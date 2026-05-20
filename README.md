@@ -9,7 +9,8 @@ Engines live behind a small provider interface (`engines.py`); identity is engin
 ## Where things live
 
 - **App code:** here (`src/agent_sessions/`)
-- **Operator-facing docs + runbook + nginx vhost + the Zellij/ttyd pieces of the install:** [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions)
+- **Deploy units (ship with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app, installed by `deploy.yml`) and `ttyd-agent.service` (the terminal pane; hand-installed — see its header).
+- **Operator-facing docs + runbook + nginx vhost + our specific as-built:** [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions)
 - **Design issue + Hermes review chain:** [`operator-docs#56`](https://git.example.com/superstatus.io/operator-docs/issues/56) (PR 3 of 4)
 - **Deploy target:** example-host (127.0.0.1:3402), behind example-proxy at terminal.example.com
 - **CI/CD:** `.forgejo/workflows/pr-validate.yml` (ruff + pytest + shell-free grep) and `.forgejo/workflows/deploy.yml` (mirrors `deploy-dashboard.yml`, targets the `[self-hosted, host]` runner on example-host)
@@ -28,7 +29,8 @@ agent-sessions/
 │   └── templates/     index.html (Alpine) + login.html
 ├── tests/             pytest; subprocess.run stubbed; covers shell-free, CSRF, lock, lookup
 ├── deploy/
-│   └── agent-sessions.service     systemd-user unit (port 3402)
+│   ├── agent-sessions.service     systemd-user unit, FastAPI app (port 3402; installed by deploy.yml)
+│   └── ttyd-agent.service         systemd-user unit, ttyd+Zellij terminal pane (port 3401; hand-installed)
 └── .forgejo/workflows/
     ├── pr-validate.yml
     └── deploy.yml
