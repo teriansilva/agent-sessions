@@ -78,6 +78,7 @@
       <strong>agent-sessions</strong>
       <div style="display:flex; gap:6px; align-items:center;">
         <button class="topbtn" @click="openNew()" type="button">+ New</button>
+        <button class="iconbtn" @click="refit()" title="Refit terminal to this screen" type="button">⤢</button>
         <button class="iconbtn" @click="toggleCollapse()" title="Collapse sidebar" type="button">‹</button>
         <button class="iconbtn" @click="logout()" type="button">⎋</button>
       </div>
@@ -146,7 +147,7 @@
   </aside>
 
   <div class="term">
-    <iframe src="/terminal/" title="agent-main"></iframe>
+    <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
   </div>
 
   <!-- New-session modal -->
@@ -198,6 +199,11 @@ function sidebar() {
         if (es[0].isIntersecting) this.loadMore();
       }, { root: this.$root, rootMargin: '200px' });
       this.$nextTick(() => this._obs.observe(this.$refs.sentinel));
+      // When the desktop regains focus/visibility (e.g. after driving the session
+      // from a phone, which shrinks the shared Zellij grid to the smaller width),
+      // nudge the terminal to re-fit so it reclaims the full screen.
+      window.addEventListener('focus', () => this.refit());
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.refit(); });
     },
     async reload() {
       // Bump the generation so any in-flight page load is discarded, clear the
@@ -276,6 +282,16 @@ function sidebar() {
       } catch (e) { this.err = e.message; }
     },
 
+    refit() {
+      // Force ttyd/xterm to recompute cols/rows by briefly nudging the iframe
+      // height: the inner window's resize handler re-fits and pushes the new size
+      // to Zellij, so the desktop reclaims width a smaller device left behind.
+      // (fit() measures both dimensions, so a height nudge also restores width.)
+      const f = this.$refs.term;
+      if (!f) return;
+      f.style.height = 'calc(100% - 1px)';
+      setTimeout(() => { f.style.height = ''; }, 80);
+    },
     toggleCollapse() { this.collapsed = !this.collapsed; localStorage.setItem('as_collapsed', this.collapsed ? '1' : '0'); },
     shortCwd(c) { return (c || '').replace(/^\/home\/[^/]+\//, '~/'); },
     ago(ts) {
