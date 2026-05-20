@@ -36,9 +36,10 @@
      place you can see what you're working in). */
   .termbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 10px;
              min-height: 26px; background: #0d0d0d; border-bottom: 1px solid #222; color: #cdd;
-             font-size: 12px; white-space: nowrap; overflow: hidden; }
+             font-size: 12px; white-space: nowrap; overflow: hidden; cursor: pointer; }
   .termbar .t { overflow: hidden; text-overflow: ellipsis; }
   .termbar .muted { color: #666; }
+  .termbar .hb { color: #8af; flex: 0 0 auto; font-size: 13px; } /* tap-for-list hint */
   header { padding: 10px 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
            border-bottom: 1px solid #222; background: #111; position: sticky; top: 0; z-index: 2; }
   header strong { color: #8af; font-size: 13px; letter-spacing: .03em; }
@@ -183,10 +184,11 @@
   </aside>
 
   <div class="term">
-    <div class="termbar">
+    <div class="termbar" @click="toggleCollapse()" title="Show / hide the session list">
+      <span class="hb" aria-hidden="true">☰</span>
       <template x-if="current"><span class="ebadge" :class="current.engine" x-text="current.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
       <span class="t" :class="{ muted: !current }"
-            x-text="current ? current.title : 'agent-main · tap a session in the sidebar to open it'"></span>
+            x-text="current ? current.title : 'agent-main · tap here for the session list'"></span>
     </div>
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
     <div class="scrollbtns">
