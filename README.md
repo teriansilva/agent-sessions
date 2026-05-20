@@ -52,6 +52,24 @@ export AGENT_SESSIONS_ORIGIN=http://localhost:3402
 uvicorn --app-dir src --host 127.0.0.1 --port 3402 agent_sessions.main:app
 ```
 
+## Permission bypass (`--dangerously-skip-permissions`)
+
+The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate (agent-sessions#4): it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
+
+This is acceptable **only** because agent-sessions is a single-user tool, on the operator's own host, behind two auth layers (nginx basic auth + the FastAPI app cookie). The toggle lets you turn bypass off per new session. The flag is asserted by `tests/test_zellij.py` so it can't silently change. Treat the whole surface as equivalent to "a shell as user" — the same trust boundary as SSH.
+
+## API surface
+
+- `GET /api/sessions?limit=20&offset=0&archived=0` — flat, newest-first, paginated (`{sessions, next_offset, total}`)
+- `GET /api/projects` — new-session picker: scanned cwds ∪ validated `~/claude/*`
+- `POST /api/sessions/{uuid}/open` — open-or-switch (resume, bypass on)
+- `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
+- `POST /api/sessions/{uuid}/archive` · `/unarchive` — move the JSONL between `projects/` and `projects-archive/`
+- `POST /api/projects/new` `{cwd, name, bypass_permissions}` — spawn a fresh session
+- `GET /api/auth-check` — 204/401 for nginx `auth_request`; `POST /login` · `/logout`
+
+All state-changing routes require the CSRF token + an Origin/Referer matching `AGENT_SESSIONS_ORIGIN`.
+
 ## Conventions
 
 See `CLAUDE.md` (= `AGENTS.md` symlink). Key points:

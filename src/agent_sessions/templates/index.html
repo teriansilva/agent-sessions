@@ -10,84 +10,216 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e6e6e6;
                font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; }
-  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 200px 1fr; } }
-  aside { background: #111; border-right: 1px solid #222; overflow-y: auto; }
+  #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; transition: grid-template-columns .15s ease; }
+  #app.collapsed { grid-template-columns: 0 1fr; }
+  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; }
+                              #app.collapsed { grid-template-rows: 0 1fr; } }
+  aside { background: #111; border-right: 1px solid #222; overflow-y: auto; min-width: 0; }
+  #app.collapsed aside { overflow: hidden; border: 0; }
   iframe { border: 0; width: 100%; height: 100%; }
-  h2 { margin: 0; padding: 12px 14px; font-size: 13px; text-transform: uppercase; color: #8af;
-       letter-spacing: 0.05em; border-bottom: 1px solid #222; position: sticky; top: 0; background: #111; }
-  .project { padding: 10px 14px 6px; color: #999; font-size: 11px; text-transform: uppercase;
-             border-top: 1px solid #1a1a1a; }
-  .row { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; cursor: pointer; }
+  header { padding: 10px 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
+           border-bottom: 1px solid #222; background: #111; position: sticky; top: 0; z-index: 2; }
+  header strong { color: #8af; font-size: 13px; letter-spacing: .03em; }
+  .row { padding: 9px 12px; border-bottom: 1px solid #1a1a1a; cursor: pointer; display: flex; align-items: flex-start; gap: 8px; }
   .row:hover { background: #181818; }
   .row.sticky { background: #122; }
-  .title { color: #fff; }
-  .meta { color: #888; font-size: 11px; margin-top: 2px; }
-  .err { color: #f88; padding: 10px 14px; }
-  header { padding: 10px 14px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
-           border-bottom: 1px solid #222; background: #111; }
-  button { background: #222; color: #ddd; border: 1px solid #333; padding: 4px 8px;
-           border-radius: 3px; cursor: pointer; font: inherit; }
-  button:hover { background: #2a2a2a; }
+  .row .body { flex: 1; min-width: 0; }
+  .title { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: #888; font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acts { display: flex; gap: 4px; opacity: .35; }
+  .row:hover .acts { opacity: 1; }
+  button, select, input { font: inherit; }
+  .iconbtn { background: #222; color: #ccc; border: 1px solid #333; border-radius: 3px; cursor: pointer; padding: 2px 6px; }
+  .iconbtn:hover { background: #2c2c2c; }
+  .topbtn { background: #1a4; color: #fff; border: 0; border-radius: 4px; padding: 6px 10px; cursor: pointer; }
+  .topbtn:hover { background: #1c5; }
+  .chip { background: #1c1c1c; border: 1px solid #2a2a2a; color: #aaa; border-radius: 12px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
+  .chip.on { background: #234; color: #cde; border-color: #356; }
+  .collapse-tab { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 5;
+                  background: #222; border: 1px solid #333; border-left: 0; color: #8af; cursor: pointer;
+                  border-radius: 0 6px 6px 0; padding: 10px 4px; display: none; }
+  #app.collapsed .collapse-tab { display: block; }
+  .err { color: #f88; padding: 8px 12px; font-size: 12px; }
+  .renameinput { width: 100%; background: #181818; color: #fff; border: 1px solid #356; border-radius: 3px; padding: 3px 6px; }
+  .sentinel { height: 1px; }
+  /* modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 10; }
+  .modal { background: #141414; border: 1px solid #2a2a2a; border-radius: 8px; padding: 18px; width: min(420px, 92vw);
+           display: flex; flex-direction: column; gap: 12px; }
+  .modal h2 { margin: 0; font-size: 16px; color: #8af; }
+  .modal label { font-size: 12px; color: #aaa; display: block; margin-bottom: 4px; }
+  .modal select, .modal input[type=text] { width: 100%; background: #181818; color: #fff;
+           border: 1px solid #2a2a2a; border-radius: 4px; padding: 8px; }
+  .modal .check { display: flex; align-items: center; gap: 8px; color: #ddd; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
-<div id="app" x-data="sidebar()">
+<div id="app" :class="{ collapsed }" x-data="sidebar()" x-init="init()">
+  <button class="collapse-tab" @click="toggleCollapse()" title="Show sidebar">›</button>
+
   <aside>
     <header>
       <strong>agent-sessions</strong>
-      <button @click="logout()" type="button">logout</button>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="topbtn" @click="openNew()" type="button">+ New</button>
+        <button class="iconbtn" @click="toggleCollapse()" title="Collapse sidebar" type="button">‹</button>
+        <button class="iconbtn" @click="logout()" type="button">⎋</button>
+      </div>
     </header>
-    <template x-for="p in projects" :key="p.project">
-      <div>
-        <div class="project" x-text="p.project"></div>
-        <template x-for="s in p.sessions" :key="s.uuid">
-          <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
+
+    <div style="padding:8px 12px; display:flex; gap:6px;">
+      <span class="chip" :class="{ on: !showArchived }" @click="setArchived(false)">Active</span>
+      <span class="chip" :class="{ on: showArchived }" @click="setArchived(true)">Archived</span>
+    </div>
+
+    <template x-for="s in sessions" :key="s.uuid">
+      <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
+        <div class="body">
+          <template x-if="editing !== s.uuid">
             <div class="title" x-text="s.title || '(untitled)'"></div>
-            <div class="meta" x-text="s.short_uuid + ' • ' + new Date(s.last_mtime * 1000).toLocaleString()"></div>
-          </div>
-        </template>
+          </template>
+          <template x-if="editing === s.uuid">
+            <input class="renameinput" type="text" x-model="editTitle"
+                   @click.stop @keydown.enter.stop="commitRename(s)" @keydown.escape.stop="editing=null"
+                   @blur="commitRename(s)" x-init="$nextTick(()=>$el.focus())">
+          </template>
+          <div class="meta" x-text="shortCwd(s.cwd) + ' • ' + ago(s.last_mtime)"></div>
+        </div>
+        <div class="acts" @click.stop>
+          <button class="iconbtn" @click="startRename(s)" title="Rename">✎</button>
+          <template x-if="!showArchived">
+            <button class="iconbtn" @click="archive(s)" title="Archive">🗄</button>
+          </template>
+          <template x-if="showArchived">
+            <button class="iconbtn" @click="unarchive(s)" title="Unarchive">↩</button>
+          </template>
+        </div>
       </div>
     </template>
-    <template x-if="err">
-      <div class="err" x-text="err"></div>
-    </template>
+
+    <div class="sentinel" x-ref="sentinel"></div>
+    <template x-if="loading"><div class="meta" style="padding:10px 12px;">loading…</div></template>
+    <template x-if="err"><div class="err" x-text="err"></div></template>
   </aside>
-  <iframe src="/terminal/" title="agent-main"></iframe>
+
+  <div style="position:relative; min-width:0;">
+    <iframe src="/terminal/" title="agent-main"></iframe>
+  </div>
+
+  <!-- New-session modal -->
+  <template x-if="showModal">
+    <div class="modal-bg" @click.self="showModal=false">
+      <div class="modal">
+        <h2>New session</h2>
+        <div>
+          <label>Project folder</label>
+          <select x-model="newCwd">
+            <template x-for="p in projects" :key="p.cwd">
+              <option :value="p.cwd" x-text="p.label"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label>Session name</label>
+          <input type="text" x-model="newName" placeholder="e.g. refactor auth" @keydown.enter="createNew()">
+        </div>
+        <label class="check">
+          <input type="checkbox" x-model="newBypass">
+          bypass permissions (skip trust + tool prompts)
+        </label>
+        <div class="actions">
+          <button class="iconbtn" @click="showModal=false">Cancel</button>
+          <button class="topbtn" @click="createNew()" :disabled="!newCwd">Create</button>
+        </div>
+      </div>
+    </div>
+  </template>
 </div>
 
 <script>
 const CSRF = {{ csrf | tojson }};
+const PAGE = 20;
 function sidebar() {
   return {
-    projects: [],
-    err: null,
+    sessions: [], projects: [], err: null, loading: false,
+    nextOffset: 0, showArchived: false,
+    collapsed: localStorage.getItem('as_collapsed') === '1',
+    editing: null, editTitle: '',
+    showModal: false, newCwd: '', newName: '', newBypass: true,
+    _obs: null,
+
     async init() {
+      await this.reload();
+      this._obs = new IntersectionObserver((es) => {
+        if (es[0].isIntersecting) this.loadMore();
+      }, { root: this.$root, rootMargin: '200px' });
+      this.$nextTick(() => this._obs.observe(this.$refs.sentinel));
+    },
+    async reload() {
+      this.sessions = []; this.nextOffset = 0; await this.loadMore();
+    },
+    async loadMore() {
+      if (this.loading || this.nextOffset === null) return;
+      this.loading = true;
       try {
-        const r = await fetch('/api/sessions', { credentials: 'same-origin' });
+        const r = await fetch(`/api/sessions?limit=${PAGE}&offset=${this.nextOffset}&archived=${this.showArchived ? 1 : 0}`,
+                              { credentials: 'same-origin' });
         if (!r.ok) throw new Error('GET /api/sessions ' + r.status);
+        const d = await r.json();
+        this.sessions.push(...d.sessions);
+        this.nextOffset = d.next_offset;
+      } catch (e) { this.err = e.message; } finally { this.loading = false; }
+    },
+    setArchived(v) { if (v === this.showArchived) return; this.showArchived = v; this.reload(); },
+
+    async post(url, body) {
+      const r = await fetch(url, { method: 'POST', credentials: 'same-origin',
+        headers: { 'X-CSRF-Token': CSRF, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined });
+      if (!r.ok) throw new Error(url + ' ' + r.status + ': ' + await r.text());
+      return r;
+    },
+    async open(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/open`); if (this.collapsed===false && window.innerWidth<=800) this.collapsed=true; } catch (e) { this.err = e.message; } },
+    startRename(s) { this.editing = s.uuid; this.editTitle = s.title || ''; },
+    async commitRename(s) {
+      if (this.editing !== s.uuid) return;
+      const t = this.editTitle.trim(); this.editing = null;
+      if (!t || t === s.title) return;
+      try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/rename`, { title: t }); s.title = t; }
+      catch (e) { this.err = e.message; }
+    },
+    async archive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/archive`); this.sessions = this.sessions.filter(x => x.uuid !== s.uuid); } catch (e) { this.err = e.message; } },
+    async unarchive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/unarchive`); this.sessions = this.sessions.filter(x => x.uuid !== s.uuid); } catch (e) { this.err = e.message; } },
+
+    async openNew() {
+      this.showModal = true; this.newName = ''; this.newBypass = true;
+      try {
+        const r = await fetch('/api/projects', { credentials: 'same-origin' });
         this.projects = (await r.json()).projects;
+        if (this.projects.length && !this.newCwd) this.newCwd = this.projects[0].cwd;
       } catch (e) { this.err = e.message; }
     },
-    async open(s) {
+    async createNew() {
+      if (!this.newCwd) return;
       try {
-        const r = await fetch('/api/sessions/' + encodeURIComponent(s.uuid) + '/open', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'X-CSRF-Token': CSRF },
-        });
-        if (!r.ok) throw new Error('open ' + r.status + ': ' + await r.text());
+        await this.post('/api/projects/new', { cwd: this.newCwd, name: this.newName || 'session', bypass_permissions: this.newBypass });
+        this.showModal = false;
+        if (window.innerWidth <= 800) this.collapsed = true;
+        // give claude a beat to write the JSONL, then refresh the list
+        setTimeout(() => this.reload(), 1500);
       } catch (e) { this.err = e.message; }
     },
-    async logout() {
-      try {
-        const r = await fetch('/logout', {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'X-CSRF-Token': CSRF },
-        });
-        if (r.redirected) location.href = r.url;
-      } catch (e) { this.err = e.message; }
+
+    toggleCollapse() { this.collapsed = !this.collapsed; localStorage.setItem('as_collapsed', this.collapsed ? '1' : '0'); },
+    shortCwd(c) { return (c || '').replace(/^\/home\/[^/]+\//, '~/'); },
+    ago(ts) {
+      const s = Math.max(0, Date.now()/1000 - ts);
+      if (s < 3600) return Math.floor(s/60) + 'm ago';
+      if (s < 86400) return Math.floor(s/3600) + 'h ago';
+      return Math.floor(s/86400) + 'd ago';
     },
+    async logout() { try { const r = await this.post('/logout'); if (r.redirected) location.href = r.url; else location.href='/login'; } catch (e) { this.err = e.message; } },
   };
 }
 </script>

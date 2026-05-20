@@ -194,6 +194,65 @@ def test_rename_does_not_create_duplicate_tab():
     assert len(rename) == 1  # best-effort rename to match the new title
 
 
+def test_resume_bypass_adds_skip_permissions_flag():
+    runner = _make_runner(existing_tabs=[])
+    zellij.open_or_switch(
+        uuid="abcdef12-1234-1234-1234-1234567890ab",
+        cwd="/tmp/x",
+        title="t",
+        allowed_cwds={"/tmp/x"},
+        bypass=True,
+        _runner=runner,
+    )
+    new_tab = next(c for c in runner.calls if "new-tab" in c)
+    assert "--dangerously-skip-permissions" in new_tab
+    assert "--resume" in new_tab
+
+
+def test_resume_without_bypass_omits_flag():
+    runner = _make_runner(existing_tabs=[])
+    zellij.open_or_switch(
+        uuid="abcdef12-1234-1234-1234-1234567890ab",
+        cwd="/tmp/x",
+        title="t",
+        allowed_cwds={"/tmp/x"},
+        bypass=False,
+        _runner=runner,
+    )
+    new_tab = next(c for c in runner.calls if "new-tab" in c)
+    assert "--dangerously-skip-permissions" not in new_tab
+
+
+def test_new_session_shell_free_and_cwd_allowlisted():
+    runner = _make_runner(existing_tabs=[])
+    tab = zellij.new_session(
+        cwd="/home/user/claude/example-app",
+        title="; rm -rf / `evil`",
+        allowed_cwds={"/home/user/claude/example-app"},
+        bypass=True,
+        _runner=runner,
+    )
+    call = runner.calls[-1]
+    assert isinstance(call, list) and all(isinstance(a, str) for a in call)
+    assert call[0] not in {"sh", "bash", "/bin/sh", "/bin/bash"}
+    assert "-c" not in call
+    assert "--resume" not in call  # brand new session, not a resume
+    assert "--dangerously-skip-permissions" in call
+    # tab name sanitized — no shell metachars
+    assert ";" not in tab and "`" not in tab
+
+
+def test_new_session_rejects_cwd_outside_allowlist():
+    runner = _make_runner()
+    with pytest.raises(zellij.ZellijError):
+        zellij.new_session(
+            cwd="/etc",
+            title="t",
+            allowed_cwds={"/home/user/claude"},
+            _runner=runner,
+        )
+
+
 def test_engine_prefix_isolation_planned():
     """Sanity check: today we use bare ``<short-uuid>:`` prefix. When opencode (#61)
     lands, the convention switches to ``c:<short-uuid>:`` vs ``o:<short-uuid>:``.

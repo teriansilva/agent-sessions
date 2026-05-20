@@ -1,6 +1,8 @@
-"""FastAPI app for agent-sessions PR 3 (minimal: list + open + login + auth-check).
+"""FastAPI app for agent-sessions.
 
-Mobile drawer / rename / sticky / archive controls land in PR 4.
+Surface: login/auth-check, a flat paginated session list, open-or-switch,
+new-session (with permission bypass), rename, archive/unarchive, and the
+project picker. See agent-sessions#4.
 """
 
 from __future__ import annotations
@@ -8,12 +10,12 @@ from __future__ import annotations
 import hmac
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import metadata, scanner, zellij
+from . import archive, metadata, scanner, zellij
 from .auth import (
     AuthConfig,
     clear_session,
@@ -98,32 +100,45 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         clear_session(resp)
         return resp
 
+    def _row(s, m: metadata.SessionMeta) -> dict:
+        return {
+            "engine": s.engine,
+            "uuid": s.uuid,
+            "short_uuid": s.short_uuid,
+            "cwd": s.cwd,
+            "project": m.project_alias or s.cwd,
+            "last_mtime": s.last_mtime,
+            "first_user_message": s.first_user_message,
+            "title": m.title or s.first_user_message,
+            "sticky": m.sticky,
+            "sort_key": m.sort_key,
+            "archived": s.archived,
+        }
+
     @app.get("/api/sessions")
-    async def list_sessions(_: str = Depends(_logged_in)) -> JSONResponse:
-        sessions = scanner.scan()
+    async def list_sessions(
+        _: str = Depends(_logged_in),
+        limit: int = Query(20, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        archived: bool = Query(False),
+    ) -> JSONResponse:
+        # Flat, paginated, newest-first. sticky floats to the top of the
+        # *first window* (a first-window concept, not a global pin).
         meta_index = metadata.load()
-        groups: dict[str, list[dict]] = {}
-        for s in sessions:
-            m = meta_index.get(s.uuid, metadata.SessionMeta())
-            project = m.project_alias or s.cwd
-            groups.setdefault(project, []).append(
-                {
-                    "engine": s.engine,
-                    "uuid": s.uuid,
-                    "short_uuid": s.short_uuid,
-                    "cwd": s.cwd,
-                    "last_mtime": s.last_mtime,
-                    "first_user_message": s.first_user_message,
-                    "title": m.title or s.first_user_message,
-                    "sticky": m.sticky,
-                    "sort_key": m.sort_key,
-                    "archived": s.archived,
-                }
-            )
-        for rows in groups.values():
-            rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
+        rows = [
+            _row(s, meta_index.get(s.uuid, metadata.SessionMeta()))
+            for s in scanner.scan()
+            if s.archived == archived
+        ]
+        rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
+        window = rows[offset : offset + limit]
+        next_offset = offset + limit if offset + limit < len(rows) else None
+        return JSONResponse({"sessions": window, "next_offset": next_offset, "total": len(rows)})
+
+    @app.get("/api/projects")
+    async def list_projects(_: str = Depends(_logged_in)) -> JSONResponse:
         return JSONResponse(
-            {"projects": [{"project": p, "sessions": rows} for p, rows in sorted(groups.items())]}
+            {"projects": [{"cwd": c, "label": c} for c in scanner.pickable_projects()]}
         )
 
     @app.post("/api/sessions/{uuid}/open")
@@ -144,10 +159,68 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 cwd=match.cwd,
                 title=title,
                 allowed_cwds=scanner.scanned_cwds(sessions),
+                bypass=True,
             )
         except zellij.ZellijError as e:
             raise HTTPException(status_code=400, detail=str(e)) from None
         return JSONResponse({"tab": tab})
+
+    @app.post("/api/sessions/{uuid}/rename")
+    async def rename_session(
+        uuid: str,
+        request: Request,
+        _user: str = Depends(_logged_in),
+        _csrf: None = Depends(_csrf_guard),
+    ) -> JSONResponse:
+        payload = await request.json()
+        title = str(payload.get("title", "")).strip()
+        if not title:
+            raise HTTPException(status_code=422, detail="title required")
+        m = metadata.patch(uuid, title=title[:120])
+        return JSONResponse({"uuid": uuid, "title": m.title})
+
+    @app.post("/api/sessions/{uuid}/archive")
+    async def archive_session(
+        uuid: str, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        try:
+            archive.archive(uuid)
+        except archive.ArchiveError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from None
+        return JSONResponse({"uuid": uuid, "archived": True})
+
+    @app.post("/api/sessions/{uuid}/unarchive")
+    async def unarchive_session(
+        uuid: str, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        try:
+            archive.unarchive(uuid)
+        except archive.ArchiveError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from None
+        return JSONResponse({"uuid": uuid, "archived": False})
+
+    @app.post("/api/projects/new")
+    async def new_session(
+        request: Request,
+        _user: str = Depends(_logged_in),
+        _csrf: None = Depends(_csrf_guard),
+    ) -> JSONResponse:
+        payload = await request.json()
+        cwd = str(payload.get("cwd", "")).strip()
+        name = str(payload.get("name", "")).strip() or "session"
+        bypass = bool(payload.get("bypass_permissions", True))
+        if not cwd:
+            raise HTTPException(status_code=422, detail="cwd required")
+        try:
+            tab = zellij.new_session(
+                cwd=cwd,
+                title=name,
+                allowed_cwds=scanner.pickable_projects(),
+                bypass=bypass,
+            )
+        except zellij.ZellijError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+        return JSONResponse({"tab": tab, "cwd": cwd, "name": name, "bypass": bypass})
 
     return app
 

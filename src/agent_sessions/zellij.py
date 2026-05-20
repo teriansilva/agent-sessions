@@ -72,17 +72,33 @@ def list_tabs(*, _runner=subprocess.run) -> list[str]:
     return [ln.strip() for ln in cp.stdout.splitlines() if ln.strip()]
 
 
+def _claude_argv(*, resume_uuid: str | None, bypass: bool) -> list[str]:
+    """Build the claude launch argv. Single shared launch-option path for both
+    resume and new-session (one place owns ``--dangerously-skip-permissions``)."""
+    argv = [CLAUDE_BIN]
+    if resume_uuid is not None:
+        argv += ["--resume", resume_uuid]
+    if bypass:
+        # Skips workspace-trust + tool-permission prompts. Default-on per the
+        # operator's request; this is a single-user tool behind dual auth.
+        argv.append("--dangerously-skip-permissions")
+    return argv
+
+
 def open_or_switch(
     *,
     uuid: str,
     cwd: str,
     title: str,
     allowed_cwds: Iterable[str],
+    bypass: bool = True,
     _runner=subprocess.run,
 ) -> str:
     """Switch to the existing Zellij tab for ``uuid`` or create a new one.
 
-    Returns the tab name that's now active.
+    Returns the tab name that's now active. With ``bypass`` (default True) the
+    resumed ``claude`` skips the workspace-trust prompt so a session opens
+    straight into its already-used folder.
 
     All boundaries are validated argv-side; no shell layer is ever invoked.
     """
@@ -126,9 +142,7 @@ def open_or_switch(
             "--name",
             desired_tab,
             "--",
-            CLAUDE_BIN,
-            "--resume",
-            uuid,
+            *_claude_argv(resume_uuid=uuid, bypass=bypass),
         ],
         check=True,
         timeout=10,
@@ -136,4 +150,46 @@ def open_or_switch(
     return desired_tab
 
 
-__all__ = ["open_or_switch", "list_tabs", "sanitize_tab_name", "ZellijError"]
+def new_session(
+    *,
+    cwd: str,
+    title: str,
+    allowed_cwds: Iterable[str],
+    bypass: bool = True,
+    _runner=subprocess.run,
+) -> str:
+    """Spawn a brand-new ``claude`` session (no --resume) in ``cwd``.
+
+    Returns the new tab name. ``cwd`` must be in ``allowed_cwds`` — for
+    new sessions the caller passes the *picker* set (scanned cwds ∪ validated
+    ``~/claude/*``), which is broader than the resume allowlist but still not
+    free-form. Shell-free argv; ``bypass`` (default True) adds
+    ``--dangerously-skip-permissions``.
+    """
+    if cwd not in set(allowed_cwds):
+        raise ZellijError(f"cwd not in allowed project set: {cwd!r}")
+    # New sessions have no uuid yet; tab name uses a sanitized title with a
+    # "new:" prefix so it's visually distinct until the next scan reconciles it.
+    safe_title = _TAB_SAFE_RE.sub("_", title).strip() or "session"
+    tab = f"new:{safe_title}"[:_TAB_MAX]
+    _runner(
+        [
+            ZELLIJ_BIN,
+            "--session",
+            ZELLIJ_SESSION,
+            "action",
+            "new-tab",
+            "--cwd",
+            cwd,
+            "--name",
+            tab,
+            "--",
+            *_claude_argv(resume_uuid=None, bypass=bypass),
+        ],
+        check=True,
+        timeout=10,
+    )
+    return tab
+
+
+__all__ = ["open_or_switch", "new_session", "list_tabs", "sanitize_tab_name", "ZellijError"]

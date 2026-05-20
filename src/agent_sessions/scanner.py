@@ -138,3 +138,37 @@ def scanned_cwds(sessions: Iterable[Session]) -> set[str]:
     Used by ``zellij.open_or_switch`` to refuse arbitrary attacker-chosen cwds.
     """
     return {s.cwd for s in sessions}
+
+
+def pickable_projects(
+    home: Path | None = None, sessions: Iterable[Session] | None = None
+) -> list[str]:
+    """Folders offered by the new-session picker: scanned session cwds ∪ the
+    immediate subdirectories of ``~/claude``.
+
+    Each ``~/claude/*`` candidate is included only when ``os.path.realpath``
+    resolves to a directory whose **real path is still under ``~/claude``** —
+    this rejects symlinks that point outside the tree and any traversal. The
+    result is the allowlist for ``zellij.new_session`` (broader than the resume
+    allowlist, but never free-form).
+    """
+    home = home or Path.home()
+    out: set[str] = set()
+    if sessions is not None:
+        out |= {s.cwd for s in sessions}
+    else:
+        out |= {s.cwd for s in scan(home)}
+
+    claude_root = (home / "claude").resolve()
+    if claude_root.is_dir():
+        for child in claude_root.iterdir():
+            try:
+                real = child.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if not real.is_dir():
+                continue
+            # real path must remain under ~/claude (reject symlink-out / traversal)
+            if real == claude_root or claude_root in real.parents:
+                out.add(str(real))
+    return sorted(out)
