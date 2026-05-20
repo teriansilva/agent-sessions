@@ -27,14 +27,25 @@
   aside { background: #111; border-right: 1px solid #222; overflow-y: auto; min-width: 0; }
   #app.collapsed aside { overflow: hidden; border: 0; }
   iframe { border: 0; width: 100%; height: 100%; display: block; }
-  /* terminal pane wrapper: clip any sub-pixel overflow so no scrollbar shows */
-  .term { position: relative; min-width: 0; overflow: hidden; }
+  /* terminal pane wrapper: clip any sub-pixel overflow so no scrollbar shows.
+     Flex column so the current-session header (.termbar) sits above the iframe. */
+  .term { position: relative; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .term iframe { flex: 1 1 auto; height: auto; min-height: 0; }
+  /* Current-session header — which session this terminal is showing. Visible on
+     desktop AND mobile (on mobile the sidebar is collapsed, so this is the only
+     place you can see what you're working in). */
+  .termbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 10px;
+             min-height: 26px; background: #0d0d0d; border-bottom: 1px solid #222; color: #cdd;
+             font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .termbar .t { overflow: hidden; text-overflow: ellipsis; }
+  .termbar .muted { color: #666; }
   header { padding: 10px 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
            border-bottom: 1px solid #222; background: #111; position: sticky; top: 0; z-index: 2; }
   header strong { color: #8af; font-size: 13px; letter-spacing: .03em; }
   .row { padding: 9px 12px; border-bottom: 1px solid #1a1a1a; cursor: pointer; display: flex; align-items: flex-start; gap: 8px; }
   .row:hover { background: #181818; }
   .row.sticky { background: #122; }
+  .row.current { background: #14233a; box-shadow: inset 3px 0 0 #4a9eff; }
   .row .body { flex: 1; min-width: 0; }
   .title { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ebadge { display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
@@ -68,6 +79,14 @@
   .scrollbtns button { width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.78);
                        color: #8af; border: 1px solid #3a3a3a; font-size: 16px; line-height: 1; cursor: pointer; }
   .scrollbtns button:active { background: rgba(64,64,64,.92); }
+  /* Mobile selection/nav keys: phone keyboards have no arrows / Esc / Tab, so these
+     inject the keys needed to drive TUI menus (e.g. Claude's resume prompt) into the
+     session. Mobile-only; desktop uses the real keyboard. */
+  .navkeys { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: none; gap: 6px; flex-wrap: wrap; max-width: 62vw; }
+  @media (max-width: 800px) { .navkeys { display: flex; } }
+  .navkeys button { min-width: 36px; height: 36px; padding: 0 8px; border-radius: 8px; background: rgba(28,28,28,.82);
+                    color: #cde; border: 1px solid #3a3a3a; font-size: 14px; line-height: 1; cursor: pointer; }
+  .navkeys button:active { background: rgba(64,64,64,.95); }
   .err { color: #f88; padding: 8px 12px; font-size: 12px; }
   .renameinput { width: 100%; background: #181818; color: #fff; border: 1px solid #356; border-radius: 3px; padding: 3px 6px; }
   .sentinel { height: 1px; }
@@ -126,7 +145,7 @@
     </div>
 
     <template x-for="s in sessions" :key="s.id">
-      <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
+      <div class="row" :class="{ sticky: s.sticky, current: current && current.id === s.id }" @click="open(s)">
         <div class="body">
           <template x-if="editing !== s.id">
             <div class="title">
@@ -164,10 +183,23 @@
   </aside>
 
   <div class="term">
+    <div class="termbar">
+      <template x-if="current"><span class="ebadge" :class="current.engine" x-text="current.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
+      <span class="t" :class="{ muted: !current }"
+            x-text="current ? current.title : 'agent-main · tap a session in the sidebar to open it'"></span>
+    </div>
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
     <div class="scrollbtns">
       <button @click="termScroll(-1)" type="button" aria-label="Scroll terminal up" title="Scroll up">▲</button>
       <button @click="termScroll(1)" type="button" aria-label="Scroll terminal down" title="Scroll down">▼</button>
+    </div>
+    <div class="navkeys">
+      <button @click="termKey('up')" type="button" aria-label="Up" title="Up">↑</button>
+      <button @click="termKey('down')" type="button" aria-label="Down" title="Down">↓</button>
+      <button @click="termKey('enter')" type="button" aria-label="Enter" title="Enter">⏎</button>
+      <button @click="termKey('esc')" type="button" aria-label="Escape" title="Escape">esc</button>
+      <button @click="termKey('tab')" type="button" aria-label="Tab" title="Tab">⇥</button>
+      <button @click="termKey('ctrlc')" type="button" aria-label="Ctrl-C" title="Ctrl-C">^C</button>
     </div>
   </div>
 
@@ -212,6 +244,9 @@ function sidebar() {
     collapsed: localStorage.getItem('as_collapsed') === '1',
     editing: null, editTitle: '',
     showModal: false, newCwd: '', newName: '', newBypass: true,
+    // The session this terminal is currently showing (set when you open one from
+    // the sidebar; persisted so it survives a reload). {id, title, engine} | null.
+    current: (() => { try { return JSON.parse(localStorage.getItem('as_current') || 'null'); } catch (_) { return null; } })(),
     _obs: null, _searchT: null, _gen: 0,
 
     async init() {
@@ -284,14 +319,27 @@ function sidebar() {
       if (!r.ok) throw new Error(url + ' ' + r.status + ': ' + await r.text());
       return r;
     },
-    async open(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/open`); if (this.collapsed===false && window.innerWidth<=800) this.collapsed=true; } catch (e) { this.err = e.message; } },
+    async open(s) {
+      try {
+        await this.post(`/api/sessions/${encodeURIComponent(s.id)}/open`);
+        this.current = { id: s.id, title: s.title || '(untitled)', engine: s.engine };
+        localStorage.setItem('as_current', JSON.stringify(this.current));
+        if (this.collapsed === false && window.innerWidth <= 800) this.collapsed = true;
+      } catch (e) { this.err = e.message; }
+    },
     startRename(s) { this.editing = s.id; this.editTitle = s.title || ''; },
     async commitRename(s) {
       if (this.editing !== s.id) return;
       const t = this.editTitle.trim(); this.editing = null;
       if (!t || t === s.title) return;
-      try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/rename`, { title: t }); s.title = t; }
-      catch (e) { this.err = e.message; }
+      try {
+        await this.post(`/api/sessions/${encodeURIComponent(s.id)}/rename`, { title: t });
+        s.title = t;
+        if (this.current && this.current.id === s.id) {
+          this.current.title = t;
+          localStorage.setItem('as_current', JSON.stringify(this.current));
+        }
+      } catch (e) { this.err = e.message; }
     },
     async archive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/archive`); this.sessions = this.sessions.filter(x => x.id !== s.id); } catch (e) { this.err = e.message; } },
     async unarchive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/unarchive`); this.sessions = this.sessions.filter(x => x.id !== s.id); } catch (e) { this.err = e.message; } },
@@ -341,6 +389,40 @@ function sidebar() {
     termScroll(dir) {
       // The ▲/▼ buttons — a few lines per tap.
       this._wheel(dir * 120);
+    },
+    termKey(name) {
+      // Mobile nav keys → inject a keydown into the session so TUI menus (e.g.
+      // Claude's resume prompt) are operable without a hardware keyboard.
+      const K = {
+        up:    { key: 'ArrowUp',   code: 'ArrowUp',   keyCode: 38 },
+        down:  { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+        enter: { key: 'Enter',     code: 'Enter',     keyCode: 13 },
+        esc:   { key: 'Escape',    code: 'Escape',    keyCode: 27 },
+        tab:   { key: 'Tab',       code: 'Tab',       keyCode: 9 },
+        ctrlc: { key: 'c',         code: 'KeyC',      keyCode: 67, ctrlKey: true },
+      }[name];
+      if (K) this._key(K);
+    },
+    _key(o) {
+      // Dispatch a synthetic keydown into the same-origin terminal iframe; xterm's
+      // key handler turns it into the right escape sequence and sends it to the PTY.
+      // Same same-origin-DOM approach as _wheel — no ttyd/xterm patching.
+      const f = this.$refs.term;
+      try {
+        const doc = f.contentDocument, win = doc.defaultView;
+        const el = doc.querySelector('.xterm-helper-textarea') || doc.querySelector('.xterm-screen')
+                 || doc.querySelector('.xterm') || doc.body;
+        if (el.focus) el.focus();
+        const ev = new win.KeyboardEvent('keydown',
+          { key: o.key, code: o.code, ctrlKey: !!o.ctrlKey, bubbles: true, cancelable: true });
+        // keyCode/which aren't settable via the constructor but some xterm paths
+        // still read them — expose them so special keys map correctly.
+        try {
+          Object.defineProperty(ev, 'keyCode', { get: () => o.keyCode });
+          Object.defineProperty(ev, 'which', { get: () => o.keyCode });
+        } catch (_) { /* ignore */ }
+        el.dispatchEvent(ev);
+      } catch (e) { this.err = 'terminal keys unavailable'; }
     },
     wireTouchScroll() {
       // Translate a one-finger vertical swipe over the terminal into wheel events
