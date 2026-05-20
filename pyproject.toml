@@ -45,5 +45,10 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["S101"]  # asserts are fine in tests
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's File(...) in an argument default is the framework idiom, not a B008 bug
+# (Depends/Form/Query are already allowlisted by ruff's defaults).
+extend-immutable-calls = ["fastapi.File"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]  # tests use subprocess + tmp paths freely

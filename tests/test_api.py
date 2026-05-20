@@ -3,6 +3,9 @@ archive/unarchive, new-session — including CSRF/origin gating."""
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from agent_sessions.main import create_app
@@ -321,3 +324,44 @@ def test_rename_opencode_is_sidecar_overlay(auth_cfg, fake_jsonl, opencode_db):
     row = next(s for s in rows if s["id"] == f"opencode:{_OC_TOP}")
     assert row["title"] == "renamed via sidebar"
     assert opencode_db.read_bytes() == before  # opencode.db untouched
+
+
+# ---- upload (paste/drop context) ----------------------------------------------
+
+
+def test_upload_saves_to_shared_dir_and_returns_path(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/upload",
+        files={"file": ("My Shot!.png", b"\x89PNG\r\n\x1a\n fake png bytes", "image/png")},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    p = Path(r.json()["path"])
+    assert p.parent == tmp_home / ".agent-sessions" / "uploads"
+    assert p.read_bytes().startswith(b"\x89PNG")
+    # filename sanitised: no spaces / punctuation that could fight the shell or path
+    assert re.fullmatch(r"\d{8}-\d{6}(-\d+)?-My_Shot_.png", p.name)
+
+
+def test_upload_requires_csrf(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post(
+        "/api/upload",
+        files={"file": ("x.txt", b"hi", "text/plain")},
+        headers={"Origin": auth_cfg.origin},  # no X-CSRF-Token
+    )
+    assert r.status_code == 403
+
+
+def test_upload_empty_is_422(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/upload",
+        files={"file": ("empty.bin", b"", "application/octet-stream")},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

@@ -83,6 +83,12 @@
   .scrollbtns button { width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.78);
                        color: #8af; border: 1px solid #3a3a3a; font-size: 16px; line-height: 1; cursor: pointer; }
   .scrollbtns button:active { background: rgba(64,64,64,.92); }
+  /* Attach control (paste/drop/pick a file as context) + transient upload notice. */
+  .termbar .attach { margin-left: auto; flex: 0 0 auto; background: none; border: 0; color: #8af;
+                     font-size: 15px; cursor: pointer; padding: 0 2px; }
+  .upnotice { position: absolute; left: 8px; right: 8px; bottom: 60px; z-index: 7; cursor: pointer;
+              background: rgba(18,38,28,.96); border: 1px solid #2a6; color: #cfe; border-radius: 6px;
+              padding: 8px 10px; font-size: 12px; white-space: normal; word-break: break-all; }
   /* Mobile selection/nav keys: phone keyboards have no arrows / Esc / Tab, so these
      inject the keys needed to drive TUI menus (e.g. Claude's resume prompt) into the
      session. Mobile-only; desktop uses the real keyboard. */
@@ -193,6 +199,8 @@
       <template x-if="current"><span class="ebadge" :class="current.engine" x-text="current.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
       <span class="t" :class="{ muted: !current }"
             x-text="current ? current.title : 'agent-main · tap here for the session list'"></span>
+      <button class="attach" @click.stop="$refs.fileInput.click()" type="button" aria-label="Attach file"
+              title="Attach an image or file as context (or paste / drop onto the terminal)">📎</button>
     </div>
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
     <div class="scrollbtns">
@@ -207,6 +215,8 @@
       <button @click="termKey('tab')" type="button" aria-label="Tab" title="Tab">⇥</button>
       <button @click="termKey('ctrlc')" type="button" aria-label="Ctrl-C" title="Ctrl-C">^C</button>
     </div>
+    <input type="file" x-ref="fileInput" @change="onFilePick" multiple style="display:none">
+    <template x-if="notice"><div class="upnotice" x-text="notice" @click="notice=null"></div></template>
   </div>
 
   <!-- New-session modal -->
@@ -244,7 +254,7 @@ const CSRF = {{ csrf | tojson }};
 const PAGE = 20;
 function sidebar() {
   return {
-    sessions: [], projects: [], err: null, loading: false,
+    sessions: [], projects: [], err: null, notice: null, _noticeT: null, loading: false,
     nextOffset: 0, showArchived: false,
     q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
@@ -275,6 +285,7 @@ function sidebar() {
         if (gap > 8000) this.reconnectTerm(); else this.refit();
       });
       this.wireTouchScroll();
+      this.wireUpload();
       // Keep the app sized to the *visible* viewport so the on-screen keyboard
       // doesn't hide the terminal's bottom (the prompt you're typing on).
       // visualViewport.height shrinks when the keyboard opens; bind #app to it and
@@ -445,6 +456,75 @@ function sidebar() {
         } catch (_) { /* ignore */ }
         el.dispatchEvent(ev);
       } catch (e) { this.err = 'terminal keys unavailable'; }
+    },
+    onFilePick(e) {
+      for (const file of e.target.files) this.uploadFile(file);
+      e.target.value = ''; // allow re-picking the same file
+    },
+    async uploadFile(file) {
+      // Upload a pasted/dropped/picked file; the server saves it under
+      // ~/.agent-sessions/uploads/ and returns a path a session can read.
+      try {
+        const fd = new FormData();
+        fd.append('file', file, file.name || 'pasted');
+        const r = await fetch('/api/upload', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': CSRF }, body: fd,
+        });
+        if (!r.ok) throw new Error(r.status + ': ' + await r.text());
+        const { path } = await r.json();
+        this._pasteText(path + ' ');                        // drop the path at the prompt
+        try { await navigator.clipboard.writeText(path); } catch (_) { /* notice still shows it */ }
+        this.showNotice('📎 ' + path + '  — path inserted + copied');
+      } catch (e) { this.err = 'upload failed — ' + e.message; }
+    },
+    showNotice(msg) {
+      this.notice = msg;
+      clearTimeout(this._noticeT);
+      this._noticeT = setTimeout(() => { this.notice = null; }, 7000);
+    },
+    _pasteText(text) {
+      // Insert a string into the terminal via a synthetic paste into xterm's textarea
+      // (same same-origin-DOM approach as _key/_wheel). The path is also on the
+      // clipboard, so a manual paste works if this no-ops.
+      const f = this.$refs.term;
+      try {
+        const doc = f.contentDocument, win = doc.defaultView;
+        const el = doc.querySelector('.xterm-helper-textarea') || doc.querySelector('.xterm') || doc.body;
+        if (el.focus) el.focus();
+        const dt = new win.DataTransfer();
+        dt.setData('text/plain', text);
+        el.dispatchEvent(new win.ClipboardEvent('paste',
+          { clipboardData: dt, bubbles: true, cancelable: true }));
+      } catch (e) { /* path is on the clipboard as a fallback */ }
+    },
+    wireUpload() {
+      // Paste an image or drop a file onto the terminal → upload it. Plain-text paste
+      // still falls through to xterm. Same iframe-doc wiring as the touch handlers.
+      const f = this.$refs.term;
+      const wire = () => {
+        let doc;
+        try { doc = f.contentDocument; } catch (e) { return; }
+        if (!doc || doc._asUploadWired) return;
+        doc._asUploadWired = true;
+        doc.addEventListener('paste', (e) => {
+          const files = e.clipboardData && e.clipboardData.files;
+          if (files && files.length) { // image/file paste → upload (text paste falls through)
+            e.preventDefault(); e.stopPropagation();
+            for (const file of files) this.uploadFile(file);
+          }
+        }, { capture: true });
+        doc.addEventListener('dragover', (e) => { e.preventDefault(); }, { capture: true });
+        doc.addEventListener('drop', (e) => {
+          const files = e.dataTransfer && e.dataTransfer.files;
+          if (files && files.length) {
+            e.preventDefault(); e.stopPropagation();
+            for (const file of files) this.uploadFile(file);
+          }
+        }, { capture: true });
+      };
+      wire();
+      f.addEventListener('load', wire);
     },
     wireTouchScroll() {
       // Translate a one-finger vertical swipe over the terminal into wheel events

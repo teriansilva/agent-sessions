@@ -9,9 +9,21 @@ project picker. See agent-sessions#4 (sidebar UX) and #8 (findable list).
 from __future__ import annotations
 
 import hmac
+import re
+import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -283,6 +295,42 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         except zellij.ZellijError as e:
             raise HTTPException(status_code=400, detail=str(e)) from None
         return JSONResponse({"tab": tab, "cwd": cwd, "name": name, "bypass": bypass})
+
+    @app.post("/api/upload")
+    async def upload_context(
+        file: UploadFile = File(...),
+        _user: str = Depends(_logged_in),
+        _csrf: None = Depends(_csrf_guard),
+    ) -> JSONResponse:
+        # Save a pasted/dropped image or file so a Claude/opencode session can read
+        # it by path (the web terminal can't carry image paste itself). Lands in a
+        # shared ~/.agent-sessions/uploads/ — never in a project working tree.
+        # Stream-read with a hard cap so a huge upload can't exhaust memory.
+        max_bytes = 25 * 1024 * 1024
+        size, chunks = 0, []
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(status_code=413, detail="file too large (max 25 MB)")
+            chunks.append(chunk)
+        if not size:
+            raise HTTPException(status_code=422, detail="empty upload")
+        # Sanitise to a bare, safe basename — no path separators, no traversal.
+        raw_name = Path(file.filename or "upload").name
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:80] or "upload"
+        dest_dir = Path.home() / ".agent-sessions" / "uploads"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = dest_dir / f"{stamp}-{safe}"
+        n = 1
+        while dest.exists():
+            dest = dest_dir / f"{stamp}-{n}-{safe}"
+            n += 1
+        dest.write_bytes(b"".join(chunks))
+        return JSONResponse({"path": str(dest), "name": safe})
 
     return app
 
