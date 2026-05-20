@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>agent-sessions</title>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e6e6e6;
+               font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; }
+  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 200px 1fr; } }
+  aside { background: #111; border-right: 1px solid #222; overflow-y: auto; }
+  iframe { border: 0; width: 100%; height: 100%; }
+  h2 { margin: 0; padding: 12px 14px; font-size: 13px; text-transform: uppercase; color: #8af;
+       letter-spacing: 0.05em; border-bottom: 1px solid #222; position: sticky; top: 0; background: #111; }
+  .project { padding: 10px 14px 6px; color: #999; font-size: 11px; text-transform: uppercase;
+             border-top: 1px solid #1a1a1a; }
+  .row { padding: 10px 14px; border-bottom: 1px solid #1a1a1a; cursor: pointer; }
+  .row:hover { background: #181818; }
+  .row.sticky { background: #122; }
+  .title { color: #fff; }
+  .meta { color: #888; font-size: 11px; margin-top: 2px; }
+  .err { color: #f88; padding: 10px 14px; }
+  header { padding: 10px 14px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
+           border-bottom: 1px solid #222; background: #111; }
+  button { background: #222; color: #ddd; border: 1px solid #333; padding: 4px 8px;
+           border-radius: 3px; cursor: pointer; font: inherit; }
+  button:hover { background: #2a2a2a; }
+</style>
+</head>
+<body>
+<div id="app" x-data="sidebar()">
+  <aside>
+    <header>
+      <strong>agent-sessions</strong>
+      <button @click="logout()" type="button">logout</button>
+    </header>
+    <template x-for="p in projects" :key="p.project">
+      <div>
+        <div class="project" x-text="p.project"></div>
+        <template x-for="s in p.sessions" :key="s.uuid">
+          <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
+            <div class="title" x-text="s.title || '(untitled)'"></div>
+            <div class="meta" x-text="s.short_uuid + ' • ' + new Date(s.last_mtime * 1000).toLocaleString()"></div>
+          </div>
+        </template>
+      </div>
+    </template>
+    <template x-if="err">
+      <div class="err" x-text="err"></div>
+    </template>
+  </aside>
+  <iframe src="/terminal/" title="agent-main"></iframe>
+</div>
+
+<script>
+const CSRF = {{ csrf | tojson }};
+function sidebar() {
+  return {
+    projects: [],
+    err: null,
+    async init() {
+      try {
+        const r = await fetch('/api/sessions', { credentials: 'same-origin' });
+        if (!r.ok) throw new Error('GET /api/sessions ' + r.status);
+        this.projects = (await r.json()).projects;
+      } catch (e) { this.err = e.message; }
+    },
+    async open(s) {
+      try {
+        const r = await fetch('/api/sessions/' + encodeURIComponent(s.uuid) + '/open', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': CSRF },
+        });
+        if (!r.ok) throw new Error('open ' + r.status + ': ' + await r.text());
+      } catch (e) { this.err = e.message; }
+    },
+    async logout() {
+      try {
+        const r = await fetch('/logout', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': CSRF },
+        });
+        if (r.redirected) location.href = r.url;
+      } catch (e) { this.err = e.message; }
+    },
+  };
+}
+</script>
+</body>
+</html>

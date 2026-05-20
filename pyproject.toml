@@ -1,0 +1,49 @@
+[project]
+name = "agent-sessions"
+version = "0.0.0"
+description = "Mobile-first AI-coding session organizer — Zellij+ttyd+FastAPI sidebar on example-host"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "jinja2==3.1.4",
+    "itsdangerous==2.2.0",
+    "python-multipart==0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "httpx==0.28.1",  # for FastAPI TestClient
+    "ruff==0.8.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship the Jinja templates inside the wheel/sdist. Without this, a non-editable
+# `pip install .` (the deploy shape) produces a package with only the .py
+# modules, and the app raises jinja2 TemplateNotFound at runtime. Editable
+# installs accidentally work because they read straight from the source tree.
+[tool.setuptools.package-data]
+agent_sessions = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101"]  # asserts are fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]  # tests use subprocess + tmp paths freely
