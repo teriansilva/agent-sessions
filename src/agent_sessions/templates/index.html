@@ -60,6 +60,14 @@
                   background: #222; border: 1px solid #333; border-left: 0; color: #8af; cursor: pointer;
                   border-radius: 0 6px 6px 0; padding: 10px 4px; display: none; }
   #app.collapsed .collapse-tab { display: block; }
+  /* Mobile scrollback controls: phones have no mouse wheel, and a swipe doesn't
+     scroll a full-screen Zellij pane, so these feed scroll into the session.
+     Desktop uses the real wheel → hidden there. */
+  .scrollbtns { position: absolute; right: 8px; bottom: 14px; z-index: 6; display: none; flex-direction: column; gap: 10px; }
+  @media (max-width: 800px) { .scrollbtns { display: flex; } }
+  .scrollbtns button { width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.78);
+                       color: #8af; border: 1px solid #3a3a3a; font-size: 16px; line-height: 1; cursor: pointer; }
+  .scrollbtns button:active { background: rgba(64,64,64,.92); }
   .err { color: #f88; padding: 8px 12px; font-size: 12px; }
   .renameinput { width: 100%; background: #181818; color: #fff; border: 1px solid #356; border-radius: 3px; padding: 3px 6px; }
   .sentinel { height: 1px; }
@@ -157,6 +165,10 @@
 
   <div class="term">
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
+    <div class="scrollbtns">
+      <button @click="termScroll(-1)" type="button" aria-label="Scroll terminal up" title="Scroll up">▲</button>
+      <button @click="termScroll(1)" type="button" aria-label="Scroll terminal down" title="Scroll down">▼</button>
+    </div>
   </div>
 
   <!-- New-session modal -->
@@ -300,6 +312,22 @@ function sidebar() {
       if (!f) return;
       f.style.height = 'calc(100% - 1px)';
       setTimeout(() => { f.style.height = ''; }, 80);
+    },
+    termScroll(dir) {
+      // Drive Zellij's scrollback by dispatching synthetic wheel events into the
+      // same-origin terminal iframe. Zellij's mouse mode is on, so xterm forwards
+      // wheel to it as scroll. dir<0 = up (older output). Mobile has no real wheel;
+      // these buttons fill that gap (desktop uses the wheel; buttons are CSS-hidden).
+      const f = this.$refs.term;
+      try {
+        const doc = f.contentDocument;
+        const win = doc.defaultView;
+        const el = doc.querySelector('.xterm-screen') || doc.querySelector('.xterm') || doc.body;
+        for (let i = 0; i < 3; i++) {
+          el.dispatchEvent(new win.WheelEvent('wheel',
+            { deltaY: dir * 120, deltaMode: 0, bubbles: true, cancelable: true }));
+        }
+      } catch (e) { this.err = 'terminal scroll unavailable'; }
     },
     toggleCollapse() { this.collapsed = !this.collapsed; localStorage.setItem('as_collapsed', this.collapsed ? '1' : '0'); },
     shortCwd(c) { return (c || '').replace(/^\/home\/[^/]+\//, '~/'); },
