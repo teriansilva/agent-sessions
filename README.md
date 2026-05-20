@@ -2,9 +2,9 @@
 
 Mobile-first AI-coding session organizer behind **https://terminal.example.com**.
 
-Sidebar: every Claude Code session on disk (`~/.claude/projects/**/*.jsonl`), grouped by project, sticky-first then by recency. Click a row → opens (or focuses) a Zellij tab with `claude --resume <uuid>` in the right cwd. Embedded terminal pane is ttyd attached to a persistent Zellij session named `agent-main`.
+Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`) and opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. Click a row → opens (or focuses) a Zellij tab resuming that session in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>`). Embedded terminal pane is ttyd attached to a persistent Zellij session named `agent-main`.
 
-Opencode is a planned second engine source — see [`operator-docs#61`](https://git.example.com/superstatus.io/operator-docs/issues/61).
+Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry. History: `agent-sessions#10` (vision) → `#11` (abstraction) → `#12` (opencode).
 
 ## Where things live
 
@@ -61,7 +61,7 @@ This is acceptable **only** because agent-sessions is a single-user tool, on the
 ## API surface
 
 - `GET /api/sessions?limit=20&offset=0&archived=0` — flat, newest-first, paginated (`{sessions, next_offset, total, facets}`).
-  Optional filters: `q` (case-insensitive title substring; trimmed, empty = no filter), `project` (exact key), `engine` (exact; `claude` today, `opencode` once #61 lands). Filters are applied **before** `limit`/`offset` so `total` and "load more" describe the filtered set. `facets: {projects, engines}` are the distinct values over the full archived-scoped set (computed pre-filter) so the sidebar dropdowns list every option, including rows past the first page.
+  Optional filters: `q` (case-insensitive title substring; trimmed, empty = no filter), `project` (exact key), `engine` (exact; `claude` / `opencode`). Filters are applied **before** `limit`/`offset` so `total` and "load more" describe the filtered set. `facets: {projects, engines}` are the distinct values over the full archived-scoped set (computed pre-filter) so the sidebar dropdowns list every option, including rows past the first page.
 - `GET /api/projects` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
 - `POST /api/sessions/{uuid}/open` — open-or-switch (resume, bypass on)
 - `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar

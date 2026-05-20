@@ -275,3 +275,49 @@ def test_new_session_requires_csrf(auth_cfg, fake_jsonl):
     _login(c, auth_cfg)
     r = c.post("/api/projects/new", json={"cwd": "/tmp/other"}, headers={"Origin": auth_cfg.origin})
     assert r.status_code == 403
+
+
+# ---- opencode engine (#12) ----------------------------------------------------
+
+_OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
+
+
+def test_opencode_rows_appear_with_engine_facet(auth_cfg, fake_jsonl, opencode_db):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/sessions?limit=200").json()
+    assert {"claude", "opencode"} <= set(d["facets"]["engines"])
+    oc = [s for s in d["sessions"] if s["engine"] == "opencode"]
+    assert oc and all(s["id"].startswith("opencode:ses_") for s in oc)
+    # engine filter narrows to opencode only
+    only = c.get("/api/sessions?engine=opencode&limit=200").json()
+    assert only["total"] >= 1 and all(s["engine"] == "opencode" for s in only["sessions"])
+
+
+def test_archive_opencode_is_rejected_read_only(auth_cfg, fake_jsonl, opencode_db):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        f"/api/sessions/opencode:{_OC_TOP}/archive",
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 400  # opencode is read-only; archive refused at the API
+
+
+def test_rename_opencode_is_sidecar_overlay(auth_cfg, fake_jsonl, opencode_db):
+    # Rename writes our engine-agnostic sidecar (metadata.json), never opencode.db,
+    # so it's allowed for opencode and persists in the list — and opencode.db is
+    # left byte-for-byte untouched (the read-only-to-opencode guarantee).
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    before = opencode_db.read_bytes()
+    r = c.post(
+        f"/api/sessions/opencode:{_OC_TOP}/rename",
+        json={"title": "renamed via sidebar"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200 and r.json()["title"] == "renamed via sidebar"
+    rows = c.get("/api/sessions?engine=opencode&limit=200").json()["sessions"]
+    row = next(s for s in rows if s["id"] == f"opencode:{_OC_TOP}")
+    assert row["title"] == "renamed via sidebar"
+    assert opencode_db.read_bytes() == before  # opencode.db untouched

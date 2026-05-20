@@ -7,6 +7,7 @@ stub subprocess runners.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -77,3 +78,38 @@ def stub_zellij():
     runner.return_value.returncode = 0
     runner.return_value.stdout = ""
     return runner
+
+
+# opencode session ids in the fixture (≥1 top-level, 1 archived, 1 fork to skip).
+OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
+OC_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
+OC_FORK = "ses_ffffffffffffffffffffffff"
+
+
+@pytest.fixture
+def opencode_db(tmp_home, monkeypatch) -> Path:
+    """A minimal opencode SQLite DB (only the columns OpenCodeProvider reads).
+
+    Two top-level sessions (one archived) + one fork (``parent_id`` set, must be
+    skipped). ``time_updated`` is epoch **milliseconds**, like the real DB.
+    """
+    db = tmp_home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    con = sqlite3.connect(str(db))
+    con.execute(
+        "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT, title TEXT, "
+        "time_updated INTEGER, time_archived INTEGER)"
+    )
+    con.executemany(
+        "INSERT INTO session (id, parent_id, directory, title, time_updated, time_archived) "
+        "VALUES (?,?,?,?,?,?)",
+        [
+            (OC_TOP, None, "/home/user/claude", "OC top one", 1777460564154, None),
+            (OC_ARCHIVED, None, "/tmp/other", "OC archived", 1777300000000, 1777400000000),
+            (OC_FORK, OC_TOP, "/home/user/claude", "OC fork skip", 1777460564999, None),
+        ],
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(db))
+    return db

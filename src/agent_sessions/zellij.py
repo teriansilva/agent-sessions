@@ -6,9 +6,15 @@ no string interpolation that reaches a shell. UUID / cwd / tabname are validated
 before they reach subprocess. The contract is pinned by ``tests/test_zellij.py``
 and by a CI grep in ``.forgejo/workflows/pr-validate.yml``.
 
-Tab name convention: ``<short-uuid>:<sanitized-title>``. **Tab lookup is by
-short-UUID prefix only**, so renaming a session in the sidebar never produces a
-duplicate Zellij tab when the existing one still carries the old title.
+Tab naming:
+- Claude (the original engine) keeps a bare ``<short-uuid>:<title>`` tab name.
+- Other engines (opencode, via ``open_engine``/``new_engine``) carry an engine
+  prefix, e.g. ``o:<short>:<title>``, so engines can't collide on tab lookup.
+
+**Tab lookup is by the ``<prefix><short>:`` segment only**, so renaming a session
+in the sidebar never produces a duplicate Zellij tab when the existing one still
+carries the old title. The actual ``claude`` / ``opencode`` argv is built by the
+caller (see ``engines.py``) and passed in — this module only manages tabs.
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ ZELLIJ_SESSION = os.environ.get("AGENT_SESSIONS_ZELLIJ_SESSION", "agent-main")
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _TAB_SAFE_RE = re.compile(r"[^A-Za-z0-9 ._:-]")
+_SHORT_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")  # tab-lookup discriminator (engine-agnostic)
 _TAB_MAX = 64
 
 
@@ -43,13 +50,26 @@ class ZellijError(RuntimeError):
     """Raised on bad input or non-zero `zellij action` exit."""
 
 
+def _safe_title(title: str) -> str:
+    return _TAB_SAFE_RE.sub("_", title).strip() or "session"
+
+
 def sanitize_tab_name(short_uuid: str, title: str) -> str:
-    """Compose a tab name from the short UUID prefix + sanitized title, truncated to 64."""
+    """Compose a (bare) Claude tab name: short UUID prefix + sanitized title, ≤64."""
     if not re.match(r"^[0-9a-f]{8}$", short_uuid):
         raise ZellijError(f"bad short uuid: {short_uuid!r}")
-    safe_title = _TAB_SAFE_RE.sub("_", title).strip() or "session"
-    raw = f"{short_uuid}:{safe_title}"
-    return raw[:_TAB_MAX]
+    return f"{short_uuid}:{_safe_title(title)}"[:_TAB_MAX]
+
+
+def sanitize_engine_tab(engine_prefix: str, short: str, title: str) -> str:
+    """Compose an engine-prefixed tab name ``<prefix>:<short>:<title>`` (≤64).
+
+    ``engine_prefix`` empty → bare ``<short>:<title>`` (the Claude convention).
+    """
+    if not _SHORT_RE.match(short):
+        raise ZellijError(f"bad short id: {short!r}")
+    head = f"{engine_prefix}:{short}" if engine_prefix else short
+    return f"{head}:{_safe_title(title)}"[:_TAB_MAX]
 
 
 def list_tabs(*, _runner=subprocess.run) -> list[str]:
@@ -80,47 +100,27 @@ def _claude_argv(*, resume_uuid: str | None, bypass: bool) -> list[str]:
         argv += ["--resume", resume_uuid]
     if bypass:
         # Skips workspace-trust + tool-permission prompts. Default-on per the
-        # operator's request; this is a single-user tool behind dual auth.
+        # operator's request; this is a single-user tool on the operator's host.
         argv.append("--dangerously-skip-permissions")
     return argv
 
 
-def open_or_switch(
-    *,
-    uuid: str,
-    cwd: str,
-    title: str,
-    allowed_cwds: Iterable[str],
-    bypass: bool = True,
-    _runner=subprocess.run,
+def _switch_or_new(
+    *, desired_tab: str, lookup_prefixes: Iterable[str], cwd: str, argv: list[str], _runner
 ) -> str:
-    """Switch to the existing Zellij tab for ``uuid`` or create a new one.
+    """Switch to an existing tab matching any ``lookup_prefixes`` or spawn a new one.
 
-    Returns the tab name that's now active. With ``bypass`` (default True) the
-    resumed ``claude`` skips the workspace-trust prompt so a session opens
-    straight into its already-used folder.
-
-    All boundaries are validated argv-side; no shell layer is ever invoked.
+    Shared core for every engine. ``argv`` is the already-built, validated launch
+    command; no shell is ever invoked. ``--`` separates zellij flags from argv.
     """
-    if not _UUID_RE.match(uuid):
-        raise ZellijError(f"uuid does not match UUID shape: {uuid!r}")
-    if cwd not in set(allowed_cwds):
-        raise ZellijError(f"cwd not in scanned session set: {cwd!r}")
-
-    short = uuid[:8]
-    desired_tab = sanitize_tab_name(short, title)
-
-    # Lookup by short-UUID prefix so a rename can't create a duplicate.
-    prefix = f"{short}:"
-    existing = [t for t in list_tabs(_runner=_runner) if t.startswith(prefix)]
-
+    prefixes = tuple(lookup_prefixes)
+    existing = [t for t in list_tabs(_runner=_runner) if t.startswith(prefixes)]
     if existing:
         _runner(
             [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "go-to-tab-name", existing[0]],
             check=True,
             timeout=5,
         )
-        # Best-effort live rename when the sidebar title diverges from the tab.
         if existing[0] != desired_tab:
             _runner(
                 [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "rename-tab", desired_tab],
@@ -129,7 +129,6 @@ def open_or_switch(
             )
         return desired_tab
 
-    # New tab. Note: ``--`` separates zellij flags from the command argv list.
     _runner(
         [
             ZELLIJ_BIN,
@@ -142,7 +141,7 @@ def open_or_switch(
             "--name",
             desired_tab,
             "--",
-            *_claude_argv(resume_uuid=uuid, bypass=bypass),
+            *argv,
         ],
         check=True,
         timeout=10,
@@ -150,28 +149,8 @@ def open_or_switch(
     return desired_tab
 
 
-def new_session(
-    *,
-    cwd: str,
-    title: str,
-    allowed_cwds: Iterable[str],
-    bypass: bool = True,
-    _runner=subprocess.run,
-) -> str:
-    """Spawn a brand-new ``claude`` session (no --resume) in ``cwd``.
-
-    Returns the new tab name. ``cwd`` must be in ``allowed_cwds`` — for
-    new sessions the caller passes the *picker* set (scanned cwds ∪ validated
-    ``~/claude/*``), which is broader than the resume allowlist but still not
-    free-form. Shell-free argv; ``bypass`` (default True) adds
-    ``--dangerously-skip-permissions``.
-    """
-    if cwd not in set(allowed_cwds):
-        raise ZellijError(f"cwd not in allowed project set: {cwd!r}")
-    # New sessions have no uuid yet; tab name uses a sanitized title with a
-    # "new:" prefix so it's visually distinct until the next scan reconciles it.
-    safe_title = _TAB_SAFE_RE.sub("_", title).strip() or "session"
-    tab = f"new:{safe_title}"[:_TAB_MAX]
+def _spawn_new(*, tab: str, cwd: str, argv: list[str], _runner) -> str:
+    """Spawn a brand-new tab running ``argv`` in ``cwd``. Shell-free."""
     _runner(
         [
             ZELLIJ_BIN,
@@ -184,7 +163,7 @@ def new_session(
             "--name",
             tab,
             "--",
-            *_claude_argv(resume_uuid=None, bypass=bypass),
+            *argv,
         ],
         check=True,
         timeout=10,
@@ -192,4 +171,109 @@ def new_session(
     return tab
 
 
-__all__ = ["open_or_switch", "new_session", "list_tabs", "sanitize_tab_name", "ZellijError"]
+def open_or_switch(
+    *,
+    uuid: str,
+    cwd: str,
+    title: str,
+    allowed_cwds: Iterable[str],
+    bypass: bool = True,
+    _runner=subprocess.run,
+) -> str:
+    """Switch to the existing Zellij tab for a Claude ``uuid`` or create a new one.
+
+    Returns the tab name that's now active. With ``bypass`` (default True) the
+    resumed ``claude`` skips the workspace-trust prompt. All boundaries are
+    validated argv-side; no shell layer is ever invoked.
+    """
+    if not _UUID_RE.match(uuid):
+        raise ZellijError(f"uuid does not match UUID shape: {uuid!r}")
+    if cwd not in set(allowed_cwds):
+        raise ZellijError(f"cwd not in scanned session set: {cwd!r}")
+    short = uuid[:8]
+    return _switch_or_new(
+        desired_tab=sanitize_tab_name(short, title),
+        lookup_prefixes=[f"{short}:"],
+        cwd=cwd,
+        argv=_claude_argv(resume_uuid=uuid, bypass=bypass),
+        _runner=_runner,
+    )
+
+
+def new_session(
+    *,
+    cwd: str,
+    title: str,
+    allowed_cwds: Iterable[str],
+    bypass: bool = True,
+    _runner=subprocess.run,
+) -> str:
+    """Spawn a brand-new ``claude`` session (no --resume) in ``cwd``.
+
+    ``cwd`` must be in ``allowed_cwds`` (the picker set). Shell-free argv;
+    ``bypass`` (default True) adds ``--dangerously-skip-permissions``.
+    """
+    if cwd not in set(allowed_cwds):
+        raise ZellijError(f"cwd not in allowed project set: {cwd!r}")
+    tab = f"new:{_safe_title(title)}"[:_TAB_MAX]
+    return _spawn_new(
+        tab=tab, cwd=cwd, argv=_claude_argv(resume_uuid=None, bypass=bypass), _runner=_runner
+    )
+
+
+def open_engine(
+    *,
+    engine_prefix: str,
+    short: str,
+    cwd: str,
+    title: str,
+    allowed_cwds: Iterable[str],
+    argv: Iterable[str],
+    _runner=subprocess.run,
+) -> str:
+    """Engine-agnostic open-or-switch: caller supplies the launch ``argv`` and the
+    tab ``engine_prefix`` (e.g. ``"o"`` for opencode). ``short`` is the per-engine
+    lookup discriminator. ``cwd`` must be in ``allowed_cwds``. Shell-free.
+    """
+    if cwd not in set(allowed_cwds):
+        raise ZellijError(f"cwd not in scanned session set: {cwd!r}")
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise ZellijError("empty argv")
+    desired = sanitize_engine_tab(engine_prefix, short, title)
+    lookup = f"{engine_prefix}:{short}:" if engine_prefix else f"{short}:"
+    return _switch_or_new(
+        desired_tab=desired, lookup_prefixes=[lookup], cwd=cwd, argv=argv, _runner=_runner
+    )
+
+
+def new_engine(
+    *,
+    engine_prefix: str,
+    cwd: str,
+    title: str,
+    allowed_cwds: Iterable[str],
+    argv: Iterable[str],
+    _runner=subprocess.run,
+) -> str:
+    """Engine-agnostic new-session spawn. Caller supplies the launch ``argv``."""
+    if cwd not in set(allowed_cwds):
+        raise ZellijError(f"cwd not in allowed project set: {cwd!r}")
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise ZellijError("empty argv")
+    head = f"{engine_prefix}:new" if engine_prefix else "new"
+    tab = f"{head}:{_safe_title(title)}"[:_TAB_MAX]
+    return _spawn_new(tab=tab, cwd=cwd, argv=argv, _runner=_runner)
+
+
+__all__ = [
+    "open_or_switch",
+    "new_session",
+    "open_engine",
+    "new_engine",
+    "list_tabs",
+    "sanitize_tab_name",
+    "sanitize_engine_tab",
+    "ZellijError",
+]

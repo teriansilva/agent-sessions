@@ -11,10 +11,10 @@ sidecar keys, and per-engine id validation means ids from different engines can
 never collide or hit the wrong validator. ``parse_key`` is the single gate that
 resolves an id to its provider and validates the native shape before any dispatch.
 
-Claude is the only provider today; opencode is #12. The seam is kept deliberately
+Claude and opencode are the two providers today. The seam is kept deliberately
 small — providers expose ``open_or_switch`` / ``new_session`` rather than a raw
-argv plugin layer, and the Zellij tab-naming generalization is finalized with the
-second provider (#12), where it's actually exercised. See #10/#11/#12.
+argv plugin layer; Zellij tab naming is engine-prefixed (Claude bare ``<short>:``,
+opencode ``o:<short>:``). See #10/#11/#12.
 
 **Shell-free:** providers build argv lists and delegate the actual ``subprocess``
 exec to ``zellij`` / ``archive``; no provider invokes a shell.
@@ -22,8 +22,10 @@ exec to ``zellij`` / ``archive``; no provider invokes a shell.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -33,6 +35,21 @@ from . import scanner, zellij
 from .scanner import Session
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_SES_RE = re.compile(r"^ses_[A-Za-z0-9]+$")
+
+OPENCODE_BIN = (
+    os.environ.get("AGENT_SESSIONS_OPENCODE_BIN") or shutil.which("opencode") or "opencode"
+)
+# Columns the opencode reader depends on, pinned so a schema rename fails the
+# fixture test (loud) rather than silently dropping rows in prod (it would just
+# fail-soft to no opencode rows).
+OPENCODE_SCHEMA = ("id", "parent_id", "directory", "title", "time_updated", "time_archived")
+
+
+def _opencode_db() -> str:
+    return os.environ.get("AGENT_SESSIONS_OPENCODE_DB") or str(
+        Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    )
 
 
 class EngineError(RuntimeError):
@@ -92,8 +109,103 @@ class ClaudeProvider:
         _archive.unarchive(native_id)
 
 
-# Registry. Order is scan/display order; new engines (opencode #12) append here.
-_PROVIDERS: list[EngineProvider] = [ClaudeProvider()]
+class OpenCodeProvider:
+    """opencode: sessions live in a SQLite DB (``~/.local/share/opencode/opencode.db``),
+    resumed via ``opencode <dir> --session <id>``.
+
+    **Read-only to opencode.db:** the sidebar never writes opencode's DB.
+    ``archive``/``unarchive`` raise ``NotImplementedError`` (surfaced as a 4xx) —
+    our archive moves the Claude JSONL, which opencode has no equivalent for.
+    Rename/sticky *do* work for opencode: they write the engine-agnostic sidecar
+    (``metadata.json``), never ``opencode.db``. All DB access is read-only and
+    **fail-soft**: any sqlite error (missing / locked / corrupt / schema drift)
+    yields no opencode rows rather than taking down the Claude list.
+    """
+
+    engine_id = "opencode"
+    id_pattern = _SES_RE
+
+    def _query(self) -> list:
+        db = _opencode_db()
+        if not os.path.exists(db):
+            return []
+        cols = ", ".join(OPENCODE_SCHEMA)
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+            try:
+                con.execute("PRAGMA busy_timeout=500")
+                return con.execute(
+                    f"SELECT {cols} FROM session WHERE parent_id IS NULL"  # noqa: S608 fixed cols
+                ).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return []
+
+    def is_present(self) -> bool:
+        # Present only when the DB is actually *readable* (not merely that the file
+        # or binary exists) — so a half-installed / locked opencode stays silent.
+        db = _opencode_db()
+        if not os.path.exists(db):
+            return False
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+            try:
+                con.execute("SELECT 1 FROM session LIMIT 1")
+                return True
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return False
+
+    def scan(self) -> list[Session]:
+        out: list[Session] = []
+        for sid, _parent, directory, title, time_updated, time_archived in self._query():
+            if not isinstance(sid, str) or not self.id_pattern.match(sid):
+                continue
+            out.append(
+                Session(
+                    engine=self.engine_id,
+                    uuid=sid,
+                    cwd=directory or "",
+                    # opencode stores epoch *milliseconds*; Claude uses seconds.
+                    last_mtime=(time_updated or 0) / 1000.0,
+                    first_user_message=title or "",  # opencode maintains a real title
+                    archived=time_archived is not None,
+                )
+            )
+        return out
+
+    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
+        # opencode's permission model is config-side (opencode.json) — there's no
+        # per-launch bypass flag; `bypass` is accepted only for interface parity.
+        return zellij.open_engine(
+            engine_prefix="o",
+            short=native_id,
+            cwd=cwd,
+            title=title,
+            allowed_cwds=allowed_cwds,
+            argv=[OPENCODE_BIN, cwd, "--session", native_id],
+        )
+
+    def new_session(self, *, cwd, title, allowed_cwds, bypass):
+        return zellij.new_engine(
+            engine_prefix="o",
+            cwd=cwd,
+            title=title,
+            allowed_cwds=allowed_cwds,
+            argv=[OPENCODE_BIN, cwd],
+        )
+
+    def archive(self, native_id):
+        raise NotImplementedError("opencode sessions are read-only in the sidebar")
+
+    def unarchive(self, native_id):
+        raise NotImplementedError("opencode sessions are read-only in the sidebar")
+
+
+# Registry. Order is scan/display order; a provider only surfaces when present.
+_PROVIDERS: list[EngineProvider] = [ClaudeProvider(), OpenCodeProvider()]
 _BY_ID: dict[str, EngineProvider] = {p.engine_id: p for p in _PROVIDERS}
 
 

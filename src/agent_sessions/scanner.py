@@ -11,8 +11,9 @@ with ``-``, so ``example-app`` and ``example-app/io`` both become
 decoding the directory name when a file has no ``cwd`` field. This matters
 because the cwd feeds the open-session allowlist + ``zellij --cwd``.
 
-Opencode is a planned second engine source (operator-docs#61); this
-scanner is Claude-Code-only by design.
+This scanner is Claude-Code-only by design — it reads ``~/.claude/projects``.
+opencode is a separate engine read by ``engines.OpenCodeProvider`` (a read-only
+SQLite reader), not here. See agent-sessions#10/#11/#12.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 class Session:
     """One Claude Code session as the sidebar sees it."""
 
-    engine: str  # "claude" for now; "opencode" once #61 lands
+    engine: str  # "claude" (this scanner) or "opencode" (engines.OpenCodeProvider)
     uuid: str
     cwd: str
     last_mtime: float

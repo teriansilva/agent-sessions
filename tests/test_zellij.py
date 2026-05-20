@@ -253,9 +253,92 @@ def test_new_session_rejects_cwd_outside_allowlist():
         )
 
 
-def test_engine_prefix_isolation_planned():
-    """Sanity check: today we use bare ``<short-uuid>:`` prefix. When opencode (#61)
-    lands, the convention switches to ``c:<short-uuid>:`` vs ``o:<short-uuid>:``.
-    For now we just document the prefix shape used."""
-    name = zellij.sanitize_tab_name("abcdef12", "test")
-    assert name.startswith("abcdef12:")
+def test_engine_tab_prefixes():
+    """Claude keeps the bare ``<short>:`` tab name; a non-empty engine prefix
+    (opencode → ``o``) yields ``<prefix>:<short>:`` so engines can't collide."""
+    assert zellij.sanitize_tab_name("abcdef12", "test").startswith("abcdef12:")
+    assert zellij.sanitize_engine_tab("", "abcdef12", "test").startswith("abcdef12:")
+    assert zellij.sanitize_engine_tab("o", "ses_abc", "test").startswith("o:ses_abc:")
+
+
+# ---- engine-agnostic dispatch (open_engine / new_engine) ----------------------
+
+
+def test_open_engine_shell_free_and_prefixed():
+    runner = _make_runner(existing_tabs=[])
+    tab = zellij.open_engine(
+        engine_prefix="o",
+        short="ses_abcd1234",
+        cwd="/tmp/x",
+        title="; rm -rf / `evil`",
+        allowed_cwds={"/tmp/x"},
+        argv=["opencode", "/tmp/x", "--session", "ses_abcd1234"],
+        _runner=runner,
+    )
+    assert tab.startswith("o:ses_abcd1234:")
+    new_tab = next(c for c in runner.calls if "new-tab" in c)
+    assert isinstance(new_tab, list) and all(isinstance(a, str) for a in new_tab)
+    assert new_tab[0] not in {"sh", "bash", "/bin/sh", "/bin/bash"} and "-c" not in new_tab
+    # the opencode argv rides after the `--` separator, never through a shell
+    assert "opencode" in new_tab and "--session" in new_tab and "ses_abcd1234" in new_tab
+    # crafted title is sanitized in the tab name
+    assert ";" not in tab and "`" not in tab
+
+
+def test_open_engine_switches_by_prefix_no_duplicate():
+    runner = _make_runner(existing_tabs=["o:ses_abcd1234:OLD"])
+    zellij.open_engine(
+        engine_prefix="o",
+        short="ses_abcd1234",
+        cwd="/tmp/x",
+        title="NEW",
+        allowed_cwds={"/tmp/x"},
+        argv=["opencode", "/tmp/x", "--session", "ses_abcd1234"],
+        _runner=runner,
+    )
+    assert not [c for c in runner.calls if "new-tab" in c]
+    assert len([c for c in runner.calls if "go-to-tab-name" in c]) == 1
+
+
+def test_open_engine_rejects_cwd_outside_allowlist():
+    runner = _make_runner()
+    with pytest.raises(zellij.ZellijError):
+        zellij.open_engine(
+            engine_prefix="o",
+            short="ses_abcd1234",
+            cwd="/etc",
+            title="t",
+            allowed_cwds={"/tmp/x"},
+            argv=["opencode", "/etc", "--session", "ses_abcd1234"],
+            _runner=runner,
+        )
+
+
+def test_open_engine_rejects_empty_argv():
+    runner = _make_runner()
+    with pytest.raises(zellij.ZellijError):
+        zellij.open_engine(
+            engine_prefix="o",
+            short="ses_abcd1234",
+            cwd="/tmp/x",
+            title="t",
+            allowed_cwds={"/tmp/x"},
+            argv=[],
+            _runner=runner,
+        )
+
+
+def test_new_engine_prefixed_and_shell_free():
+    runner = _make_runner(existing_tabs=[])
+    tab = zellij.new_engine(
+        engine_prefix="o",
+        cwd="/tmp/x",
+        title="fresh",
+        allowed_cwds={"/tmp/x"},
+        argv=["opencode", "/tmp/x"],
+        _runner=runner,
+    )
+    assert tab.startswith("o:new:")
+    call = runner.calls[-1]
+    assert isinstance(call, list) and call[0] not in {"sh", "bash"} and "-c" not in call
+    assert "opencode" in call

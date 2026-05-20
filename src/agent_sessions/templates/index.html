@@ -34,6 +34,9 @@
   .row.sticky { background: #122; }
   .row .body { flex: 1; min-width: 0; }
   .title { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ebadge { display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+            padding: 1px 4px; margin-right: 5px; border-radius: 3px; background: #234; color: #9cf; vertical-align: middle; }
+  .ebadge.opencode { background: #3a2f12; color: #fc9; }
   .meta { color: #888; font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .acts { display: flex; gap: 4px; opacity: .35; }
   .row:hover .acts { opacity: 1; }
@@ -115,7 +118,10 @@
       <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
         <div class="body">
           <template x-if="editing !== s.id">
-            <div class="title" x-text="s.title || '(untitled)'"></div>
+            <div class="title">
+              <template x-if="facets.engines.length > 1"><span class="ebadge" :class="s.engine" x-text="s.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
+              <span x-text="s.title || '(untitled)'"></span>
+            </div>
           </template>
           <template x-if="editing === s.id">
             <input class="renameinput" type="text" x-model="editTitle"

@@ -65,7 +65,8 @@ def test_canonical_key_normalizes_bare_uuid():
         "bogus:whatever",  # unknown engine
         "claude:not-a-uuid",  # right engine, wrong native shape
         "not-a-uuid",  # bare, not a claude uuid
-        "ses_26484f850ffei7OMJwLTM9MLgn",  # opencode-shaped id with no provider yet
+        "ses_26484f850ffei7OMJwLTM9MLgn",  # bare ses_ → parsed as claude, fails uuid shape
+        "opencode:not-a-ses",  # right engine, wrong native shape
     ],
 )
 def test_parse_key_rejects_bad_ids(bad):
@@ -118,3 +119,80 @@ def test_claude_archive_moves_the_jsonl(fake_jsonl):
     rows = engines.scan_all()
     moved = next(r for r in rows if r.uuid == _U1)
     assert moved.archived is True
+
+
+# ---- opencode provider (#12) --------------------------------------------------
+
+_OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
+_OC_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
+_OC_FORK = "ses_ffffffffffffffffffffffff"
+
+
+def test_opencode_present_when_db_readable(opencode_db):
+    assert "opencode" in {p.engine_id for p in engines.present_providers()}
+
+
+def test_opencode_scan_top_level_only(opencode_db):
+    ids = {r.uuid for r in engines.scan_all() if r.engine == "opencode"}
+    assert ids == {_OC_TOP, _OC_ARCHIVED}  # fork (parent_id set) excluded
+    assert _OC_FORK not in ids
+
+
+def test_opencode_time_normalized_to_seconds(opencode_db):
+    top = next(r for r in engines.scan_all() if r.uuid == _OC_TOP)
+    # 1777460564154 ms → ~1777460564.154 s (not left in milliseconds)
+    assert 1_700_000_000 < top.last_mtime < 2_000_000_000
+    assert abs(top.last_mtime - 1777460564.154) < 1
+
+
+def test_opencode_archived_and_title(opencode_db):
+    rows = {r.uuid: r for r in engines.scan_all() if r.engine == "opencode"}
+    assert rows[_OC_ARCHIVED].archived is True
+    assert rows[_OC_TOP].archived is False
+    assert rows[_OC_TOP].first_user_message == "OC top one"  # native opencode title
+
+
+def test_opencode_fail_soft_missing_db(tmp_home, monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(tmp_home / "nope.db"))
+    prov = engines.OpenCodeProvider()
+    assert prov.is_present() is False
+    assert prov.scan() == []
+
+
+def test_opencode_fail_soft_corrupt_db(tmp_home, monkeypatch):
+    bad = tmp_home / "corrupt.db"
+    bad.write_text("this is not a sqlite database")
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(bad))
+    prov = engines.OpenCodeProvider()
+    assert prov.is_present() is False
+    assert prov.scan() == []
+
+
+def test_parse_key_opencode():
+    prov, native = engines.parse_key(f"opencode:{_OC_TOP}")
+    assert prov.engine_id == "opencode" and native == _OC_TOP
+
+
+def test_opencode_archive_unarchive_read_only():
+    with pytest.raises(NotImplementedError):
+        engines.OpenCodeProvider().archive(_OC_TOP)
+    with pytest.raises(NotImplementedError):
+        engines.OpenCodeProvider().unarchive(_OC_TOP)
+
+
+def test_opencode_open_dispatch_argv(monkeypatch):
+    captured: dict = {}
+
+    def fake_open(**kw):
+        captured.update(kw)
+        return "o-tab"
+
+    monkeypatch.setattr(engines.zellij, "open_engine", fake_open)
+    tab = engines.OpenCodeProvider().open_or_switch(
+        _OC_TOP, cwd="/tmp/other", title="t", allowed_cwds={"/tmp/other"}, bypass=True
+    )
+    assert tab == "o-tab"
+    assert captured["engine_prefix"] == "o"
+    assert captured["short"] == _OC_TOP
+    assert captured["argv"][0] == engines.OPENCODE_BIN
+    assert "--session" in captured["argv"] and _OC_TOP in captured["argv"]
