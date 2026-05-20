@@ -85,8 +85,6 @@
   .scrollstrip:active { cursor: grabbing; background: rgba(110,110,150,.5); }
   @media (min-width: 801px) { .scrollstrip { display: block; } }
   /* Attach control (paste/drop/pick a file as context) + transient upload notice. */
-  .termbar .attach { margin-left: auto; flex: 0 0 auto; background: none; border: 0; color: #8af;
-                     font-size: 15px; cursor: pointer; padding: 0 2px; }
   .upnotice { position: absolute; left: 8px; right: 8px; bottom: 60px; z-index: 7; cursor: pointer;
               background: rgba(18,38,28,.96); border: 1px solid #2a6; color: #cfe; border-radius: 6px;
               padding: 8px 10px; font-size: 12px; white-space: normal; word-break: break-all; }
@@ -136,13 +134,13 @@
   <button class="collapse-tab" @click="toggleCollapse()" title="Show sidebar">›</button>
 
   <aside>
-    <header>
+    <header @click="window.innerWidth <= 800 && toggleCollapse()" title="Tap to collapse the list (mobile)">
       <strong>agent-sessions</strong>
       <div style="display:flex; gap:6px; align-items:center;">
-        <button class="topbtn" @click="openNew()" type="button">+ New</button>
-        <button class="iconbtn" @click="refit()" title="Refit terminal to this screen" type="button">⤢</button>
-        <button class="iconbtn" @click="toggleCollapse()" title="Collapse sidebar" type="button">‹</button>
-        <button class="iconbtn" @click="logout()" type="button">⎋</button>
+        <button class="topbtn" @click.stop="openNew()" type="button">+ New</button>
+        <button class="iconbtn" @click.stop="refit()" title="Refit terminal to this screen" type="button">⤢</button>
+        <button class="iconbtn" @click.stop="toggleCollapse()" title="Collapse sidebar" type="button">‹</button>
+        <button class="iconbtn" @click.stop="logout()" type="button">⎋</button>
       </div>
     </header>
 
@@ -218,8 +216,6 @@
       <template x-if="current"><span class="ebadge" :class="current.engine" x-text="current.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
       <span class="t" :class="{ muted: !current }"
             x-text="current ? current.title : 'agent-main · tap here for the session list'"></span>
-      <button class="attach" @click.stop="$refs.fileInput.click()" type="button" aria-label="Attach file"
-              title="Attach an image or file as context (or paste / drop onto the terminal)">📎</button>
     </div>
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
     <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
