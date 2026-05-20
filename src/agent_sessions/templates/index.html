@@ -226,6 +226,17 @@ function sidebar() {
       window.addEventListener('focus', () => this.refit());
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.refit(); });
       this.wireTouchScroll();
+      // Keep the app sized to the *visible* viewport so the on-screen keyboard
+      // doesn't hide the terminal's bottom (the prompt you're typing on).
+      // visualViewport.height shrinks when the keyboard opens; bind #app to it and
+      // the terminal reflows (the iframe resizes with its grid cell). Falls back to
+      // the dvh CSS where visualViewport is unavailable.
+      if (window.visualViewport) {
+        const vv = window.visualViewport;
+        const fitViewport = () => { this.$root.style.height = vv.height + 'px'; };
+        vv.addEventListener('resize', fitViewport);
+        fitViewport();
+      }
     },
     async reload() {
       // Bump the generation so any in-flight page load is discarded, clear the
@@ -314,20 +325,22 @@ function sidebar() {
       f.style.height = 'calc(100% - 1px)';
       setTimeout(() => { f.style.height = ''; }, 80);
     },
-    _wheelTick(dir) {
-      // One wheel notch into the same-origin terminal iframe. Zellij's mouse mode
-      // is on, so xterm forwards wheel to it as scroll. dir<0 = up (older output).
+    _wheel(deltaY) {
+      // Dispatch one wheel event (pixel delta) into the same-origin terminal iframe.
+      // Zellij's mouse mode is on, so xterm forwards wheel to it as scroll;
+      // deltaY<0 = up (older output). Passing the *real* px delta (instead of fixed
+      // notches) lets a swipe track the finger rather than lurch ahead.
       const f = this.$refs.term;
       try {
         const doc = f.contentDocument, win = doc.defaultView;
         const el = doc.querySelector('.xterm-screen') || doc.querySelector('.xterm') || doc.body;
         el.dispatchEvent(new win.WheelEvent('wheel',
-          { deltaY: dir * 120, deltaMode: 0, bubbles: true, cancelable: true }));
+          { deltaY, deltaMode: 0, bubbles: true, cancelable: true }));
       } catch (e) { this.err = 'terminal scroll unavailable'; }
     },
     termScroll(dir) {
-      // The ▲/▼ buttons — a few notches per tap.
-      for (let i = 0; i < 3; i++) this._wheelTick(dir);
+      // The ▲/▼ buttons — a few lines per tap.
+      this._wheel(dir * 120);
     },
     wireTouchScroll() {
       // Translate a one-finger vertical swipe over the terminal into wheel notches
@@ -337,7 +350,6 @@ function sidebar() {
       // tap-to-focus / keyboard still work. Multi-finger gestures are left alone.
       // Same-origin DOM only — no ttyd/xterm patching.
       const f = this.$refs.term;
-      const STEP = 28; // px of swipe per wheel notch
       const attach = () => {
         let doc;
         try { doc = f.contentDocument; } catch (e) { return; }
@@ -350,12 +362,8 @@ function sidebar() {
         doc.addEventListener('touchmove', (e) => {
           if (lastY === null || e.touches.length !== 1) return; // multi-finger: leave alone
           const y = e.touches[0].clientY;
-          acc += y - lastY; lastY = y;
-          while (Math.abs(acc) >= STEP) {
-            const fingerDown = acc > 0;
-            acc -= fingerDown ? STEP : -STEP;
-            this._wheelTick(fingerDown ? -1 : 1); // drag down → older (up); drag up → newer (down)
-          }
+          acc += lastY - y; lastY = y; // +acc = drag up (newer/down); -acc = drag down (older/up)
+          if (Math.abs(acc) >= 16) { this._wheel(acc); acc = 0; } // real px → tracks the finger
           e.preventDefault(); e.stopPropagation();
         }, { passive: false, capture: true });
       };
