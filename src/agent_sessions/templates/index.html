@@ -8,15 +8,24 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: #0a0a0a; color: #e6e6e6;
+  /* Fixed full-screen app: only the sidebar scrolls. overflow:hidden on the
+     document kills the spurious page-level scrollbar (the iframe's default
+     inline baseline-gap pushed layout a few px past 100vh). */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0a0a; color: #e6e6e6;
                font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; transition: grid-template-columns .15s ease; }
+  #app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; overflow: hidden; transition: grid-template-columns .15s ease; }
   #app.collapsed { grid-template-columns: 0 1fr; }
   @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; }
-                              #app.collapsed { grid-template-rows: 0 1fr; } }
+                              /* must also reset columns to 1fr: the general #app.collapsed rule
+                                 sets `grid-template-columns: 0 1fr` (higher specificity than the
+                                 media `#app`), which would otherwise make this a 2x2 grid and
+                                 auto-place the terminal into the 0-height first row → blank screen. */
+                              #app.collapsed { grid-template-columns: 1fr; grid-template-rows: 0 1fr; } }
   aside { background: #111; border-right: 1px solid #222; overflow-y: auto; min-width: 0; }
   #app.collapsed aside { overflow: hidden; border: 0; }
-  iframe { border: 0; width: 100%; height: 100%; }
+  iframe { border: 0; width: 100%; height: 100%; display: block; }
+  /* terminal pane wrapper: clip any sub-pixel overflow so no scrollbar shows */
+  .term { position: relative; min-width: 0; overflow: hidden; }
   header { padding: 10px 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
            border-bottom: 1px solid #222; background: #111; position: sticky; top: 0; z-index: 2; }
   header strong { color: #8af; font-size: 13px; letter-spacing: .03em; }
@@ -103,7 +112,7 @@
     <template x-if="err"><div class="err" x-text="err"></div></template>
   </aside>
 
-  <div style="position:relative; min-width:0;">
+  <div class="term">
     <iframe src="/terminal/" title="agent-main"></iframe>
   </div>
 
