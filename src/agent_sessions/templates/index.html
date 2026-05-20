@@ -214,6 +214,8 @@
       <button @click="termKey('esc')" type="button" aria-label="Escape" title="Escape">esc</button>
       <button @click="termKey('tab')" type="button" aria-label="Tab" title="Tab">⇥</button>
       <button @click="termKey('ctrlc')" type="button" aria-label="Ctrl-C" title="Ctrl-C">^C</button>
+      <button @click="$refs.fileInput.click()" type="button" aria-label="Upload a file"
+              title="Upload an image or file as context">📎</button>
     </div>
     <input type="file" x-ref="fileInput" @change="onFilePick" multiple style="display:none">
     <template x-if="notice"><div class="upnotice" x-text="notice" @click="notice=null"></div></template>
