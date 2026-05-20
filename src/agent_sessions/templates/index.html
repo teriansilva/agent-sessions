@@ -30,7 +30,10 @@
   /* terminal pane wrapper: clip any sub-pixel overflow so no scrollbar shows.
      Flex column so the current-session header (.termbar) sits above the iframe. */
   .term { position: relative; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
-  .term iframe { flex: 1 1 auto; height: auto; min-height: 0; }
+  /* The iframe lives in .termwrap so the user-set scale (a CSS transform on the iframe)
+     can oversize+shrink it for more columns without disturbing the flex layout / compose box. */
+  .termwrap { flex: 1 1 auto; position: relative; overflow: hidden; min-height: 0; }
+  .termwrap iframe { width: 100%; height: 100%; transform-origin: top left; }
   /* Current-session header — which session this terminal is showing. Visible on
      desktop AND mobile (on mobile the sidebar is collapsed, so this is the only
      place you can see what you're working in). */
@@ -143,6 +146,7 @@
       <strong>agent-sessions</strong>
       <div style="display:flex; gap:6px; align-items:center;">
         <button class="topbtn" @click.stop="openNew()" type="button">+ New</button>
+        <button class="iconbtn" @click.stop="showSettings=true" title="Settings" type="button">⚙</button>
         <button class="iconbtn" @click.stop="logout()" type="button">⎋</button>
       </div>
     </header>
@@ -220,7 +224,7 @@
       <span class="t" :class="{ muted: !current }"
             x-text="current ? current.title : 'agent-main · tap here for the session list'"></span>
     </div>
-    <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
+    <div class="termwrap"><iframe x-ref="term" src="/terminal/" title="agent-main"></iframe></div>
     <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
     <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
@@ -282,6 +286,27 @@
       </div>
     </div>
   </template>
+
+  <!-- Settings modal -->
+  <template x-if="showSettings">
+    <div class="modal-bg" @click.self="showSettings=false">
+      <div class="modal">
+        <h2>Settings</h2>
+        <div>
+          <label>Terminal scale — <span x-text="Math.round(scale*100)+'%'"></span></label>
+          <input type="range" min="0.6" max="1.3" step="0.05" x-model.number="scale"
+                 @input="persistScale(); applyScale()" style="width:100%">
+          <div style="font-size:11px; color:#888; margin-top:4px;">
+            Smaller = more columns (helps wide tables / code fit on a phone). Resyncs the terminal.
+          </div>
+        </div>
+        <div class="actions">
+          <button class="iconbtn" @click="scale=1; persistScale(); applyScale()" type="button">Reset</button>
+          <button class="topbtn" @click="showSettings=false" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+  </template>
 </div>
 
 <script>
@@ -292,6 +317,7 @@ function sidebar() {
     sessions: [], projects: [], err: null, notice: null, _noticeT: null, loading: false,
     composeOpen: localStorage.getItem('as_compose') !== '0', composeText: '',  // open by default; remembers if closed
     attachments: [],  // {name, path} pills for files attached to the draft
+    scale: (parseFloat(localStorage.getItem('as_scale')) || 1), showSettings: false,  // terminal zoom
     nextOffset: 0, showArchived: false,
     q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
@@ -308,6 +334,8 @@ function sidebar() {
         if (es[0].isIntersecting) this.loadMore();
       }, { root: this.$root, rootMargin: '200px' });
       this.$nextTick(() => this._obs.observe(this.$refs.sentinel));
+      this.$nextTick(() => this.applyScale());                                  // apply persisted terminal scale
+      if (this.$refs.term) this.$refs.term.addEventListener('load', () => this.applyScale());  // re-apply after reconnect-reload
       // When the desktop regains focus/visibility (e.g. after driving the session
       // from a phone, which shrinks the shared Zellij grid to the smaller width),
       // nudge the terminal to re-fit so it reclaims the full screen.
@@ -432,6 +460,20 @@ function sidebar() {
       const f = this.$refs.term;
       if (!f) return;
       try { f.contentWindow.location.reload(); } catch (e) { f.src = f.src; }
+    },
+    persistScale() { localStorage.setItem('as_scale', String(this.scale)); },
+    applyScale() {
+      // Oversize the iframe then shrink it with a CSS transform, so xterm sees a larger
+      // viewport (more columns/rows) rendered smaller. <1 = more columns — helps wide
+      // tables/code fit on a phone. .termwrap clips the overflow; the flex layout (compose
+      // box) is untouched; xterm re-fits on the size change.
+      const f = this.$refs.term;
+      if (!f) return;
+      const s = this.scale || 1;
+      if (s === 1) { f.style.transform = ''; f.style.width = '100%'; f.style.height = '100%'; return; }
+      f.style.width = (100 / s) + '%';
+      f.style.height = (100 / s) + '%';
+      f.style.transform = 'scale(' + s + ')';
     },
     refit() {
       // Force ttyd/xterm to recompute cols/rows by briefly nudging the iframe
