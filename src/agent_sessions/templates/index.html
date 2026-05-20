@@ -95,13 +95,13 @@
      into xterm. Collapsible; holds the nav keys + attach + send. Mobile-only (desktop
      types directly in the terminal). The nav keys (arrows/Esc/Tab/^C) inject keystrokes
      so TUI menus — e.g. Claude's native /-command menu or resume prompt — are operable. */
-  .compose-toggle { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: none;
+  .compose-toggle { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: block;
                     width: 56px; height: 56px; border-radius: 50%; background: rgba(28,28,28,.88);
                     color: #cde; border: 1px solid #3a3a3a; font-size: 26px; line-height: 1; cursor: pointer; }
-  @media (max-width: 800px) { .compose-toggle { display: block; } }
-  .compose { position: absolute; left: 0; right: 0; bottom: 0; z-index: 8; display: none;
-             flex-direction: column; gap: 6px; padding: 8px; background: rgba(12,12,12,.97);
-             border-top: 1px solid #2a2a2a; }
+  /* Docked BELOW the terminal: in-flow flex child of .term, so the iframe (flex:1)
+     shrinks above it and the compose box never overlays the session. Desktop + mobile. */
+  .compose { flex: 0 0 auto; display: none; flex-direction: column; gap: 6px; padding: 8px;
+             background: rgba(12,12,12,.97); border-top: 1px solid #2a2a2a; }
   .compose.open { display: flex; }
   .compose textarea { width: 100%; max-height: 28vh; resize: none; background: #181818; color: #fff;
                       border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px; font: inherit; }
@@ -537,14 +537,15 @@ function sidebar() {
       // Paste the whole draft into the terminal in one shot, then Enter to submit. One
       // bracketed paste = no per-keystroke IME/autocomplete garble. /commands run as
       // typed; for the native /-menu, type '/' here, Send, then drive it with the nav keys.
+      // Only submit + clear AFTER the paste actually lands (the inject can need retries
+      // right after a reconnect), so a failed inject never silently loses the draft.
       const t = this.composeText;
       if (!t.trim()) return;                       // empty → no-op (use the ⏎ key for a bare Enter)
-      this._pasteText(t);
-      setTimeout(() => {
-        this.termKey('enter');                       // submit after xterm has the paste
+      this._pasteText(t, () => {
+        setTimeout(() => this.termKey('enter'), 60); // submit once xterm has the paste
+        this.composeText = '';
         try { this.$refs.composeInput.focus(); } catch (_) { /* keep cursor in the box, not terminal */ }
-      }, 80);
-      this.composeText = '';
+      });
     },
     _clipFiles(dt) {
       // Pull pasted/dropped file(s) from a DataTransfer. Browsers vary: some put a
@@ -574,20 +575,33 @@ function sidebar() {
       clearTimeout(this._noticeT);
       this._noticeT = setTimeout(() => { this.notice = null; }, 7000);
     },
-    _pasteText(text) {
-      // Insert a string into the terminal via a synthetic paste into xterm's textarea
-      // (same same-origin-DOM approach as _key/_wheel). The path is also on the
-      // clipboard, so a manual paste works if this no-ops.
+    _pasteText(text, after) {
+      // Inject text into xterm via a synthetic paste on its helper textarea. Right
+      // after a reload (e.g. auto-reconnect) xterm may not be mounted yet, so retry
+      // briefly until the textarea exists, then run `after` (e.g. press Enter). If it
+      // never appears, copy to the clipboard + notify so the text isn't lost.
       const f = this.$refs.term;
-      try {
-        const doc = f.contentDocument, win = doc.defaultView;
-        const el = doc.querySelector('.xterm-helper-textarea') || doc.querySelector('.xterm') || doc.body;
-        if (el.focus) el.focus();
-        const dt = new win.DataTransfer();
-        dt.setData('text/plain', text);
-        el.dispatchEvent(new win.ClipboardEvent('paste',
-          { clipboardData: dt, bubbles: true, cancelable: true }));
-      } catch (e) { /* path is on the clipboard as a fallback */ }
+      let tries = 0;
+      const attempt = () => {
+        let el = null, win = null;
+        try {
+          const doc = f.contentDocument; win = doc.defaultView;
+          el = doc.querySelector('.xterm-helper-textarea');
+        } catch (_) { /* iframe not ready */ }
+        if (el && win) {
+          el.focus();
+          const dt = new win.DataTransfer();
+          dt.setData('text/plain', text);
+          el.dispatchEvent(new win.ClipboardEvent('paste',
+            { clipboardData: dt, bubbles: true, cancelable: true }));
+          if (after) after();
+          return;
+        }
+        if (tries++ < 12) { setTimeout(attempt, 60); return; } // ~0.7s of retries while xterm boots
+        try { navigator.clipboard.writeText(text); } catch (_) { /* */ }
+        this.showNotice('terminal not ready — text copied, paste it manually');
+      };
+      attempt();
     },
     wireUpload() {
       // Paste an image or drop a file onto the terminal → upload it. Plain-text paste
@@ -619,7 +633,7 @@ function sidebar() {
     },
     wireTouchScroll() {
       // Translate a one-finger vertical swipe over the terminal into wheel events
-      // (the same path the buttons use) so mobile can scroll the session by dragging,
+      // (the same wheel path the desktop drag-strip uses) so mobile scrolls by dragging,
       // with native-feeling momentum: a flick glides and decays, and any touch stops
       // it. touchmove is captured + stopped so it doesn't also reach xterm as a mouse
       // drag (which would start a text selection); touchstart/end pass through so
