@@ -111,13 +111,13 @@
       </div>
     </div>
 
-    <template x-for="s in sessions" :key="s.uuid">
+    <template x-for="s in sessions" :key="s.id">
       <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
         <div class="body">
-          <template x-if="editing !== s.uuid">
+          <template x-if="editing !== s.id">
             <div class="title" x-text="s.title || '(untitled)'"></div>
           </template>
-          <template x-if="editing === s.uuid">
+          <template x-if="editing === s.id">
             <input class="renameinput" type="text" x-model="editTitle"
                    @click.stop @keydown.enter.stop="commitRename(s)" @keydown.escape.stop="editing=null"
                    @blur="commitRename(s)" x-init="$nextTick(()=>$el.focus())">
@@ -251,17 +251,17 @@ function sidebar() {
       if (!r.ok) throw new Error(url + ' ' + r.status + ': ' + await r.text());
       return r;
     },
-    async open(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/open`); if (this.collapsed===false && window.innerWidth<=800) this.collapsed=true; } catch (e) { this.err = e.message; } },
-    startRename(s) { this.editing = s.uuid; this.editTitle = s.title || ''; },
+    async open(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/open`); if (this.collapsed===false && window.innerWidth<=800) this.collapsed=true; } catch (e) { this.err = e.message; } },
+    startRename(s) { this.editing = s.id; this.editTitle = s.title || ''; },
     async commitRename(s) {
-      if (this.editing !== s.uuid) return;
+      if (this.editing !== s.id) return;
       const t = this.editTitle.trim(); this.editing = null;
       if (!t || t === s.title) return;
-      try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/rename`, { title: t }); s.title = t; }
+      try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/rename`, { title: t }); s.title = t; }
       catch (e) { this.err = e.message; }
     },
-    async archive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/archive`); this.sessions = this.sessions.filter(x => x.uuid !== s.uuid); } catch (e) { this.err = e.message; } },
-    async unarchive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.uuid)}/unarchive`); this.sessions = this.sessions.filter(x => x.uuid !== s.uuid); } catch (e) { this.err = e.message; } },
+    async archive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/archive`); this.sessions = this.sessions.filter(x => x.id !== s.id); } catch (e) { this.err = e.message; } },
+    async unarchive(s) { try { await this.post(`/api/sessions/${encodeURIComponent(s.id)}/unarchive`); this.sessions = this.sessions.filter(x => x.id !== s.id); } catch (e) { this.err = e.message; } },
 
     async openNew() {
       this.showModal = true; this.newName = ''; this.newBypass = true;

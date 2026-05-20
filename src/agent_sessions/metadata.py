@@ -1,8 +1,9 @@
 """Sidecar JSON for the bits Claude Code doesn't store: title, sticky, sort_key, project_alias.
 
-Backed by ``~/.config/agent-sessions/metadata.json``. Keyed by session UUID for
-v1 (Claude-only); migrates to ``<engine>:<id>`` form when the opencode follow-up
-in operator-docs#61 lands.
+Backed by ``~/.config/agent-sessions/metadata.json``. Keyed by the engine-qualified
+session id ``<engine>:<native_id>`` (e.g. ``claude:<uuid>``). Pre-multi-engine
+bare-UUID keys (#11) are normalized to ``claude:<uuid>`` on read, and rewritten in
+canonical form after a one-time ``.bak`` backup so a botched migration is reversible.
 
 Concurrent writers serialize on ``fcntl.flock``. Reads tolerate a write in
 progress; writes take an exclusive lock for the read-modify-write window.
@@ -13,9 +14,27 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+_CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _normalize_keys(data: dict) -> tuple[dict, bool]:
+    """Map pre-multi-engine bare-UUID keys to ``claude:<uuid>``.
+
+    Returns ``(normalized, changed)``. Already-qualified keys (containing ``:``)
+    and non-UUID keys are left untouched, so this is a no-op for current data.
+    """
+    out: dict = {}
+    changed = False
+    for k, v in data.items():
+        nk = f"claude:{k}" if (":" not in k and _CLAUDE_UUID_RE.match(k)) else k
+        changed = changed or nk != k
+        out[nk] = v
+    return out, changed
 
 
 @dataclass
@@ -79,6 +98,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    raw, _ = _normalize_keys(raw)
     out: dict[str, SessionMeta] = {}
     for key, val in raw.items():
         if not isinstance(val, dict):
@@ -93,12 +113,13 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
 
 
 def patch(
-    uuid: str,
+    key: str,
     **fields,
 ) -> SessionMeta:
     """Read-modify-write a single session's metadata under an exclusive flock.
 
-    Returns the new SessionMeta.
+    ``key`` is the engine-qualified id (``<engine>:<native_id>``). Returns the new
+    SessionMeta.
     """
     path = _default_path()
     allowed = {"title", "sticky", "sort_key", "project_alias"}
@@ -111,11 +132,19 @@ def patch(
             text = fh.read()
             data = json.loads(text) if text.strip() else {}
             if not isinstance(data, dict):
-                data = {}
+                text, data = "", {}
         except json.JSONDecodeError:
-            data = {}
+            text, data = "", {}
 
-        existing = data.get(uuid, {})
+        # One-time migration of legacy bare-UUID keys → claude:<uuid>, backing the
+        # original file up once before the first canonical rewrite.
+        data, migrated = _normalize_keys(data)
+        if migrated:
+            bak = path.with_name(path.name + ".bak")
+            if not bak.exists():
+                bak.write_text(text)
+
+        existing = data.get(key, {})
         if not isinstance(existing, dict):
             existing = {}
         meta_dict = {
@@ -125,13 +154,13 @@ def patch(
             "project_alias": existing.get("project_alias", ""),
         }
         meta_dict.update(fields)
-        data[uuid] = meta_dict
+        data[key] = meta_dict
         _rewrite_in_place(fh, data)
         return SessionMeta(**meta_dict)
 
 
-def get(uuid: str, path: Path | None = None) -> SessionMeta:
-    return load(path).get(uuid, SessionMeta())
+def get(key: str, path: Path | None = None) -> SessionMeta:
+    return load(path).get(key, SessionMeta())
 
 
 __all__ = ["SessionMeta", "load", "patch", "get"]
