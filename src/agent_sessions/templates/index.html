@@ -44,6 +44,12 @@
   .topbtn:hover { background: #1c5; }
   .chip { background: #1c1c1c; border: 1px solid #2a2a2a; color: #aaa; border-radius: 12px; padding: 2px 9px; cursor: pointer; font-size: 12px; }
   .chip.on { background: #234; color: #cde; border-color: #356; }
+  .fbar { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 6px; }
+  .fbar input, .fbar select { width: 100%; background: #181818; color: #fff; border: 1px solid #2a2a2a; border-radius: 4px; padding: 6px 8px; }
+  .fbar .selects { display: flex; gap: 6px; }
+  .fbar select { flex: 1; min-width: 0; }
+  .fbar .clear { flex: 0 0 auto; }
+  .empty { color: #888; padding: 14px 12px; font-size: 12px; }
   .collapse-tab { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 5;
                   background: #222; border: 1px solid #333; border-left: 0; color: #8af; cursor: pointer;
                   border-radius: 0 6px 6px 0; padding: 10px 4px; display: none; }
@@ -82,6 +88,28 @@
       <span class="chip" :class="{ on: showArchived }" @click="setArchived(true)">Archived</span>
     </div>
 
+    <div class="fbar">
+      <input type="text" placeholder="Search titles…" x-model="q" @input="onSearchInput()"
+             aria-label="Search session titles">
+      <div class="selects">
+        <select x-model="projectFilter" @change="reload()" aria-label="Filter by project">
+          <option value="">All projects</option>
+          <template x-for="p in facets.projects" :key="p">
+            <option :value="p" x-text="shortCwd(p)"></option>
+          </template>
+        </select>
+        <select x-show="facets.engines.length > 1" x-model="engineFilter" @change="reload()"
+                aria-label="Filter by agent">
+          <option value="">All agents</option>
+          <template x-for="e in facets.engines" :key="e">
+            <option :value="e" x-text="e"></option>
+          </template>
+        </select>
+        <button class="iconbtn clear" type="button" title="Clear filters"
+                x-show="q || projectFilter || engineFilter" @click="clearFilters()">✕</button>
+      </div>
+    </div>
+
     <template x-for="s in sessions" :key="s.uuid">
       <div class="row" :class="{ sticky: s.sticky }" @click="open(s)">
         <div class="body">
@@ -105,6 +133,11 @@
           </template>
         </div>
       </div>
+    </template>
+
+    <template x-if="!loading && sessions.length === 0">
+      <div class="empty"
+           x-text="(q || projectFilter || engineFilter) ? 'No sessions match — clear filters.' : (showArchived ? 'No archived sessions.' : 'No sessions yet.')"></div>
     </template>
 
     <div class="sentinel" x-ref="sentinel"></div>
@@ -153,10 +186,11 @@ function sidebar() {
   return {
     sessions: [], projects: [], err: null, loading: false,
     nextOffset: 0, showArchived: false,
+    q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
     editing: null, editTitle: '',
     showModal: false, newCwd: '', newName: '', newBypass: true,
-    _obs: null,
+    _obs: null, _searchT: null, _gen: 0,
 
     async init() {
       await this.reload();
@@ -166,21 +200,43 @@ function sidebar() {
       this.$nextTick(() => this._obs.observe(this.$refs.sentinel));
     },
     async reload() {
-      this.sessions = []; this.nextOffset = 0; await this.loadMore();
+      // Bump the generation so any in-flight page load is discarded, clear the
+      // accumulated rows, and fetch from the top of the (possibly filtered) set.
+      const gen = ++this._gen;
+      this.sessions = []; this.nextOffset = 0; this.err = null;
+      await this._fetchPage(gen);
     },
     async loadMore() {
       if (this.loading || this.nextOffset === null) return;
+      await this._fetchPage(this._gen);
+    },
+    async _fetchPage(gen) {
+      if (this.nextOffset === null) return;
       this.loading = true;
       try {
-        const r = await fetch(`/api/sessions?limit=${PAGE}&offset=${this.nextOffset}&archived=${this.showArchived ? 1 : 0}`,
-                              { credentials: 'same-origin' });
+        const params = new URLSearchParams({ limit: PAGE, offset: this.nextOffset,
+                                             archived: this.showArchived ? 1 : 0 });
+        if (this.q.trim()) params.set('q', this.q.trim());
+        if (this.projectFilter) params.set('project', this.projectFilter);
+        if (this.engineFilter) params.set('engine', this.engineFilter);
+        const r = await fetch(`/api/sessions?${params.toString()}`, { credentials: 'same-origin' });
         if (!r.ok) throw new Error('GET /api/sessions ' + r.status);
         const d = await r.json();
+        if (gen !== this._gen) return;  // a newer reload superseded this fetch
         this.sessions.push(...d.sessions);
         this.nextOffset = d.next_offset;
-      } catch (e) { this.err = e.message; } finally { this.loading = false; }
+        if (d.facets) this.facets = d.facets;
+      } catch (e) { if (gen === this._gen) this.err = e.message; }
+      finally { if (gen === this._gen) this.loading = false; }
     },
-    setArchived(v) { if (v === this.showArchived) return; this.showArchived = v; this.reload(); },
+    setArchived(v) {
+      if (v === this.showArchived) return;
+      // project/engine option lists are scope-specific; reset them on toggle
+      // (keep the title query, which applies across both scopes).
+      this.showArchived = v; this.projectFilter = ''; this.engineFilter = ''; this.reload();
+    },
+    onSearchInput() { clearTimeout(this._searchT); this._searchT = setTimeout(() => this.reload(), 250); },
+    clearFilters() { this.q = ''; this.projectFilter = ''; this.engineFilter = ''; this.reload(); },
 
     async post(url, body) {
       const r = await fetch(url, { method: 'POST', credentials: 'same-origin',

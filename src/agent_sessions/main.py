@@ -1,8 +1,9 @@
 """FastAPI app for agent-sessions.
 
-Surface: login/auth-check, a flat paginated session list, open-or-switch,
+Surface: login/auth-check, a flat paginated session list (with title search +
+project/agent-engine filters and server-computed facets), open-or-switch,
 new-session (with permission bypass), rename, archive/unarchive, and the
-project picker. See agent-sessions#4.
+project picker. See agent-sessions#4 (sidebar UX) and #8 (findable list).
 """
 
 from __future__ import annotations
@@ -121,19 +122,54 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         limit: int = Query(20, ge=1, le=200),
         offset: int = Query(0, ge=0),
         archived: bool = Query(False),
+        q: str | None = Query(None),
+        project: str | None = Query(None),
+        engine: str | None = Query(None),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. sticky floats to the top of the
         # *first window* (a first-window concept, not a global pin).
         meta_index = metadata.load()
-        rows = [
+        scoped = [
             _row(s, meta_index.get(s.uuid, metadata.SessionMeta()))
             for s in scanner.scan()
             if s.archived == archived
         ]
+        # Facets for the project/agent dropdowns: distinct values over the full
+        # archived-scoped set, computed BEFORE q/project/engine filtering — so the
+        # dropdowns list every project/engine present, including ones past the
+        # first page, regardless of what's currently filtered or loaded.
+        facets = {
+            "projects": sorted({r["project"] for r in scoped}),
+            "engines": sorted({r["engine"] for r in scoped}),
+        }
+        # Normalize filters; empty / whitespace-only means "no filter".
+        q_norm = (q or "").strip().casefold()
+        project_f = (project or "").strip() or None
+        engine_f = (engine or "").strip() or None
+
+        def _keep(r: dict) -> bool:
+            if q_norm and q_norm not in (r["title"] or "").casefold():
+                return False
+            if project_f is not None and r["project"] != project_f:
+                return False
+            if engine_f is not None and r["engine"] != engine_f:
+                return False
+            return True
+
+        # Filter BEFORE limit/offset so total + next_offset describe the filtered
+        # set and "load more" stays within results.
+        rows = [r for r in scoped if _keep(r)]
         rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
         window = rows[offset : offset + limit]
         next_offset = offset + limit if offset + limit < len(rows) else None
-        return JSONResponse({"sessions": window, "next_offset": next_offset, "total": len(rows)})
+        return JSONResponse(
+            {
+                "sessions": window,
+                "next_offset": next_offset,
+                "total": len(rows),
+                "facets": facets,
+            }
+        )
 
     @app.get("/api/projects")
     async def list_projects(_: str = Depends(_logged_in)) -> JSONResponse:

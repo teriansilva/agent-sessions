@@ -34,7 +34,7 @@ def test_sessions_paginated_shape(auth_cfg, fake_jsonl):
     r = c.get("/api/sessions?limit=2&offset=0")
     assert r.status_code == 200
     d = r.json()
-    assert set(d) == {"sessions", "next_offset", "total"}
+    assert set(d) == {"sessions", "next_offset", "total", "facets"}
     assert len(d["sessions"]) == 2
     # 4 live sessions in the fixture (1 archived excluded) → next_offset advances
     assert d["total"] == 4
@@ -52,6 +52,113 @@ def test_sessions_archived_filter(auth_cfg, fake_jsonl):
     assert all(not s["archived"] for s in active["sessions"])
     assert all(s["archived"] for s in archived["sessions"])
     assert archived["total"] == 1  # the one archived fixture
+
+
+# ---- filters: search / project / engine --------------------------------------
+
+# Fixture project keys (project_alias unset → key == cwd).
+_REPO_A = "/home/user/claude/repo/a"  # sessions 1111 + 2222
+_TMP_OTHER = "/tmp/other"  # session 3333
+_example-app = "/home/user/claude/example-app"  # session 5555
+_OLD = "/home/user/claude/old"  # archived 4444
+
+
+def test_search_by_title_substring_and_case_insensitive(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # "second" is the title of session 2222 only.
+    d = c.get("/api/sessions?q=SeCoNd&limit=50").json()
+    assert d["total"] == 1
+    assert d["sessions"][0]["uuid"] == "22222222-2222-2222-2222-222222222222"
+    # substring match against "first message on repo-a"
+    d = c.get("/api/sessions?q=message&limit=50").json()
+    assert {s["uuid"] for s in d["sessions"]} == {"11111111-1111-1111-1111-111111111111"}
+
+
+def test_search_trims_and_empty_is_no_filter(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/sessions?q=%20%20second%20%20&limit=50").json()["total"] == 1
+    # whitespace-only q is treated as no filter → all 4 live sessions
+    assert c.get("/api/sessions?q=%20%20%20&limit=50").json()["total"] == 4
+
+
+def test_filter_by_project(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get(f"/api/sessions?project={_REPO_A}&limit=50").json()
+    assert d["total"] == 2
+    assert all(s["project"] == _REPO_A for s in d["sessions"])
+
+
+def test_filter_by_engine(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/sessions?engine=claude&limit=50").json()["total"] == 4
+    # no opencode sessions exist yet (#61) → empty
+    assert c.get("/api/sessions?engine=opencode&limit=50").json()["total"] == 0
+
+
+def test_filters_combine_with_and(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # project repo/a has 1111 ("first message on repo-a") + 2222 ("second");
+    # only 1111's title contains "repo".
+    d = c.get(f"/api/sessions?project={_REPO_A}&q=repo&limit=50").json()
+    assert d["total"] == 1
+    assert d["sessions"][0]["uuid"] == "11111111-1111-1111-1111-111111111111"
+
+
+def test_no_match_is_empty_but_facets_remain(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/sessions?q=zzz-nothing-matches&limit=50").json()
+    assert d["total"] == 0
+    assert d["sessions"] == []
+    assert d["next_offset"] is None
+    # facets are computed over the full archived-scoped set, so they survive a
+    # zero-match filter (the dropdowns must still offer every project).
+    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _example-app}
+
+
+# ---- filtered pagination ------------------------------------------------------
+
+
+def test_filtered_pagination_stays_within_results(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # project repo/a matches exactly 2; page through it one at a time.
+    p0 = c.get(f"/api/sessions?project={_REPO_A}&limit=1&offset=0").json()
+    assert p0["total"] == 2 and len(p0["sessions"]) == 1 and p0["next_offset"] == 1
+    p1 = c.get(f"/api/sessions?project={_REPO_A}&limit=1&offset=1").json()
+    assert p1["total"] == 2 and len(p1["sessions"]) == 1 and p1["next_offset"] is None
+    # the two pages together cover both sessions, no overlap
+    seen = {p0["sessions"][0]["uuid"], p1["sessions"][0]["uuid"]}
+    assert seen == {
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    }
+
+
+# ---- facets -------------------------------------------------------------------
+
+
+def test_facets_cover_full_set_beyond_first_page(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # Only one row loaded, but every live project must still be an option.
+    d = c.get("/api/sessions?limit=1&offset=0").json()
+    assert len(d["sessions"]) == 1
+    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _example-app}
+    assert d["facets"]["engines"] == ["claude"]
+
+
+def test_facets_scoped_by_archived(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/sessions?archived=1&limit=50").json()
+    assert d["facets"]["projects"] == [_OLD]
+    assert d["facets"]["engines"] == ["claude"]
 
 
 # ---- projects picker ----------------------------------------------------------
