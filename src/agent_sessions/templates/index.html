@@ -75,11 +75,6 @@
                   background: #222; border: 1px solid #333; border-left: 0; color: #8af; cursor: pointer;
                   border-radius: 0 6px 6px 0; padding: 10px 4px; display: none; }
   #app.collapsed .collapse-tab { display: block; }
-  /* Mobile scrollback controls: phones have no mouse wheel, and a swipe doesn't
-     scroll a full-screen Zellij pane, so these feed scroll into the session.
-     Desktop uses the real wheel → hidden there. */
-  .scrollbtns { position: absolute; right: 8px; bottom: 14px; z-index: 6; display: none; flex-direction: column; gap: 10px; }
-  @media (max-width: 800px) { .scrollbtns { display: flex; } }
   /* Desktop scroll-strip: Zellij owns the scrollback (alt-screen) so xterm has no real
      scrollbar — this grab-and-drag gutter on the right edge feeds Zellij scroll via
      wheel events. Relative (no position thumb — Zellij's scroll position isn't knowable).
@@ -89,9 +84,6 @@
   .scrollstrip:hover { background: rgba(80,80,110,.40); }
   .scrollstrip:active { cursor: grabbing; background: rgba(110,110,150,.5); }
   @media (min-width: 801px) { .scrollstrip { display: block; } }
-  .scrollbtns button { width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.78);
-                       color: #8af; border: 1px solid #3a3a3a; font-size: 16px; line-height: 1; cursor: pointer; }
-  .scrollbtns button:active { background: rgba(64,64,64,.92); }
   /* Attach control (paste/drop/pick a file as context) + transient upload notice. */
   .termbar .attach { margin-left: auto; flex: 0 0 auto; background: none; border: 0; color: #8af;
                      font-size: 15px; cursor: pointer; padding: 0 2px; }
@@ -230,10 +222,6 @@
               title="Attach an image or file as context (or paste / drop onto the terminal)">📎</button>
     </div>
     <iframe x-ref="term" src="/terminal/" title="agent-main"></iframe>
-    <div class="scrollbtns">
-      <button @click="termScroll(-1)" type="button" aria-label="Scroll terminal up" title="Scroll up">▲</button>
-      <button @click="termScroll(1)" type="button" aria-label="Scroll terminal down" title="Scroll down">▼</button>
-    </div>
     <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
     <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
@@ -478,10 +466,6 @@ function sidebar() {
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     },
-    termScroll(dir) {
-      // The ▲/▼ buttons — a few lines per tap.
-      this._wheel(dir * 120);
-    },
     termKey(name) {
       // Mobile nav keys → inject a keydown into the session so TUI menus (e.g.
       // Claude's resume prompt) are operable without a hardware keyboard.
@@ -556,7 +540,10 @@ function sidebar() {
       const t = this.composeText;
       if (!t.trim()) return;                       // empty → no-op (use the ⏎ key for a bare Enter)
       this._pasteText(t);
-      setTimeout(() => this.termKey('enter'), 80); // let xterm process the paste, then submit
+      setTimeout(() => {
+        this.termKey('enter');                       // submit after xterm has the paste
+        try { this.$refs.composeInput.focus(); } catch (_) { /* keep cursor in the box, not terminal */ }
+      }, 80);
       this.composeText = '';
     },
     _clipFiles(dt) {
