@@ -343,29 +343,50 @@ function sidebar() {
       this._wheel(dir * 120);
     },
     wireTouchScroll() {
-      // Translate a one-finger vertical swipe over the terminal into wheel notches
-      // (the same path the buttons use) so mobile can scroll the session by dragging.
-      // touchmove is captured + stopped so it doesn't also reach xterm as a mouse
+      // Translate a one-finger vertical swipe over the terminal into wheel events
+      // (the same path the buttons use) so mobile can scroll the session by dragging,
+      // with native-feeling momentum: a flick glides and decays, and any touch stops
+      // it. touchmove is captured + stopped so it doesn't also reach xterm as a mouse
       // drag (which would start a text selection); touchstart/end pass through so
       // tap-to-focus / keyboard still work. Multi-finger gestures are left alone.
       // Same-origin DOM only — no ttyd/xterm patching.
       const f = this.$refs.term;
+      let momRAF = null;
+      const stopMomentum = () => { if (momRAF) { cancelAnimationFrame(momRAF); momRAF = null; } };
       const attach = () => {
         let doc;
         try { doc = f.contentDocument; } catch (e) { return; }
         if (!doc || doc._asTouchWired) return;
         doc._asTouchWired = true;
-        let lastY = null, acc = 0;
+        let lastY = null, acc = 0, lastT = 0, vel = 0; // vel: smoothed px/ms (+ = newer/down)
         doc.addEventListener('touchstart', (e) => {
-          lastY = e.touches.length === 1 ? e.touches[0].clientY : null; acc = 0;
+          stopMomentum(); // any touch halts a glide in progress
+          lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
+          acc = 0; vel = 0; lastT = performance.now();
         }, { passive: true });
         doc.addEventListener('touchmove', (e) => {
           if (lastY === null || e.touches.length !== 1) return; // multi-finger: leave alone
-          const y = e.touches[0].clientY;
-          acc += lastY - y; lastY = y; // +acc = drag up (newer/down); -acc = drag down (older/up)
+          const y = e.touches[0].clientY, now = performance.now();
+          const d = lastY - y; // +d = drag up (newer/down); -d = drag down (older/up)
+          acc += d; lastY = y;
+          const dt = Math.max(now - lastT, 1); lastT = now;
+          vel = 0.8 * vel + 0.2 * (d / dt); // low-pass the finger velocity
           if (Math.abs(acc) >= 16) { this._wheel(acc); acc = 0; } // real px → tracks the finger
           e.preventDefault(); e.stopPropagation();
         }, { passive: false, capture: true });
+        doc.addEventListener('touchend', () => {
+          lastY = null;
+          if (Math.abs(vel) < 0.4) return; // not a flick → no glide
+          let v = vel, prevT = performance.now(), mAcc = 0;
+          const step = () => {
+            const now = performance.now(), dt = Math.min(now - prevT, 32); prevT = now;
+            mAcc += v * dt;
+            if (Math.abs(mAcc) >= 16) { this._wheel(mAcc); mAcc = 0; }
+            v *= Math.pow(0.95, dt / 16); // friction (~per frame); glides for ~1s
+            momRAF = Math.abs(v) > 0.04 ? requestAnimationFrame(step) : null;
+          };
+          momRAF = requestAnimationFrame(step);
+        }, { passive: true });
       };
       attach();
       f.addEventListener('load', attach);
