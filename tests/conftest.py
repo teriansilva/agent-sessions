@@ -43,6 +43,15 @@ def fake_jsonl(tmp_home) -> Path:
     (proj2 / "33333333-3333-3333-3333-333333333333.jsonl").write_text(
         '{"type":"user","message":{"content":"hello tmp"}}\n'
     )
+    # A dotted-path project: the dir name is lossy (example-app and
+    # example-app/io both encode to ...-example-app-io), but the JSONL carries the
+    # real cwd. The scanner must prefer the JSONL cwd over the decode.
+    proj3 = projects / "-home-user-claude-example-app-io"
+    proj3.mkdir(parents=True)
+    (proj3 / "55555555-5555-5555-5555-555555555555.jsonl").write_text(
+        '{"type":"user","cwd":"/home/user/claude/example-app",'
+        '"message":{"content":"dotted path session"}}\n'
+    )
     # An archived one — same shape, different root.
     archive = tmp_home / ".claude" / "projects-archive" / "-home-user-claude-old"
     archive.mkdir(parents=True)

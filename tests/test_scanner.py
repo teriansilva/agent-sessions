@@ -9,16 +9,30 @@ def test_walks_live_and_archive(fake_jsonl):
         "22222222-2222-2222-2222-222222222222",
         "33333333-3333-3333-3333-333333333333",
         "44444444-4444-4444-4444-444444444444",
+        "55555555-5555-5555-5555-555555555555",
     }
     archived = {r.uuid for r in rows if r.archived}
     assert archived == {"44444444-4444-4444-4444-444444444444"}
 
 
-def test_cwd_decoding(fake_jsonl):
+def test_cwd_decoding_fallback(fake_jsonl):
+    # These sessions have NO cwd field in their JSONL, so the scanner falls back
+    # to decoding the dir name.
     rows = scanner.scan(home=fake_jsonl)
     cwds = {r.cwd for r in rows}
     assert "/home/user/claude/repo/a" in cwds
     assert "/tmp/other" in cwds
+
+
+def test_jsonl_cwd_beats_lossy_dirname(fake_jsonl):
+    # The example-app session's dir name encodes to ...-example-app-io, which
+    # would wrongly decode to /home/user/claude/example-app/io. The JSONL
+    # carries the real cwd, which must win.
+    rows = scanner.scan(home=fake_jsonl)
+    row = next(r for r in rows if r.uuid.startswith("55555555"))
+    assert row.cwd == "/home/user/claude/example-app"
+    # And the wrong decoded form must NOT appear anywhere.
+    assert "/home/user/claude/example-app/io" not in {r.cwd for r in rows}
 
 
 def test_first_user_message_string(fake_jsonl):
@@ -43,6 +57,7 @@ def test_scanned_cwds_set(fake_jsonl):
     assert scanner.scanned_cwds(rows) == {
         "/home/user/claude/repo/a",
         "/tmp/other",
+        "/home/user/claude/example-app",
         "/home/user/claude/old",
     }
 
