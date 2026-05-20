@@ -104,6 +104,13 @@
                      display: grid; place-items: center; background: rgba(40,40,46,.9); color: #cde;
                      border: 1px solid #3a3a3a; border-radius: 5px; font-size: 13px; line-height: 1; cursor: pointer; }
   .compose .xclose:hover { background: #c0392b; color: #fff; border-color: #c0392b; }
+  /* Attached-file pills above the input (path goes to the session on Send, not into the box). */
+  .compose .pills { display: flex; flex-wrap: wrap; gap: 5px; padding-right: 38px; }
+  .compose .pill { display: inline-flex; align-items: center; gap: 4px; max-width: 70%; background: #16263a;
+                   border: 1px solid #356; color: #cde; border-radius: 12px; padding: 2px 4px 2px 9px; font-size: 11px; }
+  .compose .pill .pn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .compose .pill button { background: none; border: 0; color: #9ab; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .compose .pill button:hover { color: #f88; }
   .compose .crow { display: flex; align-items: center; gap: 6px; }
   .compose .crow .spacer { flex: 1; }
   .compose .send { background: #1a4; color: #fff; border: 0; height: 36px; padding: 0 16px;
@@ -219,6 +226,13 @@
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
     <div class="compose" :class="{ open: composeOpen }">
       <button class="xclose" @click="toggleCompose()" type="button" aria-label="Close compose box" title="Close">✕</button>
+      <template x-if="attachments.length">
+        <div class="pills">
+          <template x-for="(a, i) in attachments" :key="a.path">
+            <span class="pill" :title="a.path"><span class="pn" x-text="a.name"></span><button @click="attachments.splice(i, 1)" type="button" aria-label="Remove attachment">×</button></span>
+          </template>
+        </div>
+      </template>
       <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
                 placeholder="Type here (autocomplete works) — Send pastes it into the session. /commands run as typed."></textarea>
       <div class="crow">
@@ -277,6 +291,7 @@ function sidebar() {
   return {
     sessions: [], projects: [], err: null, notice: null, _noticeT: null, loading: false,
     composeOpen: localStorage.getItem('as_compose') !== '0', composeText: '',  // open by default; remembers if closed
+    attachments: [],  // {name, path} pills for files attached to the draft
     nextOffset: 0, showArchived: false,
     q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
@@ -468,6 +483,7 @@ function sidebar() {
         esc:   { key: 'Escape',    code: 'Escape',    keyCode: 27 },
         tab:   { key: 'Tab',       code: 'Tab',       keyCode: 9 },
         ctrlc: { key: 'c',         code: 'KeyC',      keyCode: 67, ctrlKey: true },
+        ctrlu: { key: 'u',         code: 'KeyU',      keyCode: 85, ctrlKey: true },
       }[name];
       if (K) this._key(K);
     },
@@ -512,8 +528,8 @@ function sidebar() {
         if (!r.ok) throw new Error(r.status + ': ' + await r.text());
         const { path } = await r.json();
         if (toCompose) {
-          this.composeText += (this.composeText && !/\s$/.test(this.composeText) ? ' ' : '') + path + ' ';
-          this.showNotice('📎 ' + path + '  — added to your message');
+          this.attachments.push({ name: path.split('/').pop(), path }); // shown as a pill, not inline text
+          this.showNotice('📎 attached ' + path.split('/').pop());
         } else {
           this._pasteText(path + ' ');                      // drop the path at the prompt
           try { await navigator.clipboard.writeText(path); } catch (_) { /* notice still shows it */ }
@@ -527,15 +543,21 @@ function sidebar() {
       if (this.composeOpen) this.$nextTick(() => { try { this.$refs.composeInput.focus(); } catch (_) { /* */ } });
     },
     sendCompose() {
-      // Paste the whole draft into the terminal in one shot, then Enter to submit. One
-      // bracketed paste = no per-keystroke IME/autocomplete garble. /commands run as
-      // typed; for the native /-menu, type '/' here, Send, then drive it with the nav keys.
-      // Only submit + clear AFTER the paste actually lands (the inject can need retries
-      // right after a reconnect), so a failed inject never silently loses the draft.
-      const t = this.composeText;
-      if (!t.trim()) return;                       // empty → no-op (use the ⏎ key for a bare Enter)
+      // Build the message from the trimmed draft + any attached file paths, clear the
+      // prompt line first (Ctrl-U) so it doesn't mix with leftover input, then paste in
+      // one shot + Enter. One bracketed paste = no per-keystroke IME garble. Clear draft
+      // + pills only AFTER the paste lands (it can need retries right after a reconnect),
+      // so nothing is silently lost. /commands run as typed; for the native /-menu, type
+      // '/' here, Send, then drive it with the nav keys.
+      const parts = [];
+      if (this.composeText.trim()) parts.push(this.composeText.trim());
+      for (const a of this.attachments) parts.push(a.path);
+      const t = parts.join(' ');
+      if (!t) return;                              // nothing to send (no text, no attachments)
+      this.termKey('ctrlu');                       // wipe any existing text at the prompt
       this._pasteText(t, () => {
         this.composeText = '';
+        this.attachments = [];
         setTimeout(() => {
           this.termKey('enter');                       // submit once xterm has the paste (this focuses xterm)
           // ...then take the cursor BACK to the box so you can keep typing. Must come
