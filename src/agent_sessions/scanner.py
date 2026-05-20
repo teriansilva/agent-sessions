@@ -162,6 +162,9 @@ def pickable_projects(
     claude_root = (home / "claude").resolve()
     if claude_root.is_dir():
         for child in claude_root.iterdir():
+            # Skip hidden dirs (e.g. ~/claude/.claude, .git) — not real projects.
+            if child.name.startswith("."):
+                continue
             try:
                 real = child.resolve(strict=True)
             except (OSError, RuntimeError):

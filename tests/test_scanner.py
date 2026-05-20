@@ -83,6 +83,17 @@ def test_pickable_projects_rejects_symlink_outside_claude(fake_jsonl):
     assert str(claude / "evil") not in picks
 
 
+def test_pickable_projects_skips_hidden_dirs(fake_jsonl):
+    claude = fake_jsonl / "claude"
+    (claude / ".claude").mkdir(parents=True, exist_ok=True)
+    (claude / ".git").mkdir(parents=True, exist_ok=True)
+    (claude / "RealProj").mkdir(parents=True, exist_ok=True)
+    picks = scanner.pickable_projects(home=fake_jsonl)
+    assert str(claude / "RealProj") in picks
+    assert str(claude / ".claude") not in picks
+    assert str(claude / ".git") not in picks
+
+
 def test_ignores_non_uuid_files(fake_jsonl):
     # Drop a noise file alongside; scanner must skip it.
     junk = (
