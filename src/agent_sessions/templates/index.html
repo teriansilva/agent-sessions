@@ -71,10 +71,6 @@
   .fbar select { flex: 1; min-width: 0; }
   .fbar .clear { flex: 0 0 auto; }
   .empty { color: #888; padding: 14px 12px; font-size: 12px; }
-  .collapse-tab { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 5;
-                  background: #222; border: 1px solid #333; border-left: 0; color: #8af; cursor: pointer;
-                  border-radius: 0 6px 6px 0; padding: 10px 4px; display: none; }
-  #app.collapsed .collapse-tab { display: block; }
   /* Desktop scroll-strip: Zellij owns the scrollback (alt-screen) so xterm has no real
      scrollbar — this grab-and-drag gutter on the right edge feeds Zellij scroll via
      wheel events. Relative (no position thumb — Zellij's scroll position isn't knowable).
@@ -131,15 +127,12 @@
 </head>
 <body>
 <div id="app" :class="{ collapsed }" x-data="sidebar()" x-init="init()">
-  <button class="collapse-tab" @click="toggleCollapse()" title="Show sidebar">›</button>
 
   <aside>
     <header @click="window.innerWidth <= 800 && toggleCollapse()" title="Tap to collapse the list (mobile)">
       <strong>agent-sessions</strong>
       <div style="display:flex; gap:6px; align-items:center;">
         <button class="topbtn" @click.stop="openNew()" type="button">+ New</button>
-        <button class="iconbtn" @click.stop="refit()" title="Refit terminal to this screen" type="button">⤢</button>
-        <button class="iconbtn" @click.stop="toggleCollapse()" title="Collapse sidebar" type="button">‹</button>
         <button class="iconbtn" @click.stop="logout()" type="button">⎋</button>
       </div>
     </header>
