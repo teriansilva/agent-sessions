@@ -80,6 +80,15 @@
      Desktop uses the real wheel → hidden there. */
   .scrollbtns { position: absolute; right: 8px; bottom: 14px; z-index: 6; display: none; flex-direction: column; gap: 10px; }
   @media (max-width: 800px) { .scrollbtns { display: flex; } }
+  /* Desktop scroll-strip: Zellij owns the scrollback (alt-screen) so xterm has no real
+     scrollbar — this grab-and-drag gutter on the right edge feeds Zellij scroll via
+     wheel events. Relative (no position thumb — Zellij's scroll position isn't knowable).
+     Desktop only; mobile uses swipe. */
+  .scrollstrip { position: absolute; top: 0; right: 0; width: 12px; height: 100%; z-index: 6;
+                 display: none; cursor: grab; background: rgba(50,50,60,.22); }
+  .scrollstrip:hover { background: rgba(80,80,110,.40); }
+  .scrollstrip:active { cursor: grabbing; background: rgba(110,110,150,.5); }
+  @media (min-width: 801px) { .scrollstrip { display: block; } }
   .scrollbtns button { width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.78);
                        color: #8af; border: 1px solid #3a3a3a; font-size: 16px; line-height: 1; cursor: pointer; }
   .scrollbtns button:active { background: rgba(64,64,64,.92); }
@@ -225,6 +234,7 @@
       <button @click="termScroll(-1)" type="button" aria-label="Scroll terminal up" title="Scroll up">▲</button>
       <button @click="termScroll(1)" type="button" aria-label="Scroll terminal down" title="Scroll down">▼</button>
     </div>
+    <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
     <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
     <div class="compose" :class="{ open: composeOpen }">
@@ -451,6 +461,23 @@ function sidebar() {
           { deltaY, deltaMode: 0, bubbles: true, cancelable: true }));
       } catch (e) { this.err = 'terminal scroll unavailable'; }
     },
+    startStripDrag(e) {
+      // Desktop: grab the right-edge strip and drag to scroll the session — drag down
+      // scrolls toward the latest output, up toward older (scrollbar semantics). Feeds
+      // Zellij via _wheel with the real drag delta. Window-level listeners so the drag
+      // keeps working off the strip; removed on mouseup.
+      let lastY = e.clientY, acc = 0;
+      const move = (ev) => {
+        acc += ev.clientY - lastY; lastY = ev.clientY; // down(+)=newer; up(-)=older
+        if (Math.abs(acc) >= 12) { this._wheel(acc); acc = 0; }
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    },
     termScroll(dir) {
       // The ▲/▼ buttons — a few lines per tap.
       this._wheel(dir * 120);
@@ -532,10 +559,25 @@ function sidebar() {
       setTimeout(() => this.termKey('enter'), 80); // let xterm process the paste, then submit
       this.composeText = '';
     },
+    _clipFiles(dt) {
+      // Pull pasted/dropped file(s) from a DataTransfer. Browsers vary: some put a
+      // pasted image in .files, others only in .items (kind 'file') — check both, so
+      // an image paste is caught and uploaded instead of falling through to Claude
+      // (which runs server-side and can't see the browser clipboard → "no image found").
+      const out = [];
+      if (!dt) return out;
+      if (dt.files && dt.files.length) { for (const f of dt.files) out.push(f); }
+      if (!out.length && dt.items) {
+        for (const it of dt.items) {
+          if (it.kind === 'file') { const f = it.getAsFile(); if (f) out.push(f); }
+        }
+      }
+      return out;
+    },
     onComposePaste(e) {
       // Image/file pasted into the draft → upload + append its path; text falls through.
-      const files = e.clipboardData && e.clipboardData.files;
-      if (files && files.length) {
+      const files = this._clipFiles(e.clipboardData);
+      if (files.length) {
         e.preventDefault();
         for (const f of files) this.uploadFile(f, true);
       }
@@ -570,16 +612,16 @@ function sidebar() {
         if (!doc || doc._asUploadWired) return;
         doc._asUploadWired = true;
         doc.addEventListener('paste', (e) => {
-          const files = e.clipboardData && e.clipboardData.files;
-          if (files && files.length) { // image/file paste → upload (text paste falls through)
+          const files = this._clipFiles(e.clipboardData);
+          if (files.length) { // image/file paste → upload (text paste falls through)
             e.preventDefault(); e.stopPropagation();
             for (const file of files) this.uploadFile(file);
           }
         }, { capture: true });
         doc.addEventListener('dragover', (e) => { e.preventDefault(); }, { capture: true });
         doc.addEventListener('drop', (e) => {
-          const files = e.dataTransfer && e.dataTransfer.files;
-          if (files && files.length) {
+          const files = this._clipFiles(e.dataTransfer);
+          if (files.length) {
             e.preventDefault(); e.stopPropagation();
             for (const file of files) this.uploadFile(file);
           }
