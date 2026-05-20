@@ -89,11 +89,29 @@
   .upnotice { position: absolute; left: 8px; right: 8px; bottom: 60px; z-index: 7; cursor: pointer;
               background: rgba(18,38,28,.96); border: 1px solid #2a6; color: #cfe; border-radius: 6px;
               padding: 8px 10px; font-size: 12px; white-space: normal; word-break: break-all; }
-  /* Mobile selection/nav keys: phone keyboards have no arrows / Esc / Tab, so these
-     inject the keys needed to drive TUI menus (e.g. Claude's resume prompt) into the
-     session. Mobile-only; desktop uses the real keyboard. */
-  .navkeys { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: none; gap: 6px; flex-wrap: wrap; max-width: 62vw; }
-  @media (max-width: 800px) { .navkeys { display: flex; } }
+  /* Compose panel: a real <textarea> (autocomplete-friendly) sent to the terminal
+     in ONE paste — sidesteps the mobile-keyboard/IME garble you get typing straight
+     into xterm. Collapsible; holds the nav keys + attach + send. Mobile-only (desktop
+     types directly in the terminal). The nav keys (arrows/Esc/Tab/^C) inject keystrokes
+     so TUI menus — e.g. Claude's native /-command menu or resume prompt — are operable. */
+  .compose-toggle { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: none;
+                    width: 40px; height: 40px; border-radius: 50%; background: rgba(28,28,28,.82);
+                    color: #cde; border: 1px solid #3a3a3a; font-size: 18px; line-height: 1; cursor: pointer; }
+  @media (max-width: 800px) { .compose-toggle { display: block; } }
+  .compose { position: absolute; left: 0; right: 0; bottom: 0; z-index: 8; display: none;
+             flex-direction: column; gap: 6px; padding: 8px; background: rgba(12,12,12,.97);
+             border-top: 1px solid #2a2a2a; }
+  .compose.open { display: flex; }
+  .compose textarea { width: 100%; max-height: 28vh; resize: none; background: #181818; color: #fff;
+                      border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px; font: inherit; }
+  .compose .crow { display: flex; align-items: center; gap: 6px; }
+  .compose .crow .spacer { flex: 1; }
+  .compose .send { background: #1a4; color: #fff; border: 0; height: 36px; padding: 0 16px;
+                   border-radius: 8px; font-weight: 600; cursor: pointer; }
+  .compose .send:active { background: #1c5; }
+  .compose .cbtn { min-width: 36px; height: 36px; border-radius: 8px; background: #222; color: #cde;
+                   border: 1px solid #3a3a3a; cursor: pointer; }
+  .navkeys { display: flex; gap: 6px; flex-wrap: wrap; }
   .navkeys button { min-width: 36px; height: 36px; padding: 0 8px; border-radius: 8px; background: rgba(28,28,28,.82);
                     color: #cde; border: 1px solid #3a3a3a; font-size: 14px; line-height: 1; cursor: pointer; }
   .navkeys button:active { background: rgba(64,64,64,.95); }
@@ -207,15 +225,26 @@
       <button @click="termScroll(-1)" type="button" aria-label="Scroll terminal up" title="Scroll up">▲</button>
       <button @click="termScroll(1)" type="button" aria-label="Scroll terminal down" title="Scroll down">▼</button>
     </div>
-    <div class="navkeys">
-      <button @click="termKey('up')" type="button" aria-label="Up" title="Up">↑</button>
-      <button @click="termKey('down')" type="button" aria-label="Down" title="Down">↓</button>
-      <button @click="termKey('enter')" type="button" aria-label="Enter" title="Enter">⏎</button>
-      <button @click="termKey('esc')" type="button" aria-label="Escape" title="Escape">esc</button>
-      <button @click="termKey('tab')" type="button" aria-label="Tab" title="Tab">⇥</button>
-      <button @click="termKey('ctrlc')" type="button" aria-label="Ctrl-C" title="Ctrl-C">^C</button>
-      <button @click="$refs.fileInput.click()" type="button" aria-label="Upload a file"
-              title="Upload an image or file as context">📎</button>
+    <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
+            aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
+    <div class="compose" :class="{ open: composeOpen }">
+      <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
+                placeholder="Type here (autocomplete works) — Send pastes it into the session. /commands run as typed."></textarea>
+      <div class="crow">
+        <div class="navkeys">
+          <button @click="termKey('up')" type="button" aria-label="Up" title="Up">↑</button>
+          <button @click="termKey('down')" type="button" aria-label="Down" title="Down">↓</button>
+          <button @click="termKey('enter')" type="button" aria-label="Enter" title="Enter">⏎</button>
+          <button @click="termKey('esc')" type="button" aria-label="Escape" title="Escape">esc</button>
+          <button @click="termKey('tab')" type="button" aria-label="Tab" title="Tab">⇥</button>
+          <button @click="termKey('ctrlc')" type="button" aria-label="Ctrl-C" title="Ctrl-C">^C</button>
+          <button @click="$refs.fileInput.click()" type="button" aria-label="Attach file"
+                  title="Attach an image or file (added to your message)">📎</button>
+        </div>
+        <span class="spacer"></span>
+        <button class="cbtn" @click="composeOpen=false" type="button" aria-label="Close" title="Close">✕</button>
+        <button class="send" @click="sendCompose()" type="button" title="Paste into the session + Enter">Send</button>
+      </div>
     </div>
     <input type="file" x-ref="fileInput" @change="onFilePick" multiple style="display:none">
     <template x-if="notice"><div class="upnotice" x-text="notice" @click="notice=null"></div></template>
@@ -257,6 +286,7 @@ const PAGE = 20;
 function sidebar() {
   return {
     sessions: [], projects: [], err: null, notice: null, _noticeT: null, loading: false,
+    composeOpen: false, composeText: '',
     nextOffset: 0, showArchived: false,
     q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
@@ -460,12 +490,15 @@ function sidebar() {
       } catch (e) { this.err = 'terminal keys unavailable'; }
     },
     onFilePick(e) {
-      for (const file of e.target.files) this.uploadFile(file);
+      const toCompose = this.composeOpen;
+      for (const file of e.target.files) this.uploadFile(file, toCompose);
       e.target.value = ''; // allow re-picking the same file
     },
-    async uploadFile(file) {
+    async uploadFile(file, toCompose = false) {
       // Upload a pasted/dropped/picked file; the server saves it under
-      // ~/.agent-sessions/uploads/ and returns a path a session can read.
+      // ~/.agent-sessions/uploads/ and returns a path a session can read. With the
+      // compose box open the path is appended to the draft; otherwise it's pasted
+      // straight into the terminal prompt (+ copied to the clipboard).
       try {
         const fd = new FormData();
         fd.append('file', file, file.name || 'pasted');
@@ -475,10 +508,37 @@ function sidebar() {
         });
         if (!r.ok) throw new Error(r.status + ': ' + await r.text());
         const { path } = await r.json();
-        this._pasteText(path + ' ');                        // drop the path at the prompt
-        try { await navigator.clipboard.writeText(path); } catch (_) { /* notice still shows it */ }
-        this.showNotice('📎 ' + path + '  — path inserted + copied');
+        if (toCompose) {
+          this.composeText += (this.composeText && !/\s$/.test(this.composeText) ? ' ' : '') + path + ' ';
+          this.showNotice('📎 ' + path + '  — added to your message');
+        } else {
+          this._pasteText(path + ' ');                      // drop the path at the prompt
+          try { await navigator.clipboard.writeText(path); } catch (_) { /* notice still shows it */ }
+          this.showNotice('📎 ' + path + '  — path inserted + copied');
+        }
       } catch (e) { this.err = 'upload failed — ' + e.message; }
+    },
+    toggleCompose() {
+      this.composeOpen = !this.composeOpen;
+      if (this.composeOpen) this.$nextTick(() => { try { this.$refs.composeInput.focus(); } catch (_) { /* */ } });
+    },
+    sendCompose() {
+      // Paste the whole draft into the terminal in one shot, then Enter to submit. One
+      // bracketed paste = no per-keystroke IME/autocomplete garble. /commands run as
+      // typed; for the native /-menu, type '/' here, Send, then drive it with the nav keys.
+      const t = this.composeText;
+      if (!t.trim()) return;                       // empty → no-op (use the ⏎ key for a bare Enter)
+      this._pasteText(t);
+      setTimeout(() => this.termKey('enter'), 80); // let xterm process the paste, then submit
+      this.composeText = '';
+    },
+    onComposePaste(e) {
+      // Image/file pasted into the draft → upload + append its path; text falls through.
+      const files = e.clipboardData && e.clipboardData.files;
+      if (files && files.length) {
+        e.preventDefault();
+        for (const f of files) this.uploadFile(f, true);
+      }
     },
     showNotice(msg) {
       this.notice = msg;
