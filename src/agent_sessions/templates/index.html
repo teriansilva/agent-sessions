@@ -13,9 +13,12 @@
      inline baseline-gap pushed layout a few px past 100vh). */
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0a0a; color: #e6e6e6;
                font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; overflow: hidden; transition: grid-template-columns .15s ease; }
+  /* 100dvh (dynamic viewport height) so the mobile URL bar / bottom nav don't push
+     the terminal off-screen — the classic 100vh crop. 100vh first as a fallback for
+     browsers without dvh. */
+  #app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; height: 100dvh; overflow: hidden; transition: grid-template-columns .15s ease; }
   #app.collapsed { grid-template-columns: 0 1fr; }
-  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; }
+  @media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; grid-template-rows: 45dvh 1fr; }
                               /* must also reset columns to 1fr: the general #app.collapsed rule
                                  sets `grid-template-columns: 0 1fr` (higher specificity than the
                                  media `#app`), which would otherwise make this a 2x2 grid and
