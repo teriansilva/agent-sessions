@@ -47,6 +47,9 @@
   .row:hover { background: #181818; }
   .row.sticky { background: #122; }
   .row.current { background: #14233a; box-shadow: inset 3px 0 0 #4a9eff; }
+  /* "Where you're working" marker — orange dot on the session open in the terminal. */
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ff9000;
+         margin-right: 6px; vertical-align: middle; box-shadow: 0 0 5px rgba(255,144,0,.7); }
   .row .body { flex: 1; min-width: 0; }
   .title { color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ebadge { display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
@@ -150,6 +153,7 @@
         <div class="body">
           <template x-if="editing !== s.id">
             <div class="title">
+              <span class="dot" x-show="current && current.id === s.id" title="Where you're working"></span>
               <template x-if="facets.engines.length > 1"><span class="ebadge" :class="s.engine" x-text="s.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
               <span x-text="s.title || '(untitled)'"></span>
             </div>
@@ -249,7 +253,7 @@ function sidebar() {
     // The session this terminal is currently showing (set when you open one from
     // the sidebar; persisted so it survives a reload). {id, title, engine} | null.
     current: (() => { try { return JSON.parse(localStorage.getItem('as_current') || 'null'); } catch (_) { return null; } })(),
-    _obs: null, _searchT: null, _gen: 0,
+    _obs: null, _searchT: null, _gen: 0, _hiddenAt: 0,
 
     async init() {
       await this.reload();
@@ -261,7 +265,15 @@ function sidebar() {
       // from a phone, which shrinks the shared Zellij grid to the smaller width),
       // nudge the terminal to re-fit so it reclaims the full screen.
       window.addEventListener('focus', () => this.refit());
-      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.refit(); });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') { this._hiddenAt = Date.now(); return; }
+        // Back in the app. ttyd (1.7.7, no auto-reconnect) drops its WebSocket when the
+        // tab is backgrounded a while, then waits on "press Enter to reconnect" — so
+        // after a real background gap, reload the iframe to reconnect automatically;
+        // for a quick flick, just refit. The Zellij session persists either way.
+        const gap = this._hiddenAt ? Date.now() - this._hiddenAt : 0;
+        if (gap > 8000) this.reconnectTerm(); else this.refit();
+      });
       this.wireTouchScroll();
       // Keep the app sized to the *visible* viewport so the on-screen keyboard
       // doesn't hide the terminal's bottom (the prompt you're typing on).
@@ -365,6 +377,14 @@ function sidebar() {
       } catch (e) { this.err = e.message; }
     },
 
+    reconnectTerm() {
+      // Reload the ttyd iframe to re-establish its WebSocket (auto-reconnect). The
+      // Zellij `agent-main` session persists server-side, so output/state is intact
+      // on re-attach — this just skips the manual "press Enter to reconnect".
+      const f = this.$refs.term;
+      if (!f) return;
+      try { f.contentWindow.location.reload(); } catch (e) { f.src = f.src; }
+    },
     refit() {
       // Force ttyd/xterm to recompute cols/rows by briefly nudging the iframe
       // height: the inner window's resize handler re-fits and pushes the new size
