@@ -225,6 +225,7 @@ function sidebar() {
       // nudge the terminal to re-fit so it reclaims the full screen.
       window.addEventListener('focus', () => this.refit());
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') this.refit(); });
+      this.wireTouchScroll();
     },
     async reload() {
       // Bump the generation so any in-flight page load is discarded, clear the
@@ -313,21 +314,53 @@ function sidebar() {
       f.style.height = 'calc(100% - 1px)';
       setTimeout(() => { f.style.height = ''; }, 80);
     },
-    termScroll(dir) {
-      // Drive Zellij's scrollback by dispatching synthetic wheel events into the
-      // same-origin terminal iframe. Zellij's mouse mode is on, so xterm forwards
-      // wheel to it as scroll. dir<0 = up (older output). Mobile has no real wheel;
-      // these buttons fill that gap (desktop uses the wheel; buttons are CSS-hidden).
+    _wheelTick(dir) {
+      // One wheel notch into the same-origin terminal iframe. Zellij's mouse mode
+      // is on, so xterm forwards wheel to it as scroll. dir<0 = up (older output).
       const f = this.$refs.term;
       try {
-        const doc = f.contentDocument;
-        const win = doc.defaultView;
+        const doc = f.contentDocument, win = doc.defaultView;
         const el = doc.querySelector('.xterm-screen') || doc.querySelector('.xterm') || doc.body;
-        for (let i = 0; i < 3; i++) {
-          el.dispatchEvent(new win.WheelEvent('wheel',
-            { deltaY: dir * 120, deltaMode: 0, bubbles: true, cancelable: true }));
-        }
+        el.dispatchEvent(new win.WheelEvent('wheel',
+          { deltaY: dir * 120, deltaMode: 0, bubbles: true, cancelable: true }));
       } catch (e) { this.err = 'terminal scroll unavailable'; }
+    },
+    termScroll(dir) {
+      // The ▲/▼ buttons — a few notches per tap.
+      for (let i = 0; i < 3; i++) this._wheelTick(dir);
+    },
+    wireTouchScroll() {
+      // Translate a one-finger vertical swipe over the terminal into wheel notches
+      // (the same path the buttons use) so mobile can scroll the session by dragging.
+      // touchmove is captured + stopped so it doesn't also reach xterm as a mouse
+      // drag (which would start a text selection); touchstart/end pass through so
+      // tap-to-focus / keyboard still work. Multi-finger gestures are left alone.
+      // Same-origin DOM only — no ttyd/xterm patching.
+      const f = this.$refs.term;
+      const STEP = 28; // px of swipe per wheel notch
+      const attach = () => {
+        let doc;
+        try { doc = f.contentDocument; } catch (e) { return; }
+        if (!doc || doc._asTouchWired) return;
+        doc._asTouchWired = true;
+        let lastY = null, acc = 0;
+        doc.addEventListener('touchstart', (e) => {
+          lastY = e.touches.length === 1 ? e.touches[0].clientY : null; acc = 0;
+        }, { passive: true });
+        doc.addEventListener('touchmove', (e) => {
+          if (lastY === null || e.touches.length !== 1) return; // multi-finger: leave alone
+          const y = e.touches[0].clientY;
+          acc += y - lastY; lastY = y;
+          while (Math.abs(acc) >= STEP) {
+            const fingerDown = acc > 0;
+            acc -= fingerDown ? STEP : -STEP;
+            this._wheelTick(fingerDown ? -1 : 1); // drag down → older (up); drag up → newer (down)
+          }
+          e.preventDefault(); e.stopPropagation();
+        }, { passive: false, capture: true });
+      };
+      attach();
+      f.addEventListener('load', attach);
     },
     toggleCollapse() { this.collapsed = !this.collapsed; localStorage.setItem('as_collapsed', this.collapsed ? '1' : '0'); },
     shortCwd(c) { return (c || '').replace(/^\/home\/[^/]+\//, '~/'); },
