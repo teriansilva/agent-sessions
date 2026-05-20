@@ -531,9 +531,13 @@ function sidebar() {
       const t = this.composeText;
       if (!t.trim()) return;                       // empty → no-op (use the ⏎ key for a bare Enter)
       this._pasteText(t, () => {
-        setTimeout(() => this.termKey('enter'), 60); // submit once xterm has the paste
         this.composeText = '';
-        try { this.$refs.composeInput.focus(); } catch (_) { /* keep cursor in the box, not terminal */ }
+        setTimeout(() => {
+          this.termKey('enter');                       // submit once xterm has the paste (this focuses xterm)
+          // ...then take the cursor BACK to the box so you can keep typing. Must come
+          // after termKey — _key() focuses the terminal, which would otherwise steal it.
+          try { this.$refs.composeInput.focus(); } catch (_) { /* */ }
+        }, 60);
       });
     },
     _clipFiles(dt) {
