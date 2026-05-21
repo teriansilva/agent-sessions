@@ -84,7 +84,7 @@
   .scrollstrip:active { cursor: grabbing; background: rgba(110,110,150,.5); }
   @media (min-width: 801px) { .scrollstrip { display: block; } }
   /* Attach control (paste/drop/pick a file as context) + transient upload notice. */
-  .upnotice { position: absolute; left: 8px; right: 8px; bottom: 60px; z-index: 7; cursor: pointer;
+  .upnotice { position: absolute; left: 8px; right: 8px; top: 34px; z-index: 7; cursor: pointer;
               background: rgba(18,38,28,.96); border: 1px solid #2a6; color: #cfe; border-radius: 6px;
               padding: 8px 10px; font-size: 12px; white-space: normal; word-break: break-all; }
   /* Compose panel: a real <textarea> (autocomplete-friendly) sent to the terminal
@@ -101,14 +101,16 @@
              background: rgba(12,12,12,.97); border-top: 1px solid #2a2a2a; }
   .compose.open { display: flex; }
   .compose textarea { width: 100%; max-height: 28vh; resize: none; background: #181818; color: #fff;
-                      border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px 36px 8px 8px; font: inherit; }
-  /* Window-style close — a small cutout in the top-right corner (not a full title bar). */
-  .compose .xclose { position: absolute; top: 6px; right: 6px; z-index: 1; width: 30px; height: 26px;
-                     display: grid; place-items: center; background: rgba(40,40,46,.9); color: #cde;
-                     border: 1px solid #3a3a3a; border-radius: 5px; font-size: 13px; line-height: 1; cursor: pointer; }
+                      border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px; font: inherit; }
+  /* Header row ABOVE the textarea: attachment pills (left) + window-style close (right). */
+  .compose-head { display: flex; align-items: center; gap: 6px; }
+  .compose-head .spacer { flex: 1; }
+  .compose .xclose { flex: 0 0 auto; width: 30px; height: 26px; display: grid; place-items: center;
+                     background: rgba(40,40,46,.9); color: #cde; border: 1px solid #3a3a3a; border-radius: 5px;
+                     font-size: 13px; line-height: 1; cursor: pointer; }
   .compose .xclose:hover { background: #c0392b; color: #fff; border-color: #c0392b; }
-  /* Attached-file pills above the input (path goes to the session on Send, not into the box). */
-  .compose .pills { display: flex; flex-wrap: wrap; gap: 5px; padding-right: 38px; }
+  /* Attached-file pills (path goes to the session on Send, not into the box). */
+  .compose .pills { display: flex; flex-wrap: wrap; gap: 5px; }
   .compose .pill { display: inline-flex; align-items: center; gap: 4px; max-width: 70%; background: #16263a;
                    border: 1px solid #356; color: #cde; border-radius: 12px; padding: 2px 4px 2px 9px; font-size: 11px; }
   .compose .pill .pn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -183,7 +185,7 @@
         <div class="body">
           <template x-if="editing !== s.id">
             <div class="title">
-              <span class="dot" x-show="current && current.id === s.id" title="Where you're working"></span>
+              <span class="dot" x-show="now - s.last_mtime < 45" title="AI active — recent output"></span>
               <template x-if="facets.engines.length > 1"><span class="ebadge" :class="s.engine" x-text="s.engine === 'opencode' ? 'oc' : 'cc'"></span></template>
               <span x-text="s.title || '(untitled)'"></span>
             </div>
@@ -193,7 +195,7 @@
                    @click.stop @keydown.enter.stop="commitRename(s)" @keydown.escape.stop="editing=null"
                    @blur="commitRename(s)" x-init="$nextTick(()=>$el.focus())">
           </template>
-          <div class="meta" x-text="shortCwd(s.cwd) + ' • ' + ago(s.last_mtime)"></div>
+          <div class="meta" :title="s.cwd" x-text="shortCwd(s.cwd) + ' • ' + ago(s.last_mtime)"></div>
         </div>
         <div class="acts" @click.stop>
           <button class="iconbtn" @click="startRename(s)" title="Rename">✎</button>
@@ -229,14 +231,17 @@
     <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
     <div class="compose" :class="{ open: composeOpen }">
-      <button class="xclose" @click="toggleCompose()" type="button" aria-label="Close compose box" title="Close">✕</button>
-      <template x-if="attachments.length">
-        <div class="pills">
-          <template x-for="(a, i) in attachments" :key="a.path">
-            <span class="pill" :title="a.path"><span class="pn" x-text="a.name"></span><button @click="attachments.splice(i, 1)" type="button" aria-label="Remove attachment">×</button></span>
-          </template>
-        </div>
-      </template>
+      <div class="compose-head">
+        <template x-if="attachments.length">
+          <div class="pills">
+            <template x-for="(a, i) in attachments" :key="a.path">
+              <span class="pill" :title="a.path"><span class="pn" x-text="a.name"></span><button @click="attachments.splice(i, 1)" type="button" aria-label="Remove attachment">×</button></span>
+            </template>
+          </div>
+        </template>
+        <span class="spacer"></span>
+        <button class="xclose" @click="toggleCompose()" type="button" aria-label="Close compose box" title="Close">✕</button>
+      </div>
       <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
                 placeholder="Type here (autocomplete works) — Send pastes it into the session. /commands run as typed."></textarea>
       <div class="crow">
@@ -318,6 +323,7 @@ function sidebar() {
     composeOpen: localStorage.getItem('as_compose') !== '0', composeText: '',  // open by default; remembers if closed
     attachments: [],  // {name, path} pills for files attached to the draft
     scale: (parseFloat(localStorage.getItem('as_scale')) || 1), showSettings: false,  // terminal zoom
+    now: Math.floor(Date.now() / 1000), _tick: null,  // drives the "AI active" dot (recent output)
     nextOffset: 0, showArchived: false,
     q: '', projectFilter: '', engineFilter: '', facets: { projects: [], engines: [] },
     collapsed: localStorage.getItem('as_collapsed') === '1',
@@ -336,6 +342,8 @@ function sidebar() {
       this.$nextTick(() => this._obs.observe(this.$refs.sentinel));
       this.$nextTick(() => this.applyScale());                                  // apply persisted terminal scale
       if (this.$refs.term) this.$refs.term.addEventListener('load', () => this.applyScale());  // re-apply after reconnect-reload
+      // Keep the "AI active" dots fresh: re-tick `now` and re-pull mtimes for loaded rows.
+      this._tick = setInterval(() => { this.now = Math.floor(Date.now() / 1000); this.refreshActivity(); }, 12000);
       // When the desktop regains focus/visibility (e.g. after driving the session
       // from a phone, which shrinks the shared Zellij grid to the smaller width),
       // nudge the terminal to re-fit so it reclaims the full screen.
@@ -392,6 +400,23 @@ function sidebar() {
         if (d.facets) this.facets = d.facets;
       } catch (e) { if (gen === this._gen) this.err = e.message; }
       finally { if (gen === this._gen) this.loading = false; }
+    },
+    async refreshActivity() {
+      // Re-pull last_mtime for the loaded rows (no reorder / no scroll change) so the
+      // "AI active" dots appear/disappear as sessions start/stop producing output.
+      if (this.loading || !this.sessions.length) return;
+      try {
+        const params = new URLSearchParams({ limit: Math.min(this.sessions.length, 200), offset: 0,
+                                             archived: this.showArchived ? 1 : 0 });
+        if (this.q.trim()) params.set('q', this.q.trim());
+        if (this.projectFilter) params.set('project', this.projectFilter);
+        if (this.engineFilter) params.set('engine', this.engineFilter);
+        const r = await fetch(`/api/sessions?${params.toString()}`, { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const fresh = {};
+        for (const s of (await r.json()).sessions) fresh[s.id] = s.last_mtime;
+        for (const s of this.sessions) if (s.id in fresh) s.last_mtime = fresh[s.id];
+      } catch (_) { /* ignore transient errors */ }
     },
     setArchived(v) {
       if (v === this.showArchived) return;
