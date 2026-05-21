@@ -57,6 +57,17 @@ def _buffer_append(key: str, data: bytes) -> None:
         del buf[: len(buf) - _MAX_BUF]
 
 
+def _in_alt_screen(buf: bytes) -> bool:
+    """True if the session is currently on the alternate screen buffer.
+
+    Replaying raw scrollback is right for *inline* agents (claude/codex/gemini) but
+    wrong for an alt-screen TUI (opencode): the alt buffer has no scrollback, and
+    replaying its frames corrupts the redraw (blank screen that only partially
+    reappears on scroll). Such sessions redraw themselves via SIGWINCH on attach,
+    so we skip the replay. Detected by the last 1049h (enter) vs 1049l (leave)."""
+    return buf.rfind(b"\x1b[?1049h") > buf.rfind(b"\x1b[?1049l")
+
+
 async def run(
     ws, argv: list[str], *, cwd: str, buf_key: str | None = None, cols: int = 80, rows: int = 24
 ) -> None:
@@ -95,8 +106,9 @@ async def run(
     loop = asyncio.get_event_loop()
 
     # Replay the session's scrollback first, so a reattach shows the prior history
-    # (dtach itself has none) before the live redraw + new output arrive.
-    if buf_key and _BUFFERS.get(buf_key):
+    # (dtach itself has none) before the live redraw + new output arrive. Skip it for
+    # alt-screen TUIs (opencode) — replay corrupts their redraw; they repaint on SIGWINCH.
+    if buf_key and _BUFFERS.get(buf_key) and not _in_alt_screen(_BUFFERS[buf_key]):
         with contextlib.suppress(Exception):
             await ws.send_bytes(bytes(_BUFFERS[buf_key]))
 

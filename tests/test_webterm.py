@@ -207,3 +207,22 @@ def test_term_suppresses_ctrl_v_to_agent():
     term = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
     assert "attachCustomKeyEventHandler" in term
     assert "ctrlKey || e.metaKey" in term and "'v'" in term
+
+
+def test_in_alt_screen_detection():
+    from agent_sessions import webterm
+
+    assert webterm._in_alt_screen(b"hi\x1b[?1049hFRAME") is True  # entered, not left
+    assert webterm._in_alt_screen(b"hi\x1b[?1049hF\x1b[?1049ldone") is False  # left again → inline
+    assert webterm._in_alt_screen(b"plain inline output, no alt") is False  # neither present
+
+
+def test_resize_only_sent_on_change():
+    # Flicker fix: a scrollbar nudge must not SIGWINCH the agent; only a real
+    # cols/rows change sends a resize.
+    from pathlib import Path
+
+    import agent_sessions
+
+    t = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
+    assert "lastCols" in t and "term.cols === lastCols && term.rows === lastRows" in t

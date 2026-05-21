@@ -81,15 +81,23 @@
       (location.protocol === 'https:' ? 'wss://' : 'ws://') +
       location.host + '/ws/term/' + encodeURIComponent(SID) + WS_QUERY;
 
+    // Only send a resize when the grid actually changed. A bare scrollbar toggle
+    // nudges the pixel size (ResizeObserver fires) without changing cols/rows; sending
+    // a resize anyway would SIGWINCH the agent → full repaint → visible flicker loop.
+    let lastCols = 0, lastRows = 0;
     const sendResize = () => {
-      if (alive) ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));
+      if (!alive) return;
+      if (term.cols === lastCols && term.rows === lastRows) return;
+      lastCols = term.cols; lastRows = term.rows;
+      ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));
     };
 
     function connect() {
       setStatus('connecting…');
       ws = new WebSocket(wsUrl());
       ws.binaryType = 'arraybuffer';
-      ws.onopen = () => { alive = true; setStatus(''); fit.fit(); sendResize(); term.focus(); };
+      // Force the size on every (re)connect — a fresh dtach pty defaults to 80x24.
+      ws.onopen = () => { alive = true; setStatus(''); fit.fit(); lastCols = lastRows = 0; sendResize(); term.focus(); };
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') term.write(ev.data);
         else term.write(new Uint8Array(ev.data));
