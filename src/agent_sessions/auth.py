@@ -119,6 +119,14 @@ def _decode_cookie(cfg: AuthConfig, request: Request) -> dict | None:
         return None
 
 
+def session_uid(cfg: AuthConfig, conn) -> str | None:
+    """uid for a valid session cookie, else None. Works for Request *or* WebSocket
+    (both expose ``.cookies``) — the websocket terminal route reuses this so it
+    inherits the exact same session gate as the HTTP routes (issue #49)."""
+    data = _decode_cookie(cfg, conn)
+    return data.get("uid") if data else None
+
+
 def current_csrf(cfg: AuthConfig, request: Request) -> str | None:
     data = _decode_cookie(cfg, request)
     return data.get("csrf") if data else None

@@ -23,20 +23,23 @@ from fastapi import (
     Request,
     Response,
     UploadFile,
+    WebSocket,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import archive, engines, metadata, scanner, zellij
+from . import archive, engines, metadata, ptybridge, scanner, webterm, zellij
 from .auth import (
     AuthConfig,
     clear_session,
     current_csrf,
     enforce_origin,
     issue_session,
+    origin_matches,
     require_csrf_and_origin,
     require_session,
+    session_uid,
     verify_password,
 )
 
@@ -217,6 +220,42 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         except zellij.ZellijError as e:
             raise HTTPException(status_code=400, detail=str(e)) from None
         return JSONResponse({"tab": tab})
+
+    @app.websocket("/ws/term/{sid}")
+    async def ws_term(ws: WebSocket, sid: str) -> None:
+        # Same gate as the HTTP routes: a valid session cookie + matching Origin.
+        # Reject BEFORE accept so an unauthenticated client never reaches a shell.
+        # (issue #49: no raw shell stream on an unauthenticated path.)
+        if session_uid(cfg, ws) is None:
+            await ws.close(code=4401)
+            return
+        if not origin_matches(cfg, ws):
+            await ws.close(code=4403)
+            return
+        try:
+            prov, native = engines.parse_key(sid)
+        except engines.EngineError:
+            await ws.close(code=4404)
+            return
+        sessions = engines.scan_all()
+        match = next((s for s in sessions if s.engine == prov.engine_id and s.uuid == native), None)
+        if match is None or match.cwd not in scanner.scanned_cwds(sessions):
+            await ws.close(code=4404)
+            return
+        try:
+            argv = ptybridge.dtach_argv(
+                engine=prov.engine_id,
+                session_id=native,
+                launch_argv=prov.launch_argv(native, cwd=match.cwd, bypass=True),
+            )
+        except ptybridge.PtyBridgeError:
+            # Misconfigured launch (e.g. an engine binary that resolved to a bare
+            # name instead of an absolute path) — close deterministically before
+            # accept rather than letting the route raise.
+            await ws.close(code=4500)
+            return
+        await ws.accept()
+        await webterm.run(ws, argv, cwd=match.cwd)
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(
