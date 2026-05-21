@@ -226,7 +226,7 @@
       <span class="t" :class="{ muted: !current }"
             x-text="current ? current.title : 'agent-main · tap here for the session list'"></span>
     </div>
-    <div class="termwrap"><iframe x-ref="term" src="/terminal/" title="agent-main"></iframe></div>
+    <div class="termwrap"><iframe x-ref="term" :src="termUrl" title="agent terminal"></iframe></div>
     <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
     <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
             aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
@@ -317,6 +317,12 @@
 
 <script>
 const CSRF = {{ csrf | tojson }};
+const TERMINAL_BACKEND = {{ terminal_backend | tojson }};  // "ttyd" (Zellij iframe) | "ws" (xterm.js over /ws/term)
+const enc = encodeURIComponent;
+const termUrlFor = (cur) =>
+  TERMINAL_BACKEND === 'ws'
+    ? (cur && cur.id ? '/term/' + enc(cur.id) : 'about:blank')
+    : '/terminal/';
 const PAGE = 20;
 function sidebar() {
   return {
@@ -333,6 +339,9 @@ function sidebar() {
     // The session this terminal is currently showing (set when you open one from
     // the sidebar; persisted so it survives a reload). {id, title, engine} | null.
     current: (() => { try { return JSON.parse(localStorage.getItem('as_current') || 'null'); } catch (_) { return null; } })(),
+    // In ws-mode this drives the terminal iframe (the /term/{id} xterm page); in
+    // ttyd-mode it stays the static shared ttyd session and switching is server-side.
+    termUrl: (() => { let c=null; try { c=JSON.parse(localStorage.getItem('as_current')||'null'); } catch(_){} return termUrlFor(c); })(),
     _obs: null, _searchT: null, _gen: 0, _hiddenAt: 0,
 
     async init() {
@@ -358,8 +367,13 @@ function sidebar() {
         const gap = this._hiddenAt ? Date.now() - this._hiddenAt : 0;
         if (gap > 8000) this.reconnectTerm(); else this.refit();
       });
-      this.wireTouchScroll();
-      this.wireUpload();
+      // ttyd-only: these inject wheel/paste into the shared ttyd xterm. In ws-mode
+      // the /term page owns its xterm (native scroll/copy/typing); compose + nav-key
+      // parity onto it is Phase 4.
+      if (TERMINAL_BACKEND === 'ttyd') {
+        this.wireTouchScroll();
+        this.wireUpload();
+      }
       // Keep the app sized to the *visible* viewport so the on-screen keyboard
       // doesn't hide the terminal's bottom (the prompt you're typing on).
       // visualViewport.height shrinks when the keyboard opens; bind #app to it and
@@ -437,8 +451,14 @@ function sidebar() {
     },
     async open(s) {
       try {
-        await this.post(`/api/sessions/${encodeURIComponent(s.id)}/open`);
         this.current = { id: s.id, title: s.title || '(untitled)', engine: s.engine };
+        if (TERMINAL_BACKEND === 'ws') {
+          // ws-mode: point the iframe at the session's xterm page; the bridge
+          // launches/attaches on connect — no server-side Zellij switch.
+          this.termUrl = termUrlFor(this.current);
+        } else {
+          await this.post(`/api/sessions/${encodeURIComponent(s.id)}/open`);  // Zellij tab switch
+        }
         localStorage.setItem('as_current', JSON.stringify(this.current));
         if (this.collapsed === false && window.innerWidth <= 800) this.collapsed = true;
       } catch (e) { this.err = e.message; }

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -51,6 +52,10 @@ _STATIC = _HERE / "static"
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
+    # Which terminal the sidebar embeds: "ttyd" (the Zellij iframe, prod default) or
+    # "ws" (the self-owned xterm.js page over /ws/term, issue #49). Staging sets "ws"
+    # to exercise the rebuild end-to-end before cutover flips prod.
+    terminal_backend = "ws" if os.environ.get("AGENT_SESSIONS_TERMINAL") == "ws" else "ttyd"
     app = FastAPI(title="agent-sessions", openapi_url=None, docs_url=None, redoc_url=None)
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
@@ -75,7 +80,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         return _TEMPLATES.TemplateResponse(
             request,
             "index.html",
-            {"csrf": csrf, "origin": cfg.origin},
+            {"csrf": csrf, "origin": cfg.origin, "terminal_backend": terminal_backend},
         )
 
     @app.get("/term/{sid}", response_class=HTMLResponse)
