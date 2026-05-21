@@ -8,11 +8,13 @@ project picker. See agent-sessions#4 (sidebar UX) and #8 (findable list).
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import os
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import (
@@ -84,19 +86,35 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         )
 
     @app.get("/term/{sid}", response_class=HTMLResponse)
-    async def terminal_page(sid: str, request: Request) -> Response:
+    async def terminal_page(
+        sid: str,
+        request: Request,
+        new: bool = Query(False),
+        cwd: str | None = Query(None),
+        bypass: bool = Query(True),
+    ) -> Response:
         # Self-owned xterm.js terminal page for one session, talking to /ws/term/{sid}.
         # Logged-in only; sid shape validated so we never render for a bogus id.
+        # `new=1&cwd=…&bypass=…` is forwarded to the ws so a fresh session launches in
+        # that cwd, honoring the modal's permission-bypass choice.
         if session_uid(cfg, request) is None:
             return RedirectResponse("/login", status_code=303)
         try:
             engines.parse_key(sid)
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
+        ws_query = ""
+        if new and cwd:
+            ws_query = (
+                "?new=1&cwd="
+                + urllib.parse.quote(cwd, safe="")
+                + "&bypass="
+                + ("1" if bypass else "0")
+            )
         return _TEMPLATES.TemplateResponse(
             request,
             "terminal.html",
-            {"sid": sid, "sid_json": json.dumps(sid)},
+            {"sid": sid, "sid_json": json.dumps(sid), "ws_query_json": json.dumps(ws_query)},
         )
 
     @app.get("/login", response_class=HTMLResponse)
@@ -245,39 +263,66 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.websocket("/ws/term/{sid}")
     async def ws_term(ws: WebSocket, sid: str) -> None:
-        # Same gate as the HTTP routes: a valid session cookie + matching Origin.
-        # Reject BEFORE accept so an unauthenticated client never reaches a shell.
-        # (issue #49: no raw shell stream on an unauthenticated path.)
+        # Accept FIRST, then close with a code on rejection. A pre-accept close fails
+        # the ws handshake, and browsers report that as code 1006 (abnormal) — not our
+        # 44xx — so the client reconnect loop never recognizes a deliberate reject and
+        # hammers forever. Accepting then closing delivers the real code to onclose.
+        # No shell is ever streamed before the checks pass, so the auth gate holds.
+        await ws.accept()
+
+        async def reject(code: int) -> None:
+            with contextlib.suppress(Exception):
+                await ws.close(code=code)
+
         if session_uid(cfg, ws) is None:
-            await ws.close(code=4401)
-            return
+            return await reject(4401)
         if not origin_matches(cfg, ws):
-            await ws.close(code=4403)
-            return
+            return await reject(4403)
         try:
             prov, native = engines.parse_key(sid)
         except engines.EngineError:
-            await ws.close(code=4404)
-            return
-        sessions = engines.scan_all()
-        match = next((s for s in sessions if s.engine == prov.engine_id and s.uuid == native), None)
-        if match is None or match.cwd not in scanner.scanned_cwds(sessions):
-            await ws.close(code=4404)
-            return
+            return await reject(4404)
+
+        if ptybridge.session_exists(prov.engine_id, native):
+            # A live dtach session already exists → attach to it regardless of new/
+            # resume. dtach -A attaches (ignoring the cmd), so a fresh session survives
+            # a browser reload before it has written its on-disk history. cwd is only
+            # for the (unused-on-attach) spawn; a scanned cwd if known, else home.
+            scanned = next(
+                (s for s in engines.scan_all() if s.engine == prov.engine_id and s.uuid == native),
+                None,
+            )
+            cwd = scanned.cwd if scanned else str(Path.home())
+            launch = prov.launch_argv(native, cwd=cwd, bypass=True)
+        elif ws.query_params.get("new") == "1":
+            # Start a FRESH session with this client-generated id, in a picker cwd.
+            new_cwd = ws.query_params.get("cwd") or ""
+            if new_cwd not in set(scanner.pickable_projects()):
+                return await reject(4404)
+            # Honor the modal's permission-bypass choice (default on); only "0" is off.
+            bypass = ws.query_params.get("bypass") != "0"
+            try:
+                launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
+            except NotImplementedError:
+                return await reject(4404)  # engine can't pin a new-session id
+            cwd = new_cwd
+        else:
+            # Resume an EXISTING scanned session.
+            sessions = engines.scan_all()
+            match = next(
+                (s for s in sessions if s.engine == prov.engine_id and s.uuid == native), None
+            )
+            if match is None or match.cwd not in scanner.scanned_cwds(sessions):
+                return await reject(4404)
+            launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
+            cwd = match.cwd
         try:
             argv = ptybridge.dtach_argv(
-                engine=prov.engine_id,
-                session_id=native,
-                launch_argv=prov.launch_argv(native, cwd=match.cwd, bypass=True),
+                engine=prov.engine_id, session_id=native, launch_argv=launch
             )
         except ptybridge.PtyBridgeError:
-            # Misconfigured launch (e.g. an engine binary that resolved to a bare
-            # name instead of an absolute path) — close deterministically before
-            # accept rather than letting the route raise.
-            await ws.close(code=4500)
-            return
-        await ws.accept()
-        await webterm.run(ws, argv, cwd=match.cwd, buf_key=engines.session_key(match))
+            return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
+        await webterm.run(ws, argv, cwd=cwd, buf_key=sid)
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

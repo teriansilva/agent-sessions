@@ -84,6 +84,11 @@ class EngineProvider(Protocol):
     def is_present(self) -> bool: ...
     def scan(self) -> list[Session]: ...
     def launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]: ...
+    def new_launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
+        """Argv to start a *fresh* session with a caller-chosen id (ws new-session,
+        #49). Engines that can't pin a new session id raise NotImplementedError."""
+        ...
+
     def open_or_switch(
         self, native_id: str, *, cwd: str, title: str, allowed_cwds: Iterable[str], bypass: bool
     ) -> str: ...
@@ -118,6 +123,14 @@ class ClaudeProvider:
         # command zellij._claude_argv builds for the current Zellij path — kept in
         # sync intentionally; cwd is set by the launcher, not an argv arg here.
         argv = [zellij.CLAUDE_BIN, "--resume", native_id]
+        if bypass:
+            argv.append("--dangerously-skip-permissions")
+        return argv
+
+    def new_launch_argv(self, native_id, *, cwd, bypass):
+        # Start a *new* claude session with our pre-generated id (`--session-id`),
+        # so the bridge can key it before claude has written its JSONL.
+        argv = [zellij.CLAUDE_BIN, "--session-id", native_id]
         if bypass:
             argv.append("--dangerously-skip-permissions")
         return argv
@@ -208,6 +221,9 @@ class OpenCodeProvider:
         # opencode resumes a session by id within its project dir. `bypass` is
         # accepted only for interface parity (permissions are config-side).
         return [OPENCODE_BIN, cwd, "--session", native_id]
+
+    def new_launch_argv(self, native_id, *, cwd, bypass):
+        raise NotImplementedError("opencode ws new-session not supported yet")
 
     def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
         # opencode's permission model is config-side (opencode.json) — there's no
@@ -328,6 +344,9 @@ class CodexProvider:
         # codex resumes by uuid; cwd is set by the launcher. No documented per-launch
         # bypass flag (sandbox/approvals are config / -c driven), so none is added.
         return [CODEX_BIN, "resume", native_id]
+
+    def new_launch_argv(self, native_id, *, cwd, bypass):
+        raise NotImplementedError("codex ws new-session not supported yet")
 
     def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
         return zellij.open_engine(

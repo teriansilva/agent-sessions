@@ -25,6 +25,7 @@
     // (issue #49). No ttyd, no Zellij: native scrollback, native copyOnSelect,
     // native touch scroll. The session cookie rides the same-origin ws handshake.
     const SID = {{ sid_json|safe }};
+    const WS_QUERY = {{ ws_query_json|safe }};  // "?new=1&cwd=…" for a fresh session, else ""
     const statusEl = document.getElementById('status');
     const setStatus = (msg) => {
       if (!msg) { statusEl.className = ''; return; }
@@ -67,7 +68,7 @@
     let ws, reconnectTimer = null, alive = false;
     const wsUrl = () =>
       (location.protocol === 'https:' ? 'wss://' : 'ws://') +
-      location.host + '/ws/term/' + encodeURIComponent(SID);
+      location.host + '/ws/term/' + encodeURIComponent(SID) + WS_QUERY;
 
     const sendResize = () => {
       if (alive) ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));

@@ -392,6 +392,23 @@ function sidebar() {
       const gen = ++this._gen;
       this.sessions = []; this.nextOffset = 0; this.err = null;
       await this._fetchPage(gen);
+      this._ensureCurrentRow();   // keep a just-created (not-yet-on-disk) session visible
+    },
+    _ensureCurrentRow() {
+      // ws-mode: a brand-new session has no JSONL until its first message, so the
+      // scan can't list it yet. Show an optimistic placeholder row for the current
+      // session so it's visible immediately; the real row replaces it on the next
+      // reload once it's on disk. ttyd-mode unaffected (current.id is null pre-JSONL).
+      const cur = this.current;
+      if (TERMINAL_BACKEND !== 'ws' || !cur || !cur.id) return;
+      if (this.sessions.some(s => s.id === cur.id)) return;
+      const native = (cur.id.split(':')[1] || '');
+      this.sessions.unshift({
+        id: cur.id, engine: cur.engine || 'claude', uuid: native, short_uuid: native.slice(0, 8),
+        cwd: cur.cwd || '', project: cur.cwd || '', last_mtime: Math.floor(Date.now() / 1000),
+        first_user_message: '', title: cur.title || 'new session',
+        sticky: false, sort_key: 0, archived: false, _placeholder: true,
+      });
     },
     async loadMore() {
       if (this.loading || this.nextOffset === null) return;
@@ -491,6 +508,23 @@ function sidebar() {
     async createNew() {
       if (!this.newCwd) return;
       const name = this.newName || 'session';
+      if (TERMINAL_BACKEND === 'ws') {
+        // ws-mode: mint a uuid client-side and launch a fresh claude session in the
+        // chosen cwd via /ws/term/{id}?new=1&cwd=… — no Zellij. It joins the list
+        // once claude writes its JSONL (the reloads below pick it up).
+        const sid = 'claude:' + (crypto.randomUUID ? crypto.randomUUID()
+          : '00000000-0000-4000-8000-' + Date.now().toString(16).padStart(12, '0'));
+        this.current = { id: sid, title: name, engine: 'claude', cwd: this.newCwd };
+        this.termUrl = '/term/' + enc(sid) + '?new=1&cwd=' + enc(this.newCwd)
+          + '&bypass=' + (this.newBypass ? '1' : '0');   // honor the modal's checkbox
+        localStorage.setItem('as_current', JSON.stringify(this.current));
+        this.showModal = false;
+        if (window.innerWidth <= 800) this.collapsed = true;
+        this._ensureCurrentRow();                 // show it now (claude writes its JSONL on first message)
+        setTimeout(() => this.reload(), 2000);
+        setTimeout(() => this.reload(), 5000);
+        return;
+      }
       try {
         await this.post('/api/projects/new', { cwd: this.newCwd, name, bypass_permissions: this.newBypass });
         this.showModal = false;
