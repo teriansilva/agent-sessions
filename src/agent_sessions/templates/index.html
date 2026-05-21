@@ -243,7 +243,8 @@
         <button class="xclose" @click="toggleCompose()" type="button" aria-label="Close compose box" title="Close">✕</button>
       </div>
       <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
-                placeholder="Type here (autocomplete works) — Send pastes it into the session. /commands run as typed."></textarea>
+                @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendCompose(); }"
+                placeholder="Type here (autocomplete works) — Enter sends, Shift+Enter = newline. /commands run as typed."></textarea>
       <div class="crow">
         <div class="navkeys">
           <button @click="termKey('up')" type="button" aria-label="Up" title="Up">↑</button>
@@ -469,12 +470,19 @@ function sidebar() {
     },
     async createNew() {
       if (!this.newCwd) return;
+      const name = this.newName || 'session';
       try {
-        await this.post('/api/projects/new', { cwd: this.newCwd, name: this.newName || 'session', bypass_permissions: this.newBypass });
+        await this.post('/api/projects/new', { cwd: this.newCwd, name, bypass_permissions: this.newBypass });
         this.showModal = false;
+        // The terminal switched to the new tab — reflect it in the header right away.
+        // (A brand-new session has no id until claude writes its JSONL, so id is null.)
+        this.current = { id: null, title: name, engine: 'claude' };
+        localStorage.setItem('as_current', JSON.stringify(this.current));
         if (window.innerWidth <= 800) this.collapsed = true;
-        // give claude a beat to write the JSONL, then refresh the list
+        // claude writes the JSONL a beat after start — reload a couple of times so the
+        // new session appears in the list without a manual refresh.
         setTimeout(() => this.reload(), 1500);
+        setTimeout(() => this.reload(), 4000);
       } catch (e) { this.err = e.message; }
     },
 
@@ -626,11 +634,11 @@ function sidebar() {
         this.composeText = '';
         this.attachments = [];
         setTimeout(() => {
-          this.termKey('enter');                       // submit once xterm has the paste (this focuses xterm)
+          this.termKey('enter');                       // submit once xterm has ingested the paste
           // ...then take the cursor BACK to the box so you can keep typing. Must come
           // after termKey — _key() focuses the terminal, which would otherwise steal it.
           try { this.$refs.composeInput.focus(); } catch (_) { /* */ }
-        }, 60);
+        }, 200);  // give the bracketed paste time to land first, else the Enter is dropped (text stays unsubmitted)
       });
     },
     _clipFiles(dt) {
