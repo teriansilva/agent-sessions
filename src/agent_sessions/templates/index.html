@@ -92,14 +92,11 @@
      into xterm. Collapsible; holds the nav keys + attach + send. Mobile-only (desktop
      types directly in the terminal). The nav keys (arrows/Esc/Tab/^C) inject keystrokes
      so TUI menus — e.g. Claude's native /-command menu or resume prompt — are operable. */
-  .compose-toggle { position: absolute; left: 8px; bottom: 14px; z-index: 6; display: block;
-                    width: 56px; height: 56px; border-radius: 50%; background: rgba(28,28,28,.88);
-                    color: #cde; border: 1px solid #3a3a3a; font-size: 26px; line-height: 1; cursor: pointer; }
-  /* Docked BELOW the terminal: in-flow flex child of .term, so the iframe (flex:1)
-     shrinks above it and the compose box never overlays the session. Desktop + mobile. */
-  .compose { position: relative; flex: 0 0 auto; display: none; flex-direction: column; gap: 6px; padding: 8px;
+  /* Docked BELOW the terminal: in-flow flex child of .term (never overlays). The
+     action bar (.crow) is always visible; only .compose-fields collapses. */
+  .compose { position: relative; flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 8px;
              background: rgba(12,12,12,.97); border-top: 1px solid #3a3a3a; }
-  .compose.open { display: flex; }
+  .compose-fields { display: flex; flex-direction: column; gap: 6px; }
   .compose textarea { width: 100%; max-height: 28vh; resize: none; background: #181818; color: #fff;
                       border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px; font: inherit; }
   /* Header row ABOVE the textarea: attachment pills (left) + window-style close (right). */
@@ -228,10 +225,10 @@
     </div>
     <div class="termwrap"><iframe x-ref="term" :src="termUrl" title="agent terminal"></iframe></div>
     <div class="scrollstrip" @mousedown.prevent="startStripDrag($event)" title="Drag to scroll the session"></div>
-    <button class="compose-toggle" x-show="!composeOpen" @click="toggleCompose()" type="button"
-            aria-label="Compose + keys" title="Compose a message (autocomplete-safe) + nav keys">✎</button>
-    <div class="compose" :class="{ open: composeOpen }">
-      <div class="compose-head">
+    <div class="compose">
+      <!-- Collapsible: attachment pills + the autocomplete-safe text field. Only these
+           hide when collapsed; the action bar below stays (there's room anyway). -->
+      <div class="compose-fields" x-show="composeOpen">
         <template x-if="attachments.length">
           <div class="pills">
             <template x-for="(a, i) in attachments" :key="a.path">
@@ -239,12 +236,12 @@
             </template>
           </div>
         </template>
-        <span class="spacer"></span>
-        <button class="xclose" @click="toggleCompose()" type="button" aria-label="Close compose box" title="Close">✕</button>
+        <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
+                  @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendCompose(); }"
+                  placeholder="Type here (autocomplete works) — Enter sends, Shift+Enter = newline. /commands run as typed."></textarea>
       </div>
-      <textarea x-ref="composeInput" x-model="composeText" rows="2" @paste="onComposePaste"
-                @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); sendCompose(); }"
-                placeholder="Type here (autocomplete works) — Enter sends, Shift+Enter = newline. /commands run as typed."></textarea>
+      <!-- Persistent action bar: nav keys + attach always available; Send only with the
+           field open; the ✎/✕ toggle expands/collapses the field. -->
       <div class="crow">
         <div class="navkeys">
           <button @click="termKey('up')" type="button" aria-label="Up" title="Up">↑</button>
@@ -257,7 +254,11 @@
                   title="Attach an image or file (added to your message)">📎</button>
         </div>
         <span class="spacer"></span>
-        <button class="send" @click="sendCompose()" type="button" title="Paste into the session + Enter">Send</button>
+        <button class="send" x-show="composeOpen" @click="sendCompose()" type="button" title="Paste into the session + Enter">Send</button>
+        <button class="xclose" @click="toggleCompose()" type="button"
+                :aria-label="composeOpen ? 'Collapse compose box' : 'Open compose box'"
+                :title="composeOpen ? 'Collapse' : 'Compose (autocomplete-safe) — type + Send'"
+                x-text="composeOpen ? '✕' : '✎'"></button>
       </div>
     </div>
     <input type="file" x-ref="fileInput" @change="onFilePick" multiple style="display:none">
@@ -332,7 +333,12 @@ const PAGE = 20;
 function sidebar() {
   return {
     sessions: [], projects: [], err: null, notice: null, _noticeT: null, loading: false,
-    composeOpen: localStorage.getItem('as_compose') !== '0', composeText: '',  // open by default; remembers if closed
+    // Default: collapsed on desktop, expanded on mobile; a saved choice wins.
+    composeOpen: (() => {
+      const s = localStorage.getItem('as_compose');
+      return s === '1' ? true : s === '0' ? false : window.innerWidth <= 800;
+    })(),
+    composeText: '',
     attachments: [],  // {name, path} pills for files attached to the draft
     scale: (parseFloat(localStorage.getItem('as_scale')) || 1), showSettings: false,  // terminal zoom
     now: Math.floor(Date.now() / 1000), _tick: null,  // drives the "AI active" dot (recent output)
