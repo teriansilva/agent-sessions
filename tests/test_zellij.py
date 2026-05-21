@@ -7,6 +7,7 @@ guarantee from issue #56's Hermes review #6.
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -192,6 +193,59 @@ def test_rename_does_not_create_duplicate_tab():
     assert not new_tabs, "renaming the sidebar title must not spawn a duplicate tab"
     assert len(go_to) == 1
     assert len(rename) == 1  # best-effort rename to match the new title
+
+
+def test_switch_self_heals_duplicate_tabs():
+    """Earlier query races could leave several tabs for one session (concurrent
+    `claude --resume` writers → mixing). A switch must close the extras, keep one,
+    and never spawn another. Regression for the switch-dedupe fix."""
+    runner = _make_runner(
+        existing_tabs=[
+            "Tab #1",
+            "abcdef12:automation workflow",  # dup 1 (kept)
+            "7f8c2040:other",
+            "abcdef12:automation workflow",  # dup 2 (closed)
+            "abcdef12:I often tell the agents",  # dup 3 (closed)
+        ]
+    )
+    zellij.open_or_switch(
+        uuid="abcdef12-1234-1234-1234-1234567890ab",
+        cwd="/tmp/x",
+        title="automation workflow",
+        allowed_cwds={"/tmp/x"},
+        _runner=runner,
+    )
+    assert not [c for c in runner.calls if "new-tab" in c], "must not spawn a duplicate"
+    # Two extra matches → two close-tab calls; the survivor is focused exactly once.
+    assert len([c for c in runner.calls if "close-tab" in c]) == 2
+    assert len([c for c in runner.calls if "go-to-tab-name" in c]) == 1
+
+
+def test_switch_raises_on_unreachable_session_instead_of_duplicating():
+    """A transient query failure must NOT look like 'no tabs' (which would spawn a
+    duplicate). It surfaces as an error so the click can be retried cleanly."""
+    runner = MagicMock()
+    runner.calls = []
+
+    def side_effect(argv, **kw):
+        runner.calls.append(argv)
+        if "query-tab-names" in argv:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=8)
+        cp = MagicMock()
+        cp.returncode = 0
+        cp.stdout = ""
+        return cp
+
+    runner.side_effect = side_effect
+    with pytest.raises(zellij.ZellijError):
+        zellij.open_or_switch(
+            uuid="abcdef12-1234-1234-1234-1234567890ab",
+            cwd="/tmp/x",
+            title="x",
+            allowed_cwds={"/tmp/x"},
+            _runner=runner,
+        )
+    assert not [c for c in runner.calls if "new-tab" in c]
 
 
 def test_resume_bypass_adds_skip_permissions_flag():

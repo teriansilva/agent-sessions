@@ -559,6 +559,8 @@ function sidebar() {
         tab:   { key: 'Tab',       code: 'Tab',       keyCode: 9 },
         ctrlc: { key: 'c',         code: 'KeyC',      keyCode: 67, ctrlKey: true },
         ctrlu: { key: 'u',         code: 'KeyU',      keyCode: 85, ctrlKey: true },
+        ctrla: { key: 'a',         code: 'KeyA',      keyCode: 65, ctrlKey: true },
+        ctrlk: { key: 'k',         code: 'KeyK',      keyCode: 75, ctrlKey: true },
       }[name];
       if (K) this._key(K);
     },
@@ -629,8 +631,15 @@ function sidebar() {
       for (const a of this.attachments) parts.push(a.path);
       const t = parts.join(' ');
       if (!t) return;                              // nothing to send (no text, no attachments)
-      this.termKey('ctrlu');                       // wipe any existing text at the prompt
-      this._pasteText(t, () => {
+      // Clear any leftover prompt text so the draft doesn't mix with it. Ctrl-A
+      // anchors the cursor at the start, Ctrl-K kills to the end (so it clears the
+      // whole line regardless of cursor position), Ctrl-U covers the kill-to-start
+      // case too. Then give the REPL a beat to redraw the empty prompt before the
+      // bracketed paste lands — otherwise the clear and the paste can interleave.
+      this.termKey('ctrla');
+      this.termKey('ctrlk');
+      this.termKey('ctrlu');
+      setTimeout(() => this._pasteText(t, () => {
         this.composeText = '';
         this.attachments = [];
         setTimeout(() => {
@@ -639,7 +648,7 @@ function sidebar() {
           // after termKey — _key() focuses the terminal, which would otherwise steal it.
           try { this.$refs.composeInput.focus(); } catch (_) { /* */ }
         }, 200);  // give the bracketed paste time to land first, else the Enter is dropped (text stays unsubmitted)
-      });
+      }), 90);  // 90ms: let the clear render before pasting the draft
     },
     _clipFiles(dt) {
       // Pull pasted/dropped file(s) from a DataTransfer. Browsers vary: some put a

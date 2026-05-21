@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable
 
 
@@ -72,24 +73,61 @@ def sanitize_engine_tab(engine_prefix: str, short: str, title: str) -> str:
     return f"{head}:{_safe_title(title)}"[:_TAB_MAX]
 
 
-def list_tabs(*, _runner=subprocess.run) -> list[str]:
-    """Return current Zellij tab names by parsing ``zellij list-tabs``.
+def _query_tab_names(*, _runner=subprocess.run, _attempts: int = 3) -> list[str]:
+    """Query Zellij tab names, retrying transient failures before giving up.
 
-    Tolerates the session not existing yet (returns []).
+    Returns the tab names on success, or ``[]`` only when the session genuinely
+    has no tabs / does not exist yet. Raises :class:`ZellijError` if the session
+    can't be reached after ``_attempts`` tries.
+
+    The strict contract matters: a *transient* failure (the scripted ``action``
+    runs as an ephemeral client and can time out under load) must NOT be confused
+    with "no tabs exist" — that mistake makes :func:`_switch_or_new` spawn a
+    *duplicate* tab, so a single session ends up with several concurrent
+    ``claude --resume`` writers (session mixing) and ambiguous tab names that
+    ``go-to-tab-name`` can't reliably focus.
+    """
+    last: Exception | None = None
+    for n in range(_attempts):
+        try:
+            cp = _runner(
+                [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "query-tab-names"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8,
+            )
+        except FileNotFoundError:
+            return []  # zellij binary missing → nothing to switch to
+        except subprocess.TimeoutExpired as e:
+            last = e
+        else:
+            if cp.returncode == 0:
+                return [ln.strip() for ln in cp.stdout.splitlines() if ln.strip()]
+            err = (cp.stderr or "").lower()
+            absent = "not found" in err or "no such" in err or "doesn't exist" in err
+            if "session" in err and absent:
+                return []  # session genuinely absent
+            last = ZellijError(
+                f"query-tab-names exit {cp.returncode}: {(cp.stderr or '').strip()!r}"
+            )
+        if n + 1 < _attempts:
+            time.sleep(0.25)
+    if isinstance(last, ZellijError):
+        raise last
+    raise ZellijError(f"query-tab-names unreachable after {_attempts} tries: {last}")
+
+
+def list_tabs(*, _runner=subprocess.run) -> list[str]:
+    """Return current Zellij tab names. Lenient: ``[]`` on any failure.
+
+    For callers that only *display* tabs. Switch logic uses :func:`_query_tab_names`
+    directly so a transient failure can't be mistaken for an empty session.
     """
     try:
-        cp = _runner(
-            [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "query-tab-names"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return _query_tab_names(_runner=_runner)
+    except ZellijError:
         return []
-    if cp.returncode != 0:
-        return []
-    return [ln.strip() for ln in cp.stdout.splitlines() if ln.strip()]
 
 
 def _claude_argv(*, resume_uuid: str | None, bypass: bool) -> list[str]:
@@ -114,14 +152,35 @@ def _switch_or_new(
     command; no shell is ever invoked. ``--`` separates zellij flags from argv.
     """
     prefixes = tuple(lookup_prefixes)
-    existing = [t for t in list_tabs(_runner=_runner) if t.startswith(prefixes)]
-    if existing:
+    # Strict query: a transient failure raises rather than looking like "no tabs",
+    # so we never spawn a duplicate tab for a session that already has one.
+    names = _query_tab_names(_runner=_runner)
+    matches = [(i, n) for i, n in enumerate(names, start=1) if n.startswith(prefixes)]
+    if matches:
+        # Self-heal any duplicate tabs that earlier races left behind: keep the
+        # first match, close the rest (highest index first so lower indices stay
+        # valid). Closing a tab kills its pane process, so the redundant
+        # `claude --resume` writers stop — one session == one tab from here on.
+        for idx, _name in reversed(matches[1:]):
+            _runner(
+                [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "go-to-tab", str(idx)],
+                check=False,
+                timeout=5,
+            )
+            _runner(
+                [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "close-tab"],
+                check=False,
+                timeout=5,
+            )
+        # With duplicates gone the survivor's name is unambiguous, so go-to-tab-name
+        # reliably focuses it (the ambiguity was why switching took 2-3 clicks).
+        survivor = matches[0][1]
         _runner(
-            [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "go-to-tab-name", existing[0]],
+            [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "go-to-tab-name", survivor],
             check=True,
             timeout=5,
         )
-        if existing[0] != desired_tab:
+        if survivor != desired_tab:
             _runner(
                 [ZELLIJ_BIN, "--session", ZELLIJ_SESSION, "action", "rename-tab", desired_tab],
                 check=False,
