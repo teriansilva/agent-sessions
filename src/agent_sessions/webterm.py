@@ -23,6 +23,7 @@ import contextlib
 import fcntl
 import json
 import os
+import signal
 import struct
 import termios
 
@@ -126,6 +127,13 @@ async def run(
                 elif kind == "r":
                     with contextlib.suppress(ValueError, TypeError):
                         _set_winsize(master, int(obj.get("rows", rows)), int(obj.get("cols", cols)))
+                        # TIOCSWINSZ on the master doesn't reliably deliver SIGWINCH to
+                        # the dtach client here, so dtach never forwards the new size to
+                        # the agent's own pty (the terminal stayed a fixed size on window
+                        # resize). Nudge the dtach client directly so it re-reads the tty
+                        # size and resizes the program → the live agent re-renders wider.
+                        with contextlib.suppress(ProcessLookupError, OSError):
+                            proc.send_signal(signal.SIGWINCH)
             elif msg.get("bytes") is not None:
                 with contextlib.suppress(OSError):
                     os.write(master, msg["bytes"])
