@@ -26,6 +26,7 @@
     // native touch scroll. The session cookie rides the same-origin ws handshake.
     const SID = {{ sid_json|safe }};
     const WS_QUERY = {{ ws_query_json|safe }};  // "?new=1&cwd=…" for a fresh session, else ""
+    const CSRF = {{ csrf_json|safe }};           // for /api/upload (image paste)
     const statusEl = document.getElementById('status');
     const setStatus = (msg) => {
       if (!msg) { statusEl.className = ''; return; }
@@ -121,6 +122,47 @@
       else if (m.t === 'paste') sendInput('\x1b[200~' + String(m.d || '') + '\x1b[201~');  // bracketed
       else if (m.t === 'focus') term.focus();
     });
+
+    // Image paste/drop → upload + type the file PATH into the terminal. Engine-agnostic:
+    // the agent (claude/opencode/codex/gemini) just receives a path string it can read.
+    // Text paste falls through to xterm. Same /api/upload contract as the sidebar.
+    const _imgFiles = (dt) => {
+      const out = [];
+      if (!dt) return out;
+      for (const f of (dt.files || [])) out.push(f);
+      if (!out.length) for (const it of (dt.items || [])) {
+        if (it.kind === 'file') { const f = it.getAsFile(); if (f) out.push(f); }
+      }
+      return out.filter((f) => f.type && f.type.startsWith('image/'));
+    };
+    async function uploadAndType(file) {
+      try {
+        const fd = new FormData();
+        fd.append('file', file, file.name || 'pasted.png');
+        const r = await fetch('/api/upload', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': CSRF }, body: fd,
+        });
+        if (!r.ok) throw new Error(r.status);
+        const { path } = await r.json();
+        sendInput(path + ' ');
+        setStatus('📎 ' + path.split('/').pop()); setTimeout(() => setStatus(''), 2500);
+      } catch (_) { setStatus('image upload failed'); setTimeout(() => setStatus(''), 3000); }
+    }
+    document.addEventListener('paste', (e) => {
+      const imgs = _imgFiles(e.clipboardData);
+      if (!imgs.length) return;                 // text paste → xterm handles it
+      e.preventDefault(); e.stopPropagation();
+      imgs.forEach(uploadAndType);
+    }, { capture: true });
+    document.addEventListener('dragover', (e) => e.preventDefault());
+    document.addEventListener('drop', (e) => {
+      const imgs = _imgFiles(e.dataTransfer);
+      if (!imgs.length) return;
+      e.preventDefault(); e.stopPropagation();
+      imgs.forEach(uploadAndType);
+    }, { capture: true });
+
     connect();
   </script>
 </body>

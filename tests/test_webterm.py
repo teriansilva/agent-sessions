@@ -182,3 +182,16 @@ def test_ws_new_session_forwards_bypass_choice():
 
     idx = (Path(agent_sessions.__file__).parent / "templates" / "index.html").read_text()
     assert "this.newBypass ? '1' : '0'" in idx and "&bypass=" in idx
+
+
+def test_term_image_paste_wiring():
+    # ws-mode terminal must handle image paste/drop → upload → type the path
+    # (engine-agnostic). Same /api/upload + CSRF contract as the sidebar.
+    from pathlib import Path
+
+    import agent_sessions
+
+    term = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
+    assert "addEventListener('paste'" in term and "addEventListener('drop'" in term
+    assert "uploadAndType" in term and "/api/upload" in term and "X-CSRF-Token" in term
+    assert "startsWith('image/')" in term  # only images are intercepted; text falls through

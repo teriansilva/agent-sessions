@@ -114,7 +114,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         return _TEMPLATES.TemplateResponse(
             request,
             "terminal.html",
-            {"sid": sid, "sid_json": json.dumps(sid), "ws_query_json": json.dumps(ws_query)},
+            {
+                "sid": sid,
+                "sid_json": json.dumps(sid),
+                "ws_query_json": json.dumps(ws_query),
+                "csrf_json": json.dumps(current_csrf(cfg, request) or ""),
+            },
         )
 
     @app.get("/login", response_class=HTMLResponse)
