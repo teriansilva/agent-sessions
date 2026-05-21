@@ -42,8 +42,18 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
-    term.open(document.getElementById('term'));
-    fit.fit();
+    const host = document.getElementById('term');
+    term.open(host);
+    const refit = () => { try { fit.fit(); } catch (_) {} };
+    refit();
+    // Fill the pane reliably: refit whenever the container actually changes size
+    // (iframe layout settling, sidebar collapse, on-screen keyboard) — more robust
+    // than window 'resize' alone. sendResize() (defined below) pushes to the PTY.
+    let roTimer = null;
+    new ResizeObserver(() => {
+      clearTimeout(roTimer);
+      roTimer = setTimeout(() => { refit(); if (typeof sendResize === 'function') sendResize(); }, 60);
+    }).observe(host);
 
     // Native select-to-copy — no Zellij mouse-mode workaround needed.
     term.onSelectionChange(() => {

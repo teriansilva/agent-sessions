@@ -39,7 +39,26 @@ def _read(fd: int) -> bytes:
         return b""
 
 
-async def run(ws, argv: list[str], *, cwd: str, cols: int = 80, rows: int = 24) -> None:
+# Per-session scrollback. dtach has no scrollback, so on reattach an inline agent
+# (claude/codex/gemini) only repaints its near-empty current frame, not the history
+# — the terminal looks empty. We keep a capped ring of recent PTY output per session
+# in the app process and replay it on connect, so reconnecting shows the conversation
+# again. Survives browser disconnect (in-process); lost on app restart (rebuilds on
+# the next live output). Keyed by the engine-qualified session id.
+_MAX_BUF = 256 * 1024
+_BUFFERS: dict[str, bytearray] = {}
+
+
+def _buffer_append(key: str, data: bytes) -> None:
+    buf = _BUFFERS.setdefault(key, bytearray())
+    buf.extend(data)
+    if len(buf) > _MAX_BUF:
+        del buf[: len(buf) - _MAX_BUF]
+
+
+async def run(
+    ws, argv: list[str], *, cwd: str, buf_key: str | None = None, cols: int = 80, rows: int = 24
+) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
     ``ws`` must already be ``accept``ed. Spawns the dtach client on a fresh PTY with
@@ -49,6 +68,11 @@ async def run(ws, argv: list[str], *, cwd: str, cols: int = 80, rows: int = 24) 
     """
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
+    # A real color terminal: without TERM, Ink-based agents (claude) disable color.
+    # The web frontend is xterm.js, which is a 256-color / truecolor terminal.
+    env = dict(os.environ)
+    env.setdefault("TERM", "xterm-256color")
+    env.setdefault("COLORTERM", "truecolor")
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -56,6 +80,7 @@ async def run(ws, argv: list[str], *, cwd: str, cols: int = 80, rows: int = 24) 
             stdout=slave,
             stderr=slave,
             cwd=cwd,
+            env=env,
             start_new_session=True,  # own session → the slave becomes the controlling tty
             close_fds=True,
         )
@@ -68,11 +93,19 @@ async def run(ws, argv: list[str], *, cwd: str, cols: int = 80, rows: int = 24) 
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
 
+    # Replay the session's scrollback first, so a reattach shows the prior history
+    # (dtach itself has none) before the live redraw + new output arrive.
+    if buf_key and _BUFFERS.get(buf_key):
+        with contextlib.suppress(Exception):
+            await ws.send_bytes(bytes(_BUFFERS[buf_key]))
+
     async def pump_out() -> None:
         while True:
             data = await loop.run_in_executor(None, _read, master)
             if not data:
                 break
+            if buf_key is not None:
+                _buffer_append(buf_key, data)
             await ws.send_bytes(data)  # awaited → natural backpressure
 
     async def pump_in() -> None:

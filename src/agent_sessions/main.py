@@ -277,7 +277,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             await ws.close(code=4500)
             return
         await ws.accept()
-        await webterm.run(ws, argv, cwd=match.cwd)
+        await webterm.run(ws, argv, cwd=match.cwd, buf_key=engines.session_key(match))
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

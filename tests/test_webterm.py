@@ -152,3 +152,17 @@ def test_ws_compose_parity_wiring():
     # sidebar driver: _wsPost + ws-branch in termKey + sendCompose
     assert "_wsPost(msg)" in idx
     assert "TERMINAL_BACKEND === 'ws'" in idx
+
+
+def test_webterm_scrollback_ring_caps():
+    # Per-session scrollback ring replays history on reattach; it must stay capped.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._buffer_append("claude:x", b"a" * 100)
+    assert len(webterm._BUFFERS["claude:x"]) == 100
+    webterm._buffer_append("claude:x", b"b" * (webterm._MAX_BUF + 5000))
+    buf = webterm._BUFFERS["claude:x"]
+    assert len(buf) == webterm._MAX_BUF  # oldest trimmed
+    assert buf[-1:] == b"b"
+    webterm._BUFFERS.clear()
