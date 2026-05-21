@@ -24,7 +24,7 @@
                                  media `#app`), which would otherwise make this a 2x2 grid and
                                  auto-place the terminal into the 0-height first row → blank screen. */
                               #app.collapsed { grid-template-columns: 1fr; grid-template-rows: 0 1fr; } }
-  aside { background: #111; border-right: 1px solid #222; overflow-y: auto; min-width: 0; }
+  aside { background: #111; border-right: 1px solid #3a3a3a; overflow-y: auto; min-width: 0; }
   #app.collapsed aside { overflow: hidden; border: 0; }
   iframe { border: 0; width: 100%; height: 100%; display: block; }
   /* terminal pane wrapper: clip any sub-pixel overflow so no scrollbar shows.
@@ -38,13 +38,13 @@
      desktop AND mobile (on mobile the sidebar is collapsed, so this is the only
      place you can see what you're working in). */
   .termbar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 10px;
-             min-height: 26px; background: #0d0d0d; border-bottom: 1px solid #222; color: #cdd;
+             min-height: 26px; background: #0d0d0d; border-bottom: 1px solid #3a3a3a; color: #cdd;
              font-size: 12px; white-space: nowrap; overflow: hidden; cursor: pointer; }
   .termbar .t { overflow: hidden; text-overflow: ellipsis; }
   .termbar .muted { color: #666; }
   .termbar .hb { color: #8af; flex: 0 0 auto; font-size: 13px; } /* tap-for-list hint */
   header { padding: 10px 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between;
-           border-bottom: 1px solid #222; background: #111; position: sticky; top: 0; z-index: 2; }
+           border-bottom: 1px solid #3a3a3a; background: #111; position: sticky; top: 0; z-index: 2; }
   header strong { color: #8af; font-size: 13px; letter-spacing: .03em; }
   .row { padding: 9px 12px; border-bottom: 1px solid #1a1a1a; cursor: pointer; display: flex; align-items: flex-start; gap: 8px; }
   .row:hover { background: #181818; }
@@ -98,7 +98,7 @@
   /* Docked BELOW the terminal: in-flow flex child of .term, so the iframe (flex:1)
      shrinks above it and the compose box never overlays the session. Desktop + mobile. */
   .compose { position: relative; flex: 0 0 auto; display: none; flex-direction: column; gap: 6px; padding: 8px;
-             background: rgba(12,12,12,.97); border-top: 1px solid #2a2a2a; }
+             background: rgba(12,12,12,.97); border-top: 1px solid #3a3a3a; }
   .compose.open { display: flex; }
   .compose textarea { width: 100%; max-height: 28vh; resize: none; background: #181818; color: #fff;
                       border: 1px solid #2a2a2a; border-radius: 6px; padding: 8px; font: inherit; }
