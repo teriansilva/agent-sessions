@@ -568,7 +568,12 @@ function sidebar() {
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     },
+    _wsPost(msg) {
+      // ws-mode: drive the same-origin /term xterm page (compose + nav keys, #49 Phase 4).
+      try { this.$refs.term.contentWindow.postMessage(msg, location.origin); } catch (_) { /* */ }
+    },
     termKey(name) {
+      if (TERMINAL_BACKEND === 'ws') { this._wsPost({ t: 'key', name }); return; }
       // Mobile nav keys → inject a keydown into the session so TUI menus (e.g.
       // Claude's resume prompt) are operable without a hardware keyboard.
       const K = {
@@ -651,6 +656,20 @@ function sidebar() {
       for (const a of this.attachments) parts.push(a.path);
       const t = parts.join(' ');
       if (!t) return;                              // nothing to send (no text, no attachments)
+      if (TERMINAL_BACKEND === 'ws') {
+        // ws-mode: drive the /term xterm via postMessage. clear → bracketed paste →
+        // Enter, then clear the draft + return focus to the box.
+        this._wsPost({ t: 'clear' });
+        setTimeout(() => {
+          this._wsPost({ t: 'paste', d: t });
+          this.composeText = ''; this.attachments = [];
+          setTimeout(() => {
+            this._wsPost({ t: 'key', name: 'enter' });
+            try { this.$refs.composeInput.focus(); } catch (_) { /* */ }
+          }, 150);
+        }, 80);
+        return;
+      }
       // Clear any leftover prompt text so the draft doesn't mix with it. Ctrl-A
       // anchors the cursor at the start, Ctrl-K kills to the end (so it clears the
       // whole line regardless of cursor position), Ctrl-U covers the kill-to-start

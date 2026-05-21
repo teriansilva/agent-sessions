@@ -86,6 +86,24 @@
     term.onResize(sendResize);
     let fitTimer = null;
     addEventListener('resize', () => { clearTimeout(fitTimer); fitTimer = setTimeout(() => { fit.fit(); }, 80); });
+
+    // Parent (the sidebar) drives the compose box + nav keys via postMessage; we
+    // forward to the same ws the keyboard uses. Same-origin only. Phase 4 of #49.
+    const KEYSEQ = {
+      up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D',
+      enter: '\r', esc: '\x1b', tab: '\t',
+      ctrlc: '\x03', ctrlu: '\x15', ctrla: '\x01', ctrlk: '\x0b',
+    };
+    const sendInput = (d) => { if (alive && d) ws.send(JSON.stringify({ t: 'i', d })); };
+    addEventListener('message', (e) => {
+      if (e.origin !== location.origin || !e.data || typeof e.data !== 'object') return;
+      const m = e.data;
+      if (m.t === 'input') sendInput(String(m.d || ''));
+      else if (m.t === 'key') sendInput(KEYSEQ[m.name] || '');  // sidebar posts {t:'key', name}
+      else if (m.t === 'clear') sendInput('\x01\x0b');                 // Ctrl-A + Ctrl-K
+      else if (m.t === 'paste') sendInput('\x1b[200~' + String(m.d || '') + '\x1b[201~');  // bracketed
+      else if (m.t === 'focus') term.focus();
+    });
     connect();
   </script>
 </body>

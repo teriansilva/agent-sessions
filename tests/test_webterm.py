@@ -129,3 +129,26 @@ def test_terminal_template_no_retry_covers_all_reject_codes():
     assert "NO_RETRY" in html and "NO_RETRY.has(ev.code)" in html
     for code in ("4401", "4403", "4404", "4500"):
         assert code in html, f"reject code {code} missing from NO_RETRY set"
+
+
+def test_ws_compose_parity_wiring():
+    # Phase 4: the /term page must accept same-origin postMessage and the sidebar
+    # must drive it in ws-mode (compose + nav keys). Static guard against regression.
+    from pathlib import Path
+
+    import agent_sessions
+
+    tdir = Path(agent_sessions.__file__).parent / "templates"
+    term = (tdir / "terminal.html").read_text()
+    idx = (tdir / "index.html").read_text()
+    # /term receiver: origin-checked message listener + key sequences + paste/clear
+    assert "addEventListener('message'" in term
+    assert "e.origin !== location.origin" in term
+    assert "KEYSEQ" in term and "'\\x1b[200~'" in term  # bracketed paste
+    # Key-message contract must match: sidebar posts {t:'key', name} → receiver must
+    # read KEYSEQ[m.name], not m.key. Regression for Hermes PR #54 (name/key mismatch).
+    assert "{ t: 'key', name }" in idx
+    assert "KEYSEQ[m.name]" in term and "KEYSEQ[m.key]" not in term
+    # sidebar driver: _wsPost + ws-branch in termKey + sendCompose
+    assert "_wsPost(msg)" in idx
+    assert "TERMINAL_BACKEND === 'ws'" in idx
