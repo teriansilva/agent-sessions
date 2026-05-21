@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>{{ sid }} — agent-sessions</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e1e; }
+    #term { position: absolute; inset: 0; padding: 4px; }
+    #status { position: absolute; top: 6px; right: 10px; z-index: 5; font: 12px system-ui;
+              color: #cfe; background: rgba(18,38,28,.9); border: 1px solid #2a6;
+              border-radius: 6px; padding: 3px 8px; display: none; }
+    #status.show { display: block; }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+  <div id="status"></div>
+  <script>
+    // Self-owned xterm.js terminal over the app's authenticated /ws/term socket
+    // (issue #49). No ttyd, no Zellij: native scrollback, native copyOnSelect,
+    // native touch scroll. The session cookie rides the same-origin ws handshake.
+    const SID = {{ sid_json|safe }};
+    const statusEl = document.getElementById('status');
+    const setStatus = (msg) => {
+      if (!msg) { statusEl.className = ''; return; }
+      statusEl.textContent = msg; statusEl.className = 'show';
+    };
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      scrollback: 10000,
+      macOptionIsMeta: true,
+      theme: { background: '#1e1e1e' },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    term.open(document.getElementById('term'));
+    fit.fit();
+
+    // Native select-to-copy — no Zellij mouse-mode workaround needed.
+    term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel) { navigator.clipboard?.writeText(sel).catch(() => {}); }
+    });
+
+    // Deliberate server-side rejects — never reconnect on these (would hammer the
+    // backend, esp. 4500 on a misconfigured launch). Kept explicit, not a range.
+    const NO_RETRY = new Set([4401, 4403, 4404, 4500]);
+    let ws, reconnectTimer = null, alive = false;
+    const wsUrl = () =>
+      (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+      location.host + '/ws/term/' + encodeURIComponent(SID);
+
+    const sendResize = () => {
+      if (alive) ws.send(JSON.stringify({ t: 'r', cols: term.cols, rows: term.rows }));
+    };
+
+    function connect() {
+      setStatus('connecting…');
+      ws = new WebSocket(wsUrl());
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => { alive = true; setStatus(''); fit.fit(); sendResize(); term.focus(); };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') term.write(ev.data);
+        else term.write(new Uint8Array(ev.data));
+      };
+      ws.onclose = (ev) => {
+        alive = false;
+        if (NO_RETRY.has(ev.code)) { setStatus('not authorized / unavailable'); return; }
+        setStatus('disconnected — reconnecting…');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 1200);
+      };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    }
+
+    term.onData((d) => { if (alive) ws.send(JSON.stringify({ t: 'i', d })); });
+    term.onResize(sendResize);
+    let fitTimer = null;
+    addEventListener('resize', () => { clearTimeout(fitTimer); fitTimer = setTimeout(() => { fit.fit(); }, 80); });
+    connect();
+  </script>
+</body>
+</html>

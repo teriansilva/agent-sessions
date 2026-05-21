@@ -9,6 +9,7 @@ project picker. See agent-sessions#4 (sidebar UX) and #8 (findable list).
 from __future__ import annotations
 
 import hmac
+import json
 import re
 import time
 from pathlib import Path
@@ -75,6 +76,22 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             request,
             "index.html",
             {"csrf": csrf, "origin": cfg.origin},
+        )
+
+    @app.get("/term/{sid}", response_class=HTMLResponse)
+    async def terminal_page(sid: str, request: Request) -> Response:
+        # Self-owned xterm.js terminal page for one session, talking to /ws/term/{sid}.
+        # Logged-in only; sid shape validated so we never render for a bogus id.
+        if session_uid(cfg, request) is None:
+            return RedirectResponse("/login", status_code=303)
+        try:
+            engines.parse_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "terminal.html",
+            {"sid": sid, "sid_json": json.dumps(sid)},
         )
 
     @app.get("/login", response_class=HTMLResponse)

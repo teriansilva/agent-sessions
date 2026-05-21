@@ -91,3 +91,41 @@ def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
         ):
             pass
     assert ei.value.code == 4500
+
+
+# ---- /term/{sid} xterm.js page (Phase 3) --------------------------------------
+
+
+def test_term_page_requires_login(auth_cfg):
+    c = _client(auth_cfg)
+    r = c.get("/term/claude:11111111-1111-1111-1111-111111111111", follow_redirects=False)
+    assert r.status_code == 303  # → /login
+
+
+def test_term_page_ok_when_logged_in(auth_cfg):
+    c = _client(auth_cfg)
+    _login_headers(c, auth_cfg)  # sets the session cookie in the client jar
+    r = c.get("/term/claude:11111111-1111-1111-1111-111111111111")
+    assert r.status_code == 200
+    assert "xterm" in r.text and "/ws/term/" in r.text
+
+
+def test_term_page_bad_sid_404(auth_cfg):
+    c = _client(auth_cfg)
+    _login_headers(c, auth_cfg)
+    r = c.get("/term/claude:not-a-uuid", follow_redirects=False)
+    assert r.status_code == 404
+
+
+def test_terminal_template_no_retry_covers_all_reject_codes():
+    # Regression for Hermes PR #52 review: the client must NOT reconnect on any
+    # deliberate server reject — esp. 4500 (misconfigured launch), which an earlier
+    # `< 4500` range guard wrongly excluded (it would hammer every 1.2s).
+    from pathlib import Path
+
+    import agent_sessions
+
+    html = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
+    assert "NO_RETRY" in html and "NO_RETRY.has(ev.code)" in html
+    for code in ("4401", "4403", "4404", "4500"):
+        assert code in html, f"reject code {code} missing from NO_RETRY set"
