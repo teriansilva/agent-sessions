@@ -85,7 +85,13 @@
       };
       ws.onclose = (ev) => {
         alive = false;
-        if (NO_RETRY.has(ev.code)) { setStatus('not authorized / unavailable'); return; }
+        const REJECT = {
+          4401: 'session expired — please sign in again',
+          4403: 'blocked (origin mismatch)',
+          4404: 'session not found or ended',
+          4500: 'couldn’t start this session',
+        };
+        if (NO_RETRY.has(ev.code)) { setStatus(REJECT[ev.code] || 'unavailable'); return; }
         setStatus('disconnected — reconnecting…');
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(connect, 1200);
