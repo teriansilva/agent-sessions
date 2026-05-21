@@ -22,6 +22,7 @@ exec to ``zellij`` / ``archive``; no provider invokes a shell.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -36,9 +37,26 @@ from .scanner import Session
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _SES_RE = re.compile(r"^ses_[A-Za-z0-9]+$")
+# codex session ids are UUIDs (UUIDv7), same shape as Claude's.
+_CODEX_UUID_RE = _CLAUDE_UUID_RE
 
 OPENCODE_BIN = (
     os.environ.get("AGENT_SESSIONS_OPENCODE_BIN") or shutil.which("opencode") or "opencode"
+)
+# Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
+# explicit env override is the reliable launch mechanism; PATH lookup is a fallback.
+CODEX_BIN = os.environ.get("AGENT_SESSIONS_CODEX_BIN") or shutil.which("codex") or "codex"
+
+
+def _codex_sessions_dir() -> Path:
+    return Path(
+        os.environ.get("AGENT_SESSIONS_CODEX_SESSIONS_DIR") or (Path.home() / ".codex" / "sessions")
+    )
+
+
+# rollout-<iso-ts>-<uuid>.jsonl  →  capture the trailing uuid
+_CODEX_ROLLOUT_RE = re.compile(
+    r"rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
 )
 # Columns the opencode reader depends on, pinned so a schema rename fails the
 # fixture test (loud) rather than silently dropping rows in prod (it would just
@@ -65,6 +83,7 @@ class EngineProvider(Protocol):
 
     def is_present(self) -> bool: ...
     def scan(self) -> list[Session]: ...
+    def launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]: ...
     def open_or_switch(
         self, native_id: str, *, cwd: str, title: str, allowed_cwds: Iterable[str], bypass: bool
     ) -> str: ...
@@ -93,6 +112,15 @@ class ClaudeProvider:
         # scanner is Claude-only today; filter defensively so this stays correct
         # if a future scanner ever yields more than one engine.
         return [s for s in scanner.scan() if s.engine == self.engine_id]
+
+    def launch_argv(self, native_id, *, cwd, bypass):
+        # Decoupled resume command (for the per-session PTY bridge, issue #49). Same
+        # command zellij._claude_argv builds for the current Zellij path — kept in
+        # sync intentionally; cwd is set by the launcher, not an argv arg here.
+        argv = [zellij.CLAUDE_BIN, "--resume", native_id]
+        if bypass:
+            argv.append("--dangerously-skip-permissions")
+        return argv
 
     def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
         return zellij.open_or_switch(
@@ -176,6 +204,11 @@ class OpenCodeProvider:
             )
         return out
 
+    def launch_argv(self, native_id, *, cwd, bypass):
+        # opencode resumes a session by id within its project dir. `bypass` is
+        # accepted only for interface parity (permissions are config-side).
+        return [OPENCODE_BIN, cwd, "--session", native_id]
+
     def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
         # opencode's permission model is config-side (opencode.json) — there's no
         # per-launch bypass flag; `bypass` is accepted only for interface parity.
@@ -204,8 +237,122 @@ class OpenCodeProvider:
         raise NotImplementedError("opencode sessions are read-only in the sidebar")
 
 
+def _codex_text(content) -> str:
+    """First text chunk of a codex message ``content`` (str or list of parts)."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("text"):
+                return str(item["text"]).strip()
+    return ""
+
+
+class CodexProvider:
+    """codex: JSONL rollout files under ``~/.codex/sessions/YYYY/MM/DD/
+    rollout-<ts>-<uuid>.jsonl``, resumed via ``codex resume <uuid>``.
+
+    File-based like Claude (not a DB like opencode), so discovery mirrors the Claude
+    reader: walk the rollout files, take the uuid from the filename, read ``cwd`` +
+    the first user message from the records, mtime from the file. **Read-only +
+    fail-soft**: a parse/IO error skips that file, never the whole list. Archive is
+    not a codex concept, so ``archive``/``unarchive`` raise (surfaced as a 4xx).
+    """
+
+    engine_id = "codex"
+    id_pattern = _CODEX_UUID_RE
+
+    def is_present(self) -> bool:
+        return _codex_sessions_dir().is_dir() or shutil.which("codex") is not None
+
+    def _meta(self, path: Path) -> tuple[str, str] | None:
+        """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort."""
+        cwd = first_user = ""
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line).get("payload") or {}
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    if not cwd and payload.get("cwd"):
+                        cwd = str(payload["cwd"])
+                    if not first_user and payload.get("role") == "user":
+                        first_user = _codex_text(payload.get("content"))
+                    if cwd and first_user:
+                        break
+        except OSError:
+            return None
+        # cwd is the one required field: it's the launch dir + the open-path
+        # allowlist key. A rollout with no usable cwd (corrupt-only, or not a real
+        # session) yields no row rather than a bogus empty-cwd session.
+        return (cwd, first_user) if cwd else None
+
+    def scan(self) -> list[Session]:
+        root = _codex_sessions_dir()
+        out: list[Session] = []
+        try:
+            files = list(root.rglob("rollout-*.jsonl"))
+        except OSError:
+            return out
+        for path in files:
+            m = _CODEX_ROLLOUT_RE.search(path.name)
+            if not m:
+                continue
+            meta = self._meta(path)
+            if meta is None:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            cwd, first_user = meta
+            out.append(
+                Session(
+                    engine=self.engine_id,
+                    uuid=m.group(1),
+                    cwd=cwd,
+                    last_mtime=mtime,
+                    first_user_message=first_user,
+                    archived=False,
+                )
+            )
+        return out
+
+    def launch_argv(self, native_id, *, cwd, bypass):
+        # codex resumes by uuid; cwd is set by the launcher. No documented per-launch
+        # bypass flag (sandbox/approvals are config / -c driven), so none is added.
+        return [CODEX_BIN, "resume", native_id]
+
+    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
+        return zellij.open_engine(
+            engine_prefix="x",
+            short=native_id,
+            cwd=cwd,
+            title=title,
+            allowed_cwds=allowed_cwds,
+            argv=self.launch_argv(native_id, cwd=cwd, bypass=bypass),
+        )
+
+    def new_session(self, *, cwd, title, allowed_cwds, bypass):
+        return zellij.new_engine(
+            engine_prefix="x", cwd=cwd, title=title, allowed_cwds=allowed_cwds, argv=[CODEX_BIN]
+        )
+
+    def archive(self, native_id):
+        raise NotImplementedError("codex sessions are read-only in the sidebar")
+
+    def unarchive(self, native_id):
+        raise NotImplementedError("codex sessions are read-only in the sidebar")
+
+
 # Registry. Order is scan/display order; a provider only surfaces when present.
-_PROVIDERS: list[EngineProvider] = [ClaudeProvider(), OpenCodeProvider()]
+_PROVIDERS: list[EngineProvider] = [ClaudeProvider(), OpenCodeProvider(), CodexProvider()]
 _BY_ID: dict[str, EngineProvider] = {p.engine_id: p for p in _PROVIDERS}
 
 
@@ -266,6 +413,8 @@ __all__ = [
     "EngineError",
     "EngineProvider",
     "ClaudeProvider",
+    "OpenCodeProvider",
+    "CodexProvider",
     "all_providers",
     "present_providers",
     "get",
