@@ -195,3 +195,15 @@ def test_term_image_paste_wiring():
     assert "addEventListener('paste'" in term and "addEventListener('drop'" in term
     assert "uploadAndType" in term and "/api/upload" in term and "X-CSRF-Token" in term
     assert "startsWith('image/')" in term  # only images are intercepted; text falls through
+
+
+def test_term_suppresses_ctrl_v_to_agent():
+    # Ctrl/Cmd+V must NOT reach the agent (claude/codex would read the empty
+    # server-side clipboard → "no image found"); the browser paste event handles it.
+    from pathlib import Path
+
+    import agent_sessions
+
+    term = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
+    assert "attachCustomKeyEventHandler" in term
+    assert "ctrlKey || e.metaKey" in term and "'v'" in term

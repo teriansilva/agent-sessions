@@ -44,6 +44,16 @@
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    // Don't forward Ctrl/Cmd+V to the agent. The browser fires a paste event we
+    // handle ourselves (image → upload + type path; text → xterm pastes). If the
+    // Ctrl-V keystroke (\x16) also reached the agent, claude/codex would try to read
+    // the server-side (empty) clipboard → "no image found in clipboard".
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+        return false;
+      }
+      return true;
+    });
     const host = document.getElementById('term');
     term.open(host);
     const refit = () => { try { fit.fit(); } catch (_) {} };
