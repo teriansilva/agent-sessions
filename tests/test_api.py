@@ -260,6 +260,35 @@ def test_new_session_success(auth_cfg, fake_jsonl, monkeypatch):
     assert r.status_code == 200 and r.json()["tab"] == "new:demo"
 
 
+def test_new_session_engine_opencode(auth_cfg, fake_jsonl, opencode_db, monkeypatch):
+    # The agent picker can spawn a new opencode session (via zellij.new_engine).
+    import agent_sessions.zellij as z
+
+    monkeypatch.setattr(z, "new_engine", lambda **kw: "o:new:demo")
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/projects/new",
+        json={"cwd": "/tmp/other", "name": "demo", "engine": "opencode"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200 and r.json()["tab"] == "o:new:demo"
+    assert r.json()["engine"] == "opencode"
+
+
+def test_new_session_unsupported_engine_422(auth_cfg, fake_jsonl):
+    # codex is resume-only (supports_new=False); a bogus engine is unknown → 422.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    for eng in ("codex", "bogus"):
+        r = c.post(
+            "/api/projects/new",
+            json={"cwd": "/tmp/other", "name": "x", "engine": eng},
+            headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+        )
+        assert r.status_code == 422, eng
+
+
 def test_new_session_bad_cwd_400(auth_cfg, fake_jsonl):
     # No stub: the real new_session validates the cwd allowlist before any
     # subprocess and raises ZellijError → 400.
@@ -283,6 +312,7 @@ def test_new_session_requires_csrf(auth_cfg, fake_jsonl):
 # ---- opencode engine (#12) ----------------------------------------------------
 
 _OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
+_OC_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"  # opencode.db time_archived set (native)
 
 
 def test_opencode_rows_appear_with_engine_facet(auth_cfg, fake_jsonl, opencode_db):
@@ -297,14 +327,44 @@ def test_opencode_rows_appear_with_engine_facet(auth_cfg, fake_jsonl, opencode_d
     assert only["total"] >= 1 and all(s["engine"] == "opencode" for s in only["sessions"])
 
 
-def test_archive_opencode_is_rejected_read_only(auth_cfg, fake_jsonl, opencode_db):
+def test_archive_opencode_via_sidecar(auth_cfg, fake_jsonl, opencode_db):
+    # Archive flips the engine-agnostic sidecar flag (never opencode.db), so an
+    # opencode session moves to the archived view and back, db left untouched.
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
-    r = c.post(
-        f"/api/sessions/opencode:{_OC_TOP}/archive",
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 400  # opencode is read-only; archive refused at the API
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    before = opencode_db.read_bytes()
+
+    r = c.post(f"/api/sessions/opencode:{_OC_TOP}/archive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True
+    active = c.get("/api/sessions?engine=opencode&archived=0&limit=200").json()["sessions"]
+    assert all(s["id"] != f"opencode:{_OC_TOP}" for s in active)
+    arch = c.get("/api/sessions?engine=opencode&archived=1&limit=200").json()["sessions"]
+    assert any(s["id"] == f"opencode:{_OC_TOP}" for s in arch)
+
+    r = c.post(f"/api/sessions/opencode:{_OC_TOP}/unarchive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is False
+    assert opencode_db.read_bytes() == before  # opencode.db untouched throughout
+
+
+def test_unarchive_natively_archived_opencode(auth_cfg, fake_jsonl, opencode_db):
+    # A row archived in opencode.db (time_archived set) must be unarchivable: the
+    # sidecar override (tri-state) wins over the native archived state in both
+    # directions. Regression for the "or" bug (s.archived or m.archived).
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # starts in the archived view (native time_archived)
+    arch = c.get("/api/sessions?engine=opencode&archived=1&limit=200").json()["sessions"]
+    assert any(s["id"] == f"opencode:{_OC_ARCHIVED}" for s in arch)
+
+    r = c.post(f"/api/sessions/opencode:{_OC_ARCHIVED}/unarchive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is False
+    # now active, and gone from the archived view
+    active = c.get("/api/sessions?engine=opencode&archived=0&limit=200").json()["sessions"]
+    assert any(s["id"] == f"opencode:{_OC_ARCHIVED}" for s in active)
+    arch = c.get("/api/sessions?engine=opencode&archived=1&limit=200").json()["sessions"]
+    assert all(s["id"] != f"opencode:{_OC_ARCHIVED}" for s in arch)
 
 
 def test_rename_opencode_is_sidecar_overlay(auth_cfg, fake_jsonl, opencode_db):

@@ -79,10 +79,20 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         csrf = current_csrf(cfg, request)
         if not csrf:
             return RedirectResponse("/login", status_code=303)
+        # Engines that can start a NEW session (present + capable) — drives the New
+        # dialog's agent picker. claude/opencode spawn via Zellij; codex is resume-only.
+        new_engines = [
+            p.engine_id for p in engines.present_providers() if getattr(p, "supports_new", False)
+        ]
         return _TEMPLATES.TemplateResponse(
             request,
             "index.html",
-            {"csrf": csrf, "origin": cfg.origin, "terminal_backend": terminal_backend},
+            {
+                "csrf": csrf,
+                "origin": cfg.origin,
+                "terminal_backend": terminal_backend,
+                "new_session_engines": json.dumps(new_engines),
+            },
         )
 
     @app.get("/term/{sid}", response_class=HTMLResponse)
@@ -174,7 +184,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             "title": m.title or s.first_user_message,
             "sticky": m.sticky,
             "sort_key": m.sort_key,
-            "archived": s.archived,
+            # Effective archive state: the sidecar override wins when set (lets a
+            # natively-archived opencode/codex row be unarchived), else the engine's
+            # native state (claude's JSONL tree / opencode.db time_archived).
+            "archived": m.archived if m.archived is not None else s.archived,
         }
 
     @app.get("/api/sessions")
@@ -191,9 +204,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # *first window* (a first-window concept, not a global pin).
         meta_index = metadata.load()
         scoped = [
-            _row(s, meta_index.get(engines.session_key(s), metadata.SessionMeta()))
+            row
             for s in engines.scan_all()
-            if s.archived == archived
+            for row in [_row(s, meta_index.get(engines.session_key(s), metadata.SessionMeta()))]
+            if row["archived"] == archived
         ]
         # Facets for the project/agent dropdowns: distinct values over the full
         # archived-scoped set, computed BEFORE q/project/engine filtering — so the
@@ -393,9 +407,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         cwd = str(payload.get("cwd", "")).strip()
         name = str(payload.get("name", "")).strip() or "session"
         bypass = bool(payload.get("bypass_permissions", True))
+        # Engine picker (defaults to claude → unchanged behavior for old clients). Only
+        # engines that are present AND can start a new session are accepted.
+        engine = str(payload.get("engine", "claude")).strip() or "claude"
         if not cwd:
             raise HTTPException(status_code=422, detail="cwd required")
-        prov = engines.get("claude")
+        prov = engines.get(engine)
+        if prov is None or not getattr(prov, "supports_new", False) or not prov.is_present():
+            raise HTTPException(status_code=422, detail=f"cannot start a new {engine} session")
         try:
             tab = prov.new_session(
                 cwd=cwd,
@@ -405,7 +424,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             )
         except zellij.ZellijError as e:
             raise HTTPException(status_code=400, detail=str(e)) from None
-        return JSONResponse({"tab": tab, "cwd": cwd, "name": name, "bypass": bypass})
+        return JSONResponse(
+            {"tab": tab, "cwd": cwd, "name": name, "engine": engine, "bypass": bypass}
+        )
 
     @app.post("/api/upload")
     async def upload_context(

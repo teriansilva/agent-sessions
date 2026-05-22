@@ -43,6 +43,12 @@ class SessionMeta:
     sticky: bool = False
     sort_key: int = 0
     project_alias: str = ""
+    # App-side archive override for engines whose store we treat as read-only
+    # (opencode.db, codex rollouts). Tri-state: None = no override (use the engine's
+    # native archived state); True/False = explicit override in *both* directions —
+    # so a row already archived natively (opencode.db time_archived) can be unarchived.
+    # Claude archives by moving its JSONL and never writes this, so it stays None.
+    archived: bool | None = None
 
 
 def _default_path() -> Path:
@@ -108,6 +114,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             sticky=bool(val.get("sticky", False)),
             sort_key=int(val.get("sort_key", 0)),
             project_alias=str(val.get("project_alias", "")),
+            archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
         )
     return out
 
@@ -122,7 +129,7 @@ def patch(
     SessionMeta.
     """
     path = _default_path()
-    allowed = {"title", "sticky", "sort_key", "project_alias"}
+    allowed = {"title", "sticky", "sort_key", "project_alias", "archived"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown metadata fields: {sorted(bad)}")
@@ -152,6 +159,7 @@ def patch(
             "sticky": existing.get("sticky", False),
             "sort_key": existing.get("sort_key", 0),
             "project_alias": existing.get("project_alias", ""),
+            "archived": existing.get("archived"),
         }
         meta_dict.update(fields)
         data[key] = meta_dict

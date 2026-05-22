@@ -173,11 +173,13 @@ def test_parse_key_opencode():
     assert prov.engine_id == "opencode" and native == _OC_TOP
 
 
-def test_opencode_archive_unarchive_read_only():
-    with pytest.raises(NotImplementedError):
-        engines.OpenCodeProvider().archive(_OC_TOP)
-    with pytest.raises(NotImplementedError):
-        engines.OpenCodeProvider().unarchive(_OC_TOP)
+def test_opencode_archive_unarchive_via_sidecar(tmp_path, monkeypatch):
+    # opencode.db stays read-only; the archive flag rides the engine-agnostic sidecar.
+    monkeypatch.setenv("AGENT_SESSIONS_METADATA", str(tmp_path / "metadata.json"))
+    engines.OpenCodeProvider().archive(_OC_TOP)
+    assert engines._metadata.get(f"opencode:{_OC_TOP}").archived is True
+    engines.OpenCodeProvider().unarchive(_OC_TOP)
+    assert engines._metadata.get(f"opencode:{_OC_TOP}").archived is False
 
 
 def test_opencode_open_dispatch_argv(monkeypatch):

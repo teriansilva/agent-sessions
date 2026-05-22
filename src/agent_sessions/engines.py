@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from . import archive as _archive
+from . import metadata as _metadata
 from . import scanner, zellij
 from .scanner import Session
 
@@ -109,6 +110,7 @@ class ClaudeProvider:
 
     engine_id = "claude"
     id_pattern = _CLAUDE_UUID_RE
+    supports_new = True  # new session via zellij.new_session
 
     def is_present(self) -> bool:
         return (Path.home() / ".claude" / "projects").is_dir() or shutil.which("claude") is not None
@@ -165,6 +167,7 @@ class OpenCodeProvider:
 
     engine_id = "opencode"
     id_pattern = _SES_RE
+    supports_new = True  # new session via zellij.new_engine
 
     def _query(self) -> list:
         db = _opencode_db()
@@ -247,10 +250,12 @@ class OpenCodeProvider:
         )
 
     def archive(self, native_id):
-        raise NotImplementedError("opencode sessions are read-only in the sidebar")
+        # opencode.db stays read-only; record the archive flag in the engine-agnostic
+        # sidecar (same place rename/sticky live). list_sessions ORs it into the row.
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=True)
 
     def unarchive(self, native_id):
-        raise NotImplementedError("opencode sessions are read-only in the sidebar")
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=False)
 
 
 def _codex_text(content) -> str:
@@ -277,6 +282,7 @@ class CodexProvider:
 
     engine_id = "codex"
     id_pattern = _CODEX_UUID_RE
+    supports_new = False  # codex resume-only (no pinned new-session yet)
 
     def is_present(self) -> bool:
         return _codex_sessions_dir().is_dir() or shutil.which("codex") is not None
@@ -364,10 +370,11 @@ class CodexProvider:
         )
 
     def archive(self, native_id):
-        raise NotImplementedError("codex sessions are read-only in the sidebar")
+        # codex rollouts stay read-only; archive flag rides the engine-agnostic sidecar.
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=True)
 
     def unarchive(self, native_id):
-        raise NotImplementedError("codex sessions are read-only in the sidebar")
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=False)
 
 
 # Registry. Order is scan/display order; a provider only surfaces when present.
