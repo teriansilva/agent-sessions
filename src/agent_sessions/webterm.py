@@ -27,6 +27,8 @@ import signal
 import struct
 import termios
 
+from . import sessionlock
+
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     with contextlib.suppress(OSError):
@@ -69,7 +71,14 @@ def _in_alt_screen(buf: bytes) -> bool:
 
 
 async def run(
-    ws, argv: list[str], *, cwd: str, buf_key: str | None = None, cols: int = 80, rows: int = 24
+    ws,
+    argv: list[str],
+    *,
+    cwd: str,
+    buf_key: str | None = None,
+    cols: int = 80,
+    rows: int = 24,
+    lock: sessionlock.SessionLock | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -77,6 +86,11 @@ async def run(
     ``cwd`` as its working dir, then pumps both directions until either side closes.
     On exit the dtach *client* is terminated (a detach); the dtach *master* keeps the
     agent alive for the next reconnect.
+
+    ``lock`` (set only when this connection is launching a fresh master) is the
+    single-writer lock; its fd is passed to the spawned process so the long-lived
+    ``dtach`` master inherits it and holds the flock for the master's lifetime. We
+    only borrow the fd here — the caller owns closing/transferring the lock.
     """
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
@@ -95,6 +109,10 @@ async def run(
             env=env,
             start_new_session=True,  # own session → the slave becomes the controlling tty
             close_fds=True,
+            # Hand the single-writer lock fd to the dtach master it forks, so the flock
+            # lives exactly as long as the running agent (survives an app restart). dtach
+            # never closes inherited fds it doesn't manage. pass_fds forces inheritance.
+            pass_fds=(lock.fd,) if lock is not None else (),
         )
     except OSError:
         os.close(master)

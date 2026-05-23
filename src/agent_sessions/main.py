@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import archive, engines, metadata, ptybridge, scanner, webterm, zellij
+from . import archive, engines, metadata, ptybridge, scanner, sessions, webterm, zellij
 from .auth import (
     AuthConfig,
     clear_session,
@@ -333,46 +333,64 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         except engines.EngineError:
             return await reject(4404)
 
-        if ptybridge.session_exists(prov.engine_id, native):
-            # A live dtach session already exists → attach to it regardless of new/
-            # resume. dtach -A attaches (ignoring the cmd), so a fresh session survives
-            # a browser reload before it has written its on-disk history. cwd is only
-            # for the (unused-on-attach) spawn; a scanned cwd if known, else home.
-            scanned = next(
-                (s for s in engines.scan_all() if s.engine == prov.engine_id and s.uuid == native),
-                None,
-            )
-            cwd = scanned.cwd if scanned else str(Path.home())
-            launch = prov.launch_argv(native, cwd=cwd, bypass=True)
-        elif ws.query_params.get("new") == "1":
-            # Start a FRESH session with this client-generated id, in a picker cwd.
-            new_cwd = ws.query_params.get("cwd") or ""
-            if new_cwd not in set(scanner.pickable_projects()):
-                return await reject(4404)
-            # Honor the modal's permission-bypass choice (default on); only "0" is off.
-            bypass = ws.query_params.get("bypass") != "0"
-            try:
-                launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
-            except NotImplementedError:
-                return await reject(4404)  # engine can't pin a new-session id
-            cwd = new_cwd
-        else:
-            # Resume an EXISTING scanned session.
-            sessions = engines.scan_all()
-            match = next(
-                (s for s in sessions if s.engine == prov.engine_id and s.uuid == native), None
-            )
-            if match is None or match.cwd not in scanner.scanned_cwds(sessions):
-                return await reject(4404)
-            launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
-            cwd = match.cwd
+        # Single-writer policy: ATTACH to a live master, LAUNCH under the launch lock,
+        # or BUSY (no local master but the lock is held elsewhere — never relaunch).
+        action, lock = sessions.open_action(prov.engine_id, native)
+        if action == sessions.BUSY:
+            return await reject(4409)  # held by another writer; client should retry → attach
         try:
-            argv = ptybridge.dtach_argv(
-                engine=prov.engine_id, session_id=native, launch_argv=launch
-            )
-        except ptybridge.PtyBridgeError:
-            return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
-        await webterm.run(ws, argv, cwd=cwd, buf_key=sid)
+            if action == sessions.ATTACH:
+                # A live dtach session already exists → attach regardless of new/resume.
+                # dtach -A attaches (ignoring the cmd), so a fresh session survives a
+                # browser reload before it has written its on-disk history. cwd is only
+                # for the (unused-on-attach) spawn; a scanned cwd if known, else home.
+                scanned = next(
+                    (
+                        s
+                        for s in engines.scan_all()
+                        if s.engine == prov.engine_id and s.uuid == native
+                    ),
+                    None,
+                )
+                cwd = scanned.cwd if scanned else str(Path.home())
+                launch = prov.launch_argv(native, cwd=cwd, bypass=True)
+            elif ws.query_params.get("new") == "1":
+                # Start a FRESH session with this client-generated id, in a picker cwd.
+                new_cwd = ws.query_params.get("cwd") or ""
+                if new_cwd not in set(scanner.pickable_projects()):
+                    return await reject(4404)
+                # Honor the modal's permission-bypass choice (default on); only "0" is off.
+                bypass = ws.query_params.get("bypass") != "0"
+                try:
+                    launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
+                except NotImplementedError:
+                    return await reject(4404)  # engine can't pin a new-session id
+                cwd = new_cwd
+            else:
+                # Resume an EXISTING scanned session.
+                sessions_all = engines.scan_all()
+                match = next(
+                    (s for s in sessions_all if s.engine == prov.engine_id and s.uuid == native),
+                    None,
+                )
+                if match is None or match.cwd not in scanner.scanned_cwds(sessions_all):
+                    return await reject(4404)
+                launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
+                cwd = match.cwd
+            try:
+                argv = ptybridge.dtach_argv(
+                    engine=prov.engine_id, session_id=native, launch_argv=launch
+                )
+            except ptybridge.PtyBridgeError:
+                return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
+            await webterm.run(ws, argv, cwd=cwd, buf_key=sid, lock=lock)
+        finally:
+            # Hand the launch lock to the dtach master we spawned (it inherited the fd),
+            # so the flock lives for the master's lifetime — closing our fd without
+            # unlocking keeps it held while the master runs, and releases it if no master
+            # was spawned (early reject) or once the master dies. ATTACH holds no lock.
+            if lock is not None:
+                lock.transfer()
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

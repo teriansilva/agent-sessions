@@ -57,12 +57,32 @@ class SessionLock:
         self.path = path
 
     def release(self) -> None:
+        """Drop the lock outright: unlock then close our fd.
+
+        Use when no one else should hold it (e.g. we lost a race and will attach).
+        Do NOT use after handing the fd to a master — ``LOCK_UN`` releases the lock
+        for the whole shared open file description, defeating the handoff; use
+        ``transfer`` there instead.
+        """
         if self.fd is not None:
             try:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
             finally:
                 os.close(self.fd)
                 self.fd = None  # type: ignore[assignment]
+
+    def transfer(self) -> None:
+        """Close our fd **without** unlocking — hand the flock to whoever inherited it.
+
+        The kernel keeps the lock alive while any fd on the same open file description
+        stays open (e.g. the ``dtach`` master that inherited it via ``pass_fds``); it
+        releases only when the last such fd closes (master death). If no one inherited
+        it, closing the last fd releases it immediately — so this is also correct on a
+        launch that never managed to spawn a master.
+        """
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None  # type: ignore[assignment]
 
     def __enter__(self) -> SessionLock:
         return self

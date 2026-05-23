@@ -28,16 +28,27 @@ Resuming/launching a session is gated by an **advisory exclusive file lock**:
   held for the **lifetime of the agent process** via `fcntl.flock(LOCK_EX|LOCK_NB)`.
 - The lock dir is **shared filesystem state**, so the lock is honored by *every*
   app instance on the host — prod and staging cannot both resume `claude:6a73…`.
-- Acquire flow (atomic, race-free):
-  1. `try flock(key, LOCK_EX|LOCK_NB)`.
-  2. **Acquired** ⇒ we are the sole writer: create the PTY/`dtach` master running
-     the resume/launch command, holding the lock for the master's lifetime.
-  3. **Would block** (someone else holds it) ⇒ **do NOT launch a second agent.**
-     Resolve the live master (below) and **attach** to it. If no reachable master
-     exists (stale lock from a crashed holder on another instance), surface
-     "session busy elsewhere" rather than racing — never relaunch.
-- The kernel releases `flock` automatically when the holding process dies, so a
-  crash never leaves a permanent lock; we additionally reap stale sockets.
+- Decision (`sessions.open_action`, synchronous so it runs atomically between
+  coroutines — two concurrent opens of the same id can't both reach LAUNCH):
+  1. Live master at `socket_path(key)` ⇒ **ATTACH** (never relaunch), no lock.
+  2. Else `try flock(key, LOCK_EX|LOCK_NB)`:
+     - **Acquired** ⇒ sole writer ⇒ **LAUNCH** (re-check the socket between the test
+       and the acquire — if a master appeared, release and ATTACH).
+     - **Would block** (held by another instance, or by an in-flight launch in ours
+       whose connection still holds the fd) ⇒ **BUSY**: do NOT launch a second agent —
+       the client retries and attaches once the master is up. The ws path closes **4409**.
+- **Lock handoff to the master (the master-lifetime / cross-instance guarantee).** On
+  LAUNCH the acquired fd is passed (`pass_fds`) to the spawned `dtach` process, so the
+  long-lived `dtach` master inherits it. The launching connection then **closes its own
+  fd without `LOCK_UN`** (`SessionLock.transfer`): the flock is held on the shared open
+  file description, so it stays held while the master keeps its inherited fd, and the
+  kernel releases it only when the **master dies** (the last fd closes). This is what
+  makes the guarantee survive an app restart/redeploy/crash, and hold across instances
+  even where the `dtach` socket isn't shared. (`LOCK_UN` would release the lock for the
+  whole shared description — defeating the handoff — so the transfer path never unlocks;
+  `release()` is only for the lost-race path where no master inherited the fd.)
+- If a launch fails before a master exists (bad cwd / unresolvable binary), `transfer`
+  closes the last fd and the lock frees immediately — no BUSY wedge.
 
 ## Attach, never relaunch
 

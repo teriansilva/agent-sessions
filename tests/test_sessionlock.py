@@ -80,3 +80,42 @@ def test_open_action_busy_when_locked_elsewhere(monkeypatch):
     action, lock = sessions.open_action("claude", "held")
     assert action == sessions.BUSY and lock is None
     held.release()
+
+
+def test_open_action_race_guard_attaches_if_master_appears(monkeypatch):
+    # No socket on the first check, but a master appears before the post-acquire
+    # recheck → release the just-won lock and ATTACH (never launch a duplicate).
+    calls = {"n": 0}
+
+    def exists(_e, _n):
+        calls["n"] += 1
+        return calls["n"] >= 2
+
+    monkeypatch.setattr(ptybridge, "session_exists", exists)
+    action, lock = sessions.open_action("claude", "racy")
+    assert action == sessions.ATTACH and lock is None
+    assert sessionlock.is_locked("claude:racy") is False  # the won lock was released
+
+
+# ---- lock handoff to the agent master ----------------------------------------
+
+
+def test_transfer_hands_flock_to_inheriting_child():
+    # THE cross-instance / restart guarantee: passing the lock fd to a long-lived
+    # child (stand-in for the dtach master) and closing our fd WITHOUT unlocking keeps
+    # the flock held for the child's lifetime — so another instance still can't resume
+    # the id, and the lock frees only when the master dies.
+    import subprocess
+    import time
+
+    lock = sessionlock.acquire("claude:xfer")
+    assert lock is not None
+    child = subprocess.Popen(["sleep", "10"], pass_fds=(lock.fd,))
+    try:
+        lock.transfer()  # close our fd, no LOCK_UN → the child still holds the flock
+        assert sessionlock.is_locked("claude:xfer") is True  # held by the inheriting child
+    finally:
+        child.terminate()
+        child.wait()
+    time.sleep(0.1)
+    assert sessionlock.is_locked("claude:xfer") is False  # released when the master died

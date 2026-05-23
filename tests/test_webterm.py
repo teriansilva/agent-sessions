@@ -226,3 +226,55 @@ def test_resize_only_sent_on_change():
 
     t = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
     assert "lastCols" in t and "term.cols === lastCols && term.rows === lastRows" in t
+
+
+def test_ws_busy_rejects_4409(fake_jsonl, auth_cfg, monkeypatch):
+    # open_action says the id is held by another writer (no local master) → 4409,
+    # never a second relaunch. The client treats 4409 as "retry → attach".
+    from agent_sessions import sessions
+
+    monkeypatch.setattr(sessions, "open_action", lambda e, n: (sessions.BUSY, None))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4409
+
+
+def test_ws_releases_launch_lock_on_launch_failure(fake_jsonl, auth_cfg, monkeypatch):
+    # A LAUNCH that then fails to build argv (4500) must release the launch lock —
+    # otherwise the id would be wedged BUSY until the app restarts. No master was
+    # spawned, so transfer() closes the last fd and the lock frees.
+    from agent_sessions import sessionlock, zellij
+
+    key = _GOOD
+    monkeypatch.setattr(zellij, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError → 4500
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{key}", headers) == 4500
+    assert sessionlock.is_locked(key) is False  # launch lock released (no wedge)
+
+
+def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
+    # The launch lock's fd must be in pass_fds so the dtach master inherits it and
+    # holds the flock for its lifetime (the cross-instance / restart guarantee).
+    import asyncio
+
+    from agent_sessions import sessionlock, webterm
+
+    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+    lock = sessionlock.acquire("claude:passfd")
+    assert lock is not None
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["pass_fds"] = kwargs.get("pass_fds")
+        raise OSError("stop before pumping")  # → webterm closes + ws.close(4500), returns
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    class FakeWS:
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path), lock=lock))
+    assert lock.fd in (captured["pass_fds"] or ())
+    lock.transfer()

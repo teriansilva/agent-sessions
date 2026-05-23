@@ -4,6 +4,11 @@ One session id ⇒ at most one running agent ⇒ one writer of its history. A se
 is *launched* only when no live master exists AND we win the single-writer lock;
 otherwise we *attach* to the running agent (never relaunch). See
 ``docs/session-handling.md``.
+
+On LAUNCH the caller hands the lock fd to the long-lived ``dtach`` master (via
+``pass_fds``); the kernel then keeps the flock for exactly the master's lifetime and
+releases it when the master dies — so the guarantee survives an app restart and
+holds across instances even where the dtach socket isn't shared.
 """
 
 from __future__ import annotations
@@ -19,7 +24,12 @@ def open_action(engine: str, native_id: str) -> tuple[str, sessionlock.SessionLo
     """Decide how to open ``{engine}:{native_id}``, enforcing one-id ⇒ one-agent.
 
     Returns ``(ATTACH, None)``, ``(BUSY, None)``, or ``(LAUNCH, lock)`` — in the
-    LAUNCH case the caller creates the master and keeps ``lock`` for its lifetime.
+    LAUNCH case the caller creates the master and hands ``lock`` to it for its lifetime.
+
+    Synchronous and free of ``await`` points, so it runs atomically with respect to
+    other coroutines: two concurrent opens of the same not-yet-running id cannot both
+    reach LAUNCH (the first holds the flock until the master inherits it; the second
+    fails to acquire → BUSY).
     """
     key = f"{engine}:{native_id}"
     # A live master already runs the agent → attach; its holder owns the lock.
