@@ -29,7 +29,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -50,6 +50,13 @@ from .auth import (
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 _STATIC = _HERE / "static"
+# Built React SPA (Vite → web/dist). Repo layout: <repo>/web/dist; a packaged
+# install overrides via AGENT_SESSIONS_WEB_DIST. Served only when AGENT_SESSIONS_UI=react.
+_WEB_DIST = Path(
+    os.environ.get("AGENT_SESSIONS_WEB_DIST") or (_HERE.parent.parent / "web" / "dist")
+)
+# Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
+_SPA_RESERVED = ("api", "ws", "term", "login", "logout", "healthz", "static", "assets")
 
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
@@ -58,9 +65,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # "ws" (the self-owned xterm.js page over /ws/term, issue #49). Staging sets "ws"
     # to exercise the rebuild end-to-end before cutover flips prod.
     terminal_backend = "ws" if os.environ.get("AGENT_SESSIONS_TERMINAL") == "ws" else "ttyd"
+    # Serve the built React SPA (#64 rebuild) instead of the Jinja UI when opted in.
+    # Default stays "jinja" so prod + the existing test suite are unchanged.
+    react_ui = os.environ.get("AGENT_SESSIONS_UI") == "react" and _WEB_DIST.is_dir()
     app = FastAPI(title="agent-sessions", openapi_url=None, docs_url=None, redoc_url=None)
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+    if react_ui and (_WEB_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_WEB_DIST / "assets")), name="assets")
 
     _logged_in = require_session(cfg)
     _csrf_guard = require_csrf_and_origin(cfg)
@@ -76,6 +88,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> Response:
+        # React SPA: serve the shell; the app handles auth via /api 401 (login at /login).
+        if react_ui:
+            return FileResponse(_WEB_DIST / "index.html")
         csrf = current_csrf(cfg, request)
         if not csrf:
             return RedirectResponse("/login", status_code=303)
@@ -463,6 +478,19 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             n += 1
         dest.write_bytes(b"".join(chunks))
         return JSONResponse({"path": str(dest), "name": safe})
+
+    if react_ui:
+        # SPA history fallback (registered LAST so it never shadows the API/ws/term/
+        # auth routes above). A real built file (sw.js, manifest.webmanifest, favicon…)
+        # is served as-is; anything else (client routes like /s/claude/<id>) → index.html.
+        @app.get("/{spa_path:path}", response_class=HTMLResponse)
+        async def spa_fallback(spa_path: str) -> Response:
+            if spa_path.split("/", 1)[0] in _SPA_RESERVED:
+                raise HTTPException(status_code=404, detail="not found")
+            candidate = (_WEB_DIST / spa_path).resolve()
+            if spa_path and candidate.is_file() and _WEB_DIST.resolve() in candidate.parents:
+                return FileResponse(candidate)
+            return FileResponse(_WEB_DIST / "index.html")
 
     return app
 
