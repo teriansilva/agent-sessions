@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "lucide-react": "^0.460.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1"

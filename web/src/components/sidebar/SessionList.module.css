@@ -27,18 +27,82 @@
   opacity: 0.5;
   cursor: default;
 }
+.rowWrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rowWrap:hover {
+  background: var(--row-hover);
+}
 .row {
   display: flex;
   gap: 8px;
   align-items: flex-start;
   padding: 9px 12px;
-  border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
   text-decoration: none;
   color: inherit;
+  flex: 1;
+  min-width: 0;
 }
-.row:hover {
-  background: var(--row-hover);
+/* Action cluster: hidden until row hover on pointer devices; always shown on touch
+ * (no hover) so phone users can reach rename/archive. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.rowWrap:hover .actions,
+.rowWrap:focus-within .actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .actions {
+    opacity: 1;
+  }
+}
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.iconBtn:hover:not(:disabled) {
+  background: var(--badge-bg);
+  color: var(--text);
+}
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.editRow {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 8px 6px 12px;
+  flex: 1;
+  min-width: 0;
+}
+.editInput {
+  flex: 1;
+  min-width: 0;
+  background: #1c1c1c;
+  border: 1px solid var(--accent, #4a90d9);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
 }
 .body {
   min-width: 0;

@@ -25,6 +25,14 @@ export interface SessionsPage {
   facets: { projects: string[]; engines: string[] };
 }
 
+export interface AppConfig {
+  /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
+  csrf: string;
+  /** Engines that are installed AND can start a new session (drives the picker). */
+  new_session_engines: string[];
+  terminal_backend: "ttyd" | "ws" | string;
+}
+
 export interface SessionsQuery {
   limit?: number;
   offset?: number;

@@ -86,6 +86,22 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # nginx `auth_request` only cares about the status code.
         return Response(status_code=204)
 
+    @app.get("/api/config")
+    async def app_config(request: Request, _: str = Depends(_logged_in)) -> JSONResponse:
+        # SPA bootstrap (#64): the CSRF token for mutations + which engines can start a
+        # new session (present + supports_new) + the terminal backend. Authed-only.
+        return JSONResponse(
+            {
+                "csrf": current_csrf(cfg, request) or "",
+                "new_session_engines": [
+                    p.engine_id
+                    for p in engines.present_providers()
+                    if getattr(p, "supports_new", False)
+                ],
+                "terminal_backend": terminal_backend,
+            }
+        )
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> Response:
         # React SPA: serve the shell; the app handles auth via /api 401 (login at /login).

@@ -85,6 +85,25 @@ export function useSessionsList() {
   const update = useCallback((patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch })), []);
   const clear = useCallback(() => setFilters(EMPTY), []);
 
+  // Rename in place: the row stays in the current view, only its title changes.
+  const renameRow = useCallback(async (id: string, title: string) => {
+    const r = await api.rename(id, title);
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: r.title } : s)));
+  }, []);
+
+  // Toggle archived: the list is scoped to one archived-state, so after the flip the
+  // row leaves the current view → drop it locally (avoids a full refetch + flicker).
+  // Removing it shrinks the server's archived-scoped set by one, so every still-unloaded
+  // row shifts down one offset — decrement nextOffset to match, or the next "Load more"
+  // would skip the first unloaded row (it sat at the old offset). When all rows are
+  // already loaded (nextOffset == null) there is nothing to backfill.
+  const setArchived = useCallback(async (id: string, currentlyArchived: boolean) => {
+    await (currentlyArchived ? api.unarchive(id) : api.archive(id));
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    setTotal((t) => Math.max(0, t - 1));
+    setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
+  }, []);
+
   return {
     sessions,
     total,
@@ -96,5 +115,7 @@ export function useSessionsList() {
     loadMore,
     update,
     clear,
+    renameRow,
+    setArchived,
   };
 }

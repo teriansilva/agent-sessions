@@ -3,6 +3,7 @@ import { SessionList } from "../components/sidebar/SessionList";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { SessionView } from "../routes/SessionView";
 import "./App.css";
+import { ConfigProvider } from "./ConfigContext";
 
 /** App shell: persistent sidebar (session list) + a routed main pane.
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing.
@@ -29,8 +30,10 @@ function Layout() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Layout />
-    </BrowserRouter>
+    <ConfigProvider>
+      <BrowserRouter>
+        <Layout />
+      </BrowserRouter>
+    </ConfigProvider>
   );
 }

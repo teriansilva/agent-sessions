@@ -425,3 +425,17 @@ def test_upload_empty_is_422(auth_cfg, tmp_home):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+def test_api_config_returns_csrf_engines_backend(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/config").json()
+    assert d["csrf"]  # non-empty token for SPA mutations
+    assert "claude" in d["new_session_engines"]
+    assert d["terminal_backend"] in ("ttyd", "ws")
+
+
+def test_api_config_requires_auth(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    assert c.get("/api/config", follow_redirects=False).status_code in (401, 403)
