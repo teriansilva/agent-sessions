@@ -1,5 +1,6 @@
-/* App shell: sidebar + terminal pane. Desktop = side-by-side; mobile = stacked.
- * Real responsive grid + collapse behavior is refined in Phase 1. */
+/* App shell: a session-list sidebar + a routed main pane.
+ * Desktop (>800px): fixed 320px sidebar column beside the pane.
+ * Mobile (≤800px): sidebar is an off-canvas drawer over a full-width pane. */
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
@@ -33,10 +34,86 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* Mobile top bar + drawer backdrop: present in the DOM but hidden on desktop. */
+.mobilebar {
+  display: none;
+}
+.mobilebar strong {
+  color: var(--accent);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+}
+.navToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.backdrop {
+  display: none;
+  border: none;
+  padding: 0;
+}
+
 @media (max-width: 800px) {
   .app {
-    grid-template-columns: 1fr;
-    grid-template-rows: 45dvh 1fr;
+    display: flex;
+    flex-direction: column;
+  }
+  .mobilebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    height: 46px;
+    padding: 0 8px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    z-index: 40; /* above the drawer so the toggle is always reachable */
+  }
+  .topbar {
+    display: none; /* the mobile bar carries the title */
+  }
+  .sidebar {
+    position: fixed;
+    z-index: 30;
+    top: 0;
+    left: 0;
+    width: min(85vw, 320px);
+    height: 100dvh;
+    padding-top: 46px; /* clear the fixed mobile bar */
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
+  }
+  .app.navOpen .sidebar {
+    transform: translateX(0);
+  }
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  .app.navOpen .backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .terminal-pane {
+    flex: 1;
+    min-height: 0;
   }
 }
 .landing,
