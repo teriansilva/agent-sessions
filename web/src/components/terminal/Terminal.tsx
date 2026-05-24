@@ -3,6 +3,7 @@ import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
+import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { dragToLines, type ScrollAccum } from "../../lib/touchScroll";
 import styles from "./Terminal.module.css";
 
@@ -22,7 +23,15 @@ function statusText(s: TermStatus): string {
 /** The live terminal: an xterm pane bridged to /ws/term/{engine}:{id} via TermSocket.
  *  Output is written verbatim; keystrokes and resize go back as JSON; reconnect +
  *  delta-resume (never-blank) is owned by TermSocket. Remount per session via `key`. */
-export function Terminal({ engine, id }: { engine: string; id: string }) {
+export function Terminal({
+  engine,
+  id,
+  fresh,
+}: {
+  engine: string;
+  id: string;
+  fresh?: FreshSession;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
 
@@ -42,12 +51,10 @@ export function Terminal({ engine, id }: { engine: string; id: string }) {
     term.open(host);
     fit.fit();
 
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const key = `${encodeURIComponent(engine)}:${encodeURIComponent(id)}`;
-    const sock = new TermSocket(
-      (have) => `${proto}://${location.host}/ws/term/${key}?have=${have}`,
-      { onOutput: (b) => term.write(b), onStatus: setStatus },
-    );
+    const sock = new TermSocket((have) => termWsUrl(engine, id, have, fresh), {
+      onOutput: (b) => term.write(b),
+      onStatus: setStatus,
+    });
 
     // Only push a resize when the grid actually changed — a bare scrollbar toggle
     // would otherwise SIGWINCH the agent into a full repaint (visible flicker loop).
@@ -108,7 +115,10 @@ export function Terminal({ engine, id }: { engine: string; id: string }) {
       sock.close();
       term.dispose();
     };
-  }, [engine, id]);
+    // Primitive deps (not the `fresh` object) so a re-render with an equal value doesn't
+    // tear down + relaunch the terminal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, id, fresh?.cwd, fresh?.bypass]);
 
   const text = statusText(status);
   return (

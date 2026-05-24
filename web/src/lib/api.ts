@@ -1,6 +1,6 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
-import type { AppConfig, SessionsPage, SessionsQuery } from "../types/api";
+import type { AppConfig, Project, SessionsPage, SessionsQuery } from "../types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -52,6 +52,7 @@ const enc = encodeURIComponent;
 
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
+  projects: () => getJson<{ projects: Project[] }>("/api/projects"),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),

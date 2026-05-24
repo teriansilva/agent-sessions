@@ -25,6 +25,11 @@ export interface SessionsPage {
   facets: { projects: string[]; engines: string[] };
 }
 
+export interface Project {
+  cwd: string;
+  label: string;
+}
+
 export interface AppConfig {
   /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
   csrf: string;
