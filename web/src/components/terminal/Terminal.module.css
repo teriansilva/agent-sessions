@@ -12,6 +12,9 @@
   min-width: 0;
   min-height: 0;
   padding: 4px 0 4px 6px;
+  /* We own touch gestures here (one-finger drag → scrollback), so stop the browser
+   * from claiming them for page pan/zoom — that's what made the terminal feel stuck. */
+  touch-action: none;
 }
 .status {
   position: absolute;
