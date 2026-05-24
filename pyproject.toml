@@ -1,6 +1,10 @@
 [project]
 name = "agent-sessions"
-version = "0.0.0"
+# Version is derived from the git tag at build time (setuptools-scm) so an
+# installer-pinned release (e.g. `pip install …@v1.2.3`) reports `1.2.3` via
+# /api/version. Untagged/dev builds get a dev version (+ short SHA); a build with
+# no SCM info at all (e.g. .git-stripped tree) falls back to 0.0.0.
+dynamic = ["version"]
 description = "Mobile-first AI-coding session organizer — Zellij+ttyd+FastAPI sidebar on example-host"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,6 +15,9 @@ dependencies = [
     "python-multipart==0.0.20",
 ]
 
+[project.scripts]
+agent-sessions = "agent_sessions.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.4",
@@ -19,8 +26,13 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# No SCM info (e.g. a deploy tree rsync'd without .git) → 0.0.0 rather than a build
+# error. Tagged builds report the tag; untagged git builds get a dev version + SHA.
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]

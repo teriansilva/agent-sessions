@@ -481,3 +481,17 @@ def test_login_post_blocks_open_redirect(auth_cfg):
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/"  # not //evil.com
+
+
+def test_api_version_returns_version(auth_cfg, fake_jsonl):
+    import agent_sessions
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/version").json()
+    assert d["version"] == agent_sessions.__version__
+
+
+def test_api_version_requires_auth(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    assert c.get("/api/version", follow_redirects=False).status_code in (401, 403)

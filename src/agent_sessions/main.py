@@ -46,6 +46,7 @@ from .auth import (
     session_uid,
     verify_password,
 )
+from .version import get_version
 
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -97,6 +98,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     async def auth_check(_: str = Depends(_logged_in)) -> Response:
         # nginx `auth_request` only cares about the status code.
         return Response(status_code=204)
+
+    @app.get("/api/version")
+    async def app_version(_: str = Depends(_logged_in)) -> JSONResponse:
+        # Runtime version for the dashboard + the self-update flow (#65). Authed.
+        return JSONResponse({"version": get_version()})
 
     @app.get("/api/config")
     async def app_config(request: Request, _: str = Depends(_logged_in)) -> JSONResponse:
