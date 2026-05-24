@@ -23,6 +23,7 @@
 <body>
 <form method="post" action="/login" autocomplete="on">
   <h1>agent-sessions</h1>
+  <input type="hidden" name="next" value="{{ next }}">
   <input name="username" type="text" placeholder="username" autocomplete="username" required>
   <input name="password" type="password" placeholder="password" autocomplete="current-password" required>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}

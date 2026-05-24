@@ -439,3 +439,45 @@ def test_api_config_returns_csrf_engines_backend(auth_cfg, fake_jsonl):
 def test_api_config_requires_auth(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     assert c.get("/api/config", follow_redirects=False).status_code in (401, 403)
+
+
+def test_safe_next_rejects_open_redirects():
+    from agent_sessions.main import _safe_next
+
+    assert _safe_next("/s/claude/abc") == "/s/claude/abc"
+    assert _safe_next("/") == "/"
+    assert _safe_next(None) == "/"
+    assert _safe_next("") == "/"
+    assert _safe_next("//evil.com") == "/"  # scheme-relative
+    assert _safe_next("/\\evil.com") == "/"  # backslash host trick
+    assert _safe_next("https://evil.com") == "/"  # absolute URL
+
+
+def test_login_get_carries_sanitized_next(auth_cfg):
+    c = _client(auth_cfg)
+    assert "/s/claude/abc" in c.get("/login?next=/s/claude/abc").text
+    assert "//evil.com" not in c.get("/login?next=//evil.com").text  # sanitized → "/"
+
+
+def test_login_post_redirects_to_next(auth_cfg):
+    c = _client(auth_cfg)
+    r = c.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2", "next": "/s/claude/abc"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/s/claude/abc"
+
+
+def test_login_post_blocks_open_redirect(auth_cfg):
+    c = _client(auth_cfg)
+    r = c.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2", "next": "//evil.com"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"  # not //evil.com

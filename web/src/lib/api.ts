@@ -11,9 +11,33 @@ export class ApiError extends Error {
   }
 }
 
+/** Where to send an unauthenticated user: the server login form, carrying the
+ *  current location so it can bounce back after sign-in (server open-redirect guards). */
+export function loginRedirectUrl(loc: { pathname: string; search: string } = location): string {
+  return `/login?next=${encodeURIComponent(loc.pathname + loc.search)}`;
+}
+
+// One-shot guard: several /api calls can 401 at once (config + sessions on load); we
+// only want a single navigation.
+let redirecting = false;
+function gotoLogin(): void {
+  if (redirecting) return;
+  redirecting = true;
+  location.assign(loginRedirectUrl());
+}
+
+/** 401 = not signed in → bounce to /login (the React shell has no login screen).
+ *  403 (bad CSRF/origin) is a real error, not an auth prompt — surfaced, not redirected. */
+function handleStatus(status: number): void {
+  if (status === 401) gotoLogin();
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path, { credentials: "same-origin" });
-  if (r.status === 401 || r.status === 403) throw new ApiError(r.status, "unauthorized");
+  if (r.status === 401 || r.status === 403) {
+    handleStatus(r.status);
+    throw new ApiError(r.status, "unauthorized");
+  }
   if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
   return (await r.json()) as T;
 }
@@ -32,7 +56,10 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (r.status === 401 || r.status === 403) throw new ApiError(r.status, "unauthorized");
+  if (r.status === 401 || r.status === 403) {
+    handleStatus(r.status);
+    throw new ApiError(r.status, "unauthorized");
+  }
   if (!r.ok) throw new ApiError(r.status, `POST ${path} → ${r.status}`);
   return (await r.json()) as T;
 }

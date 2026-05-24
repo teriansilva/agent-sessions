@@ -59,6 +59,18 @@ _WEB_DIST = Path(
 _SPA_RESERVED = ("api", "ws", "term", "login", "logout", "healthz", "static", "assets")
 
 
+def _safe_next(raw: str | None) -> str:
+    """Sanitize a post-login redirect target to a same-site path (open-redirect guard).
+
+    Accept only a path beginning with a single ``/`` — reject absolute URLs,
+    scheme-relative ``//host`` and backslash tricks ``/\\host`` that browsers may
+    treat as host-relative. Anything else falls back to ``/``.
+    """
+    if raw and raw.startswith("/") and not raw.startswith(("//", "/\\")):
+        return raw
+    return "/"
+
+
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
     # Which terminal the sidebar embeds: "ttyd" (the Zellij iframe, prod default) or
@@ -165,10 +177,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request) -> Response:
+        # `next` lets the SPA bounce a 401 back to where the user was (open-redirect
+        # guarded → same-site paths only); preserved through the POST via a hidden field.
         return _TEMPLATES.TemplateResponse(
             request,
             "login.html",
-            {"error": None},
+            {"error": None, "next": _safe_next(request.query_params.get("next"))},
         )
 
     @app.post("/login")
@@ -177,22 +191,24 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         response: Response,
         username: str = Form(...),
         password: str = Form(...),
+        next: str = Form("/"),
     ) -> Response:
         # Fail-closed Origin/Referer check on the login POST: reject cross-site
         # submits AND originless POSTs. Same contract as require_csrf_and_origin
         # (a session/CSRF can't exist yet at login, so we check origin only).
         enforce_origin(cfg, request)
 
+        target = _safe_next(next)
         ok_user = hmac.compare_digest(username, cfg.username)
         ok_pass = verify_password(password, cfg.password_hash)
         if not (ok_user and ok_pass):
             return _TEMPLATES.TemplateResponse(
                 request,
                 "login.html",
-                {"error": "invalid credentials"},
+                {"error": "invalid credentials", "next": target},
                 status_code=401,
             )
-        redirect = RedirectResponse("/", status_code=303)
+        redirect = RedirectResponse(target, status_code=303)
         issue_session(cfg, redirect)
         return redirect
 
