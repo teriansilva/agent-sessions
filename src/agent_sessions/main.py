@@ -33,12 +33,25 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import archive, engines, metadata, ptybridge, scanner, sessions, webterm, zellij
+from . import (
+    accounts,
+    archive,
+    discover,
+    engines,
+    envfile,
+    metadata,
+    ptybridge,
+    scanner,
+    sessions,
+    webterm,
+    zellij,
+)
 from .auth import (
     AuthConfig,
     clear_session,
     current_csrf,
     enforce_origin,
+    hash_password,
     issue_session,
     origin_matches,
     require_csrf_and_origin,
@@ -90,6 +103,58 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     _logged_in = require_session(cfg)
     _csrf_guard = require_csrf_and_origin(cfg)
 
+    # Runtime credential state: AuthConfig is frozen, but the admin password and the
+    # first-run "must change password" flag change at runtime (forced first-login change /
+    # the change endpoint). Login + the change flow read/update these live values; the new
+    # hash is also persisted to the env file so it survives a restart.
+    _env_file = Path(os.environ.get("AGENT_SESSIONS_ENV_FILE") or discover.default_env_path())
+    _pw = {"hash": cfg.password_hash}
+    _must_change = {
+        "v": os.environ.get("AGENT_SESSIONS_FORCE_PASSWORD_CHANGE", "")
+        in {
+            "1",
+            "true",
+            "yes",
+        }
+    }
+
+    def _apply_password_change(current: str, new: str) -> str | None:
+        """Verify the current password, persist a new one (hash only) + clear the
+        force-change flag, and update the live state. Returns an error string or None."""
+        if not verify_password(current, _pw["hash"]):
+            return "incorrect"
+        if len(new) < 8:
+            return "weak"
+        new_hash = hash_password(new)
+        envfile.update(_env_file, {accounts.HASH_KEY: new_hash, accounts.FORCE_CHANGE_KEY: None})
+        _pw["hash"] = new_hash
+        _must_change["v"] = False
+        return None
+
+    # Force the first-login password change "before anything else": while the flag is
+    # set, a logged-in request to anything outside this allowlist is blocked — API/ws get
+    # 403, page navigations are redirected to /change-password. (Unauthenticated requests
+    # fall through to normal auth handling; ws is gated in its own handler.)
+    _CHANGE_ALLOW = {
+        "/change-password",
+        "/api/password",
+        "/api/config",
+        "/api/auth-check",
+        "/login",
+        "/logout",
+        "/healthz",
+    }
+
+    @app.middleware("http")
+    async def _force_change_gate(request: Request, call_next):
+        if _must_change["v"] and session_uid(cfg, request) is not None:
+            path = request.url.path
+            if path not in _CHANGE_ALLOW and not path.startswith(("/static/", "/assets/")):
+                if path.startswith(("/api/", "/ws/")):
+                    return JSONResponse({"detail": "password change required"}, status_code=403)
+                return RedirectResponse("/change-password", status_code=303)
+        return await call_next(request)
+
     @app.get("/healthz")
     async def healthz() -> dict:
         return {"ok": True}
@@ -117,12 +182,32 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                     if getattr(p, "supports_new", False)
                 ],
                 "terminal_backend": terminal_backend,
+                "must_change_password": _must_change["v"],
             }
         )
+
+    @app.post("/api/password")
+    async def change_password_api(
+        request: Request,
+        _user: str = Depends(_logged_in),
+        _csrf: None = Depends(_csrf_guard),
+    ) -> Response:
+        # Change the admin password (current + new) for the SPA. The Jinja /change-password
+        # page is the server-rendered equivalent. New must be ≥ 8 chars.
+        payload = await request.json()
+        err = _apply_password_change(
+            str(payload.get("current_password", "")), str(payload.get("new_password", ""))
+        )
+        if err == "incorrect":
+            raise HTTPException(status_code=403, detail="current password is incorrect")
+        if err == "weak":
+            raise HTTPException(status_code=422, detail="new password must be ≥ 8 characters")
+        return Response(status_code=204)
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> Response:
         # React SPA: serve the shell; the app handles auth via /api 401 (login at /login).
+        # (The forced-password-change gate is enforced for all routes by middleware below.)
         if react_ui:
             return FileResponse(_WEB_DIST / "index.html")
         csrf = current_csrf(cfg, request)
@@ -206,7 +291,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
         target = _safe_next(next)
         ok_user = hmac.compare_digest(username, cfg.username)
-        ok_pass = verify_password(password, cfg.password_hash)
+        ok_pass = verify_password(password, _pw["hash"])  # live hash (changeable at runtime)
         if not (ok_user and ok_pass):
             return _TEMPLATES.TemplateResponse(
                 request,
@@ -215,6 +300,42 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 status_code=401,
             )
         redirect = RedirectResponse(target, status_code=303)
+        issue_session(cfg, redirect)
+        return redirect
+
+    @app.get("/change-password", response_class=HTMLResponse)
+    async def change_password_form(request: Request, error: str | None = None) -> Response:
+        if session_uid(cfg, request) is None:
+            return RedirectResponse("/login", status_code=303)
+        return _TEMPLATES.TemplateResponse(request, "change_password.html", {"error": error})
+
+    @app.post("/change-password")
+    async def change_password_submit(
+        request: Request,
+        current: str = Form(...),
+        new: str = Form(...),
+        confirm: str = Form(...),
+    ) -> Response:
+        # Server-rendered change page (the forced first-login wizard + a manual change).
+        # Origin-checked + session-gated, mirroring the login POST.
+        enforce_origin(cfg, request)
+        if session_uid(cfg, request) is None:
+            return RedirectResponse("/login", status_code=303)
+
+        def fail(msg: str) -> Response:
+            return _TEMPLATES.TemplateResponse(
+                request, "change_password.html", {"error": msg}, status_code=400
+            )
+
+        if new != confirm:
+            return fail("passwords do not match")
+        err = _apply_password_change(current, new)
+        if err == "incorrect":
+            return fail("current password is incorrect")
+        if err == "weak":
+            return fail("new password must be at least 8 characters")
+        # Re-issue the session and land on the app.
+        redirect = RedirectResponse("/", status_code=303)
         issue_session(cfg, redirect)
         return redirect
 
@@ -350,6 +471,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             return await reject(4401)
         if not origin_matches(cfg, ws):
             return await reject(4403)
+        if _must_change["v"]:
+            return await reject(4403)  # forced password change pending — no sessions yet
         try:
             prov, native = engines.parse_key(sid)
         except engines.EngineError:
