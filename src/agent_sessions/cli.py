@@ -40,6 +40,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doc.add_argument("--env", default=None, help="env file to update (default: <home>/env)")
     doc.add_argument("--dry-run", action="store_true", help="print findings without writing")
+
+    rp = sub.add_parser("reset-password", help="Set a new admin password (hash) in the env")
+    rp.add_argument("--env", default=None, help="env file to update (default: <home>/env)")
+    # A new password is never accepted as an argv value (leaks via shell history / ps).
+    # Default generates a random one and prints it once; --stdin reads it from stdin
+    # (scriptable); --prompt asks interactively without echo.
+    rp.add_argument("--stdin", action="store_true", help="read the new password from stdin")
+    rp.add_argument("--prompt", action="store_true", help="prompt for the new password (no echo)")
     return p
 
 
@@ -66,6 +74,41 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"updated {env_path}")
             else:
                 print(f"(no env file at {env_path} — skipped write)")
+        return 0
+
+    if args.cmd == "reset-password":
+        import sys
+        from pathlib import Path
+
+        from . import accounts, discover
+
+        env_path = Path(args.env).expanduser() if args.env else discover.default_env_path()
+        if not env_path.exists():
+            print(f"error: env file not found at {env_path}")
+            return 1
+        generated = False
+        if args.stdin:
+            password = sys.stdin.readline().rstrip("\n")
+            if not password:
+                print("error: empty password on stdin")
+                return 1
+        elif args.prompt:
+            import getpass
+
+            password = getpass.getpass("New password: ")
+            if not password:
+                print("error: empty password")
+                return 1
+            if password != getpass.getpass("Confirm new password: "):
+                print("error: passwords do not match")
+                return 1
+        else:
+            password = accounts.random_password()
+            generated = True
+        accounts.set_password(env_path, password)
+        print(f"password updated in {env_path}")
+        if generated:  # show the generated value once; a chosen password is never echoed
+            print(f"new password: {password}")
         return 0
 
     if args.cmd == "serve":

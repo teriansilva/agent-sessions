@@ -9,13 +9,13 @@ else in the file is preserved.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+
+from . import envfile
 
 ENGINES = ("claude", "opencode", "codex", "gemini")
 
@@ -85,32 +85,5 @@ def discover(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
 
 def write_env_bins(env_path: Path, bins: Mapping[str, str | None]) -> None:
     """Rewrite only the ``*_BIN`` lines of ``env_path`` from ``bins`` (found → set,
-    not-found → drop), preserving every other line. Atomic (temp + rename), mode 0600."""
-    keys = {envvar(name): path for name, path in bins.items()}
-    lines = env_path.read_text().splitlines() if env_path.exists() else []
-    out: list[str] = []
-    seen: set[str] = set()
-    for ln in lines:
-        key = ln.split("=", 1)[0].strip() if "=" in ln else None
-        if key in keys:
-            seen.add(key)
-            val = keys[key]
-            if val:
-                out.append(f"{key}={val}")
-            # not found → omit the line (leave the engine unset)
-        else:
-            out.append(ln)
-    for key, val in keys.items():
-        if key not in seen and val:
-            out.append(f"{key}={val}")
-    # mkstemp creates the temp file 0600 from the first byte (umask-independent), so the
-    # secrets this env preserves are never briefly world-readable; then rename atomically.
-    fd, tmp = tempfile.mkstemp(dir=str(env_path.parent), prefix=f".{env_path.name}.")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write("\n".join(out) + ("\n" if out else ""))
-        os.replace(tmp, env_path)  # atomic
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    not-found → drop), preserving every other line. Secure atomic write (see envfile)."""
+    envfile.update(env_path, {envvar(name): path for name, path in bins.items()})
