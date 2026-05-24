@@ -48,6 +48,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # (scriptable); --prompt asks interactively without echo.
     rp.add_argument("--stdin", action="store_true", help="read the new password from stdin")
     rp.add_argument("--prompt", action="store_true", help="prompt for the new password (no echo)")
+
+    sub.add_parser("autoupdate", help="Check the channel and apply an update if available")
     return p
 
 
@@ -109,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"password updated in {env_path}")
         if generated:  # show the generated value once; a chosen password is never echoed
             print(f"new password: {password}")
+        return 0
+
+    if args.cmd == "autoupdate":
+        from . import update
+
+        print(update.autoupdate())
         return 0
 
     if args.cmd == "serve":

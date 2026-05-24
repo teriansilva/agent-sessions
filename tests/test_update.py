@@ -77,3 +77,22 @@ def test_apply_never_inherits_a_pinned_ref(monkeypatch, tmp_path):
     assert update.apply() is True
     assert "AGENT_SESSIONS_REF" not in captured["env"]
     assert captured["env"]["AGENT_SESSIONS_CHANNEL"]  # channel drives the update
+
+
+def test_autoupdate_applies_only_when_available(monkeypatch):
+    monkeypatch.setattr(update, "check", lambda: {"update_available": False})
+    assert update.autoupdate() == "up-to-date"
+
+    monkeypatch.setattr(update, "check", lambda: {"update_available": True})
+    monkeypatch.setattr(update, "apply", lambda: True)
+    assert update.autoupdate() == "applied"
+    monkeypatch.setattr(update, "apply", lambda: False)
+    assert update.autoupdate() == "unavailable"
+
+
+def test_cli_autoupdate(monkeypatch, capsys):
+    from agent_sessions import cli
+
+    monkeypatch.setattr(update, "autoupdate", lambda: "up-to-date")
+    assert cli.main(["autoupdate"]) == 0
+    assert capsys.readouterr().out.strip() == "up-to-date"

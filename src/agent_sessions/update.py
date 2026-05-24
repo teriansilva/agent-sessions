@@ -103,3 +103,12 @@ def apply() -> bool:
         start_new_session=True,  # survive the service restart the installer triggers
     )
     return True
+
+
+def autoupdate() -> str:
+    """Check the channel and apply only if an update is available (the timer entrypoint).
+    Returns a short status string: 'up-to-date', 'applied', or 'unavailable'."""
+    info = check()
+    if not info["update_available"]:
+        return "up-to-date"
+    return "applied" if apply() else "unavailable"

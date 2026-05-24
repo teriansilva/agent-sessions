@@ -103,3 +103,15 @@ def test_install_sh_has_update_rollback():
     s = INSTALL_SH.read_text()
     assert "_healthcheck" in s  # post-restart health check
     assert "rolling back" in s and "prev" in s  # rollback to the prior release on failure
+
+
+def test_install_sh_optin_autoupdate_timer():
+    s = INSTALL_SH.read_text()
+    assert "AGENT_SESSIONS_AUTOUPDATE" in s  # opt-in flag
+    assert "$APP-update.timer" in s  # the user timer
+    assert "agent-sessions autoupdate" in s  # timer runs the autoupdate command
+    # The timer runs detached from the install shell, so the opt-in + channel + repo must
+    # be baked into the service (else it loses the channel and self-disables on first run).
+    assert "Environment=AGENT_SESSIONS_AUTOUPDATE=1" in s
+    assert "Environment=AGENT_SESSIONS_CHANNEL=" in s
+    assert "Environment=AGENT_SESSIONS_REPO=" in s

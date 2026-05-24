@@ -173,6 +173,48 @@ manage_service() {
   die "service started but /healthz never came up on $HOST:$PORT"
 }
 
+manage_autoupdate() {
+  # Opt-in (AGENT_SESSIONS_AUTOUPDATE=1): a user timer that periodically runs
+  # `agent-sessions autoupdate` (check the channel + apply via the same rollback-guarded
+  # installer). Disabled (and torn down on re-run) by default.
+  systemctl --user >/dev/null 2>&1 || return 0
+  case "${AGENT_SESSIONS_AUTOUPDATE:-}" in
+    1 | true | yes)
+      mkdir -p "$UNIT_DIR"
+      cat > "$UNIT_DIR/$APP-update.service" <<EOF
+[Unit]
+Description=agent-sessions autoupdate
+[Service]
+Type=oneshot
+EnvironmentFile=$ENVF
+# Carry the opt-in + channel + repo explicitly: the timer runs detached from the install
+# shell, and the re-run installer must see AGENT_SESSIONS_AUTOUPDATE (so it keeps the
+# timer) and the channel/repo (so the update targets the right ref) — none of which live
+# in the env file. (Non-secret values only.)
+Environment=AGENT_SESSIONS_AUTOUPDATE=1
+Environment=AGENT_SESSIONS_CHANNEL=$CHANNEL
+Environment=AGENT_SESSIONS_REPO=$REPO_URL
+ExecStart=$CURRENT/venv/bin/agent-sessions autoupdate
+EOF
+      cat > "$UNIT_DIR/$APP-update.timer" <<EOF
+[Unit]
+Description=agent-sessions autoupdate timer
+[Timer]
+OnCalendar=${AGENT_SESSIONS_AUTOUPDATE_ONCALENDAR:-daily}
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$APP-update.timer" >/dev/null 2>&1 || true
+      log "autoupdate enabled ($CHANNEL channel)"
+      ;;
+    *)
+      systemctl --user disable --now "$APP-update.timer" >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
 main() {
   mkdir -p "$PREFIX"
   ensure_prereqs
@@ -200,6 +242,7 @@ main() {
   # re-runs on every upgrade so newly-installed engines are picked up).
   "$CURRENT/venv/bin/agent-sessions" doctor --env "$ENVF" >/dev/null 2>&1 || true
   manage_service "$prev_target"
+  manage_autoupdate
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"
 
   note "agent-sessions $version installed."
