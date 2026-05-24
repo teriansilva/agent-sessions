@@ -1,19 +1,43 @@
 .wrap {
-  position: relative;
   display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
   background: #0e0e0e;
 }
+/* Terminal area: the xterm host + the touch-capture overlay + status sit here, so the
+ * overlay covers only the terminal and not the compose bar below it. */
+.termArea {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
 .term {
   flex: 1;
   min-width: 0;
   min-height: 0;
   padding: 4px 0 4px 6px;
-  /* We own touch gestures here (one-finger drag → scrollback), so stop the browser
-   * from claiming them for page pan/zoom — that's what made the terminal feel stuck. */
+}
+/* On touch devices, xterm's hidden helper textarea sits over the text and would grab a
+ * touch-drag (the gesture then went to the caret, not us — "scrolled one line then
+ * stuck"). Make it non-interactive to pointers so drags reach the terminal: our handler
+ * disambiguates scroll vs hold-to-select, and a tap re-focuses it for the keyboard. */
+@media (pointer: coarse) {
+  .term :global(.xterm-helper-textarea) {
+    pointer-events: none;
+  }
+}
+/* Transparent capture surface over the terminal (added in JS on coarse pointers): a
+ * plain element scrolls reliably where xterm's text layer hijacks the touch. */
+.touchLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: transparent;
   touch-action: none;
 }
 .status {

@@ -77,8 +77,28 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
 
 const enc = encodeURIComponent;
 
+/** Upload a file (image/context) → server saves it under ~/.agent-sessions/uploads/
+ *  and returns a path the agent can read. Multipart, CSRF-guarded (not JSON). */
+async function upload(file: File): Promise<{ path: string; name: string }> {
+  const fd = new FormData();
+  fd.append("file", file, file.name || "pasted");
+  const r = await fetch("/api/upload", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: fd,
+  });
+  if (r.status === 401) {
+    handleStatus(401);
+    throw new ApiError(401, "unauthorized");
+  }
+  if (!r.ok) throw new ApiError(r.status, `upload → ${r.status}`);
+  return (await r.json()) as { path: string; name: string };
+}
+
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
+  upload,
   projects: () => getJson<{ projects: Project[] }>("/api/projects"),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>

@@ -1,12 +1,15 @@
 .landing {
   display: flex;
-  align-items: center;
-  justify-content: center;
   width: 100%;
   height: 100%;
   padding: 24px;
+  overflow-y: auto; /* short screens scroll instead of the card overflowing the pane */
 }
 .card {
+  /* margin:auto centers in both axes but, unlike justify/align-center, the top stays
+   * reachable when the card is taller than the pane — so it never slides up under the
+   * mobile header bar. */
+  margin: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;

@@ -4,6 +4,23 @@
   min-height: 0;
   flex: 1;
 }
+.newBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  margin: 8px;
+  padding: 9px 0;
+  background: var(--accent, #4a90d9);
+  color: #fff;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.newBtn:active {
+  filter: brightness(1.1);
+}
 .list {
   list-style: none;
   margin: 0;

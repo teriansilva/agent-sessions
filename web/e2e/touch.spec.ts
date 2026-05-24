@@ -40,8 +40,9 @@ test("one-finger drag scrolls the terminal scrollback", async ({ page }, testInf
   const before = await viewport.evaluate((el) => el.scrollTop);
   expect(before).toBeGreaterThan(0); // sitting at the bottom of the scrollback
 
-  // Drag a finger DOWNWARD over the text (scroll up into history) via real touch events.
-  await page.locator(".xterm-screen").evaluate((el) => {
+  // A quick downward drag over the touch-capture surface scrolls up into history,
+  // driven via real touch events.
+  await page.locator("[data-touch-surface]").evaluate((el) => {
     const r = el.getBoundingClientRect();
     const cx = Math.round(r.x + r.width / 2);
     const touch = (y: number) =>

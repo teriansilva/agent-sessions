@@ -1,10 +1,11 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
+import { Compose } from "./Compose";
 import styles from "./Terminal.module.css";
 
 function statusText(s: TermStatus): string {
@@ -33,7 +34,27 @@ export function Terminal({
   fresh?: FreshSession;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const sockRef = useRef<TermSocket | null>(null);
+  const termRef = useRef<Xterm | null>(null);
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
+  const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+
+  // Send raw input to the PTY (used by the mobile action bar / compose).
+  const sendInput = useCallback((d: string) => {
+    sockRef.current?.send({ t: "i", d });
+  }, []);
+  // Copy the current selection, or the whole buffer if nothing is selected.
+  const handleCopy = useCallback(() => {
+    const t = termRef.current;
+    if (!t) return;
+    let sel = t.getSelection();
+    if (!sel) {
+      t.selectAll();
+      sel = t.getSelection();
+      t.clearSelection();
+    }
+    if (sel) void navigator.clipboard?.writeText(sel);
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -49,12 +70,18 @@ export function Terminal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    fit.fit();
+    termRef.current = term;
 
+    // Indirection so onStatus (fires async) can call resize logic defined below.
+    let onConnected = () => {};
     const sock = new TermSocket((have) => termWsUrl(engine, id, have, fresh), {
       onOutput: (b) => term.write(b),
-      onStatus: setStatus,
+      onStatus: (s) => {
+        setStatus(s);
+        if (s.kind === "connected") onConnected();
+      },
     });
+    sockRef.current = sock;
 
     // Only push a resize when the grid actually changed — a bare scrollbar toggle
     // would otherwise SIGWINCH the agent into a full repaint (visible flicker loop).
@@ -66,25 +93,52 @@ export function Terminal({
       lastRows = term.rows;
       sock.send({ t: "r", cols: term.cols, rows: term.rows });
     };
+    // Refit to the container, then push the size. Used on mount, on container/visual-
+    // viewport resize, and on every (re)connect — a fresh dtach pty defaults to 80x24,
+    // so we MUST tell it our real size or the agent renders at the wrong dimensions
+    // (garbled / blank-until-scroll until something else triggers a resize).
+    const refit = (force = false) => {
+      fit.fit();
+      if (force) lastCols = lastRows = 0; // bypass the dedupe so the new pty is sized
+      sendResize();
+    };
+    onConnected = () => refit(true);
 
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
-    const ro = new ResizeObserver(() => {
-      fit.fit();
-      sendResize();
-    });
+    const ro = new ResizeObserver(() => refit());
     ro.observe(host);
+    // Mobile: the address bar showing/hiding changes the visual viewport height (dvh)
+    // well after first paint — refit so the terminal fills the new height.
+    const vv = window.visualViewport;
+    const onVV = () => refit();
+    vv?.addEventListener("resize", onVV);
+    // First fit after layout settles (open() can run before the flex/dvh height is final).
+    const raf = requestAnimationFrame(() => refit());
 
-    // Touch scroll: xterm doesn't scroll its scrollback on a one-finger drag (it grabs
-    // touch for selection), so phones felt stuck. attachTouchScroll translates a drag
-    // into line scrolls (capture phase, non-passive) — see lib/touchScroll.
-    const detachTouch = attachTouchScroll(host, term);
+    // Touch scroll: on coarse-pointer devices lay a transparent capture surface over the
+    // terminal area — claiming the touch there (xterm never sees it) is the only thing
+    // that scrolls reliably; its text layer otherwise hijacks the drag. Quick drag
+    // scrolls (+ momentum); a tap (re)opens the keyboard. See lib/touchScroll.
+    let touchLayer: HTMLDivElement | undefined;
+    if (coarse && host.parentElement) {
+      touchLayer = document.createElement("div");
+      touchLayer.className = styles.touchLayer;
+      touchLayer.dataset.touchSurface = ""; // e2e hook
+      host.parentElement.appendChild(touchLayer); // host.parentElement = .termArea
+    }
+    const detachTouch = attachTouchScroll(touchLayer ?? host, term);
 
     sock.connect();
     return () => {
+      cancelAnimationFrame(raf);
+      vv?.removeEventListener("resize", onVV);
       detachTouch();
+      touchLayer?.remove();
       ro.disconnect();
       sock.close();
+      sockRef.current = null;
+      termRef.current = null;
       term.dispose();
     };
     // Primitive deps (not the `fresh` object) so a re-render with an equal value doesn't
@@ -95,15 +149,19 @@ export function Terminal({
   const text = statusText(status);
   return (
     <div className={styles.wrap}>
-      {text && (
-        <div
-          className={`${styles.status} ${status.kind === "rejected" ? styles.rejected : ""}`}
-          role="status"
-        >
-          {text}
-        </div>
-      )}
-      <div ref={hostRef} className={styles.term} />
+      <div className={styles.termArea}>
+        {text && (
+          <div
+            className={`${styles.status} ${status.kind === "rejected" ? styles.rejected : ""}`}
+            role="status"
+          >
+            {text}
+          </div>
+        )}
+        <div ref={hostRef} className={styles.term} />
+      </div>
+      {/* Action/compose bar everywhere; expanded on touch, collapsed-to-the-bar on desktop. */}
+      <Compose sendInput={sendInput} onCopy={handleCopy} defaultOpen={coarse} />
     </div>
   );
 }

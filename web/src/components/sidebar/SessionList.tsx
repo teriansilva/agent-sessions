@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Check, Pencil, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useSessionsList } from "../../hooks/useSessionsList";
@@ -144,6 +144,10 @@ export function SessionList() {
 
   return (
     <div className={styles.wrap}>
+      <Link to="/" className={styles.newBtn}>
+        <Plus size={16} />
+        New session
+      </Link>
       <FiltersBar filters={filters} facets={facets} onChange={update} onClear={clear} />
       {error ? (
         <div className={styles.empty}>{error}</div>

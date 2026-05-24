@@ -1,0 +1,124 @@
+.compose {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.textarea {
+  width: 100%;
+  max-height: 28vh;
+  resize: none;
+  background: #181818;
+  color: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+  line-height: 1.35;
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 70%;
+  background: #16263a;
+  border: 1px solid #244;
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #cde;
+}
+.pn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill button {
+  background: none;
+  border: 0;
+  color: #9ab;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.keys button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  background: #1c1c1c;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.keys button:active {
+  background: #2a2a2a;
+}
+.txt {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.spacer {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.send {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1a8a4a;
+  color: #fff;
+  border: 0;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.send:active {
+  background: #1c9c54;
+}
+.toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  background: #1c1c1c;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
