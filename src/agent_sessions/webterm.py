@@ -48,15 +48,46 @@ def _read(fd: int) -> bytes:
 # in the app process and replay it on connect, so reconnecting shows the conversation
 # again. Survives browser disconnect (in-process); lost on app restart (rebuilds on
 # the next live output). Keyed by the engine-qualified session id.
+#
+# `_TOTALS[key]` is a monotonic count of *all* bytes ever sent for the key (not just
+# what's still in the ring). It powers delta-resume: a reconnecting client reports the
+# absolute offset it last saw (`?have=`), and we stream only the bytes since then — so
+# a transient ws drop continues seamlessly instead of re-replaying the whole ring (or,
+# worse, blanking). See docs/session-handling.md §Reconnect continuity.
 _MAX_BUF = 256 * 1024
 _BUFFERS: dict[str, bytearray] = {}
+_TOTALS: dict[str, int] = {}
 
 
 def _buffer_append(key: str, data: bytes) -> None:
     buf = _BUFFERS.setdefault(key, bytearray())
     buf.extend(data)
+    _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
+
+
+def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
+    """Decide what to (re)send on connect: ``(payload, total)``.
+
+    - No history yet → ``(b"", total)``.
+    - Alt-screen TUI (opencode) → ``(b"", total)``: it repaints via SIGWINCH; replaying
+      its frames corrupts the redraw, and we never blank on reconnect.
+    - ``have`` is a valid absolute offset still inside the ring → the **delta** since
+      ``have`` (seamless continuation across a drop).
+    - Otherwise (fresh attach, or ``have`` fell behind the capped ring) → **full replay**.
+
+    The caller follows the payload with a ``{"t":"seq","n":total}`` control frame so the
+    client adopts ``total`` as its authoritative offset for the next reconnect.
+    """
+    total = _TOTALS.get(key, 0)
+    ring = _BUFFERS.get(key) or b""
+    if not ring or _in_alt_screen(bytes(ring)):
+        return b"", total
+    ring_start = total - len(ring)  # absolute offset of ring[0]
+    if 0 < have <= total and have >= ring_start:
+        return bytes(ring[have - ring_start :]), total
+    return bytes(ring), total
 
 
 def _in_alt_screen(buf: bytes) -> bool:
@@ -79,6 +110,7 @@ async def run(
     cols: int = 80,
     rows: int = 24,
     lock: sessionlock.SessionLock | None = None,
+    have: int = 0,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -123,12 +155,17 @@ async def run(
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
 
-    # Replay the session's scrollback first, so a reattach shows the prior history
-    # (dtach itself has none) before the live redraw + new output arrive. Skip it for
-    # alt-screen TUIs (opencode) — replay corrupts their redraw; they repaint on SIGWINCH.
-    if buf_key and _BUFFERS.get(buf_key) and not _in_alt_screen(_BUFFERS[buf_key]):
+    # (Re)connect resume: replay history (or just the delta since the client's `have`
+    # offset) so a reattach shows the prior conversation and a transient drop continues
+    # seamlessly — never blank. Then send the authoritative byte offset as a control
+    # frame. dtach has no scrollback of its own; alt-screen TUIs repaint via SIGWINCH.
+    if buf_key:
+        payload, total = _resume_payload(buf_key, have)
+        if payload:
+            with contextlib.suppress(Exception):
+                await ws.send_bytes(payload)
         with contextlib.suppress(Exception):
-            await ws.send_bytes(bytes(_BUFFERS[buf_key]))
+            await ws.send_text(json.dumps({"t": "seq", "n": total}))
 
     async def pump_out() -> None:
         while True:

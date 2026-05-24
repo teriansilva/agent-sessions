@@ -99,8 +99,14 @@
       // Force the size on every (re)connect — a fresh dtach pty defaults to 80x24.
       ws.onopen = () => { alive = true; setStatus(''); fit.fit(); lastCols = lastRows = 0; sendResize(); term.focus(); };
       ws.onmessage = (ev) => {
-        if (typeof ev.data === 'string') term.write(ev.data);
-        else term.write(new Uint8Array(ev.data));
+        if (typeof ev.data === 'string') {
+          // String frames are JSON control frames (e.g. {"t":"seq","n":N} from
+          // delta-resume) — never write them to the terminal. Raw PTY output is binary.
+          try { const m = JSON.parse(ev.data); if (m && m.t) return; } catch (_) {}
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data));
+        }
       };
       ws.onclose = (ev) => {
         alive = false;

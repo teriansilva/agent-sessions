@@ -127,6 +127,19 @@ def test_terminal_template_no_retry_covers_all_reject_codes():
         assert code in html, f"reject code {code} missing from NO_RETRY set"
 
 
+def test_terminal_template_ignores_control_frames():
+    # Regression (Hermes #74): the legacy ws client must parse string frames as JSON
+    # control frames (e.g. {"t":"seq"} from delta-resume) and ignore them — never write
+    # them into the terminal. Only binary frames are raw PTY output.
+    from pathlib import Path
+
+    import agent_sessions
+
+    html = (Path(agent_sessions.__file__).parent / "templates" / "terminal.html").read_text()
+    assert "JSON.parse(ev.data)" in html
+    assert "m && m.t" in html  # control-frame guard runs before term.write(string)
+
+
 def test_ws_compose_parity_wiring():
     # Phase 4: the /term page must accept same-origin postMessage and the sidebar
     # must drive it in ws-mode (compose + nav keys). Static guard against regression.
@@ -278,3 +291,54 @@ def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
     asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path), lock=lock))
     assert lock.fd in (captured["pass_fds"] or ())
     lock.transfer()
+
+
+def test_resume_payload_tracks_total_and_serves_full_then_delta():
+    # Delta-resume: _TOTALS counts every byte; have=0 → full replay; have within the
+    # ring → only the bytes since `have`; have==total → nothing new.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    k = "claude:dr"
+    webterm._buffer_append(k, b"hello ")
+    webterm._buffer_append(k, b"world")
+    assert webterm._TOTALS[k] == 11
+    assert webterm._resume_payload(k, 0) == (b"hello world", 11)  # fresh attach → full
+    assert webterm._resume_payload(k, 6) == (b"world", 11)  # reconnect → delta
+    assert webterm._resume_payload(k, 11) == (b"", 11)  # caught up → nothing
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_resume_payload_full_replay_when_have_fell_behind_ring(monkeypatch):
+    # If the client's offset fell behind the capped ring, send the whole ring (it can't
+    # reconstruct the gap), not a wrong partial slice.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    monkeypatch.setattr(webterm, "_MAX_BUF", 10)
+    k = "claude:dr2"
+    webterm._buffer_append(k, b"abcdefghijklmnop")  # 16 bytes → ring trimmed to last 10
+    assert webterm._TOTALS[k] == 16
+    payload, total = webterm._resume_payload(k, 3)  # 3 < ring_start(6) → full ring
+    assert total == 16 and payload == bytes(webterm._BUFFERS[k]) and len(payload) == 10
+    assert webterm._resume_payload(k, 12)[0] == b"mnop"  # within ring → delta
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_resume_payload_alt_screen_sends_nothing():
+    # Alt-screen TUI: never replay (repaints via SIGWINCH) and never blank — empty
+    # payload, but still report the authoritative total.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    k = "opencode:alt"
+    webterm._buffer_append(k, b"\x1b[?1049h a tui frame")  # entered alt screen
+    payload, total = webterm._resume_payload(k, 0)
+    assert payload == b"" and total == webterm._TOTALS[k]
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()

@@ -383,7 +383,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 )
             except ptybridge.PtyBridgeError:
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
-            await webterm.run(ws, argv, cwd=cwd, buf_key=sid, lock=lock)
+            # Delta-resume: a reconnecting client reports the absolute byte offset it
+            # last saw; we stream only the bytes since then (never re-blank). Bad/absent
+            # value → 0 → full replay.
+            try:
+                have = max(0, int(ws.query_params.get("have", "0") or "0"))
+            except (ValueError, TypeError):
+                have = 0
+            await webterm.run(ws, argv, cwd=cwd, buf_key=sid, lock=lock, have=have)
         finally:
             # Hand the launch lock to the dtach master we spawned (it inherited the fd),
             # so the flock lives for the master's lifetime — closing our fd without
