@@ -97,3 +97,9 @@ def test_installer_end_to_end(tmp_path):
     releases2 = sorted((home / "releases").iterdir())
     assert len(releases2) == 2  # prior kept for rollback
     assert current.resolve() == sorted(releases2)[-1].resolve()
+
+
+def test_install_sh_has_update_rollback():
+    s = INSTALL_SH.read_text()
+    assert "_healthcheck" in s  # post-restart health check
+    assert "rolling back" in s and "prev" in s  # rollback to the prior release on failure

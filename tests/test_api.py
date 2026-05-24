@@ -495,3 +495,35 @@ def test_api_version_returns_version(auth_cfg, fake_jsonl):
 def test_api_version_requires_auth(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     assert c.get("/api/version", follow_redirects=False).status_code in (401, 403)
+
+
+def test_update_check_authed(auth_cfg, fake_jsonl, monkeypatch):
+    import agent_sessions.update as up
+
+    monkeypatch.setattr(
+        up,
+        "check",
+        lambda: {"current": "x", "channel": "stable", "latest": None, "update_available": False},
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/update/check").json()["channel"] == "stable"
+
+
+def test_update_apply_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post("/api/update/apply", headers={"Origin": auth_cfg.origin})
+    assert r.status_code == 403
+
+
+def test_update_apply_202_then_503(auth_cfg, fake_jsonl, monkeypatch):
+    import agent_sessions.update as up
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    monkeypatch.setattr(up, "apply", lambda: True)
+    assert c.post("/api/update/apply", headers=hdr).status_code == 202
+    monkeypatch.setattr(up, "apply", lambda: False)  # not an install
+    assert c.post("/api/update/apply", headers=hdr).status_code == 503

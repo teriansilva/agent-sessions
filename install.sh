@@ -137,7 +137,18 @@ prune_releases() {
   done
 }
 
+_healthcheck() {
+  i=0
+  while [ "$i" -lt 10 ]; do
+    if curl -fsS -m 2 "http://$HOST:$PORT/healthz" >/dev/null 2>&1; then return 0; fi
+    i=$((i + 1))
+    sleep 1
+  done
+  return 1
+}
+
 manage_service() {
+  prev="$1"  # the release `current` pointed at before this flip (rollback target)
   if [ "${AGENT_SESSIONS_NO_SERVICE:-0}" = 1 ] || ! systemctl --user >/dev/null 2>&1; then
     note "Service not started automatically (no systemctl --user session)."
     log "Start it with:  $CURRENT/venv/bin/agent-sessions serve"
@@ -147,13 +158,19 @@ manage_service() {
   systemctl --user daemon-reload
   systemctl --user enable "$APP.service" >/dev/null 2>&1 || true
   systemctl --user restart "$APP.service"
-  ok=0
-  i=0
-  while [ "$i" -lt 10 ]; do
-    if curl -fsS -m 2 "http://$HOST:$PORT/healthz" >/dev/null 2>&1; then ok=1; break; fi
-    i=$((i + 1)); sleep 1
-  done
-  [ "$ok" = 1 ] || die "service started but /healthz never came up on $HOST:$PORT"
+  _healthcheck && return 0
+  # Unhealthy. Roll back to the previous release if there is one (self-update safety):
+  # re-point `current` (atomic) + restart so a bad update can't leave the host down.
+  if [ -n "$prev" ] && [ "$prev" != "$rel" ] && [ -d "$prev" ]; then
+    log "new release failed /healthz — rolling back to $(basename "$prev")"
+    rb="$PREFIX/.current.rb.$$"
+    ln -s "$prev" "$rb"
+    mv -Tf "$rb" "$CURRENT" 2>/dev/null || { rm -f "$rb"; ln -sfn "$prev" "$CURRENT"; }
+    systemctl --user restart "$APP.service"
+    _healthcheck && die "update failed health check — rolled back to the previous release"
+    die "update failed and the rollback release is also unhealthy"
+  fi
+  die "service started but /healthz never came up on $HOST:$PORT"
 }
 
 main() {
@@ -173,6 +190,7 @@ main() {
   # sees a missing `current` (unlike `ln -sfn`, which unlinks then recreates). Falls back
   # to a plain swap where `mv -T` is unavailable. One-step rollback = re-point to a prior
   # release dir.
+  prev_target="$(readlink "$CURRENT" 2>/dev/null || true)"  # for rollback on a bad update
   tmp_link="$PREFIX/.current.$$"
   ln -s "$rel" "$tmp_link"
   mv -Tf "$tmp_link" "$CURRENT" 2>/dev/null || { rm -f "$tmp_link"; ln -sfn "$rel" "$CURRENT"; }
@@ -181,7 +199,7 @@ main() {
   # Discover installed agent CLIs and record their paths in the env (best-effort; also
   # re-runs on every upgrade so newly-installed engines are picked up).
   "$CURRENT/venv/bin/agent-sessions" doctor --env "$ENVF" >/dev/null 2>&1 || true
-  manage_service
+  manage_service "$prev_target"
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"
 
   note "agent-sessions $version installed."

@@ -43,6 +43,7 @@ from . import (
     ptybridge,
     scanner,
     sessions,
+    update,
     webterm,
     zellij,
 )
@@ -168,6 +169,21 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     async def app_version(_: str = Depends(_logged_in)) -> JSONResponse:
         # Runtime version for the dashboard + the self-update flow (#65). Authed.
         return JSONResponse({"version": get_version()})
+
+    @app.get("/api/update/check")
+    async def update_check(_: str = Depends(_logged_in)) -> JSONResponse:
+        # Compare the running version to the channel's latest on the remote (#65 Phase 5).
+        return JSONResponse(update.check())
+
+    @app.post("/api/update/apply")
+    async def update_apply(
+        _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        # Update to the channel's latest — no user-supplied ref/command. Re-runs the
+        # installer detached (atomic release + flip + restart + health-check + rollback).
+        if not update.apply():
+            raise HTTPException(status_code=503, detail="self-update unavailable (not an install)")
+        return JSONResponse({"status": "updating"}, status_code=202)
 
     @app.get("/api/config")
     async def app_config(request: Request, _: str = Depends(_logged_in)) -> JSONResponse:
