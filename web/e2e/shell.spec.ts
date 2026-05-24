@@ -13,9 +13,12 @@ test("shell renders + new-session landing at /", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /start a new session/i })).toBeVisible();
 });
 
-test("deep-link to /s/:engine/:id renders the session route (URL = identity)", async ({ page }) => {
+test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async ({ page }) => {
   await page.goto("/s/claude/abc123");
-  await expect(page.getByText("claude:abc123")).toBeVisible();
+  // No backend in the preview, so the ws can't connect — but the xterm pane must mount
+  // and a connection status must surface (connecting/reconnecting), never a blank route.
+  await expect(page.locator(".xterm")).toBeVisible();
+  await expect(page.getByRole("status")).toBeVisible();
 });
 
 test("responsive nav: hamburger toggles the drawer on mobile, hidden on desktop", async ({
@@ -32,8 +35,10 @@ test("responsive nav: hamburger toggles the drawer on mobile, hidden on desktop"
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(app).toHaveClass(/navOpen/);
-    // Tapping the backdrop closes the drawer again.
-    await page.getByRole("button", { name: /close session list/i }).click();
+    // Tapping the backdrop (where it's exposed, right of the ~320px drawer) closes it.
+    await page.getByRole("button", { name: /close session list/i }).click({
+      position: { x: 390, y: 320 },
+    });
     await expect(app).not.toHaveClass(/navOpen/);
   } else {
     // Desktop: the sidebar is always present, so the hamburger is hidden.
