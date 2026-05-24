@@ -6,6 +6,79 @@ Sidebar: every session from each installed engine — Claude Code (`~/.claude/pr
 
 Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry. History: `agent-sessions#10` (vision) → `#11` (abstraction) → `#12` (opencode).
 
+## Install & operate
+
+Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx).
+
+```sh
+curl -fsSL https://github.com/teriansilva/agent-sessions/raw/branch/main/install.sh | sh
+```
+
+Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (the **only** sudo step, and it's prompted). On a fresh install it prints the generated admin credentials **once**:
+
+```
+agent-sessions 0.3.1 installed.
+  URL:      http://127.0.0.1:8765
+  username: admin
+  password: <generated>            ← shown once; only the PBKDF2 hash is stored
+```
+
+**First login** forces a password change before anything else is reachable. Lost it? Reset from the host (never pass the password on the command line — it leaks via shell history/`ps`):
+
+```sh
+~/.local/share/agent-sessions/current/venv/bin/agent-sessions reset-password --prompt   # interactive, no echo
+… reset-password --stdin    # scriptable: read one line from stdin
+… reset-password            # generate a random one and print it once
+```
+
+### What the installer creates
+
+```
+~/.local/share/agent-sessions/
+├── releases/<ts>-<sha>/{src,venv}   one self-contained release per build
+├── current → releases/<ts>-<sha>     atomic symlink (rename(2)); flip = upgrade/rollback
+└── env                               0600; secret + admin hash + host/port/origin
+~/.config/systemd/user/agent-sessions.service
+```
+
+Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/opencode/codex) and record their paths in `env`.
+
+Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
+
+### Updating
+
+Self-update never runs arbitrary input — it only moves to the **channel's latest** release, flips `current`, restarts, health-checks `/healthz`, and **rolls back** to the prior release if the new one fails.
+
+- **In-app:** the dashboard shows the version + a check/apply control (`/api/version`, `/api/update/check`, `/api/update/apply` — authed + CSRF + origin-gated).
+- **CLI:** `agent-sessions autoupdate` (check the channel, apply only if newer).
+- **Opt-in autoupdate timer:** pass `AGENT_SESSIONS_AUTOUPDATE=1` at install (optionally `AGENT_SESSIONS_AUTOUPDATE_ONCALENDAR=daily`) and a `agent-sessions-update.timer` runs the same guarded apply on a schedule. Default **off**; re-running the installer without the flag tears the timer back down.
+
+### Rollback & emergency-disable
+
+Releases are immutable directories; `current` is just a symlink, so rollback is a one-step re-point — no rebuild:
+
+```sh
+P=~/.local/share/agent-sessions
+ls -1dt $P/releases/*/                       # newest first; pick the known-good one
+# atomic re-point — same temp-link + rename(2) the installer uses, so a concurrent
+# start/health-check never sees a missing `current` (bare `ln -sfn` unlinks first):
+ln -s $P/releases/<ts>-<sha> $P/.current.rb && mv -Tf $P/.current.rb $P/current
+systemctl --user restart agent-sessions.service
+```
+
+(A failed self-/auto-update already rolls back automatically; this is the manual path.)
+
+**Emergency-disable** — stop serving and/or stop auto-updating:
+
+```sh
+systemctl --user stop    agent-sessions.service          # take the app down now
+systemctl --user disable agent-sessions.service          # …and keep it down across logins
+systemctl --user disable --now agent-sessions-update.timer   # stop autoupdate only
+journalctl --user -u agent-sessions.service -f           # logs
+```
+
+> RO deployment note: the live `terminal.example.com` host predates this installer and is deployed via the app repo's `deploy.yml` (CI) — its host-specific rollback/ops runbook is in [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions).
+
 ## Where things live
 
 - **App code:** here (`src/agent_sessions/`)
