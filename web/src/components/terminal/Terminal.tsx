@@ -4,7 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
-import { dragToLines, type ScrollAccum } from "../../lib/touchScroll";
+import { attachTouchScroll } from "../../lib/touchScroll";
 import styles from "./Terminal.module.css";
 
 function statusText(s: TermStatus): string {
@@ -76,41 +76,13 @@ export function Terminal({
     ro.observe(host);
 
     // Touch scroll: xterm doesn't scroll its scrollback on a one-finger drag (it grabs
-    // touch for selection), so phones felt stuck. Translate a single-finger drag into
-    // line scrolls ourselves; a tap (no move) is left alone so it still focuses + opens
-    // the keyboard. preventDefault stops the page from rubber-banding under the drag.
-    const acc: ScrollAccum = { remainder: 0 };
-    let lastY = 0;
-    let dragging = false;
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
-      lastY = e.touches[0].clientY;
-      acc.remainder = 0;
-      dragging = true;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!dragging || e.touches.length !== 1) return;
-      const y = e.touches[0].clientY;
-      const dy = lastY - y; // finger up (dy>0) → scroll toward newer output
-      lastY = y;
-      const lines = dragToLines(dy, host.clientHeight / (term.rows || 24), acc);
-      if (lines !== 0) term.scrollLines(lines);
-      e.preventDefault();
-    };
-    const endTouch = () => {
-      dragging = false;
-    };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
-    host.addEventListener("touchend", endTouch, { passive: true });
-    host.addEventListener("touchcancel", endTouch, { passive: true });
+    // touch for selection), so phones felt stuck. attachTouchScroll translates a drag
+    // into line scrolls (capture phase, non-passive) — see lib/touchScroll.
+    const detachTouch = attachTouchScroll(host, term);
 
     sock.connect();
     return () => {
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
-      host.removeEventListener("touchend", endTouch);
-      host.removeEventListener("touchcancel", endTouch);
+      detachTouch();
       ro.disconnect();
       sock.close();
       term.dispose();
