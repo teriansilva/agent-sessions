@@ -32,6 +32,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("version", help="Print the version and exit")
+
+    doc = sub.add_parser(
+        "doctor",
+        aliases=["discover-engines"],
+        help="Discover installed agent CLIs and record their paths in the env",
+    )
+    doc.add_argument("--env", default=None, help="env file to update (default: <home>/env)")
+    doc.add_argument("--dry-run", action="store_true", help="print findings without writing")
     return p
 
 
@@ -40,6 +48,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "version":
         print(__version__)
+        return 0
+
+    if args.cmd in ("doctor", "discover-engines"):
+        from pathlib import Path
+
+        from . import discover
+
+        found = discover.discover()
+        for name in discover.ENGINES:
+            path = found[name]
+            print(f"  {name:9} {('→ ' + path) if path else '— not found'}")
+        if not args.dry_run:
+            env_path = Path(args.env).expanduser() if args.env else discover.default_env_path()
+            if env_path.exists() or env_path.parent.is_dir():
+                discover.write_env_bins(env_path, found)
+                print(f"updated {env_path}")
+            else:
+                print(f"(no env file at {env_path} — skipped write)")
         return 0
 
     if args.cmd == "serve":

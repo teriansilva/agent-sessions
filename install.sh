@@ -176,6 +176,9 @@ main() {
   mv -Tf "$tmp_link" "$CURRENT" 2>/dev/null || { rm -f "$tmp_link"; ln -sfn "$rel" "$CURRENT"; }
   trap - EXIT INT TERM        # release is live; do not clean it up
   prune_releases
+  # Discover installed agent CLIs and record their paths in the env (best-effort; also
+  # re-runs on every upgrade so newly-installed engines are picked up).
+  "$CURRENT/venv/bin/agent-sessions" doctor --env "$ENVF" >/dev/null 2>&1 || true
   manage_service
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"
 
