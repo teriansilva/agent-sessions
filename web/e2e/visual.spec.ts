@@ -63,7 +63,14 @@ test("visual capture", async ({ browser }, info) => {
   test.setTimeout(180_000);
   const parsed = parseAreasArg(process.env.VISUAL_AREAS ?? "all");
   if (parsed.kind === "none") {
-    info.skip(true, "VISUAL_AREAS empty/none");
+    // Still write an EMPTY manifest so the comment poster patches the snapshot to
+    // "scope: none / no rows" instead of leaving a stale prior comment in place.
+    mkdirSync(OUT, { recursive: true });
+    writeFileSync(
+      `${OUT}/manifest.json`,
+      JSON.stringify(emptyManifest(BASE, process.env.HEAD_SHA ?? null, []), null, 2) + "\n",
+    );
+    info.skip(true, "VISUAL_AREAS empty/none — wrote empty manifest");
     return;
   }
   if (parsed.kind === "invalid") throw new Error(`unknown areas: ${parsed.unknown.join(", ")}`);

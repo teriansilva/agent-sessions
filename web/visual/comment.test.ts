@@ -40,6 +40,15 @@ describe("post-visual-comment renderer", () => {
     expect(body).not.toContain("<img");
   });
 
+  it("renders an empty (scope=none) manifest as 0/0 with no rows/images — clears a stale snapshot", () => {
+    const empty = { head_sha: "abcdef1234567890", viewports: ["desktop", "mobile"], paths: [] };
+    const body = renderBody(empty, {}, "commit trailer (none)");
+    expect(body).toContain("0/0 ok");
+    expect(body).toContain("scope: commit trailer (none)");
+    expect(body).not.toContain("<img");
+    expect(body).not.toContain("failed to upload");
+  });
+
   it("flags a PARTIAL upload failure explicitly (one ok uploads, another ok doesn't)", () => {
     // login__desktop uploads; the other two ok shots (login__mobile, app-home__desktop) don't.
     const body = renderBody(manifest, { "login__desktop.png": "https://x/a.png" });
