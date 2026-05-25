@@ -19,10 +19,16 @@
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
-.topbar strong {
-  color: var(--accent);
-  font-size: 13px;
-  letter-spacing: 0.03em;
+/* TermRoyale wordmark (#91): gold, the crown 👑 + a gold "Royale". */
+.brand {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--brand-soft);
+}
+.brand b {
+  color: var(--brand);
+  font-weight: 800;
 }
 .terminal-pane {
   min-width: 0;
@@ -39,10 +45,8 @@
 .mobilebar {
   display: none;
 }
-.mobilebar strong {
-  color: var(--accent);
-  font-size: 13px;
-  letter-spacing: 0.03em;
+.mobilebar .brand {
+  font-size: 15px;
 }
 .navToggle {
   display: flex;

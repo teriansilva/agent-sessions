@@ -16,6 +16,24 @@
   width: 100%;
   max-width: 360px;
 }
+.brandHero {
+  margin-bottom: 6px;
+}
+.wordmark {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--brand-soft);
+}
+.wordmark b {
+  color: var(--brand);
+}
+.tagline {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}
 .card h1 {
   font-size: 18px;
   margin: 0 0 2px;

@@ -9,7 +9,7 @@ test("shell renders + new-session landing at /", async ({ page }) => {
   await page.goto("/");
   // The brand shows in the sidebar header (desktop) or the top bar (mobile); only one
   // is visible per viewport, so filter to the visible instance.
-  await expect(page.getByText("agent-sessions").filter({ visible: true })).toBeVisible();
+  await expect(page.getByText("TermRoyale").filter({ visible: true }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: /start a new session/i })).toBeVisible();
 });
 

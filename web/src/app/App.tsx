@@ -34,11 +34,15 @@ function Layout() {
         >
           {navOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
-        <strong>agent-sessions</strong>
+        <span className="brand">
+          👑 Term<b>Royale</b>
+        </span>
       </header>
       <aside className="sidebar">
         <header className="topbar">
-          <strong>agent-sessions</strong>
+          <span className="brand">
+            👑 Term<b>Royale</b>
+          </span>
         </header>
         <SessionList />
       </aside>
