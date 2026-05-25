@@ -26,18 +26,38 @@ function gotoLogin(): void {
   location.assign(loginRedirectUrl());
 }
 
-/** 401 = not signed in → bounce to /login (the React shell has no login screen).
- *  403 (bad CSRF/origin) is a real error, not an auth prompt — surfaced, not redirected. */
-function handleStatus(status: number): void {
-  if (status === 401) gotoLogin();
+/** First-run forced password change → the server-rendered /change-password (the SPA has
+ *  no change screen; this route is on the SW navigateFallbackDenylist). */
+export function gotoChangePassword(): void {
+  if (redirecting) return;
+  redirecting = true;
+  location.assign("/change-password");
+}
+
+/** Handle a 401/403 on an /api call (always throws). 401 = not signed in → /login.
+ *  403 = bad CSRF/origin (surfaced) UNLESS the body says a password change is required,
+ *  in which case route to /change-password (belt-and-suspenders alongside the config gate). */
+async function authGate(r: Response): Promise<never> {
+  if (r.status === 401) {
+    gotoLogin();
+    throw new ApiError(401, "unauthorized");
+  }
+  let detail = "";
+  try {
+    detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+  } catch {
+    /* non-JSON body */
+  }
+  if (/password change required/i.test(detail)) {
+    gotoChangePassword();
+    throw new ApiError(403, "password change required");
+  }
+  throw new ApiError(403, "forbidden");
 }
 
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path, { credentials: "same-origin" });
-  if (r.status === 401 || r.status === 403) {
-    handleStatus(r.status);
-    throw new ApiError(r.status, "unauthorized");
-  }
+  if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
   return (await r.json()) as T;
 }
@@ -56,10 +76,7 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (r.status === 401 || r.status === 403) {
-    handleStatus(r.status);
-    throw new ApiError(r.status, "unauthorized");
-  }
+  if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `POST ${path} → ${r.status}`);
   return (await r.json()) as T;
 }
@@ -88,10 +105,7 @@ async function upload(file: File): Promise<{ path: string; name: string }> {
     headers: { "X-CSRF-Token": csrfToken },
     body: fd,
   });
-  if (r.status === 401) {
-    handleStatus(401);
-    throw new ApiError(401, "unauthorized");
-  }
+  if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `upload → ${r.status}`);
   return (await r.json()) as { path: string; name: string };
 }

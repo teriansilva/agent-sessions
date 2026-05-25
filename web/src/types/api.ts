@@ -36,6 +36,8 @@ export interface AppConfig {
   /** Engines that are installed AND can start a new session (drives the picker). */
   new_session_engines: string[];
   terminal_backend: "ttyd" | "ws" | string;
+  /** First-run forced password change pending — the SPA routes to /change-password. */
+  must_change_password?: boolean;
 }
 
 export interface SessionsQuery {
