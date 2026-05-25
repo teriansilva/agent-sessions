@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "visual": "playwright test e2e/visual.spec.ts --project=desktop",
     "test": "vitest run"
   },
   "dependencies": {
