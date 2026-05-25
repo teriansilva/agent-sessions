@@ -34,6 +34,29 @@ def test_install_sh_structural_invariants():
     assert "AGENT_SESSIONS_NO_SERVICE" in s  # degrades without systemd
 
 
+def test_install_sh_builds_and_serves_react_ui():
+    s = INSTALL_SH.read_text()
+    # The React UI is built from source at install time and the app is pointed at it.
+    assert "build_web" in s
+    assert "npm run build" in s.replace('"$NPM" run build', "npm run build")
+    # Serving/runtime defaults are applied idempotently (set-if-absent) so an upgrade of an
+    # existing install also cuts over — not just a fresh write.
+    assert "migrate_env" in s and "_env_set_if_absent" in s
+    assert "AGENT_SESSIONS_UI react" in s
+    assert "AGENT_SESSIONS_TERMINAL ws" in s
+    assert "AGENT_SESSIONS_WEB_DIST" in s and "src/web/dist" in s
+    assert "AGENT_SESSIONS_RUNTIME_DIR" in s
+
+
+def test_install_sh_self_contained_toolchain():
+    s = INSTALL_SH.read_text()
+    # Missing prereqs are auto-installed (distro) or vendored (Node), not just rejected.
+    assert "_pkg_install" in s
+    assert "ensure_node" in s and "nodejs.org/dist" in s  # vendored Node fallback, no sudo
+    assert "dtach" in s  # ws-PTY backend ensured
+    assert "preflight_report" in s  # up-front validation summary
+
+
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_end_to_end(tmp_path):
     home = tmp_path / "prefix"
@@ -49,6 +72,9 @@ def test_installer_end_to_end(tmp_path):
         "AGENT_SESSIONS_HOME": str(home),
         "AGENT_SESSIONS_NO_SERVICE": "1",
         "AGENT_SESSIONS_PORT": "8799",
+        # Keep this test fast + Node-free; the real UI build is covered by the
+        # Node-gated test below.
+        "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
     }
     r = subprocess.run(
         ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
@@ -74,6 +100,11 @@ def test_installer_end_to_end(tmp_path):
     assert "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$" in text
     assert "AGENT_SESSIONS_SECRET_KEY=" in text
     assert "\nAGENT_SESSIONS_PASSWORD=" not in text  # plaintext never written
+    # The generated env serves the React UI + ws terminal and points at the built dist.
+    assert "AGENT_SESSIONS_UI=react" in text
+    assert "AGENT_SESSIONS_TERMINAL=ws" in text
+    assert f"AGENT_SESSIONS_WEB_DIST={home}/current/src/web/dist" in text
+    assert f"AGENT_SESSIONS_RUNTIME_DIR={home}/pty" in text
 
     # Credentials printed once → the generated password logs in against the stored hash.
     m = re.search(r"password:\s*(\S+)", r.stdout)
@@ -97,6 +128,87 @@ def test_installer_end_to_end(tmp_path):
     releases2 = sorted((home / "releases").iterdir())
     assert len(releases2) == 2  # prior kept for rollback
     assert current.resolve() == sorted(releases2)[-1].resolve()
+
+
+@pytest.mark.skipif(
+    os.environ.get("AGENT_SESSIONS_TEST_UI_BUILD") != "1" or not shutil.which("npm"),
+    reason="opt-in real npm ci + Vite build; set AGENT_SESSIONS_TEST_UI_BUILD=1",
+)
+def test_installer_builds_the_react_ui(tmp_path):
+    # Opt-in heavy test: a full install WITHOUT skipping the build must produce a served
+    # SPA (web/dist/index.html) inside the release `current` points at. Gated behind an
+    # env flag because it runs `npm ci` (network + registry) which isn't deterministic in
+    # a sandboxed CI container; the structural test above guards the wiring on every run,
+    # and the install path is validated locally + during the prod cutover.
+    home = tmp_path / "prefix"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    env = {
+        **os.environ,
+        "AGENT_SESSIONS_REPO": str(REPO),
+        "AGENT_SESSIONS_REF": head,
+        "AGENT_SESSIONS_HOME": str(home),
+        # NO_SERVICE is essential: the systemd unit path is per-user (not per-HOME), so
+        # without this the test would render + restart the host's real agent-sessions unit.
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_PORT": "8798",
+    }
+    r = subprocess.run(
+        ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=900
+    )
+    assert r.returncode == 0, r.stderr
+    dist_index = home / "current" / "src" / "web" / "dist" / "index.html"
+    assert dist_index.is_file(), f"no built SPA at {dist_index}\n{r.stdout[-2000:]}"
+    assert (home / "pty").is_dir()  # ws-PTY runtime dir created
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git required")
+def test_installer_migrates_existing_env_to_react(tmp_path):
+    # An upgrade of a pre-existing (older) env must gain the React/ws serving + runtime
+    # flags WITHOUT clobbering the existing secret/credential lines — otherwise re-running
+    # the installer wouldn't actually cut an existing deployment over to the shipped UI.
+    home = tmp_path / "prefix"
+    home.mkdir()
+    envf = home / "env"
+    envf.write_text(
+        "AGENT_SESSIONS_USERNAME=marcus\n"
+        "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$keepme\n"
+        "AGENT_SESSIONS_SECRET_KEY=keepmesecret\n"
+        "AGENT_SESSIONS_ORIGIN=https://terminal.example\n"
+    )
+    envf.chmod(0o600)
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    env = {
+        **os.environ,
+        "AGENT_SESSIONS_REPO": str(REPO),
+        "AGENT_SESSIONS_REF": head,
+        "AGENT_SESSIONS_HOME": str(home),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
+        "AGENT_SESSIONS_PORT": "8797",
+    }
+    r = subprocess.run(
+        ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
+    )
+    assert r.returncode == 0, r.stderr
+    text = envf.read_text()
+    # New serving/runtime flags added…
+    assert "AGENT_SESSIONS_UI=react" in text
+    assert "AGENT_SESSIONS_TERMINAL=ws" in text
+    assert f"AGENT_SESSIONS_WEB_DIST={home}/current/src/web/dist" in text
+    assert f"AGENT_SESSIONS_RUNTIME_DIR={home}/pty" in text
+    # …existing secrets/credentials preserved, exactly once each (no clobber, no dup).
+    assert "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$keepme\n" in text
+    assert "AGENT_SESSIONS_SECRET_KEY=keepmesecret\n" in text
+    assert text.count("AGENT_SESSIONS_UI=") == 1
+    assert text.count("AGENT_SESSIONS_SECRET_KEY=") == 1
+    assert oct(envf.stat().st_mode & 0o777) == "0o600"  # still locked down
+    assert (home / "pty").is_dir()
+    # No new password printed (credentials kept).
+    assert "password:" not in r.stdout
 
 
 def test_install_sh_has_update_rollback():

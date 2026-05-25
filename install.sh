@@ -23,6 +23,11 @@ PORT="${AGENT_SESSIONS_PORT:-8765}"
 PREFIX="${AGENT_SESSIONS_HOME:-$HOME/.local/share/$APP}"
 ORIGIN="${AGENT_SESSIONS_ORIGIN:-http://$HOST:$PORT}"
 KEEP_RELEASES=3
+# Pinned Node used to build the React UI when the host has no new-enough Node. Vendored
+# into $PREFIX/.toolchain (no sudo, self-contained) so the install "just works".
+NODE_VERSION="${AGENT_SESSIONS_NODE_VERSION:-22.14.0}"
+NODE_MIN_MAJOR=20
+NPM=npm  # resolved by ensure_node() to the system npm or the vendored one
 
 RELEASES="$PREFIX/releases"
 CURRENT="$PREFIX/current"
@@ -35,18 +40,73 @@ note() { printf '\n%s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# --- prerequisites: auto-install everything we can, vendor what we can't ----------
+# Goal: a self-contained install that "just works". A package the operator can't get
+# any other way (a too-old / missing Node) is vendored into $PREFIX with no sudo.
+
+_pkg_install() {  # best-effort distro install of the named packages; returns nonzero if it can't
+  if   have apt-get; then sudo apt-get update -qq && sudo apt-get install -y "$@"
+  elif have dnf;     then sudo dnf install -y "$@"
+  elif have pacman;  then sudo pacman -Sy --noconfirm "$@"
+  else return 1
+  fi
+}
+
+ensure_node() {
+  # Resolve $NPM to a Node >= $NODE_MIN_MAJOR. Order: a new-enough system Node > a distro
+  # install > a vendored static Node (downloaded into $PREFIX/.toolchain, no sudo).
+  _node_ok() { have node && [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -ge "$NODE_MIN_MAJOR" ]; }
+  if _node_ok && have npm; then NPM=npm; return; fi
+  log "Node >= $NODE_MIN_MAJOR not found — trying to install it…"
+  _pkg_install nodejs npm >/dev/null 2>&1 || true
+  if _node_ok && have npm; then NPM=npm; return; fi
+  # Vendor a pinned static Node — fully self-contained, no sudo, no system change.
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) na=x64 ;;
+    aarch64|arm64) na=arm64 ;;
+    *) die "no prebuilt Node for arch '$arch' — install Node >= $NODE_MIN_MAJOR and re-run" ;;
+  esac
+  tdir="$PREFIX/.toolchain"
+  ndir="$tdir/node-v$NODE_VERSION-linux-$na"
+  if [ ! -x "$ndir/bin/npm" ]; then
+    mkdir -p "$tdir"
+    log "fetching a self-contained Node $NODE_VERSION ($na) for the UI build…"
+    curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$na.tar.gz" \
+      -o "$tdir/node.tar.gz" || die "could not download Node $NODE_VERSION"
+    tar -xzf "$tdir/node.tar.gz" -C "$tdir" || die "could not unpack Node"
+    rm -f "$tdir/node.tar.gz"
+  fi
+  PATH="$ndir/bin:$PATH"; export PATH   # so the vendored node + vite are found by npm
+  NPM="$ndir/bin/npm"
+}
+
 ensure_prereqs() {
-  have git || die "git not found — install git and re-run"
+  have curl || die "curl not found — install curl and re-run"
+  have git || { log "git missing — installing…"; _pkg_install git || die "install git and re-run"; }
   have python3 || die "python3 not found — install python3.11+ and re-run"
   python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' \
     || die "python3 >= 3.11 required"
   if ! python3 -m venv --help >/dev/null 2>&1; then
-    log "python venv module missing — attempting to install it (may prompt for sudo)…"
-    if   have apt-get; then sudo apt-get update -qq && sudo apt-get install -y python3-venv
-    elif have dnf;     then sudo dnf install -y python3
-    else die "install the python3 venv module for your distro and re-run"
-    fi
+    log "python venv module missing — installing…"
+    _pkg_install python3-venv >/dev/null 2>&1 || _pkg_install python3 >/dev/null 2>&1 \
+      || die "install the python3 venv module for your distro and re-run"
   fi
+  # The ws terminal attaches agents under a persistent dtach master.
+  have dtach || { log "dtach missing (terminal pane) — installing…"; _pkg_install dtach >/dev/null 2>&1 \
+    || log "could not auto-install dtach — install it so the terminal pane works"; }
+  # The React UI is built from source (Vite) at install time; skip resolving Node when
+  # the build is explicitly skipped (CI / bring-your-own-dist).
+  [ "${AGENT_SESSIONS_SKIP_WEB_BUILD:-0}" = 1 ] || ensure_node
+  preflight_report
+}
+
+preflight_report() {
+  log "prerequisites:"
+  log "  git      $(command -v git || echo MISSING)"
+  log "  python3  $(command -v python3 || echo MISSING) ($(python3 -V 2>&1 | awk '{print $2}'))"
+  log "  node     $(command -v node || echo '(vendored)') ($(node -v 2>/dev/null || echo "v$NODE_VERSION vendored"))"
+  log "  dtach    $(command -v dtach || echo 'MISSING — terminal pane degraded')"
 }
 
 resolve_ref() {
@@ -79,6 +139,22 @@ build_release() {
   python3 -m venv "$rel/venv"   # built at its final path → valid shebangs
   "$rel/venv/bin/pip" install --quiet --upgrade pip
   "$rel/venv/bin/pip" install --quiet "$rel/src"
+  build_web "$rel"
+}
+
+build_web() {
+  # Build the React SPA (Vite) into <rel>/src/web/dist. The app serves it when the env
+  # points AGENT_SESSIONS_WEB_DIST here (set by write_env_if_absent, stable via `current`).
+  # web/dist is git-ignored, so every release builds its own — no stale artifact.
+  rel="$1"
+  if [ "${AGENT_SESSIONS_SKIP_WEB_BUILD:-0}" = 1 ]; then
+    log "skipping UI build (AGENT_SESSIONS_SKIP_WEB_BUILD=1)"; return 0
+  fi
+  [ -f "$rel/src/web/package.json" ] || { log "no web/ in this release — skipping UI build"; return 0; }
+  log "building the React UI (this can take a minute)…"
+  ( cd "$rel/src/web" && "$NPM" ci --no-audit --no-fund --silent && "$NPM" run build --silent ) \
+    || die "UI build failed — see the npm output above"
+  [ -f "$rel/src/web/dist/index.html" ] || die "UI build produced no dist/index.html"
 }
 
 write_env_if_absent() {
@@ -104,6 +180,27 @@ AGENT_SESSIONS_FORCE_PASSWORD_CHANGE=1
 EOF
   chmod 600 "$ENVF"
   printf '%s' "$password"
+}
+
+_env_has() { grep -q "^$1=" "$ENVF" 2>/dev/null; }
+_env_set_if_absent() {
+  # Append KEY=VAL only if KEY is absent — preserves operator overrides + existing
+  # secrets/credentials (we never rewrite the lines already in the file). 0600 is kept
+  # because we only append to an already-0600 file.
+  _env_has "$1" || printf '%s=%s\n' "$1" "$2" >> "$ENVF"
+}
+
+migrate_env() {
+  # Bring an env file (fresh OR pre-existing from an older install) up to the current
+  # serving contract: the shipped product is the React UI + ws-PTY terminal. Idempotent
+  # and non-destructive — existing keys (incl. a deliberate AGENT_SESSIONS_UI=jinja) win.
+  [ -f "$ENVF" ] || return 0
+  mkdir -p "$PREFIX/pty"   # ws-PTY dtach sockets live here
+  umask 077
+  _env_set_if_absent AGENT_SESSIONS_UI react
+  _env_set_if_absent AGENT_SESSIONS_TERMINAL ws
+  _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
+  _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
 }
 
 render_unit() {
@@ -225,8 +322,16 @@ main() {
   # release keeps serving (rollback-safe). Cleared once the flip succeeds.
   trap 'rm -rf "$rel"' EXIT INT TERM
   build_release "$ref"  # sets $rel
-  render_unit  # write/refresh the unit before flipping so ExecStart path is valid
+  # Write/refresh the unit before flipping so the ExecStart path is valid — but ONLY when
+  # we'll actually manage the service. Under NO_SERVICE we must not touch the host's
+  # systemd unit at all (it's a per-user, not per-HOME, path — otherwise a scratch/test
+  # install would clobber the real unit).
+  [ "${AGENT_SESSIONS_NO_SERVICE:-0}" = 1 ] || render_unit
   password="$(write_env_if_absent "$rel")"
+  # Bring the env up to the current serving contract (React UI + ws terminal). Runs for
+  # BOTH a fresh install and an upgrade of an older env — idempotent + non-destructive,
+  # so re-running the installer actually cuts an existing deployment over to the React UI.
+  migrate_env
   # Atomic flip: create the new link beside `current`, then rename(2) it over the old
   # one — atomic on the same filesystem, so a concurrent start/health-check/restart never
   # sees a missing `current` (unlike `ln -sfn`, which unlinks then recreates). Falls back
