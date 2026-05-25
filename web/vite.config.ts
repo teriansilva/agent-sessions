@@ -18,7 +18,18 @@ export default defineConfig({
       // from cache (per #64 PWA rule). No runtimeCaching entries for them on purpose.
       workbox: {
         navigateFallback: "index.html",
-        navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/term/, /^\/login/, /^\/logout/, /^\/healthz/],
+        // Server-rendered (Jinja) routes the SPA must NOT shadow with its index.html
+        // fallback — incl. /change-password (the forced first-login change has no SPA
+        // route; without this the SW serves the React shell there and login dead-ends).
+        navigateFallbackDenylist: [
+          /^\/api/,
+          /^\/ws/,
+          /^\/term/,
+          /^\/login/,
+          /^\/logout/,
+          /^\/change-password/,
+          /^\/healthz/,
+        ],
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
       },
       manifest: {
