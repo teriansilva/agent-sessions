@@ -170,7 +170,7 @@ export function Compose({
         </div>
         <span className={styles.spacer}>{note}</span>
         {open && (
-          <button type="button" className={styles.send} title="Send + Enter" onClick={send}>
+          <button type="button" className={`${styles.send} shine`} title="Send + Enter" onClick={send}>
             <Send size={15} />
             Send
           </button>

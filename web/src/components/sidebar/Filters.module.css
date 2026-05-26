@@ -7,11 +7,20 @@
 .search,
 .selects select {
   width: 100%;
-  background: #181818;
+  background: var(--bg);
   color: var(--text);
-  border: 1px solid #2a2a2a;
-  border-radius: 4px;
-  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+.search::placeholder {
+  color: var(--text-muted);
+}
+.search:focus,
+.selects select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(124, 77, 219, 0.3);
 }
 .selects {
   display: flex;
@@ -23,29 +32,39 @@
 }
 .clear {
   flex: none;
-  background: #222;
-  color: #ccc;
-  border: 1px solid #333;
-  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   padding: 0 10px;
   cursor: pointer;
+}
+.clear:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 .tabs {
   display: flex;
   gap: 6px;
 }
+/* Segmented Active/Archived — a faint top sheen gives a subtle gloss, on theme. */
 .tabs button {
   flex: 1;
-  background: #1c1c1c;
-  border: 1px solid #2a2a2a;
-  color: #aaa;
-  border-radius: 12px;
-  padding: 3px 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 50%), var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 4px 0;
   cursor: pointer;
   font-size: 12px;
 }
+.tabs button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .tabs button.on {
-  background: #234;
-  color: #cde;
-  border-color: #356;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 55%), var(--accent);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
 }

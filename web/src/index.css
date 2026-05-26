@@ -19,6 +19,47 @@
 * {
   box-sizing: border-box;
 }
+
+/* Shiny CTAs (#91 polish): a gold reflection sweeps across the button now and then.
+ * Global helper so it composes with any module's button class. ~7s cycle = a ~1.3s sweep
+ * then a long pause. Disabled buttons + reduced-motion users get no sweep. */
+.shine {
+  position: relative;
+  overflow: hidden;
+}
+.shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 35%,
+    rgba(255, 233, 168, 0.5) 50%,
+    transparent 65%
+  );
+  transform: translateX(-160%);
+  animation: shine-sweep 7s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes shine-sweep {
+  0% {
+    transform: translateX(-160%);
+  }
+  18% {
+    transform: translateX(160%);
+  }
+  100% {
+    transform: translateX(160%);
+  }
+}
+button.shine:disabled::after {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shine::after {
+    animation: none;
+  }
+}
 html,
 body,
 #root {

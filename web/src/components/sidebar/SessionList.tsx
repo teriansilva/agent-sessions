@@ -144,7 +144,7 @@ export function SessionList() {
 
   return (
     <div className={styles.wrap}>
-      <Link to="/" className={styles.newBtn}>
+      <Link to="/" className={`${styles.newBtn} shine`}>
         <Plus size={16} />
         New session
       </Link>

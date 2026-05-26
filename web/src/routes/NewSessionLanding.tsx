@@ -95,7 +95,7 @@ export function NewSessionLanding() {
           <span>Skip permission prompts</span>
         </label>
 
-        <button type="button" className={styles.start} disabled={!canStart} onClick={start}>
+        <button type="button" className={`${styles.start} shine`} disabled={!canStart} onClick={start}>
           Start session
         </button>
         <p className={styles.hint}>…or open an existing session from the list.</p>

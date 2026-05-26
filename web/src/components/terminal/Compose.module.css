@@ -16,13 +16,18 @@
   width: 100%;
   max-height: 28vh;
   resize: none;
-  background: #181818;
+  background: var(--bg);
   color: #fff;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px;
   font: inherit;
   line-height: 1.35;
+}
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(124, 77, 219, 0.25);
 }
 .pills {
   display: flex;
@@ -34,12 +39,12 @@
   align-items: center;
   gap: 4px;
   max-width: 70%;
-  background: #16263a;
-  border: 1px solid #244;
+  background: rgba(124, 77, 219, 0.16);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 2px 8px;
   font-size: 12px;
-  color: #cde;
+  color: var(--text);
 }
 .pn {
   overflow: hidden;
@@ -49,7 +54,7 @@
 .pill button {
   background: none;
   border: 0;
-  color: #9ab;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -65,21 +70,28 @@
   flex-wrap: wrap;
   gap: 4px;
 }
-.keys button {
+/* Key + toggle buttons: themed indigo with a faint top sheen — a bit shiny, not loud. */
+.keys button,
+.toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 34px;
   height: 34px;
   padding: 0 8px;
-  background: #1c1c1c;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 45%), #181238;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
-.keys button:active {
-  background: #2a2a2a;
+.keys button:hover,
+.toggle:hover {
+  border-color: var(--accent);
+}
+.keys button:active,
+.toggle:active {
+  background: var(--row-hover);
 }
 .txt {
   font-size: 12px;
@@ -93,32 +105,27 @@
   overflow: hidden;
   white-space: nowrap;
 }
+/* Primary Send: violet + a top sheen; the global .shine class adds the periodic sweep. */
 .send {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: #1a8a4a;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 55%), var(--accent);
   color: #fff;
   border: 0;
   height: 36px;
   padding: 0 14px;
-  border-radius: 6px;
+  border-radius: 8px;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
 .send:active {
-  background: #1c9c54;
+  filter: brightness(1.08);
 }
 .toggle {
   flex: 0 0 auto;
   display: grid;
   place-items: center;
   width: 34px;
-  height: 34px;
-  background: #1c1c1c;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
 }
