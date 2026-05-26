@@ -63,6 +63,13 @@
   color: inherit;
   flex: 1;
   min-width: 0;
+  border-left: 2px solid transparent;
+}
+/* The currently-open session (the row whose URL matches the route). A tinted ground +
+ * an accent rail so you can see which session you're in at a glance (#18). */
+.active {
+  background: var(--row-hover);
+  border-left-color: var(--accent);
 }
 /* Action cluster: hidden until row hover on pointer devices; always shown on touch
  * (no hover) so phone users can reach rename/archive. */

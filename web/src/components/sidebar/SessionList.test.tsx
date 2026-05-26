@@ -64,6 +64,22 @@ test("renders session rows from the API", async () => {
   expect(screen.getByText("Second")).toBeInTheDocument();
 });
 
+test("marks the row matching the current URL as the active session (#18)", async () => {
+  mockSessions.mockResolvedValue(
+    pageOf([sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")], { total: 2 }),
+  );
+  render(
+    <MemoryRouter initialEntries={["/s/claude/a"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  // NavLink sets aria-current="page" on the row whose /s/:engine/:uuid matches the route.
+  const open = await screen.findByRole("link", { name: /First/ });
+  expect(open).toHaveAttribute("aria-current", "page");
+  const other = screen.getByRole("link", { name: /Second/ });
+  expect(other).not.toHaveAttribute("aria-current");
+});
+
 test("shows the empty state when there are no sessions", async () => {
   mockSessions.mockResolvedValue(pageOf([]));
   render(

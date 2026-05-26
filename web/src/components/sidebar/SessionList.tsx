@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { engineBadge, relTime, shortCwd } from "../../lib/format";
 import type { Session } from "../../types/api";
@@ -88,7 +88,10 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
 
   return (
     <li className={styles.rowWrap}>
-      <Link to={`/s/${s.engine}/${s.uuid}`} className={styles.row}>
+      <NavLink
+        to={`/s/${s.engine}/${s.uuid}`}
+        className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
+      >
         <span className={`${styles.badge} ${styles[s.engine] ?? ""}`}>{engineBadge(s.engine)}</span>
         <div className={styles.body}>
           <div className={styles.title}>{s.title || "(untitled)"}</div>
@@ -96,7 +99,7 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
             {shortCwd(s.cwd)} · {relTime(s.last_mtime)}
           </div>
         </div>
-      </Link>
+      </NavLink>
       <div className={styles.actions}>
         <button
           type="button"
