@@ -75,6 +75,15 @@ export interface SystemInfo {
   uptime_seconds?: number;
 }
 
+export interface UpdateInfo {
+  current: string;
+  channel: string;
+  /** The channel's latest ref (highest v* tag on stable, main HEAD short SHA on main),
+   *  or null when git/network is unavailable or no release tag exists yet. */
+  latest: string | null;
+  update_available: boolean;
+}
+
 export interface SessionsQuery {
   limit?: number;
   offset?: number;

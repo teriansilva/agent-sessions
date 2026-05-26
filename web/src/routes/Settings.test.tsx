@@ -8,7 +8,14 @@ import { ThemeCtx } from "../theme/themeStore";
 import { Settings } from "./Settings";
 
 vi.mock("../lib/api", () => ({
-  api: { version: vi.fn(), setTheme: vi.fn(), engines: vi.fn(), system: vi.fn() },
+  api: {
+    version: vi.fn(),
+    setTheme: vi.fn(),
+    engines: vi.fn(),
+    system: vi.fn(),
+    updateCheck: vi.fn(),
+    updateApply: vi.fn(),
+  },
 }));
 
 function renderSettings(theme: ThemeId = "royal") {
@@ -54,7 +61,7 @@ test("renders the three themes, the version, and a safe coffee link", async () =
   for (const label of ["Royal", "Dark", "Light"]) {
     expect(screen.getByRole("radio", { name: new RegExp(label) })).toBeInTheDocument();
   }
-  await waitFor(() => expect(screen.getByText("1.2.3")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
 
   const coffee = screen.getByRole("link", { name: /buy me a coffee/i });
   expect(coffee).toHaveAttribute("href", "https://buymeacoffee.com/teriansilva");
@@ -67,14 +74,14 @@ test("the active theme is marked aria-checked", async () => {
   expect(screen.getByRole("radio", { name: /Light/ })).toHaveAttribute("aria-checked", "true");
   expect(screen.getByRole("radio", { name: /Royal/ })).toHaveAttribute("aria-checked", "false");
   // flush the pending version fetch so its state update doesn't warn outside act()
-  await waitFor(() => expect(screen.getByText("1.2.3")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
 });
 
 test("picking a theme calls setTheme with its id", async () => {
   const { setTheme } = renderSettings("royal");
   await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
-  await waitFor(() => expect(screen.getByText("1.2.3")).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
 });
 
 test("renders the Connected agents section with each engine + new-session badge", async () => {
@@ -97,4 +104,20 @@ test("renders the System section with humanized fields", async () => {
   expect(screen.getByText(/8 cores · load 0\.50/)).toBeInTheDocument();
   expect(screen.getByText("8.0 GB / 16 GB")).toBeInTheDocument();
   expect(screen.getByText("1d 1h")).toBeInTheDocument();
+});
+
+test("Updates: check finds an update, then apply calls the API", async () => {
+  vi.mocked(api.updateCheck).mockResolvedValue({
+    current: "0.0.1",
+    channel: "main",
+    latest: "abc1234",
+    update_available: true,
+  });
+  vi.mocked(api.updateApply).mockResolvedValue({ status: "updating" });
+  renderSettings();
+  await userEvent.click(screen.getByRole("button", { name: /check for updates/i }));
+  expect(await screen.findByText(/update available: abc1234/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /update now/i }));
+  expect(api.updateApply).toHaveBeenCalled();
+  expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
 });

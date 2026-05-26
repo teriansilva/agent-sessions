@@ -7,6 +7,7 @@ import type {
   SessionsPage,
   SessionsQuery,
   SystemInfo,
+  UpdateInfo,
 } from "../types/api";
 
 export class ApiError extends Error {
@@ -124,6 +125,10 @@ export const api = {
   engines: () => getJson<EnginesResponse>("/api/engines"),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
+  /** Self-update: compare the running version to the channel's latest. */
+  updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
+  /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */
+  updateApply: () => postJson<{ status: string }>("/api/update/apply"),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
   upload,

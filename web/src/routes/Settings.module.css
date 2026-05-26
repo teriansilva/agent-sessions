@@ -234,3 +234,49 @@
 .coffee:active {
   background: linear-gradient(100deg, #e6b837, #c8951f);
 }
+
+/* Updates */
+.updateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.updateBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.updateBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+.updateBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.updateApply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  color: var(--cta-text);
+}
+.updateApply:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

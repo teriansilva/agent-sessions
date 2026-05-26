@@ -1,12 +1,11 @@
-import { Code2, Coffee, Mail } from "lucide-react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Code2, Coffee, Download, Mail, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration } from "../lib/format";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
-import type { EngineInfo, SystemInfo } from "../types/api";
+import type { EngineInfo, SystemInfo, UpdateInfo } from "../types/api";
 import styles from "./Settings.module.css";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
@@ -141,6 +140,106 @@ function SystemCard() {
   );
 }
 
+/** Updates: compare the running version to the channel's latest and apply (re-runs the
+ *  installer). Only meaningful for installer-managed deploys; in a dev/source checkout
+ *  apply returns 503 (surfaced). On the default `stable` channel with no release tags
+ *  yet, the check reports "up to date" (no `latest`). */
+function UpdatesCard() {
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [current, setCurrent] = useState<string | null>(null);
+  const [state, setState] = useState<"idle" | "checking" | "applying" | "applied" | "error">(
+    "idle",
+  );
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Show the running version immediately; the remote compare (a git ls-remote) only runs
+  // when the user clicks "Check for updates".
+  useEffect(() => {
+    let alive = true;
+    api
+      .version()
+      .then((v) => alive && setCurrent(v.version))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const check = async () => {
+    setState("checking");
+    setMsg(null);
+    try {
+      setInfo(await api.updateCheck());
+      setState("idle");
+    } catch {
+      setState("error");
+      setMsg("Couldn’t check for updates.");
+    }
+  };
+
+  const apply = async () => {
+    setState("applying");
+    setMsg(null);
+    try {
+      await api.updateApply();
+      setState("applied");
+      setMsg("Updating… the app will restart shortly; reload in a moment.");
+    } catch (e) {
+      setState("error");
+      setMsg(
+        e instanceof ApiError && e.status === 503
+          ? "Self-update isn’t available for this install."
+          : "Update failed to start.",
+      );
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="updates-h">
+      <h2 id="updates-h">Updates</h2>
+      <dl className={styles.meta}>
+        <div className={styles.metaRow}>
+          <dt>Current</dt>
+          <dd>{info?.current ?? current ?? "—"}</dd>
+        </div>
+        <div className={styles.metaRow}>
+          <dt>Channel</dt>
+          <dd>{info?.channel ?? "stable"}</dd>
+        </div>
+      </dl>
+      {info &&
+        (info.update_available ? (
+          <p className={styles.hint}>Update available: {info.latest}</p>
+        ) : (
+          <p className={styles.hint}>
+            {info.latest ? `You’re on the latest (${info.latest}).` : "You’re up to date."}
+          </p>
+        ))}
+      {msg && <p className={styles.hint}>{msg}</p>}
+      <div className={styles.updateActions}>
+        <button
+          type="button"
+          className={styles.updateBtn}
+          onClick={check}
+          disabled={state === "checking" || state === "applying"}
+        >
+          <RefreshCw size={15} /> {state === "checking" ? "Checking…" : "Check for updates"}
+        </button>
+        {info?.update_available && (
+          <button
+            type="button"
+            className={`${styles.updateApply} shine`}
+            onClick={apply}
+            disabled={state === "applying" || state === "applied"}
+          >
+            <Download size={15} /> {state === "applying" ? "Updating…" : "Update now"}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /** Settings (#109): theme picker (applies app-wide + to the terminal), an About section
  *  with the running version, and a support link. Reached via the gear in the sidebar. */
 export function Settings() {
@@ -226,6 +325,8 @@ export function Settings() {
       <ConnectedAgents />
 
       <SystemCard />
+
+      <UpdatesCard />
 
       <section className={styles.section} aria-labelledby="support-h">
         <h2 id="support-h">Support</h2>
