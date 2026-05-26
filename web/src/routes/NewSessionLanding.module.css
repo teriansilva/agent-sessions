@@ -47,12 +47,28 @@
   color: var(--text-muted);
 }
 .field select {
-  background: #1c1c1c;
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 8px 10px;
   font: inherit;
+  /* Inherit the theme's color-scheme so the native option popup is dark in
+   * royal/dark and light in light. */
+  color-scheme: inherit;
+  cursor: pointer;
+}
+.field select:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.field select:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .checkbox {
   display: flex;
@@ -61,6 +77,17 @@
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
+}
+/* Tint the native checkbox to the theme accent so it isn't a stock blue/white box. */
+.checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.checkbox input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .start {
   margin-top: 4px;

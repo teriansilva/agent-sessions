@@ -27,11 +27,14 @@
          web/src/theme/applyTheme.ts; kept inline + tiny so it runs ahead of the bundle. -->
     <script>
       (function () {
+        var t = "royal";
         try {
-          var t = localStorage.getItem("tr-theme");
-          if (t === "dark" || t === "light" || t === "royal")
-            document.documentElement.setAttribute("data-theme", t);
+          var s = localStorage.getItem("tr-theme");
+          if (s === "dark" || s === "light" || s === "royal") t = s;
         } catch (e) {}
+        // Always pin a valid data-theme so <html> never renders attribute-less or
+        // with an unknown value; "royal" matches the bare :root tokens (the default).
+        document.documentElement.setAttribute("data-theme", t);
       })();
     </script>
   </head>

@@ -6,6 +6,10 @@
   padding: 8px;
   background: var(--panel);
   border-top: 1px solid var(--border);
+  /* Cap the bar's own height and scroll internally so a tall compose shrinks the
+   * terminal (the flex:1 sibling) rather than pushing the action row off-screen (#7). */
+  max-height: 50dvh;
+  overflow-y: auto;
 }
 .fields {
   display: flex;
@@ -17,7 +21,7 @@
   max-height: 28vh;
   resize: none;
   background: var(--bg);
-  color: #fff;
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
@@ -96,6 +100,7 @@
 .txt {
   font-size: 12px;
   letter-spacing: 0.02em;
+  gap: 5px;
 }
 .spacer {
   flex: 1;

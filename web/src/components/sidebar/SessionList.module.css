@@ -36,12 +36,22 @@
 }
 .more button {
   width: 100%;
-  background: #1c1c1c;
-  color: #ccc;
-  border: 1px solid #2a2a2a;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 0;
   cursor: pointer;
+  font: inherit;
+}
+.more button:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+.more button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .more button:disabled {
   opacity: 0.5;
@@ -106,8 +116,13 @@
   cursor: pointer;
 }
 .iconBtn:hover:not(:disabled) {
-  background: var(--badge-bg);
-  color: var(--text);
+  background: var(--row-hover);
+  color: var(--accent);
+}
+.iconBtn:focus-visible {
+  outline: none;
+  color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .iconBtn:disabled {
   opacity: 0.4;
@@ -124,12 +139,17 @@
 .editInput {
   flex: 1;
   min-width: 0;
-  background: #1c1c1c;
-  border: 1px solid var(--accent, #4a90d9);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   padding: 5px 8px;
   font: inherit;
+}
+.editInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .body {
   min-width: 0;
@@ -161,9 +181,15 @@
   background: var(--badge-bg);
   color: var(--badge-fg);
 }
+/* opencode keeps a warm/amber identity (vs the violet default badge), but tuned per
+ * theme so it stays legible — the dark-brown/peach pair was unreadable in light. */
 .opencode {
   background: #3a2f12;
-  color: #fc9;
+  color: #ffcc99;
+}
+:root[data-theme="light"] .opencode {
+  background: #fbe9c6;
+  color: #6b4e12;
 }
 .empty {
   color: var(--text-muted);

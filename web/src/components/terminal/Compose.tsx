@@ -150,11 +150,13 @@ export function Compose({
           </button>
           <button
             type="button"
-            aria-label="Ctrl-C (interrupt)"
-            title="Ctrl-C — interrupt"
+            className={styles.txt}
+            aria-label="Interrupt (send Ctrl-C)"
+            title="Send Ctrl-C (interrupt)"
             onClick={() => key("ctrlc")}
           >
-            <Square size={14} fill="currentColor" />
+            <Square size={12} fill="currentColor" />
+            <span>Interrupt</span>
           </button>
           <button
             type="button"

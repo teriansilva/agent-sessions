@@ -4,6 +4,10 @@
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
+  /* Bound the single row to the viewport so grid items can't grow past it. Without an
+   * explicit row track the implicit row is `auto` (content-sized), which let the compose
+   * bar push the terminal pane below the fold (#7) and stopped window-resize reflow (#8). */
+  grid-template-rows: minmax(0, 100dvh);
   height: 100dvh;
   overflow: hidden;
 }
@@ -52,9 +56,17 @@
 }
 .terminal-pane {
   min-width: 0;
+  min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  /* Stretch the routed child to fill the bounded pane (don't center it vertically — the
+   * landing centers its own card internally, and the terminal must fill the height so the
+   * compose bar shrinks the terminal instead of overflowing). */
+  overflow: hidden;
+}
+.terminal-pane > * {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .placeholder {
   color: var(--text-muted);
