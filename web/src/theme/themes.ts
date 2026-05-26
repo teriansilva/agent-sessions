@@ -75,6 +75,25 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
 
 export const THEME_LIST: ThemeMeta[] = THEME_IDS.map((id) => THEMES[id]);
 
+/** The subset of xterm.js `ITheme` we drive from a theme. Kept as a plain shape so
+ *  Terminal.tsx can assign it to `term.options.theme`. */
+export interface XtermTheme {
+  background: string;
+  foreground: string;
+  cursor: string;
+  selectionBackground: string;
+}
+
+export function xtermTheme(id: ThemeId): XtermTheme {
+  const t = THEMES[id].terminal;
+  return {
+    background: t.background,
+    foreground: t.foreground,
+    cursor: t.cursor,
+    selectionBackground: t.selectionBackground,
+  };
+}
+
 export function isThemeId(v: unknown): v is ThemeId {
   return typeof v === "string" && (THEME_IDS as readonly string[]).includes(v);
 }

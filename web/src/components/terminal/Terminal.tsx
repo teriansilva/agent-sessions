@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
+import { THEMES, xtermTheme } from "../../theme/themes";
+import { useTheme } from "../../theme/themeStore";
 import { Compose } from "./Compose";
 import styles from "./Terminal.module.css";
 
@@ -36,6 +38,8 @@ export function Terminal({
   const hostRef = useRef<HTMLDivElement>(null);
   const sockRef = useRef<TermSocket | null>(null);
   const termRef = useRef<Xterm | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const { theme } = useTheme();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
 
@@ -60,17 +64,20 @@ export function Terminal({
     const host = hostRef.current;
     if (!host) return;
 
+    // Initial look from the active theme; a separate effect re-applies on theme change.
+    const t0 = THEMES[theme].terminal;
     const term = new Xterm({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: t0.fontSize,
       scrollback: 10000,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      theme: { background: "#0e0e0e" },
+      fontFamily: t0.fontFamily,
+      theme: xtermTheme(theme),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
     termRef.current = term;
+    fitRef.current = fit;
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -139,12 +146,26 @@ export function Terminal({
       sock.close();
       sockRef.current = null;
       termRef.current = null;
+      fitRef.current = null;
       term.dispose();
     };
     // Primitive deps (not the `fresh` object) so a re-render with an equal value doesn't
     // tear down + relaunch the terminal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, id, fresh?.cwd, fresh?.bypass]);
+
+  // Re-theme the live terminal on theme change WITHOUT tearing it down. Colours apply
+  // immediately; if the font/size changed, fit() recomputes the grid and xterm's
+  // onResize handler (wired above) pushes the new dimensions to the pty.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const t = THEMES[theme].terminal;
+    term.options.theme = xtermTheme(theme);
+    term.options.fontFamily = t.fontFamily;
+    term.options.fontSize = t.fontSize;
+    fitRef.current?.fit();
+  }, [theme]);
 
   const text = statusText(status);
   return (

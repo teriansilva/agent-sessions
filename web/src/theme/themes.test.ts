@@ -6,6 +6,7 @@ import {
   THEME_IDS,
   THEME_LIST,
   THEMES,
+  xtermTheme,
 } from "./themes";
 
 test("registry has royal/dark/light and royal is the default", () => {
@@ -41,4 +42,19 @@ test("coerceTheme accepts valid ids and falls back to the default otherwise", ()
   expect(coerceTheme("bogus")).toBe(DEFAULT_THEME);
   expect(coerceTheme(null)).toBe(DEFAULT_THEME);
   expect(coerceTheme(undefined)).toBe(DEFAULT_THEME);
+});
+
+test("xtermTheme maps a theme's terminal palette to the xterm ITheme subset", () => {
+  for (const id of THEME_IDS) {
+    const it = xtermTheme(id);
+    const t = THEMES[id].terminal;
+    expect(it).toEqual({
+      background: t.background,
+      foreground: t.foreground,
+      cursor: t.cursor,
+      selectionBackground: t.selectionBackground,
+    });
+  }
+  // Royal keeps the deep-indigo ground (the established TermRoyale terminal look).
+  expect(xtermTheme("royal").background).toBe("#0d0820");
 });

@@ -66,6 +66,14 @@ export const VISUAL_PATHS: VisualPath[] = [
     requireAuth: "admin",
     waitFor: SPA_MOUNTED,
   },
+  {
+    group: "authed",
+    path: "/settings",
+    name: "settings",
+    description: "Settings — theme picker, About, and the support link (#109)",
+    requireAuth: "admin",
+    waitFor: SPA_MOUNTED,
+  },
 ];
 
 export const KNOWN_AREA_KEYS: ReadonlySet<string> = new Set(VISUAL_PATHS.map((p) => p.name));
