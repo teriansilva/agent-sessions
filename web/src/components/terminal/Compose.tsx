@@ -10,8 +10,9 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ClipboardEvent as ReactClipboardEvent, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { imageFilesFromData } from "../../lib/clipboardImages";
 import { bracketedPaste, KEYSEQ, type KeyName } from "../../lib/termKeys";
 import styles from "./Compose.module.css";
 
@@ -65,11 +66,11 @@ export function Compose({
     if (taRef.current) taRef.current.style.height = "auto";
   };
 
-  const pickFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const uploadFiles = async (files: File[]) => {
+    if (!files.length) return;
     setNote("uploading…");
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         const up = await api.upload(file);
         if (open) {
           setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
@@ -83,6 +84,18 @@ export function Compose({
       setTimeout(() => setNote(""), 3000);
     }
     if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const pickFiles = (files: FileList | null) => uploadFiles(Array.from(files ?? []));
+
+  // Paste an image (screenshot) into the compose box → upload it like an attachment
+  // instead of letting the textarea swallow the (empty) text. Plain-text paste is left
+  // to the textarea (#135).
+  const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const images = imageFilesFromData(e.clipboardData);
+    if (!images.length) return;
+    e.preventDefault();
+    void uploadFiles(images);
   };
 
   return (
@@ -115,6 +128,7 @@ export function Compose({
               setText(e.target.value);
               grow();
             }}
+            onPaste={onPaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();

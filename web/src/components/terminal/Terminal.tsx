@@ -2,7 +2,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "../../lib/api";
+import { imageFilesFromData } from "../../lib/clipboardImages";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
+import { bracketedPaste } from "../../lib/termKeys";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
 import { THEMES, xtermTheme } from "../../theme/themes";
@@ -135,6 +138,29 @@ export function Terminal({
 
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
+
+    // Paste an image (screenshot) anywhere over the terminal → upload it and send the
+    // returned server path to the PTY as a bracketed paste so the agent can read it.
+    // Capture-phase + stopPropagation so xterm never sees the (text-less) image paste; a
+    // plain-text paste carries no image files, so we fall through to xterm untouched (#135).
+    const onHostPaste = (e: ClipboardEvent) => {
+      const images = imageFilesFromData(e.clipboardData);
+      if (!images.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        for (const f of images) {
+          try {
+            const up = await api.upload(f);
+            sock.send({ t: "i", d: bracketedPaste(up.path) + " " });
+          } catch {
+            /* best-effort: a failed upload just inserts nothing */
+          }
+        }
+      })();
+    };
+    host.addEventListener("paste", onHostPaste, true);
+
     const ro = new ResizeObserver(() => refit());
     ro.observe(host);
     // Mobile: the address bar showing/hiding changes the visual viewport height (dvh)
@@ -162,6 +188,7 @@ export function Terminal({
     return () => {
       cancelAnimationFrame(raf);
       vv?.removeEventListener("resize", onVV);
+      host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       touchLayer?.remove();
       ro.disconnect();

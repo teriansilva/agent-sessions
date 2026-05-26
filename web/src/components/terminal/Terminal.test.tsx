@@ -1,8 +1,13 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { type ReactNode } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
+import { api } from "../../lib/api";
+import { bracketedPaste } from "../../lib/termKeys";
 import { ThemeCtx } from "../../theme/themeStore";
 import { Terminal } from "./Terminal";
+import styles from "./Terminal.module.css";
+
+vi.mock("../../lib/api", () => ({ api: { upload: vi.fn() } }));
 
 // jsdom has no canvas/ResizeObserver/rAF — stub the bits the socket effect touches so we can
 // mount the REAL Terminal (the bug this guards lives in its socket effect, not in a mock).
@@ -102,4 +107,25 @@ test("dropping `fresh` during convergence keeps the same live socket (no relaunc
   expect(sockets).toHaveLength(1);
   expect(sockets[0].close).not.toHaveBeenCalled();
   expect(sockets[0].url(0)).toContain("new=1");
+});
+
+// #135: pasting an image over the terminal uploads it and sends the server path to the PTY.
+test("pasting an image over the terminal uploads it and sends the path to the PTY", async () => {
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const { container } = render(
+    wrap(<Terminal engine="claude" id="abc123" />),
+  );
+  const host = container.getElementsByClassName(styles.term)[0];
+  expect(host).toBeTruthy();
+  fireEvent.paste(host, {
+    clipboardData: {
+      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+      files: [file],
+    },
+  });
+  await vi.waitFor(() => expect(api.upload).toHaveBeenCalledWith(file));
+  await vi.waitFor(() =>
+    expect(sockets[0].send).toHaveBeenCalledWith({ t: "i", d: `${bracketedPaste("/uploads/shot.png")} ` }),
+  );
 });

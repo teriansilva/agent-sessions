@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
+import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { Compose } from "./Compose";
 
@@ -9,6 +10,7 @@ vi.mock("../../lib/api", () => ({ api: { upload: vi.fn() } }));
 let sendInput: ReturnType<typeof vi.fn>;
 let onCopy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
+  vi.clearAllMocks();
   sendInput = vi.fn();
   onCopy = vi.fn();
 });
@@ -58,6 +60,32 @@ test("the compose toggle hides/shows the text field", async () => {
   expect(screen.getByRole("textbox")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /collapse compose/i }));
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+});
+
+test("pasting an image uploads it and adds an attachment, not text (#135)", async () => {
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  fireEvent.paste(ta, {
+    clipboardData: {
+      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+      files: [file],
+    },
+  });
+  expect(api.upload).toHaveBeenCalledWith(file);
+  // The upload surfaces as an attachment pill (compose box open) — and no text was inserted.
+  expect(await screen.findByText("shot.png")).toBeInTheDocument();
+  expect(ta.value).toBe("");
+});
+
+test("pasting plain text is left to the textarea (no upload)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("textbox"));
+  await user.paste("just text");
+  expect(api.upload).not.toHaveBeenCalled();
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("just text");
 });
 
 test("the copy button invokes onCopy", async () => {
