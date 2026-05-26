@@ -48,6 +48,7 @@ from . import (
     webterm,
 )
 from .auth import (
+    _SESSION_COOKIE,
     AuthConfig,
     clear_session,
     current_csrf,
@@ -104,7 +105,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     _env_file = Path(os.environ.get("AGENT_SESSIONS_ENV_FILE") or discover.default_env_path())
     _pw = {"hash": cfg.password_hash}
     _must_change = {
-        "v": os.environ.get("AGENT_SESSIONS_FORCE_PASSWORD_CHANGE", "")
+        # No password to change in `none` mode — the forced-change gate is always off.
+        "v": cfg.auth_mode != "none"
+        and os.environ.get("AGENT_SESSIONS_FORCE_PASSWORD_CHANGE", "")
         in {
             "1",
             "true",
@@ -139,6 +142,43 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         "/healthz",
     }
 
+    # `none` auth-mode (#13 / #32 Phase 3): no login at all. Before any route runs,
+    # ensure every request carries a valid admin session cookie — auto-issue one when
+    # absent so require_session / require_csrf_and_origin / current_csrf all behave as
+    # if the single admin had logged in. We mint the signed cookie value, splice it
+    # into the *request* cookies (so downstream deps decode a session this turn) and
+    # set it on the *response* (so the browser keeps it). CSRF + Origin stay enforced:
+    # they guard against cross-site requests, which matters even without auth.
+    @app.middleware("http")
+    async def _none_mode_autosession(request: Request, call_next):
+        if cfg.auth_mode != "none":
+            return await call_next(request)
+        if session_uid(cfg, request) is None:
+            stub = Response()
+            issue_session(cfg, stub)
+            set_cookie = stub.headers.get("set-cookie", "")
+            token = set_cookie.split(";", 1)[0].split("=", 1)[1] if "=" in set_cookie else ""
+            # Splice the freshly-minted cookie into this request so the route's
+            # session deps see a valid session on this very turn.
+            existing = request.headers.get("cookie", "")
+            new_cookie = (
+                f"{existing}; {_SESSION_COOKIE}={token}"
+                if existing
+                else (f"{_SESSION_COOKIE}={token}")
+            )
+            headers = [(k, v) for (k, v) in request.scope["headers"] if k.lower() != b"cookie"]
+            headers.append((b"cookie", new_cookie.encode("latin-1")))
+            request.scope["headers"] = headers
+            # Drop Starlette's cached header/cookie parse so downstream deps re-read the
+            # spliced cookie from the mutated scope.
+            for attr in ("_headers", "_cookies"):
+                if hasattr(request, attr):
+                    delattr(request, attr)
+            response = await call_next(request)
+            response.headers.append("set-cookie", set_cookie)
+            return response
+        return await call_next(request)
+
     @app.middleware("http")
     async def _force_change_gate(request: Request, call_next):
         if _must_change["v"] and session_uid(cfg, request) is not None:
@@ -154,8 +194,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/auth-check")
-    async def auth_check(_: str = Depends(_logged_in)) -> Response:
-        # nginx `auth_request` only cares about the status code.
+    async def auth_check(request: Request) -> Response:
+        # nginx `auth_request` only cares about the status code. In `none` mode there
+        # is no login → always 204. In single-user mode, 204 with a valid cookie, else 401.
+        if cfg.auth_mode == "none":
+            return Response(status_code=204)
+        if session_uid(cfg, request) is None:
+            raise HTTPException(status_code=401, detail="no session")
         return Response(status_code=204)
 
     @app.get("/api/version")
@@ -192,6 +237,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 ],
                 "terminal_backend": "ws",
                 "must_change_password": _must_change["v"],
+                # "single-user" | "none" — lets the SPA hide login/logout UI when there
+                # is no login (#13 / #32 Phase 3).
+                "auth_mode": cfg.auth_mode,
                 # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
@@ -243,6 +291,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request) -> Response:
+        # No login screen in `none` mode — bounce to the app.
+        if cfg.auth_mode == "none":
+            return RedirectResponse("/", status_code=303)
         # `next` lets the SPA bounce a 401 back to where the user was (open-redirect
         # guarded → same-site paths only); preserved through the POST via a hidden field.
         return _TEMPLATES.TemplateResponse(
@@ -259,6 +310,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         password: str = Form(...),
         next: str = Form("/"),
     ) -> Response:
+        # No login in `none` mode — the auto-session middleware already established it.
+        if cfg.auth_mode == "none":
+            return RedirectResponse("/", status_code=303)
         # Fail-closed Origin/Referer check on the login POST: reject cross-site
         # submits AND originless POSTs. Same contract as require_csrf_and_origin
         # (a session/CSRF can't exist yet at login, so we check origin only).
@@ -596,4 +650,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     return app
 
 
-app = create_app() if "AGENT_SESSIONS_USERNAME" in __import__("os").environ else None
+app = (
+    create_app()
+    if (
+        "AGENT_SESSIONS_USERNAME" in os.environ
+        or os.environ.get("AGENT_SESSIONS_AUTH_MODE") == "none"
+    )
+    else None
+)

@@ -60,6 +60,7 @@ Set at install time (persisted into `env`):
 | --- | --- |
 | `AGENT_SESSIONS_HOST` / `_PORT` | Bind address/port (default `127.0.0.1:8765`). |
 | `AGENT_SESSIONS_ORIGIN` | Public origin for CSRF / `Origin` checks, e.g. `https://your-domain.example`. |
+| `AGENT_SESSIONS_AUTH_MODE` | `single-user` (default — username + password login) or `none` (no login; the admin session is auto-established). **`none` = trust the network: localhost / behind-VPN only.** CSRF + `Origin` checks stay on. |
 | `AGENT_SESSIONS_HOME` | Install root (default `~/.local/share/agent-sessions`). |
 | `AGENT_SESSIONS_WEB_DIST` | Override the built SPA directory (default the release's `web/dist`). |
 | `AGENT_SESSIONS_RUNTIME_DIR` | Runtime/socket dir for the dtach session bridge. |

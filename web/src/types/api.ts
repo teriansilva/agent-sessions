@@ -40,6 +40,9 @@ export interface AppConfig {
   must_change_password?: boolean;
   /** Per-user UI theme id (royal|dark|light); applied at load. Absent on older servers. */
   theme?: string;
+  /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
+   * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
+  auth_mode?: "single-user" | "none" | string;
 }
 
 export interface SessionsQuery {

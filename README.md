@@ -139,6 +139,13 @@ export AGENT_SESSIONS_ORIGIN=http://localhost:3402
 uvicorn --app-dir src --host 127.0.0.1 --port 3402 agent_sessions.main:app
 ```
 
+`AGENT_SESSIONS_AUTH_MODE` selects the auth model: `single-user` (default — the
+username + password login above) or `none` (no login at all; the admin session is
+auto-established so the SPA, CSRF token and `Origin` checks still work, but you're
+never prompted for credentials, and username/password-hash aren't required). **Use
+`none` only when you trust the network — localhost or behind a VPN** — since anyone
+who can reach the port gets in. CSRF + same-origin enforcement stay on in both modes.
+
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev setup (web build, tests, conventions).
 
 ## Permission bypass (`--dangerously-skip-permissions`)

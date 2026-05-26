@@ -41,16 +41,34 @@ class AuthConfig:
     secret_key: str
     origin: str
     session_ttl: int = 86400
+    # "single-user" (default) — env username + password hash, cookie login, forced
+    # change. "none" — no login at all (self-host on a trusted/localhost network):
+    # the admin session is auto-established so the SPA + CSRF + Origin still work, but
+    # the user is never prompted for credentials. Anything but "none" → "single-user".
+    auth_mode: str = "single-user"
 
     @classmethod
     def from_env(cls) -> AuthConfig:
+        raw_mode = os.environ.get("AGENT_SESSIONS_AUTH_MODE")
+        auth_mode = "none" if raw_mode == "none" else "single-user"
         try:
             return cls(
-                username=os.environ["AGENT_SESSIONS_USERNAME"],
-                password_hash=os.environ["AGENT_SESSIONS_PASSWORD_HASH"],
+                # In `none` mode there is no login, so username/password-hash are not
+                # required from the env — default to a fixed admin uid + empty hash.
+                username=(
+                    os.environ["AGENT_SESSIONS_USERNAME"]
+                    if auth_mode != "none"
+                    else os.environ.get("AGENT_SESSIONS_USERNAME", "admin")
+                ),
+                password_hash=(
+                    os.environ["AGENT_SESSIONS_PASSWORD_HASH"]
+                    if auth_mode != "none"
+                    else os.environ.get("AGENT_SESSIONS_PASSWORD_HASH", "")
+                ),
                 secret_key=os.environ["AGENT_SESSIONS_SECRET_KEY"],
                 origin=os.environ["AGENT_SESSIONS_ORIGIN"],
                 session_ttl=int(os.environ.get("AGENT_SESSIONS_SESSION_TTL", "86400")),
+                auth_mode=auth_mode,
             )
         except KeyError as e:
             raise RuntimeError(f"missing required env var: {e.args[0]}") from None
