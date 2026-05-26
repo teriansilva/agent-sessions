@@ -9,6 +9,7 @@ rename, archive/unarchive, the project list, and upload. See agent-sessions#4
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import json
@@ -74,6 +75,57 @@ _WEB_DIST = Path(
 )
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
 _SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
+
+# opencode new-session reconcile tunables (#127). opencode mints its own ``ses_…`` id and
+# may not write the DB row until the first message, so we poll opencode.db (read-only) for
+# the new id rather than blocking the terminal. Bounded interval; no hard deadline — if
+# the row never appears we just keep serving under the placeholder (the timeout path).
+_OC_RECONCILE_INTERVAL_S = 0.5
+# ~5 min of polling, then give up (session still served under the placeholder; no URL converge).
+_OC_RECONCILE_MAX_POLLS = 600
+
+
+async def _reconcile_opencode(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
+    """Discover opencode's real ``ses_…`` for a placeholder launch, persist the alias,
+    converge the client (#127).
+
+    Runs concurrently with the PTY bridge. Polls opencode.db (read-only, fail-soft) for a
+    session id in ``cwd`` not in ``snapshot``:
+      * exactly one new id → that's ours: persist ``opencode:<placeholder> →
+        opencode:<real>`` and send ``{"t":"id","sid":"opencode:<real>"}`` so the client
+        replaces the URL and the sidebar de-dupes. One-shot, then stop.
+      * ≥2 new ids (two same-cwd launches in the window) → AMBIGUOUS: do NOT guess; keep
+        serving under the placeholder and stop reconciling (fail-safe — never the wrong
+        session).
+      * none yet → opencode hasn't written the row (may wait for first input); poll again.
+    If the row never appears within the poll budget we stop quietly; the session keeps
+    running under the placeholder (timeout path, never blocks the terminal).
+    """
+    placeholder_key = f"{prov.engine_id}:{placeholder}"
+    for _ in range(_OC_RECONCILE_MAX_POLLS):
+        await asyncio.sleep(_OC_RECONCILE_INTERVAL_S)
+        result = await asyncio.to_thread(prov.reconcile_new_session, cwd, snapshot)
+        if result is None:
+            continue  # not written yet → keep polling
+        if isinstance(result, list):
+            return  # ambiguous → fail safe, stay on the placeholder
+        real_key = f"{prov.engine_id}:{result}"
+        # Persist the alias FIRST, and ONLY converge the client if that write succeeds. The
+        # alias (real → placeholder) is what lets a later attach by the real id resolve back
+        # to the placeholder's socket/lock/buffer (it survives an app restart). If we sent the
+        # id frame without it, the browser URL would become /s/opencode/ses_… with no alias on
+        # disk, so a reload/reattach by the real id could not find the placeholder and might
+        # launch a SECOND writer for the same opencode session. On persist failure (full disk,
+        # permissions, …) we stay quietly on the placeholder — the session keeps running there.
+        try:
+            await asyncio.to_thread(metadata.set_alias, placeholder_key, real_key)
+        except Exception:
+            return  # alias not durable → never converge; keep serving under the placeholder
+        # Then converge the client: it replaces /s/opencode/new-… → /s/opencode/ses_…
+        # (history replace, no reload, keep the socket) and the sidebar shows one row.
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({"t": "id", "sid": real_key}))
+        return
 
 
 def _safe_next(raw: str | None) -> str:
@@ -432,10 +484,23 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Flat, paginated, newest-first. sticky floats to the top of the
         # *first window* (a first-window concept, not a global pin).
         meta_index = metadata.load()
+        # opencode new-session alias (#127): the live row is the real ``ses_…`` from
+        # scan_all (the placeholder never appears here — it isn't in opencode.db), so
+        # there is no ghost row to drop. But metadata set while the session was still on
+        # its placeholder (title/sticky/archive before reconcile) is keyed by the
+        # placeholder; resolve each scanned id to its physical key so that metadata
+        # follows the real row — one row, with its sidecar intact, no duplicate.
+        aliases = metadata.load_aliases()
+
+        def _meta_for(s) -> metadata.SessionMeta:
+            key = engines.session_key(s)
+            phys = engines.physical_key(key, aliases)
+            return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+
         scoped = [
             row
             for s in engines.scan_all()
-            for row in [_row(s, meta_index.get(engines.session_key(s), metadata.SessionMeta()))]
+            for row in [_row(s, _meta_for(s))]
             if row["archived"] == archived
         ]
         # Facets for the project/agent dropdowns: distinct values over the full
@@ -500,16 +565,45 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             return await reject(4403)
         if _must_change["v"]:
             return await reject(4403)  # forced password change pending — no sessions yet
+        is_new = ws.query_params.get("new") == "1"
         try:
-            prov, native = engines.parse_key(sid)
+            # The opencode new-session placeholder (``new-<uuid>``) is a valid id ONLY on
+            # the new=1 launch path (#127); resume/attach still requires the native shape.
+            prov, native = engines.parse_key(sid, allow_new_placeholder=is_new)
         except engines.EngineError:
             return await reject(4404)
 
+        # Alias resolution (#127): for opencode new-session we launch under a placeholder
+        # and reconcile to opencode's real ``ses_…`` id, persisting a placeholder→real
+        # alias. When a client later attaches by the *real* id (after the URL converged or
+        # an app restart), its live resources (dtach socket / single-writer lock / buffer)
+        # are still under the placeholder — so resolve the real id back to the physical
+        # placeholder key before any socket/lock/buffer derivation. No-op for everything
+        # else. Skipped on the new=1 launch (the placeholder IS the physical key).
+        # Two ids, kept distinct (#127 review): `native` is the LOGICAL/real id from the
+        # URL (a real ``ses_…`` or, on new=1, the placeholder) — used for scanned-session
+        # matching + ``launch_argv`` (so a real id still resumes via ``opencode --session``
+        # even when the placeholder master is gone). `phys_native` is the PHYSICAL key the
+        # live resources (dtach socket / single-writer lock / scrollback buffer) sit under
+        # — the placeholder for a reconciled opencode session, else == native. Never
+        # overwrite `native` with the placeholder, or a real URL would 4404 on LAUNCH.
+        phys_native = native
+        if not is_new:
+            resolved = engines.physical_key(f"{prov.engine_id}:{native}")
+            if resolved != f"{prov.engine_id}:{native}":
+                _eng, _, phys_native = resolved.partition(":")
+        phys_key = f"{prov.engine_id}:{phys_native}"
+
         # Single-writer policy: ATTACH to a live master, LAUNCH under the launch lock,
         # or BUSY (no local master but the lock is held elsewhere — never relaunch).
-        action, lock = sessions.open_action(prov.engine_id, native)
+        # Keyed by the PHYSICAL id so an attach by the real id finds the placeholder master.
+        action, lock = sessions.open_action(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
+        # opencode new-session reconcile (#127): set when this connection launches an
+        # opencode placeholder; runs concurrently with the PTY bridge to discover
+        # opencode's real ``ses_…`` id, persist the alias, and converge the client URL.
+        reconcile_task = None
         try:
             if action == sessions.ATTACH:
                 # A live dtach session already exists → attach regardless of new/resume.
@@ -526,18 +620,31 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 )
                 cwd = scanned.cwd if scanned else str(Path.home())
                 launch = prov.launch_argv(native, cwd=cwd, bypass=True)
-            elif ws.query_params.get("new") == "1":
+            elif is_new:
                 # Start a FRESH session with this client-generated id, in a picker cwd.
                 new_cwd = ws.query_params.get("cwd") or ""
                 if new_cwd not in set(scanner.pickable_projects()):
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
+                # opencode can't pin a new-session id: it launches under the placeholder
+                # and we DB-diff opencode.db to find the real id (#127). Snapshot the
+                # cwd's existing ids BEFORE launch so the diff attributes the one new id
+                # to us; then arm the concurrent reconcile. A None snapshot means the
+                # baseline read FAILED (not empty) — we skip reconciliation entirely rather
+                # than risk misattributing a pre-existing row, and serve under the placeholder.
+                oc_snapshot = None
+                if engines.is_opencode_new_placeholder(f"{prov.engine_id}:{native}"):
+                    oc_snapshot = prov.snapshot_session_ids(new_cwd)
                 try:
                     launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
                 except NotImplementedError:
                     return await reject(4404)  # engine can't pin a new-session id
                 cwd = new_cwd
+                if oc_snapshot is not None:
+                    reconcile_task = asyncio.create_task(
+                        _reconcile_opencode(ws, prov, native, new_cwd, oc_snapshot)
+                    )
             else:
                 # Resume an EXISTING scanned session.
                 sessions_all = engines.scan_all()
@@ -550,26 +657,39 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
                 cwd = match.cwd
             try:
+                # Socket under the PHYSICAL key (placeholder for a reconciled opencode
+                # session) so attach/resume by the real id reaches the same master.
                 argv = ptybridge.dtach_argv(
-                    engine=prov.engine_id, session_id=native, launch_argv=launch
+                    engine=prov.engine_id, session_id=phys_native, launch_argv=launch
                 )
             except ptybridge.PtyBridgeError:
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
             # Delta-resume: a reconnecting client reports the absolute byte offset it
             # last saw; we stream only the bytes since then (never re-blank). Bad/absent
-            # value → 0 → full replay.
+            # value → 0 → full replay. buf_key is the PHYSICAL key (placeholder for an
+            # opencode new-session) so scrollback stays under one key across the alias.
             try:
                 have = max(0, int(ws.query_params.get("have", "0") or "0"))
             except (ValueError, TypeError):
                 have = 0
-            await webterm.run(ws, argv, cwd=cwd, buf_key=sid, lock=lock, have=have)
+            await webterm.run(ws, argv, cwd=cwd, buf_key=phys_key, lock=lock, have=have)
         finally:
-            # Hand the launch lock to the dtach master we spawned (it inherited the fd),
-            # so the flock lives for the master's lifetime — closing our fd without
-            # unlocking keeps it held while the master runs, and releases it if no master
-            # was spawned (early reject) or once the master dies. ATTACH holds no lock.
-            if lock is not None:
-                lock.transfer()
+            # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
+            # not Exception) bypass the lock handoff below — nest it in its own try/finally
+            # and suppress CancelledError too (#127 review).
+            try:
+                if reconcile_task is not None:
+                    reconcile_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await reconcile_task
+            finally:
+                # Hand the launch lock to the dtach master we spawned (it inherited the
+                # fd), so the flock lives for the master's lifetime — closing our fd
+                # without unlocking keeps it held while the master runs, and releases it if
+                # no master was spawned (early reject) or once the master dies. ATTACH
+                # holds no lock.
+                if lock is not None:
+                    lock.transfer()
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

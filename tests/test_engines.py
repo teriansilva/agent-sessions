@@ -181,8 +181,12 @@ def test_supports_new_agrees_with_new_launch_argv():
         assert isinstance(argv, list) and argv, f"{prov.engine_id} new_launch_argv must yield argv"
 
 
-def test_opencode_does_not_advertise_new_session():
-    # opencode has no ws new-launch yet (new_launch_argv raises) → must not be offered.
-    assert engines.OpenCodeProvider().supports_new is False
-    with pytest.raises(NotImplementedError):
-        engines.OpenCodeProvider().new_launch_argv("ses_x", cwd="/tmp", bypass=True)
+def test_opencode_advertises_new_session_via_reconcile():
+    # #127: opencode now supports new-session via launch-then-reconcile. supports_new is
+    # True and new_launch_argv yields a bare `opencode <dir>` (NO --session: opencode
+    # mints its own id, which the reconcile discovers).
+    p = engines.OpenCodeProvider()
+    assert p.supports_new is True
+    argv = p.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True)
+    assert argv == [engines.OPENCODE_BIN, "/tmp/proj"]
+    assert "--session" not in argv  # never pins an id; opencode creates a fresh one

@@ -36,12 +36,17 @@ class FakeWS {
 function makeSocket() {
   const outputs: Uint8Array[] = [];
   const statuses: TermStatus[] = [];
+  const ids: string[] = [];
   const ts = new TermSocket(
     (have) => `/ws/term/claude:abc?have=${have}`,
-    { onOutput: (b) => outputs.push(b), onStatus: (s) => statuses.push(s) },
+    {
+      onOutput: (b) => outputs.push(b),
+      onStatus: (s) => statuses.push(s),
+      onId: (sid) => ids.push(sid),
+    },
     (u) => new FakeWS(u) as unknown as WebSocket,
   );
-  return { ts, outputs, statuses };
+  return { ts, outputs, statuses, ids };
 }
 
 beforeEach(() => {
@@ -86,6 +91,21 @@ test("malformed / unknown control frames are ignored, never written", () => {
   ws.message(JSON.stringify({ t: "whatever" }));
   expect(outputs).toHaveLength(0);
   expect(ts.consumed).toBe(0);
+});
+
+test("an id control frame fires onId with the real engine-qualified id (#127)", () => {
+  // opencode new-session reconcile: the server pushes {"t":"id","sid":"opencode:ses_…"}
+  // when it has discovered the real id. It is NOT terminal output and does not move the
+  // byte offset.
+  const { ts, outputs, ids } = makeSocket();
+  ts.connect();
+  const ws = FakeWS.instances[0];
+  ws.open();
+  ws.message(new Uint8Array([1, 2]).buffer); // 2 bytes of real output
+  ws.message(JSON.stringify({ t: "id", sid: "opencode:ses_realreal0000" }));
+  expect(ids).toEqual(["opencode:ses_realreal0000"]);
+  expect(outputs).toHaveLength(1); // the id frame is not written to the terminal
+  expect(ts.consumed).toBe(2); // and does not advance the resume offset
 });
 
 describe("close codes", () => {

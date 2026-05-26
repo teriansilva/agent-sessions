@@ -20,6 +20,51 @@ remember what we did," and duplicate rows.
   the lock name — one string, everywhere. No mutable label (the Zellij tab-label
   failure mode) is ever the identity.
 
+## opencode new-session: placeholder→real alias (#127)
+
+Claude/gemini accept `--session-id <id>`, so the bridge mints the id up front and
+keys the socket/lock/buffer/metadata by it before launch. **opencode can't pin a
+new-session id** (`opencode --session` only *continues*; there is no
+create-returning-id). So opencode new-session uses **launch-then-reconcile** with a
+stable alias layer — never a physical rename of a live dtach socket:
+
+1. **Placeholder.** The client mints `new-<uuid>` and opens
+   `/s/opencode/new-<uuid>?new=1&cwd=…`. `new-<uuid>` is a valid opencode id **only**
+   on the `new=1` launch path (`parse_key(allow_new_placeholder=True)`); resume/attach
+   still requires `ses_…`. The socket, lock, buffer, and metadata are all keyed by this
+   placeholder — it is the **physical key**.
+2. **Snapshot + launch.** Before launch the route snapshots the set of `ses_…` ids in
+   that `cwd` from `opencode.db` (read-only). It launches `opencode <dir>` (no
+   `--session` → opencode mints its own id) under the placeholder dtach socket.
+3. **Reconcile (alias).** A coroutine running alongside the PTY bridge polls
+   `opencode.db` (read-only) for an id in that `cwd` not in the snapshot:
+   - **exactly one new id** → ours: persist `opencode:new-<uuid> → opencode:<ses_…>` in
+     the metadata sidecar (`metadata.set_alias`), then push `{"t":"id","sid":…}` to the
+     client.
+   - **≥2 new ids** (two same-cwd launches in the window) → **ambiguous**: do **not**
+     guess (never attach to the wrong session); keep serving under the placeholder.
+   - **none yet** (opencode may not write the row until first input) → keep polling; if
+     the poll budget exhausts, keep serving under the placeholder forever (never blocks
+     the terminal).
+4. **Resolve through the alias EVERYWHERE.** The stored map is `placeholder → real`. The
+   live resources are under the **placeholder**, so an attach by the *real* id resolves
+   **real → placeholder** (`engines.physical_key`, the inverse of the stored map) before
+   any socket / single-writer-lock / scrollback-buffer / metadata derivation. The session
+   list resolves each scanned `ses_…` row's metadata via its physical key, so a title set
+   while on the placeholder follows the real row — **one row, no placeholder/ghost row**
+   (the #64 failure mode). The placeholder is never scanned (it isn't in `opencode.db`),
+   so it can't appear as a second row.
+5. **Client converge.** On `{"t":"id","sid":"opencode:ses_…"}` the SessionView replaces
+   the URL `/s/opencode/new-<uuid>` → `/s/opencode/ses_…` (history replace, no reload) and
+   drops the fresh-launch state, while keeping the terminal mounted under its original key
+   — the live socket is preserved (no relaunch/flicker). A later reload attaches by the
+   real id and resolves back to the placeholder socket via the persisted alias.
+6. **Restart survival.** The alias lives in the on-disk sidecar, and the dtach
+   socket/lock stay under the placeholder for the master's lifetime. After an app restart
+   a fresh instance reads the alias and still resolves real → placeholder, so an attach by
+   the real id finds the running master. `opencode.db` is **strictly read-only**
+   throughout.
+
 ## The single-writer lock (the core guarantee)
 
 Resuming/launching a session is gated by an **advisory exclusive file lock**:

@@ -17,6 +17,10 @@ export type TermStatus =
 export interface TermSocketHandlers {
   onOutput: (bytes: Uint8Array) => void;
   onStatus: (status: TermStatus) => void;
+  /** Server reconciled this session to its real engine-qualified id (#127, opencode
+   *  new-session). The client converges the URL/sidebar to `sid` (e.g.
+   *  `opencode:ses_…`). Optional — only the new-session path emits it. */
+  onId?: (sid: string) => void;
 }
 
 // Deliberate server rejects — never reconnect on these (would hammer the backend).
@@ -95,8 +99,10 @@ export class TermSocket {
       // Control frame. {"t":"seq","n"} sets our authoritative offset (the server's
       // total). Unknown control frames are ignored — never written to the terminal.
       try {
-        const msg = JSON.parse(data) as { t?: string; n?: number };
+        const msg = JSON.parse(data) as { t?: string; n?: number; sid?: string };
         if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
+        // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
+        else if (msg.t === "id" && typeof msg.sid === "string") this.handlers.onId?.(msg.sid);
       } catch {
         /* ignore malformed control frame */
       }

@@ -30,10 +30,14 @@ export function Terminal({
   engine,
   id,
   fresh,
+  onReconcileId,
 }: {
   engine: string;
   id: string;
   fresh?: FreshSession;
+  /** Server reconciled to the real engine-qualified id (#127, opencode new-session).
+   *  The owner converges the URL/sidebar without tearing down the socket. */
+  onReconcileId?: (sid: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sockRef = useRef<TermSocket | null>(null);
@@ -42,6 +46,23 @@ export function Terminal({
   const { theme } = useTheme();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+  // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
+  // current one WITHOUT the socket effect depending on it (a changing callback identity
+  // must never tear down + relaunch the live terminal). Updated in an effect (writing a
+  // ref during render is disallowed by react-hooks).
+  const onReconcileIdRef = useRef(onReconcileId);
+  useEffect(() => {
+    onReconcileIdRef.current = onReconcileId;
+  }, [onReconcileId]);
+
+  // Freeze the fresh-launch params for the lifetime of this terminal instance (its `key`).
+  // The owner DROPS route state during placeholder→real convergence (#127, opencode); if the
+  // socket effect depended on `fresh`, that drop would tear down the live socket and reconnect
+  // via termWsUrl(..., undefined) — omitting new=1 while the id is still the pending
+  // placeholder, which the server rejects as a plain attach (4404), killing the very terminal
+  // the converge is meant to preserve. useRef captures only the first render's value, so later
+  // prop changes can't move it; a genuine session switch remounts via `key` and re-seeds it.
+  const freshRef = useRef(fresh);
 
   // Send raw input to the PTY (used by the mobile action bar / compose).
   const sendInput = useCallback((d: string) => {
@@ -81,12 +102,13 @@ export function Terminal({
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
-    const sock = new TermSocket((have) => termWsUrl(engine, id, have, fresh), {
+    const sock = new TermSocket((have) => termWsUrl(engine, id, have, freshRef.current), {
       onOutput: (b) => term.write(b),
       onStatus: (s) => {
         setStatus(s);
         if (s.kind === "connected") onConnected();
       },
+      onId: (sid) => onReconcileIdRef.current?.(sid),
     });
     sockRef.current = sock;
 
@@ -149,10 +171,11 @@ export function Terminal({
       fitRef.current = null;
       term.dispose();
     };
-    // Primitive deps (not the `fresh` object) so a re-render with an equal value doesn't
-    // tear down + relaunch the terminal.
+    // Identity-only deps: this socket lives and dies with the terminal's `key` (engine:id).
+    // `fresh` is intentionally excluded — it's read once via freshRef so self-convergence
+    // (which clears route state) can't tear down + relaunch the live terminal. See freshRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, id, fresh?.cwd, fresh?.bypass]);
+  }, [engine, id]);
 
   // Re-theme the live terminal on theme change WITHOUT tearing it down. Colours apply
   // immediately; if the font/size changed, fit() recomputes the grid and xterm's

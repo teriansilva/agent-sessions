@@ -289,3 +289,145 @@ def test_maybe_evict_ended_drops_dead_keeps_live(monkeypatch):
     assert key not in webterm._TOTALS
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
+
+
+# ---- opencode new-session launch-then-reconcile (#127) ------------------------
+
+_OC_PLACEHOLDER = "opencode:new-11111111-1111-1111-1111-111111111111"
+
+
+def test_ws_opencode_placeholder_passes_validation_on_new(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # The new-<uuid> placeholder must pass the ws id-validation gate on new=1 and reach the
+    # LAUNCH path (it would 4404 if parse_key rejected it). We force the launch to fail at
+    # argv-build (bare-name bin → 4500) to prove validation passed without needing a real
+    # opencode/dtach. The launch cwd must be a pickable project.
+    from agent_sessions import engines, scanner
+
+    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare name → PtyBridgeError → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500  # past validation, into launch (not 4404)
+
+
+def test_ws_opencode_placeholder_rejected_on_resume(fake_jsonl, opencode_db, auth_cfg):
+    # Without new=1 the placeholder is not a valid id (resume/attach requires ses_…) → 4404.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}", headers) == 4404
+
+
+def test_ws_opencode_placeholder_rejects_unpickable_cwd(fake_jsonl, opencode_db, auth_cfg):
+    # new=1 with a cwd that isn't a pickable project → 4404 (same guard as claude/gemini).
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd=/not/a/project"
+    assert _close_code(c, url, headers) == 4404
+
+
+class _FakeWS:
+    """Minimal ws stand-in capturing control frames sent by the reconcile coroutine."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send_text(self, text):
+        self.sent.append(text)
+
+
+def test_reconcile_single_id_persists_alias_and_converges(tmp_home, monkeypatch):
+    # The reconcile coroutine: one new id → persist placeholder→real alias + send the
+    # {"t":"id","sid":real} converge frame, then stop.
+    import asyncio
+    import json
+
+    from agent_sessions import engines, main, metadata
+
+    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.001)
+    prov = engines.get("opencode")
+    placeholder = "new-11111111-1111-1111-1111-111111111111"
+    real = "ses_reconciled000000000000000"
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: real)
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_opencode(ws, prov, placeholder, "/cwd", set()))
+
+    assert metadata.load_aliases() == {f"opencode:{placeholder}": f"opencode:{real}"}
+    assert ws.sent and json.loads(ws.sent[-1]) == {"t": "id", "sid": f"opencode:{real}"}
+
+
+def test_reconcile_ambiguous_no_alias_no_converge(tmp_home, monkeypatch):
+    # Two new same-cwd ids → ambiguous: never guess. No alias, no converge frame.
+    import asyncio
+
+    from agent_sessions import engines, main, metadata
+
+    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.001)
+    prov = engines.get("opencode")
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: ["ses_a000", "ses_b000"])
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_opencode(ws, prov, "new-x", "/cwd", set()))
+
+    assert metadata.load_aliases() == {}  # no alias recorded
+    assert ws.sent == []  # no converge frame
+
+
+def test_reconcile_timeout_when_row_never_written(tmp_home, monkeypatch):
+    # opencode never writes the row (reconcile always None) → poll budget exhausts, the
+    # coroutine returns quietly with no alias/frame (session keeps serving on placeholder).
+    import asyncio
+
+    from agent_sessions import engines, main, metadata
+
+    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.0001)
+    monkeypatch.setattr(main, "_OC_RECONCILE_MAX_POLLS", 3)
+    prov = engines.get("opencode")
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: None)
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_opencode(ws, prov, "new-x", "/cwd", set()))
+
+    assert metadata.load_aliases() == {}
+    assert ws.sent == []
+
+
+def test_ws_opencode_resume_real_id_with_aliased_dead_master(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # #127 review (bug 2): an alias placeholder→real must NOT make a real ``ses_…`` URL
+    # 4404 when the placeholder master is gone. With the alias set + NO live dtach master,
+    # attaching by the real id must RESUME the scanned opencode session (reach launch →
+    # 4500 on a bare-name bin), not 4404 — which is what would happen if `native` were
+    # overwritten to the placeholder before the resume scan.
+    from agent_sessions import engines, metadata
+
+    OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
+    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    # real id, no new=1, no live master → must resume (4500), not 4404.
+    assert _close_code(c, f"/ws/term/opencode:{OC_TOP}", headers) == 4500
+
+
+def test_ws_opencode_placeholder_launch_failure_releases_lock(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # #127 review (bug 1): a new=1 opencode placeholder arms the reconcile task BEFORE the
+    # launch; if the launch then fails (4500), the finally cancels that task — whose
+    # CancelledError must NOT bypass lock.transfer(). Proven by reconnecting to the same
+    # placeholder: the launch lock was released, so the 2nd attempt LAUNCHes again (4500),
+    # not BUSY (4409).
+    from agent_sessions import engines, scanner
+
+    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500
+    assert _close_code(c, url, headers) == 4500  # lock released → not 4409 BUSY

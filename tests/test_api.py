@@ -374,6 +374,41 @@ def test_api_config_requires_auth(auth_cfg, fake_jsonl):
     assert c.get("/api/config", follow_redirects=False).status_code in (401, 403)
 
 
+def test_api_config_advertises_opencode_new_session(auth_cfg, fake_jsonl, opencode_db):
+    # #127: opencode is now offered in the new-session picker (present + supports_new).
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/config").json()
+    assert "opencode" in d["new_session_engines"]
+
+
+def test_list_no_ghost_row_after_reconcile(auth_cfg, fake_jsonl, opencode_db):
+    # The no-ghost-row invariant (#127 / #64): after reconcile, the list shows exactly ONE
+    # row for the reconciled session — the real ses_… — and the placeholder never appears.
+    # Metadata set while on the placeholder (a rename) follows the real row via the alias.
+    from agent_sessions import metadata
+
+    oc_top = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the real ses_ already seeded by opencode_db
+    placeholder_key = "opencode:new-22222222-2222-2222-2222-222222222222"
+    real_key = f"opencode:{oc_top}"
+    # Rename happened while the session was still under its placeholder, then reconcile
+    # recorded the alias placeholder→real.
+    metadata.patch(placeholder_key, title="named-before-converge")
+    metadata.set_alias(placeholder_key, real_key)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    rows = c.get("/api/sessions?engine=opencode&limit=200").json()["sessions"]
+    ids = [s["id"] for s in rows]
+    # Exactly one row for the real id; no placeholder/ghost row.
+    assert ids.count(real_key) == 1
+    assert placeholder_key not in ids
+    assert not any(s["id"].startswith("opencode:new-") for s in rows)
+    # The placeholder-era title carried over to the real row (alias-resolved metadata).
+    real_row = next(s for s in rows if s["id"] == real_key)
+    assert real_row["title"] == "named-before-converge"
+
+
 def test_safe_next_rejects_open_redirects():
     from agent_sessions.main import _safe_next
 

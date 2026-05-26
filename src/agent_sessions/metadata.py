@@ -21,16 +21,29 @@ from pathlib import Path
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
+# Reserved top-level key in the sidecar JSON for the placeholder→real session-id alias
+# map (#127). It's NOT a session row: ``load`` skips it, so it never leaks into the
+# list. The value is ``{placeholder_key: real_key}`` where each side is an
+# engine-qualified id (``opencode:new-<uuid>`` → ``opencode:ses_…``). Persisting it in
+# the sidecar is what lets an alias survive an app restart: after a restart the dtach
+# socket / lock still live under the *placeholder* key, so an attach by the real id must
+# resolve back to the placeholder, and a freshly-loaded app reads the alias to do so.
+_ALIAS_KEY = "__aliases__"
+
 
 def _normalize_keys(data: dict) -> tuple[dict, bool]:
     """Map pre-multi-engine bare-UUID keys to ``claude:<uuid>``.
 
     Returns ``(normalized, changed)``. Already-qualified keys (containing ``:``)
-    and non-UUID keys are left untouched, so this is a no-op for current data.
+    and non-UUID keys are left untouched, so this is a no-op for current data. The
+    reserved ``__aliases__`` key (#127) is passed through verbatim.
     """
     out: dict = {}
     changed = False
     for k, v in data.items():
+        if k == _ALIAS_KEY:
+            out[k] = v
+            continue
         nk = f"claude:{k}" if (":" not in k and _CLAUDE_UUID_RE.match(k)) else k
         changed = changed or nk != k
         out[nk] = v
@@ -107,6 +120,8 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
     raw, _ = _normalize_keys(raw)
     out: dict[str, SessionMeta] = {}
     for key, val in raw.items():
+        if key == _ALIAS_KEY:
+            continue  # the alias map is not a session row — never surface it
         if not isinstance(val, dict):
             continue
         out[key] = SessionMeta(
@@ -171,4 +186,59 @@ def get(key: str, path: Path | None = None) -> SessionMeta:
     return load(path).get(key, SessionMeta())
 
 
-__all__ = ["SessionMeta", "load", "patch", "get"]
+def load_aliases(path: Path | None = None) -> dict[str, str]:
+    """The persisted ``placeholder_key → real_key`` alias map (#127).
+
+    Both sides are engine-qualified ids. Fail-soft: a missing / corrupt sidecar or a
+    malformed alias section yields ``{}`` (no aliasing) rather than an error — the worst
+    case is a reconciled session momentarily showing under its placeholder again, never
+    a wrong attach. Only well-formed ``str → str`` entries are returned.
+    """
+    path = path or _default_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open() as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    aliases = raw.get(_ALIAS_KEY)
+    if not isinstance(aliases, dict):
+        return {}
+    return {k: v for k, v in aliases.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def set_alias(placeholder_key: str, real_key: str) -> None:
+    """Record ``placeholder_key → real_key`` in the sidecar under an exclusive flock (#127).
+
+    Idempotent. Stored in the same file as session metadata so it survives an app
+    restart; the session-row read path skips the reserved alias section, so it never
+    pollutes the list.
+    """
+    if not placeholder_key or not real_key:
+        raise ValueError("empty alias key")
+    path = _default_path()
+    with _exclusive(path) as fh:
+        try:
+            text = fh.read()
+            data = json.loads(text) if text.strip() else {}
+            if not isinstance(data, dict):
+                text, data = "", {}
+        except json.JSONDecodeError:
+            text, data = "", {}
+        data, migrated = _normalize_keys(data)
+        if migrated:
+            bak = path.with_name(path.name + ".bak")
+            if not bak.exists():
+                bak.write_text(text)
+        aliases = data.get(_ALIAS_KEY)
+        if not isinstance(aliases, dict):
+            aliases = {}
+        aliases[placeholder_key] = real_key
+        data[_ALIAS_KEY] = aliases
+        _rewrite_in_place(fh, data)
+
+
+__all__ = ["SessionMeta", "load", "patch", "get", "load_aliases", "set_alias"]

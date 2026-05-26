@@ -36,6 +36,15 @@ from .scanner import Session
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _SES_RE = re.compile(r"^ses_[A-Za-z0-9]+$")
+# Client-minted placeholder id for an opencode new-session (#127). opencode mints its
+# own ``ses_…`` id (we can't pin one), so the ws/dtach bridge launches under this
+# placeholder and later reconciles it to the real id via the persisted alias. Accepted
+# ONLY in the ``new=1`` launch path (see ``parse_key(allow_new_placeholder=True)``);
+# ``_SES_RE`` stays the validator for resume/attach so a placeholder can never be used
+# to attach to or resume a session that isn't ours.
+_NEW_PLACEHOLDER_RE = re.compile(
+    r"^new-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 # codex session ids are UUIDs (UUIDv7), same shape as Claude's.
 _CODEX_UUID_RE = _CLAUDE_UUID_RE
 
@@ -160,26 +169,38 @@ class OpenCodeProvider:
 
     engine_id = "opencode"
     id_pattern = _SES_RE
-    # No ws new-session path yet: new_launch_argv raises NotImplementedError, so we must
-    # NOT advertise opencode in /api/config's new_session_engines (else the picker offers
-    # it and /ws/term/opencode:…?new=1 closes 4404). Flip to True once a pinned opencode
-    # new-launch is implemented (#64 review).
-    supports_new = False
+    # opencode can't pin a new-session id (``opencode --session`` only *continues*; there
+    # is no create-returning-id). So new-session uses launch-then-reconcile (#127): launch
+    # ``opencode <dir>`` (mints its own ``ses_…``) under a client-minted ``new-<uuid>``
+    # placeholder, then diff opencode.db to find the new ``ses_…`` for that cwd and record
+    # a persisted placeholder→real alias. The ws route + alias layer do the reconcile; the
+    # provider only supplies the snapshot/diff primitives and the new-launch argv.
+    supports_new = True
 
-    def _query(self) -> list:
+    def _query_rows(self) -> list:
+        """Read top-level opencode sessions, RAISING ``sqlite3.Error`` on a real read
+        failure (locked / corrupt / schema drift). A genuinely absent DB file returns ``[]``
+        — that's a valid empty (fresh opencode, no sessions yet), not a failure. Callers that
+        must not confuse "read failed" with "empty" (the new-session baseline snapshot) use
+        this directly; ``_query`` wraps it fail-soft for scan / is_present."""
         db = _opencode_db()
         if not os.path.exists(db):
             return []
         cols = ", ".join(OPENCODE_SCHEMA)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
         try:
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
-            try:
-                con.execute("PRAGMA busy_timeout=500")
-                return con.execute(
-                    f"SELECT {cols} FROM session WHERE parent_id IS NULL"  # noqa: S608 fixed cols
-                ).fetchall()
-            finally:
-                con.close()
+            con.execute("PRAGMA busy_timeout=500")
+            return con.execute(
+                f"SELECT {cols} FROM session WHERE parent_id IS NULL"  # noqa: S608 fixed cols
+            ).fetchall()
+        finally:
+            con.close()
+
+    def _query(self) -> list:
+        # Fail-soft wrapper: any sqlite error yields no opencode rows rather than taking
+        # down the Claude list. (The baseline snapshot can't use this — see _query_rows.)
+        try:
+            return self._query_rows()
         except sqlite3.Error:
             return []
 
@@ -223,7 +244,62 @@ class OpenCodeProvider:
         return [OPENCODE_BIN, cwd, "--session", native_id]
 
     def new_launch_argv(self, native_id, *, cwd, bypass):
-        raise NotImplementedError("opencode ws new-session not supported yet")
+        # Start a *fresh* opencode session in `cwd`. We deliberately pass NO `--session`:
+        # ``opencode <dir>`` mints its own ``ses_…`` id, which the reconcile step (DB-diff)
+        # discovers afterwards. `native_id` here is the client-minted ``new-<uuid>``
+        # placeholder the bridge keys the socket/lock by; opencode never sees it. `bypass`
+        # is config-side for opencode, so it doesn't change the argv (interface parity).
+        return [OPENCODE_BIN, cwd]
+
+    def snapshot_session_ids(self, cwd: str) -> set[str] | None:
+        """The set of top-level opencode ``ses_…`` ids currently in ``cwd`` (#127), or
+        ``None`` if the DB read FAILED.
+
+        Taken *before* launch so the post-launch diff can attribute the one new id to our
+        placeholder. A failed read MUST NOT be confused with a genuinely empty one: if a
+        transient sqlite lock/corrupt/schema error yielded an empty baseline while the cwd
+        already had a ``ses_…`` row, the next successful poll would see that pre-existing row
+        as "new" and misattribute it — a wrong attach, exactly what #127 must never do. So on
+        read failure we return ``None`` and the caller skips reconciliation (stays on the
+        placeholder). A missing DB file is a valid empty baseline (fresh opencode), not a
+        failure. cwd-scoped so an unrelated new session elsewhere can't be mistaken for ours.
+        """
+        try:
+            rows = self._query_rows()
+        except sqlite3.Error:
+            return None
+        return {
+            sid
+            for sid, _parent, directory, _title, _tu, _ta in rows
+            if isinstance(sid, str) and self.id_pattern.match(sid) and (directory or "") == cwd
+        }
+
+    def reconcile_new_session(self, cwd: str, snapshot: set[str]) -> str | list[str] | None:
+        """Find the opencode session id created in ``cwd`` since ``snapshot`` (#127).
+
+        Returns:
+          * the single new ``ses_…`` id — our session (unambiguous attribution), or
+          * a ``list`` of ≥2 new ids — AMBIGUOUS (two new same-cwd sessions in the poll
+            window): the caller must NOT guess (fail-safe — never attach to the wrong
+            one), or
+          * ``None`` — opencode hasn't written a new row yet (it may not until the first
+            message): the caller keeps serving under the placeholder and polls again.
+
+        Read-only to opencode.db; never mutates it.
+        """
+        new_ids = [
+            sid
+            for sid, _parent, directory, _title, _tu, _ta in self._query()
+            if isinstance(sid, str)
+            and self.id_pattern.match(sid)
+            and (directory or "") == cwd
+            and sid not in snapshot
+        ]
+        if not new_ids:
+            return None
+        if len(new_ids) > 1:
+            return new_ids  # ambiguous → caller fails safe
+        return new_ids[0]
 
     def archive(self, native_id):
         # opencode.db stays read-only; record the archive flag in the engine-agnostic
@@ -502,13 +578,26 @@ def session_key(s: Session) -> str:
     return f"{s.engine}:{s.uuid}"
 
 
-def parse_key(raw: str) -> tuple[EngineProvider, str]:
+def is_opencode_new_placeholder(raw: str) -> bool:
+    """True if ``raw`` is an ``opencode:new-<uuid>`` new-session placeholder (#127)."""
+    if ":" not in raw:
+        return False
+    engine_id, _, native = raw.partition(":")
+    return engine_id == "opencode" and bool(_NEW_PLACEHOLDER_RE.match(native))
+
+
+def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[EngineProvider, str]:
     """Resolve an engine-qualified id (``engine:native_id``) to (provider, native_id).
 
     Back-compat: a bare value matching Claude's UUID shape is treated as a Claude
     id, so pre-multi-engine clients / bookmarks keep working. Raises ``EngineError``
     on an unknown engine or a native id that fails the provider's pattern — this is
     the validation gate before any dispatch.
+
+    ``allow_new_placeholder`` (set ONLY by the ws ``new=1`` launch path, #127) also
+    accepts the opencode ``new-<uuid>`` placeholder, which opencode mints-its-own-id
+    flow needs. It is NOT accepted on the resume/attach path, so a placeholder can
+    never be used to attach to or resume an arbitrary session.
     """
     if ":" in raw:
         engine_id, _, native = raw.partition(":")
@@ -518,9 +607,35 @@ def parse_key(raw: str) -> tuple[EngineProvider, str]:
     else:
         prov = _BY_ID["claude"]
         native = raw
+    if allow_new_placeholder and prov.engine_id == "opencode" and _NEW_PLACEHOLDER_RE.match(native):
+        return prov, native
     if not prov.id_pattern.match(native):
         raise EngineError(f"bad {prov.engine_id} id: {native!r}")
     return prov, native
+
+
+def physical_key(key: str, aliases: dict[str, str] | None = None) -> str:
+    """Resolve an engine-qualified ``key`` to the PHYSICAL key its live resources are
+    under (#127 alias layer).
+
+    For opencode new-session, the dtach socket / single-writer lock / scrollback buffer /
+    metadata are all keyed by the ``new-<uuid>`` placeholder the master was launched
+    under. Once reconciled, an alias ``placeholder → real`` is persisted; an attach by the
+    *real* id must therefore resolve back to the placeholder. So this maps a real id to
+    its placeholder (the inverse of the stored map) and leaves everything else unchanged.
+
+    Pass ``aliases`` (``metadata.load_aliases()``) to avoid re-reading the sidecar; omit
+    to read it. Idempotent and safe for non-opencode keys (returns ``key``).
+    """
+    if aliases is None:
+        from . import metadata as _md
+
+        aliases = _md.load_aliases()
+    # stored map is placeholder→real; we need real→placeholder for resource lookup.
+    for placeholder, real in aliases.items():
+        if real == key:
+            return placeholder
+    return key
 
 
 def canonical_key(raw: str) -> str:
@@ -543,4 +658,6 @@ __all__ = [
     "session_key",
     "parse_key",
     "canonical_key",
+    "physical_key",
+    "is_opencode_new_placeholder",
 ]
