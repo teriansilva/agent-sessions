@@ -16,6 +16,43 @@
   --badge-fg: #c9bbff;
   font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
+
+/* Theme presets (#109). The bare :root above is Royal (the default — no attribute needed,
+ * so existing users are unchanged). data-theme overrides swap the same token set; the
+ * `:root[data-theme=…]` form (specificity 0,2,0) deterministically beats the bare :root.
+ * Interactive-text contrast is held to WCAG AA (text/bg and white-on-accent ≥4.5:1),
+ * locked by web/src/theme/contrast.test.ts. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #161b22;
+  --text: #e6edf3;
+  --text-muted: #9da7b3;
+  --border: #30363d;
+  --border-subtle: #21262d;
+  --row-hover: #1c2128;
+  --accent: #2563eb; /* white text = 5.1:1 */
+  --brand: #58a6ff;
+  --brand-soft: #9ecbff;
+  --badge-bg: #21304a;
+  --badge-fg: #9ecbff;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c2024;
+  --text-muted: #5b6470;
+  --border: #d6dae0;
+  --border-subtle: #e7eaee;
+  --row-hover: #eef1f4;
+  --accent: #1d4ed8; /* white text = 6.3:1 */
+  --brand: #6d28d9; /* violet wordmark — 5.9:1 on white */
+  --brand-soft: #5b21b6;
+  --badge-bg: #ece9f7;
+  --badge-fg: #4c3a82;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -53,6 +90,11 @@
   }
 }
 button.shine:disabled::after {
+  display: none;
+}
+/* The sweep is gold — a Royal flourish. Non-Royal themes get a flat button (no sweep). */
+:root[data-theme="dark"] .shine::after,
+:root[data-theme="light"] .shine::after {
   display: none;
 }
 @media (prefers-reduced-motion: reduce) {
