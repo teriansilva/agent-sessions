@@ -1,18 +1,25 @@
-# agent-sessions
+# agent-sessions (TermRoyale)
 
-Mobile-first AI-coding session organizer behind **https://terminal.example.com**.
+A mobile-first, self-hostable web organizer for your AI-coding CLI sessions.
+
+> _"Finally, a terminal with some class."_
 
 A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, and gemini — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / …). No ttyd, no Zellij.
 
-Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry. History: `agent-sessions#10` (vision) → `#11` (abstraction) → `#12` (opencode).
+Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry.
 
 ## Install & operate
 
 Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx).
 
 ```sh
-curl -fsSL https://github.com/teriansilva/agent-sessions/raw/branch/main/install.sh | sh
+# Read the script before piping it to a shell.
+curl -fsSL https://<your-forge>/<you>/agent-sessions/raw/branch/main/install.sh | sh
 ```
+
+> Replace `https://<your-forge>/<you>/agent-sessions` with your repository URL. A worked
+> reverse-proxy example lives in [`deploy/nginx.example.conf`](deploy/nginx.example.conf);
+> a full self-host walkthrough is in [`INSTALL.md`](INSTALL.md).
 
 Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (the **only** sudo step, and it's prompted). On a fresh install it prints the generated admin credentials **once**:
 
@@ -77,16 +84,21 @@ systemctl --user disable --now agent-sessions-update.timer   # stop autoupdate o
 journalctl --user -u agent-sessions.service -f           # logs
 ```
 
-> RO deployment note: the live `terminal.example.com` host predates this installer and is deployed via the app repo's `deploy.yml` (CI) — its host-specific rollback/ops runbook is in [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions).
+## Security / trust model
+
+agent-sessions is a **single-admin** tool. Understand this before exposing it:
+
+- It launches AI-coding agents with permission bypass **by design** — `--dangerously-skip-permissions` (Claude Code) / `--yolo`-equivalent toggles. A logged-in user can run arbitrary commands in any project on the host. Treat the whole surface as **equivalent to a shell as the user the service runs as** — the same trust boundary as SSH.
+- It is **not multi-tenant**. There is one admin account; there is no per-user isolation. Do not share a login.
+- The app binds `127.0.0.1` and does **not** terminate TLS or do rate-limiting itself. **You must put it behind a reverse proxy that provides TLS + auth.** See [`deploy/nginx.example.conf`](deploy/nginx.example.conf).
+- Defence in depth: the app has its own cookie + CSRF + same-origin (`Origin`/`Referer` must equal `AGENT_SESSIONS_ORIGIN`) checks, and `/api/auth-check` (204/401) so the reverse proxy can additionally gate with `auth_request`. **Rate-limit `/login` at the proxy** to blunt credential stuffing.
 
 ## Where things live
 
 - **App code:** here (`src/agent_sessions/`)
-- **Deploy unit (ships with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app; the installer / `deploy.yml` manages it). The terminal is in-process (the ws bridge), so there's no separate terminal unit anymore.
-- **Operator-facing docs + runbook + nginx vhost + our specific as-built:** [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions)
-- **Design issue + Hermes review chain:** [`operator-docs#56`](https://git.example.com/superstatus.io/operator-docs/issues/56) (PR 3 of 4)
-- **Deploy target:** example-host (127.0.0.1:3402), behind example-proxy at terminal.example.com
-- **CI/CD:** `.forgejo/workflows/pr-validate.yml` (ruff + pytest + shell-free grep) and `.forgejo/workflows/deploy.yml` (mirrors `deploy-dashboard.yml`, targets the `[self-hosted, host]` runner on example-host)
+- **Deploy unit (ships with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app; the installer manages it). The terminal is in-process (the ws bridge), so there's no separate terminal unit.
+- **Reverse-proxy example:** [`deploy/nginx.example.conf`](deploy/nginx.example.conf)
+- **Self-host guide:** [`INSTALL.md`](INSTALL.md)
 
 ## Layout
 
@@ -104,10 +116,9 @@ agent-sessions/
 ├── web/               React + Vite + TS SPA (built to web/dist, served by main.py)
 ├── tests/             pytest; subprocess.run stubbed; covers shell-free, CSRF, lock, lookup
 ├── deploy/
-│   └── agent-sessions.service     systemd-user unit, FastAPI app (port 3402; installed by deploy.yml)
-└── .forgejo/workflows/
-    ├── pr-validate.yml
-    └── deploy.yml
+│   ├── agent-sessions.service     systemd-user unit, FastAPI app
+│   └── nginx.example.conf         sample reverse-proxy vhost (TLS + ws upgrade)
+└── .forgejo/workflows/            CI (lint + tests) + deploy
 ```
 
 ## Running locally
@@ -121,18 +132,20 @@ pytest
 Bring up the app against a fake home (no real Claude sessions touched):
 
 ```bash
-export AGENT_SESSIONS_USERNAME=marcus
+export AGENT_SESSIONS_USERNAME=admin
 export AGENT_SESSIONS_PASSWORD_HASH=$(python -c "from agent_sessions.auth import hash_password; print(hash_password('hunter2'))")
 export AGENT_SESSIONS_SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
 export AGENT_SESSIONS_ORIGIN=http://localhost:3402
 uvicorn --app-dir src --host 127.0.0.1 --port 3402 agent_sessions.main:app
 ```
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev setup (web build, tests, conventions).
+
 ## Permission bypass (`--dangerously-skip-permissions`)
 
-The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate (agent-sessions#4): it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
+The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate: it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
 
-This is acceptable **only** because agent-sessions is a single-user tool, on the operator's own host, behind two auth layers (nginx basic auth + the FastAPI app cookie). The toggle lets you turn bypass off per new session. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. Treat the whole surface as equivalent to "a shell as user" — the same trust boundary as SSH.
+This is acceptable **only** because agent-sessions is a single-admin tool, on the operator's own host, behind a reverse proxy (TLS + auth) and the app's own cookie auth. The toggle lets you turn bypass off per new session. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. See the **Security / trust model** section above.
 
 ## API surface
 
@@ -149,7 +162,11 @@ All state-changing routes require the CSRF token + an Origin/Referer matching `A
 
 ## Conventions
 
-See `CLAUDE.md` (= `AGENTS.md` symlink). Key points:
+See [`CLAUDE.md`](CLAUDE.md) (= `AGENTS.md` symlink) and [`CONTRIBUTING.md`](CONTRIBUTING.md). Key points:
 
 - **Shell-free** engine launchers — providers build argv lists; the ws bridge runs them under `dtach`. Pinned by tests + a CI grep.
 - **Session = URL = socket identity:** one `{engine}:{id}` ⇒ one dtach master ⇒ one writer; attach, never relaunch.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

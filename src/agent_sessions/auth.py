@@ -1,6 +1,6 @@
 """Session-cookie auth + CSRF + Origin/Referer enforcement.
 
-- Single user (Marcus). Username + password hash come from environment.
+- Single admin user. Username + password hash come from environment.
 - Session cookie is a signed ``itsdangerous`` token containing ``{uid, csrf}``,
   ``HttpOnly``, ``Secure``, ``SameSite=Lax``, idle TTL configurable via env.
 - Every state-changing request must carry the CSRF token in the
@@ -14,7 +14,7 @@ Configuration (all required at process start unless dev_mode=True):
     AGENT_SESSIONS_USERNAME       — operator login (single user)
     AGENT_SESSIONS_PASSWORD_HASH  — pbkdf2_sha256 hash; mint via ``hash_password()``
     AGENT_SESSIONS_SECRET_KEY     — 32+ byte random secret (cookie signing)
-    AGENT_SESSIONS_ORIGIN         — e.g. ``https://terminal.example.com``
+    AGENT_SESSIONS_ORIGIN         — e.g. ``https://your-domain.example``
     AGENT_SESSIONS_SESSION_TTL    — seconds, default 86400 (24h idle)
 """
 
