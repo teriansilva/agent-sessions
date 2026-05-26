@@ -40,6 +40,7 @@ from . import (
     engines,
     envfile,
     metadata,
+    prefs,
     ptybridge,
     scanner,
     sessions,
@@ -199,8 +200,30 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 ],
                 "terminal_backend": terminal_backend,
                 "must_change_password": _must_change["v"],
+                # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
+                # choice carries across devices; localStorage is the device cache.
+                "theme": prefs.get_theme(),
             }
         )
+
+    @app.post("/api/prefs")
+    async def set_prefs(
+        request: Request,
+        _user: str = Depends(_logged_in),
+        _csrf: None = Depends(_csrf_guard),
+    ) -> JSONResponse:
+        # Persist UI preferences (#109). Currently just the theme; validated against the
+        # known set server-side (unknown → 422, never silently coerced on write).
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        theme = payload.get("theme")
+        if theme not in prefs.THEMES:
+            raise HTTPException(status_code=422, detail="unknown theme")
+        return JSONResponse({"theme": prefs.set_theme(theme)})
 
     @app.post("/api/password")
     async def change_password_api(

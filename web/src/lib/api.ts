@@ -112,6 +112,9 @@ async function upload(file: File): Promise<{ path: string; name: string }> {
 
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
+  version: () => getJson<{ version: string }>("/api/version"),
+  /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
+  setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
   upload,
   projects: () => getJson<{ projects: Project[] }>("/api/projects"),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),

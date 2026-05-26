@@ -38,6 +38,8 @@ export interface AppConfig {
   terminal_backend: "ttyd" | "ws" | string;
   /** First-run forced password change pending — the SPA routes to /change-password. */
   must_change_password?: boolean;
+  /** Per-user UI theme id (royal|dark|light); applied at load. Absent on older servers. */
+  theme?: string;
 }
 
 export interface SessionsQuery {

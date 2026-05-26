@@ -1,0 +1,148 @@
+.wrap {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px clamp(16px, 5vw, 40px) 48px;
+  background: var(--bg);
+  color: var(--text);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.head h1 {
+  font-size: 20px;
+  font-weight: 800;
+  margin: 0;
+  color: var(--brand-soft);
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.back:hover {
+  border-color: var(--accent);
+}
+
+.section {
+  max-width: 640px;
+  margin: 0 auto 26px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.section h2 {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+.hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.blurb {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Theme picker */
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.themeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.themeCard:hover {
+  border-color: var(--accent);
+}
+.themeCard.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.swatch {
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+/* Fixed preview swatches — show each theme's identity regardless of the active theme. */
+.sw_royal {
+  background: linear-gradient(120deg, #0d0820 55%, #7c4ddb 55%, #f5c542);
+}
+.sw_dark {
+  background: linear-gradient(120deg, #0e1116 55%, #2563eb 55%, #58a6ff);
+}
+.sw_light {
+  background: linear-gradient(120deg, #f6f7f9 55%, #1d4ed8 55%, #6d28d9);
+}
+.themeName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.themeDesc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* About */
+.brandLine {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--brand-soft);
+}
+.brandLine b {
+  color: var(--brand);
+}
+.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+.meta dt {
+  color: var(--text-muted);
+}
+.meta dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Support */
+.coffee {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--accent);
+  color: #fff;
+}
+.coffee:hover {
+  filter: brightness(1.06);
+}

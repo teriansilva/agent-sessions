@@ -16,8 +16,28 @@
 }
 .topbar {
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+}
+/* Settings gear — sits opposite the wordmark in the sidebar header. */
+.gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+}
+.gear:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--row-hover);
 }
 /* TermRoyale wordmark (#91): gold, the crown 👑 + a gold "Royale". */
 .brand {
@@ -47,6 +67,17 @@
 }
 .mobilebar .brand {
   font-size: 15px;
+}
+/* The mobile Settings gear sits at the far right of the bar (the desktop gear lives in
+ * the sidebar .topbar, which is hidden on mobile — so without this mobile users have no
+ * way to reach /settings). Hidden on desktop since the .topbar gear is visible there. */
+.mobileGear {
+  margin-left: auto;
+}
+@media (min-width: 801px) {
+  .mobileGear {
+    display: none;
+  }
 }
 .navToggle {
   display: flex;

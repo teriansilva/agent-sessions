@@ -1,9 +1,11 @@
-import { Menu, X } from "lucide-react";
+import { Menu, Settings as SettingsIcon, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
+import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
+import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
 import { ConfigProvider } from "./ConfigContext";
 
@@ -37,12 +39,18 @@ function Layout() {
         <span className="brand">
           👑 Term<b>Royale</b>
         </span>
+        <Link to="/settings" className="gear mobileGear" aria-label="Settings">
+          <SettingsIcon size={18} />
+        </Link>
       </header>
       <aside className="sidebar">
         <header className="topbar">
           <span className="brand">
             👑 Term<b>Royale</b>
           </span>
+          <Link to="/settings" className="gear" aria-label="Settings">
+            <SettingsIcon size={18} />
+          </Link>
         </header>
         <SessionList />
       </aside>
@@ -56,6 +64,7 @@ function Layout() {
       <main className="terminal-pane">
         <Routes>
           <Route path="/" element={<NewSessionLanding />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/s/:engine/:id" element={<SessionView />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -67,9 +76,11 @@ function Layout() {
 export default function App() {
   return (
     <ConfigProvider>
-      <BrowserRouter>
-        <Layout />
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <Layout />
+        </BrowserRouter>
+      </ThemeProvider>
     </ConfigProvider>
   );
 }
