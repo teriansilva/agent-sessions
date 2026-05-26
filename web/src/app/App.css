@@ -1,7 +1,9 @@
-/* App shell: a thin top header + a session-list sidebar + a routed main pane.
- * Desktop (>800px): a header row spanning both columns, then a fixed 320px sidebar
- *   column beside the pane. The sidebar is collapsible (.app.collapsed) — hidden, pane
- *   full-width. The header carries the sidebar toggle + the current session.
+/* App shell: a session-list sidebar + a thin top header over the pane + a routed main pane.
+ * Desktop (>800px): a fixed 320px sidebar column spanning the FULL height, with the header
+ *   sitting only above the pane — it ends where the sidebar begins. The sidebar is
+ *   collapsible (.app.collapsed) — hidden, pane full-width — and the header then spans the
+ *   full width and carries the expand toggle + Settings gear. While expanded, collapse is
+ *   driven solely by the sidebar .topbar's PanelLeftClose icon, so there's one affordance.
  * Mobile (≤800px): sidebar is an off-canvas drawer over a full-width pane; the header
  *   carries the hamburger. */
 .app {
@@ -12,8 +14,10 @@
    * bar shrinks the terminal instead of overflowing it (#7) and window-resize reflow works
    * (#8). 100dvh minus the header keeps the terminal pane height-bounded. */
   grid-template-rows: auto minmax(0, calc(100dvh - 46px));
+  /* The sidebar spans BOTH rows (full height); the header occupies only the pane column, so
+   * it ends at the sidebar edge rather than crossing over it (#132). */
   grid-template-areas:
-    "header header"
+    "sidebar header"
     "sidebar pane";
   height: 100dvh;
   overflow: hidden;
@@ -50,7 +54,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px;
+  /* Match the header height so the sidebar topbar and the pane header share one clean
+   * horizontal line where the header meets the sidebar edge (#132). */
+  height: 46px;
+  box-sizing: border-box;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
 }
 /* Settings gear — sits opposite the wordmark in the sidebar header. */
@@ -161,8 +169,19 @@
   margin-left: auto;
 }
 @media (min-width: 801px) {
+  /* The header's hamburger/X only opens the sidebar when collapsed; while the sidebar is
+   * expanded the collapse control lives in its .topbar (PanelLeftClose), so hide the header
+   * toggle then — otherwise two buttons collapse the same sidebar (#132). */
+  .app:not(.collapsed) .navToggle {
+    display: none;
+  }
+  /* Settings gear: the sidebar .topbar gear is visible while expanded, so hide the header
+   * one then; when collapsed the sidebar (and its gear) is gone, so show the header gear. */
   .mobileGear {
     display: none;
+  }
+  .app.collapsed .mobileGear {
+    display: inline-flex;
   }
 }
 .navToggle {

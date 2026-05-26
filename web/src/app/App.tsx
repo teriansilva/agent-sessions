@@ -48,11 +48,13 @@ function CurrentSessionLabel() {
 }
 
 /** App shell: a session-list sidebar + a routed main pane.
- *  - Desktop (>800px): sidebar is a fixed 320px column beside the pane, **collapsible**
- *    via the header toggle (persisted in localStorage). When collapsed, the pane goes
- *    full-width and a thin top header shows the toggle + current session.
- *  - Mobile (≤800px): sidebar is an off-canvas drawer toggled by the same header
- *    hamburger; the pane is full-width. The drawer auto-closes after navigating.
+ *  - Desktop (>800px): sidebar is a fixed 320px column spanning the full height; the thin
+ *    top header sits only above the pane (it ends at the sidebar edge). While expanded, the
+ *    sidebar is collapsed via its own .topbar PanelLeftClose icon — the header carries NO
+ *    toggle then (one affordance, #132). When collapsed (persisted in localStorage) the pane
+ *    goes full-width and the header spans it, showing an expand toggle + Settings gear.
+ *  - Mobile (≤800px): sidebar is an off-canvas drawer toggled by the header hamburger; the
+ *    pane is full-width. The drawer auto-closes after navigating.
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing. */
 function Layout() {
   const [navOpen, setNavOpen] = useState(false);

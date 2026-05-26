@@ -21,7 +21,7 @@ test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async (
   await expect(page.getByRole("status")).toBeVisible();
 });
 
-test("responsive nav: hamburger toggles the drawer on mobile, hidden on desktop", async ({
+test("responsive nav: drawer hamburger on mobile; single collapse affordance on desktop", async ({
   page,
 }, testInfo) => {
   await page.goto("/");
@@ -41,15 +41,16 @@ test("responsive nav: hamburger toggles the drawer on mobile, hidden on desktop"
     });
     await expect(app).not.toHaveClass(/navOpen/);
   } else {
-    // Desktop: the compact header carries a visible toggle that collapses/expands the
-    // sidebar (persisted). Starts expanded; one click collapses it (sidebar hidden),
-    // another expands it again.
-    await expect(toggle).toBeVisible();
+    // Desktop (#132): while the sidebar is expanded the header carries NO collapse toggle —
+    // collapse lives only in the sidebar's PanelLeftClose, so there's a single affordance.
+    // Collapsing hides the sidebar; THEN the header's expand toggle appears and re-expands.
     await expect(app).not.toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeVisible();
-    await toggle.click();
+    await expect(toggle).toBeHidden(); // no duplicate collapse button while expanded
+    await page.getByRole("button", { name: /collapse session list/i }).click();
     await expect(app).toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeHidden();
+    await expect(toggle).toBeVisible(); // collapsed → header shows the expand toggle
     await toggle.click();
     await expect(app).not.toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeVisible();
