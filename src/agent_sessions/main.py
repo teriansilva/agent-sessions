@@ -120,7 +120,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         force-change flag, and update the live state. Returns an error string or None."""
         if not verify_password(current, _pw["hash"]):
             return "incorrect"
-        if len(new) < 8:
+        if len(new) < 12:
             return "weak"
         new_hash = hash_password(new)
         envfile.update(_env_file, {accounts.HASH_KEY: new_hash, accounts.FORCE_CHANGE_KEY: None})
@@ -272,7 +272,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         _csrf: None = Depends(_csrf_guard),
     ) -> Response:
         # Change the admin password (current + new) for the SPA. The Jinja /change-password
-        # page is the server-rendered equivalent. New must be ≥ 8 chars.
+        # page is the server-rendered equivalent. New must be ≥ 12 chars.
         payload = await request.json()
         err = _apply_password_change(
             str(payload.get("current_password", "")), str(payload.get("new_password", ""))
@@ -280,7 +280,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         if err == "incorrect":
             raise HTTPException(status_code=403, detail="current password is incorrect")
         if err == "weak":
-            raise HTTPException(status_code=422, detail="new password must be ≥ 8 characters")
+            raise HTTPException(status_code=422, detail="new password must be ≥ 12 characters")
         return Response(status_code=204)
 
     @app.get("/", response_class=HTMLResponse)
@@ -362,7 +362,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         if err == "incorrect":
             return fail("current password is incorrect")
         if err == "weak":
-            return fail("new password must be at least 8 characters")
+            return fail("new password must be at least 12 characters")
         # Re-issue the session and land on the app.
         redirect = RedirectResponse("/", status_code=303)
         issue_session(cfg, redirect)

@@ -26,8 +26,9 @@ import os
 import signal
 import struct
 import termios
+from collections import OrderedDict
 
-from . import sessionlock
+from . import ptybridge, sessionlock
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -55,16 +56,83 @@ def _read(fd: int) -> bytes:
 # a transient ws drop continues seamlessly instead of re-replaying the whole ring (or,
 # worse, blanking). See docs/session-handling.md §Reconnect continuity.
 _MAX_BUF = 256 * 1024
-_BUFFERS: dict[str, bytearray] = {}
-_TOTALS: dict[str, int] = {}
+
+# Hard cap on how many *distinct* session buffers we retain at once. Each entry is
+# capped at `_MAX_BUF`, but without a ceiling on the *count* every session that ever
+# attached would leave up to 256KB resident for the process lifetime (audit MEDIUM:
+# unbounded growth over many sessions). The buffers are insertion-/access-ordered
+# (`OrderedDict`, move-to-end on touch); when over the cap we evict the
+# least-recently-used entry. A still-attached/alive session is touched on every
+# output chunk, so it stays at the hot end and survives eviction — delta-resume for
+# live sessions is preserved. Dead sessions also get dropped eagerly at end-of-run
+# (see `_maybe_evict_ended`), so the LRU cap is a worst-case backstop, not the
+# primary reclaim path.
+_MAX_BUFFERS = 64
+_BUFFERS: OrderedDict[str, bytearray] = OrderedDict()
+_TOTALS: OrderedDict[str, int] = OrderedDict()
+
+
+def _drop_buffer(key: str) -> None:
+    _BUFFERS.pop(key, None)
+    _TOTALS.pop(key, None)
+
+
+def _session_alive(buf_key: str) -> bool:
+    """Is the dtach master for this engine-qualified session id still running?
+
+    Used to protect a live session's scrollback from eviction (it's needed for a
+    reconnect's delta-resume) and to eagerly reclaim a dead one. Best-effort: an
+    unparseable key / lookup error is treated as NOT alive (i.e. evictable).
+    """
+    try:
+        from . import engines
+
+        prov, native = engines.parse_key(buf_key)
+        return ptybridge.session_exists(prov.engine_id, native)
+    except Exception:
+        return False
+
+
+def _enforce_buffer_cap() -> None:
+    """Bound the number of retained buffers — but only by evicting buffers whose dtach
+    master is GONE. A live session's scrollback is never evicted (an idle/attached
+    session produces no output to refresh its LRU recency, yet still needs the buffer
+    for delta-resume — the bug Hermes caught). So the cap reclaims dead/orphan buffers
+    only; concurrent *live* sessions are all retained (their memory is legitimate and
+    bounded by real concurrency), and dead ones are normally reaped eagerly at
+    end-of-run via `_maybe_evict_ended`.
+    """
+    while len(_BUFFERS) > _MAX_BUFFERS:
+        victim = next((k for k in _BUFFERS if not _session_alive(k)), None)
+        if victim is None:
+            break  # everything retained is live — keep it all
+        _drop_buffer(victim)
 
 
 def _buffer_append(key: str, data: bytes) -> None:
-    buf = _BUFFERS.setdefault(key, bytearray())
+    buf = _BUFFERS.get(key)
+    if buf is None:
+        buf = bytearray()
+        _BUFFERS[key] = buf
+    _BUFFERS.move_to_end(key)  # most-recently-used
     buf.extend(data)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
+    _TOTALS.move_to_end(key)
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
+    _enforce_buffer_cap()
+
+
+def _maybe_evict_ended(buf_key: str | None) -> None:
+    """Drop a session's retained buffer once its run ends and no dtach master survives.
+
+    The buffer only earns its keep while the agent is still alive (a later reconnect
+    delta-resumes from it). When the dtach master is gone there's nothing to resume,
+    so we reclaim the memory immediately rather than waiting for the LRU backstop.
+    Best-effort — any failure leaves the entry for `_enforce_buffer_cap` to reclaim.
+    """
+    if buf_key and not _session_alive(buf_key):
+        _drop_buffer(buf_key)
 
 
 def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
@@ -222,3 +290,6 @@ async def run(
             await asyncio.wait_for(proc.wait(), timeout=3)
         with contextlib.suppress(Exception):
             await ws.close()
+        # Reclaim the scrollback for a session whose dtach master has exited — there's
+        # nothing left to resume. Live sessions keep their buffer (master still alive).
+        _maybe_evict_ended(buf_key)

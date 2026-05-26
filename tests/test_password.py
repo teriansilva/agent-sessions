@@ -53,13 +53,25 @@ def test_api_password_change_validates_and_updates_live(auth_cfg, tmp_path, monk
         ).status_code
         == 422
     )
-
-    # success → 204, env updated (hash verifies the new password), and the LIVE app now
-    # authenticates with the new password (old one rejected) without a restart.
+    # An 11-char password (the old minimum was 8) is now rejected; the floor is 12.
+    assert len("elevenchars") == 11
     assert (
         c.post(
             "/api/password",
-            json={"current_password": "hunter2", "new_password": "brandnewpw"},
+            json={"current_password": "hunter2", "new_password": "elevenchars"},
+            headers=hdr,
+        ).status_code
+        == 422
+    )
+
+    # success (a 12-char password is accepted) → 204, env updated (hash verifies the new
+    # password), and the LIVE app now authenticates with the new password (old one
+    # rejected) without a restart.
+    assert len("brandnewpw12") == 12
+    assert (
+        c.post(
+            "/api/password",
+            json={"current_password": "hunter2", "new_password": "brandnewpw12"},
             headers=hdr,
         ).status_code
         == 204
@@ -68,8 +80,8 @@ def test_api_password_change_validates_and_updates_live(auth_cfg, tmp_path, monk
     hash_line = next(
         ln for ln in text.splitlines() if ln.startswith("AGENT_SESSIONS_PASSWORD_HASH=")
     )
-    assert verify_password("brandnewpw", hash_line.split("=", 1)[1])
-    assert _login(c, auth_cfg, password="brandnewpw") == 303
+    assert verify_password("brandnewpw12", hash_line.split("=", 1)[1])
+    assert _login(c, auth_cfg, password="brandnewpw12") == 303
     assert _login(c, auth_cfg, password="hunter2") == 401
 
 
@@ -79,7 +91,7 @@ def test_api_password_requires_csrf(auth_cfg, tmp_path, monkeypatch):
     _login(c, auth_cfg)
     r = c.post(
         "/api/password",
-        json={"current_password": "hunter2", "new_password": "brandnewpw"},
+        json={"current_password": "hunter2", "new_password": "brandnewpw12"},
         headers={"Origin": auth_cfg.origin},
     )
     assert r.status_code == 403
@@ -114,14 +126,14 @@ def test_must_change_gate_and_change_page(auth_cfg, tmp_path, monkeypatch):
     # Mismatch is rejected; a valid change clears the flag and lands on the app.
     bad = c.post(
         "/change-password",
-        data={"current": "hunter2", "new": "brandnewpw", "confirm": "nope"},
+        data={"current": "hunter2", "new": "brandnewpw12", "confirm": "nope"},
         headers={"Origin": auth_cfg.origin},
         follow_redirects=False,
     )
     assert bad.status_code == 400
     ok = c.post(
         "/change-password",
-        data={"current": "hunter2", "new": "brandnewpw", "confirm": "brandnewpw"},
+        data={"current": "hunter2", "new": "brandnewpw12", "confirm": "brandnewpw12"},
         headers={"Origin": auth_cfg.origin},
         follow_redirects=False,
     )

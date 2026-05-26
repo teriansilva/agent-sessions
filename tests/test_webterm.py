@@ -222,3 +222,70 @@ def test_resume_payload_alt_screen_sends_nothing():
     assert payload == b"" and total == webterm._TOTALS[k]
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
+
+
+def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
+    # Audit MEDIUM: the retained-buffer set stays bounded. When every retained session
+    # is dead (no surviving dtach master), exceeding the cap evicts the oldest first.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    monkeypatch.setattr(webterm, "_MAX_BUFFERS", 4)
+    monkeypatch.setattr(webterm, "_session_alive", lambda k: False)  # all dead → evictable
+
+    for i in range(10):
+        webterm._buffer_append(f"claude:s{i}", b"y")
+
+    assert len(webterm._BUFFERS) == 4  # bounded
+    assert "claude:s0" not in webterm._BUFFERS  # oldest evicted
+    assert "claude:s9" in webterm._BUFFERS and "claude:s9" in webterm._TOTALS  # newest kept
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_idle_live_session_never_evicted(monkeypatch):
+    # Regression (Hermes #121): an idle/attached LIVE session produces no output to
+    # refresh its LRU recency, yet its scrollback must survive churn from other
+    # sessions so a later reconnect can still delta-resume. The cap only evicts
+    # buffers whose dtach master is gone — never a live one.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    monkeypatch.setattr(webterm, "_MAX_BUFFERS", 4)
+    live = "claude:live-idle"
+    # Only `live` is alive; every other (churning) session is dead/evictable.
+    monkeypatch.setattr(webterm, "_session_alive", lambda k: k == live)
+
+    webterm._buffer_append(live, b"important history")  # written ONCE, then idle
+    for i in range(20):  # heavy churn from other sessions, well past the cap
+        webterm._buffer_append(f"claude:dead{i}", b"y")
+
+    assert live in webterm._BUFFERS  # live session preserved despite being the oldest + idle
+    assert bytes(webterm._BUFFERS[live]) == b"important history"  # buffer intact for resume
+    assert "claude:dead0" not in webterm._BUFFERS  # dead sessions evicted instead
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_maybe_evict_ended_drops_dead_keeps_live(monkeypatch):
+    # On run-end we drop a session's scrollback only when its dtach master is gone;
+    # a still-alive master keeps its buffer so a later reconnect can delta-resume.
+    from agent_sessions import ptybridge, webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    key = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(key, b"history")
+
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: True)
+    webterm._maybe_evict_ended(key)
+    assert key in webterm._BUFFERS  # master alive → kept
+
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
+    webterm._maybe_evict_ended(key)
+    assert key not in webterm._BUFFERS  # master gone → reclaimed
+    assert key not in webterm._TOTALS
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
