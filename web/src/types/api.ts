@@ -45,6 +45,36 @@ export interface AppConfig {
   auth_mode?: "single-user" | "none" | string;
 }
 
+/** One engine provider's discovery status (Settings → Connected agents). */
+export interface EngineInfo {
+  id: EngineId | string;
+  present: boolean;
+  supports_new: boolean;
+  bin: string | null;
+}
+
+export interface EnginesResponse {
+  engines: EngineInfo[];
+}
+
+/** Host/system info (Settings → System). Every field is fail-soft server-side, so any
+ *  of them may be absent depending on the platform / permissions. */
+export interface SystemInfo {
+  os?: string;
+  platform?: string;
+  arch?: string;
+  python?: string;
+  version?: string;
+  hostname?: string;
+  cpus?: number;
+  load?: { "1": number; "5": number; "15": number };
+  mem_total?: number;
+  mem_available?: number;
+  disk_total?: number;
+  disk_free?: number;
+  uptime_seconds?: number;
+}
+
 export interface SessionsQuery {
   limit?: number;
   offset?: number;

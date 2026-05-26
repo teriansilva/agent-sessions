@@ -1,6 +1,7 @@
 import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
+import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { engineBadge, relTime, shortCwd } from "../../lib/format";
 import type { Session } from "../../types/api";
@@ -144,6 +145,12 @@ export function SessionList() {
     renameRow,
     setArchived,
   } = useSessionsList();
+
+  // Publish the loaded rows so the compact header can resolve the current session's title.
+  const { setSessions } = useSessionsStore();
+  useEffect(() => {
+    setSessions(sessions);
+  }, [sessions, setSessions]);
 
   return (
     <div className={styles.wrap}>

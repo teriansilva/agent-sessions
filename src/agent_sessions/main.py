@@ -44,6 +44,7 @@ from . import (
     ptybridge,
     scanner,
     sessions,
+    sysinfo,
     update,
     webterm,
 )
@@ -207,6 +208,31 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     async def app_version(_: str = Depends(_logged_in)) -> JSONResponse:
         # Runtime version for the dashboard + the self-update flow (#65). Authed.
         return JSONResponse({"version": get_version()})
+
+    @app.get("/api/engines")
+    async def list_engines(_: str = Depends(_logged_in)) -> JSONResponse:
+        # Discovery for the Settings "Connected agents" section: every known provider
+        # with its presence + whether it can start a new session + the resolved binary
+        # path (or null). Authed; GET, so no CSRF.
+        return JSONResponse(
+            {
+                "engines": [
+                    {
+                        "id": p.engine_id,
+                        "present": p.is_present(),
+                        "supports_new": bool(getattr(p, "supports_new", False)),
+                        "bin": discover.resolve(p.engine_id),
+                    }
+                    for p in engines.all_providers()
+                ]
+            }
+        )
+
+    @app.get("/api/system")
+    async def system_info(_: str = Depends(_logged_in)) -> JSONResponse:
+        # Host/system info for the Settings "System" section. Stdlib only, every field
+        # fail-soft (omitted on error / non-Linux). No network interfaces / IPs. Authed.
+        return JSONResponse(sysinfo.collect())
 
     @app.get("/api/update/check")
     async def update_check(_: str = Depends(_logged_in)) -> JSONResponse:

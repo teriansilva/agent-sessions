@@ -1,6 +1,13 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
-import type { AppConfig, Project, SessionsPage, SessionsQuery } from "../types/api";
+import type {
+  AppConfig,
+  EnginesResponse,
+  Project,
+  SessionsPage,
+  SessionsQuery,
+  SystemInfo,
+} from "../types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -113,6 +120,10 @@ async function upload(file: File): Promise<{ path: string; name: string }> {
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
   version: () => getJson<{ version: string }>("/api/version"),
+  /** Discovery: every known engine provider with presence / new-session / bin path. */
+  engines: () => getJson<EnginesResponse>("/api/engines"),
+  /** Host/system info for the Settings → System card (fail-soft fields). */
+  system: () => getJson<SystemInfo>("/api/system"),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
   upload,

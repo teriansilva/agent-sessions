@@ -7,7 +7,9 @@ import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { Settings } from "./Settings";
 
-vi.mock("../lib/api", () => ({ api: { version: vi.fn(), setTheme: vi.fn() } }));
+vi.mock("../lib/api", () => ({
+  api: { version: vi.fn(), setTheme: vi.fn(), engines: vi.fn(), system: vi.fn() },
+}));
 
 function renderSettings(theme: ThemeId = "royal") {
   const setTheme = vi.fn();
@@ -23,6 +25,27 @@ function renderSettings(theme: ThemeId = "royal") {
 
 beforeEach(() => {
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
+  vi.mocked(api.engines).mockResolvedValue({
+    engines: [
+      { id: "claude", present: true, supports_new: true, bin: "/usr/local/bin/claude" },
+      { id: "codex", present: false, supports_new: false, bin: null },
+    ],
+  });
+  vi.mocked(api.system).mockResolvedValue({
+    os: "Linux 6.8.0",
+    platform: "Linux-6.8.0-x86_64",
+    arch: "x86_64",
+    python: "3.12.1",
+    version: "9.9.9",
+    hostname: "host",
+    cpus: 8,
+    load: { "1": 0.5, "5": 0.4, "15": 0.3 },
+    mem_total: 16 * 1024 ** 3,
+    mem_available: 8 * 1024 ** 3,
+    disk_total: 500 * 1024 ** 3,
+    disk_free: 200 * 1024 ** 3,
+    uptime_seconds: 90000,
+  });
 });
 
 test("renders the three themes, the version, and a safe coffee link", async () => {
@@ -52,4 +75,26 @@ test("picking a theme calls setTheme with its id", async () => {
   await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
   await waitFor(() => expect(screen.getByText("1.2.3")).toBeInTheDocument());
+});
+
+test("renders the Connected agents section with each engine + new-session badge", async () => {
+  renderSettings();
+  expect(screen.getByRole("heading", { name: "Connected agents" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("claude")).toBeInTheDocument());
+  expect(screen.getByText("codex")).toBeInTheDocument();
+  // present engine shows its resolved bin + a "can start new" badge
+  expect(screen.getByText("/usr/local/bin/claude")).toBeInTheDocument();
+  expect(screen.getByText(/can start new/i)).toBeInTheDocument();
+  // absent engine shows "not found"
+  expect(screen.getByText("not found")).toBeInTheDocument();
+});
+
+test("renders the System section with humanized fields", async () => {
+  renderSettings();
+  expect(screen.getByRole("heading", { name: "System" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument());
+  // CPU + load, humanized memory (8/16 GB used/total), humanized uptime (90000s = 1d 1h)
+  expect(screen.getByText(/8 cores · load 0\.50/)).toBeInTheDocument();
+  expect(screen.getByText("8.0 GB / 16 GB")).toBeInTheDocument();
+  expect(screen.getByText("1d 1h")).toBeInTheDocument();
 });

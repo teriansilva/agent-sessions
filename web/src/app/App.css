@@ -1,22 +1,48 @@
-/* App shell: a session-list sidebar + a routed main pane.
- * Desktop (>800px): fixed 320px sidebar column beside the pane.
- * Mobile (≤800px): sidebar is an off-canvas drawer over a full-width pane. */
+/* App shell: a thin top header + a session-list sidebar + a routed main pane.
+ * Desktop (>800px): a header row spanning both columns, then a fixed 320px sidebar
+ *   column beside the pane. The sidebar is collapsible (.app.collapsed) — hidden, pane
+ *   full-width. The header carries the sidebar toggle + the current session.
+ * Mobile (≤800px): sidebar is an off-canvas drawer over a full-width pane; the header
+ *   carries the hamburger. */
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
-  /* Bound the single row to the viewport so grid items can't grow past it. Without an
-   * explicit row track the implicit row is `auto` (content-sized), which let the compose
-   * bar push the terminal pane below the fold (#7) and stopped window-resize reflow (#8). */
-  grid-template-rows: minmax(0, 100dvh);
+  /* A thin header row (auto) + a content row bounded to the remaining viewport. The
+   * minmax(0, …) row keeps the grid items from growing past the viewport so the compose
+   * bar shrinks the terminal instead of overflowing it (#7) and window-resize reflow works
+   * (#8). 100dvh minus the header keeps the terminal pane height-bounded. */
+  grid-template-rows: auto minmax(0, calc(100dvh - 46px));
+  grid-template-areas:
+    "header header"
+    "sidebar pane";
   height: 100dvh;
   overflow: hidden;
 }
+/* Collapsed (desktop only — mobile uses the off-canvas drawer, scoped below): no sidebar
+ * column, pane full-width. */
+@media (min-width: 801px) {
+  .app.collapsed {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "header"
+      "pane";
+  }
+  .app.collapsed .sidebar {
+    display: none;
+  }
+}
 .sidebar {
+  grid-area: sidebar;
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
+}
+.topbarActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .topbar {
   flex: none;
@@ -55,6 +81,7 @@
   font-weight: 800;
 }
 .terminal-pane {
+  grid-area: pane;
   min-width: 0;
   min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
   display: flex;
@@ -73,12 +100,59 @@
   font-size: 13px;
 }
 
-/* Mobile top bar + drawer backdrop: present in the DOM but hidden on desktop. */
+/* Shared compact top header (desktop + mobile). On desktop it's a thin bar spanning both
+ * grid columns carrying the sidebar toggle + the current session; on mobile it carries the
+ * drawer hamburger. */
 .mobilebar {
-  display: none;
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 .mobilebar .brand {
   font-size: 15px;
+}
+/* Current-session label in the header. */
+.hdrSession {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+}
+.hdrBadge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+.hdrEngine {
+  font-weight: 700;
+  color: var(--text);
+}
+.hdrSep {
+  color: var(--text-muted);
+}
+.hdrTitle {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 /* The mobile Settings gear sits at the far right of the bar (the desktop gear lives in
  * the sidebar .topbar, which is hidden on mobile — so without this mobile users have no
@@ -115,19 +189,15 @@
     flex-direction: column;
   }
   .mobilebar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     flex: none;
-    height: 46px;
-    padding: 0 8px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
     position: relative;
     z-index: 40; /* above the drawer so the toggle is always reachable */
   }
   .topbar {
-    display: none; /* the mobile bar carries the title */
+    display: none; /* the mobile bar carries the title; drawer starts with the list */
+  }
+  .collapseToggle {
+    display: none; /* desktop-only affordance; mobile collapses via the drawer backdrop */
   }
   .sidebar {
     position: fixed;

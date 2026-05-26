@@ -15,3 +15,38 @@ export function shortCwd(cwd: string): string {
 export function engineBadge(engine: string): string {
   return engine === "opencode" ? "oc" : engine === "codex" ? "cx" : engine === "gemini" ? "gm" : "cc";
 }
+
+/** Human display name for an engine id (sidebar uses short badges; cards want the name). */
+export function engineName(engine: string): string {
+  return engine === "opencode"
+    ? "opencode"
+    : engine === "codex"
+      ? "codex"
+      : engine === "gemini"
+        ? "gemini"
+        : engine === "claude"
+          ? "claude"
+          : engine;
+}
+
+/** Humanize a byte count to a compact GB/MB string (binary units). */
+export function humanBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  const gb = n / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(gb >= 10 ? 0 : 1)} GB`;
+  const mb = n / 1024 ** 2;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+/** Humanize a duration in seconds to "Xd Yh" / "Yh Zm" / "Zm". */
+export function humanDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.floor(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
+}

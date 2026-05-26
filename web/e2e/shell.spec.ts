@@ -41,8 +41,18 @@ test("responsive nav: hamburger toggles the drawer on mobile, hidden on desktop"
     });
     await expect(app).not.toHaveClass(/navOpen/);
   } else {
-    // Desktop: the sidebar is always present, so the hamburger is hidden.
-    await expect(toggle).toBeHidden();
+    // Desktop: the compact header carries a visible toggle that collapses/expands the
+    // sidebar (persisted). Starts expanded; one click collapses it (sidebar hidden),
+    // another expands it again.
+    await expect(toggle).toBeVisible();
+    await expect(app).not.toHaveClass(/collapsed/);
+    await expect(page.locator(".sidebar")).toBeVisible();
+    await toggle.click();
+    await expect(app).toHaveClass(/collapsed/);
+    await expect(page.locator(".sidebar")).toBeHidden();
+    await toggle.click();
+    await expect(app).not.toHaveClass(/collapsed/);
+    await expect(page.locator(".sidebar")).toBeVisible();
   }
 });
 
