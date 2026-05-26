@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- TermRoyale maskable icon (#81): full-bleed indigo ground, crown centered inside the
+       maskable safe zone. The 64-unit favicon crown is scaled into the inner ~64% box
+       (centered at 256,256, ~280px wide) so Android's circle/squircle masks never clip it. -->
+  <rect width="512" height="512" fill="#0d0820"/>
+  <g transform="translate(116,116) scale(4.375)">
+    <!-- crown glyph from favicon.svg (viewBox 0 0 64 64) -->
+    <path d="M12 44h40l4-22-12 9-12-15-12 15-12-9z" fill="#f5c542" stroke="#ffe9a8" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect x="12" y="46" width="40" height="6" rx="2" fill="#f5c542"/>
+  </g>
+</svg>

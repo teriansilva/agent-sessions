@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- TermRoyale social/og image (#81): indigo ground, gold crown above the wordmark
+       ("Term" soft-gold #ffe9a8, "Royale" #f5c542) + the tagline. Rasterized to og-image.png. -->
+  <rect width="1200" height="630" fill="#0d0820"/>
+  <!-- subtle vignette so the centered mark reads cleanly -->
+  <radialGradient id="glow" cx="50%" cy="42%" r="60%">
+    <stop offset="0%" stop-color="#1a1138"/>
+    <stop offset="100%" stop-color="#0d0820"/>
+  </radialGradient>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <!-- crown, centered, ~150px wide -->
+  <g transform="translate(525,150) scale(2.34)">
+    <path d="M12 44h40l4-22-12 9-12-15-12 15-12-9z" fill="#f5c542" stroke="#ffe9a8" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect x="12" y="46" width="40" height="6" rx="2" fill="#f5c542"/>
+  </g>
+  <!-- wordmark: two words laid out explicitly (left-anchored at measured x positions) so the
+       two-tone color split renders without tspan/middle-anchor kerning overlap. "Term" ends
+       and "Royale" begins at x=600-ish, visually centered as one word. -->
+  <text y="430"
+        font-family="'DejaVu Sans','Helvetica Neue',Arial,sans-serif"
+        font-size="96" font-weight="700">
+    <tspan x="358" fill="#ffe9a8">Term</tspan>
+    <tspan x="603" fill="#f5c542">Royale</tspan>
+  </text>
+  <!-- tagline -->
+  <text x="600" y="500" text-anchor="middle"
+        font-family="'DejaVu Sans','Helvetica Neue',Arial,sans-serif"
+        font-size="36" font-weight="400" fill="#c9c2e0">
+    Finally, a terminal with some class.
+  </text>
+</svg>

@@ -12,6 +12,16 @@
       content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
     />
     <title>TermRoyale</title>
+    <!-- Social / Open Graph + Twitter card (#81). Relative og:image so it resolves under
+         whatever host serves the app (no hardcoded domain). -->
+    <meta property="og:title" content="TermRoyale" />
+    <meta property="og:description" content="Finally, a terminal with some class." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="TermRoyale" />
+    <meta name="twitter:description" content="Finally, a terminal with some class." />
+    <meta name="twitter:image" content="/og-image.png" />
     <!-- Apply the device-cached theme before first paint so a non-Royal user doesn't see a
          Royal flash. Royal is the default (no attribute → the bare :root tokens). Mirrors
          web/src/theme/applyTheme.ts; kept inline + tiny so it runs ahead of the bundle. -->
