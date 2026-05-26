@@ -213,6 +213,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini,
+# which commonly live there) are on PATH — otherwise the claude CLI nags
+# "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile
+# so an explicit PATH in the env file still wins. %h = the service user's home dir.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=$ENVF
 ExecStart=$CURRENT/venv/bin/agent-sessions serve --host $HOST --port $PORT
 Restart=on-failure

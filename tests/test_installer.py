@@ -217,6 +217,14 @@ def test_install_sh_has_update_rollback():
     assert "rolling back" in s and "prev" in s  # rollback to the prior release on failure
 
 
+def test_install_sh_unit_puts_local_bin_on_path():
+    s = INSTALL_SH.read_text()
+    # The rendered service unit must carry ~/.local/bin on PATH so sessions spawned by the
+    # app (claude/opencode/codex/gemini) resolve there — otherwise the claude CLI nags about
+    # "~/.local/bin is not in your PATH". %h is the systemd-user home-dir specifier.
+    assert "Environment=PATH=%h/.local/bin:" in s
+
+
 def test_install_sh_optin_autoupdate_timer():
     s = INSTALL_SH.read_text()
     assert "AGENT_SESSIONS_AUTOUPDATE" in s  # opt-in flag
