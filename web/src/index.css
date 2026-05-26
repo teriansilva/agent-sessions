@@ -9,7 +9,12 @@
   --border: #2f2658;
   --border-subtle: #1b1540;
   --row-hover: #1c1642;
-  --accent: #7c4ddb; /* violet — CTAs; white text = 5.3:1 (WCAG AA, #91 review) */
+  --accent: #7c4ddb; /* violet — non-button accents: focus rings, active rail, filters */
+  /* Gold CTA tokens (the brand) — theme-INDEPENDENT, identical in royal/dark/light.
+   * Dark text on gold is ~11:1 (WCAG AAA); locked by web/src/theme/contrast.test.ts. */
+  --cta-bg-1: #f5c542;
+  --cta-bg-2: #e0a92e;
+  --cta-text: #2a1a05;
   --brand: #f5c542; /* gold — the wordmark + crown */
   --brand-soft: #ffe9a8;
   --badge-bg: #2a2358;
@@ -71,7 +76,7 @@
   background: linear-gradient(
     110deg,
     transparent 35%,
-    rgba(255, 233, 168, 0.5) 50%,
+    rgba(255, 255, 255, 0.55) 50%,
     transparent 65%
   );
   transform: translateX(-160%);

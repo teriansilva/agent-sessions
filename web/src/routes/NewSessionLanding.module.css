@@ -64,14 +64,20 @@
 }
 .start {
   margin-top: 4px;
-  background: var(--accent, #4a90d9);
-  color: #fff;
+  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  color: var(--cta-text);
   border: none;
   border-radius: 6px;
   padding: 10px 0;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+}
+.start:hover:not(:disabled) {
+  background: linear-gradient(100deg, #ffd45e, #eab63c);
+}
+.start:active:not(:disabled) {
+  background: linear-gradient(100deg, #e6b837, #c8951f);
 }
 .start:disabled {
   opacity: 0.5;

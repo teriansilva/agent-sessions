@@ -140,9 +140,12 @@
   border-radius: 8px;
   font-weight: 700;
   text-decoration: none;
-  background: var(--accent);
-  color: #fff;
+  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  color: var(--cta-text);
 }
 .coffee:hover {
-  filter: brightness(1.06);
+  background: linear-gradient(100deg, #ffd45e, #eab63c);
+}
+.coffee:active {
+  background: linear-gradient(100deg, #e6b837, #c8951f);
 }

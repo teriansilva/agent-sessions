@@ -12,14 +12,17 @@
   flex: none;
   margin: 8px;
   padding: 9px 0;
-  background: var(--accent, #4a90d9);
-  color: #fff;
+  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  color: var(--cta-text);
   border-radius: 6px;
   font-weight: 600;
   text-decoration: none;
 }
+.newBtn:hover {
+  background: linear-gradient(100deg, #ffd45e, #eab63c);
+}
 .newBtn:active {
-  filter: brightness(1.1);
+  background: linear-gradient(100deg, #e6b837, #c8951f);
 }
 .list {
   list-style: none;
