@@ -57,6 +57,16 @@ test("responsive nav: drawer hamburger on mobile; single collapse affordance on 
   }
 });
 
+test("no empty gap between the title bar and the pane (#134)", async ({ page }) => {
+  await page.goto("/");
+  // The pane must start immediately under the header — no wasted band below the title bar.
+  const header = await page.locator(".mobilebar").boundingBox();
+  const pane = await page.locator(".terminal-pane").boundingBox();
+  expect(header).not.toBeNull();
+  expect(pane).not.toBeNull();
+  expect(Math.abs(pane!.y - (header!.y + header!.height))).toBeLessThan(2);
+});
+
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({ page }, testInfo) => {
   await page.goto("/");
   // Screenshot named per project → mobile vs desktop layout regressions are visible/diffable.

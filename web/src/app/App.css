@@ -9,11 +9,13 @@
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
-  /* A thin header row (auto) + a content row bounded to the remaining viewport. The
-   * minmax(0, …) row keeps the grid items from growing past the viewport so the compose
-   * bar shrinks the terminal instead of overflowing it (#7) and window-resize reflow works
-   * (#8). 100dvh minus the header keeps the terminal pane height-bounded. */
-  grid-template-rows: auto minmax(0, calc(100dvh - 46px));
+  /* A FIXED 46px header row + a content row bounded to the remaining viewport. The header
+   * must be pinned (not `auto`): the sidebar spans both rows, and as a row-spanning item its
+   * intrinsic content height would otherwise inflate an `auto` header row above 46px, leaving
+   * an empty gap between the title bar and the pane (#134). The minmax(0, …) row keeps the
+   * grid items from growing past the viewport so the compose bar shrinks the terminal instead
+   * of overflowing it (#7) and window-resize reflow works (#8). */
+  grid-template-rows: 46px minmax(0, calc(100dvh - 46px));
   /* The sidebar spans BOTH rows (full height); the header occupies only the pane column, so
    * it ends at the sidebar edge rather than crossing over it (#132). */
   grid-template-areas:
