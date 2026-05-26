@@ -1,9 +1,10 @@
 """FastAPI app for agent-sessions.
 
-Surface: login/auth-check, a flat paginated session list (with title search +
-project/agent-engine filters and server-computed facets), open-or-switch,
-new-session (with permission bypass), rename, archive/unarchive, and the
-project picker. See agent-sessions#4 (sidebar UX) and #8 (findable list).
+Surface: the React SPA shell, login/auth-check, a flat paginated session list
+(with title search + project/agent-engine filters and server-computed facets),
+the self-owned ws terminal (``/ws/term/{sid}``: attach / resume / new-session),
+rename, archive/unarchive, the project list, and upload. See agent-sessions#4
+(sidebar UX), #8 (findable list), #49 (ws terminal), #64 (React SPA cutover).
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ import json
 import os
 import re
 import time
-import urllib.parse
 from pathlib import Path
 
 from fastapi import (
@@ -46,7 +46,6 @@ from . import (
     sessions,
     update,
     webterm,
-    zellij,
 )
 from .auth import (
     AuthConfig,
@@ -66,13 +65,13 @@ from .version import get_version
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 _STATIC = _HERE / "static"
-# Built React SPA (Vite → web/dist). Repo layout: <repo>/web/dist; a packaged
-# install overrides via AGENT_SESSIONS_WEB_DIST. Served only when AGENT_SESSIONS_UI=react.
+# Built React SPA (Vite → web/dist), the only UI. Repo layout: <repo>/web/dist; a
+# packaged install overrides via AGENT_SESSIONS_WEB_DIST.
 _WEB_DIST = Path(
     os.environ.get("AGENT_SESSIONS_WEB_DIST") or (_HERE.parent.parent / "web" / "dist")
 )
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
-_SPA_RESERVED = ("api", "ws", "term", "login", "logout", "healthz", "static", "assets")
+_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
 
 
 def _safe_next(raw: str | None) -> str:
@@ -89,17 +88,10 @@ def _safe_next(raw: str | None) -> str:
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
-    # Which terminal the sidebar embeds: "ttyd" (the Zellij iframe, prod default) or
-    # "ws" (the self-owned xterm.js page over /ws/term, issue #49). Staging sets "ws"
-    # to exercise the rebuild end-to-end before cutover flips prod.
-    terminal_backend = "ws" if os.environ.get("AGENT_SESSIONS_TERMINAL") == "ws" else "ttyd"
-    # Serve the built React SPA (#64 rebuild) instead of the Jinja UI when opted in.
-    # Default stays "jinja" so prod + the existing test suite are unchanged.
-    react_ui = os.environ.get("AGENT_SESSIONS_UI") == "react" and _WEB_DIST.is_dir()
     app = FastAPI(title="agent-sessions", openapi_url=None, docs_url=None, redoc_url=None)
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
-    if react_ui and (_WEB_DIST / "assets").is_dir():
+    if (_WEB_DIST / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=str(_WEB_DIST / "assets")), name="assets")
 
     _logged_in = require_session(cfg)
@@ -198,7 +190,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                     for p in engines.present_providers()
                     if getattr(p, "supports_new", False)
                 ],
-                "terminal_backend": terminal_backend,
+                "terminal_backend": "ws",
                 "must_change_password": _must_change["v"],
                 # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
                 # choice carries across devices; localStorage is the device cache.
@@ -247,63 +239,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     async def index(request: Request) -> Response:
         # React SPA: serve the shell; the app handles auth via /api 401 (login at /login).
         # (The forced-password-change gate is enforced for all routes by middleware below.)
-        if react_ui:
-            return FileResponse(_WEB_DIST / "index.html")
-        csrf = current_csrf(cfg, request)
-        if not csrf:
-            return RedirectResponse("/login", status_code=303)
-        # Engines that can start a NEW session (present + capable) — drives the New
-        # dialog's agent picker. claude/opencode spawn via Zellij; codex is resume-only.
-        new_engines = [
-            p.engine_id for p in engines.present_providers() if getattr(p, "supports_new", False)
-        ]
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "index.html",
-            {
-                "csrf": csrf,
-                "origin": cfg.origin,
-                "terminal_backend": terminal_backend,
-                "new_session_engines": json.dumps(new_engines),
-            },
-        )
-
-    @app.get("/term/{sid}", response_class=HTMLResponse)
-    async def terminal_page(
-        sid: str,
-        request: Request,
-        new: bool = Query(False),
-        cwd: str | None = Query(None),
-        bypass: bool = Query(True),
-    ) -> Response:
-        # Self-owned xterm.js terminal page for one session, talking to /ws/term/{sid}.
-        # Logged-in only; sid shape validated so we never render for a bogus id.
-        # `new=1&cwd=…&bypass=…` is forwarded to the ws so a fresh session launches in
-        # that cwd, honoring the modal's permission-bypass choice.
-        if session_uid(cfg, request) is None:
-            return RedirectResponse("/login", status_code=303)
-        try:
-            engines.parse_key(sid)
-        except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
-        ws_query = ""
-        if new and cwd:
-            ws_query = (
-                "?new=1&cwd="
-                + urllib.parse.quote(cwd, safe="")
-                + "&bypass="
-                + ("1" if bypass else "0")
-            )
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "terminal.html",
-            {
-                "sid": sid,
-                "sid_json": json.dumps(sid),
-                "ws_query_json": json.dumps(ws_query),
-                "csrf_json": json.dumps(current_csrf(cfg, request) or ""),
-            },
-        )
+        return FileResponse(_WEB_DIST / "index.html")
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_form(request: Request) -> Response:
@@ -465,34 +401,6 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             {"projects": [{"cwd": c, "label": c} for c in scanner.pickable_projects()]}
         )
 
-    @app.post("/api/sessions/{sid}/open")
-    async def open_session(
-        sid: str,
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        try:
-            prov, native = engines.parse_key(sid)
-        except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
-        sessions = engines.scan_all()
-        match = next((s for s in sessions if s.engine == prov.engine_id and s.uuid == native), None)
-        if match is None:
-            raise HTTPException(status_code=404, detail="unknown session")
-        meta = metadata.get(engines.session_key(match))
-        title = meta.title or match.first_user_message or "session"
-        try:
-            tab = prov.open_or_switch(
-                native,
-                cwd=match.cwd,
-                title=title,
-                allowed_cwds=scanner.scanned_cwds(sessions),
-                bypass=True,
-            )
-        except zellij.ZellijError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from None
-        return JSONResponse({"tab": tab})
-
     @app.websocket("/ws/term/{sid}")
     async def ws_term(ws: WebSocket, sid: str) -> None:
         # Accept FIRST, then close with a code on rejection. A pre-accept close fails
@@ -637,37 +545,6 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             ) from None
         return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": False})
 
-    @app.post("/api/projects/new")
-    async def new_session(
-        request: Request,
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        payload = await request.json()
-        cwd = str(payload.get("cwd", "")).strip()
-        name = str(payload.get("name", "")).strip() or "session"
-        bypass = bool(payload.get("bypass_permissions", True))
-        # Engine picker (defaults to claude → unchanged behavior for old clients). Only
-        # engines that are present AND can start a new session are accepted.
-        engine = str(payload.get("engine", "claude")).strip() or "claude"
-        if not cwd:
-            raise HTTPException(status_code=422, detail="cwd required")
-        prov = engines.get(engine)
-        if prov is None or not getattr(prov, "supports_new", False) or not prov.is_present():
-            raise HTTPException(status_code=422, detail=f"cannot start a new {engine} session")
-        try:
-            tab = prov.new_session(
-                cwd=cwd,
-                title=name,
-                allowed_cwds=scanner.pickable_projects(),
-                bypass=bypass,
-            )
-        except zellij.ZellijError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from None
-        return JSONResponse(
-            {"tab": tab, "cwd": cwd, "name": name, "engine": engine, "bypass": bypass}
-        )
-
     @app.post("/api/upload")
     async def upload_context(
         file: UploadFile = File(...),
@@ -704,18 +581,17 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         dest.write_bytes(b"".join(chunks))
         return JSONResponse({"path": str(dest), "name": safe})
 
-    if react_ui:
-        # SPA history fallback (registered LAST so it never shadows the API/ws/term/
-        # auth routes above). A real built file (sw.js, manifest.webmanifest, favicon…)
-        # is served as-is; anything else (client routes like /s/claude/<id>) → index.html.
-        @app.get("/{spa_path:path}", response_class=HTMLResponse)
-        async def spa_fallback(spa_path: str) -> Response:
-            if spa_path.split("/", 1)[0] in _SPA_RESERVED:
-                raise HTTPException(status_code=404, detail="not found")
-            candidate = (_WEB_DIST / spa_path).resolve()
-            if spa_path and candidate.is_file() and _WEB_DIST.resolve() in candidate.parents:
-                return FileResponse(candidate)
-            return FileResponse(_WEB_DIST / "index.html")
+    # SPA history fallback (registered LAST so it never shadows the API/ws/auth routes
+    # above). A real built file (sw.js, manifest.webmanifest, favicon…) is served as-is;
+    # anything else (client routes like /s/claude/<id>) → index.html.
+    @app.get("/{spa_path:path}", response_class=HTMLResponse)
+    async def spa_fallback(spa_path: str) -> Response:
+        if spa_path.split("/", 1)[0] in _SPA_RESERVED:
+            raise HTTPException(status_code=404, detail="not found")
+        candidate = (_WEB_DIST / spa_path).resolve()
+        if spa_path and candidate.is_file() and _WEB_DIST.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_WEB_DIST / "index.html")
 
     return app
 

@@ -20,9 +20,8 @@ def _login(c, cfg):
         headers={"Origin": cfg.origin},
     )
     assert r.status_code == 303
-    page = c.get("/", follow_redirects=False).text
-    i = page.index("const CSRF = ") + len("const CSRF = ")
-    return page[i : page.index(";", i)].strip().strip('"')
+    # CSRF token comes from the SPA bootstrap endpoint (/api/config).
+    return c.get("/api/config").json()["csrf"]
 
 
 # ---- store --------------------------------------------------------------------

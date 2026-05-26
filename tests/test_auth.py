@@ -81,6 +81,7 @@ def test_login_accepted_via_referer_fallback(auth_cfg):
 
 
 def _login(c, cfg):
+    """Log in and return the CSRF token (read from /api/config, the SPA bootstrap)."""
     r = c.post(
         "/login",
         data={"username": "marcus", "password": "hunter2"},
@@ -88,51 +89,30 @@ def _login(c, cfg):
         headers={"Origin": cfg.origin},
     )
     assert r.status_code == 303
-    # Parse the CSRF out of the index page.
-    page = c.get("/", follow_redirects=False)
-    assert page.status_code == 200
-    # CSRF token is JSON-serialized in the page; extract from a known marker.
-    text = page.text
-    marker = "const CSRF = "
-    idx = text.index(marker) + len(marker)
-    end = text.index(";", idx)
-    return text[idx:end].strip().strip('"')
+    return c.get("/api/config").json()["csrf"]
 
 
-def test_open_requires_csrf_token(auth_cfg, fake_jsonl):
+def test_rename_requires_csrf_token(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     # Cookie present, but no X-CSRF-Token header.
     r = c.post(
-        "/api/sessions/11111111-1111-1111-1111-111111111111/open",
+        "/api/sessions/11111111-1111-1111-1111-111111111111/rename",
+        json={"title": "x"},
         headers={"Origin": auth_cfg.origin},
     )
     assert r.status_code == 403
 
 
-def test_open_rejects_wrong_origin(auth_cfg, fake_jsonl):
+def test_rename_rejects_wrong_origin(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = c.post(
-        "/api/sessions/11111111-1111-1111-1111-111111111111/open",
+        "/api/sessions/11111111-1111-1111-1111-111111111111/rename",
+        json={"title": "x"},
         headers={"X-CSRF-Token": csrf, "Origin": "https://evil.example"},
     )
     assert r.status_code == 403
-
-
-def test_open_unknown_session_returns_404(auth_cfg, fake_jsonl, monkeypatch):
-    # Stub subprocess.run so the test never tries the real binary.
-    import agent_sessions.zellij as z
-
-    monkeypatch.setattr(z, "list_tabs", lambda **_: [])
-
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    r = c.post(
-        "/api/sessions/00000000-0000-0000-0000-000000000000/open",
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 404
 
 
 # ---- /healthz is open (deploy probe) ------------------------------------------

@@ -105,7 +105,7 @@ def test_claude_launch_argv_bypass_flag():
     prov = engines.get("claude")
     uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
     assert prov.launch_argv(uuid, cwd="/x", bypass=False) == [
-        engines.zellij.CLAUDE_BIN,
+        engines.CLAUDE_BIN,
         "--resume",
         uuid,
     ]

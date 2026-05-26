@@ -192,13 +192,12 @@ _env_set_if_absent() {
 
 migrate_env() {
   # Bring an env file (fresh OR pre-existing from an older install) up to the current
-  # serving contract: the shipped product is the React UI + ws-PTY terminal. Idempotent
-  # and non-destructive — existing keys (incl. a deliberate AGENT_SESSIONS_UI=jinja) win.
+  # serving contract: the shipped product is the React UI + ws-PTY terminal, the only
+  # UI/terminal there is (the app no longer reads a UI/terminal selector env var).
+  # Idempotent and non-destructive — existing keys win.
   [ -f "$ENVF" ] || return 0
   mkdir -p "$PREFIX/pty"   # ws-PTY dtach sockets live here
   umask 077
-  _env_set_if_absent AGENT_SESSIONS_UI react
-  _env_set_if_absent AGENT_SESSIONS_TERMINAL ws
   _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
   _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
 }

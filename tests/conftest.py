@@ -1,15 +1,13 @@
 """Shared pytest fixtures.
 
-Tests don't touch the real Zellij binary, the real Claude Code session
-history, or the real sidecar — every fixture sets up isolated paths and
-stub subprocess runners.
+Tests don't touch the real Claude Code session history or the real sidecar —
+every fixture sets up isolated paths.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -69,15 +67,6 @@ def auth_cfg(monkeypatch) -> AuthConfig:
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
     monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://terminal.example.com")
     return AuthConfig.from_env()
-
-
-@pytest.fixture
-def stub_zellij():
-    """A subprocess.run stub for zellij; records calls + replies as if no tabs exist."""
-    runner = MagicMock()
-    runner.return_value.returncode = 0
-    runner.return_value.stdout = ""
-    return runner
 
 
 # opencode session ids in the fixture (≥1 top-level, 1 archived, 1 fork to skip).

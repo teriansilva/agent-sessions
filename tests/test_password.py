@@ -23,9 +23,8 @@ def _login(c, cfg, password="hunter2"):
 
 
 def _csrf(c):
-    page = c.get("/", follow_redirects=False).text
-    i = page.index("const CSRF = ") + len("const CSRF = ")
-    return page[i : page.index(";", i)].strip().strip('"')
+    # CSRF token comes from the SPA bootstrap endpoint (/api/config).
+    return c.get("/api/config").json()["csrf"]
 
 
 def test_api_password_change_validates_and_updates_live(auth_cfg, tmp_path, monkeypatch):
@@ -91,6 +90,14 @@ def test_must_change_gate_and_change_page(auth_cfg, tmp_path, monkeypatch):
     envf.write_text("")
     monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(envf))
     monkeypatch.setenv("AGENT_SESSIONS_FORCE_PASSWORD_CHANGE", "1")
+    # The "/" route serves the built SPA shell once the gate lifts; point at a fake dist
+    # (the React build isn't present in the Python test env).
+    from agent_sessions import main
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root>spa-shell</div>")
+    monkeypatch.setattr(main, "_WEB_DIST", dist)
     c = _client(auth_cfg)
     assert _login(c, auth_cfg) == 303
 
@@ -102,7 +109,7 @@ def test_must_change_gate_and_change_page(auth_cfg, tmp_path, monkeypatch):
     # …and the rest of the authed API is BLOCKED until the password is changed (not just
     # the index): app routes 403, page navigations redirect; only the allowlist works.
     assert c.get("/api/sessions", follow_redirects=False).status_code == 403
-    assert c.get("/term/claude:abc", follow_redirects=False).status_code == 303
+    assert c.get("/s/claude:abc", follow_redirects=False).status_code == 303
 
     # Mismatch is rejected; a valid change clears the flag and lands on the app.
     bad = c.post(

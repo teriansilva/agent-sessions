@@ -3,7 +3,7 @@
 These pin the seam #12 (opencode) builds on: a present-providers registry, a
 merged scan, and ``parse_key`` as the single id-validation gate (with bare-UUID
 back-compat for Claude). The Claude provider is a thin adapter over the existing
-scanner/zellij/archive modules — those keep their own dedicated tests.
+scanner/archive modules — those keep their own dedicated tests.
 """
 
 from __future__ import annotations
@@ -74,43 +74,24 @@ def test_parse_key_rejects_bad_ids(bad):
         engines.parse_key(bad)
 
 
-# ---- Claude provider delegates (thin adapter) ---------------------------------
+# ---- Claude provider launch argv (ws PTY bridge) ------------------------------
 
 
-def test_claude_open_delegates_to_zellij(monkeypatch):
-    captured: dict = {}
-
-    def fake_open(**kw):
-        captured.update(kw)
-        return "c-tab"
-
-    monkeypatch.setattr(engines.zellij, "open_or_switch", fake_open)
-    tab = engines.ClaudeProvider().open_or_switch(
-        "abcdef12-1234-1234-1234-1234567890ab",
-        cwd="/tmp/x",
-        title="t",
-        allowed_cwds={"/tmp/x"},
-        bypass=True,
-    )
-    assert tab == "c-tab"
-    assert captured["uuid"] == "abcdef12-1234-1234-1234-1234567890ab"
-    assert captured["cwd"] == "/tmp/x"
-    assert captured["bypass"] is True
+def test_claude_launch_argv_resume(monkeypatch):
+    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")
+    argv = engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=True)
+    assert argv == ["claude", "--resume", _U1, "--dangerously-skip-permissions"]
+    assert engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=False) == [
+        "claude",
+        "--resume",
+        _U1,
+    ]
 
 
-def test_claude_new_delegates_to_zellij(monkeypatch):
-    captured: dict = {}
-
-    def fake_new(**kw):
-        captured.update(kw)
-        return "new:demo"
-
-    monkeypatch.setattr(engines.zellij, "new_session", fake_new)
-    tab = engines.ClaudeProvider().new_session(
-        cwd="/tmp/x", title="demo", allowed_cwds={"/tmp/x"}, bypass=False
-    )
-    assert tab == "new:demo"
-    assert captured["bypass"] is False
+def test_claude_new_launch_argv(monkeypatch):
+    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")
+    argv = engines.ClaudeProvider().new_launch_argv(_U1, cwd="/tmp/x", bypass=True)
+    assert argv == ["claude", "--session-id", _U1, "--dangerously-skip-permissions"]
 
 
 def test_claude_archive_moves_the_jsonl(fake_jsonl):
@@ -182,19 +163,26 @@ def test_opencode_archive_unarchive_via_sidecar(tmp_path, monkeypatch):
     assert engines._metadata.get(f"opencode:{_OC_TOP}").archived is False
 
 
-def test_opencode_open_dispatch_argv(monkeypatch):
-    captured: dict = {}
+def test_opencode_launch_argv(monkeypatch):
+    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")
+    argv = engines.OpenCodeProvider().launch_argv(_OC_TOP, cwd="/tmp/other", bypass=True)
+    assert argv == ["opencode", "/tmp/other", "--session", _OC_TOP]
 
-    def fake_open(**kw):
-        captured.update(kw)
-        return "o-tab"
 
-    monkeypatch.setattr(engines.zellij, "open_engine", fake_open)
-    tab = engines.OpenCodeProvider().open_or_switch(
-        _OC_TOP, cwd="/tmp/other", title="t", allowed_cwds={"/tmp/other"}, bypass=True
-    )
-    assert tab == "o-tab"
-    assert captured["engine_prefix"] == "o"
-    assert captured["short"] == _OC_TOP
-    assert captured["argv"][0] == engines.OPENCODE_BIN
-    assert "--session" in captured["argv"] and _OC_TOP in captured["argv"]
+def test_supports_new_agrees_with_new_launch_argv():
+    # Invariant (#64 review): /api/config advertises new_session_engines from
+    # supports_new, and the ws new-session path calls new_launch_argv. A provider that
+    # claims supports_new but whose new_launch_argv raises NotImplementedError would
+    # offer a new-session option that closes the ws with 4404. Keep the two in lockstep.
+    for prov in engines.all_providers():
+        if not getattr(prov, "supports_new", False):
+            continue
+        argv = prov.new_launch_argv("00000000-0000-0000-0000-000000000000", cwd="/tmp", bypass=True)
+        assert isinstance(argv, list) and argv, f"{prov.engine_id} new_launch_argv must yield argv"
+
+
+def test_opencode_does_not_advertise_new_session():
+    # opencode has no ws new-launch yet (new_launch_argv raises) → must not be offered.
+    assert engines.OpenCodeProvider().supports_new is False
+    with pytest.raises(NotImplementedError):
+        engines.OpenCodeProvider().new_launch_argv("ses_x", cwd="/tmp", bypass=True)

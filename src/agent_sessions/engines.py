@@ -2,8 +2,9 @@
 sidebar organizes.
 
 Each provider knows how to discover its sessions, validate its native id shape,
-dispatch open/new into Zellij, and (optionally) archive. A small registry merges
-the **present** providers so ``/api/sessions`` is engine-agnostic.
+build the launch argv (the ws PTY bridge spawns it via dtach), and (optionally)
+archive. A small registry merges the **present** providers so ``/api/sessions``
+is engine-agnostic.
 
 **Engine-qualified identity.** A session's app-facing id is ``<engine>:<native_id>``
 (e.g. ``claude:<uuid>``). Threading that through the API routes, the metadata
@@ -11,13 +12,11 @@ sidecar keys, and per-engine id validation means ids from different engines can
 never collide or hit the wrong validator. ``parse_key`` is the single gate that
 resolves an id to its provider and validates the native shape before any dispatch.
 
-Claude and opencode are the two providers today. The seam is kept deliberately
-small — providers expose ``open_or_switch`` / ``new_session`` rather than a raw
-argv plugin layer; Zellij tab naming is engine-prefixed (Claude bare ``<short>:``,
-opencode ``o:<short>:``). See #10/#11/#12.
+Providers expose ``launch_argv`` / ``new_launch_argv`` — a raw argv the ws bridge
+runs under dtach — rather than a Zellij dispatch layer. See #10/#11/#12, #49, #64.
 
 **Shell-free:** providers build argv lists and delegate the actual ``subprocess``
-exec to ``zellij`` / ``archive``; no provider invokes a shell.
+exec to the PTY bridge / ``archive``; no provider invokes a shell.
 """
 
 from __future__ import annotations
@@ -27,13 +26,12 @@ import os
 import re
 import shutil
 import sqlite3
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from . import archive as _archive
 from . import metadata as _metadata
-from . import scanner, zellij
+from . import scanner
 from .scanner import Session
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -41,6 +39,7 @@ _SES_RE = re.compile(r"^ses_[A-Za-z0-9]+$")
 # codex session ids are UUIDs (UUIDv7), same shape as Claude's.
 _CODEX_UUID_RE = _CLAUDE_UUID_RE
 
+CLAUDE_BIN = os.environ.get("AGENT_SESSIONS_CLAUDE_BIN") or shutil.which("claude") or "claude"
 OPENCODE_BIN = (
     os.environ.get("AGENT_SESSIONS_OPENCODE_BIN") or shutil.which("opencode") or "opencode"
 )
@@ -99,12 +98,6 @@ class EngineProvider(Protocol):
         #49). Engines that can't pin a new session id raise NotImplementedError."""
         ...
 
-    def open_or_switch(
-        self, native_id: str, *, cwd: str, title: str, allowed_cwds: Iterable[str], bypass: bool
-    ) -> str: ...
-    def new_session(
-        self, *, cwd: str, title: str, allowed_cwds: Iterable[str], bypass: bool
-    ) -> str: ...
     def archive(self, native_id: str) -> None: ...
     def unarchive(self, native_id: str) -> None: ...
 
@@ -112,14 +105,14 @@ class EngineProvider(Protocol):
 class ClaudeProvider:
     """Claude Code: sessions under ``~/.claude/projects``, resumed via ``claude --resume``.
 
-    Delegates to the existing ``scanner`` / ``zellij`` / ``archive`` modules — this
-    provider is a thin adapter, so the Claude behavior is byte-for-byte what it was
-    before the abstraction.
+    Delegates to the existing ``scanner`` / ``archive`` modules — this provider is a
+    thin adapter, so the Claude behavior is byte-for-byte what it was before the
+    abstraction.
     """
 
     engine_id = "claude"
     id_pattern = _CLAUDE_UUID_RE
-    supports_new = True  # new session via zellij.new_session
+    supports_new = True  # ws new-session via new_launch_argv
 
     def is_present(self) -> bool:
         return (Path.home() / ".claude" / "projects").is_dir() or shutil.which("claude") is not None
@@ -130,10 +123,9 @@ class ClaudeProvider:
         return [s for s in scanner.scan() if s.engine == self.engine_id]
 
     def launch_argv(self, native_id, *, cwd, bypass):
-        # Decoupled resume command (for the per-session PTY bridge, issue #49). Same
-        # command zellij._claude_argv builds for the current Zellij path — kept in
-        # sync intentionally; cwd is set by the launcher, not an argv arg here.
-        argv = [zellij.CLAUDE_BIN, "--resume", native_id]
+        # Resume command for the per-session PTY bridge (issue #49); cwd is set by the
+        # launcher, not an argv arg here.
+        argv = [CLAUDE_BIN, "--resume", native_id]
         if bypass:
             argv.append("--dangerously-skip-permissions")
         return argv
@@ -141,18 +133,10 @@ class ClaudeProvider:
     def new_launch_argv(self, native_id, *, cwd, bypass):
         # Start a *new* claude session with our pre-generated id (`--session-id`),
         # so the bridge can key it before claude has written its JSONL.
-        argv = [zellij.CLAUDE_BIN, "--session-id", native_id]
+        argv = [CLAUDE_BIN, "--session-id", native_id]
         if bypass:
             argv.append("--dangerously-skip-permissions")
         return argv
-
-    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
-        return zellij.open_or_switch(
-            uuid=native_id, cwd=cwd, title=title, allowed_cwds=allowed_cwds, bypass=bypass
-        )
-
-    def new_session(self, *, cwd, title, allowed_cwds, bypass):
-        return zellij.new_session(cwd=cwd, title=title, allowed_cwds=allowed_cwds, bypass=bypass)
 
     def archive(self, native_id):
         _archive.archive(native_id)
@@ -176,7 +160,11 @@ class OpenCodeProvider:
 
     engine_id = "opencode"
     id_pattern = _SES_RE
-    supports_new = True  # new session via zellij.new_engine
+    # No ws new-session path yet: new_launch_argv raises NotImplementedError, so we must
+    # NOT advertise opencode in /api/config's new_session_engines (else the picker offers
+    # it and /ws/term/opencode:…?new=1 closes 4404). Flip to True once a pinned opencode
+    # new-launch is implemented (#64 review).
+    supports_new = False
 
     def _query(self) -> list:
         db = _opencode_db()
@@ -236,27 +224,6 @@ class OpenCodeProvider:
 
     def new_launch_argv(self, native_id, *, cwd, bypass):
         raise NotImplementedError("opencode ws new-session not supported yet")
-
-    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
-        # opencode's permission model is config-side (opencode.json) — there's no
-        # per-launch bypass flag; `bypass` is accepted only for interface parity.
-        return zellij.open_engine(
-            engine_prefix="o",
-            short=native_id,
-            cwd=cwd,
-            title=title,
-            allowed_cwds=allowed_cwds,
-            argv=[OPENCODE_BIN, cwd, "--session", native_id],
-        )
-
-    def new_session(self, *, cwd, title, allowed_cwds, bypass):
-        return zellij.new_engine(
-            engine_prefix="o",
-            cwd=cwd,
-            title=title,
-            allowed_cwds=allowed_cwds,
-            argv=[OPENCODE_BIN, cwd],
-        )
 
     def archive(self, native_id):
         # opencode.db stays read-only; record the archive flag in the engine-agnostic
@@ -362,21 +329,6 @@ class CodexProvider:
 
     def new_launch_argv(self, native_id, *, cwd, bypass):
         raise NotImplementedError("codex ws new-session not supported yet")
-
-    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
-        return zellij.open_engine(
-            engine_prefix="x",
-            short=native_id,
-            cwd=cwd,
-            title=title,
-            allowed_cwds=allowed_cwds,
-            argv=self.launch_argv(native_id, cwd=cwd, bypass=bypass),
-        )
-
-    def new_session(self, *, cwd, title, allowed_cwds, bypass):
-        return zellij.new_engine(
-            engine_prefix="x", cwd=cwd, title=title, allowed_cwds=allowed_cwds, argv=[CODEX_BIN]
-        )
 
     def archive(self, native_id):
         # codex rollouts stay read-only; archive flag rides the engine-agnostic sidecar.
@@ -505,24 +457,6 @@ class GeminiProvider:
         if bypass:
             argv += ["--yolo", "--skip-trust"]
         return argv
-
-    def open_or_switch(self, native_id, *, cwd, title, allowed_cwds, bypass):
-        return zellij.open_engine(
-            engine_prefix="g",
-            short=native_id,
-            cwd=cwd,
-            title=title,
-            allowed_cwds=allowed_cwds,
-            argv=self.launch_argv(native_id, cwd=cwd, bypass=bypass),
-        )
-
-    def new_session(self, *, cwd, title, allowed_cwds, bypass):
-        argv = [GEMINI_BIN]
-        if bypass:
-            argv += ["--yolo", "--skip-trust"]
-        return zellij.new_engine(
-            engine_prefix="g", cwd=cwd, title=title, allowed_cwds=allowed_cwds, argv=argv
-        )
 
     def archive(self, native_id):
         # gemini chat logs stay read-only; archive flag rides the engine-agnostic sidecar.

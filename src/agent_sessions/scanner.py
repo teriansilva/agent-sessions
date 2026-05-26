@@ -9,7 +9,7 @@ with ``-``, so ``example-app`` and ``example-app/io`` both become
 ``...-example-app-io`` and can't be told apart. The authoritative cwd is the
 ``cwd`` field recorded inside the JSONL; we read that and only fall back to
 decoding the directory name when a file has no ``cwd`` field. This matters
-because the cwd feeds the open-session allowlist + ``zellij --cwd``.
+because the cwd feeds the open-session allowlist + the ws launch dir.
 
 This scanner is Claude-Code-only by design — it reads ``~/.claude/projects``.
 opencode is a separate engine read by ``engines.OpenCodeProvider`` (a read-only
@@ -136,7 +136,7 @@ def scan(home: Path | None = None) -> list[Session]:
 def scanned_cwds(sessions: Iterable[Session]) -> set[str]:
     """The set of cwds that have at least one session.
 
-    Used by ``zellij.open_or_switch`` to refuse arbitrary attacker-chosen cwds.
+    Used by the ws resume path to refuse arbitrary attacker-chosen cwds.
     """
     return {s.cwd for s in sessions}
 
@@ -150,7 +150,7 @@ def pickable_projects(
     Each ``~/claude/*`` candidate is included only when ``os.path.realpath``
     resolves to a directory whose **real path is still under ``~/claude``** —
     this rejects symlinks that point outside the tree and any traversal. The
-    result is the allowlist for ``zellij.new_session`` (broader than the resume
+    result is the allowlist for the ws new-session path (broader than the resume
     allowlist, but never free-form).
     """
     home = home or Path.home()

@@ -42,8 +42,10 @@ def test_install_sh_builds_and_serves_react_ui():
     # Serving/runtime defaults are applied idempotently (set-if-absent) so an upgrade of an
     # existing install also cuts over — not just a fresh write.
     assert "migrate_env" in s and "_env_set_if_absent" in s
-    assert "AGENT_SESSIONS_UI react" in s
-    assert "AGENT_SESSIONS_TERMINAL ws" in s
+    # The React UI + ws terminal are the only product; the app no longer reads
+    # AGENT_SESSIONS_UI / AGENT_SESSIONS_TERMINAL, so the installer no longer sets them.
+    assert "AGENT_SESSIONS_UI" not in s
+    assert "AGENT_SESSIONS_TERMINAL" not in s
     assert "AGENT_SESSIONS_WEB_DIST" in s and "src/web/dist" in s
     assert "AGENT_SESSIONS_RUNTIME_DIR" in s
 
@@ -100,9 +102,10 @@ def test_installer_end_to_end(tmp_path):
     assert "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$" in text
     assert "AGENT_SESSIONS_SECRET_KEY=" in text
     assert "\nAGENT_SESSIONS_PASSWORD=" not in text  # plaintext never written
-    # The generated env serves the React UI + ws terminal and points at the built dist.
-    assert "AGENT_SESSIONS_UI=react" in text
-    assert "AGENT_SESSIONS_TERMINAL=ws" in text
+    # The React UI + ws terminal are the only product (no UI/terminal env switch); the
+    # generated env just points at the built dist + the ws-PTY runtime dir.
+    assert "AGENT_SESSIONS_UI=" not in text
+    assert "AGENT_SESSIONS_TERMINAL=" not in text
     assert f"AGENT_SESSIONS_WEB_DIST={home}/current/src/web/dist" in text
     assert f"AGENT_SESSIONS_RUNTIME_DIR={home}/pty" in text
 
@@ -165,9 +168,9 @@ def test_installer_builds_the_react_ui(tmp_path):
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_migrates_existing_env_to_react(tmp_path):
-    # An upgrade of a pre-existing (older) env must gain the React/ws serving + runtime
-    # flags WITHOUT clobbering the existing secret/credential lines — otherwise re-running
-    # the installer wouldn't actually cut an existing deployment over to the shipped UI.
+    # An upgrade of a pre-existing (older) env must gain the serving + runtime flags
+    # WITHOUT clobbering the existing secret/credential lines — otherwise re-running the
+    # installer wouldn't actually point an existing deployment at the built dist.
     home = tmp_path / "prefix"
     home.mkdir()
     envf = home / "env"
@@ -195,15 +198,15 @@ def test_installer_migrates_existing_env_to_react(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     text = envf.read_text()
-    # New serving/runtime flags added…
-    assert "AGENT_SESSIONS_UI=react" in text
-    assert "AGENT_SESSIONS_TERMINAL=ws" in text
+    # New serving/runtime flags added (no UI/terminal switch — that's the only product now)…
+    assert "AGENT_SESSIONS_UI=" not in text
+    assert "AGENT_SESSIONS_TERMINAL=" not in text
     assert f"AGENT_SESSIONS_WEB_DIST={home}/current/src/web/dist" in text
     assert f"AGENT_SESSIONS_RUNTIME_DIR={home}/pty" in text
     # …existing secrets/credentials preserved, exactly once each (no clobber, no dup).
     assert "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$keepme\n" in text
     assert "AGENT_SESSIONS_SECRET_KEY=keepmesecret\n" in text
-    assert text.count("AGENT_SESSIONS_UI=") == 1
+    assert text.count("AGENT_SESSIONS_WEB_DIST=") == 1
     assert text.count("AGENT_SESSIONS_SECRET_KEY=") == 1
     assert oct(envf.stat().st_mode & 0o777) == "0o600"  # still locked down
     assert (home / "pty").is_dir()

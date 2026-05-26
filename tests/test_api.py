@@ -23,9 +23,8 @@ def _login(c, cfg):
         headers={"Origin": cfg.origin},
     )
     assert r.status_code == 303
-    page = c.get("/", follow_redirects=False).text
-    i = page.index("const CSRF = ") + len("const CSRF = ")
-    return page[i : page.index(";", i)].strip().strip('"')
+    # CSRF token comes from the SPA bootstrap endpoint (/api/config).
+    return c.get("/api/config").json()["csrf"]
 
 
 # ---- pagination ---------------------------------------------------------------
@@ -243,72 +242,6 @@ def test_archive_unknown_404(auth_cfg, fake_jsonl):
     assert r.status_code == 404
 
 
-# ---- new session --------------------------------------------------------------
-
-
-def test_new_session_success(auth_cfg, fake_jsonl, monkeypatch):
-    import agent_sessions.zellij as z
-
-    monkeypatch.setattr(z, "new_session", lambda **kw: "new:demo")
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    r = c.post(
-        "/api/projects/new",
-        json={"cwd": "/tmp/other", "name": "demo", "bypass_permissions": True},
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 200 and r.json()["tab"] == "new:demo"
-
-
-def test_new_session_engine_opencode(auth_cfg, fake_jsonl, opencode_db, monkeypatch):
-    # The agent picker can spawn a new opencode session (via zellij.new_engine).
-    import agent_sessions.zellij as z
-
-    monkeypatch.setattr(z, "new_engine", lambda **kw: "o:new:demo")
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    r = c.post(
-        "/api/projects/new",
-        json={"cwd": "/tmp/other", "name": "demo", "engine": "opencode"},
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 200 and r.json()["tab"] == "o:new:demo"
-    assert r.json()["engine"] == "opencode"
-
-
-def test_new_session_unsupported_engine_422(auth_cfg, fake_jsonl):
-    # codex is resume-only (supports_new=False); a bogus engine is unknown → 422.
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    for eng in ("codex", "bogus"):
-        r = c.post(
-            "/api/projects/new",
-            json={"cwd": "/tmp/other", "name": "x", "engine": eng},
-            headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-        )
-        assert r.status_code == 422, eng
-
-
-def test_new_session_bad_cwd_400(auth_cfg, fake_jsonl):
-    # No stub: the real new_session validates the cwd allowlist before any
-    # subprocess and raises ZellijError → 400.
-    c = _client(auth_cfg)
-    csrf = _login(c, auth_cfg)
-    r = c.post(
-        "/api/projects/new",
-        json={"cwd": "/etc", "name": "x"},
-        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
-    )
-    assert r.status_code == 400
-
-
-def test_new_session_requires_csrf(auth_cfg, fake_jsonl):
-    c = _client(auth_cfg)
-    _login(c, auth_cfg)
-    r = c.post("/api/projects/new", json={"cwd": "/tmp/other"}, headers={"Origin": auth_cfg.origin})
-    assert r.status_code == 403
-
-
 # ---- opencode engine (#12) ----------------------------------------------------
 
 _OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
@@ -433,7 +366,7 @@ def test_api_config_returns_csrf_engines_backend(auth_cfg, fake_jsonl):
     d = c.get("/api/config").json()
     assert d["csrf"]  # non-empty token for SPA mutations
     assert "claude" in d["new_session_engines"]
-    assert d["terminal_backend"] in ("ttyd", "ws")
+    assert d["terminal_backend"] == "ws"
 
 
 def test_api_config_requires_auth(auth_cfg, fake_jsonl):

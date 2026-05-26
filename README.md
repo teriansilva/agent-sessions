@@ -2,7 +2,7 @@
 
 Mobile-first AI-coding session organizer behind **https://terminal.example.com**.
 
-Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`) and opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. Click a row → opens (or focuses) a Zellij tab resuming that session in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>`). Embedded terminal pane is ttyd attached to a persistent Zellij session named `agent-main`.
+A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, and gemini — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / …). No ttyd, no Zellij.
 
 Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry. History: `agent-sessions#10` (vision) → `#11` (abstraction) → `#12` (opencode).
 
@@ -82,7 +82,7 @@ journalctl --user -u agent-sessions.service -f           # logs
 ## Where things live
 
 - **App code:** here (`src/agent_sessions/`)
-- **Deploy units (ship with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app, installed by `deploy.yml`) and `ttyd-agent.service` (the terminal pane; hand-installed — see its header).
+- **Deploy unit (ships with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app; the installer / `deploy.yml` manages it). The terminal is in-process (the ws bridge), so there's no separate terminal unit anymore.
 - **Operator-facing docs + runbook + nginx vhost + our specific as-built:** [`operator-docs/example-infrastructure/agent-sessions/`](https://git.example.com/superstatus.io/operator-docs/src/branch/main/example-infrastructure/agent-sessions)
 - **Design issue + Hermes review chain:** [`operator-docs#56`](https://git.example.com/superstatus.io/operator-docs/issues/56) (PR 3 of 4)
 - **Deploy target:** example-host (127.0.0.1:3402), behind example-proxy at terminal.example.com
@@ -94,16 +94,17 @@ journalctl --user -u agent-sessions.service -f           # logs
 agent-sessions/
 ├── pyproject.toml
 ├── src/agent_sessions/
-│   ├── main.py        FastAPI app factory
+│   ├── main.py        FastAPI app factory (serves the React SPA + the API + ws terminal)
 │   ├── scanner.py     read ~/.claude/projects/ (live + archive)
 │   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/sort_key/project_alias
-│   ├── zellij.py      open-or-switch wrapper. Shell-free; short-UUID prefix lookup
+│   ├── engines.py     per-engine providers (scan + launch_argv); claude/opencode/codex/gemini
+│   ├── webterm.py + ptybridge.py   the ws↔PTY bridge (xterm.js over /ws/term, dtach-backed)
 │   ├── auth.py        cookie + CSRF + Origin + /api/auth-check for nginx auth_request
-│   └── templates/     index.html (Alpine) + login.html
+│   └── templates/     login.html + change_password.html (the only server-rendered pages)
+├── web/               React + Vite + TS SPA (built to web/dist, served by main.py)
 ├── tests/             pytest; subprocess.run stubbed; covers shell-free, CSRF, lock, lookup
 ├── deploy/
-│   ├── agent-sessions.service     systemd-user unit, FastAPI app (port 3402; installed by deploy.yml)
-│   └── ttyd-agent.service         systemd-user unit, ttyd+Zellij terminal pane (port 3401; hand-installed)
+│   └── agent-sessions.service     systemd-user unit, FastAPI app (port 3402; installed by deploy.yml)
 └── .forgejo/workflows/
     ├── pr-validate.yml
     └── deploy.yml
@@ -131,17 +132,17 @@ uvicorn --app-dir src --host 127.0.0.1 --port 3402 agent_sessions.main:app
 
 The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate (agent-sessions#4): it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
 
-This is acceptable **only** because agent-sessions is a single-user tool, on the operator's own host, behind two auth layers (nginx basic auth + the FastAPI app cookie). The toggle lets you turn bypass off per new session. The flag is asserted by `tests/test_zellij.py` so it can't silently change. Treat the whole surface as equivalent to "a shell as user" — the same trust boundary as SSH.
+This is acceptable **only** because agent-sessions is a single-user tool, on the operator's own host, behind two auth layers (nginx basic auth + the FastAPI app cookie). The toggle lets you turn bypass off per new session. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. Treat the whole surface as equivalent to "a shell as user" — the same trust boundary as SSH.
 
 ## API surface
 
 - `GET /api/sessions?limit=20&offset=0&archived=0` — flat, newest-first, paginated (`{sessions, next_offset, total, facets}`).
   Optional filters: `q` (case-insensitive title substring; trimmed, empty = no filter), `project` (exact key), `engine` (exact; `claude` / `opencode`). Filters are applied **before** `limit`/`offset` so `total` and "load more" describe the filtered set. `facets: {projects, engines}` are the distinct values over the full archived-scoped set (computed pre-filter) so the sidebar dropdowns list every option, including rows past the first page.
 - `GET /api/projects` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
-- `POST /api/sessions/{uuid}/open` — open-or-switch (resume, bypass on)
 - `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
 - `POST /api/sessions/{uuid}/archive` · `/unarchive` — move the JSONL between `projects/` and `projects-archive/`
-- `POST /api/projects/new` `{cwd, name, bypass_permissions}` — spawn a fresh session
+- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme); `POST /api/prefs` `{theme}`
+- `WS /ws/term/{sid}` — the terminal: attach to (or, with `?new=1&cwd=&bypass=`, launch) a session's dtach PTY
 - `GET /api/auth-check` — 204/401 for nginx `auth_request`; `POST /login` · `/logout`
 
 All state-changing routes require the CSRF token + an Origin/Referer matching `AGENT_SESSIONS_ORIGIN`.
@@ -150,6 +151,5 @@ All state-changing routes require the CSRF token + an Origin/Referer matching `A
 
 See `CLAUDE.md` (= `AGENTS.md` symlink). Key points:
 
-- **Shell-free** Zellij wrapper. Pinned by tests + a CI grep.
-- **Tab lookup by short-UUID prefix** so renames don't duplicate tabs.
-- **Scope discipline:** PR 3 ships scan/list + open + auth only. Rename / sticky / archive / close / mobile drawer are PR 4 (see #56).
+- **Shell-free** engine launchers — providers build argv lists; the ws bridge runs them under `dtach`. Pinned by tests + a CI grep.
+- **Session = URL = socket identity:** one `{engine}:{id}` ⇒ one dtach master ⇒ one writer; attach, never relaunch.
