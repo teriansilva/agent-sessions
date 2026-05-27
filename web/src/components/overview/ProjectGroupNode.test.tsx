@@ -1,28 +1,21 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import type { NodeProps } from "@xyflow/react";
-import { expect, test, vi } from "vitest";
-import { OverviewActions } from "./overviewActions";
+import { expect, test } from "vitest";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 
-function renderGroup(data: object, toggle = vi.fn()) {
-  render(
-    <OverviewActions.Provider value={{ toggle }}>
-      <ProjectGroupNode {...({ data } as unknown as NodeProps)} />
-    </OverviewActions.Provider>,
-  );
-  return toggle;
-}
+const renderGroup = (data: object) =>
+  render(<ProjectGroupNode {...({ data } as unknown as NodeProps)} />);
 
-test("the cluster header is a button that toggles via the actions context (#144)", async () => {
-  const toggle = renderGroup({ project: "one", cwd: "/p/one", count: 2, collapsed: true });
-  const btn = screen.getByRole("button");
-  expect(btn).toHaveAttribute("aria-expanded", "false"); // collapsed
-  await userEvent.click(btn);
-  expect(toggle).toHaveBeenCalledWith("/p/one");
+// The header is presentational — collapse is toggled via the canvas's React Flow onNodeClick
+// (#149). Here we verify it reflects collapsed state for assistive tech + shows path/count.
+test("collapsed cluster header reports aria-expanded=false + the path/count", () => {
+  renderGroup({ project: "one", cwd: "/home/u/one", count: 2, collapsed: true });
+  expect(screen.getByTitle(/expand \/home\/u\/one/i)).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByText("~/one")).toBeInTheDocument();
+  expect(screen.getByText("2 sessions")).toBeInTheDocument();
 });
 
-test("an expanded cluster reports aria-expanded=true", () => {
-  renderGroup({ project: "one", cwd: "/p/one", count: 1, collapsed: false });
-  expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+test("expanded cluster header reports aria-expanded=true", () => {
+  renderGroup({ project: "one", cwd: "/home/u/one", count: 1, collapsed: false });
+  expect(screen.getByTitle(/collapse \/home\/u\/one/i)).toHaveAttribute("aria-expanded", "true");
 });

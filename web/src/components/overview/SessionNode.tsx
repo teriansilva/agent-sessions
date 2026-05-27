@@ -1,26 +1,21 @@
 import { type NodeProps } from "@xyflow/react";
 import { type CSSProperties } from "react";
-import { useNavigate } from "react-router-dom";
 import { engineBadge, engineColor, relTime } from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
 
-/** A session chip inside a project cluster. Engine-colored; filled dot = active,
- *  hollow = idle; archived dimmed. Click opens the session (URL = identity). */
+/** A session chip inside a project cluster. Engine-colored; filled dot = active, hollow =
+ *  idle; archived dimmed; `selected` highlights the open session. Presentational — the click
+ *  is handled by the canvas's React Flow `onNodeClick` (opens the session). `nodrag nopan`
+ *  stops a press from initiating a pan/drag. */
 export function SessionNode({ data }: NodeProps) {
   const { session, active, selected } = data as SessionNodeData;
-  const navigate = useNavigate();
   const color = engineColor(session.engine);
   const title = session.title || session.first_user_message || session.short_uuid;
-  const open = () => navigate(`/s/${encodeURIComponent(session.engine)}/${encodeURIComponent(session.uuid)}`);
 
   return (
-    <button
-      type="button"
-      // `nodrag nopan`: let the click reach this button instead of React Flow treating the
-      // pointerdown as a pan/drag and swallowing it (#149).
+    <div
       className={`tr-ov-chip nodrag nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}`}
       style={{ "--eng": color } as CSSProperties}
-      onClick={open}
       title={`${title}\n${session.cwd}`}
       aria-label={`Open ${title}`}
       aria-current={selected ? "true" : undefined}
@@ -33,6 +28,6 @@ export function SessionNode({ data }: NodeProps) {
       <span className="tr-ov-eng" aria-hidden="true">
         {engineBadge(session.engine)}
       </span>
-    </button>
+    </div>
   );
 }

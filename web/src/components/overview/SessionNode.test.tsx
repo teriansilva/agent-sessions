@@ -1,7 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import type { NodeProps } from "@xyflow/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, test } from "vitest";
 import type { Session } from "../../types/api";
 import { SessionNode } from "./SessionNode";
@@ -23,34 +21,24 @@ const sess = (over: Partial<Session> = {}): Session =>
     ...over,
   }) as Session;
 
-function renderNode(data: object) {
-  const loc: { pathname?: string } = {};
-  function Probe() {
-    loc.pathname = useLocation().pathname;
-    return null;
-  }
-  render(
-    <MemoryRouter initialEntries={["/overview"]}>
-      <SessionNode {...({ data } as unknown as NodeProps)} />
-      <Probe />
-    </MemoryRouter>,
-  );
-  return loc;
-}
+const renderNode = (data: object) =>
+  render(<SessionNode {...({ data } as unknown as NodeProps)} />);
 
-test("chip is nodrag/nopan and opens the session on click (#149)", async () => {
-  const loc = renderNode({ session: sess(), active: true, selected: false });
-  const btn = screen.getByRole("button", { name: /open my session/i });
-  // Without these RF would swallow the click as a pan/drag.
-  expect(btn.className).toMatch(/\bnodrag\b/);
-  expect(btn.className).toMatch(/\bnopan\b/);
-  await userEvent.click(btn);
-  expect(loc.pathname).toBe("/s/claude/u1");
+// The chip is presentational — the click that opens the session is handled by the canvas's
+// React Flow onNodeClick (#149). Here we verify the chip carries nodrag/nopan (so a press
+// doesn't pan) and renders the title/engine.
+test("chip carries nodrag/nopan + renders title and engine badge", () => {
+  renderNode({ session: sess(), active: true, selected: false });
+  const chip = screen.getByLabelText(/open my session/i);
+  expect(chip.className).toMatch(/\bnodrag\b/);
+  expect(chip.className).toMatch(/\bnopan\b/);
+  expect(screen.getByText("My session")).toBeInTheDocument();
+  expect(screen.getByText("cc")).toBeInTheDocument();
 });
 
 test("the open session's chip is marked selected/aria-current (#149)", () => {
   renderNode({ session: sess(), active: false, selected: true });
-  const btn = screen.getByRole("button");
-  expect(btn).toHaveAttribute("aria-current", "true");
-  expect(btn.className).toMatch(/\bselected\b/);
+  const chip = screen.getByLabelText(/open my session/i);
+  expect(chip).toHaveAttribute("aria-current", "true");
+  expect(chip.className).toMatch(/\bselected\b/);
 });

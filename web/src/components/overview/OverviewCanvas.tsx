@@ -8,13 +8,16 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ChevronsDownUp, ChevronsUpDown } from "lucide-react";
-import { useMemo } from "react";
-import { useLocation } from "react-router-dom";
-import { engineColor } from "../../lib/format";
+import { type MouseEvent, useCallback, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
-import { buildOverview, type SessionNodeData } from "../../lib/overviewGraph";
+import { engineColor } from "../../lib/format";
+import {
+  buildOverview,
+  type ProjectGroupData,
+  type SessionNodeData,
+} from "../../lib/overviewGraph";
 import type { Session } from "../../types/api";
-import { OverviewActions } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
 import "./overview.css";
@@ -40,6 +43,24 @@ export function OverviewCanvas({
   compact?: boolean;
 }) {
   const { expanded, excluded, toggle, expandAll, collapseAll } = useOverviewPrefs();
+  const navigate = useNavigate();
+
+  // All node interaction goes through React Flow's onNodeClick. This is required, not just
+  // convenient: RF only sets pointer-events:all on a node when it's selectable/draggable OR
+  // has a click handler — with selection+drag disabled and no handler, every node would be
+  // pointer-events:none and the inner buttons would be dead (#149/#152). A click on a session
+  // chip opens it; a click on a cluster header toggles collapse.
+  const onNodeClick = useCallback(
+    (_e: MouseEvent, node: Node) => {
+      if (node.type === "session") {
+        const s = (node.data as SessionNodeData).session;
+        navigate(`/s/${encodeURIComponent(s.engine)}/${encodeURIComponent(s.uuid)}`);
+      } else if (node.type === "projectGroup") {
+        toggle((node.data as ProjectGroupData).cwd);
+      }
+    },
+    [navigate, toggle],
+  );
 
   // The currently-open session ("engine:uuid"), parsed from /s/:engine/:id — its chip is
   // highlighted, in sync with the sidebar list's active row (#149).
@@ -64,37 +85,36 @@ export function OverviewCanvas({
   }
 
   return (
-    <OverviewActions.Provider value={{ toggle }}>
-      <div className="tr-overview" style={{ position: "relative" }}>
-        {partial && <div className="tr-ov-partial">Showing the most recent sessions</div>}
-        <div className="tr-ov-toolbar">
-          <button type="button" onClick={() => expandAll(allCwds)} title="Expand all projects">
-            <ChevronsUpDown size={14} /> Expand all
-          </button>
-          <button type="button" onClick={collapseAll} title="Collapse all projects">
-            <ChevronsDownUp size={14} /> Collapse all
-          </button>
-        </div>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.18 }}
-          minZoom={0.2}
-          maxZoom={1.5}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          elementsSelectable={false}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--border)" />
-          <Controls showInteractive={false} position={compact ? "bottom-right" : "bottom-left"} />
-          {!compact && (
-            <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(0,0,0,0.45)" />
-          )}
-        </ReactFlow>
+    <div className="tr-overview" style={{ position: "relative" }}>
+      {partial && <div className="tr-ov-partial">Showing the most recent sessions</div>}
+      <div className="tr-ov-toolbar">
+        <button type="button" onClick={() => expandAll(allCwds)} title="Expand all projects">
+          <ChevronsUpDown size={14} /> Expand all
+        </button>
+        <button type="button" onClick={collapseAll} title="Collapse all projects">
+          <ChevronsDownUp size={14} /> Collapse all
+        </button>
       </div>
-    </OverviewActions.Provider>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        onNodeClick={onNodeClick}
+        fitView
+        fitViewOptions={{ padding: 0.18 }}
+        minZoom={0.2}
+        maxZoom={1.5}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--border)" />
+        <Controls showInteractive={false} position={compact ? "bottom-right" : "bottom-left"} />
+        {!compact && (
+          <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(0,0,0,0.45)" />
+        )}
+      </ReactFlow>
+    </div>
   );
 }
