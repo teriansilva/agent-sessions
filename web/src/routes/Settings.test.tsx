@@ -2,8 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
+import { ConfigCtx } from "../app/config";
 import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
+import type { AppConfig } from "../types/api";
 import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { Settings } from "./Settings";
@@ -201,6 +203,48 @@ test("Session overview: ticking a project hides it + persists via setExcluded (#
   expect(api.setPrefs).toHaveBeenCalledWith({ overview_excluded: ["/home/u/alpha"] });
   // Shared state updates → the row reflects the new excluded state immediately.
   expect(await screen.findByRole("checkbox", { name: /alpha/i })).toBeChecked();
+});
+
+test("Session overview: renaming a project persists via setProjectName (#148)", async () => {
+  vi.mocked(api.projects).mockResolvedValue({
+    projects: [{ cwd: "/home/u/alpha", label: "Alpha" }],
+  });
+  renderSettings();
+  const input = await screen.findByRole("textbox", { name: /custom name for \/home\/u\/alpha/i });
+  await userEvent.type(input, "My Alpha");
+  await userEvent.tab(); // blur → commit
+  expect(api.setPrefs).toHaveBeenCalledWith({ project_names: { "/home/u/alpha": "My Alpha" } });
+});
+
+test("Session overview: a name seeded after /api/config resolves still fills the input (#161)", async () => {
+  vi.mocked(api.projects).mockResolvedValue({ projects: [{ cwd: "/home/u/alpha", label: "Alpha" }] });
+  // OverviewPrefs seeds projectNames from ConfigCtx, which is null until /api/config resolves —
+  // and the row can mount first. Start with null config, then deliver it with a saved name and
+  // assert the input reconciles (the stale-draft case Hermes caught on PR #161).
+  const seeded: AppConfig = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "single-user",
+    two_factor_enabled: false,
+    project_names: { "/home/u/alpha": "Saved Alpha" },
+  };
+  const tree = (cfg: AppConfig | null) => (
+    <MemoryRouter>
+      <ThemeCtx.Provider value={{ theme: "royal", setTheme: vi.fn() }}>
+        <ConfigCtx.Provider value={cfg}>
+          <OverviewPrefsProvider>
+            <Settings />
+          </OverviewPrefsProvider>
+        </ConfigCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree(null));
+  const input = await screen.findByRole("textbox", { name: /custom name for \/home\/u\/alpha/i });
+  expect(input).toHaveValue(""); // mounted before the name arrived
+  rerender(tree(seeded));
+  await waitFor(() => expect(input).toHaveValue("Saved Alpha"));
 });
 
 test("About: the creator name links to superstatus.io", async () => {

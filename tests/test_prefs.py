@@ -236,3 +236,55 @@ def test_set_overview_list_rejects_non_string_items(auth_cfg, tmp_home):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+# ---- project_names map (#148) -------------------------------------------------
+
+
+def test_project_names_default_empty(tmp_path):
+    assert prefs.get_project_names(tmp_path / "prefs.json") == {}
+
+
+def test_project_names_round_trip_and_coerce(tmp_path):
+    p = tmp_path / "prefs.json"
+    out = prefs.set_project_names(
+        {"/a": "  Alpha  ", "/b": "", "/c": 3, 5: "x", "/d": "x" * 200}, p
+    )
+    # trimmed; empty drops; non-str key/val dropped; value capped at 80.
+    assert out == {"/a": "Alpha", "/d": "x" * 80}
+    assert prefs.get_project_names(p) == {"/a": "Alpha", "/d": "x" * 80}
+    assert prefs.set_project_names("nope", p) == {}  # non-dict → {}
+
+
+def test_project_names_coexist_with_theme_and_lists(tmp_path):
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("dark", p)
+    prefs.set_overview_excluded(["/x"], p)
+    prefs.set_project_names({"/x": "X"}, p)
+    assert prefs.get_theme(p) == "dark"
+    assert prefs.get_overview_excluded(p) == ["/x"]
+    assert prefs.get_project_names(p) == {"/x": "X"}
+
+
+def test_config_exposes_project_names(auth_cfg, tmp_home):
+    prefs.set_project_names({"/home/u/proj": "My Project"})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["project_names"] == {"/home/u/proj": "My Project"}
+
+
+def test_set_project_names_endpoint(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"project_names": {"/a": "Alpha"}}, headers=hdr)
+    assert r.status_code == 200 and r.json() == {"project_names": {"/a": "Alpha"}}
+    assert c.get("/api/config").json()["project_names"] == {"/a": "Alpha"}
+
+
+def test_set_project_names_rejects_non_string_values(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"project_names": {"/a": 5}}, headers=hdr).status_code == 422
+    assert c.post("/api/prefs", json={"project_names": ["/a"]}, headers=hdr).status_code == 422

@@ -120,13 +120,61 @@ test("chip order is deterministic: sticky first, then most-recent, then id", () 
   expect(order).toEqual(["claude:pin", "claude:new", "claude:old"]);
 });
 
-test("clusters wrap to a new row instead of an unbounded horizontal strip", () => {
-  const many = Array.from({ length: 12 }, (_, i) =>
-    s({ id: `claude:${i}`, cwd: `/p/${i}`, project: `p${i}` }),
+// ---- hierarchy / edges (#148) -------------------------------------------------
+
+test("links a nested project to its parent with an edge, child placed below", () => {
+  const input = [
+    s({ id: "claude:root", cwd: "/home/u/claude" }),
+    s({ id: "claude:child", cwd: "/home/u/claude/example-app" }),
+  ];
+  const { nodes, edges } = buildOverview(input, { nowS: NOW });
+  expect(edges).toHaveLength(1);
+  expect(edges[0]).toMatchObject({
+    source: "group:/home/u/claude",
+    target: "group:/home/u/claude/example-app",
+  });
+  const y = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.position.y]),
   );
-  const groups = buildOverview(many, { nowS: NOW }).nodes.filter((n) => n.type === "projectGroup");
-  const ys = new Set(groups.map((g) => g.position.y));
-  expect(ys.size).toBeGreaterThan(1);
+  expect(y["group:/home/u/claude/example-app"]).toBeGreaterThan(y["group:/home/u/claude"]);
+});
+
+test("path matching is boundary-aware: /claude is NOT a parent of /claude-foo", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/home/u/claude" }),
+    s({ id: "claude:b", cwd: "/home/u/claude-foo" }),
+  ];
+  const { edges } = buildOverview(input, { nowS: NOW });
+  expect(edges).toHaveLength(0); // siblings, not parent/child
+});
+
+test("links to the NEAREST present ancestor, skipping absent intermediates", () => {
+  // /a present, /a/b/c present, /a/b absent → c links to a (no synthetic /a/b node).
+  const input = [
+    s({ id: "claude:a", cwd: "/a" }),
+    s({ id: "claude:c", cwd: "/a/b/c" }),
+  ];
+  const { nodes, edges } = buildOverview(input, { nowS: NOW });
+  expect(nodes.some((n) => n.id === "group:/a/b")).toBe(false);
+  expect(edges).toEqual([
+    expect.objectContaining({ source: "group:/a", target: "group:/a/b/c" }),
+  ]);
+});
+
+test("multiple roots, no edges between unrelated trees", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/a" }),
+    s({ id: "claude:b", cwd: "/b" }),
+    s({ id: "claude:ax", cwd: "/a/x" }),
+  ];
+  const { edges } = buildOverview(input, { nowS: NOW });
+  expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["group:/a->group:/a/x"]);
+});
+
+test("custom name is carried on the group node data (#148)", () => {
+  const input = [s({ id: "claude:a", cwd: "/home/u/proj" })];
+  const { nodes } = buildOverview(input, { nowS: NOW, names: { "/home/u/proj": "My Project" } });
+  expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ name: "My Project" });
 });
 
 test("output is stable across calls (deterministic)", () => {

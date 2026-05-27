@@ -361,6 +361,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # and project cwds excluded from the map. Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
                 "overview_excluded": prefs.get_overview_excluded(),
+                # Per-cwd custom project display names (#148).
+                "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
@@ -400,6 +402,15 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                     raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
                 out[key] = setter(v)
+        if "project_names" in payload:
+            v = payload["project_names"]
+            if not isinstance(v, dict) or not all(
+                isinstance(k, str) and isinstance(val, str) for k, val in v.items()
+            ):
+                raise HTTPException(
+                    status_code=422, detail="project_names must be an object of string→string"
+                )
+            out["project_names"] = prefs.set_project_names(v)
         if not out:
             raise HTTPException(status_code=422, detail="no known preference key")
         return JSONResponse(out)

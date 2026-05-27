@@ -6,10 +6,14 @@ import { createContext, useContext } from "react";
 export interface OverviewPrefs {
   expanded: Set<string>;
   excluded: Set<string>;
+  /** Per-cwd custom display names (#148). */
+  projectNames: Record<string, string>;
   toggle: (cwd: string) => void;
   expandAll: (cwds: string[]) => void;
   collapseAll: () => void;
   setExcluded: (cwds: string[]) => void;
+  /** Set (or, with an empty/blank name, clear) a project's custom name. */
+  setProjectName: (cwd: string, name: string) => void;
 }
 
 export const OverviewPrefsCtx = createContext<OverviewPrefs | null>(null);
@@ -21,10 +25,12 @@ export function useOverviewPrefs(): OverviewPrefs {
     useContext(OverviewPrefsCtx) ?? {
       expanded: new Set(),
       excluded: new Set(),
+      projectNames: {},
       toggle: () => {},
       expandAll: () => {},
       collapseAll: () => {},
       setExcluded: () => {},
+      setProjectName: () => {},
     }
   );
 }

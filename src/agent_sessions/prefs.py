@@ -72,7 +72,29 @@ def coerce_str_list(value: object, cap: int = 2000) -> list[str]:
     return out
 
 
-def _set(key: str, value: str | list[str], path: Path | None = None):
+def coerce_str_map(
+    value: object, cap: int = 500, key_max: int = 4096, val_max: int = 80
+) -> dict[str, str]:
+    """Narrow any input to a bounded {str: str} map for custom project names (#148).
+    Non-string keys/values are dropped; keys over key_max are dropped; values are trimmed
+    and capped at val_max; an empty (after-trim) value drops the entry (clears the name).
+    Applied on BOTH write and read so a malformed persisted map can't crash the app."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in value.items():
+        if not isinstance(k, str) or not isinstance(v, str) or len(k) > key_max:
+            continue
+        name = v.strip()[:val_max]
+        if not name:
+            continue
+        out[k] = name
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _set(key: str, value: str | list[str] | dict[str, str], path: Path | None = None):
     """Persist a single pref key. Read-modify-write under an exclusive flock so a concurrent
     writer (or a different key) can't clobber the rest of the document."""
     path = path or _default_path()
@@ -137,3 +159,13 @@ def get_overview_excluded(path: Path | None = None) -> list[str]:
 def set_overview_excluded(cwds: object, path: Path | None = None) -> list[str]:
     """Persist the excluded-project cwds. Preserves other keys."""
     return _set("overview_excluded", coerce_str_list(cwds), path)
+
+
+def get_project_names(path: Path | None = None) -> dict[str, str]:
+    """Per-cwd custom display names for projects (#148). Normalized on read."""
+    return coerce_str_map(_load(path or _default_path()).get("project_names"))
+
+
+def set_project_names(names: object, path: Path | None = None) -> dict[str, str]:
+    """Persist the custom project-name map (normalized; empty names drop entries)."""
+    return _set("project_names", coerce_str_map(names), path)

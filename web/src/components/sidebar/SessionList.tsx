@@ -1,9 +1,10 @@
 import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
+import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
-import { engineBadge, relTime, shortCwd } from "../../lib/format";
+import { displayProjectName, engineBadge, relTime } from "../../lib/format";
 import type { Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import styles from "./SessionList.module.css";
@@ -15,6 +16,7 @@ interface RowProps {
 }
 
 function Row({ s, onRename, onToggleArchive }: RowProps) {
+  const { projectNames } = useOverviewPrefs();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
   const [busy, setBusy] = useState(false);
@@ -97,7 +99,7 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
         <div className={styles.body}>
           <div className={styles.title}>{s.title || "(untitled)"}</div>
           <div className={styles.meta}>
-            {shortCwd(s.cwd)} · {relTime(s.last_mtime)}
+            {displayProjectName(s.cwd, projectNames)} · {relTime(s.last_mtime)}
           </div>
         </div>
       </NavLink>

@@ -636,15 +636,72 @@ function AccountCard() {
   );
 }
 
-/** Session overview (#144): exclude project paths from the map. One cwd per line. The
- *  editor seeds from a fresh /api/config (current persisted value); saving routes through the
- *  shared OverviewPrefs context so an open canvas reflects it immediately (no reload). */
-/** Session overview (#152): a checklist of projects to hide from the overview map. Rows are
- *  the discovered projects UNION the currently-excluded cwds (so a stale exclusion with no
- *  active sessions is still shown + removable). Ticking persists immediately via the shared
- *  OverviewPrefs context (canvas reacts). Filtering elsewhere still uses the full cwd. */
+/** One project row in the Settings overview card (#148/#152): a custom-name input + a hide
+ *  checkbox. The local draft commits on blur/Enter; clearing it removes the custom name. */
+function ProjectRow({
+  cwd,
+  stale,
+  excluded,
+  currentName,
+  onToggleExclude,
+  onRename,
+}: {
+  cwd: string;
+  stale: boolean;
+  excluded: boolean;
+  currentName: string;
+  onToggleExclude: (cwd: string) => void;
+  onRename: (cwd: string, name: string) => void;
+}) {
+  const [draft, setDraft] = useState(currentName);
+  const [editing, setEditing] = useState(false);
+  // Reconcile the draft when the persisted name changes from outside — e.g. OverviewPrefs seeds
+  // projectNames only after /api/config resolves, which can land after this row mounts (Hermes
+  // #161). Adjust during render (React's blessed pattern) and skip while the user is actively
+  // editing so we never clobber an in-progress edit.
+  const [syncedName, setSyncedName] = useState(currentName);
+  if (!editing && currentName !== syncedName) {
+    setSyncedName(currentName);
+    setDraft(currentName);
+  }
+  const commit = () => {
+    setEditing(false);
+    if (draft.trim() !== currentName) onRename(cwd, draft);
+  };
+  return (
+    <li className={styles.excludeRow}>
+      <input
+        type="checkbox"
+        checked={excluded}
+        onChange={() => onToggleExclude(cwd)}
+        aria-label={`Hide ${shortCwd(cwd)} from the overview`}
+      />
+      <span className={styles.excludeMeta}>
+        <input
+          className={styles.nameInput}
+          value={draft}
+          placeholder={shortCwd(cwd)}
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={() => setEditing(true)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          aria-label={`Custom name for ${cwd}`}
+        />
+        <span className={styles.excludePath}>{shortCwd(cwd)}</span>
+      </span>
+      {stale && <span className={styles.excludeStale}>not currently active</span>}
+    </li>
+  );
+}
+
+/** Session overview (#148/#152): per-project custom names + hide-from-map. Rows = discovered
+ *  projects ∪ excluded ∪ named cwds (so a stale exclusion or a renamed project with no active
+ *  sessions is still shown + editable). Both persist immediately via the shared OverviewPrefs
+ *  context (the canvas + sidebar/filters react); filtering elsewhere still uses the full cwd. */
 function OverviewCard() {
-  const { excluded, setExcluded } = useOverviewPrefs();
+  const { excluded, setExcluded, projectNames, setProjectName } = useOverviewPrefs();
   const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
 
   useEffect(() => {
@@ -659,15 +716,13 @@ function OverviewCard() {
   }, []);
 
   const rows = useMemo(() => {
-    const labels = new Map((projects ?? []).map((p) => [p.cwd, p.label]));
-    return [...new Set<string>([...labels.keys(), ...excluded])].sort().map((cwd) => ({
-      cwd,
-      label: labels.get(cwd) || shortCwd(cwd),
-      stale: !labels.has(cwd), // excluded but absent from the current project list
-    }));
-  }, [projects, excluded]);
+    const known = new Set((projects ?? []).map((p) => p.cwd));
+    return [...new Set<string>([...known, ...excluded, ...Object.keys(projectNames)])]
+      .sort()
+      .map((cwd) => ({ cwd, stale: !known.has(cwd) }));
+  }, [projects, excluded, projectNames]);
 
-  const toggle = (cwd: string) => {
+  const toggleExclude = (cwd: string) => {
     const next = new Set(excluded);
     if (next.has(cwd)) next.delete(cwd);
     else next.add(cwd);
@@ -678,30 +733,25 @@ function OverviewCard() {
     <section className={styles.section} aria-labelledby="overview-h">
       <h2 id="overview-h">Session overview</h2>
       <p className={styles.hint}>
-        Tick a project to hide it from the overview map. Filtering elsewhere still uses the full
-        path.
+        Give a project a custom name, or tick to hide it from the overview map. Filtering
+        elsewhere still uses the full path.
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>
       ) : rows.length === 0 ? (
         <p className={styles.hint}>No projects discovered yet.</p>
       ) : (
-        <ul className={styles.excludeList} aria-label="Projects to hide from the overview">
+        <ul className={styles.excludeList} aria-label="Projects">
           {rows.map((r) => (
-            <li key={r.cwd}>
-              <label className={styles.excludeRow}>
-                <input
-                  type="checkbox"
-                  checked={excluded.has(r.cwd)}
-                  onChange={() => toggle(r.cwd)}
-                />
-                <span className={styles.excludeMeta}>
-                  <span className={styles.excludeName}>{r.label}</span>
-                  <span className={styles.excludePath}>{shortCwd(r.cwd)}</span>
-                </span>
-                {r.stale && <span className={styles.excludeStale}>not currently active</span>}
-              </label>
-            </li>
+            <ProjectRow
+              key={r.cwd}
+              cwd={r.cwd}
+              stale={r.stale}
+              excluded={excluded.has(r.cwd)}
+              currentName={projectNames[r.cwd] ?? ""}
+              onToggleExclude={toggleExclude}
+              onRename={setProjectName}
+            />
           ))}
         </ul>
       )}

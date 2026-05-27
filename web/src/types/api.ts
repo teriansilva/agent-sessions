@@ -45,6 +45,8 @@ export interface AppConfig {
   /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden from the map. */
   overview_expanded?: string[];
   overview_excluded?: string[];
+  /** Per-cwd custom project display names (#148). */
+  project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
    * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
   auth_mode?: "single-user" | "none" | string;

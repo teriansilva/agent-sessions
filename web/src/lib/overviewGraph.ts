@@ -1,8 +1,8 @@
-// Pure transform: a flat session list → React Flow nodes/edges for the Session Overview
-// (#139). Kept independent of @xyflow/react at runtime (type-only import) so the layout
-// + grouping logic is unit-testable without mounting the canvas. The visual styling of a
-// node (engine color, dots) lives in the node components; here we only group, place, and
-// classify.
+// Pure transform: a flat session list → React Flow nodes/edges for the Session Overview.
+// Kept independent of @xyflow/react at runtime (type-only import) so the grouping, hierarchy,
+// and layout are unit-testable without mounting the canvas. Node styling lives in the node
+// components; here we group by cwd, derive the folder hierarchy (#148), place a layered tree,
+// and classify chips.
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
@@ -15,20 +15,21 @@ const CHIP_W = 176;
 const CHIP_H = 46;
 const GAP = 8;
 const PAD = 12;
-const HEADER_H = 34;
-const GROUP_GAP = 28;
-/** Wrap clusters to a new row once a row passes this width. */
-const MAX_ROW_W = 1240;
-/** Chip columns per cluster: a roughly-square grid, capped so wide clusters stay readable. */
+const HEADER_H = 44; // fits a custom name + a path subtitle line (#148)
 const MAX_COLS = 3;
 /** A collapsed cluster shows only its header at a fixed compact width (#144). */
 const COLLAPSED_W = 300;
+/** Horizontal gap between sibling subtrees; vertical gap between depth levels (#148). */
+const SIBLING_GAP = 28;
+const ROW_GAP = 64;
 
 export interface ProjectGroupData extends Record<string, unknown> {
   project: string;
   cwd: string;
   count: number;
   collapsed: boolean;
+  /** Custom per-cwd display name (#148); falls back to the path when unset. */
+  name?: string;
 }
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
@@ -57,6 +58,18 @@ function groupSize(count: number): { w: number; h: number; cols: number } {
   };
 }
 
+/** The nearest present project that is a path-BOUNDARY ancestor of `cwd` (longest match), or
+ *  undefined. Boundary-aware so `/a/b` links to `/a` but `/a-foo` never does (#148). */
+function nearestAncestor(cwd: string, present: Set<string>): string | undefined {
+  let best: string | undefined;
+  for (const c of present) {
+    if (c === cwd) continue;
+    const pfx = c.endsWith("/") ? c : `${c}/`;
+    if (cwd.startsWith(pfx) && (best === undefined || c.length > best.length)) best = c;
+  }
+  return best;
+}
+
 export interface BuildOptions {
   /** Epoch seconds used to classify active/idle. Defaults to now (injectable for tests). */
   nowS?: number;
@@ -67,24 +80,25 @@ export interface BuildOptions {
   expanded?: Set<string>;
   /** Cwds hidden from the map entirely (#144). */
   excluded?: Set<string>;
-  /** Engine-qualified id ("engine:uuid") of the currently-open session → its chip is
-   *  marked selected, in sync with the sidebar list (#149). */
+  /** Engine-qualified id ("engine:uuid") of the open session → its chip is marked selected. */
   activeId?: string;
+  /** Per-cwd custom display names (#148). */
+  names?: Record<string, string>;
 }
 
-/** Build the project-cluster graph. Group nodes are emitted before their children (React
- *  Flow requires a parent to precede its `parentId` children). Sessions are grouped by
- *  `cwd`; clusters are packed left→right, wrapping at MAX_ROW_W. Ordering is fully
- *  deterministic (most-recent cluster first; within a cluster sticky→recent→id). */
+/** Build the project hierarchy graph. Clusters (one per cwd) are linked parent→child by
+ *  folder nesting (nearest present ancestor only) and laid out as a layered tidy tree: depth
+ *  = nesting level → row; siblings spread left→right with parents centered over their
+ *  children. Group nodes precede their session-chip children (React Flow requirement). */
 export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
   const expanded = opts.expanded ?? new Set<string>();
   const excluded = opts.excluded ?? new Set<string>();
+  const names = opts.names ?? {};
   const visible = (opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)).filter(
     (s) => !excluded.has(s.cwd),
   );
 
-  // Group by cwd, preserving each group's display label + max mtime for ordering.
   const groups = new Map<string, { project: string; items: Session[]; maxMtime: number }>();
   for (const s of visible) {
     const g = groups.get(s.cwd) ?? { project: s.project || s.cwd, items: [], maxMtime: 0 };
@@ -93,47 +107,96 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     groups.set(s.cwd, g);
   }
 
-  // Clusters: most recently active first, then cwd for a stable tiebreak.
-  const ordered = [...groups.entries()].sort(
-    (a, b) => b[1].maxMtime - a[1].maxMtime || a[0].localeCompare(b[0]),
-  );
+  const present = new Set(groups.keys());
+  const parent = new Map<string, string | undefined>();
+  const children = new Map<string, string[]>();
+  for (const cwd of present) {
+    const p = nearestAncestor(cwd, present);
+    parent.set(cwd, p);
+    if (p) {
+      const ks = children.get(p) ?? [];
+      ks.push(cwd);
+      children.set(p, ks);
+    }
+  }
+  const depthOf = (cwd: string): number => {
+    let d = 0;
+    let c = parent.get(cwd);
+    const seen = new Set<string>();
+    while (c && !seen.has(c)) {
+      seen.add(c);
+      d++;
+      c = parent.get(c);
+    }
+    return d;
+  };
+  const sizeOf = (cwd: string) =>
+    expanded.has(cwd) ? groupSize(groups.get(cwd)!.items.length) : { w: COLLAPSED_W, h: HEADER_H };
+
+  // Row Y by depth (each row as tall as its tallest cluster).
+  const maxDepth = present.size ? Math.max(...[...present].map(depthOf)) : 0;
+  const rowH: number[] = [];
+  for (const cwd of present) {
+    const d = depthOf(cwd);
+    rowH[d] = Math.max(rowH[d] ?? 0, sizeOf(cwd).h);
+  }
+  const rowY: number[] = [];
+  let acc = 0;
+  for (let d = 0; d <= maxDepth; d++) {
+    rowY[d] = acc;
+    acc += (rowH[d] ?? HEADER_H) + ROW_GAP;
+  }
+
+  // Deterministic ordering: most-recent first, then cwd. Roots + each child list.
+  const byRecent = (a: string, b: string) =>
+    groups.get(b)!.maxMtime - groups.get(a)!.maxMtime || a.localeCompare(b);
+  const roots = [...present].filter((c) => !parent.get(c)).sort(byRecent);
+  for (const ks of children.values()) ks.sort(byRecent);
+
+  // Tidy-tree layout: leaves consume the x-cursor; a parent centers over its children.
+  const pos = new Map<string, { x: number; y: number }>();
+  let cursor = 0;
+  const place = (cwd: string): number => {
+    const { w } = sizeOf(cwd);
+    const kids = children.get(cwd) ?? [];
+    let cx: number;
+    if (kids.length === 0) {
+      cx = cursor + w / 2;
+      cursor += w + SIBLING_GAP;
+    } else {
+      const cs = kids.map(place);
+      cx = (cs[0] + cs[cs.length - 1]) / 2;
+    }
+    pos.set(cwd, { x: cx - w / 2, y: rowY[depthOf(cwd)] });
+    return cx;
+  };
+  for (const r of roots) place(r);
 
   const nodes: Node[] = [];
-  // Row-packing cursor.
-  let x = 0;
-  let y = 0;
-  let rowH = 0;
-
-  for (const [cwd, g] of ordered) {
+  const edges: Edge[] = [];
+  // DFS emit: each group node immediately followed by its chips; parent before children.
+  const emit = (cwd: string) => {
+    const g = groups.get(cwd)!;
     const isExpanded = expanded.has(cwd);
-    const { w, h, cols } = isExpanded
-      ? groupSize(g.items.length)
-      : { w: COLLAPSED_W, h: HEADER_H, cols: 1 };
-    if (x > 0 && x + w > MAX_ROW_W) {
-      // Wrap to the next row.
-      x = 0;
-      y += rowH + GROUP_GAP;
-      rowH = 0;
-    }
+    const { w, h } = isExpanded ? groupSize(g.items.length) : { w: COLLAPSED_W, h: HEADER_H };
+    const cols = isExpanded ? groupSize(g.items.length).cols : 1;
     const groupId = `group:${cwd}`;
     nodes.push({
       id: groupId,
       type: "projectGroup",
-      position: { x, y },
+      position: pos.get(cwd)!,
       data: {
         project: g.project,
         cwd,
         count: g.items.length,
         collapsed: !isExpanded,
+        name: names[cwd],
       } satisfies ProjectGroupData,
       style: { width: w, height: h },
       draggable: false,
       selectable: false,
     });
-
-    // Collapsed clusters render header-only — no child chips (keeps the map compact, #144).
     if (isExpanded) {
-      // Sticky first, then most-recent, then id — deterministic chip order.
       const items = [...g.items].sort(
         (a, b) =>
           Number(b.sticky) - Number(a.sticky) ||
@@ -141,16 +204,14 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
           a.id.localeCompare(b.id),
       );
       items.forEach((s, i) => {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
         nodes.push({
           id: s.id,
           type: "session",
           parentId: groupId,
           extent: "parent",
           position: {
-            x: PAD + col * (CHIP_W + GAP),
-            y: HEADER_H + PAD + row * (CHIP_H + GAP),
+            x: PAD + (i % cols) * (CHIP_W + GAP),
+            y: HEADER_H + PAD + Math.floor(i / cols) * (CHIP_H + GAP),
           },
           data: {
             session: s,
@@ -161,10 +222,20 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
         });
       });
     }
+    for (const kid of children.get(cwd) ?? []) {
+      edges.push({
+        id: `e:${cwd}->${kid}`,
+        source: groupId,
+        target: `group:${kid}`,
+        type: "smoothstep",
+        selectable: false,
+        focusable: false,
+        deletable: false,
+      });
+      emit(kid);
+    }
+  };
+  for (const r of roots) emit(r);
 
-    x += w + GROUP_GAP;
-    rowH = Math.max(rowH, h);
-  }
-
-  return { nodes, edges: [] };
+  return { nodes, edges };
 }

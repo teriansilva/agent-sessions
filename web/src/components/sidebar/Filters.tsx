@@ -1,5 +1,6 @@
+import { useOverviewPrefs } from "../../app/overviewPrefs";
 import type { Filters } from "../../hooks/useSessionsList";
-import { shortCwd } from "../../lib/format";
+import { displayProjectName } from "../../lib/format";
 import styles from "./Filters.module.css";
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
 
 /** Search + project/agent dropdowns (server facets) + active/archived tabs. */
 export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
+  const { projectNames } = useOverviewPrefs();
   const hasFilter = !!(filters.q || filters.project || filters.engine);
   return (
     <div className={styles.bar}>
@@ -31,7 +33,7 @@ export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
           <option value="">All projects</option>
           {facets.projects.map((p) => (
             <option key={p} value={p}>
-              {shortCwd(p)}
+              {displayProjectName(p, projectNames)}
             </option>
           ))}
         </select>

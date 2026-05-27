@@ -442,6 +442,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Per-project custom-name input (#148). */
+.nameInput {
+  width: 100%;
+  background: var(--surface-3, #0b0617);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.nameInput::placeholder {
+  color: var(--text-muted);
+}
 .excludePath {
   font-size: 11px;
   color: var(--text-muted);

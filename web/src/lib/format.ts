@@ -12,6 +12,12 @@ export function shortCwd(cwd: string): string {
   return cwd.replace(/^\/home\/[^/]+\//, "~/");
 }
 
+/** A project's display label: the user's custom name for this cwd (#148) if set, else the
+ *  shortened path. Display-only — filtering/identity stays keyed by the raw cwd. */
+export function displayProjectName(cwd: string, names?: Record<string, string>): string {
+  return names?.[cwd]?.trim() || shortCwd(cwd);
+}
+
 export function engineBadge(engine: string): string {
   return engine === "opencode" ? "oc" : engine === "codex" ? "cx" : engine === "gemini" ? "gm" : "cc";
 }

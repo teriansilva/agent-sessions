@@ -42,7 +42,7 @@ export function OverviewCanvas({
   partial?: boolean;
   compact?: boolean;
 }) {
-  const { expanded, excluded, toggle, expandAll, collapseAll } = useOverviewPrefs();
+  const { expanded, excluded, projectNames, toggle, expandAll, collapseAll } = useOverviewPrefs();
   const navigate = useNavigate();
 
   // All node interaction goes through React Flow's onNodeClick. This is required, not just
@@ -71,8 +71,8 @@ export function OverviewCanvas({
   }, [pathname]);
 
   const { nodes, edges } = useMemo(
-    () => buildOverview(sessions, { includeArchived, expanded, excluded, activeId }),
-    [sessions, includeArchived, expanded, excluded, activeId],
+    () => buildOverview(sessions, { includeArchived, expanded, excluded, activeId, names: projectNames }),
+    [sessions, includeArchived, expanded, excluded, activeId, projectNames],
   );
   // Cwds available to expand (non-excluded) — drives "Expand all".
   const allCwds = useMemo(
