@@ -9,6 +9,9 @@
   --border: #2f2658;
   --border-subtle: #1b1540;
   --row-hover: #1c1642;
+  /* Raised control / recessed well surfaces (Settings buttons, panels, inputs). */
+  --surface-2: #211a4a;
+  --surface-3: #0b0617;
   --accent: #7c4ddb; /* violet — non-button accents: focus rings, active rail, filters */
   /* Gold CTA tokens (the brand) — theme-INDEPENDENT, identical in royal/dark/light.
    * Dark text on gold is ~11:1 (WCAG AAA); locked by web/src/theme/contrast.test.ts. */
@@ -36,6 +39,8 @@
   --border: #30363d;
   --border-subtle: #21262d;
   --row-hover: #1c2128;
+  --surface-2: #21262d;
+  --surface-3: #0b0e13;
   --accent: #2563eb; /* white text = 5.1:1 */
   --brand: #58a6ff;
   --brand-soft: #9ecbff;
@@ -51,6 +56,8 @@
   --border: #d6dae0;
   --border-subtle: #e7eaee;
   --row-hover: #eef1f4;
+  --surface-2: #eef1f4;
+  --surface-3: #f3f5f7;
   --accent: #1d4ed8; /* white text = 6.3:1 */
   --brand: #6d28d9; /* violet wordmark — 5.9:1 on white */
   --brand-soft: #5b21b6;
