@@ -495,3 +495,71 @@ def test_update_apply_202_then_503(auth_cfg, fake_jsonl, monkeypatch):
     assert c.post("/api/update/apply", headers=hdr).status_code == 202
     monkeypatch.setattr(up, "apply", lambda: False)  # not an install
     assert c.post("/api/update/apply", headers=hdr).status_code == 503
+
+
+# ---- bulk archive: archive-older (#142) ---------------------------------------
+
+
+def test_archive_older_archives_only_old_sessions(auth_cfg, fake_jsonl):
+    import os
+    import time
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Age session 1111 to 10h ago; 2222 stays fresh.
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    old = time.time() - 10 * 3600
+    os.utime(proj / "11111111-1111-1111-1111-111111111111.jsonl", (old, old))
+
+    r = c.post("/api/sessions/archive-older", json={"hours": 5}, headers=hdr)
+    assert r.status_code == 200
+    assert r.json()["archived"] == 1  # only the 10h-old one
+
+    active = {s["uuid"] for s in c.get("/api/sessions?archived=0&limit=50").json()["sessions"]}
+    assert "11111111-1111-1111-1111-111111111111" not in active  # archived away
+    assert "22222222-2222-2222-2222-222222222222" in active  # fresh, untouched
+
+
+def test_archive_older_skips_engines_that_cannot_archive(auth_cfg, fake_jsonl, monkeypatch):
+    # A provider whose archive() raises must be counted as skipped, never 500 the request.
+    import os
+    import time
+
+    from agent_sessions import engines
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    old = time.time() - 10 * 3600
+    os.utime(proj / "11111111-1111-1111-1111-111111111111.jsonl", (old, old))
+
+    def boom(self, native):
+        raise NotImplementedError
+
+    monkeypatch.setattr(engines.ClaudeProvider, "archive", boom)
+    r = c.post(
+        "/api/sessions/archive-older",
+        json={"hours": 5},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"archived": 0, "skipped": 1}  # the one old session, skipped not errored
+
+
+def test_archive_older_validates_hours(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    for bad in (0, -3, "5", True, 24 * 3650 + 1):
+        r = c.post("/api/sessions/archive-older", json={"hours": bad}, headers=hdr)
+        assert r.status_code == 422, bad
+
+
+def test_archive_older_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post(
+        "/api/sessions/archive-older", json={"hours": 5}, headers={"Origin": auth_cfg.origin}
+    )
+    assert r.status_code == 403

@@ -1,10 +1,12 @@
 import encodeQR from "@paulmillr/qr";
 import {
+  Archive,
   ArrowLeft,
   Code2,
   Coffee,
   Copy,
   Download,
+  LogOut,
   Mail,
   RefreshCw,
   ShieldCheck,
@@ -592,6 +594,127 @@ function TwoFactorCard() {
   );
 }
 
+/** Account (#141): a Sign out button. Hidden when there's no login (auth_mode=none), like
+ *  the 2FA card. Sign out clears the session server-side, then navigates to /login. */
+function AccountCard() {
+  const [authMode, setAuthMode] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .config()
+      .then((c) => alive && setAuthMode(c.auth_mode ?? "single-user"))
+      .catch(() => {
+        /* unauthenticated/offline — leave it blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (authMode === "none") return null; // no login → nothing to sign out of
+
+  return (
+    <section className={styles.section} aria-labelledby="account-h">
+      <h2 id="account-h">Account</h2>
+      <p className={styles.hint}>You’re signed in to this TermRoyale.</p>
+      <button
+        type="button"
+        className={styles.secBtnGhost}
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          // logout hard-navigates on success; only re-enable if it threw.
+          api.logout().catch(() => setBusy(false));
+        }}
+      >
+        <LogOut size={16} /> {busy ? "Signing out…" : "Sign out"}
+      </button>
+    </section>
+  );
+}
+
+/** Maintenance (#142): bulk-archive sessions older than N hours. Reversible (archived
+ *  sessions can be unarchived); a two-step confirm guards the bulk action. */
+function CleanupCard() {
+  const [hours, setHours] = useState(168); // default: a week
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.archiveOlder(hours);
+      setResult(
+        `Archived ${r.archived} session${r.archived === 1 ? "" : "s"}` +
+          (r.skipped ? ` (${r.skipped} skipped).` : "."),
+      );
+    } catch {
+      setResult("Couldn’t archive — please try again.");
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  const valid = Number.isFinite(hours) && hours > 0;
+
+  return (
+    <section className={styles.section} aria-labelledby="cleanup-h">
+      <h2 id="cleanup-h">Maintenance</h2>
+      <p className={styles.hint}>
+        Archive sessions you haven’t touched in a while. Archived sessions are hidden from the
+        list but can be unarchived — nothing is deleted.
+      </p>
+      <div className={styles.cleanupRow}>
+        <label className={styles.cleanupLabel}>
+          Older than
+          <input
+            className={styles.hoursInput}
+            type="number"
+            min={1}
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value))}
+            aria-label="Age in hours"
+          />
+          hours
+        </label>
+        {confirming ? (
+          <span className={styles.confirmRow}>
+            <button type="button" className={styles.danger} disabled={busy} onClick={run}>
+              <Archive size={16} /> {busy ? "Archiving…" : "Confirm archive"}
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            disabled={!valid}
+            onClick={() => {
+              setResult(null);
+              setConfirming(true);
+            }}
+          >
+            <Archive size={16} /> Archive older
+          </button>
+        )}
+      </div>
+      {result && <p className={styles.hint}>{result}</p>}
+    </section>
+  );
+}
+
 /** Settings (#109): theme picker (applies app-wide + to the terminal), an About section
  *  with the running version, and a support link. Reached via the gear in the sidebar. */
 export function Settings() {
@@ -643,6 +766,29 @@ export function Settings() {
 
       <TwoFactorCard />
 
+      <AccountCard />
+
+      <ConnectedAgents />
+
+      <SystemCard />
+
+      <UpdatesCard />
+
+      <CleanupCard />
+
+      <section className={styles.section} aria-labelledby="support-h">
+        <h2 id="support-h">Support</h2>
+        <p className={styles.blurb}>If TermRoyale saves you time, you can support its development.</p>
+        <a
+          className={`${styles.coffee} shine`}
+          href={BUY_ME_A_COFFEE}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Coffee size={16} /> Buy me a coffee
+        </a>
+      </section>
+
       <section className={styles.section} aria-labelledby="about-h">
         <h2 id="about-h">About</h2>
         <p className={styles.brandLine}>
@@ -657,7 +803,16 @@ export function Settings() {
           <dt>Version</dt>
           <dd>{version ?? "…"}</dd>
           <dt>Created by</dt>
-          <dd>Marcus Braun</dd>
+          <dd>
+            <a
+              className={styles.nameLink}
+              href="https://superstatus.io"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Marcus Braun
+            </a>
+          </dd>
         </dl>
         <div className={styles.aboutLinks}>
           <a className={styles.aboutLink} href={SOURCE_URL} target="_blank" rel="noopener noreferrer">
@@ -674,25 +829,6 @@ export function Settings() {
             <Mail size={15} /> {CONTACT_USER}&#64;{CONTACT_DOMAIN}
           </a>
         </div>
-      </section>
-
-      <ConnectedAgents />
-
-      <SystemCard />
-
-      <UpdatesCard />
-
-      <section className={styles.section} aria-labelledby="support-h">
-        <h2 id="support-h">Support</h2>
-        <p className={styles.blurb}>If TermRoyale saves you time, you can support its development.</p>
-        <a
-          className={`${styles.coffee} shine`}
-          href={BUY_ME_A_COFFEE}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Coffee size={16} /> Buy me a coffee
-        </a>
       </section>
     </div>
   );

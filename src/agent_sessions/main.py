@@ -916,6 +916,40 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             ) from None
         return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": False})
 
+    @app.post("/api/sessions/archive-older")
+    async def archive_older(
+        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        # Bulk-archive every (non-archived) session whose last activity is older than `hours`
+        # (#142). Reuses the per-session archive; engines that can't archive (opencode/codex)
+        # are skipped, not errored. Reversible — the archived sessions can be unarchived.
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        hours = payload.get("hours") if isinstance(payload, dict) else None
+        # Reject non-numbers, bool (a bool is an int in Python), ≤0, and absurd horizons.
+        if (
+            not isinstance(hours, int | float)
+            or isinstance(hours, bool)
+            or hours <= 0
+            or hours > 24 * 3650
+        ):
+            raise HTTPException(status_code=422, detail="hours must be a positive number")
+        cutoff = time.time() - hours * 3600.0
+        archived = 0
+        skipped = 0
+        for s in engines.scan_all():
+            if s.archived or (s.last_mtime or 0) >= cutoff:
+                continue
+            try:
+                prov, native = engines.parse_key(engines.session_key(s))
+                prov.archive(native)
+                archived += 1
+            except (NotImplementedError, archive.ArchiveError, engines.EngineError):
+                skipped += 1  # engine can't archive / lost the file → leave it, keep going
+        return JSONResponse({"archived": archived, "skipped": skipped})
+
     @app.post("/api/upload")
     async def upload_context(
         file: UploadFile = File(...),

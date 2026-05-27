@@ -165,4 +165,14 @@ export const api = {
     postJson<{ id: string; archived: boolean }>(`/api/sessions/${enc(id)}/archive`),
   unarchive: (id: string) =>
     postJson<{ id: string; archived: boolean }>(`/api/sessions/${enc(id)}/unarchive`),
+  /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
+  archiveOlder: (hours: number) =>
+    postJson<{ archived: number; skipped: number }>("/api/sessions/archive-older", { hours }),
+  /** Sign out: clear the session server-side, then hard-navigate to the login page (#141). */
+  logout,
 };
+
+async function logout(): Promise<void> {
+  await postVoid("/logout"); // CSRF POST; the server clears the cookie + 303s to /login
+  window.location.assign("/login");
+}

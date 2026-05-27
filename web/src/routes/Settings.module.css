@@ -130,6 +130,13 @@
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+.nameLink {
+  color: var(--brand-soft);
+  text-decoration: none;
+}
+.nameLink:hover {
+  text-decoration: underline;
+}
 .aboutLinks {
   display: flex;
   flex-wrap: wrap;
@@ -341,6 +348,60 @@
 }
 .secBtnGhost:hover {
   background: var(--surface-3, #262626);
+}
+.secBtnGhost:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Caution accent for the bulk-archive confirm step (#142). */
+.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: #ffd9d2;
+  background: #5a2018;
+  border: 1px solid #8a3324;
+}
+.danger:hover {
+  background: #6d271d;
+}
+.danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Maintenance / cleanup row (#142). */
+.cleanupRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.cleanupLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.hoursInput {
+  width: 84px;
+  background: var(--surface-3, #0d0820);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+}
+.confirmRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .enrollPanel {
   margin-top: 12px;

@@ -23,6 +23,8 @@ vi.mock("../lib/api", async () => {
       confirm2fa: vi.fn(),
       disable2fa: vi.fn(),
       regenerate2fa: vi.fn(),
+      logout: vi.fn(),
+      archiveOlder: vi.fn(),
     },
   };
 });
@@ -40,6 +42,7 @@ function renderSettings(theme: ThemeId = "royal") {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
   vi.mocked(api.config).mockResolvedValue({
     csrf: "t",
@@ -69,6 +72,8 @@ beforeEach(() => {
     disk_free: 200 * 1024 ** 3,
     uptime_seconds: 90000,
   });
+  vi.mocked(api.logout).mockResolvedValue(undefined);
+  vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 0, skipped: 0 });
 });
 
 test("renders the three themes, the version, and a safe coffee link", async () => {
@@ -173,4 +178,51 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   await userEvent.click(screen.getByRole("button", { name: /update now/i }));
   expect(api.updateApply).toHaveBeenCalled();
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
+});
+
+test("About: the creator name links to superstatus.io", async () => {
+  renderSettings();
+  const link = await screen.findByRole("link", { name: "Marcus Braun" });
+  expect(link).toHaveAttribute("href", "https://superstatus.io");
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener noreferrer");
+});
+
+test("Account: Sign out calls the logout API (#141)", async () => {
+  renderSettings();
+  const btn = await screen.findByRole("button", { name: /sign out/i });
+  await userEvent.click(btn);
+  expect(api.logout).toHaveBeenCalled();
+});
+
+test("Account: Sign out hidden when auth_mode is none (#141)", async () => {
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "none",
+    two_factor_enabled: false,
+  });
+  renderSettings();
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+  expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull();
+});
+
+test("Maintenance: archive-older confirms then calls the API with the chosen hours (#142)", async () => {
+  vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 2, skipped: 1 });
+  renderSettings();
+  // Default age is 168h; first click reveals the confirm step (no API call yet).
+  await userEvent.click(await screen.findByRole("button", { name: /archive older/i }));
+  expect(api.archiveOlder).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: /confirm archive/i }));
+  expect(api.archiveOlder).toHaveBeenCalledWith(168);
+  expect(await screen.findByText(/archived 2 sessions \(1 skipped\)\./i)).toBeInTheDocument();
+});
+
+test("Maintenance: cancel backs out without archiving (#142)", async () => {
+  renderSettings();
+  await userEvent.click(await screen.findByRole("button", { name: /archive older/i }));
+  await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+  expect(api.archiveOlder).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: /archive older/i })).toBeInTheDocument();
 });
