@@ -21,6 +21,7 @@ dependencies = [
     "jinja2==3.1.4",
     "itsdangerous==2.2.0",
     "python-multipart==0.0.20",
+    "pyotp==2.9.0",  # TOTP 2FA (RFC 6238) — tiny, pure-Python (issue #116)
 ]
 
 [project.scripts]

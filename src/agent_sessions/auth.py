@@ -30,6 +30,13 @@ from fastapi import HTTPException, Request, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 _SESSION_COOKIE = "agent_sessions"
+# Short-lived pre-auth cookie for the optional 2FA second step (issue #116). It is a
+# *distinct* cookie — its own name, its own itsdangerous salt, and a short TTL — so it can
+# never be decoded as (or mistaken for) a full session: it does not satisfy
+# require_session / require_csrf_and_origin and grants no access to /api/config or any
+# authed route. It only carries enough to gate POST /login/totp.
+_PREAUTH_COOKIE = "agent_sessions_preauth"
+_PREAUTH_TTL = 300  # 5 minutes to enter the code
 _PBKDF2_ITERS = 600_000
 _PBKDF2_DKLEN = 32
 
@@ -127,6 +134,49 @@ def clear_session(response: Response) -> None:
     response.delete_cookie(_SESSION_COOKIE, path="/")
 
 
+# ---- pre-auth (2FA second step) cookie ----------------------------------------
+
+
+def _preauth_serializer(cfg: AuthConfig) -> URLSafeTimedSerializer:
+    # Different salt from the session serializer → a pre-auth token can never be loaded as
+    # a session cookie (and vice-versa), even though both sign with the same secret key.
+    return URLSafeTimedSerializer(cfg.secret_key, salt="agent-sessions:preauth")
+
+
+def issue_preauth(cfg: AuthConfig, response: Response, uid: str) -> None:
+    """Set the short-lived pre-auth cookie after a correct password when 2FA is enabled.
+
+    This is NOT a session — the full session cookie is minted only after the TOTP/recovery
+    step succeeds.
+    """
+    token = _preauth_serializer(cfg).dumps({"stage": "totp", "uid": uid})
+    response.set_cookie(
+        _PREAUTH_COOKIE,
+        token,
+        max_age=_PREAUTH_TTL,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def decode_preauth(cfg: AuthConfig, request: Request) -> dict | None:
+    """The pre-auth payload if a valid, unexpired pre-auth cookie is present, else None."""
+    raw = request.cookies.get(_PREAUTH_COOKIE)
+    if not raw:
+        return None
+    try:
+        data = _preauth_serializer(cfg).loads(raw, max_age=_PREAUTH_TTL)
+    except (BadSignature, SignatureExpired):
+        return None
+    return data if isinstance(data, dict) and data.get("stage") == "totp" else None
+
+
+def clear_preauth(response: Response) -> None:
+    response.delete_cookie(_PREAUTH_COOKIE, path="/")
+
+
 def _decode_cookie(cfg: AuthConfig, request: Request) -> dict | None:
     raw = request.cookies.get(_SESSION_COOKIE)
     if not raw:
@@ -209,6 +259,9 @@ __all__ = [
     "verify_password",
     "issue_session",
     "clear_session",
+    "issue_preauth",
+    "decode_preauth",
+    "clear_preauth",
     "current_csrf",
     "origin_matches",
     "enforce_origin",

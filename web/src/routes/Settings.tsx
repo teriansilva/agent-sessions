@@ -1,11 +1,21 @@
-import { ArrowLeft, Code2, Coffee, Download, Mail, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import encodeQR from "@paulmillr/qr";
+import {
+  ArrowLeft,
+  Code2,
+  Coffee,
+  Copy,
+  Download,
+  Mail,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration } from "../lib/format";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
-import type { EngineInfo, SystemInfo, UpdateInfo } from "../types/api";
+import type { EngineInfo, SystemInfo, TwoFactorEnrollment, UpdateInfo } from "../types/api";
 import styles from "./Settings.module.css";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
@@ -240,6 +250,348 @@ function UpdatesCard() {
   );
 }
 
+/** A read-once recovery-code panel: list + copy + download. The codes live only in
+ *  component state and are never persisted by the SPA (issue #116). */
+function RecoveryCodes({ codes, label }: { codes: string[]; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const text = codes.join("\n");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — the codes are visible to copy by hand */
+    }
+  };
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "termroyale-recovery-codes.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div className={styles.recoveryBox}>
+      <p className={styles.warn}>{label}</p>
+      <ul className={styles.recoveryList} aria-label="Recovery codes">
+        {codes.map((c) => (
+          <li key={c}>{c}</li>
+        ))}
+      </ul>
+      <div className={styles.twofaActions}>
+        <button type="button" className={styles.secBtnGhost} onClick={copy}>
+          <Copy size={14} /> {copied ? "Copied" : "Copy"}
+        </button>
+        <button type="button" className={styles.secBtnGhost} onClick={download}>
+          <Download size={14} /> Download
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A free-text proof field that resolves to a current TOTP code and/or the account
+ *  password. We always send it as a password, and *also* as a code when it looks like a
+ *  6-digit TOTP — so a genuine 6-digit account password can still authorize the action
+ *  (the server tries the code first, then the password). */
+function proofPayload(value: string): { code?: string; password?: string } {
+  const v = value.trim();
+  return /^\d{6}$/.test(v) ? { code: v, password: value } : { password: value };
+}
+
+/** Two-factor authentication (#116): enable (QR + manual key + confirm + recovery codes),
+ *  disable, and regenerate recovery codes. Hidden when there is no login (auth_mode=none).
+ *  The TOTP secret/recovery codes are shown once and never re-fetched. */
+function TwoFactorCard() {
+  const [authMode, setAuthMode] = useState<string | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [enroll, setEnroll] = useState<TwoFactorEnrollment | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [confirmCode, setConfirmCode] = useState("");
+  const [showDisable, setShowDisable] = useState(false);
+  const [showRegen, setShowRegen] = useState(false);
+  const [proof, setProof] = useState("");
+  const [regenCodes, setRegenCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .config()
+      .then((c) => {
+        if (!alive) return;
+        setAuthMode(c.auth_mode ?? "single-user");
+        setEnabled(!!c.two_factor_enabled);
+      })
+      .catch(() => {
+        /* unauthenticated/offline — leave it blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Client-side QR from the otpauth:// URI (bundled lib, no CDN). SVG scales to the box.
+  const qrSvg = useMemo(
+    () => (enroll ? encodeQR(enroll.otpauth_uri, "svg", { border: 2 }) : null),
+    [enroll],
+  );
+
+  const reset = () => {
+    setEnroll(null);
+    setConfirmed(false);
+    setConfirmCode("");
+    setShowDisable(false);
+    setShowRegen(false);
+    setProof("");
+    setRegenCodes(null);
+    setError(null);
+  };
+
+  const begin = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setEnroll(await api.enroll2fa());
+      setConfirmed(false);
+    } catch {
+      setError("Couldn’t start enrollment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.confirm2fa(confirmCode.trim());
+      setEnabled(true);
+      setConfirmed(true);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 400
+          ? "That code didn’t match — check your authenticator and try again."
+          : "Couldn’t confirm the code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.disable2fa(proofPayload(proof));
+      setEnabled(false);
+      reset();
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Enter a current authenticator code or your password."
+          : "Couldn’t disable 2FA.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const regenerate = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.regenerate2fa(proofPayload(proof));
+      setRegenCodes(r.recovery_codes);
+      setShowRegen(false);
+      setProof("");
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Enter a current authenticator code or your password."
+          : "Couldn’t regenerate recovery codes.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (authMode === "none") return null; // no login → 2FA is N/A
+
+  return (
+    <section className={styles.section} aria-labelledby="twofa-h">
+      <h2 id="twofa-h">Two-factor authentication</h2>
+      <p className={styles.hint}>
+        Require a 6-digit code from an authenticator app (Google Authenticator, Authy,
+        1Password, Aegis…) in addition to your password.
+      </p>
+
+      {enabled !== null && (
+        <p className={styles.twofaStatus}>
+          <ShieldCheck size={15} />
+          <span className={`${styles.twofaBadge} ${enabled ? styles.twofaOn : styles.twofaOff}`}>
+            {enabled ? "On" : "Off"}
+          </span>
+        </p>
+      )}
+
+      {error && <p className={styles.err}>{error}</p>}
+
+      {/* Disabled, not mid-enrollment → offer Enable. */}
+      {enabled === false && !enroll && (
+        <button type="button" className={`${styles.secBtn} shine`} onClick={begin} disabled={busy}>
+          <ShieldCheck size={15} /> {busy ? "Starting…" : "Enable two-factor auth"}
+        </button>
+      )}
+
+      {/* Enrollment in progress: QR + manual key + recovery codes + confirm. */}
+      {enroll && !confirmed && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.hint}>1. Scan this with your authenticator app:</p>
+          {qrSvg && (
+            <img
+              className={styles.qr}
+              alt="TOTP QR code"
+              src={`data:image/svg+xml,${encodeURIComponent(qrSvg)}`}
+            />
+          )}
+          <p className={styles.hint}>…or enter this key manually:</p>
+          <code className={styles.manualKey}>{enroll.secret}</code>
+          <p className={styles.hint}>
+            2. Save these recovery codes somewhere safe — each works once if you lose your
+            device. They’re shown only now.
+          </p>
+          <RecoveryCodes codes={enroll.recovery_codes} label="Recovery codes (shown once)" />
+          <p className={styles.hint}>3. Enter the current 6-digit code to finish:</p>
+          <input
+            className={styles.codeInput}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="6-digit code"
+            value={confirmCode}
+            onChange={(e) => setConfirmCode(e.target.value)}
+          />
+          <div className={styles.twofaActions}>
+            <button
+              type="button"
+              className={styles.secBtn}
+              onClick={confirm}
+              disabled={busy || confirmCode.trim().length < 6}
+            >
+              {busy ? "Confirming…" : "Confirm & enable"}
+            </button>
+            <button type="button" className={styles.secBtnGhost} onClick={reset} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Just enabled: confirm the recovery codes were saved, then dismiss. */}
+      {enroll && confirmed && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.twofaStatus}>
+            <ShieldCheck size={15} /> Two-factor authentication is on.
+          </p>
+          <RecoveryCodes
+            codes={enroll.recovery_codes}
+            label="Make sure you’ve saved your recovery codes — they won’t be shown again."
+          />
+          <button type="button" className={styles.secBtn} onClick={reset}>
+            Done
+          </button>
+        </div>
+      )}
+
+      {/* Enabled: manage (regenerate codes / disable). */}
+      {enabled === true && !enroll && (
+        <div className={styles.twofaActions}>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setShowRegen((v) => !v);
+              setShowDisable(false);
+              setProof("");
+              setError(null);
+            }}
+          >
+            <RefreshCw size={14} /> Regenerate recovery codes
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setShowDisable((v) => !v);
+              setShowRegen(false);
+              setProof("");
+              setError(null);
+            }}
+          >
+            Disable
+          </button>
+        </div>
+      )}
+
+      {/* Fresh-proof prompt shared by disable + regenerate. */}
+      {enabled === true && !enroll && (showDisable || showRegen) && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.hint}>
+            Enter a current authenticator code or your password to{" "}
+            {showDisable ? "disable two-factor auth" : "regenerate your recovery codes"}.
+          </p>
+          <input
+            className={styles.codeInput}
+            type="password"
+            autoComplete="off"
+            placeholder="6-digit code or password"
+            value={proof}
+            onChange={(e) => setProof(e.target.value)}
+          />
+          <div className={styles.twofaActions}>
+            <button
+              type="button"
+              className={styles.secBtn}
+              onClick={showDisable ? disable : regenerate}
+              disabled={busy || !proof}
+            >
+              {busy ? "Working…" : showDisable ? "Disable" : "Regenerate"}
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={() => {
+                setShowDisable(false);
+                setShowRegen(false);
+                setProof("");
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Newly regenerated codes (shown once). */}
+      {regenCodes && (
+        <div className={styles.enrollPanel}>
+          <RecoveryCodes
+            codes={regenCodes}
+            label="New recovery codes — the old ones no longer work. Shown only now."
+          />
+          <button type="button" className={styles.secBtn} onClick={() => setRegenCodes(null)}>
+            Done
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** Settings (#109): theme picker (applies app-wide + to the terminal), an About section
  *  with the running version, and a support link. Reached via the gear in the sidebar. */
 export function Settings() {
@@ -288,6 +640,8 @@ export function Settings() {
           ))}
         </div>
       </section>
+
+      <TwoFactorCard />
 
       <section className={styles.section} aria-labelledby="about-h">
         <h2 id="about-h">About</h2>

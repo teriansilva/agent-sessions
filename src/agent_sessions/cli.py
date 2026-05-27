@@ -49,6 +49,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--stdin", action="store_true", help="read the new password from stdin")
     rp.add_argument("--prompt", action="store_true", help="prompt for the new password (no echo)")
 
+    c2 = sub.add_parser(
+        "clear-2fa",
+        help="Disable TOTP 2FA from the host (lockout escape hatch): removes the 2FA secrets file",
+    )
+    c2.add_argument(
+        "--file",
+        default=None,
+        help="2FA secrets file (default: AGENT_SESSIONS_2FA_FILE or <env-dir>/2fa.json)",
+    )
+
     sub.add_parser("autoupdate", help="Check the channel and apply an update if available")
     return p
 
@@ -111,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"password updated in {env_path}")
         if generated:  # show the generated value once; a chosen password is never echoed
             print(f"new password: {password}")
+        return 0
+
+    if args.cmd == "clear-2fa":
+        from pathlib import Path
+
+        from . import twofactor
+
+        path = Path(args.file).expanduser() if args.file else twofactor.default_path()
+        if twofactor.clear(path):
+            print(f"2FA disabled — removed {path}")
+        else:
+            print(f"2FA was not enabled (no file at {path})")
         return 0
 
     if args.cmd == "autoupdate":

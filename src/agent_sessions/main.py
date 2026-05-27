@@ -46,16 +46,20 @@ from . import (
     scanner,
     sessions,
     sysinfo,
+    twofactor,
     update,
     webterm,
 )
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
+    clear_preauth,
     clear_session,
     current_csrf,
+    decode_preauth,
     enforce_origin,
     hash_password,
+    issue_preauth,
     issue_session,
     origin_matches,
     require_csrf_and_origin,
@@ -167,6 +171,35 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             "yes",
         }
     }
+
+    # Brute-force throttle for the 2FA login step. Single admin → one global counter is
+    # enough. After _TOTP_MAX_FAILS failed code attempts the step locks for _TOTP_LOCKOUT_S;
+    # any success resets it. (Replay protection is separate + persisted in twofactor.py.)
+    _TOTP_MAX_FAILS = 10
+    _TOTP_LOCKOUT_S = 300
+    _totp_throttle = {"fails": 0, "locked_until": 0.0}
+
+    def _totp_locked() -> bool:
+        return time.time() < _totp_throttle["locked_until"]
+
+    def _totp_note_fail() -> None:
+        _totp_throttle["fails"] += 1
+        if _totp_throttle["fails"] >= _TOTP_MAX_FAILS:
+            _totp_throttle["locked_until"] = time.time() + _TOTP_LOCKOUT_S
+            _totp_throttle["fails"] = 0
+
+    def _totp_reset() -> None:
+        _totp_throttle["fails"] = 0
+        _totp_throttle["locked_until"] = 0.0
+
+    def _verify_2fa_proof(code: str | None, password: str | None) -> bool:
+        """Fresh proof for disable / regenerate: a current TOTP (non-consuming) OR the
+        current password. Origin + CSRF are enforced by the route dependency on top."""
+        if code and twofactor.check_totp(code):
+            return True
+        if password and verify_password(password, _pw["hash"]):
+            return True
+        return False
 
     def _apply_password_change(current: str, new: str) -> str | None:
         """Verify the current password, persist a new one (hash only) + clear the
@@ -321,6 +354,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
+                # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
+                # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
+                "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
             }
         )
 
@@ -360,6 +396,85 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         if err == "weak":
             raise HTTPException(status_code=422, detail="new password must be ≥ 12 characters")
         return Response(status_code=204)
+
+    # ---- optional TOTP 2FA (#116) -------------------------------------------------
+    # All authed + CSRF/origin guarded. In `none` mode there is no login → 2FA is N/A, so
+    # these 404. While the forced-password-change flag is set, the /api/* gate already
+    # blocks them (403) — so a password change always precedes enrollment.
+
+    def _require_2fa_available() -> None:
+        if cfg.auth_mode == "none":
+            raise HTTPException(status_code=404, detail="2FA unavailable in this auth mode")
+
+    async def _proof_from_body(request: Request) -> tuple[str | None, str | None]:
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        code = str(payload.get("code", "")).strip() or None
+        password = payload.get("password")
+        password = password if isinstance(password, str) and password else None
+        return code, password
+
+    @app.post("/api/2fa/enroll")
+    async def twofa_enroll(
+        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        # Begin enrollment → secret + otpauth URI + one-time recovery codes (shown once,
+        # never returned again). Does not enable 2FA until /api/2fa/confirm.
+        _require_2fa_available()
+        # Re-enrolling while 2FA is ALREADY on would replace the active secret/recovery
+        # codes — so it needs the same fresh proof as disable/regenerate. A first-time
+        # enrollment (2FA off) just needs the authed session (you logged in moments ago).
+        if twofactor.is_enabled():
+            code, password = await _proof_from_body(request)
+            if not _verify_2fa_proof(code, password):
+                raise HTTPException(
+                    status_code=403, detail="current 2FA code or password required to re-enroll"
+                )
+        return JSONResponse(twofactor.begin_enrollment(cfg.username))
+
+    @app.post("/api/2fa/confirm")
+    async def twofa_confirm(
+        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> Response:
+        # Verify a code against the pending secret → enable. Never enabled without a code.
+        _require_2fa_available()
+        code, _ = await _proof_from_body(request)
+        if not (code and twofactor.confirm_enrollment(code)):
+            raise HTTPException(status_code=400, detail="invalid or expired enrollment code")
+        return Response(status_code=204)
+
+    @app.post("/api/2fa/disable")
+    async def twofa_disable(
+        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> Response:
+        # Turn 2FA off. Requires a FRESH proof (current TOTP or password) on top of the
+        # session + CSRF/origin, so a stale logged-in browser can't silently weaken auth.
+        _require_2fa_available()
+        if not twofactor.is_enabled():
+            return Response(status_code=204)  # already off — idempotent
+        code, password = await _proof_from_body(request)
+        if not _verify_2fa_proof(code, password):
+            raise HTTPException(status_code=403, detail="current 2FA code or password required")
+        twofactor.disable()
+        return Response(status_code=204)
+
+    @app.post("/api/2fa/recovery-codes")
+    async def twofa_recovery_codes(
+        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
+    ) -> JSONResponse:
+        # Regenerate recovery codes (invalidates the old set). Same fresh-proof requirement
+        # as disable. Returns the new codes once.
+        _require_2fa_available()
+        if not twofactor.is_enabled():
+            raise HTTPException(status_code=400, detail="2FA is not enabled")
+        code, password = await _proof_from_body(request)
+        if not _verify_2fa_proof(code, password):
+            raise HTTPException(status_code=403, detail="current 2FA code or password required")
+        return JSONResponse({"recovery_codes": twofactor.regenerate_recovery()})
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> Response:
@@ -406,8 +521,51 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 {"error": "invalid credentials", "next": target},
                 status_code=401,
             )
+        # Optional second factor (#116): when 2FA is enabled, a correct password does NOT
+        # mint a session — it issues a short-lived pre-auth cookie and shows the TOTP step.
+        # The full session is minted only after POST /login/totp verifies the code.
+        if twofactor.is_enabled():
+            page = _TEMPLATES.TemplateResponse(
+                request, "login_totp.html", {"error": None, "next": target}
+            )
+            issue_preauth(cfg, page, cfg.username)
+            return page
         redirect = RedirectResponse(target, status_code=303)
         issue_session(cfg, redirect)
+        return redirect
+
+    @app.post("/login/totp")
+    async def login_totp(
+        request: Request,
+        code: str = Form(...),
+        next: str = Form("/"),
+    ) -> Response:
+        # Second factor step. Gated by the pre-auth cookie (set by /login after a correct
+        # password). Origin-checked like the login POST; no CSRF token exists yet.
+        enforce_origin(cfg, request)
+        target = _safe_next(next)
+        pre = decode_preauth(cfg, request)
+        if pre is None:
+            # No / expired pre-auth → restart at the password step.
+            return RedirectResponse(f"/login?next={target}", status_code=303)
+
+        def fail(msg: str, status: int = 401) -> Response:
+            return _TEMPLATES.TemplateResponse(
+                request, "login_totp.html", {"error": msg, "next": target}, status_code=status
+            )
+
+        if _totp_locked():
+            return fail("too many attempts — try again later", status=429)
+
+        code = code.strip()
+        ok = twofactor.verify_totp_for_login(code) or twofactor.verify_recovery_for_login(code)
+        if not ok:
+            _totp_note_fail()
+            return fail("invalid code")
+        _totp_reset()
+        redirect = RedirectResponse(target, status_code=303)
+        issue_session(cfg, redirect)
+        clear_preauth(redirect)
         return redirect
 
     @app.get("/change-password", response_class=HTMLResponse)

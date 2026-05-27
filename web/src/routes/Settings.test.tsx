@@ -7,16 +7,25 @@ import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { Settings } from "./Settings";
 
-vi.mock("../lib/api", () => ({
-  api: {
-    version: vi.fn(),
-    setTheme: vi.fn(),
-    engines: vi.fn(),
-    system: vi.fn(),
-    updateCheck: vi.fn(),
-    updateApply: vi.fn(),
-  },
-}));
+vi.mock("../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    ...actual,
+    api: {
+      version: vi.fn(),
+      setTheme: vi.fn(),
+      engines: vi.fn(),
+      system: vi.fn(),
+      updateCheck: vi.fn(),
+      updateApply: vi.fn(),
+      config: vi.fn(),
+      enroll2fa: vi.fn(),
+      confirm2fa: vi.fn(),
+      disable2fa: vi.fn(),
+      regenerate2fa: vi.fn(),
+    },
+  };
+});
 
 function renderSettings(theme: ThemeId = "royal") {
   const setTheme = vi.fn();
@@ -32,6 +41,13 @@ function renderSettings(theme: ThemeId = "royal") {
 
 beforeEach(() => {
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "single-user",
+    two_factor_enabled: false,
+  });
   vi.mocked(api.engines).mockResolvedValue({
     engines: [
       { id: "claude", present: true, supports_new: true, bin: "/usr/local/bin/claude" },
@@ -104,6 +120,43 @@ test("renders the System section with humanized fields", async () => {
   expect(screen.getByText(/8 cores · load 0\.50/)).toBeInTheDocument();
   expect(screen.getByText("8.0 GB / 16 GB")).toBeInTheDocument();
   expect(screen.getByText("1d 1h")).toBeInTheDocument();
+});
+
+test("2FA: enable flow shows QR + manual key + recovery codes, then confirms", async () => {
+  vi.mocked(api.enroll2fa).mockResolvedValue({
+    secret: "JBSWY3DPEHPK3PXP",
+    otpauth_uri: "otpauth://totp/TermRoyale:marcus?secret=JBSWY3DPEHPK3PXP&issuer=TermRoyale",
+    recovery_codes: ["aaaa-bbbb-cccc", "dddd-eeee-ffff"],
+  });
+  vi.mocked(api.confirm2fa).mockResolvedValue(undefined);
+  renderSettings();
+  expect(
+    await screen.findByRole("heading", { name: /two-factor authentication/i }),
+  ).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: /enable two-factor auth/i }));
+  // Manual key + recovery codes are shown.
+  expect(await screen.findByText("JBSWY3DPEHPK3PXP")).toBeInTheDocument();
+  expect(screen.getByText("aaaa-bbbb-cccc")).toBeInTheDocument();
+  expect(screen.getByAltText(/qr code/i)).toBeInTheDocument();
+
+  await userEvent.type(screen.getByPlaceholderText(/6-digit code/i), "123456");
+  await userEvent.click(screen.getByRole("button", { name: /confirm & enable/i }));
+  expect(api.confirm2fa).toHaveBeenCalledWith("123456");
+  expect(await screen.findByText(/two-factor authentication is on/i)).toBeInTheDocument();
+});
+
+test("2FA: hidden entirely when auth_mode is none", async () => {
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "none",
+    two_factor_enabled: false,
+  });
+  renderSettings();
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+  expect(screen.queryByRole("heading", { name: /two-factor authentication/i })).toBeNull();
 });
 
 test("Updates: check finds an update, then apply calls the API", async () => {

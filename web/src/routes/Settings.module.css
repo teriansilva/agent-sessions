@@ -280,3 +280,126 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* --- Two-factor authentication (#116) --- */
+.twofaStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  margin: 2px 0 10px;
+}
+.twofaBadge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.twofaOn {
+  background: color-mix(in srgb, var(--ok, #36c) 28%, transparent);
+  color: var(--text, #fff);
+}
+.twofaOff {
+  background: var(--surface-2, #222);
+  color: var(--text-dim, #9a9a9a);
+}
+.twofaActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.secBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  color: var(--cta-text);
+}
+.secBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.secBtnGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+  background: var(--surface-2, #1c1c1c);
+  color: var(--text, #ddd);
+  border: 1px solid var(--border, #333);
+}
+.secBtnGhost:hover {
+  background: var(--surface-3, #262626);
+}
+.enrollPanel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 10px;
+  background: var(--surface-2, #14102e);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qr {
+  width: 184px;
+  height: 184px;
+  align-self: center;
+  background: #fff;
+  padding: 8px;
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+.manualKey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  background: var(--surface-3, #0d0820);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+.codeInput {
+  width: 100%;
+  background: var(--surface-3, #0d0820);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font: inherit;
+  letter-spacing: 0.12em;
+}
+.recoveryBox {
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.recoveryList {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.warn {
+  color: var(--warn, #ffb454);
+  font-size: 12px;
+}
+.err {
+  color: var(--danger, #ff9a9a);
+  font-size: 12px;
+}

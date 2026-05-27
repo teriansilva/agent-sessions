@@ -7,6 +7,7 @@ import type {
   SessionsPage,
   SessionsQuery,
   SystemInfo,
+  TwoFactorEnrollment,
   UpdateInfo,
 } from "../types/api";
 
@@ -89,6 +90,18 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+/** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
+async function postVoid(path: string, body?: unknown): Promise<void> {
+  const r = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `POST ${path} → ${r.status}`);
+}
+
 export function sessionsUrl(q: SessionsQuery = {}): string {
   const p = new URLSearchParams();
   p.set("limit", String(q.limit ?? 20));
@@ -131,6 +144,15 @@ export const api = {
   updateApply: () => postJson<{ status: string }>("/api/update/apply"),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
+  /** Optional TOTP 2FA (#116). All CSRF-guarded. */
+  enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
+  confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),
+  /** Disable 2FA — needs a fresh proof (current code OR password). */
+  disable2fa: (proof: { code?: string; password?: string }) =>
+    postVoid("/api/2fa/disable", proof),
+  /** Regenerate recovery codes — same fresh-proof requirement; returns the new set once. */
+  regenerate2fa: (proof: { code?: string; password?: string }) =>
+    postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
   upload,
   projects: () => getJson<{ projects: Project[] }>("/api/projects"),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),

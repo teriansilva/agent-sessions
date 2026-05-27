@@ -38,6 +38,12 @@ agent-sessions 0.3.1 installed.
 … reset-password            # generate a random one and print it once
 ```
 
+**Optional two-factor auth (TOTP).** Off by default. Enable it from **Settings → Two-factor authentication**: scan the QR (or enter the key) into an authenticator app (Google Authenticator, Authy, 1Password, Aegis…), confirm a code, and save the one-time recovery codes shown once. After that, login asks for a 6-digit code after your password. The TOTP secret + recovery-code hashes live in a `0600` file next to the env (`<env-dir>/2fa.json`, override `AGENT_SESSIONS_2FA_FILE`) — never in `prefs.json` or the metadata sidecar. **Locked out** (lost device *and* recovery codes)? Clear 2FA from the host:
+
+```sh
+~/.local/share/agent-sessions/current/venv/bin/agent-sessions clear-2fa    # removes the 2FA secrets file → 2FA off
+```
+
 ### What the installer creates
 
 ```
@@ -92,6 +98,7 @@ agent-sessions is a **single-admin** tool. Understand this before exposing it:
 - It is **not multi-tenant**. There is one admin account; there is no per-user isolation. Do not share a login.
 - The app binds `127.0.0.1` and does **not** terminate TLS or do rate-limiting itself. **You must put it behind a reverse proxy that provides TLS + auth.** See [`deploy/nginx.example.conf`](deploy/nginx.example.conf).
 - Defence in depth: the app has its own cookie + CSRF + same-origin (`Origin`/`Referer` must equal `AGENT_SESSIONS_ORIGIN`) checks, and `/api/auth-check` (204/401) so the reverse proxy can additionally gate with `auth_request`. **Rate-limit `/login` at the proxy** to blunt credential stuffing.
+- **Optional TOTP 2FA** adds a second factor on top of the password (see Install & operate). A correct password issues only a short-lived *pre-auth* cookie; the full session is minted after a valid authenticator/recovery code. Recommended once the instance is reachable beyond localhost. `clear-2fa` (host-only) is the lockout escape hatch.
 
 ## Where things live
 
@@ -112,7 +119,7 @@ agent-sessions/
 │   ├── engines.py     per-engine providers (scan + launch_argv); claude/opencode/codex/gemini
 │   ├── webterm.py + ptybridge.py   the ws↔PTY bridge (xterm.js over /ws/term, dtach-backed)
 │   ├── auth.py        cookie + CSRF + Origin + /api/auth-check for nginx auth_request
-│   └── templates/     login.html + change_password.html (the only server-rendered pages)
+│   └── templates/     login.html + login_totp.html + change_password.html (server-rendered pages)
 ├── web/               React + Vite + TS SPA (built to web/dist, served by main.py)
 ├── tests/             pytest; subprocess.run stubbed; covers shell-free, CSRF, lock, lookup
 ├── deploy/
@@ -161,7 +168,8 @@ This is acceptable **only** because agent-sessions is a single-admin tool, on th
 - `GET /api/projects` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
 - `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
 - `POST /api/sessions/{uuid}/archive` · `/unarchive` — move the JSONL between `projects/` and `projects-archive/`
-- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme); `POST /api/prefs` `{theme}`
+- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`); `POST /api/prefs` `{theme}`
+- `POST /api/2fa/enroll` → `{secret, otpauth_uri, recovery_codes}` (shown once) · `POST /api/2fa/confirm` `{code}` (enable) · `POST /api/2fa/disable` · `POST /api/2fa/recovery-codes` (regenerate) — the last two need a fresh proof (`{code}` or `{password}`). Login second step: `POST /login` → pre-auth → `POST /login/totp` (form field `code`). N/A under `AUTH_MODE=none`.
 - `WS /ws/term/{sid}` — the terminal: attach to (or, with `?new=1&cwd=&bypass=`, launch) a session's dtach PTY
 - `GET /api/auth-check` — 204/401 for nginx `auth_request`; `POST /login` · `/logout`
 

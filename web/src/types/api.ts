@@ -43,6 +43,20 @@ export interface AppConfig {
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
    * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
   auth_mode?: "single-user" | "none" | string;
+  /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
+   *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
+  two_factor_enabled?: boolean;
+}
+
+/** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never
+ *  returned again after this response. */
+export interface TwoFactorEnrollment {
+  /** base32 TOTP secret (also encoded in otpauth_uri) for manual entry. */
+  secret: string;
+  /** otpauth://totp/... URI to render as a QR for the authenticator app. */
+  otpauth_uri: string;
+  /** One-time recovery codes — display once, never persisted by the SPA. */
+  recovery_codes: string[];
 }
 
 /** One engine provider's discovery status (Settings → Connected agents). */

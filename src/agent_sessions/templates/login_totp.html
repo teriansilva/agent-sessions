@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TermRoyale — verify</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0d0820; color: #ece9f7;
+               font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+               display: grid; place-items: center; }
+  form { background: #14102e; border: 1px solid #2f2658; padding: 24px; border-radius: 12px;
+         min-width: 290px; display: flex; flex-direction: column; gap: 10px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 800; color: #ffe9a8; letter-spacing: -.2px; }
+  h1 b { color: #f5c542; }
+  .tagline { margin: 0 0 8px; font-size: 12.5px; font-style: italic; color: #9a8fcf; }
+  input { background: #0d0820; color: #fff; border: 1px solid #2f2658;
+          padding: 9px 11px; border-radius: 8px; font: inherit; letter-spacing: .12em; }
+  button { background: linear-gradient(100deg, #f5c542, #e0a92e); color: #2a1a05; border: 0; padding: 10px;
+           border-radius: 8px; font: inherit; font-weight: 700; cursor: pointer;
+           position: relative; overflow: hidden; }
+  button:hover { background: linear-gradient(100deg, #ffd45e, #eab63c); }
+  button::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(110deg, transparent 35%, rgba(255,255,255,.55) 50%, transparent 65%);
+    transform: translateX(-160%); animation: shine 7s ease-in-out infinite; }
+  @keyframes shine { 0% { transform: translateX(-160%); } 18% { transform: translateX(160%); }
+    100% { transform: translateX(160%); } }
+  @media (prefers-reduced-motion: reduce) { button::after { animation: none; } }
+  .hint { margin: 0; font-size: 11.5px; color: #9a8fcf; }
+  .err { color: #ff9a9a; font-size: 12px; }
+</style>
+</head>
+<body>
+<form method="post" action="/login/totp" autocomplete="off">
+  <h1>👑 Term<b>Royale</b></h1>
+  <p class="tagline">Two-factor verification</p>
+  <input type="hidden" name="next" value="{{ next }}">
+  <input name="code" type="text" autocomplete="one-time-code"
+         placeholder="6-digit code or recovery code" autofocus required>
+  <p class="hint">Enter the code from your authenticator app, or a recovery code.</p>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <button type="submit">verify</button>
+</form>
+</body>
+</html>
