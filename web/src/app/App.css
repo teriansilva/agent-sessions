@@ -111,6 +111,9 @@
   height: 32px;
   border-radius: 8px;
   color: var(--text-muted);
+  /* Explicit transparent bg: without it the UA paints the default (grey) button face
+   * under color-scheme:dark (#149). */
+  background: transparent;
   border: 1px solid transparent;
 }
 .gear:hover {
