@@ -403,6 +403,19 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+/* Excluded-projects editor (#144). */
+.excludeInput {
+  width: 100%;
+  margin: 10px 0;
+  background: var(--surface-3, #0d0820);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  resize: vertical;
+}
 .enrollPanel {
   margin-top: 12px;
   padding: 14px;

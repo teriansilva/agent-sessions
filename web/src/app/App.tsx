@@ -11,6 +11,7 @@ import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
 import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
+import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
 
@@ -225,11 +226,13 @@ export default function App() {
   return (
     <ConfigProvider>
       <ThemeProvider>
-        <SessionsProvider>
-          <BrowserRouter>
-            <Layout />
-          </BrowserRouter>
-        </SessionsProvider>
+        <OverviewPrefsProvider>
+          <SessionsProvider>
+            <BrowserRouter>
+              <Layout />
+            </BrowserRouter>
+          </SessionsProvider>
+        </OverviewPrefsProvider>
       </ThemeProvider>
     </ConfigProvider>
   );

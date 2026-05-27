@@ -42,10 +42,11 @@
   color: var(--text-muted);
 }
 
-/* Project cluster container. */
-.tr-overview .react-flow__node-projectGroup {
-  pointer-events: none; /* clicks fall through to chips; the group itself isn't interactive */
-}
+/* Project cluster container. The node wrapper keeps pointer events ENABLED (default) so the
+ * header toggle <button> is hit-testable; chips are separate React Flow nodes on top and stay
+ * clickable. (We deliberately don't disable the wrapper — that would also disable the header
+ * button. The minor cost: dragging on a cluster's empty body doesn't pan the canvas; users
+ * pan over the background / between clusters instead.) (#144) */
 .tr-ov-group {
   width: 100%;
   height: 100%;
@@ -54,23 +55,32 @@
   border-radius: 14px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
 }
+/* The cluster header is a collapse/expand toggle (button reset). */
 .tr-ov-group-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   height: 34px;
   padding: 0 12px;
+  border: 0;
   border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
 }
-.tr-ov-folder {
-  width: 14px;
-  height: 12px;
+.tr-ov-group-head:hover .tr-ov-path {
+  color: var(--accent);
+}
+.tr-ov-group.collapsed .tr-ov-group-head {
+  border-bottom: 0; /* header-only box */
+}
+.tr-ov-chev {
   flex: none;
-  border: 1.5px solid var(--text-muted);
-  border-radius: 3px;
-  border-top-left-radius: 0;
+  color: var(--text-muted);
 }
 .tr-ov-path {
   color: var(--text);
@@ -168,6 +178,32 @@
   color: var(--text-muted);
   font-size: 13px;
   background: var(--bg);
+}
+/* Expand-all / Collapse-all toolbar (#144), top-right over the canvas. */
+.tr-ov-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+}
+.tr-ov-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.tr-ov-toolbar button:hover {
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
 }
 .tr-ov-partial {
   position: absolute;

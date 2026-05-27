@@ -147,6 +147,9 @@ export const api = {
   /** Persist the sidebar view (list|overview) server-side, per-user (#139). CSRF-guarded. */
   setSidebarView: (view: string) =>
     postJson<{ sidebar_view: string }>("/api/prefs", { sidebar_view: view }),
+  /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
+  setPrefs: (partial: Record<string, unknown>) =>
+    postJson<Record<string, unknown>>("/api/prefs", partial),
   /** Optional TOTP 2FA (#116). All CSRF-guarded. */
   enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
   confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),

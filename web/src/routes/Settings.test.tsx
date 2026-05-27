@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
+import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
 import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
@@ -25,6 +26,7 @@ vi.mock("../lib/api", async () => {
       regenerate2fa: vi.fn(),
       logout: vi.fn(),
       archiveOlder: vi.fn(),
+      setPrefs: vi.fn(),
     },
   };
 });
@@ -34,7 +36,9 @@ function renderSettings(theme: ThemeId = "royal") {
   render(
     <MemoryRouter>
       <ThemeCtx.Provider value={{ theme, setTheme }}>
-        <Settings />
+        <OverviewPrefsProvider>
+          <Settings />
+        </OverviewPrefsProvider>
       </ThemeCtx.Provider>
     </MemoryRouter>,
   );
@@ -74,6 +78,7 @@ beforeEach(() => {
   });
   vi.mocked(api.logout).mockResolvedValue(undefined);
   vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 0, skipped: 0 });
+  vi.mocked(api.setPrefs).mockResolvedValue({});
 });
 
 test("renders the three themes, the version, and a safe coffee link", async () => {
@@ -178,6 +183,24 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   await userEvent.click(screen.getByRole("button", { name: /update now/i }));
   expect(api.updateApply).toHaveBeenCalled();
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
+});
+
+test("Session overview: saving excluded paths persists a cleaned list (#144)", async () => {
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "single-user",
+    two_factor_enabled: false,
+    overview_excluded: ["/home/u/old"],
+  });
+  renderSettings();
+  const box = await screen.findByLabelText(/excluded project paths/i);
+  await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe("/home/u/old"));
+  await userEvent.clear(box);
+  await userEvent.type(box, "/home/u/a\n  \n/home/u/b\n");
+  await userEvent.click(screen.getByRole("button", { name: /save excluded projects/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ overview_excluded: ["/home/u/a", "/home/u/b"] });
 });
 
 test("About: the creator name links to superstatus.io", async () => {

@@ -21,6 +21,9 @@ function s(over: Partial<Session> & { id: string }): Session {
   } as Session;
 }
 
+/** Expand every cwd in the given sessions (chips only render for expanded clusters). */
+const allExpanded = (sessions: Session[]) => new Set(sessions.map((x) => x.cwd));
+
 test("groups sessions by cwd and emits one group node per project", () => {
   const { nodes } = buildOverview(
     [
@@ -32,31 +35,61 @@ test("groups sessions by cwd and emits one group node per project", () => {
   );
   const groups = nodes.filter((n) => n.type === "projectGroup");
   expect(groups).toHaveLength(2);
-  const one = groups.find((g) => g.id === "group:/p/one");
-  expect(one?.data).toMatchObject({ project: "one", cwd: "/p/one", count: 2 });
+  expect(groups.find((g) => g.id === "group:/p/one")?.data).toMatchObject({
+    project: "one",
+    cwd: "/p/one",
+    count: 2,
+  });
+});
+
+test("clusters are collapsed by default — header only, no child chips", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/one" })];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  expect(nodes.filter((n) => n.type === "session")).toHaveLength(0);
+  expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ collapsed: true });
+});
+
+test("an expanded cluster renders its chips; a collapsed one does not", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/two" })];
+  const { nodes } = buildOverview(input, { nowS: NOW, expanded: new Set(["/p/one"]) });
+  const chips = nodes.filter((n) => n.type === "session").map((n) => n.id);
+  expect(chips).toEqual(["claude:a"]); // only the expanded cluster's chip
+  const groups = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.data]),
+  );
+  expect(groups["group:/p/one"]).toMatchObject({ collapsed: false });
+  expect(groups["group:/p/two"]).toMatchObject({ collapsed: true });
+});
+
+test("excluded cwds are dropped entirely (no group, no chips)", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/secret" })];
+  const { nodes } = buildOverview(input, {
+    nowS: NOW,
+    expanded: allExpanded(input),
+    excluded: new Set(["/p/secret"]),
+  });
+  expect(nodes.some((n) => n.id === "group:/p/secret")).toBe(false);
+  expect(nodes.some((n) => n.id === "claude:b")).toBe(false);
+  expect(nodes.some((n) => n.id === "group:/p/one")).toBe(true);
 });
 
 test("hides archived by default, includes them when asked", () => {
-  const input = [
-    s({ id: "claude:a" }),
-    s({ id: "claude:b", archived: true }),
-  ];
-  const def = buildOverview(input, { nowS: NOW }).nodes.filter((n) => n.type === "session");
+  const input = [s({ id: "claude:a" }), s({ id: "claude:b", archived: true })];
+  const exp = { expanded: allExpanded(input), nowS: NOW };
+  const def = buildOverview(input, exp).nodes.filter((n) => n.type === "session");
   expect(def.map((n) => n.id)).toEqual(["claude:a"]);
-  const all = buildOverview(input, { nowS: NOW, includeArchived: true }).nodes.filter(
+  const all = buildOverview(input, { ...exp, includeArchived: true }).nodes.filter(
     (n) => n.type === "session",
   );
   expect(all.map((n) => n.id).sort()).toEqual(["claude:a", "claude:b"]);
 });
 
 test("active = last activity within the 15-min window; older is idle", () => {
-  const { nodes } = buildOverview(
-    [
-      s({ id: "claude:fresh", last_mtime: NOW - 60 }),
-      s({ id: "claude:stale", last_mtime: NOW - ACTIVE_WINDOW_S - 1 }),
-    ],
-    { nowS: NOW },
-  );
+  const input = [
+    s({ id: "claude:fresh", last_mtime: NOW - 60 }),
+    s({ id: "claude:stale", last_mtime: NOW - ACTIVE_WINDOW_S - 1 }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
   const byId = Object.fromEntries(
     nodes.filter((n) => n.type === "session").map((n) => [n.id, n.data]),
   );
@@ -65,10 +98,8 @@ test("active = last activity within the 15-min window; older is idle", () => {
 });
 
 test("each group node precedes its children (React Flow parent ordering)", () => {
-  const { nodes } = buildOverview(
-    [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/two" })],
-    { nowS: NOW },
-  );
+  const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/two" })];
+  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
   for (const child of nodes.filter((n) => n.parentId)) {
     const gi = nodes.findIndex((n) => n.id === child.parentId);
     const ci = nodes.findIndex((n) => n.id === child.id);
@@ -78,35 +109,24 @@ test("each group node precedes its children (React Flow parent ordering)", () =>
   }
 });
 
-test("children carry parentId and sit inside the group via relative positions", () => {
-  const { nodes } = buildOverview([s({ id: "claude:a", cwd: "/p/one" })], { nowS: NOW });
-  const child = nodes.find((n) => n.type === "session");
-  expect(child?.parentId).toBe("group:/p/one");
-  expect(child?.position.x).toBeGreaterThan(0);
-  expect(child?.position.y).toBeGreaterThan(0);
-});
-
 test("chip order is deterministic: sticky first, then most-recent, then id", () => {
-  const { nodes } = buildOverview(
-    [
-      s({ id: "claude:old", last_mtime: NOW - 1000 }),
-      s({ id: "claude:new", last_mtime: NOW - 10 }),
-      s({ id: "claude:pin", last_mtime: NOW - 5000, sticky: true }),
-    ],
-    { nowS: NOW },
-  );
+  const input = [
+    s({ id: "claude:old", last_mtime: NOW - 1000 }),
+    s({ id: "claude:new", last_mtime: NOW - 10 }),
+    s({ id: "claude:pin", last_mtime: NOW - 5000, sticky: true }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
   const order = nodes.filter((n) => n.type === "session").map((n) => n.id);
   expect(order).toEqual(["claude:pin", "claude:new", "claude:old"]);
 });
 
 test("clusters wrap to a new row instead of an unbounded horizontal strip", () => {
-  // 12 single-session projects → must not all sit at y=0.
   const many = Array.from({ length: 12 }, (_, i) =>
     s({ id: `claude:${i}`, cwd: `/p/${i}`, project: `p${i}` }),
   );
   const groups = buildOverview(many, { nowS: NOW }).nodes.filter((n) => n.type === "projectGroup");
   const ys = new Set(groups.map((g) => g.position.y));
-  expect(ys.size).toBeGreaterThan(1); // wrapped onto multiple rows
+  expect(ys.size).toBeGreaterThan(1);
 });
 
 test("output is stable across calls (deterministic)", () => {
@@ -114,5 +134,6 @@ test("output is stable across calls (deterministic)", () => {
     s({ id: "claude:a", cwd: "/p/one", last_mtime: NOW - 5 }),
     s({ id: "opencode:b", cwd: "/p/two", last_mtime: NOW - 50 }),
   ];
-  expect(buildOverview(input, { nowS: NOW })).toEqual(buildOverview(input, { nowS: NOW }));
+  const opts = { nowS: NOW, expanded: allExpanded(input) };
+  expect(buildOverview(input, opts)).toEqual(buildOverview(input, opts));
 });

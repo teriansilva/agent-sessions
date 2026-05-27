@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration } from "../lib/format";
 import { THEME_LIST } from "../theme/themes";
@@ -635,6 +636,65 @@ function AccountCard() {
   );
 }
 
+/** Session overview (#144): exclude project paths from the map. One cwd per line. The
+ *  editor seeds from a fresh /api/config (current persisted value); saving routes through the
+ *  shared OverviewPrefs context so an open canvas reflects it immediately (no reload). */
+function OverviewCard() {
+  const { setExcluded } = useOverviewPrefs();
+  const [text, setText] = useState<string | null>(null); // null = still loading
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .config()
+      .then((c) => alive && setText((c.overview_excluded ?? []).join("\n")))
+      .catch(() => alive && setText(""));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = () => {
+    const lines = (text ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    setExcluded(lines); // updates shared state (canvas reacts) + persists via /api/prefs
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="overview-h">
+      <h2 id="overview-h">Session overview</h2>
+      <p className={styles.hint}>
+        Hide projects from the overview map — one project path per line.
+      </p>
+      <textarea
+        className={styles.excludeInput}
+        rows={4}
+        placeholder="/home/you/private-project"
+        value={text ?? ""}
+        disabled={text === null}
+        onChange={(e) => setText(e.target.value)}
+        aria-label="Excluded project paths"
+      />
+      <div className={styles.cleanupRow}>
+        <button
+          type="button"
+          className={styles.secBtnGhost}
+          onClick={save}
+          disabled={text === null}
+        >
+          Save excluded projects
+        </button>
+        {saved && <span className={styles.hint}>Saved.</span>}
+      </div>
+    </section>
+  );
+}
+
 /** Maintenance (#142): bulk-archive sessions older than N hours. Reversible (archived
  *  sessions can be unarchived); a two-step confirm guards the bulk action. */
 function CleanupCard() {
@@ -763,6 +823,8 @@ export function Settings() {
           ))}
         </div>
       </section>
+
+      <OverviewCard />
 
       <TwoFactorCard />
 

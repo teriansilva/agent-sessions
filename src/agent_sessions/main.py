@@ -357,6 +357,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Sidebar body: the session list, or the squeezed Session Overview map (#139).
                 # Persisted per-user like the theme; the SPA applies it at load.
                 "sidebar_view": prefs.get_sidebar_view(),
+                # Session Overview view-state (#144): expanded cluster cwds (default collapsed)
+                # and project cwds excluded from the map. Per-user.
+                "overview_expanded": prefs.get_overview_expanded(),
+                "overview_excluded": prefs.get_overview_excluded(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
@@ -369,17 +373,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         _user: str = Depends(_logged_in),
         _csrf: None = Depends(_csrf_guard),
     ) -> JSONResponse:
-        # Persist UI preferences (#109 theme, #139 sidebar_view). Each provided key is
-        # validated against its known set server-side (unknown value → 422, never silently
-        # coerced on write); other persisted keys are preserved. At least one known key
-        # must be present.
+        # Persist UI preferences (#109 theme, #139 sidebar_view, #144 overview lists). Each
+        # provided key is validated server-side (unknown value → 422, never silently coerced
+        # on write); other persisted keys are preserved. At least one known key must be present.
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
-        out: dict[str, str] = {}
+        out: dict[str, object] = {}
         if "theme" in payload:
             if payload["theme"] not in prefs.THEMES:
                 raise HTTPException(status_code=422, detail="unknown theme")
@@ -388,6 +391,15 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
                 raise HTTPException(status_code=422, detail="unknown sidebar_view")
             out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
+        for key, setter in (
+            ("overview_expanded", prefs.set_overview_expanded),
+            ("overview_excluded", prefs.set_overview_excluded),
+        ):
+            if key in payload:
+                v = payload[key]
+                if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                    raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
+                out[key] = setter(v)
         if not out:
             raise HTTPException(status_code=422, detail="no known preference key")
         return JSONResponse(out)

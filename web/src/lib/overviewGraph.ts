@@ -21,11 +21,14 @@ const GROUP_GAP = 28;
 const MAX_ROW_W = 1240;
 /** Chip columns per cluster: a roughly-square grid, capped so wide clusters stay readable. */
 const MAX_COLS = 3;
+/** A collapsed cluster shows only its header at a fixed compact width (#144). */
+const COLLAPSED_W = 300;
 
 export interface ProjectGroupData extends Record<string, unknown> {
   project: string;
   cwd: string;
   count: number;
+  collapsed: boolean;
 }
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
@@ -56,6 +59,11 @@ export interface BuildOptions {
   nowS?: number;
   /** Include archived sessions (default: hidden). */
   includeArchived?: boolean;
+  /** Cwds whose cluster is expanded. Anything not here is collapsed (header only) — the
+   *  overview defaults to collapsed (#144). */
+  expanded?: Set<string>;
+  /** Cwds hidden from the map entirely (#144). */
+  excluded?: Set<string>;
 }
 
 /** Build the project-cluster graph. Group nodes are emitted before their children (React
@@ -64,7 +72,11 @@ export interface BuildOptions {
  *  deterministic (most-recent cluster first; within a cluster sticky→recent→id). */
 export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
-  const visible = opts.includeArchived ? sessions : sessions.filter((s) => !s.archived);
+  const expanded = opts.expanded ?? new Set<string>();
+  const excluded = opts.excluded ?? new Set<string>();
+  const visible = (opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)).filter(
+    (s) => !excluded.has(s.cwd),
+  );
 
   // Group by cwd, preserving each group's display label + max mtime for ordering.
   const groups = new Map<string, { project: string; items: Session[]; maxMtime: number }>();
@@ -87,7 +99,10 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   let rowH = 0;
 
   for (const [cwd, g] of ordered) {
-    const { w, h, cols } = groupSize(g.items.length);
+    const isExpanded = expanded.has(cwd);
+    const { w, h, cols } = isExpanded
+      ? groupSize(g.items.length)
+      : { w: COLLAPSED_W, h: HEADER_H, cols: 1 };
     if (x > 0 && x + w > MAX_ROW_W) {
       // Wrap to the next row.
       x = 0;
@@ -99,35 +114,43 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
       id: groupId,
       type: "projectGroup",
       position: { x, y },
-      data: { project: g.project, cwd, count: g.items.length } satisfies ProjectGroupData,
+      data: {
+        project: g.project,
+        cwd,
+        count: g.items.length,
+        collapsed: !isExpanded,
+      } satisfies ProjectGroupData,
       style: { width: w, height: h },
       draggable: false,
       selectable: false,
     });
 
-    // Sticky first, then most-recent, then id — deterministic chip order.
-    const items = [...g.items].sort(
-      (a, b) =>
-        Number(b.sticky) - Number(a.sticky) ||
-        (b.last_mtime || 0) - (a.last_mtime || 0) ||
-        a.id.localeCompare(b.id),
-    );
-    items.forEach((s, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      nodes.push({
-        id: s.id,
-        type: "session",
-        parentId: groupId,
-        extent: "parent",
-        position: {
-          x: PAD + col * (CHIP_W + GAP),
-          y: HEADER_H + PAD + row * (CHIP_H + GAP),
-        },
-        data: { session: s, active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S } satisfies SessionNodeData,
-        draggable: false,
+    // Collapsed clusters render header-only — no child chips (keeps the map compact, #144).
+    if (isExpanded) {
+      // Sticky first, then most-recent, then id — deterministic chip order.
+      const items = [...g.items].sort(
+        (a, b) =>
+          Number(b.sticky) - Number(a.sticky) ||
+          (b.last_mtime || 0) - (a.last_mtime || 0) ||
+          a.id.localeCompare(b.id),
+      );
+      items.forEach((s, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        nodes.push({
+          id: s.id,
+          type: "session",
+          parentId: groupId,
+          extent: "parent",
+          position: {
+            x: PAD + col * (CHIP_W + GAP),
+            y: HEADER_H + PAD + row * (CHIP_H + GAP),
+          },
+          data: { session: s, active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S } satisfies SessionNodeData,
+          draggable: false,
+        });
       });
-    });
+    }
 
     x += w + GROUP_GAP;
     rowH = Math.max(rowH, h);

@@ -56,7 +56,23 @@ def _load(path: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _set(key: str, value: str, path: Path | None = None) -> str:
+def coerce_str_list(value: object, cap: int = 2000) -> list[str]:
+    """Narrow any input to a bounded list of unique strings (drops non-strings/dupes).
+    Used for the overview's expanded/excluded path lists (#144)."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in value:
+        if isinstance(v, str) and v not in seen:
+            seen.add(v)
+            out.append(v)
+            if len(out) >= cap:
+                break
+    return out
+
+
+def _set(key: str, value: str | list[str], path: Path | None = None):
     """Persist a single pref key. Read-modify-write under an exclusive flock so a concurrent
     writer (or a different key) can't clobber the rest of the document."""
     path = path or _default_path()
@@ -101,3 +117,23 @@ def get_sidebar_view(path: Path | None = None) -> str:
 def set_sidebar_view(view: str, path: Path | None = None) -> str:
     """Persist the sidebar view (invalid input → default). Preserves other keys (e.g. theme)."""
     return _set("sidebar_view", coerce_sidebar_view(view), path)
+
+
+def get_overview_expanded(path: Path | None = None) -> list[str]:
+    """Project cwds whose overview cluster is expanded (default: none → collapsed) (#144)."""
+    return coerce_str_list(_load(path or _default_path()).get("overview_expanded"))
+
+
+def set_overview_expanded(cwds: object, path: Path | None = None) -> list[str]:
+    """Persist the expanded-cluster cwds. Preserves other keys."""
+    return _set("overview_expanded", coerce_str_list(cwds), path)
+
+
+def get_overview_excluded(path: Path | None = None) -> list[str]:
+    """Project cwds hidden from the overview map (#144)."""
+    return coerce_str_list(_load(path or _default_path()).get("overview_excluded"))
+
+
+def set_overview_excluded(cwds: object, path: Path | None = None) -> list[str]:
+    """Persist the excluded-project cwds. Preserves other keys."""
+    return _set("overview_excluded", coerce_str_list(cwds), path)

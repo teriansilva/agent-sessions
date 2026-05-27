@@ -180,3 +180,59 @@ def test_prefs_no_known_key_422(auth_cfg, tmp_home):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+# ---- overview lists: expanded / excluded (#144) -------------------------------
+
+
+def test_overview_lists_default_empty(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.get_overview_expanded(p) == []
+    assert prefs.get_overview_excluded(p) == []
+
+
+def test_overview_lists_round_trip_and_coerce(tmp_path):
+    p = tmp_path / "prefs.json"
+    # dupes + non-strings are dropped; order preserved.
+    assert prefs.set_overview_expanded(["/a", "/a", "/b", 3, None], p) == ["/a", "/b"]
+    assert prefs.get_overview_expanded(p) == ["/a", "/b"]
+    assert prefs.set_overview_excluded("nope", p) == []  # non-list → []
+
+
+def test_overview_lists_coexist_with_theme(tmp_path):
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("dark", p)
+    prefs.set_overview_expanded(["/x"], p)
+    prefs.set_overview_excluded(["/y"], p)
+    assert prefs.get_theme(p) == "dark"
+    assert prefs.get_overview_expanded(p) == ["/x"]
+    assert prefs.get_overview_excluded(p) == ["/y"]
+
+
+def test_config_exposes_overview_lists(auth_cfg, tmp_home):
+    prefs.set_overview_excluded(["/home/u/secret"])
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/config").json()
+    assert d["overview_excluded"] == ["/home/u/secret"]
+    assert d["overview_expanded"] == []
+
+
+def test_set_overview_lists_endpoint(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"overview_expanded": ["/a", "/b"]}, headers=hdr)
+    assert r.status_code == 200 and r.json() == {"overview_expanded": ["/a", "/b"]}
+    assert c.get("/api/config").json()["overview_expanded"] == ["/a", "/b"]
+
+
+def test_set_overview_list_rejects_non_string_items(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"overview_excluded": ["/ok", 5]},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
