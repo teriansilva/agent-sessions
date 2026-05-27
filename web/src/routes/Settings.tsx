@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
-import { engineName, humanBytes, humanDuration } from "../lib/format";
+import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type { EngineInfo, SystemInfo, TwoFactorEnrollment, UpdateInfo } from "../types/api";
@@ -639,58 +639,72 @@ function AccountCard() {
 /** Session overview (#144): exclude project paths from the map. One cwd per line. The
  *  editor seeds from a fresh /api/config (current persisted value); saving routes through the
  *  shared OverviewPrefs context so an open canvas reflects it immediately (no reload). */
+/** Session overview (#152): a checklist of projects to hide from the overview map. Rows are
+ *  the discovered projects UNION the currently-excluded cwds (so a stale exclusion with no
+ *  active sessions is still shown + removable). Ticking persists immediately via the shared
+ *  OverviewPrefs context (canvas reacts). Filtering elsewhere still uses the full cwd. */
 function OverviewCard() {
-  const { setExcluded } = useOverviewPrefs();
-  const [text, setText] = useState<string | null>(null); // null = still loading
-  const [saved, setSaved] = useState(false);
+  const { excluded, setExcluded } = useOverviewPrefs();
+  const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
 
   useEffect(() => {
     let alive = true;
     api
-      .config()
-      .then((c) => alive && setText((c.overview_excluded ?? []).join("\n")))
-      .catch(() => alive && setText(""));
+      .projects()
+      .then((d) => alive && setProjects(d.projects))
+      .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
     return () => {
       alive = false;
     };
   }, []);
 
-  const save = () => {
-    const lines = (text ?? "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    setExcluded(lines); // updates shared state (canvas reacts) + persists via /api/prefs
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const rows = useMemo(() => {
+    const labels = new Map((projects ?? []).map((p) => [p.cwd, p.label]));
+    return [...new Set<string>([...labels.keys(), ...excluded])].sort().map((cwd) => ({
+      cwd,
+      label: labels.get(cwd) || shortCwd(cwd),
+      stale: !labels.has(cwd), // excluded but absent from the current project list
+    }));
+  }, [projects, excluded]);
+
+  const toggle = (cwd: string) => {
+    const next = new Set(excluded);
+    if (next.has(cwd)) next.delete(cwd);
+    else next.add(cwd);
+    setExcluded([...next]);
   };
 
   return (
     <section className={styles.section} aria-labelledby="overview-h">
       <h2 id="overview-h">Session overview</h2>
       <p className={styles.hint}>
-        Hide projects from the overview map — one project path per line.
+        Tick a project to hide it from the overview map. Filtering elsewhere still uses the full
+        path.
       </p>
-      <textarea
-        className={styles.excludeInput}
-        rows={4}
-        placeholder="/home/you/private-project"
-        value={text ?? ""}
-        disabled={text === null}
-        onChange={(e) => setText(e.target.value)}
-        aria-label="Excluded project paths"
-      />
-      <div className={styles.cleanupRow}>
-        <button
-          type="button"
-          className={styles.secBtnGhost}
-          onClick={save}
-          disabled={text === null}
-        >
-          Save excluded projects
-        </button>
-        {saved && <span className={styles.hint}>Saved.</span>}
-      </div>
+      {projects === null ? (
+        <p className={styles.hint}>Loading projects…</p>
+      ) : rows.length === 0 ? (
+        <p className={styles.hint}>No projects discovered yet.</p>
+      ) : (
+        <ul className={styles.excludeList} aria-label="Projects to hide from the overview">
+          {rows.map((r) => (
+            <li key={r.cwd}>
+              <label className={styles.excludeRow}>
+                <input
+                  type="checkbox"
+                  checked={excluded.has(r.cwd)}
+                  onChange={() => toggle(r.cwd)}
+                />
+                <span className={styles.excludeMeta}>
+                  <span className={styles.excludeName}>{r.label}</span>
+                  <span className={styles.excludePath}>{shortCwd(r.cwd)}</span>
+                </span>
+                {r.stale && <span className={styles.excludeStale}>not currently active</span>}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
