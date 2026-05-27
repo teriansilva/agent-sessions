@@ -137,3 +137,20 @@ test("output is stable across calls (deterministic)", () => {
   const opts = { nowS: NOW, expanded: allExpanded(input) };
   expect(buildOverview(input, opts)).toEqual(buildOverview(input, opts));
 });
+
+test("activeId marks the matching chip selected (#149 sidebar sync)", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/one" }),
+    s({ id: "claude:b", cwd: "/p/one" }),
+  ];
+  const { nodes } = buildOverview(input, {
+    nowS: NOW,
+    expanded: new Set(["/p/one"]),
+    activeId: "claude:a",
+  });
+  const byId = Object.fromEntries(
+    nodes.filter((n) => n.type === "session").map((n) => [n.id, n.data]),
+  );
+  expect(byId["claude:a"]).toMatchObject({ selected: true });
+  expect(byId["claude:b"]).toMatchObject({ selected: false });
+});
