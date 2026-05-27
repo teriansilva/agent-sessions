@@ -15,9 +15,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
     <div className={`tr-ov-group${collapsed ? " collapsed" : ""}`}>
       <button
         type="button"
-        // `nodrag nopan`: the header is the collapse toggle — let its click through instead of
-        // React Flow capturing the pointer for pan/drag (#149).
-        className="tr-ov-group-head nodrag nopan"
+        className="tr-ov-group-head"
         onClick={() => toggle(cwd)}
         aria-expanded={!collapsed}
         title={`${collapsed ? "Expand" : "Collapse"} ${cwd}`}

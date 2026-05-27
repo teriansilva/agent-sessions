@@ -9,7 +9,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { ChevronsDownUp, ChevronsUpDown } from "lucide-react";
 import { useMemo } from "react";
-import { useLocation } from "react-router-dom";
 import { engineColor } from "../../lib/format";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { buildOverview, type SessionNodeData } from "../../lib/overviewGraph";
@@ -41,17 +40,9 @@ export function OverviewCanvas({
 }) {
   const { expanded, excluded, toggle, expandAll, collapseAll } = useOverviewPrefs();
 
-  // The currently-open session ("engine:uuid"), parsed from /s/:engine/:id — its chip is
-  // highlighted, in sync with the sidebar list's active row (#149).
-  const { pathname } = useLocation();
-  const activeId = useMemo(() => {
-    const m = /^\/s\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-    return m ? `${decodeURIComponent(m[1])}:${decodeURIComponent(m[2])}` : undefined;
-  }, [pathname]);
-
   const { nodes, edges } = useMemo(
-    () => buildOverview(sessions, { includeArchived, expanded, excluded, activeId }),
-    [sessions, includeArchived, expanded, excluded, activeId],
+    () => buildOverview(sessions, { includeArchived, expanded, excluded }),
+    [sessions, includeArchived, expanded, excluded],
   );
   // Cwds available to expand (non-excluded) — drives "Expand all".
   const allCwds = useMemo(

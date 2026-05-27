@@ -126,12 +126,6 @@
 .tr-ov-chip.archived {
   opacity: 0.45;
 }
-/* The currently-open session — highlighted in sync with the sidebar's active row (#149). */
-.tr-ov-chip.selected {
-  border-color: var(--accent);
-  background: var(--row-hover);
-  box-shadow: 0 0 0 1px var(--accent);
-}
 .tr-ov-dot {
   width: 8px;
   height: 8px;

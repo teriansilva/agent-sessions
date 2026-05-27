@@ -33,9 +33,6 @@ export interface ProjectGroupData extends Record<string, unknown> {
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
   active: boolean;
-  /** This chip is the currently-open session (route = identity) — highlighted in sync with
-   *  the sidebar list's active row (#149). */
-  selected: boolean;
 }
 
 export interface OverviewGraph {
@@ -67,9 +64,6 @@ export interface BuildOptions {
   expanded?: Set<string>;
   /** Cwds hidden from the map entirely (#144). */
   excluded?: Set<string>;
-  /** Engine-qualified id ("engine:uuid") of the currently-open session → its chip is
-   *  marked selected, in sync with the sidebar list (#149). */
-  activeId?: string;
 }
 
 /** Build the project-cluster graph. Group nodes are emitted before their children (React
@@ -152,11 +146,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
             x: PAD + col * (CHIP_W + GAP),
             y: HEADER_H + PAD + row * (CHIP_H + GAP),
           },
-          data: {
-            session: s,
-            active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S,
-            selected: s.id === opts.activeId,
-          } satisfies SessionNodeData,
+          data: { session: s, active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S } satisfies SessionNodeData,
           draggable: false,
         });
       });
