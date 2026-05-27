@@ -1,18 +1,26 @@
-import { Menu, PanelLeftClose, Settings as SettingsIcon, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { engineBadge, engineName } from "../lib/format";
+import { api } from "../lib/api";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
+import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
 
+// Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
+const Overview = lazy(() => import("../routes/Overview"));
+const SidebarOverview = lazy(() => import("../components/overview/SidebarOverview"));
+
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
+
+type SidebarView = "list" | "overview";
 
 /** Parse `/s/:engine/:id` from a pathname (the header lives above <Routes>, so useParams
  *  can't see the match — parse the path directly). Returns null off a session route. */
@@ -85,6 +93,24 @@ function Layout() {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
+  // Sidebar body: session list or the squeezed Session Overview map (#139). Per-user,
+  // persisted server-side like the theme; reconcile to the server value once config loads.
+  const config = useConfig();
+  const [sidebarView, setSidebarView] = useState<SidebarView>("list");
+  const viewReconciled = useRef(false);
+  useEffect(() => {
+    if (viewReconciled.current || !config?.sidebar_view) return;
+    viewReconciled.current = true;
+    // One-time sync to the server-persisted value once /api/config loads (same pattern as
+    // the theme reconcile + the drawer-close effect below).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (config.sidebar_view === "overview") setSidebarView("overview");
+  }, [config?.sidebar_view]);
+  const chooseView = (v: SidebarView) => {
+    setSidebarView(v);
+    api.setSidebarView(v).catch(() => {}); // best-effort; applies locally regardless
+  };
+
   // The header toggle drives ONLY the current surface: the mobile drawer (≤800px) or the
   // desktop collapse (>800px). This stops the mobile hamburger from mutating/persisting
   // the desktop-collapse flag (Hermes #128).
@@ -112,9 +138,14 @@ function Layout() {
           {surfaceOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
         <CurrentSessionLabel />
-        <Link to="/settings" className="gear mobileGear" aria-label="Settings">
-          <SettingsIcon size={18} />
-        </Link>
+        <span className="mobilebarActions">
+          <Link to="/overview" className="gear" aria-label="Open session overview">
+            <Network size={18} />
+          </Link>
+          <Link to="/settings" className="gear" aria-label="Settings">
+            <SettingsIcon size={18} />
+          </Link>
+        </span>
       </header>
       <aside className="sidebar">
         <header className="topbar">
@@ -122,6 +153,9 @@ function Layout() {
             👑 Term<b>Royale</b>
           </span>
           <span className="topbarActions">
+            <Link to="/overview" className="gear" aria-label="Open session overview">
+              <Network size={18} />
+            </Link>
             <Link to="/settings" className="gear" aria-label="Settings">
               <SettingsIcon size={18} />
             </Link>
@@ -135,7 +169,35 @@ function Layout() {
             </button>
           </span>
         </header>
-        <SessionList />
+        <div className="viewToggle" role="tablist" aria-label="Sidebar view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sidebarView === "list"}
+            className={sidebarView === "list" ? "on" : ""}
+            onClick={() => chooseView("list")}
+          >
+            <ListIcon size={14} /> List
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sidebarView === "overview"}
+            className={sidebarView === "overview" ? "on" : ""}
+            onClick={() => chooseView("overview")}
+          >
+            <LayoutGrid size={14} /> Map
+          </button>
+        </div>
+        <div className="sidebarBody">
+          {sidebarView === "overview" ? (
+            <Suspense fallback={<div className="tr-overview tr-ov-state">Loading map…</div>}>
+              <SidebarOverview />
+            </Suspense>
+          ) : (
+            <SessionList />
+          )}
+        </div>
       </aside>
       <button
         type="button"
@@ -145,12 +207,15 @@ function Layout() {
         onClick={() => setNavOpen(false)}
       />
       <main className="terminal-pane">
-        <Routes>
-          <Route path="/" element={<NewSessionLanding />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/s/:engine/:id" element={<SessionView />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
+          <Routes>
+            <Route path="/" element={<NewSessionLanding />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/overview" element={<Overview />} />
+            <Route path="/s/:engine/:id" element={<SessionView />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   );

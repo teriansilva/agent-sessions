@@ -67,6 +67,33 @@ test("no empty gap between the title bar and the pane (#134)", async ({ page }) 
   expect(Math.abs(pane!.y - (header!.y + header!.height))).toBeLessThan(2);
 });
 
+test("opens the fullscreen session overview from the sidebar/header (#139)", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/");
+  // Desktop: the entry is in the sidebar topbar; mobile/collapsed: in the always-visible header.
+  const entry =
+    testInfo.project.name === "mobile"
+      ? page.locator(".mobilebar").getByRole("link", { name: /open session overview/i })
+      : page.locator(".sidebar .topbar").getByRole("link", { name: /open session overview/i });
+  await entry.click();
+  await expect(page).toHaveURL(/\/overview$/);
+  // The overview surface mounts (loading/empty/error state — never a blank route).
+  await expect(page.locator(".tr-overview")).toBeVisible();
+});
+
+test("desktop: List ⇄ Map toggle swaps the sidebar body to the overview (#139)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "mobile", "toggle lives in the sidebar drawer; covered on desktop");
+  await page.goto("/");
+  await page.getByRole("tab", { name: /^map$/i }).click();
+  // The squeezed overview canvas now renders inside the sidebar.
+  await expect(page.locator(".sidebar .tr-overview")).toBeVisible();
+  await page.getByRole("tab", { name: /^list$/i }).click();
+  await expect(page.locator(".sidebar .tr-overview")).toHaveCount(0);
+});
+
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({ page }, testInfo) => {
   await page.goto("/");
   // Screenshot named per project → mobile vs desktop layout regressions are visible/diffable.

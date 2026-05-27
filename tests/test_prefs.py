@@ -116,3 +116,67 @@ def test_set_theme_non_object_json_422(auth_cfg, tmp_home):
             headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
         )
         assert r.status_code == 422, body
+
+
+# ---- sidebar_view (#139) ------------------------------------------------------
+
+
+def test_default_sidebar_view_when_unset(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.get_sidebar_view(p) == "list"
+
+
+def test_sidebar_view_round_trip_and_invalid(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.set_sidebar_view("overview", p) == "overview"
+    assert prefs.get_sidebar_view(p) == "overview"
+    assert prefs.set_sidebar_view("bogus", p) == "list"  # invalid → default
+
+
+def test_sidebar_view_and_theme_coexist(tmp_path):
+    # Setting one pref must not clobber the other (read-modify-write).
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("dark", p)
+    prefs.set_sidebar_view("overview", p)
+    assert prefs.get_theme(p) == "dark"
+    assert prefs.get_sidebar_view(p) == "overview"
+
+
+def test_config_exposes_sidebar_view(auth_cfg, tmp_home):
+    prefs.set_sidebar_view("overview")
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["sidebar_view"] == "overview"
+
+
+def test_set_sidebar_view_endpoint_persists_without_clobbering_theme(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"theme": "dark"}, headers=hdrs).status_code == 200
+    r = c.post("/api/prefs", json={"sidebar_view": "overview"}, headers=hdrs)
+    assert r.status_code == 200 and r.json() == {"sidebar_view": "overview"}
+    cfg = c.get("/api/config").json()
+    assert cfg["sidebar_view"] == "overview" and cfg["theme"] == "dark"
+
+
+def test_set_sidebar_view_unknown_422(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"sidebar_view": "spreadsheet"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+
+
+def test_prefs_no_known_key_422(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"nope": "x"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

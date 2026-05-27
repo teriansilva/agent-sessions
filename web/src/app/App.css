@@ -50,6 +50,45 @@
   align-items: center;
   gap: 4px;
 }
+/* Sidebar List ⇄ Map view toggle (#139). */
+.viewToggle {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.viewToggle button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.viewToggle button:hover {
+  color: var(--text);
+  background: var(--row-hover);
+}
+.viewToggle button.on {
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+/* The sidebar body fills the remaining height so the list scrolls and the squeezed
+ * overview canvas has a definite height to size into (React Flow needs one). */
+.sidebarBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .topbar {
   flex: none;
   display: flex;
@@ -164,11 +203,15 @@
   text-overflow: ellipsis;
   min-width: 0;
 }
-/* The mobile Settings gear sits at the far right of the bar (the desktop gear lives in
- * the sidebar .topbar, which is hidden on mobile — so without this mobile users have no
- * way to reach /settings). Hidden on desktop since the .topbar gear is visible there. */
-.mobileGear {
+/* Header actions (Overview + Settings) sit at the far right of the bar. The desktop
+ * equivalents live in the sidebar .topbar (hidden on mobile, and gone when the sidebar is
+ * collapsed) — so these give mobile + collapsed-desktop a way to reach /overview and
+ * /settings. Hidden on desktop while the sidebar is expanded (#139). */
+.mobilebarActions {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 @media (min-width: 801px) {
   /* The header's hamburger/X only opens the sidebar when collapsed; while the sidebar is
@@ -177,12 +220,12 @@
   .app:not(.collapsed) .navToggle {
     display: none;
   }
-  /* Settings gear: the sidebar .topbar gear is visible while expanded, so hide the header
-   * one then; when collapsed the sidebar (and its gear) is gone, so show the header gear. */
-  .mobileGear {
+  /* Header actions: the sidebar .topbar carries them while expanded, so hide the header
+   * copies then; when collapsed the sidebar (and its actions) is gone, so show them. */
+  .mobilebarActions {
     display: none;
   }
-  .app.collapsed .mobileGear {
+  .app.collapsed .mobilebarActions {
     display: inline-flex;
   }
 }

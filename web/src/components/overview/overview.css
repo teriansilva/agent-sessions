@@ -1,0 +1,184 @@
+/* Session Overview canvas (#139). React Flow base CSS is imported by OverviewCanvas; these
+ * rules theme it to our tokens and style the custom nodes. Everything is scoped under
+ * .tr-overview so it can't leak into the rest of the app. */
+
+.tr-overview {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* React Flow chrome → our tokens. */
+.tr-overview .react-flow__background {
+  background: var(--bg);
+}
+.tr-overview .react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+.tr-overview .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  fill: currentColor;
+}
+.tr-overview .react-flow__controls-button:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.tr-overview .react-flow__minimap {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.tr-overview .react-flow__attribution {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+.tr-overview .react-flow__attribution a {
+  color: var(--text-muted);
+}
+
+/* Project cluster container. */
+.tr-overview .react-flow__node-projectGroup {
+  pointer-events: none; /* clicks fall through to chips; the group itself isn't interactive */
+}
+.tr-ov-group {
+  width: 100%;
+  height: 100%;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
+}
+.tr-ov-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.tr-ov-folder {
+  width: 14px;
+  height: 12px;
+  flex: none;
+  border: 1.5px solid var(--text-muted);
+  border-radius: 3px;
+  border-top-left-radius: 0;
+}
+.tr-ov-path {
+  color: var(--text);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+/* Session chip. */
+.tr-ov-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 176px;
+  height: 46px;
+  padding: 0 10px;
+  background: var(--row-hover);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--eng, var(--accent));
+  border-radius: 9px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition:
+    border-color 0.12s,
+    transform 0.12s;
+}
+.tr-ov-chip:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.tr-ov-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tr-ov-chip.archived {
+  opacity: 0.45;
+}
+.tr-ov-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--eng, var(--accent));
+}
+.tr-ov-dot.active {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 25%, transparent);
+}
+.tr-ov-dot.idle {
+  background: transparent;
+}
+.tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tr-ov-ttl {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+.tr-ov-sub {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.tr-ov-eng {
+  margin-left: auto;
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--eng, var(--accent));
+}
+
+/* Empty / loading / error states. */
+.tr-ov-state {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--bg);
+}
+.tr-ov-partial {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+}

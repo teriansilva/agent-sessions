@@ -61,11 +61,15 @@ def fake_jsonl(tmp_home) -> Path:
 
 
 @pytest.fixture
-def auth_cfg(monkeypatch) -> AuthConfig:
+def auth_cfg(tmp_path, monkeypatch) -> AuthConfig:
     monkeypatch.setenv("AGENT_SESSIONS_USERNAME", "marcus")
     monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", hash_password("hunter2"))
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
     monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://terminal.example.com")
+    # Isolate the 2FA store (#116) to a tmp path — otherwise twofactor.default_path()
+    # resolves under the real HOME and the auth/login tests read the operator's real,
+    # possibly-enabled 2fa.json, making the suite outcome host-dependent (Hermes #140).
+    monkeypatch.setenv("AGENT_SESSIONS_2FA_FILE", str(tmp_path / "2fa.json"))
     return AuthConfig.from_env()
 
 

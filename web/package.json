@@ -16,6 +16,7 @@
     "@paulmillr/qr": "^0.2.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "@xyflow/react": "^12.10.2",
     "lucide-react": "^0.460.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

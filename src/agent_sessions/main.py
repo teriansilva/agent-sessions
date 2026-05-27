@@ -354,6 +354,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
+                # Sidebar body: the session list, or the squeezed Session Overview map (#139).
+                # Persisted per-user like the theme; the SPA applies it at load.
+                "sidebar_view": prefs.get_sidebar_view(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
@@ -366,18 +369,28 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         _user: str = Depends(_logged_in),
         _csrf: None = Depends(_csrf_guard),
     ) -> JSONResponse:
-        # Persist UI preferences (#109). Currently just the theme; validated against the
-        # known set server-side (unknown → 422, never silently coerced on write).
+        # Persist UI preferences (#109 theme, #139 sidebar_view). Each provided key is
+        # validated against its known set server-side (unknown value → 422, never silently
+        # coerced on write); other persisted keys are preserved. At least one known key
+        # must be present.
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
-        theme = payload.get("theme")
-        if theme not in prefs.THEMES:
-            raise HTTPException(status_code=422, detail="unknown theme")
-        return JSONResponse({"theme": prefs.set_theme(theme)})
+        out: dict[str, str] = {}
+        if "theme" in payload:
+            if payload["theme"] not in prefs.THEMES:
+                raise HTTPException(status_code=422, detail="unknown theme")
+            out["theme"] = prefs.set_theme(payload["theme"])
+        if "sidebar_view" in payload:
+            if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
+                raise HTTPException(status_code=422, detail="unknown sidebar_view")
+            out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
+        if not out:
+            raise HTTPException(status_code=422, detail="no known preference key")
+        return JSONResponse(out)
 
     @app.post("/api/password")
     async def change_password_api(

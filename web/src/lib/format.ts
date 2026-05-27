@@ -16,6 +16,17 @@ export function engineBadge(engine: string): string {
   return engine === "opencode" ? "oc" : engine === "codex" ? "cx" : engine === "gemini" ? "gm" : "cc";
 }
 
+/** Per-engine accent for the overview chips (tuned for the dark royal canvas). */
+export function engineColor(engine: string): string {
+  return engine === "opencode"
+    ? "#4fd1c5" // teal
+    : engine === "codex"
+      ? "#7ee787" // green
+      : engine === "gemini"
+        ? "#7aa2ff" // blue
+        : "#d98a5c"; // claude — amber
+}
+
 /** Human display name for an engine id (sidebar uses short badges; cards want the name). */
 export function engineName(engine: string): string {
   return engine === "opencode"
