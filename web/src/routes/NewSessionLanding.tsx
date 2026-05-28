@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
+import { mintNewSessionId } from "../lib/newSession";
 import type { Project } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
@@ -42,7 +43,7 @@ export function NewSessionLanding() {
 
   const start = () => {
     if (!canStart) return;
-    const id = crypto.randomUUID();
+    const id = mintNewSessionId(engine);
     navigate(`/s/${engine}/${id}`, { state: { fresh: { cwd, bypass } } });
   };
 
