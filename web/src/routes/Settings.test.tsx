@@ -247,6 +247,26 @@ test("Session overview: a name seeded after /api/config resolves still fills the
   await waitFor(() => expect(input).toHaveValue("Saved Alpha"));
 });
 
+test.each([
+  ["/s/claude/abc", "/s/claude/abc"], // an in-app session path is honored
+  ["/overview", "/overview"], // any internal path is fine
+  [undefined, "/"], // opened directly (no state) → landing
+  ["//evil.example", "/"], // protocol-relative → rejected
+  ["https://evil.example", "/"], // absolute external → rejected
+  ["/settings", "/"], // self → rejected (no loop)
+])("Settings back link honors only internal returnTo: %s → %s (#155)", (returnTo, expected) => {
+  render(
+    <MemoryRouter initialEntries={[{ pathname: "/settings", state: returnTo && { returnTo } }]}>
+      <ThemeCtx.Provider value={{ theme: "royal", setTheme: vi.fn() }}>
+        <OverviewPrefsProvider>
+          <Settings />
+        </OverviewPrefsProvider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  expect(screen.getByRole("link", { name: "Back to sessions" })).toHaveAttribute("href", expected);
+});
+
 test("About: the creator name links to superstatus.io", async () => {
   renderSettings();
   const link = await screen.findByRole("link", { name: "Marcus Braun" });

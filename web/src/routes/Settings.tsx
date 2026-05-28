@@ -12,7 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
@@ -844,6 +844,15 @@ function CleanupCard() {
 export function Settings() {
   const { theme, setTheme } = useTheme();
   const [version, setVersion] = useState<string | null>(null);
+  // Return to wherever the gear was tapped from (#155) — the session, overview, or landing —
+  // instead of always dropping to the new-session landing. Only trust an in-app path.
+  const location = useLocation();
+  const returnTo = (() => {
+    const r = (location.state as { returnTo?: unknown } | null)?.returnTo;
+    return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && r !== "/settings"
+      ? r
+      : "/";
+  })();
 
   useEffect(() => {
     let alive = true;
@@ -861,7 +870,7 @@ export function Settings() {
   return (
     <div className={styles.wrap}>
       <header className={styles.head}>
-        <Link to="/" className={styles.back} aria-label="Back to sessions">
+        <Link to={returnTo} className={styles.back} aria-label="Back to sessions">
           <ArrowLeft size={18} />
         </Link>
         <h1>Settings</h1>

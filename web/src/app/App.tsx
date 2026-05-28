@@ -143,7 +143,12 @@ function Layout() {
           <Link to="/overview" className="gear" aria-label="Open session overview">
             <Network size={18} />
           </Link>
-          <Link to="/settings" className="gear" aria-label="Settings">
+          <Link
+            to="/settings"
+            state={{ returnTo: location.pathname }}
+            className="gear"
+            aria-label="Settings"
+          >
             <SettingsIcon size={18} />
           </Link>
         </span>
@@ -157,7 +162,12 @@ function Layout() {
             <Link to="/overview" className="gear" aria-label="Open session overview">
               <Network size={18} />
             </Link>
-            <Link to="/settings" className="gear" aria-label="Settings">
+            <Link
+              to="/settings"
+              state={{ returnTo: location.pathname }}
+              className="gear"
+              aria-label="Settings"
+            >
               <SettingsIcon size={18} />
             </Link>
             <button
