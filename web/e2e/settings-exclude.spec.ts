@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-// Real-browser check of the Settings → Session overview exclude checklist (#152): ticking a
-// project persists it as excluded via /api/prefs. Network is mocked so Settings renders
-// without a backend.
+// Real-browser check of the Settings → Session overview hide checklist (#152 + #174 inverse
+// semantics): un-ticking a project persists it as hidden via /api/prefs. The checkbox is
+// "Show in sidebar/filter/overview" — checked = visible, unchecked = hidden. Network is
+// mocked so Settings renders without a backend.
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/config", (r) =>
@@ -35,7 +36,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("desktop: ticking a project in Settings persists it as excluded (#152)", async ({
+test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #174)", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "covered on desktop");
@@ -48,9 +49,10 @@ test("desktop: ticking a project in Settings persists it as excluded (#152)", as
   await page.goto("/settings");
   const alpha = page.getByRole("checkbox", { name: /alpha/i });
   await expect(alpha).toBeVisible();
-  await expect(alpha).not.toBeChecked();
-
-  await alpha.check();
-  await expect.poll(() => prefsBody).toEqual({ overview_excluded: ["/home/u/alpha"] });
+  // New (#174) inverse semantics: nothing hidden → row is shown → checkbox is checked.
   await expect(alpha).toBeChecked();
+
+  await alpha.uncheck();
+  await expect.poll(() => prefsBody).toEqual({ projects_hidden: ["/home/u/alpha"] });
+  await expect(alpha).not.toBeChecked();
 });

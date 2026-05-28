@@ -456,6 +456,31 @@
 .nameInput::placeholder {
   color: var(--text-muted);
 }
+/* Clickable project name (#174) — opens RenameProjectModal. Looks like text, behaves
+ * like a button: hover underline, focus ring. */
+.nameButton {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nameButton:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.nameButton:focus-visible {
+  outline: 2px solid var(--focus, #ffe28a);
+  outline-offset: 2px;
+}
 .excludePath {
   font-size: 11px;
   color: var(--text-muted);

@@ -288,3 +288,53 @@ def test_set_project_names_rejects_non_string_values(auth_cfg, tmp_home):
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     assert c.post("/api/prefs", json={"project_names": {"/a": 5}}, headers=hdr).status_code == 422
     assert c.post("/api/prefs", json={"project_names": ["/a"]}, headers=hdr).status_code == 422
+
+
+# ---- projects_hidden (#174): new key for global project hiding with overview_excluded
+# back-compat. Reader prefers projects_hidden when both present; writer goes through
+# set_projects_hidden which is also the back-end of the legacy `overview_excluded` POST.
+
+
+def test_projects_hidden_default_empty(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.get_projects_hidden(p) == []
+
+
+def test_projects_hidden_round_trips(tmp_path):
+    p = tmp_path / "prefs.json"
+    prefs.set_projects_hidden(["/y", "/x"], p)
+    # `coerce_str_list` preserves insertion order, no sort applied.
+    assert prefs.get_projects_hidden(p) == ["/y", "/x"]
+
+
+def test_projects_hidden_falls_back_to_legacy_overview_excluded(tmp_path):
+    """A user who set the legacy key in an older release must see those hides under the
+    new name without losing them (#174). Reader returns the legacy value when only the
+    legacy key exists on disk."""
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"overview_excluded": ["/legacy"]}))
+    assert prefs.get_projects_hidden(p) == ["/legacy"]
+
+
+def test_projects_hidden_wins_over_legacy_when_both_present(tmp_path):
+    """Migration precedence: when both keys exist (e.g. an old client wrote
+    `overview_excluded` while a new client also wrote `projects_hidden`), the new key
+    wins. Otherwise transitions would silently lose user intent (#174 Hermes review)."""
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"overview_excluded": ["/legacy"], "projects_hidden": ["/new"]}))
+    assert prefs.get_projects_hidden(p) == ["/new"]
+
+
+def test_projects_hidden_persists_alongside_other_keys(tmp_path):
+    """Writing projects_hidden does not clobber theme / project_names / sidebar_view."""
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("dark", p)
+    prefs.set_project_names({"/a": "A"}, p)
+    prefs.set_projects_hidden(["/h"], p)
+    assert prefs.get_theme(p) == "dark"
+    assert prefs.get_project_names(p) == {"/a": "A"}
+    assert prefs.get_projects_hidden(p) == ["/h"]

@@ -16,6 +16,8 @@ import { Link, useLocation } from "react-router-dom";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
+import { buildProjectTree, flattenTree } from "../lib/projectTree";
+import { RenameProjectModal } from "./RenameProjectModal";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type { EngineInfo, SystemInfo, TwoFactorEnrollment, UpdateInfo } from "../types/api";
@@ -636,73 +638,66 @@ function AccountCard() {
   );
 }
 
-/** One project row in the Settings overview card (#148/#152): a custom-name input + a hide
- *  checkbox. The local draft commits on blur/Enter; clearing it removes the custom name. */
+/** One project row in the Settings → Session overview card (#174). Indented by tree depth,
+ *  inverse checkbox semantics (checked = visible; unchecked = hidden everywhere), and the
+ *  custom name opens a rename modal on click instead of an inline input. */
 function ProjectRow({
   cwd,
+  depth,
   stale,
-  excluded,
+  hidden,
   currentName,
-  onToggleExclude,
-  onRename,
+  onToggleHidden,
+  onOpenRename,
 }: {
   cwd: string;
+  depth: number;
   stale: boolean;
-  excluded: boolean;
+  hidden: boolean;
   currentName: string;
-  onToggleExclude: (cwd: string) => void;
-  onRename: (cwd: string, name: string) => void;
+  onToggleHidden: (cwd: string, hidden: boolean) => void;
+  onOpenRename: (cwd: string, trigger: HTMLElement) => void;
 }) {
-  const [draft, setDraft] = useState(currentName);
-  const [editing, setEditing] = useState(false);
-  // Reconcile the draft when the persisted name changes from outside — e.g. OverviewPrefs seeds
-  // projectNames only after /api/config resolves, which can land after this row mounts (Hermes
-  // #161). Adjust during render (React's blessed pattern) and skip while the user is actively
-  // editing so we never clobber an in-progress edit.
-  const [syncedName, setSyncedName] = useState(currentName);
-  if (!editing && currentName !== syncedName) {
-    setSyncedName(currentName);
-    setDraft(currentName);
-  }
-  const commit = () => {
-    setEditing(false);
-    if (draft.trim() !== currentName) onRename(cwd, draft);
-  };
+  const displayName = currentName.trim();
   return (
-    <li className={styles.excludeRow}>
+    <li
+      className={styles.excludeRow}
+      style={{ paddingLeft: `${8 + depth * 18}px` }}
+    >
+      {/* Inverse: checked = visible, unchecked = hidden. Per #174 the user's mental model is
+       *  "show this project? yes/no" — the previous "tick to hide" was confusing. */}
       <input
         type="checkbox"
-        checked={excluded}
-        onChange={() => onToggleExclude(cwd)}
-        aria-label={`Hide ${shortCwd(cwd)} from the overview`}
+        checked={!hidden}
+        onChange={(e) => onToggleHidden(cwd, !e.target.checked)}
+        aria-label={`Show ${shortCwd(cwd)} in the sidebar, filter, and overview`}
       />
       <span className={styles.excludeMeta}>
-        <input
-          className={styles.nameInput}
-          value={draft}
-          placeholder={shortCwd(cwd)}
-          onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => setEditing(true)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-          aria-label={`Custom name for ${cwd}`}
-        />
-        <span className={styles.excludePath}>{shortCwd(cwd)}</span>
+        {/* Click anywhere on the name to open the rename modal. Path is shown as a subtitle
+         *  only when a custom name is set — otherwise it would just repeat the name. */}
+        <button
+          type="button"
+          className={styles.nameButton}
+          onClick={(e) => onOpenRename(cwd, e.currentTarget)}
+          aria-label={`Rename ${shortCwd(cwd)}`}
+        >
+          {displayName || shortCwd(cwd)}
+        </button>
+        {displayName && <span className={styles.excludePath}>{shortCwd(cwd)}</span>}
       </span>
       {stale && <span className={styles.excludeStale}>not currently active</span>}
     </li>
   );
 }
 
-/** Session overview (#148/#152): per-project custom names + hide-from-map. Rows = discovered
- *  projects ∪ excluded ∪ named cwds (so a stale exclusion or a renamed project with no active
- *  sessions is still shown + editable). Both persist immediately via the shared OverviewPrefs
- *  context (the canvas + sidebar/filters react); filtering elsewhere still uses the full cwd. */
+/** Session overview (#174): hierarchical project tree with inverse-checkbox + rename modal.
+ *  Hide is GLOBAL — affects sidebar list, project filter, new-session picker, and the map. */
 function OverviewCard() {
-  const { excluded, setExcluded, projectNames, setProjectName } = useOverviewPrefs();
+  const { hiddenProjects, projectNames, setProjectHidden, setProjectName } = useOverviewPrefs();
   const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
+  const [renaming, setRenaming] = useState<{ cwd: string; trigger: HTMLElement | null } | null>(
+    null,
+  );
 
   useEffect(() => {
     let alive = true;
@@ -715,26 +710,27 @@ function OverviewCard() {
     };
   }, []);
 
+  // Union of: known (discovered) cwds ∪ hidden ∪ named — so a hidden project (which
+  // /api/projects now omits server-side per #174) AND a rename for an inactive project
+  // are both still editable here.
   const rows = useMemo(() => {
     const known = new Set((projects ?? []).map((p) => p.cwd));
-    return [...new Set<string>([...known, ...excluded, ...Object.keys(projectNames)])]
-      .sort()
-      .map((cwd) => ({ cwd, stale: !known.has(cwd) }));
-  }, [projects, excluded, projectNames]);
-
-  const toggleExclude = (cwd: string) => {
-    const next = new Set(excluded);
-    if (next.has(cwd)) next.delete(cwd);
-    else next.add(cwd);
-    setExcluded([...next]);
-  };
+    const all = new Set<string>([...known, ...hiddenProjects, ...Object.keys(projectNames)]);
+    const tree = buildProjectTree(all);
+    return flattenTree(tree).map((n) => ({
+      cwd: n.cwd,
+      depth: n.depth,
+      stale: !known.has(n.cwd),
+    }));
+  }, [projects, hiddenProjects, projectNames]);
 
   return (
     <section className={styles.section} aria-labelledby="overview-h">
       <h2 id="overview-h">Session overview</h2>
       <p className={styles.hint}>
-        Give a project a custom name, or tick to hide it from the overview map. Filtering
-        elsewhere still uses the full path.
+        Untick a project to hide it everywhere — sidebar, filter, new-session picker, and the
+        overview map. Click a name to give the project a custom display name. Filtering still
+        uses the full path under the hood.
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>
@@ -746,14 +742,27 @@ function OverviewCard() {
             <ProjectRow
               key={r.cwd}
               cwd={r.cwd}
+              depth={r.depth}
               stale={r.stale}
-              excluded={excluded.has(r.cwd)}
+              hidden={hiddenProjects.has(r.cwd)}
               currentName={projectNames[r.cwd] ?? ""}
-              onToggleExclude={toggleExclude}
-              onRename={setProjectName}
+              onToggleHidden={setProjectHidden}
+              onOpenRename={(cwd, trigger) => setRenaming({ cwd, trigger })}
             />
           ))}
         </ul>
+      )}
+      {renaming && (
+        <RenameProjectModal
+          cwd={renaming.cwd}
+          initialName={projectNames[renaming.cwd] ?? ""}
+          onCancel={() => setRenaming(null)}
+          onSave={(name) => {
+            setProjectName(renaming.cwd, name);
+            setRenaming(null);
+          }}
+          returnFocusTo={renaming.trigger}
+        />
       )}
     </section>
   );

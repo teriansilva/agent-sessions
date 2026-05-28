@@ -189,7 +189,7 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
 });
 
-test("Session overview: ticking a project hides it + persists via setExcluded (#152)", async () => {
+test("Session overview: unticking a project hides it + persists via projects_hidden (#174)", async () => {
   vi.mocked(api.projects).mockResolvedValue({
     projects: [
       { cwd: "/home/u/alpha", label: "Alpha" },
@@ -197,30 +197,37 @@ test("Session overview: ticking a project hides it + persists via setExcluded (#
     ],
   });
   renderSettings();
-  const alpha = await screen.findByRole("checkbox", { name: /alpha/i });
-  expect(alpha).not.toBeChecked();
+  // Inverse semantics (#174): the row starts CHECKED (visible). Unticking hides.
+  const alpha = await screen.findByRole("checkbox", { name: /~\/alpha/i });
+  expect(alpha).toBeChecked();
   await userEvent.click(alpha);
-  expect(api.setPrefs).toHaveBeenCalledWith({ overview_excluded: ["/home/u/alpha"] });
-  // Shared state updates → the row reflects the new excluded state immediately.
-  expect(await screen.findByRole("checkbox", { name: /alpha/i })).toBeChecked();
+  expect(api.setPrefs).toHaveBeenCalledWith({ projects_hidden: ["/home/u/alpha"] });
+  // Shared state updates → the row immediately reflects the hidden state (now unchecked).
+  expect(await screen.findByRole("checkbox", { name: /~\/alpha/i })).not.toBeChecked();
 });
 
-test("Session overview: renaming a project persists via setProjectName (#148)", async () => {
+test("Session overview: renaming via the modal persists via setProjectName (#174)", async () => {
   vi.mocked(api.projects).mockResolvedValue({
     projects: [{ cwd: "/home/u/alpha", label: "Alpha" }],
   });
   renderSettings();
-  const input = await screen.findByRole("textbox", { name: /custom name for \/home\/u\/alpha/i });
-  await userEvent.type(input, "My Alpha");
-  await userEvent.tab(); // blur → commit
+  // Click the project NAME (a button now, not an inline input) → opens the rename modal.
+  const trigger = await screen.findByRole("button", { name: /rename ~\/alpha/i });
+  await userEvent.click(trigger);
+  const modalInput = await screen.findByRole("textbox", {
+    name: /custom name for \/home\/u\/alpha/i,
+  });
+  await userEvent.type(modalInput, "My Alpha");
+  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
   expect(api.setPrefs).toHaveBeenCalledWith({ project_names: { "/home/u/alpha": "My Alpha" } });
 });
 
-test("Session overview: a name seeded after /api/config resolves still fills the input (#161)", async () => {
+test("Session overview: a name seeded after /api/config resolves is shown on the row (#161/#174)", async () => {
   vi.mocked(api.projects).mockResolvedValue({ projects: [{ cwd: "/home/u/alpha", label: "Alpha" }] });
   // OverviewPrefs seeds projectNames from ConfigCtx, which is null until /api/config resolves —
   // and the row can mount first. Start with null config, then deliver it with a saved name and
-  // assert the input reconciles (the stale-draft case Hermes caught on PR #161).
+  // assert the row's clickable name reflects it (post-#174 the name lives on the button label,
+  // not in an inline input).
   const seeded: AppConfig = {
     csrf: "t",
     new_session_engines: [],
@@ -241,10 +248,11 @@ test("Session overview: a name seeded after /api/config resolves still fills the
     </MemoryRouter>
   );
   const { rerender } = render(tree(null));
-  const input = await screen.findByRole("textbox", { name: /custom name for \/home\/u\/alpha/i });
-  expect(input).toHaveValue(""); // mounted before the name arrived
+  // Before the name arrives, the row shows the shortened path as its visible label.
+  await screen.findByRole("button", { name: /rename ~\/alpha/i });
+  expect(screen.queryByText("Saved Alpha")).not.toBeInTheDocument();
   rerender(tree(seeded));
-  await waitFor(() => expect(input).toHaveValue("Saved Alpha"));
+  await waitFor(() => expect(screen.getByText("Saved Alpha")).toBeInTheDocument());
 });
 
 test.each([

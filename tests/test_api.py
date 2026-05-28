@@ -175,6 +175,59 @@ def test_projects_endpoint(auth_cfg, fake_jsonl):
     assert "/tmp/other" in cwds
 
 
+# ---- #174: server-side hide propagates to /api/sessions + /api/projects -----
+
+
+def test_hidden_projects_filtered_from_sessions_and_facets(auth_cfg, fake_jsonl, tmp_home):
+    """A hidden cwd disappears from `/api/sessions` rows, totals, and the project facet —
+    so the sidebar's pagination + filter dropdown describe the visible set, not the
+    full one (Hermes #174 review: client-only filtering would make totals lie)."""
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # Sanity: before hiding, /tmp/other is present.
+    before = c.get("/api/sessions?limit=100").json()
+    assert "/tmp/other" in {row["cwd"] for row in before["sessions"]}
+    assert "/tmp/other" in {p for p in before["facets"]["projects"]} or before["facets"]["projects"]
+    pre_total = before["total"]
+
+    # Hide it via the new key and confirm it's absent server-side.
+    prefs.set_projects_hidden(["/tmp/other"])
+    after = c.get("/api/sessions?limit=100").json()
+    assert "/tmp/other" not in {row["cwd"] for row in after["sessions"]}
+    assert "/tmp/other" not in after["facets"]["projects"]
+    assert after["total"] <= pre_total  # the hidden rows are gone from the total too
+
+
+def test_hidden_projects_filtered_from_projects_endpoint(auth_cfg, fake_jsonl, tmp_home):
+    """The new-session picker (`/api/projects`) must also drop hidden cwds — the user
+    said they don't want to see this project anywhere."""
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert "/tmp/other" in {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    prefs.set_projects_hidden(["/tmp/other"])
+    assert "/tmp/other" not in {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+
+
+def test_legacy_overview_excluded_post_routes_to_projects_hidden(auth_cfg, fake_jsonl, tmp_home):
+    """A client still POSTing the legacy `overview_excluded` key must end up writing the
+    new `projects_hidden` storage, so existing tabs in the wild stay functional."""
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"overview_excluded": ["/tmp/other"]},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert prefs.get_projects_hidden() == ["/tmp/other"]
+
+
 # ---- rename -------------------------------------------------------------------
 
 

@@ -42,9 +42,15 @@ export interface AppConfig {
   theme?: string;
   /** Per-user sidebar body: "list" (session list) or "overview" (squeezed map, #139). */
   sidebar_view?: "list" | "overview" | string;
-  /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden from the map. */
+  /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden globally. */
   overview_expanded?: string[];
+  /** @deprecated Use `projects_hidden` (#174 — same data; broader scope). Emitted in
+   *  parallel during the transition window so an old client tab still reads its hides. */
   overview_excluded?: string[];
+  /** Cwds hidden globally from the UI (#174). Wins over `overview_excluded` when both
+   *  are present. The hide affects the sidebar list, the project filter, the new-session
+   *  picker, and the overview map. */
+  projects_hidden?: string[];
   /** Per-cwd custom project display names (#148). */
   project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a

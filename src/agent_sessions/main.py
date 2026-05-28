@@ -360,7 +360,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed)
                 # and project cwds excluded from the map. Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
-                "overview_excluded": prefs.get_overview_excluded(),
+                # `overview_excluded` was the legacy name (#144); `projects_hidden` (#174) is
+                # the same idea but with broader scope (sidebar list + filter + map + picker).
+                # Both keys are emitted during the transition window so an old client tab still
+                # reads its hidden list; new clients prefer `projects_hidden`.
+                "overview_excluded": prefs.get_projects_hidden(),
+                "projects_hidden": prefs.get_projects_hidden(),
                 # Per-cwd custom project display names (#148).
                 "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
@@ -395,7 +400,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
-            ("overview_excluded", prefs.set_overview_excluded),
+            # The legacy `overview_excluded` write path is kept for clients still on the old
+            # API surface — internally it routes to the same `projects_hidden` storage so
+            # the two never diverge (#174).
+            ("overview_excluded", prefs.set_projects_hidden),
+            ("projects_hidden", prefs.set_projects_hidden),
         ):
             if key in payload:
                 v = payload[key]
@@ -691,15 +700,20 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             phys = engines.physical_key(key, aliases)
             return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
 
+        # Hidden projects (#174) are stripped server-side BEFORE pagination + facets are
+        # computed, so totals/next_offset/facet lists all describe the visible-to-the-user
+        # set. Filtering only on the client would make `total` and the filter dropdown lie.
+        # Hide is keyed by cwd (the row's `cwd` field), not the display name.
+        hidden = set(prefs.get_projects_hidden())
         scoped = [
             row
             for s in engines.scan_all()
             for row in [_row(s, _meta_for(s))]
-            if row["archived"] == archived
+            if row["archived"] == archived and row["cwd"] not in hidden
         ]
-        # Facets for the project/agent dropdowns: distinct values over the full
-        # archived-scoped set, computed BEFORE q/project/engine filtering — so the
-        # dropdowns list every project/engine present, including ones past the
+        # Facets for the project/agent dropdowns: distinct values over the visible (already
+        # hide-filtered) archived-scoped set, computed BEFORE q/project/engine filtering —
+        # so the dropdowns list every project/engine present, including ones past the
         # first page, regardless of what's currently filtered or loaded.
         facets = {
             "projects": sorted({r["project"] for r in scoped}),
@@ -736,8 +750,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.get("/api/projects")
     async def list_projects(_: str = Depends(_logged_in)) -> JSONResponse:
+        # New-session picker — hidden projects (#174) are excluded here too. Picking a
+        # hidden project as a start location would feel inconsistent with the user having
+        # explicitly said "I don't want to see this project."
+        hidden = set(prefs.get_projects_hidden())
         return JSONResponse(
-            {"projects": [{"cwd": c, "label": c} for c in scanner.pickable_projects()]}
+            {
+                "projects": [
+                    {"cwd": c, "label": c} for c in scanner.pickable_projects() if c not in hidden
+                ]
+            }
         )
 
     @app.websocket("/ws/term/{sid}")

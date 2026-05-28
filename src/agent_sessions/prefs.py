@@ -152,13 +152,39 @@ def set_overview_expanded(cwds: object, path: Path | None = None) -> list[str]:
 
 
 def get_overview_excluded(path: Path | None = None) -> list[str]:
-    """Project cwds hidden from the overview map (#144)."""
+    """Project cwds hidden from the overview map (#144). Legacy reader — kept so the
+    transition window from `overview_excluded` to `projects_hidden` (#174) is invisible
+    to existing on-disk prefs; prefer `get_projects_hidden`."""
     return coerce_str_list(_load(path or _default_path()).get("overview_excluded"))
 
 
 def set_overview_excluded(cwds: object, path: Path | None = None) -> list[str]:
     """Persist the excluded-project cwds. Preserves other keys."""
     return _set("overview_excluded", coerce_str_list(cwds), path)
+
+
+def get_projects_hidden(path: Path | None = None) -> list[str]:
+    """Project cwds globally hidden from the UI (#174). Hide is broader than the legacy
+    `overview_excluded`: an unchecked project also disappears from the sidebar list, the
+    project filter dropdown, and the new-session picker — not just the overview map.
+
+    Precedence on a transition install: the new `projects_hidden` key wins when present;
+    otherwise read the legacy `overview_excluded` (so a user who already excluded projects
+    from the map keeps that behavior, now globally). Normalization happens only on a real
+    write (see `set_projects_hidden`)."""
+    data = _load(path or _default_path())
+    if "projects_hidden" in data:
+        return coerce_str_list(data.get("projects_hidden"))
+    return coerce_str_list(data.get("overview_excluded"))
+
+
+def set_projects_hidden(cwds: object, path: Path | None = None) -> list[str]:
+    """Persist the hidden-project cwds under the new key (#174). Preserves other keys.
+
+    We do NOT delete the legacy `overview_excluded` from disk here: the reader
+    (`get_projects_hidden`) explicitly prefers `projects_hidden` when present, so a
+    legacy key lying around is benign and the on-disk diff stays minimal."""
+    return _set("projects_hidden", coerce_str_list(cwds), path)
 
 
 def get_project_names(path: Path | None = None) -> dict[str, str]:

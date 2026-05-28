@@ -29,8 +29,13 @@ def test_cli_no_subcommand_prints_help_and_returns_1(capsys):
     assert "usage:" in capsys.readouterr().out.lower()
 
 
-def test_cli_serve_parser_defaults_to_localhost():
+def test_cli_serve_parser_defaults_to_localhost(monkeypatch):
     # `serve` binds localhost by default (the installer documents a reverse proxy/TLS).
+    # The argparse default reads AGENT_SESSIONS_HOST from the env, so isolate it — a
+    # runner with the env exported (self-hosted runners often have it for local serve)
+    # otherwise contaminates the assertion. Same story for the port default.
+    monkeypatch.delenv("AGENT_SESSIONS_HOST", raising=False)
+    monkeypatch.delenv("AGENT_SESSIONS_PORT", raising=False)
     args = cli._build_parser().parse_args(["serve"])
     assert args.cmd == "serve"
     assert args.host == "127.0.0.1"

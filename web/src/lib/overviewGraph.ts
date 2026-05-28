@@ -58,17 +58,10 @@ function groupSize(count: number): { w: number; h: number; cols: number } {
   };
 }
 
-/** The nearest present project that is a path-BOUNDARY ancestor of `cwd` (longest match), or
- *  undefined. Boundary-aware so `/a/b` links to `/a` but `/a-foo` never does (#148). */
-function nearestAncestor(cwd: string, present: Set<string>): string | undefined {
-  let best: string | undefined;
-  for (const c of present) {
-    if (c === cwd) continue;
-    const pfx = c.endsWith("/") ? c : `${c}/`;
-    if (cwd.startsWith(pfx) && (best === undefined || c.length > best.length)) best = c;
-  }
-  return best;
-}
+// Tree resolution (parent / children / depth) is shared with the Settings → Session
+// overview card via `./projectTree` (#174). The local copy here used to be the only one
+// and is gone — both surfaces now agree on the same hierarchy by construction.
+import { buildProjectTree } from "./projectTree";
 
 export interface BuildOptions {
   /** Epoch seconds used to classify active/idle. Defaults to now (injectable for tests). */
@@ -107,29 +100,18 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     groups.set(s.cwd, g);
   }
 
+  // Hierarchy (parent/children/depth) — extracted to `./projectTree` so the Settings card
+  // can render the same tree (#174). The shapes the rest of the function consumes are
+  // unchanged.
   const present = new Set(groups.keys());
-  const parent = new Map<string, string | undefined>();
-  const children = new Map<string, string[]>();
-  for (const cwd of present) {
-    const p = nearestAncestor(cwd, present);
-    parent.set(cwd, p);
-    if (p) {
-      const ks = children.get(p) ?? [];
-      ks.push(cwd);
-      children.set(p, ks);
-    }
-  }
-  const depthOf = (cwd: string): number => {
-    let d = 0;
-    let c = parent.get(cwd);
-    const seen = new Set<string>();
-    while (c && !seen.has(c)) {
-      seen.add(c);
-      d++;
-      c = parent.get(c);
-    }
-    return d;
-  };
+  const tree = buildProjectTree(present);
+  const parent = new Map<string, string | undefined>(
+    [...tree.values()].map((n) => [n.cwd, n.parent]),
+  );
+  const children = new Map<string, string[]>(
+    [...tree.values()].map((n) => [n.cwd, n.children]),
+  );
+  const depthOf = (cwd: string): number => tree.get(cwd)?.depth ?? 0;
   const sizeOf = (cwd: string) =>
     expanded.has(cwd) ? groupSize(groups.get(cwd)!.items.length) : { w: COLLAPSED_W, h: HEADER_H };
 

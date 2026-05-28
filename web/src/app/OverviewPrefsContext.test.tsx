@@ -35,7 +35,9 @@ test("a save is visible to a canvas-like consumer immediately + persists (#144)"
   await userEvent.click(screen.getByRole("button", { name: "exclude" }));
   // The SAME context state a canvas reads now reflects the exclusion — no page reload.
   expect(screen.getByTestId("excluded").textContent).toBe("/p/secret");
-  expect(api.setPrefs).toHaveBeenCalledWith({ overview_excluded: ["/p/secret"] });
+  // The provider now writes the new `projects_hidden` key (#174); the legacy
+  // `overview_excluded` is still accepted by the server but no client sends it any more.
+  expect(api.setPrefs).toHaveBeenCalledWith({ projects_hidden: ["/p/secret"] });
 });
 
 test("toggling a cluster updates shared expanded state + persists (#144)", async () => {
