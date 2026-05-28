@@ -3,6 +3,8 @@ import { api, ApiError } from "../lib/api";
 import type { Session, SessionsQuery } from "../types/api";
 
 const PAGE = 20;
+/** Background refresh cadence — keeps the sidebar live without hammering the server (#159). */
+const POLL_MS = 15_000;
 
 export interface Filters {
   q: string;
@@ -31,6 +33,16 @@ export function useSessionsList() {
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
   // never overwrite the state of a newer one that already resolved.
   const reqId = useRef(0);
+  // `initialLoaded` flips after the very first fetch settles. Polling is gated on it so a
+  // silent 15s poll firing while the bootstrap is in flight can't supersede it (#168).
+  const [initialLoaded, setInitialLoaded] = useState(false);
+  // Visible (non-silent) request count: bootstrap + filter changes + loadMore. While > 0
+  // the silent poll is suppressed entirely — otherwise a silent fetch bumping `reqId`
+  // would orphan the visible request's `finally`, never clearing `loading=true`
+  // ("Load more" disabled / spinner forever). Hermes #168 review caught this for both
+  // the bootstrap path AND a `loadMore` mid-poll. A counter (not a boolean) handles the
+  // case where two visible requests overlap (e.g. fast filter typing).
+  const visibleInFlight = useRef(0);
 
   const query: SessionsQuery = useMemo(
     () => ({
@@ -43,13 +55,29 @@ export function useSessionsList() {
     [filters],
   );
 
+  // Live row count — read inside refresh() without re-creating it on every list mutation,
+  // so the polling effect's setInterval doesn't get torn down and restarted each tick (#159).
+  const sessionsCount = useRef(0);
+  useEffect(() => {
+    sessionsCount.current = sessions.length;
+  }, [sessions]);
+
   const fetchPage = useCallback(
-    async (offset: number, replace: boolean) => {
+    async (
+      offset: number,
+      replace: boolean,
+      opts: { silent?: boolean; limit?: number } = {},
+    ) => {
       const gen = ++reqId.current;
-      setLoading(true);
-      setError(null);
+      // Silent (background) refreshes don't show a loading state or surface errors — the
+      // user sees current rows until the next successful fetch (#159).
+      if (!opts.silent) {
+        setLoading(true);
+        setError(null);
+        visibleInFlight.current += 1; // suppresses the silent poll while we're pending
+      }
       try {
-        const page = await api.sessions({ ...query, offset });
+        const page = await api.sessions({ ...query, offset, limit: opts.limit ?? PAGE });
         if (gen !== reqId.current) return; // superseded by a newer request → drop
         setSessions((prev) => {
           const merged = replace ? page.sessions : [...prev, ...page.sessions];
@@ -61,11 +89,20 @@ export function useSessionsList() {
         setFacets(page.facets);
       } catch (e) {
         if (gen !== reqId.current) return;
+        if (opts.silent) return; // background failure → keep existing rows, no flicker
         setError(
           e instanceof ApiError && e.status === 401 ? "Please sign in." : "Failed to load sessions.",
         );
       } finally {
-        if (gen === reqId.current) setLoading(false);
+        if (gen === reqId.current && !opts.silent) setLoading(false);
+        // The first visible (non-silent) fetch to fully settle — successful, errored, or
+        // superseded after this point — unblocks polling. Silent fetches don't qualify;
+        // they're never the bootstrap.
+        if (!opts.silent) {
+          setInitialLoaded(true);
+          // Always decrement, even on supersession — pairs with the increment above.
+          visibleInFlight.current = Math.max(0, visibleInFlight.current - 1);
+        }
       }
     },
     [query],
@@ -76,6 +113,50 @@ export function useSessionsList() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchPage(0, true);
   }, [fetchPage]);
+
+  /** Silent refresh from offset 0 covering every loaded row, so a session that just got new
+   *  activity moves up + relative-time labels stay fresh without losing pages the user has
+   *  already loaded (#159). Skipped while any visible request (bootstrap / filter / loadMore)
+   *  is in flight, so the silent fetch can't supersede the visible one and leave `loading`
+   *  stuck `true` (Hermes #168 review). The next 15s tick picks up cleanly once visible is
+   *  done. */
+  const refresh = useCallback(() => {
+    if (visibleInFlight.current > 0) return; // a visible request is pending — let it finish
+    const limit = Math.max(PAGE, sessionsCount.current);
+    void fetchPage(0, true, { silent: true, limit });
+  }, [fetchPage]);
+
+  // Live polling: refresh on a cadence, pause while the tab is hidden, resume + refresh
+  // immediately when it becomes visible again. Gated on `initialLoaded` so a slow first
+  // fetch can't be lapped by a silent poll (the race Hermes caught: both fetches in flight,
+  // `reqId` bumped past the visible one, `loading` stuck true).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!initialLoaded) return; // wait for the bootstrap fetch to settle
+    let id: number | undefined;
+    const start = () => {
+      if (id != null) return;
+      id = window.setInterval(refresh, POLL_MS);
+    };
+    const stop = () => {
+      if (id != null) window.clearInterval(id);
+      id = undefined;
+    };
+    const onVis = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        refresh(); // catch up on what we missed while hidden
+        start();
+      }
+    };
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [refresh, initialLoaded]);
 
   const loadMore = useCallback(() => {
     if (loading || nextOffset == null) return;

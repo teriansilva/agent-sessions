@@ -154,6 +154,29 @@ export function SessionList() {
     setSessions(sessions);
   }, [sessions, setSessions]);
 
+  // Relative-time labels otherwise stay frozen ("2m ago", "2m ago", …) until something else
+  // re-renders the list. Bump a counter every ~30s while the tab is visible so `relTime` is
+  // recomputed without forcing an API call (#159). Background poll handles row order.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    let id: number | undefined;
+    const start = () => {
+      if (id == null) id = window.setInterval(() => setClockTick((t) => t + 1), 30_000);
+    };
+    const stop = () => {
+      if (id != null) window.clearInterval(id);
+      id = undefined;
+    };
+    const onVis = () => (document.hidden ? stop() : start());
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+
   return (
     <div className={styles.wrap}>
       <Link to="/" className={`${styles.newBtn} shine`}>

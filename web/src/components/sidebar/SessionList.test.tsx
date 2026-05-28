@@ -131,3 +131,35 @@ test("archiving a row calls api.archive and removes it from the active list", as
   expect(mockArchive).toHaveBeenCalledWith("claude:a");
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
 });
+
+// #159: relative-time labels advance over time without a refetch — the sidebar shows
+// "just now" when the row is fresh; 30s later (after the clockTick) it shows "1m ago".
+test("relative-time labels advance over time without a refetch (#159)", async () => {
+  const { act } = await import("@testing-library/react");
+  const start = new Date("2026-05-28T08:00:00Z");
+  const startSec = Math.floor(start.getTime() / 1000);
+  const s = sess("claude:a", "First");
+  s.last_mtime = startSec - 50; // 50s old → "just now"
+  mockSessions.mockResolvedValue(pageOf([s], { total: 1 }));
+  // shouldAdvanceTime lets the initial fetch's microtasks resolve while we still hold the
+  // fake-timer steering wheel for the clockTick interval.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(start);
+  try {
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+    await screen.findByText("First");
+    expect(screen.getByText(/just now/i)).toBeInTheDocument();
+    // 30s passes (one clockTick interval); relTime now sees the row as 80s old → "1m ago".
+    vi.setSystemTime(new Date(start.getTime() + 30_000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(screen.getByText(/1m ago/i)).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
