@@ -1,5 +1,5 @@
 import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { engineBadge, engineName } from "../lib/format";
@@ -11,13 +11,19 @@ import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
 import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
+import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
+import { lazyWithReload } from "./lazyWithReload";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
 
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
-const Overview = lazy(() => import("../routes/Overview"));
-const SidebarOverview = lazy(() => import("../components/overview/SidebarOverview"));
+// Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
+const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
+const SidebarOverview = lazyWithReload(
+  () => import("../components/overview/SidebarOverview"),
+  "sidebar-overview",
+);
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 
@@ -202,9 +208,11 @@ function Layout() {
         </div>
         <div className="sidebarBody">
           {sidebarView === "overview" ? (
-            <Suspense fallback={<div className="tr-overview tr-ov-state">Loading map…</div>}>
-              <SidebarOverview />
-            </Suspense>
+            <ChunkErrorBoundary>
+              <Suspense fallback={<div className="tr-overview tr-ov-state">Loading map…</div>}>
+                <SidebarOverview />
+              </Suspense>
+            </ChunkErrorBoundary>
           ) : (
             <SessionList />
           )}
@@ -218,15 +226,17 @@ function Layout() {
         onClick={() => setNavOpen(false)}
       />
       <main className="terminal-pane">
-        <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
-          <Routes>
-            <Route path="/" element={<NewSessionLanding />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/overview" element={<Overview />} />
-            <Route path="/s/:engine/:id" element={<SessionView />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
+        <ChunkErrorBoundary>
+          <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
+            <Routes>
+              <Route path="/" element={<NewSessionLanding />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/overview" element={<Overview />} />
+              <Route path="/s/:engine/:id" element={<SessionView />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </ChunkErrorBoundary>
       </main>
     </div>
   );
