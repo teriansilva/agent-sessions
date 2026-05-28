@@ -38,13 +38,16 @@ test("interrupt button is icon-only — no visible 'Interrupt' label (#186)", ()
   expect(btn).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
 });
 
-test("Send clears the line then bracketed-pastes the message + Enter", async () => {
+test("Send clears the line then bracketed-pastes the message then submits Enter (#180)", async () => {
   const user = userEvent.setup();
   renderCompose();
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
+  // Three discrete WS frames — clear, paste, Enter — so the agent reads the
+  // trailing ``\r`` as a discrete keystroke, not as part of the paste buffer.
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
-  expect(sendInput).toHaveBeenNthCalledWith(2, `${bracketedPaste("hello world")}${KEYSEQ.enter}`);
+  expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
+  expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter);
 });
 
 test("Enter sends, Shift+Enter inserts a newline", async () => {
@@ -55,6 +58,40 @@ test("Enter sends, Shift+Enter inserts a newline", async () => {
   expect(sendInput).not.toHaveBeenCalled(); // shift+enter = newline, not send
   await user.type(ta, "{Enter}");
   expect(sendInput).toHaveBeenCalledWith(expect.stringContaining(bracketedPaste("line1\nline2")));
+});
+
+test("Send with image attachment writes Enter as its own frame after the paste (#180)", async () => {
+  // Regression for the original bug: with an attachment path appended to the
+  // text the bracketed-paste packet got long enough that some agents read the
+  // trailing ``\r`` as still inside the paste buffer, leaving the prompt typed
+  // but unsubmitted. The fix is to split the Enter into its own sendInput call.
+  const user = userEvent.setup();
+  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const handle = createRef<ComposeHandle>();
+  render(<Compose ref={handle} sendInput={sendInput} onCopy={onCopy} />);
+  await user.type(screen.getByRole("textbox"), "look at this");
+  // Forward an image paste the way Terminal does — the upload resolves and the
+  // attachment pill renders.
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+  handle.current!.attachImages([file]);
+  await screen.findByText("shot.png");
+
+  sendInput.mockClear();
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+
+  // 3 frames total (clear, paste-with-attachment, enter). The Enter is its own
+  // call — never appended to the paste payload.
+  expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
+  expect(sendInput).toHaveBeenNthCalledWith(
+    2,
+    bracketedPaste("look at this /uploads/shot.png"),
+  );
+  expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter);
+  // No frame contains the paste-end marker + Enter back-to-back.
+  const pasteEndPlusEnter = "\x1b[201~" + KEYSEQ.enter;
+  for (const [arg] of sendInput.mock.calls) {
+    expect(String(arg).includes(pasteEndPlusEnter)).toBe(false);
+  }
 });
 
 test("empty Send is a no-op", async () => {

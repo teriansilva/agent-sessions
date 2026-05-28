@@ -71,9 +71,17 @@ export const Compose = forwardRef<
     const msg = parts.join(" ");
     if (!msg) return;
     // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then
-    // paste the message in one shot + Enter.
+    // paste the message, then submit as a SEPARATE frame.
+    // (#180) The previous form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into
+    // one WS frame → one PTY write → one read by the agent. With an attachment
+    // path appended the longer paste packet caused some agents to read the
+    // trailing ``\r`` as still inside the bracketed-paste buffer, leaving the
+    // prompt typed but unsubmitted. Splitting the ``\r`` into its own WS frame
+    // guarantees the agent sees it as a discrete Enter keystroke after the
+    // paste-end marker.
     sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-    sendInput(bracketedPaste(msg) + KEYSEQ.enter);
+    sendInput(bracketedPaste(msg));
+    sendInput(KEYSEQ.enter);
     setText("");
     setAttachments([]);
     if (taRef.current) taRef.current.style.height = "auto";
