@@ -2,15 +2,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../../lib/api";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
-import { bracketedPaste } from "../../lib/termKeys";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
-import { Compose } from "./Compose";
+import { Compose, type ComposeHandle } from "./Compose";
 import styles from "./Terminal.module.css";
 
 function statusText(s: TermStatus): string {
@@ -44,6 +42,7 @@ export function Terminal({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sockRef = useRef<TermSocket | null>(null);
+  const composeRef = useRef<ComposeHandle>(null);
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const { theme } = useTheme();
@@ -139,25 +138,16 @@ export function Terminal({
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
 
-    // Paste an image (screenshot) anywhere over the terminal → upload it and send the
-    // returned server path to the PTY as a bracketed paste so the agent can read it.
-    // Capture-phase + stopPropagation so xterm never sees the (text-less) image paste; a
-    // plain-text paste carries no image files, so we fall through to xterm untouched (#135).
+    // Paste an image (screenshot) anywhere over the terminal → forward it to Compose as an
+    // attachment pill (opening Compose if it was collapsed) so the user actually sees the
+    // file land (#157). Capture-phase + stopPropagation so xterm never sees the (text-less)
+    // image paste; plain-text paste carries no image files and falls through to xterm (#135).
     const onHostPaste = (e: ClipboardEvent) => {
       const images = imageFilesFromData(e.clipboardData);
       if (!images.length) return;
       e.preventDefault();
       e.stopPropagation();
-      void (async () => {
-        for (const f of images) {
-          try {
-            const up = await api.upload(f);
-            sock.send({ t: "i", d: bracketedPaste(up.path) + " " });
-          } catch {
-            /* best-effort: a failed upload just inserts nothing */
-          }
-        }
-      })();
+      composeRef.current?.attachImages(images);
     };
     host.addEventListener("paste", onHostPaste, true);
 
@@ -232,7 +222,7 @@ export function Terminal({
         <div ref={hostRef} className={styles.term} />
       </div>
       {/* Action/compose bar everywhere; expanded on touch, collapsed-to-the-bar on desktop. */}
-      <Compose sendInput={sendInput} onCopy={handleCopy} defaultOpen={coarse} />
+      <Compose ref={composeRef} sendInput={sendInput} onCopy={handleCopy} defaultOpen={coarse} />
     </div>
   );
 }

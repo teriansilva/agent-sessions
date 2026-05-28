@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
-import { Compose } from "./Compose";
+import { Compose, type ComposeHandle } from "./Compose";
 
 vi.mock("../../lib/api", () => ({ api: { upload: vi.fn() } }));
 
@@ -93,4 +94,27 @@ test("the copy button invokes onCopy", async () => {
   renderCompose();
   await user.click(screen.getByRole("button", { name: /copy/i }));
   expect(onCopy).toHaveBeenCalledOnce();
+});
+
+test("attachImages opens the compose (if collapsed) and adds the upload as a pill (#157)", async () => {
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const ref = createRef<ComposeHandle>();
+  render(<Compose ref={ref} sendInput={sendInput} onCopy={onCopy} defaultOpen={false} />);
+  // Desktop-style: collapsed → no textarea visible.
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  ref.current!.attachImages([file]);
+  // Compose expands → textarea is now visible, and the upload surfaces as a pill.
+  await screen.findByRole("textbox");
+  await screen.findByText("shot.png");
+  expect(api.upload).toHaveBeenCalledWith(file);
+  // No bracketed-paste of the path into the PTY — pill mode only.
+  expect(sendInput).not.toHaveBeenCalledWith(`${bracketedPaste("/uploads/shot.png")} `);
+});
+
+test("attachImages with no files is a no-op", () => {
+  const ref = createRef<ComposeHandle>();
+  render(<Compose ref={ref} sendInput={sendInput} onCopy={onCopy} defaultOpen={false} />);
+  ref.current!.attachImages([]);
+  expect(api.upload).not.toHaveBeenCalled();
 });

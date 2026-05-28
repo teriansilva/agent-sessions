@@ -1,8 +1,7 @@
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { type ReactNode } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
-import { bracketedPaste } from "../../lib/termKeys";
 import { ThemeCtx } from "../../theme/themeStore";
 import { Terminal } from "./Terminal";
 import styles from "./Terminal.module.css";
@@ -109,13 +108,12 @@ test("dropping `fresh` during convergence keeps the same live socket (no relaunc
   expect(sockets[0].url(0)).toContain("new=1");
 });
 
-// #135: pasting an image over the terminal uploads it and sends the server path to the PTY.
-test("pasting an image over the terminal uploads it and sends the path to the PTY", async () => {
+// #157: pasting an image over the terminal opens Compose and adds an attachment pill —
+// it never goes to the PTY (no bracketed-paste of the server path, no terminal pollution).
+test("pasting an image over the terminal routes to Compose as an attachment, not to the PTY (#157)", async () => {
   const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
   vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
-  const { container } = render(
-    wrap(<Terminal engine="claude" id="abc123" />),
-  );
+  const { container } = render(wrap(<Terminal engine="claude" id="abc123" />));
   const host = container.getElementsByClassName(styles.term)[0];
   expect(host).toBeTruthy();
   fireEvent.paste(host, {
@@ -124,8 +122,14 @@ test("pasting an image over the terminal uploads it and sends the path to the PT
       files: [file],
     },
   });
+  // Compose's uploadFiles is invoked → api.upload runs with the pasted file.
   await vi.waitFor(() => expect(api.upload).toHaveBeenCalledWith(file));
-  await vi.waitFor(() =>
-    expect(sockets[0].send).toHaveBeenCalledWith({ t: "i", d: `${bracketedPaste("/uploads/shot.png")} ` }),
-  );
+  // The pill (with the filename) appears in the DOM → the user sees the attachment landed.
+  await screen.findByText("shot.png");
+  // CRITICAL: nothing was bracketed-pasted into the PTY for the image.
+  const sentToPty = sockets[0].send.mock.calls
+    .map((c) => c[0])
+    .filter((m) => m.t === "i")
+    .map((m) => m.d);
+  expect(sentToPty.join("|")).not.toContain("/uploads/shot.png");
 });

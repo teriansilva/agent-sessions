@@ -10,7 +10,13 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { type ClipboardEvent as ReactClipboardEvent, useRef, useState } from "react";
+import {
+  type ClipboardEvent as ReactClipboardEvent,
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../../lib/api";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { bracketedPaste, KEYSEQ, type KeyName } from "../../lib/termKeys";
@@ -21,20 +27,27 @@ interface Attachment {
   path: string;
 }
 
+/** Imperative handle for parents that want to push files into Compose from outside (e.g.
+ *  Terminal forwarding a captured image paste, #157). */
+export interface ComposeHandle {
+  /** Open Compose (if collapsed) and upload the files as attachment pills — same flow as
+   *  a textarea paste, regardless of focus or open state. */
+  attachImages: (files: File[]) => void;
+}
+
 /** Mobile compose + action bar (the legacy bottom bar): nav/control keys, file attach,
  *  copy, and a collapsible autocomplete-safe text field. Keystrokes + the composed
- *  message go to the PTY via `sendInput`. Desktop types directly in the terminal, so
- *  this is only rendered on coarse-pointer devices. */
-export function Compose({
-  sendInput,
-  onCopy,
-  defaultOpen = true,
-}: {
-  sendInput: (d: string) => void;
-  onCopy: () => void;
-  /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
-  defaultOpen?: boolean;
-}) {
+ *  message go to the PTY via `sendInput`. On desktop it stays collapsed by default; image
+ *  pastes captured by the parent terminal call `attachImages` to expand it and add pills. */
+export const Compose = forwardRef<
+  ComposeHandle,
+  {
+    sendInput: (d: string) => void;
+    onCopy: () => void;
+    /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
+    defaultOpen?: boolean;
+  }
+>(function Compose({ sendInput, onCopy, defaultOpen = true }, ref) {
   const [open, setOpen] = useState(defaultOpen);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -66,13 +79,13 @@ export function Compose({
     if (taRef.current) taRef.current.style.height = "auto";
   };
 
-  const uploadFiles = async (files: File[]) => {
+  const uploadFiles = async (files: File[], forceAttachment = false) => {
     if (!files.length) return;
     setNote("uploading…");
     try {
       for (const file of files) {
         const up = await api.upload(file);
-        if (open) {
+        if (open || forceAttachment) {
           setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
         } else {
           sendInput(bracketedPaste(up.path) + " ");
@@ -87,6 +100,17 @@ export function Compose({
   };
 
   const pickFiles = (files: FileList | null) => uploadFiles(Array.from(files ?? []));
+
+  // External path (#157): the parent terminal forwards a captured image paste here. Open
+  // Compose if it was collapsed (desktop default) and always upload as an attachment pill,
+  // so the user actually sees the screenshot landed.
+  useImperativeHandle(ref, () => ({
+    attachImages: (files: File[]) => {
+      if (!files.length) return;
+      if (!open) setOpen(true);
+      void uploadFiles(files, true);
+    },
+  }));
 
   // Paste an image (screenshot) into the compose box → upload it like an attachment
   // instead of letting the textarea swallow the (empty) text. Plain-text paste is left
@@ -211,4 +235,4 @@ export function Compose({
       />
     </div>
   );
-}
+});
