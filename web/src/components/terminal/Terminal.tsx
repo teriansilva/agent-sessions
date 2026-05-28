@@ -189,16 +189,30 @@ export function Terminal({
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
 
-    // Paste an image (screenshot) anywhere over the terminal → forward it to Compose as an
-    // attachment pill (opening Compose if it was collapsed) so the user actually sees the
-    // file land (#157). Capture-phase + stopPropagation so xterm never sees the (text-less)
-    // image paste; plain-text paste carries no image files and falls through to xterm (#135).
+    // Paste over the terminal (#157 + #181):
+    // - Image paste → forward to Compose as an attachment pill (opens Compose if
+    //   it was collapsed); the image never reaches the PTY.
+    // - Text paste → forward to xterm via ``term.paste(text)``. Without this the
+    //   capture-phase listener has to rely on the paste event reaching xterm's
+    //   hidden helper textarea, which doesn't happen reliably when the cursor
+    //   is over the canvas rather than the textarea — the user saw a paste that
+    //   did nothing and had to right-click → Paste instead (#181). ``term.paste``
+    //   respects bracketed-paste mode and matches what xterm's own textarea
+    //   handler would do, so the agent sees one clean paste.
     const onHostPaste = (e: ClipboardEvent) => {
       const images = imageFilesFromData(e.clipboardData);
-      if (!images.length) return;
-      e.preventDefault();
-      e.stopPropagation();
-      composeRef.current?.attachImages(images);
+      if (images.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        composeRef.current?.attachImages(images);
+        return;
+      }
+      const text = e.clipboardData?.getData("text/plain");
+      if (text) {
+        e.preventDefault();
+        e.stopPropagation();
+        termRef.current?.paste(text);
+      }
     };
     host.addEventListener("paste", onHostPaste, true);
 

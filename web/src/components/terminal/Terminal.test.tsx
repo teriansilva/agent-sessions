@@ -19,6 +19,7 @@ type FakeXterm = {
   buffer: { active: { baseY: number; viewportY: number } };
   scrollToBottom: ReturnType<typeof vi.fn>;
   fireScroll: () => void;
+  paste: ReturnType<typeof vi.fn>;
 };
 const xterms: FakeXterm[] = [];
 vi.mock("@xterm/xterm", () => ({
@@ -32,6 +33,7 @@ vi.mock("@xterm/xterm", () => ({
       this.buffer.active.viewportY = this.buffer.active.baseY;
       this.scrollCb?.();
     });
+    public paste = vi.fn();
     constructor() {
       const self = this as unknown as FakeXterm;
       self.fireScroll = () => this.scrollCb?.();
@@ -301,4 +303,26 @@ test("#184 owner role hides the banner", () => {
   expect(screen.getByRole("button", { name: /take over/i })).toBeInTheDocument();
   act(() => sockets[0].emitRole!("owner"));
   expect(screen.queryByRole("button", { name: /take over/i })).toBeNull();
+});
+
+// #181: text pasted anywhere over the terminal pane is forwarded to xterm via
+// term.paste(text). Without this the paste depended on the hidden helper textarea
+// receiving the event, which failed unreliably and forced the user to use
+// right-click → Paste from the context menu.
+test("#181 text paste over the terminal forwards to term.paste + prevents default", () => {
+  const { container } = render(wrap(<Terminal engine="claude" id="abc" />));
+  const host = container.getElementsByClassName(styles.term)[0] as HTMLElement;
+  expect(host).toBeTruthy();
+  const preventDefault = vi.fn();
+  const stopPropagation = vi.fn();
+  fireEvent.paste(host, {
+    clipboardData: {
+      items: [{ kind: "string", type: "text/plain" }],
+      files: [] as File[],
+      getData: (mime: string) => (mime === "text/plain" ? "hello agent" : ""),
+    },
+    preventDefault,
+    stopPropagation,
+  });
+  expect(xterms[0].paste).toHaveBeenCalledWith("hello agent");
 });
