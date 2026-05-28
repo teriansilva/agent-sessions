@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -98,6 +99,14 @@ export function Terminal({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Make URLs in agent output clickable (#158). Opens in a new tab, deliberately denying
+    // window.opener access (so the linked page can't navigate this tab) + the Referer header
+    // (privacy + don't leak which agent-sessions session we came from).
+    term.loadAddon(
+      new WebLinksAddon((_e, uri) => {
+        window.open(uri, "_blank", "noopener,noreferrer");
+      }),
+    );
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;

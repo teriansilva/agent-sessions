@@ -11,12 +11,17 @@ vi.mock("../../lib/api", () => ({ api: { upload: vi.fn() } }));
 // jsdom has no canvas/ResizeObserver/rAF — stub the bits the socket effect touches so we can
 // mount the REAL Terminal (the bug this guards lives in its socket effect, not in a mock).
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
+// Records every addon loaded into the Terminal so tests can assert WebLinksAddon's presence
+// (and that its click handler was wired correctly). Reset in `beforeEach`.
+const loadedAddons: unknown[] = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
     options: Record<string, unknown> = {};
-    loadAddon() {}
+    loadAddon(addon: unknown) {
+      loadedAddons.push(addon);
+    }
     open() {}
     write() {}
     onData() {}
@@ -32,6 +37,16 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
     fit() {}
+  },
+}));
+// Capture the click handler passed to WebLinksAddon so the test can fire it directly and
+// confirm the window.open invocation shape (noopener,noreferrer).
+vi.mock("@xterm/addon-web-links", () => ({
+  WebLinksAddon: class {
+    public handler: (e: unknown, uri: string) => void;
+    constructor(handler: (e: unknown, uri: string) => void) {
+      this.handler = handler;
+    }
   },
 }));
 
@@ -65,6 +80,7 @@ class FakeResizeObserver {
 
 beforeEach(() => {
   sockets.length = 0;
+  loadedAddons.length = 0;
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   vi.stubGlobal("requestAnimationFrame", () => 0);
   vi.stubGlobal("cancelAnimationFrame", () => {});
@@ -132,4 +148,25 @@ test("pasting an image over the terminal routes to Compose as an attachment, not
     .filter((m) => m.t === "i")
     .map((m) => m.d);
   expect(sentToPty.join("|")).not.toContain("/uploads/shot.png");
+});
+
+// #158: URLs in agent output are clickable via @xterm/addon-web-links. The addon is loaded
+// on every Terminal mount with a handler that opens in a new tab WITHOUT window.opener +
+// WITHOUT the Referer header.
+test("loads WebLinksAddon and opens links in a new tab with noopener,noreferrer (#158)", () => {
+  const open = vi.fn();
+  vi.stubGlobal("open", open);
+  render(wrap(<Terminal engine="claude" id="abc123" />));
+
+  // The Terminal effect loaded the addons in order: FitAddon, then WebLinksAddon.
+  // Find the WebLinksAddon by its captured `handler` property.
+  const wl = loadedAddons.find(
+    (a): a is { handler: (e: unknown, uri: string) => void } =>
+      typeof (a as { handler?: unknown }).handler === "function",
+  );
+  expect(wl).toBeDefined();
+
+  // Fire the handler as the addon would on a real click.
+  wl!.handler({}, "https://example.com/foo");
+  expect(open).toHaveBeenCalledWith("https://example.com/foo", "_blank", "noopener,noreferrer");
 });
