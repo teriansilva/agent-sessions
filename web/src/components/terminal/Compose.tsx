@@ -188,13 +188,11 @@ export const Compose = forwardRef<
           </button>
           <button
             type="button"
-            className={styles.txt}
             aria-label="Interrupt (send Ctrl-C)"
             title="Send Ctrl-C (interrupt)"
             onClick={() => key("ctrlc")}
           >
-            <Square size={12} fill="currentColor" />
-            <span>Interrupt</span>
+            <Square size={14} fill="currentColor" />
           </button>
           <button
             type="button"

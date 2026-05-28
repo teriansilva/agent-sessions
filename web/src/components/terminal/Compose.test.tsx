@@ -29,6 +29,15 @@ test("nav keys send their control sequence to the PTY", async () => {
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.ctrlc);
 });
 
+test("interrupt button is icon-only — no visible 'Interrupt' label (#186)", () => {
+  renderCompose();
+  const btn = screen.getByRole("button", { name: /ctrl-c/i });
+  // The icon-only invariant: aria-label + title are the affordance, no visible text.
+  expect(btn.textContent ?? "").toBe("");
+  expect(btn).toHaveAttribute("aria-label", expect.stringMatching(/interrupt/i));
+  expect(btn).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
+});
+
 test("Send clears the line then bracketed-pastes the message + Enter", async () => {
   const user = userEvent.setup();
   renderCompose();
