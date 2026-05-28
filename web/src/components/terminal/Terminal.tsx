@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { TermSocket, type TermStatus } from "../../lib/termSocket";
@@ -49,6 +50,9 @@ export function Terminal({
   const { theme } = useTheme();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+  // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
+  // up off the live tail. Updated from xterm's onScroll; the click jumps back.
+  const [atBottom, setAtBottom] = useState(true);
   // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
   // current one WITHOUT the socket effect depending on it (a changing callback identity
   // must never tear down + relaunch the live terminal). Updated in an effect (writing a
@@ -110,6 +114,20 @@ export function Terminal({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // #187: track whether the viewport is sitting at the live tail. xterm fires
+    // onScroll with the topmost line of the viewport whenever the user scrolls or
+    // new output pushes the buffer; "at bottom" means viewportY has caught up to
+    // baseY (the bottom of the scrollback). Eight-line dead zone so a single
+    // wheel click while live output is streaming doesn't flicker the FAB on/off.
+    const SCROLL_DEAD_ZONE = 8;
+    const computeAtBottom = () => {
+      const buf = term.buffer?.active;
+      if (!buf) return true;
+      return buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE;
+    };
+    const updateAtBottom = () => setAtBottom(computeAtBottom());
+    term.onScroll?.(updateAtBottom);
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -217,6 +235,10 @@ export function Terminal({
   }, [theme]);
 
   const text = statusText(status);
+  const scrollToTail = useCallback(() => {
+    termRef.current?.scrollToBottom();
+    setAtBottom(true);
+  }, []);
   return (
     <div className={styles.wrap}>
       <div className={styles.termArea}>
@@ -229,6 +251,17 @@ export function Terminal({
           </div>
         )}
         <div ref={hostRef} className={styles.term} />
+        {coarse && !atBottom && (
+          <button
+            type="button"
+            className={styles.scrollFab}
+            aria-label="Scroll to bottom"
+            title="Scroll to bottom"
+            onClick={scrollToTail}
+          >
+            <ArrowDown size={20} />
+          </button>
+        )}
       </div>
       {/* Action/compose bar everywhere; expanded on touch, collapsed-to-the-bar on desktop. */}
       <Compose ref={composeRef} sendInput={sendInput} onCopy={handleCopy} defaultOpen={coarse} />

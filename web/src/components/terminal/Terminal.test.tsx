@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { type ReactNode } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
@@ -14,11 +14,29 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 // Records every addon loaded into the Terminal so tests can assert WebLinksAddon's presence
 // (and that its click handler was wired correctly). Reset in `beforeEach`.
 const loadedAddons: unknown[] = [];
+// Per-test handle to the latest mocked xterm so #187 can poke its scroll bookkeeping.
+type FakeXterm = {
+  buffer: { active: { baseY: number; viewportY: number } };
+  scrollToBottom: ReturnType<typeof vi.fn>;
+  fireScroll: () => void;
+};
+const xterms: FakeXterm[] = [];
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
     options: Record<string, unknown> = {};
+    buffer = { active: { baseY: 0, viewportY: 0 } };
+    private scrollCb: (() => void) | undefined;
+    public scrollToBottom = vi.fn(() => {
+      this.buffer.active.viewportY = this.buffer.active.baseY;
+      this.scrollCb?.();
+    });
+    constructor() {
+      const self = this as unknown as FakeXterm;
+      self.fireScroll = () => this.scrollCb?.();
+      xterms.push(self);
+    }
     loadAddon(addon: unknown) {
       loadedAddons.push(addon);
     }
@@ -26,6 +44,9 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     onData() {}
     onResize() {}
+    onScroll(cb: () => void) {
+      this.scrollCb = cb;
+    }
     dispose() {}
     getSelection() {
       return "";
@@ -81,6 +102,7 @@ class FakeResizeObserver {
 beforeEach(() => {
   sockets.length = 0;
   loadedAddons.length = 0;
+  xterms.length = 0;
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   vi.stubGlobal("requestAnimationFrame", () => 0);
   vi.stubGlobal("cancelAnimationFrame", () => {});
@@ -169,4 +191,56 @@ test("loads WebLinksAddon and opens links in a new tab with noopener,noreferrer 
   // Fire the handler as the addon would on a real click.
   wl!.handler({}, "https://example.com/foo");
   expect(open).toHaveBeenCalledWith("https://example.com/foo", "_blank", "noopener,noreferrer");
+});
+
+// #187: mobile floating scroll-to-bottom FAB. Mounts only on coarse pointers AND when
+// the viewport is off the live tail; tapping it calls term.scrollToBottom() and the
+// button auto-hides.
+function setCoarsePointer(coarse: boolean) {
+  vi.stubGlobal("matchMedia", (q: string) => ({
+    matches: q.includes("pointer: coarse") ? coarse : false,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+}
+
+test("#187 FAB stays hidden when the viewport sits on the live tail", () => {
+  setCoarsePointer(true);
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+});
+
+test("#187 FAB appears when the user scrolls off the tail, dismisses on tap", () => {
+  setCoarsePointer(true);
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  const term = xterms[0];
+
+  // Simulate the user scrolling well above the tail.
+  act(() => {
+    term.buffer.active.baseY = 100;
+    term.buffer.active.viewportY = 40;
+    term.fireScroll();
+  });
+
+  const fab = screen.getByRole("button", { name: /scroll to bottom/i });
+  expect(fab).toBeInTheDocument();
+
+  // Tap → scrollToBottom called + position lands on the tail → button hides.
+  fireEvent.click(fab);
+  expect(term.scrollToBottom).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+});
+
+test("#187 FAB never shows on a fine-pointer (desktop) device", () => {
+  setCoarsePointer(false);
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  const term = xterms[0];
+
+  act(() => {
+    term.buffer.active.baseY = 100;
+    term.buffer.active.viewportY = 0;
+    term.fireScroll();
+  });
+
+  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
 });
