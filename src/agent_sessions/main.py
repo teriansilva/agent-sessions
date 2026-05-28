@@ -44,6 +44,7 @@ from . import (
     prefs,
     ptybridge,
     scanner,
+    session_stream,
     sessions,
     sysinfo,
     twofactor,
@@ -149,7 +150,34 @@ def _safe_next(raw: str | None) -> str:
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
-    app = FastAPI(title="agent-sessions", openapi_url=None, docs_url=None, redoc_url=None)
+
+    # Slice 2 of the session-stability foundation (#183): the registry is the
+    # process-wide source of truth for every live dtach session. The lifespan
+    # context discovers live sessions on startup (so the sidebar's working dot +
+    # scrollback resume are accurate even before any browser attaches) and
+    # tears the streams down on shutdown.
+    registry = session_stream.SessionRegistry()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Best-effort: a discovery error must not block the app from serving
+        # (the existing /api/sessions HTTP path keeps working as fallback).
+        with contextlib.suppress(Exception):
+            await registry.discover()
+        try:
+            yield
+        finally:
+            with contextlib.suppress(Exception):
+                await registry.stop_all()
+
+    app = FastAPI(
+        title="agent-sessions",
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
+    )
+    app.state.session_registry = registry
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
     if (_WEB_DIST / "assets").is_dir():
@@ -660,11 +688,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     def _row(s, m: metadata.SessionMeta) -> dict:
         key = engines.session_key(s)
-        # #156 v1 "agent working" signal: last byte we observed flowing over a live WS
-        # in the current process. Best-effort and browser-attached-only — a headless
-        # session that no client has reconnected to since service start reports as idle,
-        # because there is no server-owned reader yet (slice 2 of #165 lands that).
-        last_out = webterm.get_last_output_at(key)
+        # #156 working signal: last byte we observed flowing into the shared ring.
+        # Slice 2 (#183): the server-owned SessionStream writes under the PHYSICAL
+        # key (opencode placeholder for a reconciled new-session). The row id stays
+        # the LOGICAL key (real ``ses_…``) so the URL/sidebar are unchanged — but
+        # the lookup must resolve through the alias map first, or a headless
+        # reconciled-opencode row would always report idle.
+        phys_key = engines.physical_key(key)
+        last_out = webterm.get_last_output_at(phys_key)
         return {
             "id": key,
             "engine": s.engine,
@@ -906,7 +937,20 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 have = max(0, int(ws.query_params.get("have", "0") or "0"))
             except (ValueError, TypeError):
                 have = 0
-            await webterm.run(ws, argv, cwd=cwd, buf_key=phys_key, lock=lock, have=have)
+            # Handoff to the server-owned SessionStream registry (#183 slice 2).
+            # on_attach STOPS any running server-owned stream for this key, so the
+            # WS bridge becomes the sole writer to ``_BUFFERS[phys_key]`` during
+            # the attached window; on_detach (in the finally) spawns a fresh
+            # server-owned stream if the dtach master is still alive. Best-effort
+            # — registry errors must not affect the browser path.
+            registry = app.state.session_registry
+            with contextlib.suppress(Exception):
+                await registry.on_attach(prov.engine_id, phys_native)
+            try:
+                await webterm.run(ws, argv, cwd=cwd, buf_key=phys_key, lock=lock, have=have)
+            finally:
+                with contextlib.suppress(Exception):
+                    await registry.on_detach(prov.engine_id, phys_native)
         finally:
             # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
             # not Exception) bypass the lock handoff below — nest it in its own try/finally

@@ -662,3 +662,44 @@ def test_sessions_row_exposes_working_and_last_output_at(auth_cfg, fake_jsonl):
 
     webterm._BUFFERS.clear()
     webterm._LAST_OUTPUT_AT.clear()
+
+
+def test_sessions_row_resolves_through_opencode_alias_for_working(auth_cfg, fake_jsonl):
+    """#183: /api/sessions must read last_output_at through the physical-key alias
+    layer. For a reconciled opencode session the SessionStream writes to the
+    PLACEHOLDER key (``opencode:new-…``), while the sidebar row's id is the
+    LOGICAL real ``opencode:ses_…``. Without the alias lookup the row would
+    always report idle even when the headless stream is actively dripping bytes.
+    """
+    import time as _time
+
+    from agent_sessions import metadata, webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    base = c.get("/api/sessions?limit=50").json()
+    assert base["sessions"], "fixture should produce rows"
+    target = base["sessions"][0]
+    real_key = target["id"]
+    placeholder_key = f"{target['engine']}:new-placeholder-12345"
+
+    # Persist the alias under the same sidecar that ``engines.physical_key`` reads.
+    metadata.set_alias(placeholder_key, real_key)
+
+    # The headless SessionStream stamps the PLACEHOLDER (physical) key.
+    fresh_ts = _time.time()
+    webterm._LAST_OUTPUT_AT[placeholder_key] = fresh_ts
+
+    fresh = c.get("/api/sessions?limit=50").json()
+    by_id = {s["id"]: s for s in fresh["sessions"]}
+    # The row's id stays LOGICAL (the real id) but its working/last_output_at
+    # come from the PHYSICAL key via the alias layer.
+    assert by_id[real_key]["last_output_at"] == fresh_ts
+    assert by_id[real_key]["working"] is True
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
