@@ -97,7 +97,17 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
       >
         <span className={`${styles.badge} ${styles[s.engine] ?? ""}`}>{engineBadge(s.engine)}</span>
         <div className={styles.body}>
-          <div className={styles.title}>{s.title || "(untitled)"}</div>
+          <div className={styles.title}>
+            {s.working && (
+              <span
+                className={styles.workingDot}
+                role="status"
+                aria-label="agent working"
+                title="agent working"
+              />
+            )}
+            {s.title || "(untitled)"}
+          </div>
           <div className={styles.meta}>
             {displayProjectName(s.cwd, projectNames)} · {relTime(s.last_mtime)}
           </div>

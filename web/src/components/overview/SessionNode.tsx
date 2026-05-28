@@ -8,7 +8,7 @@ import type { SessionNodeData } from "../../lib/overviewGraph";
  *  is handled by the canvas's React Flow `onNodeClick` (opens the session). `nodrag nopan`
  *  stops a press from initiating a pan/drag. */
 export function SessionNode({ data }: NodeProps) {
-  const { session, active, selected } = data as SessionNodeData;
+  const { session, active, working, selected } = data as SessionNodeData;
   const color = engineColor(session.engine);
   const title = session.title || session.first_user_message || session.short_uuid;
 
@@ -20,7 +20,11 @@ export function SessionNode({ data }: NodeProps) {
       aria-label={`Open ${title}`}
       aria-current={selected ? "true" : undefined}
     >
-      <span className={`tr-ov-dot ${active ? "active" : "idle"}`} aria-hidden="true" />
+      <span
+        className={`tr-ov-dot ${working ? "working" : active ? "active" : "idle"}`}
+        aria-label={working ? "agent working" : undefined}
+        role={working ? "status" : undefined}
+      />
       <span className="tr-ov-meta">
         <span className="tr-ov-ttl">{title}</span>
         <span className="tr-ov-sub">{relTime(session.last_mtime)}</span>

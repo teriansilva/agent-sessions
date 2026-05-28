@@ -11,6 +11,12 @@ export interface Session {
   cwd: string;
   project: string;
   last_mtime: number;
+  /** Wall-clock of the last byte the agent emitted that we observed (#156). null when
+   * the server hasn't seen output for this session in this process (no WS attached). */
+  last_output_at?: number | null;
+  /** True when ``now - last_output_at`` is inside the working window (#156 v1).
+   * Browser-attached-only; a headless session not yet reconnected to reports false. */
+  working?: boolean;
   first_user_message: string;
   title: string;
   sticky: boolean;

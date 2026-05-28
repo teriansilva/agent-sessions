@@ -175,6 +175,28 @@
 .tr-ov-dot.idle {
   background: transparent;
 }
+/* Agent currently emitting output (#156). Stronger signal than `active` — pulses to
+ * draw the eye. Reduced-motion users get a steady ring instead of the animation. */
+.tr-ov-dot.working {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  animation: tr-ov-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tr-ov-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--eng, var(--accent)) 12%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-ov-dot.working {
+    animation: none;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
+  }
+}
 .tr-ov-meta {
   min-width: 0;
   display: flex;

@@ -616,3 +616,49 @@ def test_archive_older_requires_csrf(auth_cfg, fake_jsonl):
         "/api/sessions/archive-older", json={"hours": 5}, headers={"Origin": auth_cfg.origin}
     )
     assert r.status_code == 403
+
+
+def test_sessions_row_exposes_working_and_last_output_at(auth_cfg, fake_jsonl):
+    """#156: every /api/sessions row carries the per-key working signal sourced from
+    webterm._LAST_OUTPUT_AT. Sessions never observed (no WS attach in this process) are
+    last_output_at=null + working=false; observed-recently are working=true; old marks
+    flip to false past the window. We don't patch ``time.time`` because the auth cookie
+    is age-checked against wall-clock — instead we write the stamp directly to mimic a
+    "fresh" or "stale" observation.
+    """
+    import time as _time
+
+    from agent_sessions import main as main_mod
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    base = c.get("/api/sessions?limit=50").json()
+    assert base["sessions"], "fixture should produce rows"
+    assert all(s["last_output_at"] is None for s in base["sessions"])
+    assert all(s["working"] is False for s in base["sessions"])
+
+    # Fresh observation (within window) → row reports working=true.
+    target = base["sessions"][0]
+    fresh_ts = _time.time()
+    webterm._LAST_OUTPUT_AT[target["id"]] = fresh_ts
+    fresh = c.get("/api/sessions?limit=50").json()
+    by_id = {s["id"]: s for s in fresh["sessions"]}
+    assert by_id[target["id"]]["last_output_at"] == fresh_ts
+    assert by_id[target["id"]]["working"] is True
+
+    # Stale stamp (past the working window) → working flips back to false, timestamp
+    # still echoed for client-side heuristics.
+    stale_ts = _time.time() - (main_mod._WORKING_WINDOW_S + 1)
+    webterm._LAST_OUTPUT_AT[target["id"]] = stale_ts
+    stale = c.get("/api/sessions?limit=50").json()
+    by_id = {s["id"]: s for s in stale["sessions"]}
+    assert by_id[target["id"]]["last_output_at"] == stale_ts
+    assert by_id[target["id"]]["working"] is False
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()

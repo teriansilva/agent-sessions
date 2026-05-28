@@ -132,6 +132,26 @@ test("archiving a row calls api.archive and removes it from the active list", as
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
 });
 
+// #156: the working dot only renders for rows where the server reports `working: true`.
+test("renders the working dot only for sessions flagged working by the server (#156)", async () => {
+  const idle = sess("claude:a", "Idle");
+  const busy = sess("claude:b", "Busy");
+  busy.working = true;
+  busy.last_output_at = Date.now() / 1000;
+  mockSessions.mockResolvedValue(pageOf([idle, busy], { total: 2 }));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Busy");
+  const dots = await screen.findAllByRole("status", { name: /agent working/i });
+  // One dot — only the busy row carries it.
+  expect(dots).toHaveLength(1);
+  // The dot sits inside the title containing "Busy", not "Idle".
+  expect(dots[0].closest("[class*='title']")?.textContent).toMatch(/Busy/);
+});
+
 // #159: relative-time labels advance over time without a refetch — the sidebar shows
 // "just now" when the row is fresh; 30s later (after the clockTick) it shows "1m ago".
 test("relative-time labels advance over time without a refetch (#159)", async () => {

@@ -34,6 +34,9 @@ export interface ProjectGroupData extends Record<string, unknown> {
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
   active: boolean;
+  /** Agent is currently emitting output (#156). Stronger signal than ``active`` — comes
+   *  from the server's per-key last_output_at, browser-attached-only in v1. */
+  working: boolean;
   /** This chip is the currently-open session (route = identity) — highlighted in sync with
    *  the sidebar list's active row (#149). */
   selected: boolean;
@@ -198,6 +201,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
           data: {
             session: s,
             active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S,
+            working: !!s.working,
             selected: s.id === opts.activeId,
           } satisfies SessionNodeData,
           draggable: false,

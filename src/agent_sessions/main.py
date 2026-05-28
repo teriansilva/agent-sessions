@@ -87,6 +87,9 @@ _SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
 _OC_RECONCILE_INTERVAL_S = 0.5
 # ~5 min of polling, then give up (session still served under the placeholder; no URL converge).
 _OC_RECONCILE_MAX_POLLS = 600
+# How long after the last byte from the agent we still call the session "working" (#156).
+# Picked to feel responsive without flapping between every keystroke of a streaming reply.
+_WORKING_WINDOW_S = 10.0
 
 
 async def _reconcile_opencode(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
@@ -656,14 +659,22 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         return resp
 
     def _row(s, m: metadata.SessionMeta) -> dict:
+        key = engines.session_key(s)
+        # #156 v1 "agent working" signal: last byte we observed flowing over a live WS
+        # in the current process. Best-effort and browser-attached-only — a headless
+        # session that no client has reconnected to since service start reports as idle,
+        # because there is no server-owned reader yet (slice 2 of #165 lands that).
+        last_out = webterm.get_last_output_at(key)
         return {
-            "id": engines.session_key(s),
+            "id": key,
             "engine": s.engine,
             "uuid": s.uuid,
             "short_uuid": s.short_uuid,
             "cwd": s.cwd,
             "project": m.project_alias or s.cwd,
             "last_mtime": s.last_mtime,
+            "last_output_at": last_out,
+            "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
             "first_user_message": s.first_user_message,
             "title": m.title or s.first_user_message,
             "sticky": m.sticky,

@@ -103,6 +103,31 @@ def test_webterm_scrollback_ring_caps():
     webterm._BUFFERS.clear()
 
 
+def test_buffer_append_records_last_output_at(monkeypatch):
+    # #156: every observed byte stamps the key's wall-clock so /api/sessions can flag
+    # "agent working". get_last_output_at returns None before the first byte and the
+    # latest timestamp after each append.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    assert webterm.get_last_output_at("claude:y") is None
+
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0)
+    webterm._buffer_append("claude:y", b"first")
+    assert webterm.get_last_output_at("claude:y") == 1000.0
+
+    monkeypatch.setattr(webterm.time, "time", lambda: 1042.5)
+    webterm._buffer_append("claude:y", b"second")
+    assert webterm.get_last_output_at("claude:y") == 1042.5
+
+    # _drop_buffer evicts the stamp too — no leak between session lifetimes.
+    webterm._drop_buffer("claude:y")
+    assert webterm.get_last_output_at("claude:y") is None
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+
+
 def test_claude_new_launch_argv_honors_bypass():
     # Hermes PR #56: the bypass choice must actually affect the launch, not be ignored.
     from agent_sessions import engines

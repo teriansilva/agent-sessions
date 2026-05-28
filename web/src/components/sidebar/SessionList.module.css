@@ -161,6 +161,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Per-row "agent working" indicator (#156). Pulses while the server is seeing output
+ * flow over the WS. Browser-attached-only in v1; a headless session not yet reconnected
+ * to reports false. Reduced-motion: replace the pulse with a steady ring. */
+.workingDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  animation: trWorkingPulse 1.4s ease-in-out infinite;
+}
+@keyframes trWorkingPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workingDot {
+    animation: none;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+}
 .meta {
   color: var(--text-muted);
   font-size: 11px;

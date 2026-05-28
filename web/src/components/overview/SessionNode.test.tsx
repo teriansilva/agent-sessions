@@ -42,3 +42,32 @@ test("the open session's chip is marked selected/aria-current (#149)", () => {
   expect(chip).toHaveAttribute("aria-current", "true");
   expect(chip.className).toMatch(/\bselected\b/);
 });
+
+// #156: when the server reports the agent is currently working, the chip's dot picks up
+// the .working modifier (which the CSS animates) and exposes role="status" for SR.
+test("working session chip pulses + announces status (#156)", () => {
+  const { container } = renderNode({
+    session: sess(),
+    active: true,
+    working: true,
+    selected: false,
+  });
+  const dot = container.querySelector(".tr-ov-dot");
+  expect(dot).not.toBeNull();
+  expect(dot?.className).toMatch(/\bworking\b/);
+  expect(dot).toHaveAttribute("aria-label", "agent working");
+  expect(dot).toHaveAttribute("role", "status");
+});
+
+test("non-working chip falls back to active/idle (no pulse) (#156)", () => {
+  const { container } = renderNode({
+    session: sess(),
+    active: true,
+    working: false,
+    selected: false,
+  });
+  const dot = container.querySelector(".tr-ov-dot");
+  expect(dot?.className).toMatch(/\bactive\b/);
+  expect(dot?.className).not.toMatch(/\bworking\b/);
+  expect(dot).not.toHaveAttribute("role");
+});

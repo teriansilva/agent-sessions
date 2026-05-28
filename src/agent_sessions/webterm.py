@@ -26,6 +26,7 @@ import os
 import signal
 import struct
 import termios
+import time
 from collections import OrderedDict
 
 from . import ptybridge, sessionlock
@@ -70,11 +71,17 @@ _MAX_BUF = 256 * 1024
 _MAX_BUFFERS = 64
 _BUFFERS: OrderedDict[str, bytearray] = OrderedDict()
 _TOTALS: OrderedDict[str, int] = OrderedDict()
+# Per-key wall-clock of the last byte we observed flowing from the agent (#156). Powers the
+# "agent working" indicator. v1 caveat: only WS-attached sessions update this — bytes from
+# a headless session aren't observed by anyone (no `dtach -a` reader on the server until
+# slice 2 of #165 lands). Best-effort and bounded by the same LRU as the buffers.
+_LAST_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
 
 
 def _drop_buffer(key: str) -> None:
     _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
+    _LAST_OUTPUT_AT.pop(key, None)
 
 
 def _session_alive(buf_key: str) -> bool:
@@ -118,9 +125,19 @@ def _buffer_append(key: str, data: bytes) -> None:
     buf.extend(data)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     _TOTALS.move_to_end(key)
+    _LAST_OUTPUT_AT[key] = time.time()
+    _LAST_OUTPUT_AT.move_to_end(key)
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
     _enforce_buffer_cap()
+
+
+def get_last_output_at(key: str) -> float | None:
+    """Wall-clock of the last byte observed from this session (#156). ``None`` if we've
+    never seen output for it — either the session has no attached WS, or the buffer was
+    evicted. Best-effort.
+    """
+    return _LAST_OUTPUT_AT.get(key)
 
 
 def _maybe_evict_ended(buf_key: str | None) -> None:
