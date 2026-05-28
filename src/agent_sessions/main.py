@@ -851,11 +851,18 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
                 cwd = match.cwd
             try:
-                # Socket under the PHYSICAL key (placeholder for a reconciled opencode
-                # session) so attach/resume by the real id reaches the same master.
-                argv = ptybridge.dtach_argv(
-                    engine=prov.engine_id, session_id=phys_native, launch_argv=launch
-                )
+                # Mode-explicit dtach (#165): on ATTACH the server has already verified
+                # a live master exists, so `dtach -a` is correct (and refuses to silently
+                # create a second master if the probe-vs-attach race lost). On LAUNCH the
+                # server holds the lock and any stale sock was unlinked in `open_action`,
+                # so `dtach -c` will bind cleanly. Socket is keyed by the PHYSICAL id so
+                # attach/resume by the real id reaches the same master.
+                if action == sessions.ATTACH:
+                    argv = ptybridge.attach_argv(engine=prov.engine_id, session_id=phys_native)
+                else:
+                    argv = ptybridge.launch_argv(
+                        engine=prov.engine_id, session_id=phys_native, launch_argv=launch
+                    )
             except ptybridge.PtyBridgeError:
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
             # Delta-resume: a reconnecting client reports the absolute byte offset it

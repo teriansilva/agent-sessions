@@ -97,13 +97,39 @@ Resuming/launching a session is gated by an **advisory exclusive file lock**:
 
 ## Attach, never relaunch
 
-- A live session = a `dtach` master at `socket_path(key)` (single chokepoint;
-  honors the real→temp alias map for engines that can't pin an id up front).
-- **Open/resume = attach to the existing master** (`dtach -A` to the *same*
-  socket). We never spawn a second `--resume <same id>` for an id that already
-  has a master. Liveness is read from the socket's existence, never guessed.
+- A live session = a `dtach` master at `socket_path(key)` that is **actually
+  accepting connections** — file presence alone is not enough (a master that
+  crashed without unlinking can leave its `.sock` file behind). `session_exists`
+  probes the sock with a non-blocking `connect()` so an orphan is correctly
+  classified as not-alive and the open path takes LAUNCH. #165.
+- **Mode-explicit dtach (#165):** the server's `open_action` is the sole
+  ATTACH-vs-LAUNCH decision; dtach is never allowed to fall back on its own:
+  - ATTACH path runs `dtach -a <sock>` (attach-only — fails loud if no master
+    is accepting; the client retries through `open_action` rather than the server
+    silently spawning a second writer).
+  - LAUNCH path holds the fcntl lock, unlinks any orphan `.sock` (`unlink_if_stale`)
+    so a stale file from a previous generation can't block `bind()`, then runs
+    `dtach -c <sock> <agent>` (create-only — fails loud if a master is somehow
+    racing for the path; the lock makes that impossible in practice).
 - Multiple viewers (tabs/devices) attaching to one master are fine — they share
   the one agent (one writer). The transport multiplexes output to each viewer.
+
+## Restart / reconnect taxonomy
+
+What survives what — and why:
+
+| Event | Browser WS | dtach master | Agent process | On-disk session | Notes |
+|---|---|---|---|---|---|
+| Browser tab close / network drop | dies | **alive** | **alive** | unchanged | Server keeps the master + buffer; client reopens with `?have=N` for delta-resume. |
+| Browser reload | dies | **alive** | **alive** | unchanged | Same path. URL is bookmarkable identity. |
+| `systemctl --user restart agent-sessions` (deploy) | dies | **alive** | **alive** | unchanged | `KillMode=process` on the unit — systemd SIGTERMs only the broker's main PID; dtach + the agent are children, untouched. The new broker re-attaches via `dtach -a <existing sock>`. **No turn loss.** #165. |
+| Broker SIGKILL / OOM | dies | **alive** | **alive** | unchanged | Same outcome — children outlive ungraceful broker death too. |
+| Agent itself exits (`/quit`, crash, OOM) | gets EOF / "ended" | gone (dtach exits when its child dies) | gone | preserved | Sock is removed by dtach; `session_exists` returns False; next attach for the key takes the LAUNCH path. |
+| Host reboot / `systemctl --user daemon-reexec` / user logout | dies | gone | gone | preserved (jsonl on disk) | Unavoidable. On next boot, the session is resumable-from-history only — the in-memory turn state is lost. |
+
+The first four rows are the cases #165 makes survivable. The last row is the only one where context can be lost, and only because the kernel destroyed the whole user-session that owns the processes.
+
+(Slice 2 — separate issue — adds a server-side `SessionStream` registry rebuilt from `/proc` on startup so the broker has rich state for the live agents it rediscovers after a restart, and so headless sessions still update `last_output_at` for the activity indicator. The single-resume invariant in this doc holds for slice 1 alone; the registry is observability + UX on top.)
 
 ## Reconnect continuity (delta-resume)
 

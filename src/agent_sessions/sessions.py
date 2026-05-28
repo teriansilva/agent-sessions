@@ -43,6 +43,10 @@ def open_action(engine: str, native_id: str) -> tuple[str, sessionlock.SessionLo
     if ptybridge.session_exists(engine, native_id):
         lock.release()
         return ATTACH, None
+    # Under the held lock, any lingering `.sock` file is necessarily an orphan from
+    # a prior generation (no one else can be racing for this key). Unlink it so the
+    # caller's subsequent `dtach -c` can `bind()` cleanly. #165.
+    ptybridge.unlink_if_stale(engine, native_id)
     return LAUNCH, lock
 
 

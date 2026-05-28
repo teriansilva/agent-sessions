@@ -4,6 +4,8 @@ rather than relaunching. See docs/session-handling.md."""
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from agent_sessions import ptybridge, sessionlock, sessions
@@ -12,6 +14,7 @@ from agent_sessions import ptybridge, sessionlock, sessions
 @pytest.fixture(autouse=True)
 def _isolated_lock_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path / "pty"))
 
 
 # ---- the single-writer lock --------------------------------------------------
@@ -80,6 +83,51 @@ def test_open_action_busy_when_locked_elsewhere(monkeypatch):
     action, lock = sessions.open_action("claude", "held")
     assert action == sessions.BUSY and lock is None
     held.release()
+
+
+def test_open_action_launch_unlinks_stale_sock(monkeypatch):
+    """#165: under the held lock, an orphan `.sock` from a dead master is unambiguously
+    stale (no one else can be racing for this key) — open_action's LAUNCH path must
+    unlink it so the caller's subsequent `dtach -c` can `bind()` cleanly. Without this,
+    `dtach -c` would fail with EADDRINUSE on the orphan file."""
+    # Real ptybridge.session_exists is used (no monkeypatch): a bound-but-not-listening
+    # orphan sock is what we set up; the connect-probe correctly classifies it dead.
+    orphan = ptybridge.socket_path("claude", "ghost")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(orphan))
+    s.close()  # file persists; nothing listening
+    assert orphan.exists()
+
+    action, lock = sessions.open_action("claude", "ghost")
+    try:
+        assert action == sessions.LAUNCH
+        assert lock is not None
+        # The stale sock has been removed under the lock — dtach -c can now bind cleanly.
+        assert not orphan.exists()
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def test_open_action_attaches_only_when_master_is_actually_accepting(monkeypatch):
+    """#165: ATTACH must be based on a live listener, not just a file. An orphan sock
+    is treated as not-alive (connect-probe in session_exists) and routes to LAUNCH."""
+    # The actual ptybridge.session_exists is exercised; an orphan sock returns False.
+    orphan = ptybridge.socket_path("claude", "dead")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(orphan))
+    s.close()
+
+    action, lock = sessions.open_action("claude", "dead")
+    try:
+        # Dead master + acquirable lock → LAUNCH (not the historical "ATTACH-on-file"
+        # bug where the client would have hit dtach -a → EOF on a phantom master).
+        assert action == sessions.LAUNCH
+        assert lock is not None
+        assert not orphan.exists()  # cleaned up too
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def test_open_action_race_guard_attaches_if_master_appears(monkeypatch):

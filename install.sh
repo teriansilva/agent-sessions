@@ -212,6 +212,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# #165: only SIGTERM the broker's main PID on stop; leave dtach + the agent processes
+# alone so a service restart (every deploy) does NOT kill the user's live session. The
+# new broker rediscovers the still-alive masters via the existing sock files.
+KillMode=process
 # Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini,
 # which commonly live there) are on PATH — otherwise the claude CLI nags
 # "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile
