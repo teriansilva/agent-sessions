@@ -196,6 +196,7 @@ async def run(
     rows: int = 24,
     lock: sessionlock.SessionLock | None = None,
     have: int = 0,
+    read_only_gate: asyncio.Event | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -208,6 +209,12 @@ async def run(
     single-writer lock; its fd is passed to the spawned process so the long-lived
     ``dtach`` master inherits it and holds the flock for the master's lifetime. We
     only borrow the fd here — the caller owns closing/transferring the lock.
+
+    ``read_only_gate`` (set by the caller for secondary-tab attaches, or fired
+    mid-session when another tab force-takes the owner role — #184 slice 3):
+    when set, input frames (``i``, ``r``, raw bytes) are silently dropped server-
+    side so a misbehaving secondary client can never write to the agent. Output
+    keeps streaming so the secondary tab is read-only, not blind.
     """
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
@@ -261,6 +268,9 @@ async def run(
                 _buffer_append(buf_key, data)
             await ws.send_bytes(data)  # awaited → natural backpressure
 
+    def _gated() -> bool:
+        return read_only_gate is not None and read_only_gate.is_set()
+
     async def pump_in() -> None:
         while True:
             msg = await ws.receive()
@@ -273,10 +283,14 @@ async def run(
                 except (ValueError, TypeError):
                     continue
                 kind = obj.get("t")
-                if kind == "i":
+                # Read-only gate (#184): the secondary tab's WS may keep sending
+                # frames; we silently drop input + resize so a misbehaving
+                # client can never write to the dtach master. Server-side gate
+                # is the source of truth — not the client.
+                if kind == "i" and not _gated():
                     with contextlib.suppress(OSError):
                         os.write(master, obj.get("d", "").encode("utf-8", "replace"))
-                elif kind == "r":
+                elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
                         _set_winsize(master, int(obj.get("rows", rows)), int(obj.get("cols", cols)))
                         # TIOCSWINSZ on the master doesn't reliably deliver SIGWINCH to
@@ -286,7 +300,7 @@ async def run(
                         # size and resizes the program → the live agent re-renders wider.
                         with contextlib.suppress(ProcessLookupError, OSError):
                             proc.send_signal(signal.SIGWINCH)
-            elif msg.get("bytes") is not None:
+            elif msg.get("bytes") is not None and not _gated():
                 with contextlib.suppress(OSError):
                     os.write(master, msg["bytes"])
 

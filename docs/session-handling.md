@@ -182,3 +182,81 @@ A transient ws drop must be invisible — never blank, never relaunch:
   landing at `/` never auto-resumes.
 
 No release/cutover ships unless all of the above are green.
+
+## Per-tab ownership protocol (#184 slice 3)
+
+A session can be open in more than one browser tab at the same time — for
+example, a forgotten tab on the desktop while the user opens the same URL on a
+phone. The single-writer invariant on disk is already absolute, but at the
+**WebSocket** layer we need to decide which tab's keystrokes the agent sees,
+and surface that decision to the other tab so the user isn't typing into the
+void.
+
+### Identity
+
+Each browser carries a stable `tr-browser-fp` (128-bit hex, `localStorage`); each
+tab gets a fresh `tab_id` (64-bit hex, in-memory). The pair `(fp, tab_id)` is the
+**claim key**.
+
+### URL extension
+
+`/ws/term/{key}?have=N&new=…&fp=…&tab=…&force=0|1`
+
+- `fp` + `tab` are sent on every connect. The pre-slice-3 server (and tests)
+  ignore them, so the new params are **additive** and don't change behavior for
+  clients that send neither.
+- `force=1` is sent **only** on a deliberate take-over: the next connect demotes
+  the prior owner. A transient reconnect after a drop MUST NOT include `force=1`,
+  or it would shut a legitimate prior owner out.
+
+### Server-side claim layer (`SessionRegistry`)
+
+A per-session `Claim` records `(fp, tab_id, last_seen)`. On each WS attach the
+registry decides the role:
+
+- **owner**: no prior claim, or the prior claim matches `(fp, tab_id)`, or the
+  prior claim's `last_seen` is older than the 5-second lease, or `force=1`.
+- **secondary**: a fresh claim for a different `(fp, tab_id)` exists.
+
+A force takeover sets the prior `Claim.demoted` event so the prior owner's WS
+bridge can flip itself into read-only mode without tearing the WS down.
+
+### Server-side input gate
+
+The WS bridge (`webterm.run`) accepts a `read_only_gate: asyncio.Event`. When the
+gate is set — at connect for secondaries, or mid-session when the owner is
+demoted — `pump_in` silently drops `i` / `r` / raw-byte frames. The server gate
+is the source of truth: a misbehaving secondary client cannot write to the
+agent regardless of what it sends.
+
+### Control frames
+
+- `{"t":"role","role":"owner"}` — server tells the client "you hold the role."
+  Sent once at connect; sent again if the role flips.
+- `{"t":"role","role":"secondary"}` — client renders the read-only banner with
+  a Take-over button.
+
+### Take-over flow
+
+1. Secondary tab sees `{"t":"role","role":"secondary"}` → banner renders.
+2. User clicks **Take over** → React tears down the current `TermSocket` and
+   reconnects with `?force=1`.
+3. Server's `claim(force=True)` demotes the prior owner; that bridge gets
+   `claim.demoted.is_set()`, flips its `read_only_gate`, sends
+   `{"t":"role","role":"secondary"}` to its own client → that tab now sees the
+   banner.
+
+### Backward compatibility
+
+A client sending neither `fp` nor `tab` (e.g. an older `web/dist`) goes straight
+to the legacy owner path — no claim recorded, no role frame; the server doesn't
+gate input. New clients always send the pair.
+
+### Tests that lock this surface
+
+- Unit on `browserFp.ts` (mint + persist + idempotent + localStorage-failure
+  fallback + per-tab id distinct).
+- Unit on `SessionRegistry.claim` / `refresh` / `release` (owner vs secondary,
+  force takeover, stale lease, heartbeat, legacy attach).
+- Vitest on `Terminal`: fp + tab in URL on every connect; banner appears on
+  secondary; Take-over reconnects with `force=1` exactly once.

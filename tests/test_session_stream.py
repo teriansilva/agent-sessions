@@ -313,3 +313,125 @@ def test_snapshot_working_flag_decays(monkeypatch):
         await reg.stop_all()
 
     asyncio.run(run())
+
+
+# ---- Per-tab claim lease (#184) ----------------------------------------------
+
+
+def test_claim_first_caller_becomes_owner(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    monkeypatch.setattr(session_stream.ptybridge, "session_exists", lambda *_a, **_kw: True)
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        role, claim = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        assert role == "owner"
+        assert claim is not None
+        assert claim.fp == "fpA" and claim.tab_id == "tabA"
+
+    asyncio.run(run())
+
+
+def test_claim_second_caller_becomes_secondary(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        owner_role, _ = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        assert owner_role == "owner"
+        second_role, second_claim = await reg.claim("claude", "x", fp="fpB", tab_id="tabB")
+        assert second_role == "secondary"
+        assert second_claim is None
+
+    asyncio.run(run())
+
+
+def test_force_takeover_demotes_prior_owner(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        _, prior = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        assert prior is not None
+        # Caller B forces takeover → returns "owner"; prior owner's demoted event fires.
+        role, new_claim = await reg.claim("claude", "x", fp="fpB", tab_id="tabB", force=True)
+        assert role == "owner"
+        assert new_claim is not None and new_claim.matches("fpB", "tabB")
+        assert prior.demoted.is_set()
+
+    asyncio.run(run())
+
+
+def test_stale_owner_lets_next_claim_in(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        _, prior = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        assert prior is not None
+        # Backdate the lease so the next claim sees it as stale.
+        prior.last_seen = time.time() - session_stream._CLAIM_LEASE_S - 1
+        role, new_claim = await reg.claim("claude", "x", fp="fpB", tab_id="tabB")
+        # Stale owner: caller B takes over without needing force=True.
+        assert role == "owner"
+        assert new_claim is not None and new_claim.matches("fpB", "tabB")
+        assert prior.demoted.is_set()
+
+    asyncio.run(run())
+
+
+def test_owner_heartbeat_resets_lease(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        _, owner = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        assert owner is not None
+        # Backdate the lease.
+        owner.last_seen = time.time() - (session_stream._CLAIM_LEASE_S - 1)
+        ok = await reg.refresh("claude", "x", fp="fpA", tab_id="tabA")
+        assert ok is True
+        # Now a foreign tab still gets secondary because the lease was refreshed.
+        role, _ = await reg.claim("claude", "x", fp="fpB", tab_id="tabB")
+        assert role == "secondary"
+
+    asyncio.run(run())
+
+
+def test_release_drops_claim_only_if_caller_matches(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        _, owner = await reg.claim("claude", "x", fp="fpA", tab_id="tabA")
+        # A non-matching release is a no-op (e.g. a stale tab sending release
+        # AFTER another tab force-took over).
+        await reg.release("claude", "x", fp="fpZ", tab_id="tabZ")
+        assert reg.get("claude:x")["owner"] is owner
+        # Owner releases — claim cleared.
+        await reg.release("claude", "x", fp="fpA", tab_id="tabA")
+        assert reg.get("claude:x")["owner"] is None
+
+    asyncio.run(run())
+
+
+def test_empty_fp_or_tab_grants_legacy_attach_without_recording(monkeypatch):
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        role, claim = await reg.claim("claude", "x", fp="", tab_id="")
+        assert role == "owner"
+        assert claim is None
+        # No claim recorded.
+        entry = reg.get("claude:x")
+        assert entry is not None and entry.get("owner") is None
+
+    asyncio.run(run())

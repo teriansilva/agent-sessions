@@ -79,6 +79,8 @@ interface FakeSocket {
   connect: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
+  // #184 hook: tests can fire the role frame as if the server sent one.
+  emitRole?: (role: "owner" | "secondary") => void;
 }
 const sockets: FakeSocket[] = [];
 vi.mock("../../lib/termSocket", () => ({
@@ -87,8 +89,13 @@ vi.mock("../../lib/termSocket", () => ({
     connect = vi.fn();
     close = vi.fn();
     send = vi.fn();
-    constructor(urlFor: (have: number) => string) {
+    emitRole: (role: "owner" | "secondary") => void;
+    constructor(
+      urlFor: (have: number) => string,
+      handlers: { onRole?: (role: "owner" | "secondary") => void },
+    ) {
       this.url = urlFor;
+      this.emitRole = (role) => handlers.onRole?.(role);
       sockets.push(this as unknown as FakeSocket);
     }
   },
@@ -243,4 +250,55 @@ test("#187 FAB never shows on a fine-pointer (desktop) device", () => {
   });
 
   expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+});
+
+// #184: per-tab ownership protocol — the URL must carry fp + tab so the server
+// SessionRegistry can claim correctly; the secondary banner renders when the
+// server sends {t:"role","role":"secondary"} and the Take-over button forces a
+// reconnect with ?force=1.
+test("#184 termWsUrl includes fp + tab params on every connect", () => {
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  const url = sockets[0].url(0);
+  expect(url).toMatch(/[?&]fp=[0-9a-f]{32}/);
+  expect(url).toMatch(/[?&]tab=[0-9a-f]{16}/);
+  // No force=1 on a first attach — only on takeover.
+  expect(url).not.toMatch(/[?&]force=1/);
+});
+
+test("#184 secondary role surfaces the read-only banner + Take-over button", () => {
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  // Before the server speaks, no banner.
+  expect(screen.queryByRole("button", { name: /take over/i })).toBeNull();
+
+  act(() => {
+    sockets[0].emitRole!("secondary");
+  });
+  // Banner explains the state + Take-over button is wired.
+  expect(screen.getByText(/read-only mode/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /take over/i })).toBeInTheDocument();
+});
+
+test("#184 Take-over reconnects with ?force=1 exactly once", () => {
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  act(() => sockets[0].emitRole!("secondary"));
+  expect(sockets).toHaveLength(1);
+
+  fireEvent.click(screen.getByRole("button", { name: /take over/i }));
+
+  // Bumping the takeover epoch tears down the old socket and opens a fresh one.
+  expect(sockets).toHaveLength(2);
+  // The first call from the fresh socket carries force=1 — the next call (a
+  // transient reconnect after a drop) MUST NOT keep demanding takeover.
+  const firstUrl = sockets[1].url(0);
+  const secondUrl = sockets[1].url(0);
+  expect(firstUrl).toMatch(/[?&]force=1/);
+  expect(secondUrl).not.toMatch(/[?&]force=1/);
+});
+
+test("#184 owner role hides the banner", () => {
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  act(() => sockets[0].emitRole!("secondary"));
+  expect(screen.getByRole("button", { name: /take over/i })).toBeInTheDocument();
+  act(() => sockets[0].emitRole!("owner"));
+  expect(screen.queryByRole("button", { name: /take over/i })).toBeNull();
 });

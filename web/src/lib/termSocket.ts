@@ -14,6 +14,8 @@ export type TermStatus =
   | { kind: "reconnecting"; attempt: number }
   | { kind: "rejected"; reason: string };
 
+export type TermRole = "owner" | "secondary";
+
 export interface TermSocketHandlers {
   onOutput: (bytes: Uint8Array) => void;
   onStatus: (status: TermStatus) => void;
@@ -21,6 +23,10 @@ export interface TermSocketHandlers {
    *  new-session). The client converges the URL/sidebar to `sid` (e.g.
    *  `opencode:ses_…`). Optional — only the new-session path emits it. */
   onId?: (sid: string) => void;
+  /** Per-tab ownership protocol (#184 slice 3): the server's verdict on whether this
+   *  WS holds the owner role or is a read-only secondary. Sent on connect, and again
+   *  when a force takeover demotes the previous owner mid-session. */
+  onRole?: (role: TermRole) => void;
 }
 
 // Deliberate server rejects — never reconnect on these (would hammer the backend).
@@ -99,10 +105,18 @@ export class TermSocket {
       // Control frame. {"t":"seq","n"} sets our authoritative offset (the server's
       // total). Unknown control frames are ignored — never written to the terminal.
       try {
-        const msg = JSON.parse(data) as { t?: string; n?: number; sid?: string };
+        const msg = JSON.parse(data) as {
+          t?: string;
+          n?: number;
+          sid?: string;
+          role?: TermRole;
+        };
         if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
         else if (msg.t === "id" && typeof msg.sid === "string") this.handlers.onId?.(msg.sid);
+        // {"t":"role","role":"owner"|"secondary"} — per-tab claim verdict (#184).
+        else if (msg.t === "role" && (msg.role === "owner" || msg.role === "secondary"))
+          this.handlers.onRole?.(msg.role);
       } catch {
         /* ignore malformed control frame */
       }

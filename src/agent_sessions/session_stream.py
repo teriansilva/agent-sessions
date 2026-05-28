@@ -44,6 +44,32 @@ _WORKING_WINDOW_S = 10.0
 # Read chunk from the stream's master fd. Matches webterm._read's implicit size.
 _READ_CHUNK = 65536
 
+# Per-tab claim lease (#184 slice 3). An owner is considered "stale" if its
+# last heartbeat is older than this — at which point the next attach takes
+# over without needing a ``force=1``. 5 seconds is the budget the WS owes for
+# either keeping the connection alive or reasserting itself via heartbeat.
+_CLAIM_LEASE_S = 5.0
+
+
+class Claim:
+    r"""One per-tab ownership token for a session (#184). The WS bridge that
+    holds the owner role for a session keeps a reference and ``await``\s
+    ``demoted`` in parallel with its bridge pumps; ``Registry.claim(force=True)``
+    sets that event when another tab takes the role.
+    """
+
+    def __init__(self, fp: str, tab_id: str) -> None:
+        self.fp = fp
+        self.tab_id = tab_id
+        self.last_seen = time.time()
+        self.demoted = asyncio.Event()
+
+    def matches(self, fp: str, tab_id: str) -> bool:
+        return self.fp == fp and self.tab_id == tab_id
+
+    def is_stale(self, now: float | None = None) -> bool:
+        return (now or time.time()) - self.last_seen > _CLAIM_LEASE_S
+
 
 class SessionStream:
     """One server-owned ``dtach -a`` reader per (headless) live session.
@@ -309,6 +335,117 @@ class SessionRegistry:
 
     def keys(self) -> Iterable[str]:
         return list(self._sessions.keys())
+
+    # ---- Per-tab claim lease (#184) ------------------------------------------
+
+    async def claim(
+        self,
+        engine: str,
+        sid: str,
+        fp: str,
+        tab_id: str,
+        *,
+        force: bool = False,
+    ) -> tuple[str, Claim | None]:
+        """Try to claim owner role for one (engine, sid) for the given (fp, tab_id).
+
+        Returns ``("owner", claim)`` if the caller now holds the role — either no
+        prior owner existed, the prior owner's lease was stale, the caller IS the
+        prior owner (heartbeat case), or ``force=True`` was set. The previous
+        owner's ``Claim.demoted`` event is fired on a successful force takeover
+        so its WS bridge can transition itself to read-only / disconnect.
+
+        Returns ``("secondary", None)`` if there is a live owner with a fresh
+        lease that is not the caller; the caller should render read-only and
+        offer a "Take over" affordance that calls ``claim(..., force=True)``.
+
+        Backward-compatible: an empty ``fp`` or ``tab_id`` is taken as "no
+        claim, just attach" → the caller gets owner status without recording
+        a claim, so old clients never see the ownership protocol.
+        """
+        async with self._lock:
+            phys_engine, phys_sid, key = self._resolve_phys(engine, sid)
+            entry = self._sessions.get(key)
+            if entry is None:
+                # No registry entry yet — usually ws_term calls on_attach first,
+                # but be defensive: bootstrap a stub entry the same way.
+                entry = {
+                    "engine": phys_engine,
+                    "sid": phys_sid,
+                    "attached": True,
+                    "stream": None,
+                    "started_at": time.time(),
+                    "owner": None,
+                }
+                self._sessions[key] = entry
+                await self._notify({"t": "added", "session": self._row(key)})
+            # Legacy / no-claim attach (e.g. tests, older clients): grant
+            # ownership without storing a Claim so the lease layer is invisible.
+            if not fp or not tab_id:
+                return ("owner", None)
+            existing: Claim | None = entry.get("owner")
+            if existing is None or existing.matches(fp, tab_id) or existing.is_stale() or force:
+                if existing is not None and not existing.matches(fp, tab_id):
+                    # Force or stale takeover: demote the prior owner so its
+                    # bridge can transition itself out of write-mode.
+                    existing.demoted.set()
+                new_claim = (
+                    existing
+                    if (existing is not None and existing.matches(fp, tab_id))
+                    else Claim(fp, tab_id)
+                )
+                new_claim.last_seen = time.time()
+                entry["owner"] = new_claim
+                await self._notify(
+                    {
+                        "t": "claim_changed",
+                        "session_id": key,
+                        "role": "owner",
+                        "fp": fp,
+                        "tab_id": tab_id,
+                    }
+                )
+                return ("owner", new_claim)
+            return ("secondary", None)
+
+    async def refresh(self, engine: str, sid: str, fp: str, tab_id: str) -> bool:
+        """Heartbeat: bump the lease's ``last_seen`` if the caller is the current
+        owner. Returns ``True`` on a successful bump, ``False`` if the caller is
+        no longer the owner (its bridge should transition to secondary).
+        """
+        async with self._lock:
+            _, _, key = self._resolve_phys(engine, sid)
+            entry = self._sessions.get(key)
+            if entry is None:
+                return False
+            existing: Claim | None = entry.get("owner")
+            if existing is None or not existing.matches(fp, tab_id):
+                return False
+            existing.last_seen = time.time()
+            return True
+
+    async def release(self, engine: str, sid: str, fp: str, tab_id: str) -> None:
+        """Owner detached cleanly. Drops the claim only if (fp, tab_id) still
+        matches — a forced takeover already replaced the owner, so we leave that
+        one in place."""
+        async with self._lock:
+            _, _, key = self._resolve_phys(engine, sid)
+            entry = self._sessions.get(key)
+            if entry is None:
+                return
+            existing: Claim | None = entry.get("owner")
+            if existing is None or not existing.matches(fp, tab_id):
+                return
+            entry["owner"] = None
+            await self._notify(
+                {
+                    "t": "claim_changed",
+                    "session_id": key,
+                    "role": "released",
+                    "fp": fp,
+                    "tab_id": tab_id,
+                }
+            )
 
     def _row(self, key: str) -> dict:
         entry = self._sessions[key]

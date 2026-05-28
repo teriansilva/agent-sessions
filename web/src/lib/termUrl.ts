@@ -10,7 +10,13 @@ export interface FreshSession {
   bypass: boolean;
 }
 
-export function termWsUrl(engine: string, id: string, have: number, fresh?: FreshSession): string {
+export function termWsUrl(
+  engine: string,
+  id: string,
+  have: number,
+  fresh?: FreshSession,
+  opts?: { fp?: string; tabId?: string; force?: boolean },
+): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const key = `${encodeURIComponent(engine)}:${encodeURIComponent(id)}`;
   const params = new URLSearchParams({ have: String(have) });
@@ -19,5 +25,10 @@ export function termWsUrl(engine: string, id: string, have: number, fresh?: Fres
     params.set("cwd", fresh.cwd);
     params.set("bypass", fresh.bypass ? "1" : "0");
   }
+  // Per-tab claim (#184): fp + tab let the server's SessionRegistry recognise
+  // owner vs secondary; force=1 demotes the current owner.
+  if (opts?.fp) params.set("fp", opts.fp);
+  if (opts?.tabId) params.set("tab", opts.tabId);
+  if (opts?.force) params.set("force", "1");
   return `${proto}://${location.host}/ws/term/${key}?${params.toString()}`;
 }

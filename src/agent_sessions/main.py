@@ -946,9 +946,57 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             registry = app.state.session_registry
             with contextlib.suppress(Exception):
                 await registry.on_attach(prov.engine_id, phys_native)
+            # Per-tab claim (#184 slice 3): empty fp/tab from an older client
+            # falls through as "owner with no recorded claim" (backward-compat).
+            # ``force=1`` lets a deliberate takeover demote a stale or recent owner.
+            fp = ws.query_params.get("fp", "") or ""
+            tab_id = ws.query_params.get("tab", "") or ""
+            force = ws.query_params.get("force", "") == "1"
+            role = "owner"
+            claim_obj: session_stream.Claim | None = None
+            with contextlib.suppress(Exception):
+                role, claim_obj = await registry.claim(
+                    prov.engine_id, phys_native, fp, tab_id, force=force
+                )
+            # Read-only gate fires when the WS is a secondary OR when a force
+            # takeover demotes the owner mid-session. Server-side gate is the
+            # source of truth — pump_in drops input/resize while it's set.
+            read_only_gate = asyncio.Event()
+            if role == "secondary":
+                read_only_gate.set()
+            with contextlib.suppress(Exception):
+                await ws.send_text(json.dumps({"t": "role", "role": role}))
+            # Watcher: if another tab force-claims, demoted fires → flip gate
+            # + tell the browser so it can render the read-only banner.
+            demote_task: asyncio.Task | None = None
+            if claim_obj is not None:
+
+                async def _watch_demote() -> None:
+                    assert claim_obj is not None
+                    await claim_obj.demoted.wait()
+                    read_only_gate.set()
+                    with contextlib.suppress(Exception):
+                        await ws.send_text(json.dumps({"t": "role", "role": "secondary"}))
+
+                demote_task = asyncio.create_task(_watch_demote())
             try:
-                await webterm.run(ws, argv, cwd=cwd, buf_key=phys_key, lock=lock, have=have)
+                await webterm.run(
+                    ws,
+                    argv,
+                    cwd=cwd,
+                    buf_key=phys_key,
+                    lock=lock,
+                    have=have,
+                    read_only_gate=read_only_gate,
+                )
             finally:
+                if demote_task is not None:
+                    demote_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await demote_task
+                with contextlib.suppress(Exception):
+                    if claim_obj is not None:
+                        await registry.release(prov.engine_id, phys_native, fp, tab_id)
                 with contextlib.suppress(Exception):
                     await registry.on_detach(prov.engine_id, phys_native)
         finally:

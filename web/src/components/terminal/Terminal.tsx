@@ -4,8 +4,9 @@ import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { imageFilesFromData } from "../../lib/clipboardImages";
-import { TermSocket, type TermStatus } from "../../lib/termSocket";
+import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
 import { THEMES, xtermTheme } from "../../theme/themes";
@@ -53,6 +54,13 @@ export function Terminal({
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
+  // Per-tab ownership (#184 slice 3): the server's verdict on whether this WS
+  // bridge holds the owner role or is a read-only secondary. Default is "owner"
+  // until the server says otherwise — backward-compatible with the pre-slice-3
+  // server which never sends a role frame at all.
+  const [role, setRole] = useState<TermRole>("owner");
+  // Bumped by the Take-over button to force a reconnect with ?force=1.
+  const [takeoverEpoch, setTakeoverEpoch] = useState(0);
   // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
   // current one WITHOUT the socket effect depending on it (a changing callback identity
   // must never tear down + relaunch the live terminal). Updated in an effect (writing a
@@ -131,14 +139,30 @@ export function Terminal({
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
-    const sock = new TermSocket((have) => termWsUrl(engine, id, have, freshRef.current), {
-      onOutput: (b) => term.write(b),
-      onStatus: (s) => {
-        setStatus(s);
-        if (s.kind === "connected") onConnected();
+    // Per-tab ownership (#184): include fp + tab + a one-shot force flag in the
+    // URL. The force flag is consumed by the FIRST connect of this terminal
+    // instance — a reconnect after a transient drop must NOT keep demanding
+    // takeover (the server would shut out a legitimate prior owner).
+    const fp = getBrowserFp();
+    const tabId = getTabId();
+    const wantsForce = takeoverEpoch > 0;
+    let forceConsumed = false;
+    const sock = new TermSocket(
+      (have) => {
+        const f = wantsForce && !forceConsumed;
+        forceConsumed = true;
+        return termWsUrl(engine, id, have, freshRef.current, { fp, tabId, force: f });
       },
-      onId: (sid) => onReconcileIdRef.current?.(sid),
-    });
+      {
+        onOutput: (b) => term.write(b),
+        onStatus: (s) => {
+          setStatus(s);
+          if (s.kind === "connected") onConnected();
+        },
+        onId: (sid) => onReconcileIdRef.current?.(sid),
+        onRole: (r) => setRole(r),
+      },
+    );
     sockRef.current = sock;
 
     // Only push a resize when the grid actually changed — a bare scrollbar toggle
@@ -219,7 +243,7 @@ export function Terminal({
     // `fresh` is intentionally excluded — it's read once via freshRef so self-convergence
     // (which clears route state) can't tear down + relaunch the live terminal. See freshRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, id]);
+  }, [engine, id, takeoverEpoch]);
 
   // Re-theme the live terminal on theme change WITHOUT tearing it down. Colours apply
   // immediately; if the font/size changed, fit() recomputes the grid and xterm's
@@ -238,6 +262,11 @@ export function Terminal({
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
+  }, []);
+  const takeover = useCallback(() => {
+    // Bumping the epoch tears down the current socket and reconnects with
+    // ?force=1, which demotes the prior owner on the server (#184).
+    setTakeoverEpoch((n) => n + 1);
   }, []);
   return (
     <div className={styles.wrap}>
@@ -261,6 +290,19 @@ export function Terminal({
           >
             <ArrowDown size={20} />
           </button>
+        )}
+        {role === "secondary" && (
+          <div className={styles.secondaryBanner} role="status">
+            <span>This session is open in another tab. You're viewing in read-only mode.</span>
+            <button
+              type="button"
+              className={styles.takeoverBtn}
+              onClick={takeover}
+              aria-label="Take over this session"
+            >
+              Take over
+            </button>
+          </div>
         )}
       </div>
       {/* Action/compose bar everywhere; expanded on touch, collapsed-to-the-bar on desktop. */}
