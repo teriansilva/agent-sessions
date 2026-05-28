@@ -13,6 +13,7 @@ import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
+import { NewVersionBanner } from "./NewVersionBanner";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
@@ -250,6 +251,7 @@ export default function App() {
           <SessionsProvider>
             <BrowserRouter>
               <Layout />
+              <NewVersionBanner />
             </BrowserRouter>
           </SessionsProvider>
         </OverviewPrefsProvider>
