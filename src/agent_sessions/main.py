@@ -792,14 +792,22 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @app.get("/api/projects")
     async def list_projects(_: str = Depends(_logged_in)) -> JSONResponse:
-        # New-session picker — hidden projects (#174) are excluded here too. Picking a
-        # hidden project as a start location would feel inconsistent with the user having
-        # explicitly said "I don't want to see this project."
+        # New-session picker + the Settings "Session overview" manager — hidden projects
+        # (#174) are excluded here too. Picking a hidden project as a start location would
+        # feel inconsistent with the user having explicitly said "I don't want to see this."
+        #
+        # Source from ALL engines (#196): the sidebar filter dropdown derives its options
+        # from /api/sessions facets, which are computed over engines.scan_all(). If this
+        # endpoint used the Claude-only scan (pickable_projects' default), an opencode/gemini
+        # cwd would appear in the filter but be unmanageable here — the two lists drift.
+        # Passing scan_all() unifies the superset so every filterable project is manageable.
         hidden = set(prefs.get_projects_hidden())
         return JSONResponse(
             {
                 "projects": [
-                    {"cwd": c, "label": c} for c in scanner.pickable_projects() if c not in hidden
+                    {"cwd": c, "label": c}
+                    for c in scanner.pickable_projects(sessions=engines.scan_all())
+                    if c not in hidden
                 ]
             }
         )
@@ -880,8 +888,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 launch = prov.launch_argv(native, cwd=cwd, bypass=True)
             elif is_new:
                 # Start a FRESH session with this client-generated id, in a picker cwd.
+                # Validate against the same all-engine superset the picker offers (#196),
+                # so a cwd the UI presented is never rejected on launch.
                 new_cwd = ws.query_params.get("cwd") or ""
-                if new_cwd not in set(scanner.pickable_projects()):
+                if new_cwd not in set(scanner.pickable_projects(sessions=engines.scan_all())):
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"

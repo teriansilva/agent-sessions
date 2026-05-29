@@ -175,6 +175,34 @@ def test_projects_endpoint(auth_cfg, fake_jsonl):
     assert "/tmp/other" in cwds
 
 
+def test_projects_endpoint_includes_all_engines(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    """#196: /api/projects must offer cwds from ALL engines — the Settings 'Session
+    overview' manager has to list every project the sidebar filter can show, and the
+    filter derives its options from the all-engine /api/sessions facets. Sourcing the
+    manager from the Claude-only scan let opencode/gemini cwds drift between the two."""
+    from agent_sessions import engines
+    from agent_sessions.scanner import Session
+
+    oc = Session(
+        engine="opencode",
+        uuid="ses_oconly",
+        cwd="/tmp/oc-only",
+        last_mtime=1.0,
+        first_user_message="hi",
+        archived=False,
+    )
+    monkeypatch.setattr(engines, "scan_all", lambda: [oc])
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # The opencode-only cwd appears in the filter facets …
+    facet_projects = set(c.get("/api/sessions?limit=100").json()["facets"]["projects"])
+    assert "/tmp/oc-only" in facet_projects
+    # … and is therefore manageable via /api/projects (previously Claude-only → it drifted).
+    picker = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert "/tmp/oc-only" in picker
+
+
 # ---- #174: server-side hide propagates to /api/sessions + /api/projects -----
 
 
