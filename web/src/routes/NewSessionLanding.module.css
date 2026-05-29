@@ -6,15 +6,15 @@
   overflow-y: auto; /* short screens scroll instead of the card overflowing the pane */
 }
 .card {
-  /* margin:auto centers in both axes but, unlike justify/align-center, the top stays
-   * reachable when the card is taller than the pane — so it never slides up under the
-   * mobile header bar. */
+  /* Plain centered content — NOT a second framed box. The frosted-glass window is the pane
+   * itself (.terminal-pane); the card is just the centered new-session content inside it
+   * (#211 review: no box-in-a-box). margin:auto keeps the top reachable when it's tall. */
   margin: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
   width: 100%;
-  max-width: 360px;
+  max-width: 380px;
 }
 .brandHero {
   margin-bottom: 6px;
@@ -50,7 +50,7 @@
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   padding: 8px 10px;
   font: inherit;
   /* Inherit the theme's color-scheme so the native option popup is dark in
@@ -91,20 +91,20 @@
 }
 .start {
   margin-top: 4px;
-  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  background: var(--cta-bg-1);
   color: var(--cta-text);
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   padding: 10px 0;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
 .start:hover:not(:disabled) {
-  background: linear-gradient(100deg, #ffd45e, #eab63c);
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
 }
 .start:active:not(:disabled) {
-  background: linear-gradient(100deg, #e6b837, #c8951f);
+  background: var(--cta-bg-2);
 }
 .start:disabled {
   opacity: 0.5;

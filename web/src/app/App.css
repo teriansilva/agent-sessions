@@ -1,26 +1,26 @@
-/* App shell: a session-list sidebar + a thin top header over the pane + a routed main pane.
- * Desktop (>800px): a fixed 320px sidebar column spanning the FULL height, with the header
- *   sitting only above the pane — it ends where the sidebar begins. The sidebar is
- *   collapsible (.app.collapsed) — hidden, pane full-width — and the header then spans the
- *   full width and carries the expand toggle + Settings gear. While expanded, collapse is
- *   driven solely by the sidebar .topbar's PanelLeftClose icon, so there's one affordance.
- * Mobile (≤800px): sidebar is an off-canvas drawer over a full-width pane; the header
- *   carries the hamburger. */
+/* App shell — tactical-HUD framework (#211 redux). Three full-width rows: a command TOPBAR
+ * (brand + SYS/MISSION telemetry + actions), the floating-panel DECK (a session-list sidebar
+ * panel + a routed main/terminal panel, both with corner-bracket frames + margins so they
+ * float on the ambient data-flow canvas), and a CLASSIFICATION footer bar.
+ * Desktop (>800px): 320px sidebar column; the single command-bar toggle collapses it
+ *   (.app.collapsed → pane full-width). Mobile (≤800px): the sidebar is an off-canvas drawer;
+ *   the command bar carries the hamburger. No rounded corners anywhere — the brackets are the
+ *   corner treatment (only LEDs/dots stay circular). */
 .app {
   display: grid;
   grid-template-columns: 320px 1fr;
-  /* A FIXED 46px header row + a content row bounded to the remaining viewport. The header
-   * must be pinned (not `auto`): the sidebar spans both rows, and as a row-spanning item its
-   * intrinsic content height would otherwise inflate an `auto` header row above 46px, leaving
-   * an empty gap between the title bar and the pane (#134). The minmax(0, …) row keeps the
-   * grid items from growing past the viewport so the compose bar shrinks the terminal instead
-   * of overflowing it (#7) and window-resize reflow works (#8). */
-  grid-template-rows: 46px minmax(0, calc(100dvh - 46px));
-  /* The sidebar spans BOTH rows (full height); the header occupies only the pane column, so
-   * it ends at the sidebar edge rather than crossing over it (#132). */
+  /* HUD framework (#211 redux): three full-width-flanked rows — a fixed 52px command TOPBAR,
+   * a bounded DECK row, and a fixed 28px CLASSIFICATION footer. The topbar and footer are
+   * pinned (fixed track sizes, not `auto`) so the deck row gets all the remaining height. The
+   * deck row is minmax(0, 1fr) so its grid items can't grow past the viewport — the compose bar
+   * shrinks the terminal instead of overflowing it (#7) and window-resize reflow works (#8).
+   * The deck panels take margins (below) so they float on the ambient canvas with their corner
+   * brackets fully visible. */
+  grid-template-rows: 52px minmax(0, 1fr) 28px;
   grid-template-areas:
-    "sidebar header"
-    "sidebar pane";
+    "topbar   topbar"
+    "sidebar  pane"
+    "classbar classbar";
   height: 100dvh;
   overflow: hidden;
   /* Sit above the fixed ambient data-flow canvas (#211 Phase 4); transparent so it shows
@@ -35,8 +35,9 @@
   .app.collapsed {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "header"
-      "pane";
+      "topbar"
+      "pane"
+      "classbar";
   }
   .app.collapsed .sidebar {
     display: none;
@@ -50,11 +51,15 @@
   /* Frosted-glass HUD panel (#211 Phase 4): translucent so the ambient canvas reads faintly
    * behind it. Falls back to the opaque --panel where backdrop-filter isn't supported. */
   position: relative;
+  /* Floating panel (#211 redux): margins so it sits off the edges with its corner brackets
+   * fully visible (not clipped), and a full border (not just border-right) since it no longer
+   * butts the viewport edge. */
+  margin: 12px 6px 12px 12px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  backdrop-filter: blur(7px) saturate(115%);
-  -webkit-backdrop-filter: blur(7px) saturate(115%);
-  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border: 1px solid var(--line);
 }
 .topbarActions {
   display: inline-flex;
@@ -80,7 +85,7 @@
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 0;
   cursor: pointer;
 }
 .viewToggle button:hover {
@@ -100,28 +105,41 @@
   display: flex;
   flex-direction: column;
 }
-.topbar {
+/* Sidebar panel header (#211 redux): "SESSIONS  SEC // 01" — mono uppercase heading + tag. */
+.sidebar-head {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  /* Match the header height so the sidebar topbar and the pane header share one clean
-   * horizontal line where the header meets the sidebar edge (#132). */
-  height: 46px;
+  height: 38px;
   box-sizing: border-box;
   padding: 0 12px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-1) 78%, transparent);
+  border-bottom: 1px solid var(--line);
 }
-/* Settings gear — sits opposite the wordmark in the sidebar header. */
+.hud-h {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* Sidebar panel footer: "60 ENGAGED · 4 LIVE" telemetry tag. */
+.sidebar-foot {
+  flex: none;
+  padding: 9px 12px;
+  border-top: 1px dashed var(--line);
+}
+/* Settings gear — topbar action button. */
 .gear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--text-muted);
   /* Explicit transparent bg: without it the UA paints the default (grey) button face
    * under color-scheme:dark (#149). */
@@ -133,29 +151,40 @@
   border-color: var(--border);
   background: var(--row-hover);
 }
-/* BattleLab wordmark (#211): uppercase HUD wordmark, "Battle" in brand-soft + a bold
- * brand-amber "Lab", led by a small amber mark — mirrors the landing + app-shell mock. */
-.brand {
+/* BattleLab wordmark (#211 redux): the prominent command-bar wordmark — uppercase, wide
+ * tracking, an amber ◢ mark, "BATTLE" in soft + a bold brand-amber "LAB". */
+.hud-brand {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 700;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--brand-soft);
+  white-space: nowrap;
 }
-.brand .mk {
+.hud-brand .mk {
   color: var(--accent);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
 }
-.brand b {
+.hud-brand b {
   color: var(--brand);
   font-weight: 800;
 }
 .terminal-pane {
   grid-area: pane;
+  position: relative;
+  /* Floating hero panel (#211 redux): margins + border + its white hero corner brackets.
+   * This IS the frosted-glass window — translucent + backdrop-filter so the ambient data-flow
+   * field blurs behind it while routed content (landing/settings/overview) sits ON the glass.
+   * The terminal renders its own opaque surface on top, so terminal text stays crisp. */
+  margin: 12px 12px 12px 6px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
   min-width: 0;
   min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
   display: flex;
@@ -174,21 +203,27 @@
   font-size: 13px;
 }
 
-/* Shared compact top header (desktop + mobile). On desktop it's a thin bar spanning both
- * grid columns carrying the sidebar toggle + the current session; on mobile it carries the
- * drawer hamburger. */
-.mobilebar {
-  grid-area: header;
+/* Full-width command topbar (#211 redux): spans both columns — toggle, the prominent
+ * BATTLELAB wordmark, the current-session label, SYS/MISSION telemetry, and the actions.
+ * This replaces both the old sidebar header and the mobile bar (one bar for all widths). */
+.hud-topbar {
+  grid-area: topbar;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 10px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  height: 52px;
+  padding: 0 18px;
+  background: color-mix(in srgb, var(--bg-1) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-bottom: 1px solid var(--line);
 }
-.mobilebar .brand {
-  font-size: 15px;
+/* SYS // clock + MISSION // timer, pushed to the right; the session label takes the slack. */
+.hud-telemetry {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 22px;
 }
 /* Current-session label in the header. */
 .hdrSession {
@@ -206,7 +241,7 @@
   min-width: 22px;
   height: 18px;
   padding: 0 5px;
-  border-radius: 5px;
+  border-radius: 0;
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
@@ -228,41 +263,70 @@
   text-overflow: ellipsis;
   min-width: 0;
 }
-/* Header actions (Overview + Settings) sit at the far right of the bar. The desktop
- * equivalents live in the sidebar .topbar (hidden on mobile, and gone when the sidebar is
- * collapsed) — so these give mobile + collapsed-desktop a way to reach /overview and
- * /settings. Hidden on desktop while the sidebar is expanded (#139). */
-.mobilebarActions {
-  margin-left: auto;
+/* Topbar actions (Overview + Settings) at the far right, after the telemetry. */
+.hud-topbar-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
-@media (min-width: 801px) {
-  /* The header's hamburger/X only opens the sidebar when collapsed; while the sidebar is
-   * expanded the collapse control lives in its .topbar (PanelLeftClose), so hide the header
-   * toggle then — otherwise two buttons collapse the same sidebar (#132). */
-  .app:not(.collapsed) .navToggle {
+/* Overview/Settings actions that live in the sidebar drawer on small screens (#211 review).
+ * Hidden on wide screens (the topbar carries them); shown ≤640px where the topbar would
+ * otherwise overflow — reached via the hamburger. */
+.sidebar-actions {
+  display: none;
+}
+@media (max-width: 640px) {
+  /* Topbar collapses to hamburger + wordmark; actions + session label move into the drawer. */
+  .hud-topbar-actions {
     display: none;
   }
-  /* Header actions: the sidebar .topbar carries them while expanded, so hide the header
-   * copies then; when collapsed the sidebar (and its actions) is gone, so show them. */
-  .mobilebarActions {
+  .hud-topbar .hdrSession,
+  .hud-topbar .hdrTitle {
     display: none;
   }
-  .app.collapsed .mobilebarActions {
-    display: inline-flex;
+  .sidebar-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 8px 4px;
+    border-bottom: 1px dashed var(--line);
   }
+  .sidebar-actions .gear {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 10px;
+    height: 40px;
+    padding: 0 8px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+/* Full-width classification footer (#211 redux): the bottom HUD bar. */
+.hud-classbar {
+  grid-area: classbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 28px;
+  padding: 0 18px;
+  background: color-mix(in srgb, var(--bg-1) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border-top: 1px solid var(--line);
 }
 .navToggle {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 0;
   color: var(--text);
   cursor: pointer;
 }
@@ -273,20 +337,19 @@
 }
 
 @media (max-width: 800px) {
+  /* Mobile: stack topbar / pane / classbar; the sidebar becomes an off-canvas drawer. */
   .app {
     display: flex;
     flex-direction: column;
   }
-  .mobilebar {
+  .hud-topbar {
     flex: none;
     position: relative;
     z-index: 40; /* above the drawer so the toggle is always reachable */
   }
-  .topbar {
-    display: none; /* the mobile bar carries the title; drawer starts with the list */
-  }
-  .collapseToggle {
-    display: none; /* desktop-only affordance; mobile collapses via the drawer backdrop */
+  /* Telemetry is noisy on a phone; the wordmark + session label + actions are enough. */
+  .hud-telemetry {
+    display: none;
   }
   .sidebar {
     position: fixed;
@@ -295,7 +358,8 @@
     left: 0;
     width: min(85vw, 320px);
     height: 100dvh;
-    padding-top: 46px; /* clear the fixed mobile bar */
+    margin: 0;
+    padding-top: 52px; /* clear the fixed command bar */
     transform: translateX(-100%);
     transition: transform 0.18s ease;
     box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
@@ -320,6 +384,7 @@
   .terminal-pane {
     flex: 1;
     min-height: 0;
+    margin: 8px;
   }
 }
 .landing,
@@ -386,16 +451,18 @@ body.hud-static-grid {
  * Accent brackets by default; `.hero` brackets are white + larger (at most one hero per view). */
 .hud-cnr {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
   border: 0 solid var(--accent);
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
-.hud-cnr.tl { top: -1px; left: -1px; border-top-width: 1.5px; border-left-width: 1.5px; }
-.hud-cnr.tr { top: -1px; right: -1px; border-top-width: 1.5px; border-right-width: 1.5px; }
-.hud-cnr.bl { bottom: -1px; left: -1px; border-bottom-width: 1.5px; border-left-width: 1.5px; }
-.hud-cnr.br { bottom: -1px; right: -1px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+.hud-cnr.tl { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
+.hud-cnr.tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
+.hud-cnr.bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
+.hud-cnr.br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+/* Hero frame — white + larger; at most one per view (the terminal pane). */
+.hud-cnr.hero { width: 20px; height: 20px; border-color: var(--text-1); }
 
 /* Mono uppercase status tag + semantic LED dot. */
 .hud-tag {

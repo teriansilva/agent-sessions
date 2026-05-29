@@ -7,9 +7,8 @@ import { expect, test } from "@playwright/test";
 
 test("shell renders + new-session landing at /", async ({ page }) => {
   await page.goto("/");
-  // The brand shows in the sidebar header (desktop) or the top bar (mobile); only one
-  // is visible per viewport, so filter to the visible instance.
-  await expect(page.getByText("BattleLab").filter({ visible: true }).first()).toBeVisible();
+  // The BATTLELAB wordmark lives in the full-width command topbar (one bar, all widths).
+  await expect(page.locator(".hud-brand")).toBeVisible();
   await expect(page.getByRole("heading", { name: /start a new session/i })).toBeVisible();
 });
 
@@ -25,7 +24,8 @@ test("responsive nav: drawer hamburger on mobile; single collapse affordance on 
   page,
 }, testInfo) => {
   await page.goto("/");
-  const toggle = page.getByRole("button", { name: /toggle session list/i });
+  // One command-bar toggle for all widths (#211 redux): drawer on mobile, collapse on desktop.
+  const toggle = page.locator(".navToggle");
   const app = page.locator(".app");
 
   if (testInfo.project.name === "mobile") {
@@ -41,42 +41,42 @@ test("responsive nav: drawer hamburger on mobile; single collapse affordance on 
     });
     await expect(app).not.toHaveClass(/navOpen/);
   } else {
-    // Desktop (#132): while the sidebar is expanded the header carries NO collapse toggle —
-    // collapse lives only in the sidebar's PanelLeftClose, so there's a single affordance.
-    // Collapsing hides the sidebar; THEN the header's expand toggle appears and re-expands.
+    // Desktop: the single command-bar toggle collapses, then re-expands the sidebar.
     await expect(app).not.toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeVisible();
-    await expect(toggle).toBeHidden(); // no duplicate collapse button while expanded
-    await page.getByRole("button", { name: /collapse session list/i }).click();
+    await expect(toggle).toBeVisible();
+    await toggle.click();
     await expect(app).toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeHidden();
-    await expect(toggle).toBeVisible(); // collapsed → header shows the expand toggle
     await toggle.click();
     await expect(app).not.toHaveClass(/collapsed/);
     await expect(page.locator(".sidebar")).toBeVisible();
   }
 });
 
-test("no empty gap between the title bar and the pane (#134)", async ({ page }) => {
+test("the command topbar spans the top and the pane floats below it (#134/#211)", async ({ page }) => {
   await page.goto("/");
-  // The pane must start immediately under the header — no wasted band below the title bar.
-  const header = await page.locator(".mobilebar").boundingBox();
+  const top = await page.locator(".hud-topbar").boundingBox();
   const pane = await page.locator(".terminal-pane").boundingBox();
-  expect(header).not.toBeNull();
+  expect(top).not.toBeNull();
   expect(pane).not.toBeNull();
-  expect(Math.abs(pane!.y - (header!.y + header!.height))).toBeLessThan(2);
+  expect(top!.y).toBeLessThan(4); // topbar pinned to the top
+  // The pane is a floating panel below the topbar (deliberate margin — no overlap, no huge gap).
+  expect(pane!.y).toBeGreaterThanOrEqual(top!.y + top!.height - 1);
+  expect(pane!.y - (top!.y + top!.height)).toBeLessThan(24);
 });
 
-test("opens the fullscreen session overview from the sidebar/header (#139)", async ({
+test("opens the fullscreen session overview (topbar on desktop, drawer on mobile) (#139/#211)", async ({
   page,
 }, testInfo) => {
   await page.goto("/");
-  // Desktop: the entry is in the sidebar topbar; mobile/collapsed: in the always-visible header.
-  const entry =
-    testInfo.project.name === "mobile"
-      ? page.locator(".mobilebar").getByRole("link", { name: /open session overview/i })
-      : page.locator(".sidebar .topbar").getByRole("link", { name: /open session overview/i });
-  await entry.click();
+  if (testInfo.project.name === "mobile") {
+    // ≤640px the topbar actions collapse into the drawer — open it, then tap Overview there.
+    await page.locator(".navToggle").click();
+    await page.locator(".sidebar").getByRole("link", { name: /open session overview/i }).click();
+  } else {
+    await page.locator(".hud-topbar").getByRole("link", { name: /open session overview/i }).click();
+  }
   await expect(page).toHaveURL(/\/overview$/);
   // The overview surface mounts (loading/empty/error state — never a blank route).
   await expect(page.locator(".tr-overview")).toBeVisible();

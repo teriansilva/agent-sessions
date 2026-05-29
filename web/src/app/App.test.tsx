@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
@@ -32,21 +32,21 @@ beforeEach(() => {
   delete document.documentElement.dataset.theme;
 });
 
-test("exposes a Settings entrypoint in both the sidebar and the mobile bar", async () => {
-  render(<App />);
-  // Two gears link to /settings: the sidebar .topbar one (desktop) and the .mobilebar one
-  // (mobile). CSS hides one per breakpoint, but both must exist in the DOM so neither
-  // surface is left without a way to reach Settings.
-  const links = await screen.findAllByRole("link", { name: "Settings" });
-  expect(links).toHaveLength(2);
-  for (const a of links) expect(a).toHaveAttribute("href", "/settings");
-  await waitFor(() => expect(links[0]).toBeInTheDocument());
+test("the command topbar carries the Settings entrypoint (#211 redux)", async () => {
+  const { container } = render(<App />);
+  // The command topbar has one Settings gear (the small-screen copy lives in the sidebar
+  // drawer — same href — so scope the assertion to the topbar).
+  await screen.findAllByRole("link", { name: "Settings" });
+  const topbar = container.querySelector(".hud-topbar") as HTMLElement;
+  const link = within(topbar).getByRole("link", { name: "Settings" });
+  expect(link).toHaveAttribute("href", "/settings");
+  await waitFor(() => expect(link).toBeInTheDocument());
 });
 
-test("desktop: collapse via the sidebar button, re-expand via the header toggle (#132)", async () => {
-  // jsdom has no matchMedia → isMobile defaults false, so this exercises the desktop path:
-  // one collapse affordance at a time — the sidebar PanelLeftClose collapses, and only when
-  // collapsed does the header toggle re-expand (no duplicate collapse button while expanded).
+test("desktop: the single command-bar toggle collapses then re-expands the sidebar (#132/#211)", async () => {
+  // jsdom has no matchMedia → isMobile defaults false → desktop path. One topbar toggle is the
+  // sole collapse affordance: it collapses when expanded ("Collapse…") and expands when
+  // collapsed ("Open…").
   const { container } = render(<App />);
   const app = container.querySelector(".app");
   expect(app).not.toHaveClass("collapsed");
@@ -54,17 +54,16 @@ test("desktop: collapse via the sidebar button, re-expand via the header toggle 
   await userEvent.click(await screen.findByRole("button", { name: "Collapse session list" }));
   expect(app).toHaveClass("collapsed");
 
-  await userEvent.click(screen.getByRole("button", { name: "Toggle session list" }));
+  await userEvent.click(screen.getByRole("button", { name: "Open session list" }));
   expect(app).not.toHaveClass("collapsed");
 });
 
-test("exposes an overview entrypoint in both the sidebar and the header (#139)", async () => {
-  render(<App />);
-  // Two links → /overview: the sidebar .topbar one (desktop expanded) and the .mobilebar one
-  // (mobile + collapsed desktop). CSS shows one per state; both must exist in the DOM.
-  const links = await screen.findAllByRole("link", { name: /open session overview/i });
-  expect(links).toHaveLength(2);
-  for (const a of links) expect(a).toHaveAttribute("href", "/overview");
+test("the command topbar carries the overview entrypoint (#139/#211)", async () => {
+  const { container } = render(<App />);
+  await screen.findAllByRole("link", { name: /open session overview/i });
+  const topbar = container.querySelector(".hud-topbar") as HTMLElement;
+  const link = within(topbar).getByRole("link", { name: /open session overview/i });
+  expect(link).toHaveAttribute("href", "/overview");
 });
 
 test("sidebar List ⇄ Map toggle swaps the body and persists the choice (#139)", async () => {

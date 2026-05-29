@@ -13,7 +13,7 @@
   background: var(--surface-1, #1b1226);
   color: var(--text-1, #ece7f7);
   border: 1px solid var(--border, #3b3357);
-  border-radius: 12px;
+  border-radius: 0;
   padding: 20px 22px;
   width: min(420px, 100%);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -49,7 +49,7 @@
   background: var(--surface-3, #2a223f);
   color: inherit;
   border: 1px solid var(--border, #3b3357);
-  border-radius: 8px;
+  border-radius: 0;
   font-size: 14px;
 }
 
@@ -74,7 +74,7 @@
 .save {
   appearance: none;
   padding: 6px 14px;
-  border-radius: 8px;
+  border-radius: 0;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;

@@ -14,7 +14,7 @@
 }
 .tr-overview .react-flow__controls {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   overflow: hidden;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
 }
@@ -31,7 +31,7 @@
 .tr-overview .react-flow__minimap {
   background: color-mix(in srgb, var(--panel) 82%, transparent);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
 }
 .tr-overview .react-flow__attribution {
   background: transparent;
@@ -52,7 +52,7 @@
   height: 100%;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 0;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
 }
 /* The cluster header is a collapse/expand toggle (button reset). */
@@ -136,7 +136,7 @@
   background: var(--row-hover);
   border: 1px solid var(--border);
   border-left: 3px solid var(--eng, var(--accent));
-  border-radius: 9px;
+  border-radius: 0;
   cursor: pointer;
   text-align: left;
   color: var(--text);
@@ -253,7 +253,7 @@
   color: var(--text-muted);
   background: color-mix(in srgb, var(--panel) 90%, transparent);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 0;
   padding: 5px 9px;
   cursor: pointer;
 }
@@ -272,6 +272,6 @@
   color: var(--text-muted);
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 4px 12px;
 }

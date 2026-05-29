@@ -8,7 +8,7 @@
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--surface-2, #2a223f);
   color: var(--text-1, #ece7f7);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
@@ -21,7 +21,7 @@
   background: var(--accent, #c8a14a);
   color: var(--accent-fg, #1b1226);
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   padding: 4px 12px;
   font-size: 13px;
   font-weight: 600;

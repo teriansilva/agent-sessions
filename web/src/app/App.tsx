@@ -1,4 +1,4 @@
-import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon, X } from "lucide-react";
+import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -9,6 +9,7 @@ import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
 import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
+import { MissionTimer } from "../components/hud/MissionTimer";
 import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -67,14 +68,17 @@ function CurrentSessionLabel() {
   );
 }
 
-/** App shell: a session-list sidebar + a routed main pane.
- *  - Desktop (>800px): sidebar is a fixed 320px column spanning the full height; the thin
- *    top header sits only above the pane (it ends at the sidebar edge). While expanded, the
- *    sidebar is collapsed via its own .topbar PanelLeftClose icon — the header carries NO
- *    toggle then (one affordance, #132). When collapsed (persisted in localStorage) the pane
- *    goes full-width and the header spans it, showing an expand toggle + Settings gear.
- *  - Mobile (≤800px): sidebar is an off-canvas drawer toggled by the header hamburger; the
- *    pane is full-width. The drawer auto-closes after navigating.
+/** App shell — tactical-HUD framework (#211 redux). Three grid rows: a full-width command
+ *  TOPBAR (brand + SYS/MISSION telemetry + overview/settings actions, carrying the single
+ *  collapse/drawer toggle), a floating-panel DECK (a session-list sidebar panel + the routed
+ *  main/terminal panel — both bracket-framed with margins so they float on the ambient
+ *  data-flow canvas), and a full-width CLASSIFICATION footer. The one command-bar toggle drives
+ *  whichever surface the viewport exposes:
+ *  - Desktop (>800px): it collapses the 320px sidebar column (persisted in localStorage);
+ *    collapsed → the pane spans full width (one affordance, #132).
+ *  - Mobile (≤800px): the sidebar is an off-canvas drawer the same toggle opens, and the
+ *    topbar's overview/settings actions collapse into the drawer. The drawer auto-closes after
+ *    navigating.
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing. */
 function Layout() {
   const [navOpen, setNavOpen] = useState(false);
@@ -133,27 +137,46 @@ function Layout() {
   // "Open" state of whichever surface the toggle controls (for the icon + aria-expanded).
   const surfaceOpen = isMobile ? navOpen : !collapsed;
 
+  // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
+  // many are live (within the working window). Derived from the shared store the list fills.
+  const { sessions } = useSessionsStore();
+  const engaged = sessions.length;
+  const live = sessions.filter((s) => s.working).length;
+
   const cls = ["app", navOpen ? "navOpen" : "", collapsed ? "collapsed" : ""]
     .filter(Boolean)
     .join(" ");
 
   return (
     <>
-      <DataFlowCanvas />
       <ButtonGlitch />
       <div className={cls}>
-      <header className="mobilebar">
+      {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
+          backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
+          blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
+      <DataFlowCanvas />
+      <header className="hud-topbar">
         <button
           type="button"
           className="navToggle"
-          aria-label="Toggle session list"
+          aria-label={surfaceOpen ? "Collapse session list" : "Open session list"}
           aria-expanded={surfaceOpen}
           onClick={toggle}
         >
-          {surfaceOpen ? <X size={18} /> : <Menu size={18} />}
+          {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
         </button>
+        <span className="hud-brand">
+          <span className="mk" aria-hidden="true">
+            ◢
+          </span>
+          BATTLE<b>LAB</b>
+        </span>
         <CurrentSessionLabel />
-        <span className="mobilebarActions">
+        <span className="hud-telemetry">
+          <SysClock />
+          <MissionTimer />
+        </span>
+        <span className="hud-topbar-actions">
           <Link to="/overview" className="gear" aria-label="Open session overview">
             <Network size={18} />
           </Link>
@@ -172,36 +195,26 @@ function Layout() {
         <span className="hud-cnr tr" />
         <span className="hud-cnr bl" />
         <span className="hud-cnr br" />
-        <header className="topbar">
-          <span className="brand">
-            <span className="mk" aria-hidden="true">
-              ◢
-            </span>
-            Battle<b>Lab</b>
-          </span>
-          <SysClock />
-          <span className="topbarActions">
-            <Link to="/overview" className="gear" aria-label="Open session overview">
-              <Network size={18} />
-            </Link>
-            <Link
-              to="/settings"
-              state={{ returnTo: location.pathname }}
-              className="gear"
-              aria-label="Settings"
-            >
-              <SettingsIcon size={18} />
-            </Link>
-            <button
-              type="button"
-              className="gear collapseToggle"
-              aria-label="Collapse session list"
-              onClick={() => setCollapsed(true)}
-            >
-              <PanelLeftClose size={18} />
-            </button>
-          </span>
+        <header className="sidebar-head">
+          <h2 className="hud-h">Sessions</h2>
+          <span className="hud-tag">SEC // 01</span>
         </header>
+        {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
+        <div className="sidebar-actions">
+          <Link to="/overview" className="gear" aria-label="Open session overview">
+            <Network size={18} />
+            <span>Overview</span>
+          </Link>
+          <Link
+            to="/settings"
+            state={{ returnTo: location.pathname }}
+            className="gear"
+            aria-label="Settings"
+          >
+            <SettingsIcon size={18} />
+            <span>Settings</span>
+          </Link>
+        </div>
         <div className="viewToggle" role="tablist" aria-label="Sidebar view">
           <button
             type="button"
@@ -233,6 +246,11 @@ function Layout() {
             <SessionList />
           )}
         </div>
+        <footer className="sidebar-foot">
+          <span className="hud-tag">
+            <b className="num">{engaged}</b> ENGAGED · <b className="num">{live}</b> LIVE
+          </span>
+        </footer>
       </aside>
       <button
         type="button"
@@ -242,6 +260,10 @@ function Layout() {
         onClick={() => setNavOpen(false)}
       />
       <main className="terminal-pane">
+        <span className="hud-cnr hero tl" />
+        <span className="hud-cnr hero tr" />
+        <span className="hud-cnr hero bl" />
+        <span className="hud-cnr hero br" />
         <ChunkErrorBoundary>
           <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
             <Routes>
@@ -254,6 +276,13 @@ function Layout() {
           </Suspense>
         </ChunkErrorBoundary>
       </main>
+      <footer className="hud-classbar">
+        <span className="hud-tag">UNCLASSIFIED // INTERNAL USE // OP: NIGHTJAR</span>
+        <span className="hud-tag">
+          <span className={`hud-led ${live > 0 ? "up" : "idle"}`} aria-hidden="true" />
+          <b className="num">{live}</b> AGENTS LIVE
+        </span>
+      </footer>
       </div>
     </>
   );

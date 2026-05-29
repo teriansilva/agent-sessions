@@ -23,7 +23,7 @@
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 8px;
   font: inherit;
   line-height: 1.35;
@@ -31,7 +31,7 @@
 .textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(124, 77, 219, 0.25);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 .pills {
   display: flex;
@@ -43,9 +43,9 @@
   align-items: center;
   gap: 4px;
   max-width: 70%;
-  background: rgba(124, 77, 219, 0.16);
+  background: var(--glass-strong);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   padding: 2px 8px;
   font-size: 12px;
   color: var(--text);
@@ -74,28 +74,36 @@
   flex-wrap: wrap;
   gap: 4px;
 }
-/* Key + toggle buttons: themed indigo with a faint top sheen — a bit shiny, not loud. */
+/* Key + toggle buttons below the console (↑ ↓ ↵ ESC TAB ^C …): flat HUD chips — mono,
+   square, translucent so the ambient field reads through, amber on hover/active (#211). */
 .keys button,
 .toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 34px;
-  height: 34px;
+  min-width: 32px;
+  height: 32px;
   padding: 0 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 45%), #181238;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+  border-radius: 0;
   cursor: pointer;
 }
 .keys button:hover,
 .toggle:hover {
-  border-color: var(--accent);
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .keys button:active,
 .toggle:active {
-  background: var(--row-hover);
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .txt {
   font-size: 12px;
@@ -115,21 +123,21 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  background: var(--cta-bg-1);
   color: var(--cta-text);
   border: 0;
   height: 36px;
   padding: 0 14px;
-  border-radius: 8px;
+  border-radius: 0;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
 .send:hover {
-  background: linear-gradient(100deg, #ffd45e, #eab63c);
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
 }
 .send:active {
-  background: linear-gradient(100deg, #e6b837, #c8951f);
+  background: var(--cta-bg-2);
 }
 .toggle {
   flex: 0 0 auto;

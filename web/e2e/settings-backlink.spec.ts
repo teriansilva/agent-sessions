@@ -8,10 +8,13 @@ test("Settings back returns to the originating session (#155)", async ({ page },
   await page.goto("/s/claude/back-test");
   await expect(page.locator(".xterm")).toBeVisible();
 
-  // The gear lives in the desktop sidebar topbar and the mobile top bar; one is visible per
-  // viewport. Tap the one for this project's viewport.
-  const surface = testInfo.project.name === "mobile" ? ".mobilebar" : ".topbar";
-  await page.locator(surface).getByRole("link", { name: "Settings" }).click();
+  // Settings is in the command topbar on desktop; ≤640px it collapses into the drawer.
+  if (testInfo.project.name === "mobile") {
+    await page.locator(".navToggle").click();
+    await page.locator(".sidebar").getByRole("link", { name: "Settings" }).click();
+  } else {
+    await page.locator(".hud-topbar").getByRole("link", { name: "Settings" }).click();
+  }
   await expect(page).toHaveURL(/\/settings$/);
 
   await page.getByRole("link", { name: "Back to sessions" }).click();

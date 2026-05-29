@@ -122,45 +122,9 @@
   position: relative;
   overflow: hidden;
 }
-.shine::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    110deg,
-    transparent 35%,
-    rgba(255, 255, 255, 0.55) 50%,
-    transparent 65%
-  );
-  transform: translateX(-160%);
-  animation: shine-sweep 7s ease-in-out infinite;
-  pointer-events: none;
-}
-@keyframes shine-sweep {
-  0% {
-    transform: translateX(-160%);
-  }
-  18% {
-    transform: translateX(160%);
-  }
-  100% {
-    transform: translateX(160%);
-  }
-}
-button.shine:disabled::after {
-  display: none;
-}
-/* The legacy gold sweep is disabled for both shipped themes; Phase 4 (#211) replaces
-   .shine with the button glitch. */
-:root[data-theme="dark"] .shine::after,
-:root[data-theme="light"] .shine::after {
-  display: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .shine::after {
-    animation: none;
-  }
-}
+/* The old gold reflection SWEEP (a gradient ::after) is gone (#211) — the HUD has no
+   gradients; .shine now only carries the button glitch (keyframes in App.css). The base rule
+   above keeps position/overflow so the glitch clip-path is contained. */
 html,
 body,
 #root {

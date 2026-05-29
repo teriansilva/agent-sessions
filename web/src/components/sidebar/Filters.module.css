@@ -10,7 +10,7 @@
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 6px 9px;
 }
 .search::placeholder {
@@ -35,7 +35,7 @@
   background: var(--panel);
   color: var(--text-muted);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 0 10px;
   cursor: pointer;
 }
@@ -50,10 +50,10 @@
 /* Segmented Active/Archived — a faint top sheen gives a subtle gloss, on theme. */
 .tabs button {
   flex: 1;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 50%), var(--panel);
+  background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 4px 0;
   cursor: pointer;
   font-size: 12px;
@@ -63,7 +63,7 @@
   color: var(--text);
 }
 .tabs button.on {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 55%), var(--accent);
+  background: var(--accent);
   color: var(--on-accent); /* dark text on the light amber accent (#211) */
   border-color: transparent;
   font-weight: 600;

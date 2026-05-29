@@ -12,17 +12,17 @@
   flex: none;
   margin: 8px;
   padding: 9px 0;
-  background: linear-gradient(100deg, var(--cta-bg-1), var(--cta-bg-2));
+  background: var(--cta-bg-1);
   color: var(--cta-text);
-  border-radius: 6px;
+  border-radius: 0;
   font-weight: 600;
   text-decoration: none;
 }
 .newBtn:hover {
-  background: linear-gradient(100deg, #ffd45e, #eab63c);
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
 }
 .newBtn:active {
-  background: linear-gradient(100deg, #e6b837, #c8951f);
+  background: var(--cta-bg-2);
 }
 .list {
   list-style: none;
@@ -39,7 +39,7 @@
   background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 6px 0;
   cursor: pointer;
   font: inherit;
@@ -111,7 +111,7 @@
   height: 28px;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -141,7 +141,7 @@
   min-width: 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   color: var(--text);
   padding: 5px 8px;
   font: inherit;
@@ -206,7 +206,7 @@
   text-transform: uppercase;
   padding: 1px 4px;
   margin-top: 2px;
-  border-radius: 3px;
+  border-radius: 0;
   background: var(--badge-bg);
   color: var(--badge-fg);
 }

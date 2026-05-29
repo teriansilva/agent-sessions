@@ -48,7 +48,10 @@ export function DataFlowCanvas() {
       parts = Array.from({ length: n }, mk);
     };
     const grid = () => {
-      ctx.strokeStyle = "rgba(255,255,255,0.025)";
+      // A touch more present than a hairline (#211 review): the floating panels are frosted
+      // glass, and a continuous grid is what makes the backdrop-blur actually read — sparse
+      // trails alone are too thin to show a blur. Still faint enough to stay ambient.
+      ctx.strokeStyle = "rgba(150,170,210,0.06)";
       ctx.lineWidth = 1;
       for (let x = 0; x < W; x += 48) {
         ctx.beginPath();
