@@ -70,9 +70,32 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/settings",
     name: "settings",
-    description: "Settings — theme picker, About, and the support link (#109)",
+    description: "Settings — theme + accent picker, About, support link (#109/#211)",
     requireAuth: "admin",
     waitFor: SPA_MOUNTED,
+  },
+  {
+    group: "authed",
+    path: "/overview",
+    name: "overview",
+    description: "Session Overview map — clustered projects/sessions (#139/#211 HUD)",
+    requireAuth: "admin",
+    waitFor: {
+      kind: "networkidle",
+      timeoutMs: 8000,
+      reason: "React Flow lays out nodes after the sessions fetch resolves",
+    },
+  },
+  {
+    group: "authed",
+    // The deterministic seeded Claude session (web/visual/seed.py _CLAUDE[0]); resumed
+    // against the fake-agent transcript so the terminal pane renders representative output.
+    path: "/s/claude/019e2ba1-1590-7003-8e4a-51ab62cec900",
+    name: "session-view",
+    description: "Open session — terminal chrome (header + scrollback + compose bar) (#211 HUD)",
+    requireAuth: "admin",
+    // Wait for the xterm canvas to mount + the fake-agent transcript to paint.
+    waitFor: { selector: ".xterm-screen", timeoutMs: 12000 },
   },
 ];
 

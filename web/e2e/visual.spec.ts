@@ -80,10 +80,27 @@ test("visual capture", async ({ browser }, info) => {
   mkdirSync(OUT, { recursive: true });
   const manifest = emptyManifest(BASE, process.env.HEAD_SHA ?? null, parsed.areas);
 
-  // One anonymous context (login page) + one authed context (everything else).
-  const anon = await browser.newContext({ reducedMotion: "reduce", baseURL: BASE });
-  const authed = await browser.newContext({ reducedMotion: "reduce", baseURL: BASE });
-  const loggedIn = inScope.some((p) => p.requireAuth === "admin") ? await login(authed) : true;
+  // One anonymous context (login page) + one authed context (everything else). Motion is left
+  // ON so the ambient HUD canvas + LEDs + button glitch render in the shots (#211) — these are
+  // review-grade captures (eyeballed by Hermes + the operator), not pixel-diffed, so the
+  // canvas's randomness is fine.
+  const anon = await browser.newContext({ baseURL: BASE });
+  const authed = await browser.newContext({ baseURL: BASE });
+  // Authenticate the authed context. Prefer a directly-minted session cookie (set by
+  // run-local.sh from the known SECRET_KEY via the app's own signer) — faithful, reliable, and
+  // 2FA-agnostic, with no flaky form round-trip. Fall back to the server /login form when no
+  // cookie is supplied (e.g. capturing a remote instance).
+  const sessionCookie = process.env.VISUAL_SESSION_COOKIE;
+  let loggedIn = true;
+  if (inScope.some((p) => p.requireAuth === "admin")) {
+    if (sessionCookie) {
+      await authed.addCookies([
+        { name: "agent_sessions", value: sessionCookie, url: BASE, httpOnly: true, sameSite: "Lax" },
+      ]);
+    } else {
+      loggedIn = await login(authed);
+    }
+  }
 
   for (const p of inScope) {
     const ctx = p.requireAuth === "admin" ? authed : anon;
@@ -108,8 +125,16 @@ test("visual capture", async ({ browser }, info) => {
       const page = await ctx.newPage();
       try {
         await page.setViewportSize(VIEWPORTS[vp]);
-        await page.goto(p.path, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.goto(p.path, { waitUntil: "domcontentloaded", timeout: 20000 });
         await waitForReady(page, p);
+        // Guard against the example-app "login-redirect screenshot" quirk: an authed area that
+        // rendered the server /login form means auth didn't take — fail the shot rather than
+        // capture a misleading login page as e.g. "settings".
+        if (p.requireAuth === "admin" && (await page.locator('form[action="/login"]').count()) > 0) {
+          throw new Error("auth not applied — rendered the /login form");
+        }
+        // Settle so the motion-on canvas + LEDs have painted a frame before the shot.
+        await page.waitForTimeout(600);
         await page.screenshot({ path: `${OUT}/${file}`, fullPage: false });
         entry.duration_ms = Date.now() - started;
         manifest.paths.push(entry);

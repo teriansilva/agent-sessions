@@ -44,8 +44,20 @@ def _refuse_real_home(home: Path) -> None:
         raise SystemExit("refusing: target already holds a real ~/.claude/projects")
 
 
+def _real_cwd(home: Path, logical: str) -> str:
+    """Map a logical seed cwd (e.g. ``/seed/alpha``) to a REAL directory under the throwaway
+    home and create it, so the engine launcher can actually ``cd`` + start the (fake) agent
+    there — otherwise resuming the seeded session fails with "couldn't start this session"
+    (the cwd didn't exist) and the ``session-view`` capture shows an empty terminal (#211)."""
+    name = logical.lstrip("/").replace("/", "-")  # /seed/alpha → seed-alpha
+    p = home / "seed" / name
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+
 def seed_claude(home: Path) -> None:
     for uuid, cwd, msg in _CLAUDE:
+        cwd = _real_cwd(home, cwd)
         enc = "-" + cwd.lstrip("/").replace("/", "-")  # claude's dir encoding
         d = home / ".claude" / "projects" / enc
         d.mkdir(parents=True, exist_ok=True)
@@ -55,6 +67,7 @@ def seed_claude(home: Path) -> None:
 
 def seed_codex(home: Path) -> None:
     uuid, cwd, msg = _CODEX
+    cwd = _real_cwd(home, cwd)
     d = home / ".codex" / "sessions" / "2026" / "05" / "15"
     d.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -76,6 +89,7 @@ def seed_codex(home: Path) -> None:
 
 def seed_gemini(home: Path) -> None:
     sid, cwd, msg = _GEMINI
+    cwd = _real_cwd(home, cwd)
     phash = hashlib.sha256(cwd.encode()).hexdigest()
     tmp = home / ".gemini" / "tmp"
     chats = tmp / "seed-beta" / "chats"
@@ -98,6 +112,7 @@ def seed_gemini(home: Path) -> None:
 
 def seed_opencode(home: Path) -> None:
     sid, directory, title = _OPENCODE
+    directory = _real_cwd(home, directory)
     db_dir = home / ".local" / "share" / "opencode"
     db_dir.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_dir / "opencode.db")
