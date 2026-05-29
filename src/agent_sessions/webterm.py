@@ -56,11 +56,17 @@ def _read(fd: int) -> bytes:
 # absolute offset it last saw (`?have=`), and we stream only the bytes since then — so
 # a transient ws drop continues seamlessly instead of re-replaying the whole ring (or,
 # worse, blanking). See docs/session-handling.md §Reconnect continuity.
-_MAX_BUF = 256 * 1024
+# Per-session scrollback ring cap. This is a CEILING, not an up-front allocation: the
+# buffer is a bytearray that grows with actual output and is then trimmed to this size,
+# so an idle/quiet session costs only what it produced. Bumped 256KB → 4MB (#204): 256KB
+# held only a few screens and lost history almost immediately. 4MB is the "many sessions
+# on one VM" balance — worst case is (concurrent live sessions × 4MB), but the real
+# footprint is the sum of each session's *recent* output, well under the cap for most.
+_MAX_BUF = 4 * 1024 * 1024
 
 # Hard cap on how many *distinct* session buffers we retain at once. Each entry is
 # capped at `_MAX_BUF`, but without a ceiling on the *count* every session that ever
-# attached would leave up to 256KB resident for the process lifetime (audit MEDIUM:
+# attached would leave up to `_MAX_BUF` resident for the process lifetime (audit MEDIUM:
 # unbounded growth over many sessions). The buffers are insertion-/access-ordered
 # (`OrderedDict`, move-to-end on touch); when over the cap we evict the
 # least-recently-used entry. A still-attached/alive session is touched on every
