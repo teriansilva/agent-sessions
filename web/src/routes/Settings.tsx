@@ -12,13 +12,15 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { buildProjectTree, flattenTree } from "../lib/projectTree";
 import { RenameProjectModal } from "./RenameProjectModal";
+import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
+import { useAccent } from "../theme/accentStore";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type { EngineInfo, SystemInfo, TwoFactorEnrollment, UpdateInfo } from "../types/api";
@@ -951,6 +953,22 @@ function ScrollbackCacheCard() {
  *  with the running version, and a support link. Reached via the gear in the sidebar. */
 export function Settings() {
   const { theme, setTheme } = useTheme();
+  const { accent, setAccent } = useAccent();
+  // Draft for the free-text hex field — committed on Enter/blur so mid-typing (e.g. a
+  // transient valid #rgb prefix) doesn't churn the live accent or the server. When the
+  // accent changes elsewhere (a preset, the colour well, another device) we reflect it into
+  // the field via React's render-phase "adjust state on change" pattern (no effect needed).
+  const [hexDraft, setHexDraft] = useState(accent);
+  const [syncedAccent, setSyncedAccent] = useState(accent);
+  if (accent !== syncedAccent) {
+    setSyncedAccent(accent);
+    setHexDraft(accent);
+  }
+  const commitHex = () => {
+    const norm = normalizeAccent(hexDraft);
+    if (norm) setAccent(norm);
+    else setHexDraft(accent); // reset an invalid entry back to the active accent
+  };
   const [version, setVersion] = useState<string | null>(null);
   // Return to wherever the gear was tapped from (#155) — the session, overview, or landing —
   // instead of always dropping to the new-session landing. Only trust an in-app path.
@@ -1002,6 +1020,50 @@ export function Settings() {
               <span className={styles.themeDesc}>{t.description}</span>
             </button>
           ))}
+        </div>
+
+        <h3 className={styles.subhead} id="accent-h">
+          Accent
+        </h3>
+        <p className={styles.hint}>The brand colour — buttons, highlights, the terminal cursor.</p>
+        <div className={styles.accents} role="radiogroup" aria-labelledby="accent-h">
+          {ACCENT_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              role="radio"
+              aria-checked={accent === p.hex}
+              aria-label={p.label}
+              title={p.label}
+              className={accent === p.hex ? `${styles.accentDot} ${styles.active}` : styles.accentDot}
+              style={{ "--dot": p.hex } as CSSProperties}
+              onClick={() => setAccent(p.hex)}
+            />
+          ))}
+          <label className={styles.accentCustom} title="Custom colour">
+            <input
+              type="color"
+              aria-label="Custom accent colour"
+              value={accent}
+              onChange={(e) => setAccent(e.target.value)}
+            />
+          </label>
+          <input
+            type="text"
+            inputMode="text"
+            spellCheck={false}
+            className={styles.accentHex}
+            aria-label="Accent hex value"
+            value={hexDraft}
+            onChange={(e) => setHexDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitHex();
+              }
+            }}
+            onBlur={commitHex}
+          />
         </div>
       </section>
 

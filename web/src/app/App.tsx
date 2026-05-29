@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
+import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
 import { useConfig } from "./config";
@@ -247,14 +248,16 @@ export default function App() {
   return (
     <ConfigProvider>
       <ThemeProvider>
-        <OverviewPrefsProvider>
-          <SessionsProvider>
-            <BrowserRouter>
-              <Layout />
-              <NewVersionBanner />
-            </BrowserRouter>
-          </SessionsProvider>
-        </OverviewPrefsProvider>
+        <AccentProvider>
+          <OverviewPrefsProvider>
+            <SessionsProvider>
+              <BrowserRouter>
+                <Layout />
+                <NewVersionBanner />
+              </BrowserRouter>
+            </SessionsProvider>
+          </OverviewPrefsProvider>
+        </AccentProvider>
       </ThemeProvider>
     </ConfigProvider>
   );

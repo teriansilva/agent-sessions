@@ -46,6 +46,9 @@ export interface AppConfig {
   must_change_password?: boolean;
   /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
+  /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
+   *  applied at load. Absent on older servers (→ client default phosphor-amber). */
+  accent?: string;
   /** Per-user sidebar body: "list" (session list) or "overview" (squeezed map, #139). */
   sidebar_view?: "list" | "overview" | string;
   /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden globally. */

@@ -4,9 +4,10 @@ import { expect, test } from "vitest";
 
 // Parses the SHIPPED index.css and enforces WCAG-AA contrast on each theme's palette, so a
 // future palette tweak can't silently drop below readable. Dark is the bare `:root` default;
-// dark/light also live in `:root[data-theme="…"]`. We check body text/bg per theme, plus the CTA
-// contract once (theme-independent): the filled CTAs are gold (--cta-bg-1) with dark text
-// (--cta-text), defined only in the bare :root and never overridden per theme.
+// dark/light also live in `:root[data-theme="…"]`. We check body text/bg per theme, plus the
+// CTA contract: since #211 Phase 2 the filled CTAs derive from the brand accent
+// (--cta-bg-1 = var(--accent), --cta-text = var(--on-accent)), so their contrast IS the
+// on-accent/accent pair already checked per theme.
 
 // vitest runs from web/; the stylesheet under test is web/src/index.css.
 const css = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
@@ -61,9 +62,13 @@ for (const [name, selector] of Object.entries(THEMES)) {
   });
 }
 
-// The CTA is theme-independent (defined only in the bare :root): dark --cta-text on the
-// amber --cta-bg-1 base, the most-contrast-critical pair of the gradient. ~11:1, WCAG AAA.
-test("CTA: --cta-text on --cta-bg-1 meets WCAG AA (>=4.5:1)", () => {
+// The CTA derives from the brand accent (#211 Phase 2): --cta-bg-1 = var(--accent),
+// --cta-text = var(--on-accent). Assert the aliasing is wired (so a custom accent recolours
+// the CTA too) and that the resolved on-accent/accent pair — the most contrast-critical part
+// of the gradient — stays AA. Default amber is ~11:1 (AAA).
+test("CTA derives from the accent and stays AA (>=4.5:1)", () => {
   const root = block(":root {");
-  expect(ratio(token(root, "cta-text"), token(root, "cta-bg-1"))).toBeGreaterThanOrEqual(4.5);
+  expect(root).toMatch(/--cta-bg-1:\s*var\(--accent\)/);
+  expect(root).toMatch(/--cta-text:\s*var\(--on-accent\)/);
+  expect(ratio(token(root, "on-accent"), token(root, "accent"))).toBeGreaterThanOrEqual(4.5);
 });

@@ -14,6 +14,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 
 # Mirror of web/src/theme/themes.ts THEME_IDS. Kept in sync by
@@ -26,6 +27,14 @@ DEFAULT_THEME = "dark"
 # Sidebar body: the session list, or the squeezed Session Overview map (#139).
 SIDEBAR_VIEWS: tuple[str, ...] = ("list", "overview")
 DEFAULT_SIDEBAR_VIEW = "list"
+
+# Brand accent (#211 Phase 2): a #rrggbb hex driving --accent (and, via color-mix in
+# index.css, the derived accent-soft/glow + CTA tokens) plus the xterm cursor. User-
+# customizable; the preset palette lives client-side (web/src/theme/accent.ts). Default
+# is phosphor-amber — keep in sync with accent.ts DEFAULT_ACCENT.
+DEFAULT_ACCENT = "#ffb000"
+_HEX6_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
+_HEX3_RE = re.compile(r"^#?([0-9a-fA-F]{3})$")
 
 
 def _default_path() -> Path:
@@ -45,6 +54,33 @@ def coerce_theme(value: object) -> str:
 def coerce_sidebar_view(value: object) -> str:
     """Narrow any input to a known sidebar view, falling back to the default."""
     return value if isinstance(value, str) and value in SIDEBAR_VIEWS else DEFAULT_SIDEBAR_VIEW
+
+
+def coerce_accent(value: object) -> str:
+    """Narrow any input to a normalized lowercase ``#rrggbb`` accent, falling back to the
+    default. Accepts ``#rgb`` shorthand (expanded) and a missing leading ``#``; anything
+    else (non-string, wrong length, non-hex) → DEFAULT_ACCENT. Applied on read AND write so
+    a malformed persisted value can never strand the UI on an invalid accent."""
+    if not isinstance(value, str):
+        return DEFAULT_ACCENT
+    s = value.strip()
+    m6 = _HEX6_RE.match(s)
+    if m6:
+        return "#" + m6.group(1).lower()
+    m3 = _HEX3_RE.match(s)
+    if m3:
+        return "#" + "".join(c * 2 for c in m3.group(1).lower())
+    return DEFAULT_ACCENT
+
+
+def is_valid_accent(value: object) -> bool:
+    """True iff ``value`` is a hex colour we accept. The write endpoint uses this to reject
+    garbage with a 422 (same contract as theme/sidebar_view) rather than silently coercing
+    a bad payload to the default on write."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    return bool(_HEX6_RE.match(s)) or bool(_HEX3_RE.match(s))
 
 
 def _load(path: Path) -> dict:
@@ -141,6 +177,17 @@ def get_sidebar_view(path: Path | None = None) -> str:
 def set_sidebar_view(view: str, path: Path | None = None) -> str:
     """Persist the sidebar view (invalid input → default). Preserves other keys (e.g. theme)."""
     return _set("sidebar_view", coerce_sidebar_view(view), path)
+
+
+def get_accent(path: Path | None = None) -> str:
+    """The persisted brand accent (#rrggbb), or the default when unset/unreadable/invalid."""
+    return coerce_accent(_load(path or _default_path()).get("accent"))
+
+
+def set_accent(accent: str, path: Path | None = None) -> str:
+    """Persist the brand accent, normalized to lowercase #rrggbb (invalid input → default).
+    Preserves other keys (e.g. theme)."""
+    return _set("accent", coerce_accent(accent), path)
 
 
 def get_overview_expanded(path: Path | None = None) -> list[str]:

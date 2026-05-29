@@ -345,3 +345,90 @@ def test_projects_hidden_persists_alongside_other_keys(tmp_path):
     assert prefs.get_theme(p) == "dark"
     assert prefs.get_project_names(p) == {"/a": "A"}
     assert prefs.get_projects_hidden(p) == ["/h"]
+
+
+# ---- brand accent (#211 Phase 2) ----------------------------------------------
+
+
+def test_default_accent_when_unset(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.get_accent(p) == "#ffb000"
+
+
+def test_accent_round_trip_and_normalization(tmp_path):
+    p = tmp_path / "prefs.json"
+    # Uppercase + missing '#' normalize to lowercase #rrggbb.
+    assert prefs.set_accent("#C02020", p) == "#c02020"
+    assert prefs.get_accent(p) == "#c02020"
+    assert prefs.set_accent("3FBF6F", p) == "#3fbf6f"
+    # #rgb shorthand expands.
+    assert prefs.set_accent("#0af", p) == "#00aaff"
+
+
+def test_invalid_accent_coerced_to_default(tmp_path):
+    p = tmp_path / "prefs.json"
+    for bad in ("nope", "#12", "#12345", "#1234567", "rgb(0,0,0)", "", "#ggghhh"):
+        assert prefs.set_accent(bad, p) == "#ffb000", bad
+        assert prefs.get_accent(p) == "#ffb000", bad
+
+
+def test_is_valid_accent():
+    assert prefs.is_valid_accent("#ffb000")
+    assert prefs.is_valid_accent("ffb000")
+    assert prefs.is_valid_accent("#0af")
+    assert not prefs.is_valid_accent("#12")
+    assert not prefs.is_valid_accent("#1234567")
+    assert not prefs.is_valid_accent("teal")
+    assert not prefs.is_valid_accent(123)
+    assert not prefs.is_valid_accent(None)
+
+
+def test_accent_coexists_with_theme(tmp_path):
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("light", p)
+    prefs.set_accent("#c02020", p)
+    assert prefs.get_theme(p) == "light"
+    assert prefs.get_accent(p) == "#c02020"
+
+
+def test_config_exposes_accent(auth_cfg, tmp_home):
+    prefs.set_accent("#3fbf6f")
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["accent"] == "#3fbf6f"
+
+
+def test_config_default_accent(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["accent"] == "#ffb000"
+
+
+def test_set_accent_endpoint_normalizes_and_persists(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"accent": "#C02020"}, headers=hdrs)
+    assert r.status_code == 200 and r.json() == {"accent": "#c02020"}
+    assert c.get("/api/config").json()["accent"] == "#c02020"
+
+
+def test_set_accent_invalid_422(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"accent": "tomato"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+
+
+def test_set_accent_endpoint_without_clobbering_theme(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"theme": "light"}, headers=hdrs).status_code == 200
+    assert c.post("/api/prefs", json={"accent": "#00aaff"}, headers=hdrs).status_code == 200
+    cfg = c.get("/api/config").json()
+    assert cfg["accent"] == "#00aaff" and cfg["theme"] == "light"

@@ -14,10 +14,12 @@
   --glass-strong: rgba(255, 255, 255, 0.035);
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.14);
-  --accent: #ffb000; /* phosphor-amber brand — user-customizable; borders/LEDs/brackets/cursor */
-  --on-accent: #120c00; /* dark text ON the (light) amber accent — AA, locked by contrast.test */
-  --accent-soft: rgba(255, 176, 0, 0.55);
-  --accent-glow: rgba(255, 176, 0, 0.22);
+  --accent: #ffb000; /* phosphor-amber brand — user-customizable (#211 Phase 2: a custom
+                        accent overrides --accent + --on-accent inline on <html>; everything
+                        below derives from them via color-mix, so the override cascades). */
+  --on-accent: #120c00; /* ink ON the (light) amber accent — AA, locked by contrast.test */
+  --accent-soft: color-mix(in srgb, var(--accent) 55%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 22%, transparent);
   /* Semantic status — INDEPENDENT of the brand accent; never substitute the accent for these. */
   --status-up: #3fbf6f;
   --status-degraded: #f59e0b;
@@ -39,10 +41,11 @@
   --brand-soft: #ffd47a;
   --badge-bg: #2a2310;
   --badge-fg: #ffd47a;
-  /* Amber CTA (was gold) — theme-independent; dark --cta-text on amber --cta-bg-1 ≈ 11:1 (AAA). */
-  --cta-bg-1: #ffb000;
-  --cta-bg-2: #d99500;
-  --cta-text: #120c00;
+  /* CTA — follows the brand accent (#211 Phase 2): bg from --accent, the darker gradient
+     stop via color-mix, ink from --on-accent. Default amber: --cta-text on --cta-bg-1 ≈ 11:1. */
+  --cta-bg-1: var(--accent);
+  --cta-bg-2: color-mix(in srgb, var(--accent) 85%, #000);
+  --cta-text: var(--on-accent);
   font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 

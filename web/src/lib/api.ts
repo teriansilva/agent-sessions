@@ -144,6 +144,8 @@ export const api = {
   updateApply: () => postJson<{ status: string }>("/api/update/apply"),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
+  /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
+  setAccent: (accent: string) => postJson<{ accent: string }>("/api/prefs", { accent }),
   /** Persist the sidebar view (list|overview) server-side, per-user (#139). CSRF-guarded. */
   setSidebarView: (view: string) =>
     postJson<{ sidebar_view: string }>("/api/prefs", { sidebar_view: view }),

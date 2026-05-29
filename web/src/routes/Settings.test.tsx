@@ -8,6 +8,7 @@ import { api } from "../lib/api";
 import type { AppConfig } from "../types/api";
 import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
+import { AccentCtx } from "../theme/accentStore";
 import { Settings } from "./Settings";
 
 vi.mock("../lib/api", async () => {
@@ -17,6 +18,7 @@ vi.mock("../lib/api", async () => {
     api: {
       version: vi.fn(),
       setTheme: vi.fn(),
+      setAccent: vi.fn(),
       engines: vi.fn(),
       system: vi.fn(),
       updateCheck: vi.fn(),
@@ -36,18 +38,21 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-function renderSettings(theme: ThemeId = "dark") {
+function renderSettings(theme: ThemeId = "dark", accent = "#ffb000") {
   const setTheme = vi.fn();
+  const setAccent = vi.fn();
   render(
     <MemoryRouter>
       <ThemeCtx.Provider value={{ theme, setTheme }}>
-        <OverviewPrefsProvider>
-          <Settings />
-        </OverviewPrefsProvider>
+        <AccentCtx.Provider value={{ accent, setAccent }}>
+          <OverviewPrefsProvider>
+            <Settings />
+          </OverviewPrefsProvider>
+        </AccentCtx.Provider>
       </ThemeCtx.Provider>
     </MemoryRouter>,
   );
-  return { setTheme };
+  return { setTheme, setAccent };
 }
 
 beforeEach(() => {
@@ -115,6 +120,39 @@ test("picking a theme calls setTheme with its id", async () => {
   const { setTheme } = renderSettings("light");
   await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+});
+
+test("picking an accent preset calls setAccent with its hex (#211 Phase 2)", async () => {
+  const { setAccent } = renderSettings("dark");
+  await userEvent.click(screen.getByRole("radio", { name: "Signal Red" }));
+  expect(setAccent).toHaveBeenCalledWith("#c02020");
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+});
+
+test("the active accent preset is marked aria-checked", async () => {
+  renderSettings("dark", "#c02020");
+  expect(screen.getByRole("radio", { name: "Signal Red" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("radio", { name: "Amber" })).toHaveAttribute("aria-checked", "false");
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+});
+
+test("committing a custom hex (Enter) calls setAccent normalized", async () => {
+  const { setAccent } = renderSettings("dark");
+  const field = screen.getByLabelText("Accent hex value");
+  await userEvent.clear(field);
+  await userEvent.type(field, "#3FBF6F{Enter}");
+  expect(setAccent).toHaveBeenCalledWith("#3fbf6f");
+  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+});
+
+test("an invalid custom hex is rejected (no setAccent) and the field resets", async () => {
+  const { setAccent } = renderSettings("dark", "#ffb000");
+  const field = screen.getByLabelText("Accent hex value");
+  await userEvent.clear(field);
+  await userEvent.type(field, "zzz{Enter}");
+  expect(setAccent).not.toHaveBeenCalled();
+  expect(field).toHaveValue("#ffb000"); // reset to the active accent
   await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
 });
 

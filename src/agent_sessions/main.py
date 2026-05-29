@@ -385,6 +385,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Per-user UI theme (#109). The SPA applies this at load so a non-default
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
+                # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
+                # Applied at load like the theme; localStorage is the device cache.
+                "accent": prefs.get_accent(),
                 # Sidebar body: the session list, or the squeezed Session Overview map (#139).
                 # Persisted per-user like the theme; the SPA applies it at load.
                 "sidebar_view": prefs.get_sidebar_view(),
@@ -425,6 +428,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             if payload["theme"] not in prefs.THEMES:
                 raise HTTPException(status_code=422, detail="unknown theme")
             out["theme"] = prefs.set_theme(payload["theme"])
+        if "accent" in payload:
+            if not prefs.is_valid_accent(payload["accent"]):
+                raise HTTPException(status_code=422, detail="invalid accent")
+            out["accent"] = prefs.set_accent(payload["accent"])
         if "sidebar_view" in payload:
             if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
                 raise HTTPException(status_code=422, detail="unknown sidebar_view")

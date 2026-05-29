@@ -10,6 +10,7 @@ import { isPasteShortcut } from "../../lib/termKeys";
 import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
+import { useAccent } from "../../theme/accentStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
@@ -50,6 +51,7 @@ export function Terminal({
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const { theme } = useTheme();
+  const { accent } = useAccent();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
@@ -101,14 +103,15 @@ export function Terminal({
     const host = hostRef.current;
     if (!host) return;
 
-    // Initial look from the active theme; a separate effect re-applies on theme change.
+    // Initial look from the active theme; a separate effect re-applies on theme/accent change.
+    // The cursor follows the brand accent (#211 Phase 2), overriding the theme's default.
     const t0 = THEMES[theme].terminal;
     const term = new Xterm({
       cursorBlink: true,
       fontSize: t0.fontSize,
       scrollback: 10000,
       fontFamily: t0.fontFamily,
-      theme: xtermTheme(theme),
+      theme: { ...xtermTheme(theme), cursor: accent },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -268,18 +271,19 @@ export function Terminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, id, takeoverEpoch]);
 
-  // Re-theme the live terminal on theme change WITHOUT tearing it down. Colours apply
+  // Re-theme the live terminal on theme/accent change WITHOUT tearing it down. Colours apply
   // immediately; if the font/size changed, fit() recomputes the grid and xterm's
-  // onResize handler (wired above) pushes the new dimensions to the pty.
+  // onResize handler (wired above) pushes the new dimensions to the pty. The cursor tracks
+  // the brand accent (#211 Phase 2).
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const t = THEMES[theme].terminal;
-    term.options.theme = xtermTheme(theme);
+    term.options.theme = { ...xtermTheme(theme), cursor: accent };
     term.options.fontFamily = t.fontFamily;
     term.options.fontSize = t.fontSize;
     fitRef.current?.fit();
-  }, [theme]);
+  }, [theme, accent]);
 
   const text = statusText(status);
   const scrollToTail = useCallback(() => {
