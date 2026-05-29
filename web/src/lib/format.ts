@@ -22,7 +22,7 @@ export function engineBadge(engine: string): string {
   return engine === "opencode" ? "oc" : engine === "codex" ? "cx" : engine === "gemini" ? "gm" : "cc";
 }
 
-/** Per-engine accent for the overview chips (tuned for the dark royal canvas). */
+/** Per-engine accent for the overview chips (tuned for the dark HUD canvas). */
 export function engineColor(engine: string): string {
   return engine === "opencode"
     ? "#4fd1c5" // teal

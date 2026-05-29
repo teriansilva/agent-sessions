@@ -1,68 +1,111 @@
-/* TermRoyale design tokens (#91) — a regal dark theme: deep indigo/violet ground, a gold
- * brand mark, violet interactive accents. Kept high-contrast so the terminal stays legible. */
+/* BattleLab tactical-HUD design tokens (#211) — near-black ground, phosphor-amber accent,
+ * semantic-colour LEDs. The bare :root is the DARK default; data-theme="light" overrides.
+ * (Rebranded from the TermRoyale royal/indigo+gold theme; royal is retired → migrates to dark.) */
 :root {
   color-scheme: dark;
-  --bg: #0d0820; /* deep indigo ground */
-  --panel: #14102e; /* sidebar / chrome */
-  --text: #ece9f7;
-  --text-muted: #9a8fcf;
-  --border: #2f2658;
-  --border-subtle: #1b1540;
-  --row-hover: #1c1642;
-  /* Raised control / recessed well surfaces (Settings buttons, panels, inputs). */
-  --surface-2: #211a4a;
-  --surface-3: #0b0617;
-  --accent: #7c4ddb; /* violet — non-button accents: focus rings, active rail, filters */
-  /* Gold CTA tokens (the brand) — theme-INDEPENDENT, identical in royal/dark/light.
-   * Dark text on gold is ~11:1 (WCAG AAA); locked by web/src/theme/contrast.test.ts. */
-  --cta-bg-1: #f5c542;
-  --cta-bg-2: #e0a92e;
-  --cta-text: #2a1a05;
-  --brand: #f5c542; /* gold — the wordmark + crown */
-  --brand-soft: #ffe9a8;
-  --badge-bg: #2a2358;
-  --badge-fg: #c9bbff;
+  /* Canonical HUD tokens. */
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --accent: #ffb000; /* phosphor-amber brand — user-customizable; borders/LEDs/brackets/cursor */
+  --on-accent: #120c00; /* dark text ON the (light) amber accent — AA, locked by contrast.test */
+  --accent-soft: rgba(255, 176, 0, 0.55);
+  --accent-glow: rgba(255, 176, 0, 0.22);
+  /* Semantic status — INDEPENDENT of the brand accent; never substitute the accent for these. */
+  --status-up: #3fbf6f;
+  --status-degraded: #f59e0b;
+  --status-down: #c02020;
+  --status-unknown: #6f747d;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+    "Roboto Mono", Menlo, Consolas, monospace;
+  /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
+  /* Amber CTA (was gold) — theme-independent; dark --cta-text on amber --cta-bg-1 ≈ 11:1 (AAA). */
+  --cta-bg-1: #ffb000;
+  --cta-bg-2: #d99500;
+  --cta-text: #120c00;
   font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
-/* Theme presets (#109). The bare :root above is Royal (the default — no attribute needed,
- * so existing users are unchanged). data-theme overrides swap the same token set; the
- * `:root[data-theme=…]` form (specificity 0,2,0) deterministically beats the bare :root.
- * Interactive-text contrast is held to WCAG AA (text/bg and white-on-accent ≥4.5:1),
- * locked by web/src/theme/contrast.test.ts. */
+/* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the
+ * data-theme override below swaps the token set for light. The `:root[data-theme=…]` form
+ * (specificity 0,2,0) deterministically beats the bare :root. Interactive-text contrast is
+ * held to WCAG AA (text/bg and --on-accent on --accent ≥4.5:1), locked by contrast.test.ts.
+ * The accent is light (amber), so text that sits ON it uses dark --on-accent, never white. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0e1116;
-  --panel: #161b22;
-  --text: #e6edf3;
-  --text-muted: #9da7b3;
-  --border: #30363d;
-  --border-subtle: #21262d;
-  --row-hover: #1c2128;
-  --surface-2: #21262d;
-  --surface-3: #0b0e13;
-  --accent: #2563eb; /* white text = 5.1:1 */
-  --brand: #58a6ff;
-  --brand-soft: #9ecbff;
-  --badge-bg: #21304a;
-  --badge-fg: #9ecbff;
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --text: #1c2024;
-  --text-muted: #5b6470;
-  --border: #d6dae0;
-  --border-subtle: #e7eaee;
-  --row-hover: #eef1f4;
-  --surface-2: #eef1f4;
-  --surface-3: #f3f5f7;
-  --accent: #1d4ed8; /* white text = 6.3:1 */
-  --brand: #6d28d9; /* violet wordmark — 5.9:1 on white */
-  --brand-soft: #5b21b6;
-  --badge-bg: #ece9f7;
-  --badge-fg: #4c3a82;
+  --bg-0: #e7e8ea;
+  --bg-1: #f2f3f5;
+  --bg-2: #ffffff;
+  --text-1: #14161a;
+  --text-2: #41454d;
+  --text-3: #6f747d;
+  --glass: rgba(10, 12, 16, 0.025);
+  --glass-strong: rgba(10, 12, 16, 0.05);
+  --line: rgba(10, 12, 16, 0.12);
+  --line-strong: rgba(10, 12, 16, 0.2);
+  --bg: #e7e8ea;
+  --panel: #f2f3f5;
+  --text: #14161a;
+  --text-muted: #41454d;
+  --border: #c9ccd2;
+  --border-subtle: #d9dbe0;
+  --row-hover: #e3e5e8;
+  --surface-2: #ffffff;
+  --surface-3: #dfe1e4;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
+  --brand-soft: #5e3d00;
+  --badge-bg: #efe3c8;
+  --badge-fg: #6b4e00;
 }
 
 * {
@@ -104,7 +147,8 @@
 button.shine:disabled::after {
   display: none;
 }
-/* The sweep is gold — a Royal flourish. Non-Royal themes get a flat button (no sweep). */
+/* The legacy gold sweep is disabled for both shipped themes; Phase 4 (#211) replaces
+   .shine with the button glitch. */
 :root[data-theme="dark"] .shine::after,
 :root[data-theme="light"] .shine::after {
   display: none;

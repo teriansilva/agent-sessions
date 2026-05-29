@@ -36,7 +36,7 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-function renderSettings(theme: ThemeId = "royal") {
+function renderSettings(theme: ThemeId = "dark") {
   const setTheme = vi.fn();
   render(
     <MemoryRouter>
@@ -89,10 +89,10 @@ beforeEach(() => {
   vi.mocked(api.clearScrollback).mockResolvedValue({ scope: "all", removed: 0, bytes_freed: 0 });
 });
 
-test("renders the three themes, the version, and a safe coffee link", async () => {
+test("renders the themes, the version, and a safe coffee link", async () => {
   renderSettings();
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
-  for (const label of ["Royal", "Dark", "Light"]) {
+  for (const label of ["Dark", "Light"]) {
     expect(screen.getByRole("radio", { name: new RegExp(label) })).toBeInTheDocument();
   }
   await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
@@ -106,13 +106,13 @@ test("renders the three themes, the version, and a safe coffee link", async () =
 test("the active theme is marked aria-checked", async () => {
   renderSettings("light");
   expect(screen.getByRole("radio", { name: /Light/ })).toHaveAttribute("aria-checked", "true");
-  expect(screen.getByRole("radio", { name: /Royal/ })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute("aria-checked", "false");
   // flush the pending version fetch so its state update doesn't warn outside act()
   await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
 });
 
 test("picking a theme calls setTheme with its id", async () => {
-  const { setTheme } = renderSettings("royal");
+  const { setTheme } = renderSettings("light");
   await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
   await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
@@ -242,7 +242,7 @@ test("Session overview: a name seeded after /api/config resolves is shown on the
   };
   const tree = (cfg: AppConfig | null) => (
     <MemoryRouter>
-      <ThemeCtx.Provider value={{ theme: "royal", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
         <ConfigCtx.Provider value={cfg}>
           <OverviewPrefsProvider>
             <Settings />
@@ -269,7 +269,7 @@ test.each([
 ])("Settings back link honors only internal returnTo: %s → %s (#155)", (returnTo, expected) => {
   render(
     <MemoryRouter initialEntries={[{ pathname: "/settings", state: returnTo && { returnTo } }]}>
-      <ThemeCtx.Provider value={{ theme: "royal", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
         <OverviewPrefsProvider>
           <Settings />
         </OverviewPrefsProvider>

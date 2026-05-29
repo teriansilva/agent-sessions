@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 import { expect, test } from "vitest";
 
 // Parses the SHIPPED index.css and enforces WCAG-AA contrast on each theme's palette, so a
-// future palette tweak can't silently drop below readable. Royal lives in the bare `:root`;
-// dark/light live in `:root[data-theme="…"]`. We check body text/bg per theme, plus the CTA
+// future palette tweak can't silently drop below readable. Dark is the bare `:root` default;
+// dark/light also live in `:root[data-theme="…"]`. We check body text/bg per theme, plus the CTA
 // contract once (theme-independent): the filled CTAs are gold (--cta-bg-1) with dark text
 // (--cta-text), defined only in the bare :root and never overridden per theme.
 
@@ -41,7 +41,7 @@ function ratio(a: string, b: string): number {
 }
 
 const THEMES: Record<string, string> = {
-  royal: ":root {",
+  default: ":root {", // BattleLab dark default lives in the bare :root (#211)
   dark: ':root[data-theme="dark"]',
   light: ':root[data-theme="light"]',
 };
@@ -52,16 +52,17 @@ for (const [name, selector] of Object.entries(THEMES)) {
     expect(ratio(token(b, "text"), token(b, "bg"))).toBeGreaterThanOrEqual(4.5);
   });
 
-  // --accent is still a text-bearing surface after the gold-CTA switch: the active filter
-  // tab (Filters.module.css `.tabs button.on`) renders white on --accent. Keep it AA.
-  test(`${name}: white on --accent meets WCAG AA (>=4.5:1)`, () => {
+  // The accent is LIGHT (amber), so text-bearing accent surfaces (the active filter tab
+  // `Filters.module.css .tabs button.on`, the takeover button) render dark --on-accent on
+  // --accent, never white. Keep that pair AA. (#211)
+  test(`${name}: --on-accent on --accent meets WCAG AA (>=4.5:1)`, () => {
     const b = block(selector);
-    expect(ratio("#ffffff", token(b, "accent"))).toBeGreaterThanOrEqual(4.5);
+    expect(ratio(token(b, "on-accent"), token(b, "accent"))).toBeGreaterThanOrEqual(4.5);
   });
 }
 
-// The gold CTA is theme-independent (defined only in the bare :root): dark --cta-text on the
-// gold --cta-bg-1 base, the most-contrast-critical pair of the gradient. ~11:1, WCAG AAA.
+// The CTA is theme-independent (defined only in the bare :root): dark --cta-text on the
+// amber --cta-bg-1 base, the most-contrast-critical pair of the gradient. ~11:1, WCAG AAA.
 test("CTA: --cta-text on --cta-bg-1 meets WCAG AA (>=4.5:1)", () => {
   const root = block(":root {");
   expect(ratio(token(root, "cta-text"), token(root, "cta-bg-1"))).toBeGreaterThanOrEqual(4.5);

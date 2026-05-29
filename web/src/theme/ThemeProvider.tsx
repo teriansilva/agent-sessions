@@ -32,7 +32,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (reconciled.current || !config?.theme) return;
     reconciled.current = true;
     // Validate the cached value — a malformed/legacy key (e.g. `"neon"`) is NOT an explicit
-    // local choice. Without this, `readStoredTheme()` would coerce the bad value to royal
+    // local choice. Without this, `readStoredTheme()` would coerce the bad value to dark
     // and we'd never adopt the server's valid theme on a fresh device (Hermes #173 review).
     let hasValidLocal = false;
     try {

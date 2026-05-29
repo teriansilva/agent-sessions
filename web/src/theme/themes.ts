@@ -2,12 +2,12 @@
 //  1. the chrome palette — CSS custom properties applied via `data-theme` on <html>;
 //     the actual values live in index.css under `:root[data-theme="…"]` blocks.
 //  2. the terminal look — the xterm.js `ITheme` + font, consumed by Terminal.tsx.
-// Royal is the default and is byte-for-byte the current TermRoyale identity, so adding
-// this registry changes nothing until a user picks another theme.
+// Dark is the BattleLab default (tactical-HUD, phosphor-amber). Light is the daylight variant.
+// The retired `royal` theme migrates to `dark` via coerceTheme (any unknown id → DEFAULT). (#211)
 
-export const THEME_IDS = ["royal", "dark", "light"] as const;
+export const THEME_IDS = ["dark", "light"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
-export const DEFAULT_THEME: ThemeId = "royal";
+export const DEFAULT_THEME: ThemeId = "dark";
 
 /** xterm.js theme subset we set (background/foreground/cursor + selection). */
 export interface TerminalTheme {
@@ -32,43 +32,30 @@ export interface ThemeMeta {
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 export const THEMES: Record<ThemeId, ThemeMeta> = {
-  royal: {
-    id: "royal",
-    label: "Royal",
-    description: "The TermRoyale identity — deep indigo with a gold crown.",
-    terminal: {
-      fontFamily: MONO,
-      fontSize: 13,
-      background: "#0d0820",
-      foreground: "#ece9f7",
-      cursor: "#f5c542",
-      selectionBackground: "#3a2d6e",
-    },
-  },
   dark: {
     id: "dark",
     label: "Dark",
-    description: "A neutral slate dark theme.",
+    description: "BattleLab tactical-HUD — near-black ground, phosphor-amber accent.",
     terminal: {
       fontFamily: MONO,
       fontSize: 13,
-      background: "#0e1116",
-      foreground: "#e6edf3",
-      cursor: "#58a6ff",
-      selectionBackground: "#2d3a51",
+      background: "#0d0e10",
+      foreground: "#e8e9ec",
+      cursor: "#ffb000",
+      selectionBackground: "#33332a",
     },
   },
   light: {
     id: "light",
     label: "Light",
-    description: "A clean light theme for bright rooms.",
+    description: "BattleLab daylight — paper-grey ground, same amber accent.",
     terminal: {
       fontFamily: MONO,
       fontSize: 13,
-      background: "#ffffff",
-      foreground: "#1c2024",
-      cursor: "#1d4ed8",
-      selectionBackground: "#cfe0ff",
+      background: "#f2f3f5",
+      foreground: "#14161a",
+      cursor: "#ffb000",
+      selectionBackground: "#ffe2a8",
     },
   },
 };

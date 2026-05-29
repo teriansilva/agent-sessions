@@ -87,15 +87,13 @@
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
-/* Fixed preview swatches — show each theme's identity regardless of the active theme. */
-.sw_royal {
-  background: linear-gradient(120deg, #0d0820 55%, #7c4ddb 55%, #f5c542);
-}
+/* Fixed preview swatches — show each theme's identity regardless of the active theme.
+   BattleLab HUD palette: ground + phosphor-amber accent (#211). */
 .sw_dark {
-  background: linear-gradient(120deg, #0e1116 55%, #2563eb 55%, #58a6ff);
+  background: linear-gradient(120deg, #0d0e10 55%, #ffb000 55%, #cc8400);
 }
 .sw_light {
-  background: linear-gradient(120deg, #f6f7f9 55%, #1d4ed8 55%, #6d28d9);
+  background: linear-gradient(120deg, #e7e8ea 55%, #ffb000 55%, #8a5a00);
 }
 .themeName {
   font-weight: 700;

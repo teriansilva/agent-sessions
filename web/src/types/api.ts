@@ -44,7 +44,7 @@ export interface AppConfig {
   terminal_backend: "ttyd" | "ws" | string;
   /** First-run forced password change pending — the SPA routes to /change-password. */
   must_change_password?: boolean;
-  /** Per-user UI theme id (royal|dark|light); applied at load. Absent on older servers. */
+  /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
   /** Per-user sidebar body: "list" (session list) or "overview" (squeezed map, #139). */
   sidebar_view?: "list" | "overview" | string;

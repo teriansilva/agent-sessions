@@ -382,7 +382,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there
                 # is no login (#13 / #32 Phase 3).
                 "auth_mode": cfg.auth_mode,
-                # Per-user UI theme (#109). The SPA applies this at load so a non-Royal
+                # Per-user UI theme (#109). The SPA applies this at load so a non-default
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
                 # Sidebar body: the session list, or the squeezed Session Overview map (#139).

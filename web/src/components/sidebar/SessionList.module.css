@@ -171,8 +171,8 @@
   margin-right: 6px;
   vertical-align: middle;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--status-up); /* working = semantic green LED, independent of brand accent (#211) */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-up) 30%, transparent);
   animation: trWorkingPulse 1.4s ease-in-out infinite;
 }
 @keyframes trWorkingPulse {

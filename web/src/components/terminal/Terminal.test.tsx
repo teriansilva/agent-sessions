@@ -119,7 +119,7 @@ beforeEach(() => {
 });
 
 function wrap(node: ReactNode) {
-  return <ThemeCtx.Provider value={{ theme: "royal", setTheme: () => {} }}>{node}</ThemeCtx.Provider>;
+  return <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>{node}</ThemeCtx.Provider>;
 }
 
 const PLACEHOLDER = "new-11111111-1111-1111-1111-111111111111";

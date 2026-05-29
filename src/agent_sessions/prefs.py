@@ -18,8 +18,10 @@ from pathlib import Path
 
 # Mirror of web/src/theme/themes.ts THEME_IDS. Kept in sync by
 # tests/test_prefs.py (server) + the SPA registry test (client).
-THEMES: tuple[str, ...] = ("royal", "dark", "light")
-DEFAULT_THEME = "royal"
+# `royal` is retired (#211): coerce_theme maps it (any unknown value) → DEFAULT_THEME = dark,
+# so a persisted legacy `royal` migrates cleanly instead of stranding on an invalid theme.
+THEMES: tuple[str, ...] = ("dark", "light")
+DEFAULT_THEME = "dark"
 
 # Sidebar body: the session list, or the squeezed Session Overview map (#139).
 SIDEBAR_VIEWS: tuple[str, ...] = ("list", "overview")

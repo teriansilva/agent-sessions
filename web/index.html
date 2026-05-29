@@ -22,18 +22,19 @@
     <meta name="twitter:title" content="TermRoyale" />
     <meta name="twitter:description" content="Finally, a terminal with some class." />
     <meta name="twitter:image" content="/og-image.png" />
-    <!-- Apply the device-cached theme before first paint so a non-Royal user doesn't see a
-         Royal flash. Royal is the default (no attribute → the bare :root tokens). Mirrors
-         web/src/theme/applyTheme.ts; kept inline + tiny so it runs ahead of the bundle. -->
+    <!-- Apply the device-cached theme before first paint so a light user doesn't see a dark
+         flash. Dark is the BattleLab default (#211); a legacy "royal" value is ignored here so
+         it falls back to dark. Mirrors web/src/theme/applyTheme.ts; inline + tiny so it runs
+         ahead of the bundle. -->
     <script>
       (function () {
-        var t = "royal";
+        var t = "dark";
         try {
           var s = localStorage.getItem("tr-theme");
-          if (s === "dark" || s === "light" || s === "royal") t = s;
+          if (s === "dark" || s === "light") t = s;
         } catch (e) {}
-        // Always pin a valid data-theme so <html> never renders attribute-less or
-        // with an unknown value; "royal" matches the bare :root tokens (the default).
+        // Always pin a valid data-theme so <html> never renders attribute-less or with an
+        // unknown value; "dark" is the default (also matches the bare :root tokens).
         document.documentElement.setAttribute("data-theme", t);
       })();
     </script>

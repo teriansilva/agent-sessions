@@ -7,7 +7,7 @@ import { coerceTheme, DEFAULT_THEME, type ThemeId } from "./themes";
 
 export const THEME_STORAGE_KEY = "tr-theme";
 
-/** Set <html data-theme>. Royal is the default (the bare `:root` tokens), but we always
+/** Set <html data-theme>. Dark is the default (the bare `:root` tokens), but we always
  *  write the attribute so the current theme is observable + the value round-trips. */
 export function applyTheme(id: ThemeId): void {
   document.documentElement.dataset.theme = id;

@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 // #172: a local theme choice must STICK on reload even when the server's persisted theme
-// has drifted. Mocked config returns theme:"dark"; localStorage already has "royal" from
-// an earlier explicit click; on load, royal must remain — both the DOM attribute and the
+// has drifted. Mocked config returns theme:"dark"; localStorage already has "light" from
+// an earlier explicit click; on load, light must remain — both the DOM attribute and the
 // localStorage value.
 
 test.beforeEach(async ({ page }) => {
@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
         new_session_engines: [],
         terminal_backend: "ws",
         auth_mode: "none",
-        theme: "dark", // server has "dark" but local has "royal"
+        theme: "dark", // server has "dark" but local has "light"
       },
     }),
   );
@@ -27,18 +27,18 @@ test.beforeEach(async ({ page }) => {
   // Seed the local choice BEFORE the SPA boots, so the inline pre-paint script + React
   // reconcile both see localStorage already set.
   await page.addInitScript(() => {
-    localStorage.setItem("tr-theme", "royal");
+    localStorage.setItem("tr-theme", "light");
   });
 });
 
 test("local theme wins over stale server theme on reload (#172)", async ({ page }) => {
   await page.goto("/");
-  // The page settled; data-theme should still be royal, not dark.
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "royal");
+  // The page settled; data-theme should still be light, not dark.
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   // Give the reconcile effect a moment to NOT fire.
   await page.waitForTimeout(300);
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "royal");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   // And localStorage hasn't been overwritten to "dark".
   const stored = await page.evaluate(() => localStorage.getItem("tr-theme"));
-  expect(stored).toBe("royal");
+  expect(stored).toBe("light");
 });

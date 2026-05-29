@@ -9,7 +9,7 @@ vi.mock("../lib/api", () => ({
   api: {
     config: vi.fn().mockResolvedValue({ csrf: "x", new_session_engines: [], terminal_backend: "ws" }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
-    setTheme: vi.fn().mockResolvedValue({ theme: "royal" }),
+    setTheme: vi.fn().mockResolvedValue({ theme: "dark" }),
     setSidebarView: vi.fn().mockResolvedValue({ sidebar_view: "overview" }),
     sessions: vi
       .fn()

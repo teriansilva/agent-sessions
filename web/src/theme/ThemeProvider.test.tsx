@@ -13,7 +13,7 @@ vi.mock("../lib/api", () => ({ api: { setTheme: vi.fn().mockResolvedValue({ them
 function Harness() {
   const { theme, setTheme } = useTheme();
   return (
-    <button type="button" onClick={() => setTheme("dark")}>
+    <button type="button" onClick={() => setTheme("light")}>
       {theme}
     </button>
   );
@@ -37,14 +37,14 @@ beforeEach(() => {
 
 test("setTheme applies to <html>, caches locally, and persists to the server", async () => {
   renderWithConfig(null);
-  expect(screen.getByRole("button")).toHaveTextContent("royal");
+  expect(screen.getByRole("button")).toHaveTextContent("dark"); // default
 
-  await userEvent.click(screen.getByRole("button"));
+  await userEvent.click(screen.getByRole("button")); // Harness picks "light"
 
-  expect(screen.getByRole("button")).toHaveTextContent("dark");
-  expect(document.documentElement.dataset.theme).toBe("dark");
-  expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
-  expect(api.setTheme).toHaveBeenCalledWith("dark");
+  expect(screen.getByRole("button")).toHaveTextContent("light");
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+  expect(api.setTheme).toHaveBeenCalledWith("light");
 });
 
 test("reconciles to the server theme once config loads", async () => {
@@ -60,14 +60,14 @@ test("an unknown server theme falls back to the default", async () => {
     terminal_backend: "ws",
     theme: "neon",
   } as AppConfig);
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("royal"));
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
 });
 
 test("a local choice wins over the server's theme on reload (#172)", async () => {
-  // The user picked royal here before; the server has somehow drifted to dark (silent
+  // The user picked light here before; the server has somehow drifted to dark (silent
   // persist failure, another device, a reset). On reload the local choice must STICK —
   // no flip to dark, no localStorage overwrite.
-  localStorage.setItem(THEME_STORAGE_KEY, "royal");
+  localStorage.setItem(THEME_STORAGE_KEY, "light");
   renderWithConfig({
     csrf: "x",
     new_session_engines: [],
@@ -76,9 +76,9 @@ test("a local choice wins over the server's theme on reload (#172)", async () =>
   });
   // Give the reconcile effect a tick to fire (or not). Use waitFor to assert stability
   // rather than racing the effect.
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("royal"));
-  expect(screen.getByRole("button")).toHaveTextContent("royal");
-  expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("royal"); // NOT overwritten to dark
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+  expect(screen.getByRole("button")).toHaveTextContent("light");
+  expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light"); // NOT overwritten to dark
 });
 
 test("a malformed local value does NOT block server seeding (Hermes #173 review)", async () => {

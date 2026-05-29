@@ -64,7 +64,7 @@
 }
 .tabs button.on {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 55%), var(--accent);
-  color: #fff;
+  color: var(--on-accent); /* dark text on the light amber accent (#211) */
   border-color: transparent;
   font-weight: 600;
 }

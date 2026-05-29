@@ -6,7 +6,7 @@ export interface ThemeStore {
   setTheme: (id: ThemeId) => void;
 }
 
-/** Current theme + setter. Default value is inert (Royal, no-op setter) so a consumer
+/** Current theme + setter. Default value is inert (dark, no-op setter) so a consumer
  *  rendered outside the provider degrades gracefully rather than throwing. */
 export const ThemeCtx = createContext<ThemeStore>({
   theme: DEFAULT_THEME,

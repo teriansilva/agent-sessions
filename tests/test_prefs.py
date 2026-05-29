@@ -29,25 +29,32 @@ def _login(c, cfg):
 
 def test_default_theme_when_unset(tmp_path):
     p = tmp_path / "prefs.json"
-    assert prefs.get_theme(p) == "royal"
+    assert prefs.get_theme(p) == "dark"
 
 
 def test_set_and_get_round_trip(tmp_path):
     p = tmp_path / "prefs.json"
-    assert prefs.set_theme("dark", p) == "dark"
-    assert prefs.get_theme(p) == "dark"
+    assert prefs.set_theme("light", p) == "light"
+    assert prefs.get_theme(p) == "light"
 
 
 def test_invalid_theme_coerced_to_default(tmp_path):
     p = tmp_path / "prefs.json"
-    assert prefs.set_theme("neon", p) == "royal"
-    assert prefs.get_theme(p) == "royal"
+    assert prefs.set_theme("neon", p) == "dark"
+    assert prefs.get_theme(p) == "dark"
+
+
+def test_legacy_royal_migrates_to_dark(tmp_path):
+    # `royal` is retired (#211); a persisted legacy value coerces to the dark default.
+    p = tmp_path / "prefs.json"
+    assert prefs.set_theme("royal", p) == "dark"
+    assert prefs.get_theme(p) == "dark"
 
 
 def test_corrupt_file_tolerated(tmp_path):
     p = tmp_path / "prefs.json"
     p.write_text("{ this is not json")
-    assert prefs.get_theme(p) == "royal"
+    assert prefs.get_theme(p) == "dark"
     # a write recovers the file
     assert prefs.set_theme("light", p) == "light"
     assert prefs.get_theme(p) == "light"

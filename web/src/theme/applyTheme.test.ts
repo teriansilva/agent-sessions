@@ -7,12 +7,17 @@ beforeEach(() => {
 });
 
 test("readStoredTheme returns the default when nothing is stored", () => {
-  expect(readStoredTheme()).toBe("royal");
+  expect(readStoredTheme()).toBe("dark");
 });
 
 test("readStoredTheme coerces an unknown stored value to the default", () => {
   localStorage.setItem(THEME_STORAGE_KEY, "neon");
-  expect(readStoredTheme()).toBe("royal");
+  expect(readStoredTheme()).toBe("dark");
+});
+
+test("legacy `royal` migrates to dark on read (#211)", () => {
+  localStorage.setItem(THEME_STORAGE_KEY, "royal");
+  expect(readStoredTheme()).toBe("dark");
 });
 
 test("store + read round-trips a valid theme", () => {
