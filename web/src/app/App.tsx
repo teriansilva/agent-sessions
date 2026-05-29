@@ -7,6 +7,9 @@ import { api } from "../lib/api";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
+import { ButtonGlitch } from "../components/hud/ButtonGlitch";
+import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
+import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
@@ -135,7 +138,10 @@ function Layout() {
     .join(" ");
 
   return (
-    <div className={cls}>
+    <>
+      <DataFlowCanvas />
+      <ButtonGlitch />
+      <div className={cls}>
       <header className="mobilebar">
         <button
           type="button"
@@ -162,10 +168,18 @@ function Layout() {
         </span>
       </header>
       <aside className="sidebar">
+        <span className="hud-cnr tl" />
+        <span className="hud-cnr tr" />
+        <span className="hud-cnr bl" />
+        <span className="hud-cnr br" />
         <header className="topbar">
           <span className="brand">
+            <span className="mk" aria-hidden="true">
+              ◢
+            </span>
             Battle<b>Lab</b>
           </span>
+          <SysClock />
           <span className="topbarActions">
             <Link to="/overview" className="gear" aria-label="Open session overview">
               <Network size={18} />
@@ -240,7 +254,8 @@ function Layout() {
           </Suspense>
         </ChunkErrorBoundary>
       </main>
-    </div>
+      </div>
+    </>
   );
 }
 
