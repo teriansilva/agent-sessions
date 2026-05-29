@@ -1,4 +1,4 @@
-# Self-hosting agent-sessions (TermRoyale)
+# Self-hosting agent-sessions (BattleLab)
 
 A rootless, user-level install: no system daemon, no root (except an optional prompted step to
 install the `venv` module). Everything lives under `~/.local/share/agent-sessions/` and runs as a

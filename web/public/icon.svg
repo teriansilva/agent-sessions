@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- TermRoyale standard PWA icon (#81): rounded indigo tile with the brand crown,
-       rasterized to icon-192.png / icon-512.png. Crown scaled up vs. the maskable variant
-       since standard icons aren't mask-clipped. -->
-  <rect width="512" height="512" rx="112" fill="#0d0820"/>
-  <g transform="translate(80,80) scale(5.5)">
-    <path d="M12 44h40l4-22-12 9-12-15-12 15-12-9z" fill="#f5c542" stroke="#ffe9a8" stroke-width="1.5" stroke-linejoin="round"/>
-    <rect x="12" y="46" width="40" height="6" rx="2" fill="#f5c542"/>
+  <!-- BattleLab standard PWA icon (#211): rounded near-black HUD tile with the phosphor-amber
+       command-prompt (>_) mark, rasterized to icon-192.png / icon-512.png. Larger than the
+       maskable variant since standard icons aren't mask-clipped. -->
+  <rect width="512" height="512" rx="112" fill="#0d0e10"/>
+  <g fill="none" stroke="#ffb000" stroke-width="48" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M144 152 L248 256 L144 360"/>
   </g>
+  <rect x="272" y="316" width="96" height="44" rx="22" fill="#ffb000"/>
 </svg>

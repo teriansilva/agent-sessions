@@ -46,7 +46,10 @@ import pyotp
 from . import discover
 from .auth import hash_password, verify_password
 
-ISSUER = "TermRoyale"
+# The label shown in authenticator apps. Renamed TermRoyale→BattleLab (#211 Phase 3); this
+# only affects NEW enrollments — existing entries keep their stored label and their secret is
+# untouched, so codes keep working (release-noted).
+ISSUER = "BattleLab"
 RECOVERY_COUNT = 10
 STEP_SECONDS = 30
 # ±1 step (30s) skew tolerance, per RFC 6238 guidance.

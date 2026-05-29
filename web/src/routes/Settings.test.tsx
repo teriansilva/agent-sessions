@@ -181,7 +181,7 @@ test("renders the System section with humanized fields", async () => {
 test("2FA: enable flow shows QR + manual key + recovery codes, then confirms", async () => {
   vi.mocked(api.enroll2fa).mockResolvedValue({
     secret: "JBSWY3DPEHPK3PXP",
-    otpauth_uri: "otpauth://totp/TermRoyale:marcus?secret=JBSWY3DPEHPK3PXP&issuer=TermRoyale",
+    otpauth_uri: "otpauth://totp/BattleLab:marcus?secret=JBSWY3DPEHPK3PXP&issuer=BattleLab",
     recovery_codes: ["aaaa-bbbb-cccc", "dddd-eeee-ffff"],
   });
   vi.mocked(api.confirm2fa).mockResolvedValue(undefined);

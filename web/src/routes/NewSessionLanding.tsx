@@ -52,9 +52,9 @@ export function NewSessionLanding() {
       <div className={styles.card}>
         <div className={styles.brandHero}>
           <div className={styles.wordmark}>
-            👑 Term<b>Royale</b>
+            Battle<b>Lab</b>
           </div>
-          <p className={styles.tagline}>Finally, a terminal with some class.</p>
+          <p className={styles.tagline}>Command &amp; Code</p>
         </div>
         <h1>Start a new session</h1>
         {error && <p className={styles.error}>{error}</p>}

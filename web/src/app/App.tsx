@@ -164,7 +164,7 @@ function Layout() {
       <aside className="sidebar">
         <header className="topbar">
           <span className="brand">
-            👑 Term<b>Royale</b>
+            Battle<b>Lab</b>
           </span>
           <span className="topbarActions">
             <Link to="/overview" className="gear" aria-label="Open session overview">

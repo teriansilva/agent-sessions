@@ -33,11 +33,11 @@ export default defineConfig({
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
       },
       manifest: {
-        name: "TermRoyale",
-        short_name: "TermRoyale",
-        description: "TermRoyale — the mobile-first organizer for your AI-coding sessions.",
-        theme_color: "#0d0820",
-        background_color: "#0d0820",
+        name: "BattleLab",
+        short_name: "BattleLab",
+        description: "BattleLab — a self-hosted command deck for your AI-coding agents.",
+        theme_color: "#0d0e10",
+        background_color: "#0d0e10",
         display: "standalone",
         start_url: "./",
         icons: [

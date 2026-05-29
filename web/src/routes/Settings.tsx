@@ -56,7 +56,7 @@ function ConnectedAgents() {
   return (
     <section className={styles.section} aria-labelledby="agents-h">
       <h2 id="agents-h">Connected agents</h2>
-      <p className={styles.hint}>The AI-coding CLIs TermRoyale can discover on this host.</p>
+      <p className={styles.hint}>The AI-coding CLIs BattleLab can discover on this host.</p>
       {engines === null ? (
         <p className={styles.hint}>…</p>
       ) : (
@@ -276,7 +276,7 @@ function RecoveryCodes({ codes, label }: { codes: string[]; label: string }) {
     const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = "termroyale-recovery-codes.txt";
+    a.download = "battlelab-recovery-codes.txt";
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -624,7 +624,7 @@ function AccountCard() {
   return (
     <section className={styles.section} aria-labelledby="account-h">
       <h2 id="account-h">Account</h2>
-      <p className={styles.hint}>You’re signed in to this TermRoyale.</p>
+      <p className={styles.hint}>You’re signed in to this BattleLab.</p>
       <button
         type="button"
         className={styles.secBtnGhost}
@@ -1004,7 +1004,7 @@ export function Settings() {
 
       <section className={styles.section} aria-labelledby="appearance-h">
         <h2 id="appearance-h">Appearance</h2>
-        <p className={styles.hint}>Choose how TermRoyale looks.</p>
+        <p className={styles.hint}>Choose how BattleLab looks.</p>
         <div className={styles.themes} role="radiogroup" aria-label="Theme">
           {THEME_LIST.map((t) => (
             <button
@@ -1085,7 +1085,7 @@ export function Settings() {
 
       <section className={styles.section} aria-labelledby="support-h">
         <h2 id="support-h">Support</h2>
-        <p className={styles.blurb}>If TermRoyale saves you time, you can support its development.</p>
+        <p className={styles.blurb}>If BattleLab saves you time, you can support its development.</p>
         <a
           className={`${styles.coffee} shine`}
           href={BUY_ME_A_COFFEE}
@@ -1099,9 +1099,9 @@ export function Settings() {
       <section className={styles.section} aria-labelledby="about-h">
         <h2 id="about-h">About</h2>
         <p className={styles.brandLine}>
-          👑 Term<b>Royale</b>
+          Battle<b>Lab</b>
         </p>
-        <p className={styles.hint}>Finally, a terminal with some class.</p>
+        <p className={styles.hint}>Command &amp; Code</p>
         <p className={styles.blurb}>
           The mobile-first organizer for your AI-coding sessions — claude, opencode, codex and
           gemini, all in one place.

@@ -1,7 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- TermRoyale mark (#91): a baked gold crown on the indigo brand ground — rendered as a
-       glyph (not the platform emoji font) so it's identical across OSes (per #81). -->
-  <rect width="64" height="64" rx="14" fill="#0d0820"/>
-  <path d="M12 44h40l4-22-12 9-12-15-12 15-12-9z" fill="#f5c542" stroke="#ffe9a8" stroke-width="1.5" stroke-linejoin="round"/>
-  <rect x="12" y="46" width="40" height="6" rx="2" fill="#f5c542"/>
+  <!-- BattleLab mark (#211): a phosphor-amber command prompt (>_) on the near-black HUD
+       ground — the "Command & Code" identity. Drawn as paths (not the platform emoji font)
+       so it's identical across OSes. -->
+  <rect width="64" height="64" rx="14" fill="#0d0e10"/>
+  <path d="M20 19 L33 32 L20 45" fill="none" stroke="#ffb000" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="36" y="39" width="14" height="6" rx="3" fill="#ffb000"/>
 </svg>

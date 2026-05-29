@@ -1,8 +1,8 @@
-# agent-sessions (TermRoyale)
+# agent-sessions (BattleLab)
 
 A mobile-first, self-hostable web organizer for your AI-coding CLI sessions.
 
-> _"Finally, a terminal with some class."_
+> _"Command & Code"_
 
 A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, and gemini — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / …). No ttyd, no Zellij.
 

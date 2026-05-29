@@ -1,4 +1,4 @@
-# Contributing to agent-sessions (TermRoyale)
+# Contributing to agent-sessions (BattleLab)
 
 Thanks for your interest! This is a small, focused project. PRs and issues are welcome.
 
