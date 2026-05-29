@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -60,11 +60,13 @@ test("Enter sends, Shift+Enter inserts a newline", async () => {
   expect(sendInput).toHaveBeenCalledWith(expect.stringContaining(bracketedPaste("line1\nline2")));
 });
 
-test("Send with image attachment writes Enter as its own frame after the paste (#180)", async () => {
-  // Regression for the original bug: with an attachment path appended to the
-  // text the bracketed-paste packet got long enough that some agents read the
-  // trailing ``\r`` as still inside the paste buffer, leaving the prompt typed
-  // but unsubmitted. The fix is to split the Enter into its own sendInput call.
+test("Send with image attachment writes Enter as its own DEFERRED frame after the paste (#180/#197)", async () => {
+  // Regression for the original bug (#180): with an attachment path appended to
+  // the text the bracketed-paste packet got long enough that some agents read the
+  // trailing ``\r`` as still inside the paste buffer, leaving the prompt typed but
+  // unsubmitted. #197: splitting the frame was necessary but not sufficient — the
+  // agent ingests the pasted image path asynchronously, so the Enter must also be
+  // DEFERRED past the paste, or it still races ingestion and is dropped.
   const user = userEvent.setup();
   vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
   const handle = createRef<ComposeHandle>();
@@ -79,15 +81,17 @@ test("Send with image attachment writes Enter as its own frame after the paste (
   sendInput.mockClear();
   await user.click(screen.getByRole("button", { name: /^send/i }));
 
-  // 3 frames total (clear, paste-with-attachment, enter). The Enter is its own
-  // call — never appended to the paste payload.
+  // The clear + paste frames go out synchronously; the Enter does NOT — it's
+  // deferred so the agent finishes ingesting the image path first (#197).
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
   expect(sendInput).toHaveBeenNthCalledWith(
     2,
     bracketedPaste("look at this /uploads/shot.png"),
   );
-  expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter);
-  // No frame contains the paste-end marker + Enter back-to-back.
+  expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
+  // …it arrives shortly after as its own discrete frame.
+  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+  // No frame ever contains the paste-end marker + Enter back-to-back.
   const pasteEndPlusEnter = "\x1b[201~" + KEYSEQ.enter;
   for (const [arg] of sendInput.mock.calls) {
     expect(String(arg).includes(pasteEndPlusEnter)).toBe(false);

@@ -27,6 +27,13 @@ interface Attachment {
   path: string;
 }
 
+/** When the message carries an attachment, the agent (e.g. Claude Code) ingests the pasted
+ *  image path asynchronously on the bracketed-paste end marker. An immediate Enter races
+ *  that ingestion and is dropped, leaving the prompt typed but unsubmitted (#197 — #180's
+ *  separate-frame split was necessary but not sufficient). Delaying the Enter by this much
+ *  lets the paste settle first. Text-only send stays synchronous (no added latency). */
+const ENTER_DELAY_AFTER_ATTACHMENT_MS = 120;
+
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
  *  Terminal forwarding a captured image paste, #157). */
 export interface ComposeHandle {
@@ -79,9 +86,18 @@ export const Compose = forwardRef<
     // prompt typed but unsubmitted. Splitting the ``\r`` into its own WS frame
     // guarantees the agent sees it as a discrete Enter keystroke after the
     // paste-end marker.
+    // (#197) Splitting the frame was not enough for image attachments: the agent
+    // ingests the pasted image path asynchronously, so an immediate Enter still
+    // races that work and is dropped. When the message carries an attachment,
+    // defer the Enter so the paste settles first; text-only send stays immediate.
+    const hasAttachment = attachments.length > 0;
     sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
     sendInput(bracketedPaste(msg));
-    sendInput(KEYSEQ.enter);
+    if (hasAttachment) {
+      setTimeout(() => sendInput(KEYSEQ.enter), ENTER_DELAY_AFTER_ATTACHMENT_MS);
+    } else {
+      sendInput(KEYSEQ.enter);
+    }
     setText("");
     setAttachments([]);
     if (taRef.current) taRef.current.style.height = "auto";
