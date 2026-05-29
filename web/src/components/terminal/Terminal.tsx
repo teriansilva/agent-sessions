@@ -6,6 +6,7 @@ import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { imageFilesFromData } from "../../lib/clipboardImages";
+import { isPasteShortcut } from "../../lib/termKeys";
 import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
@@ -122,6 +123,14 @@ export function Terminal({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Don't forward the paste shortcut (Ctrl+V / Cmd+V) to the PTY as a raw keystroke
+    // (#209): the agent (Claude Code) binds Ctrl+V to "paste image from clipboard" and
+    // reads the SERVER clipboard, printing "no image found in clipboard" on a text paste.
+    // Returning false makes xterm skip the key WITHOUT preventDefault, so the browser's
+    // native paste still fires → onHostPaste → term.paste(text), one clean paste.
+    const isMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent || "");
+    term.attachCustomKeyEventHandler((e) => !isPasteShortcut(e, isMac));
 
     // #187: track whether the viewport is sitting at the live tail. xterm fires
     // onScroll with the topmost line of the viewport whenever the user scrolls or

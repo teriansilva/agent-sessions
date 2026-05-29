@@ -46,6 +46,7 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     onData() {}
     onResize() {}
+    attachCustomKeyEventHandler() {}
     onScroll(cb: () => void) {
       this.scrollCb = cb;
     }
