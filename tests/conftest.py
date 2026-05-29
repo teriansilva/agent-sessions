@@ -14,6 +14,25 @@ import pytest
 from agent_sessions.auth import AuthConfig, hash_password
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scrollback(tmp_path, monkeypatch) -> None:
+    """Point the persisted-scrollback cache (#206) at a per-test tmp dir and reset the
+    in-memory ring state, so ``_buffer_append`` never writes to the real ``$HOME`` and no
+    cache bytes leak between tests (``_SCROLLBACK_DIR`` is captured at import from
+    ``Path.home()``, so setting ``$HOME`` later is not enough)."""
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SCROLLBACK_DIR", tmp_path / "scrollback-cache")
+    for d in (
+        webterm._BUFFERS,
+        webterm._TOTALS,
+        webterm._LAST_OUTPUT_AT,
+        webterm._SUPPRESS_OUTPUT_UNTIL,
+    ):
+        d.clear()
+    webterm._LOADED_FROM_DISK.clear()
+
+
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch) -> Path:
     """Pretend the user's ``$HOME`` is an empty tmp dir."""

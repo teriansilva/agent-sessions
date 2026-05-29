@@ -171,6 +171,13 @@ export const api = {
   /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
   archiveOlder: (hours: number) =>
     postJson<{ archived: number; skipped: number }>("/api/sessions/archive-older", { hours }),
+  /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
+  scrollbackInfo: () => getJson<{ bytes: number; files: number }>("/api/scrollback"),
+  /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */
+  clearScrollback: (scope: "all" | "archived") =>
+    postJson<{ scope: string; removed: number; bytes_freed: number }>("/api/scrollback/clear", {
+      scope,
+    }),
   /** Sign out: clear the session server-side, then hard-navigate to the login page (#141). */
   logout,
 };

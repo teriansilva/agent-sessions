@@ -30,6 +30,8 @@ vi.mock("../lib/api", async () => {
       archiveOlder: vi.fn(),
       setPrefs: vi.fn(),
       projects: vi.fn(),
+      scrollbackInfo: vi.fn(),
+      clearScrollback: vi.fn(),
     },
   };
 });
@@ -83,6 +85,8 @@ beforeEach(() => {
   vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 0, skipped: 0 });
   vi.mocked(api.setPrefs).mockResolvedValue({});
   vi.mocked(api.projects).mockResolvedValue({ projects: [] });
+  vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 0, files: 0 });
+  vi.mocked(api.clearScrollback).mockResolvedValue({ scope: "all", removed: 0, bytes_freed: 0 });
 });
 
 test("renders the three themes, the version, and a safe coffee link", async () => {
@@ -320,4 +324,35 @@ test("Maintenance: cancel backs out without archiving (#142)", async () => {
   await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
   expect(api.archiveOlder).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: /archive older/i })).toBeInTheDocument();
+});
+
+test("Scrollback cache: shows size and clears all after confirm (#206)", async () => {
+  vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 2 * 1024 * 1024, files: 3 });
+  vi.mocked(api.clearScrollback).mockResolvedValue({
+    scope: "all",
+    removed: 3,
+    bytes_freed: 2 * 1024 * 1024,
+  });
+  renderSettings();
+  // The fetched cache size is shown.
+  expect(await screen.findByText(/2(\.0)?\s?MB across 3 sessions/i)).toBeInTheDocument();
+  // First click reveals the confirm step (no API call yet).
+  await userEvent.click(screen.getByRole("button", { name: /clear all cache/i }));
+  expect(api.clearScrollback).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: /confirm clear all/i }));
+  expect(api.clearScrollback).toHaveBeenCalledWith("all");
+  expect(await screen.findByText(/cleared 3 cache files/i)).toBeInTheDocument();
+});
+
+test("Scrollback cache: clear archived passes the archived scope (#206)", async () => {
+  vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 0, files: 0 });
+  vi.mocked(api.clearScrollback).mockResolvedValue({
+    scope: "archived",
+    removed: 1,
+    bytes_freed: 10,
+  });
+  renderSettings();
+  await userEvent.click(await screen.findByRole("button", { name: /clear archived sessions/i }));
+  await userEvent.click(screen.getByRole("button", { name: /confirm clear archived/i }));
+  expect(api.clearScrollback).toHaveBeenCalledWith("archived");
 });

@@ -10,6 +10,7 @@ import {
   Mail,
   RefreshCw,
   ShieldCheck,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -848,6 +849,104 @@ function CleanupCard() {
   );
 }
 
+/** Scrollback cache (#206): the per-session terminal-history files that make scrollback
+ *  survive restarts. Shows the cache size and lets the user reclaim it — either just the
+ *  archived sessions' caches, or everything. A two-step confirm guards each clear. */
+function ScrollbackCacheCard() {
+  const [info, setInfo] = useState<{ bytes: number; files: number } | null>(null);
+  const [confirming, setConfirming] = useState<"all" | "archived" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const refresh = () =>
+    api
+      .scrollbackInfo()
+      .then(setInfo)
+      .catch(() => setInfo(null));
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const clear = async (scope: "all" | "archived") => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.clearScrollback(scope);
+      setResult(
+        `Cleared ${r.removed} cache file${r.removed === 1 ? "" : "s"} (${humanBytes(r.bytes_freed)} freed).`,
+      );
+      await refresh();
+    } catch {
+      setResult("Couldn’t clear the cache — please try again.");
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="scrollback-h">
+      <h2 id="scrollback-h">Scrollback cache</h2>
+      <p className={styles.hint}>
+        Terminal history is cached on disk per session so scrollback survives restarts.
+        {info ? ` Currently ${humanBytes(info.bytes)} across ${info.files} session${info.files === 1 ? "" : "s"}.` : ""}{" "}
+        Clearing only drops cached scrollback — sessions and their on-disk transcripts are
+        untouched.
+      </p>
+      {confirming ? (
+        <span className={styles.confirmRow}>
+          <button
+            type="button"
+            className={styles.danger}
+            disabled={busy}
+            onClick={() => void clear(confirming)}
+          >
+            <Trash2 size={16} />{" "}
+            {busy
+              ? "Clearing…"
+              : confirming === "all"
+                ? "Confirm clear all"
+                : "Confirm clear archived"}
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => setConfirming(null)}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <div className={styles.cleanupRow}>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setResult(null);
+              setConfirming("archived");
+            }}
+          >
+            <Archive size={16} /> Clear archived sessions’ cache
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setResult(null);
+              setConfirming("all");
+            }}
+          >
+            <Trash2 size={16} /> Clear all cache
+          </button>
+        </div>
+      )}
+      {result && <p className={styles.hint}>{result}</p>}
+    </section>
+  );
+}
+
 /** Settings (#109): theme picker (applies app-wide + to the terminal), an About section
  *  with the running version, and a support link. Reached via the gear in the sidebar. */
 export function Settings() {
@@ -919,6 +1018,8 @@ export function Settings() {
       <UpdatesCard />
 
       <CleanupCard />
+
+      <ScrollbackCacheCard />
 
       <section className={styles.section} aria-labelledby="support-h">
         <h2 id="support-h">Support</h2>

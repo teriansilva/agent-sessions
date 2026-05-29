@@ -493,3 +493,67 @@ def test_ws_opencode_placeholder_launch_failure_releases_lock(
     url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}"
     assert _close_code(c, url, headers) == 4500
     assert _close_code(c, url, headers) == 4500  # lock released → not 4409 BUSY
+
+
+# ---- persistent scrollback (#206) --------------------------------------------
+
+
+# The `_isolate_scrollback` autouse fixture (conftest) points `_SCROLLBACK_DIR` at a
+# per-test tmp dir and resets the in-memory ring, so these tests start clean.
+
+
+def test_scrollback_persists_and_rehydrates_across_restart():
+    """#206: output is mirrored to a per-session file; after a (simulated) restart wipes
+    the in-memory ring, a fresh attach rehydrates scrollback from disk."""
+    from agent_sessions import webterm
+
+    k = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(k, b"hello ")
+    webterm._buffer_append(k, b"world")
+    assert webterm._scrollback_path(k).read_bytes() == b"hello world"  # mirrored to disk
+
+    # Simulate an app restart: in-memory state gone, disk file remains.
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
+
+    payload, total = webterm._resume_payload(k, 0)  # fresh attach
+    assert payload == b"hello world"  # restored from disk
+    assert total == len(b"hello world")
+
+
+def test_clear_scrollback_by_key_and_all():
+    """#206: clear_scrollback removes the right files and drops the in-memory ring so a
+    cleared session is not re-served from memory."""
+    from agent_sessions import webterm
+
+    k1 = "claude:11111111-1111-1111-1111-111111111111"
+    k2 = "claude:22222222-2222-2222-2222-222222222222"
+    webterm._buffer_append(k1, b"one")
+    webterm._buffer_append(k2, b"two")
+
+    res = webterm.clear_scrollback([k1])
+    assert res["removed"] == 1
+    assert not webterm._scrollback_path(k1).exists()
+    assert webterm._scrollback_path(k2).exists()
+    assert k1 not in webterm._BUFFERS  # ring dropped too
+
+    res_all = webterm.clear_scrollback(None)
+    assert res_all["removed"] == 1  # only k2 left
+    assert webterm.scrollback_cache_stats()["files"] == 0
+
+
+def test_drop_buffer_keeps_disk_then_rehydrates():
+    """#206: an in-memory eviction (`_drop_buffer`) must NOT delete the durable disk file;
+    a later touch rehydrates from it."""
+    from agent_sessions import webterm
+
+    k = "claude:33333333-3333-3333-3333-333333333333"
+    webterm._buffer_append(k, b"persist me")
+    webterm._drop_buffer(k)
+    assert webterm._scrollback_path(k).exists()  # disk survives eviction
+    assert k not in webterm._BUFFERS
+
+    payload, total = webterm._resume_payload(k, 0)
+    assert payload == b"persist me"
+    assert total == len(b"persist me")

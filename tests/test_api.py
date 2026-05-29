@@ -764,3 +764,58 @@ def test_sessions_row_resolves_through_opencode_alias_for_working(auth_cfg, fake
 
     webterm._BUFFERS.clear()
     webterm._LAST_OUTPUT_AT.clear()
+
+
+# ---- #206: persisted-scrollback cache management ------------------------------
+
+
+def test_scrollback_cache_info_and_clear(auth_cfg, fake_jsonl):
+    """GET /api/scrollback reports cache size; POST /clear with scope=archived removes only
+    archived sessions' caches, scope=all wipes everything. Clearing drops the in-memory
+    ring too (#206)."""
+    from agent_sessions import webterm
+
+    # `_isolate_scrollback` (autouse) already points `_SCROLLBACK_DIR` at a tmp dir.
+    active_key = "claude:11111111-1111-1111-1111-111111111111"  # live in fixture
+    archived_key = "claude:44444444-4444-4444-4444-444444444444"  # archived in fixture
+    webterm._buffer_append(active_key, b"active session output")
+    webterm._buffer_append(archived_key, b"archived session output")
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+
+    info = c.get("/api/scrollback").json()
+    assert info["files"] == 2 and info["bytes"] > 0
+
+    # scope=archived → only the archived session's cache goes.
+    r = c.post("/api/scrollback/clear", json={"scope": "archived"}, headers=hdr)
+    assert r.status_code == 200 and r.json()["removed"] == 1
+    assert not webterm._scrollback_path(archived_key).exists()
+    assert webterm._scrollback_path(active_key).exists()
+
+    # scope=all → the rest.
+    r = c.post("/api/scrollback/clear", json={"scope": "all"}, headers=hdr)
+    assert r.status_code == 200 and r.json()["removed"] == 1
+    assert c.get("/api/scrollback").json()["files"] == 0
+
+
+def test_scrollback_clear_rejects_bad_scope_and_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    # bad scope → 422
+    assert (
+        c.post(
+            "/api/scrollback/clear",
+            json={"scope": "nope"},
+            headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+        ).status_code
+        == 422
+    )
+    # missing CSRF → 403
+    assert (
+        c.post(
+            "/api/scrollback/clear", json={"scope": "all"}, headers={"Origin": auth_cfg.origin}
+        ).status_code
+        == 403
+    )

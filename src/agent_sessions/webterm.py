@@ -28,6 +28,8 @@ import struct
 import termios
 import time
 from collections import OrderedDict
+from collections.abc import Iterable
+from pathlib import Path
 
 from . import ptybridge, sessionlock
 
@@ -101,11 +103,131 @@ def note_attach(key: str) -> None:
     _SUPPRESS_OUTPUT_UNTIL[key] = time.time() + _ATTACH_REPLAY_GRACE_S
 
 
+# --- Persistent scrollback (#206) --------------------------------------------------
+# The in-memory ring above is wiped on every app restart/deploy and only ever holds
+# output observed since the app started — so after a deploy a session can only scroll
+# back ~one screen. We mirror each session's ring to a small per-session file so
+# scrollback SURVIVES restarts: on the first touch of a key in a new process we hydrate
+# the ring from its file, and every observed chunk is also appended to disk. The file is
+# keyed by the engine-qualified id and head-trimmed to `_MAX_BUF`, so disk use mirrors the
+# in-memory ceiling. Best-effort throughout — persistence never breaks the live stream.
+# This does NOT recover output produced before the app first observed a session (that
+# would need transcript replay from the engine's own store — see #203); it makes the
+# rolling `_MAX_BUF` window durable across restarts.
+_SCROLLBACK_DIR = Path(
+    os.environ.get("AGENT_SESSIONS_SCROLLBACK_DIR")
+    or (Path.home() / ".agent-sessions" / "scrollback")
+)
+_SCROLLBACK_SUFFIX = ".scrollback"
+# Head-trim the file only once it grows a full `_MAX_BUF` past the cap, so trims are
+# amortized (≈ one rewrite per `_MAX_BUF` of output) rather than on every chunk.
+_DISK_TRIM_SLACK = _MAX_BUF
+# Keys hydrated from disk this process — so we read the file at most once per key.
+_LOADED_FROM_DISK: set[str] = set()
+
+
+def _scrollback_path(key: str) -> Path:
+    # "<engine>:<native>" → filesystem-safe "<engine>__<native>". ':' is legal on Linux
+    # but avoided for portability; native ids (uuid / ses_…) never contain '__', so the
+    # mapping is unambiguous and reversible (see `_key_from_path`).
+    return _SCROLLBACK_DIR / (key.replace(":", "__") + _SCROLLBACK_SUFFIX)
+
+
+def _key_from_path(p: Path) -> str:
+    engine, _, native = p.name[: -len(_SCROLLBACK_SUFFIX)].partition("__")
+    return f"{engine}:{native}" if native else engine
+
+
+def _persist_append(key: str, data: bytes) -> None:
+    """Append observed output to the key's on-disk scrollback (best-effort), head-trimming
+    to the last `_MAX_BUF` bytes once it grows past the cap + slack."""
+    try:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        path = _scrollback_path(key)
+        with path.open("ab") as fh:
+            fh.write(data)
+        if path.stat().st_size > _MAX_BUF + _DISK_TRIM_SLACK:
+            tail = path.read_bytes()[-_MAX_BUF:]
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_bytes(tail)
+            tmp.replace(path)  # atomic swap so a reader never sees a half-written file
+    except OSError:
+        pass  # scrollback persistence is best-effort; never break the stream
+
+
+def _ensure_loaded(key: str) -> None:
+    """On the first touch of a key in this process, hydrate its in-memory ring from the
+    persisted file — so a reattach after a restart replays the prior scrollback. No-op if
+    already loaded/live or no file exists."""
+    if key in _LOADED_FROM_DISK:
+        return
+    _LOADED_FROM_DISK.add(key)
+    if key in _BUFFERS:  # already live in this process — the ring is authoritative
+        return
+    try:
+        data = _scrollback_path(key).read_bytes()[-_MAX_BUF:]
+    except OSError:
+        return
+    if not data:
+        return
+    _BUFFERS[key] = bytearray(data)
+    _BUFFERS.move_to_end(key)
+    _TOTALS[key] = len(data)
+
+
+def scrollback_cache_stats() -> dict[str, int]:
+    """Total bytes + file count of the on-disk scrollback cache (best-effort)."""
+    files = 0
+    total = 0
+    try:
+        for p in _SCROLLBACK_DIR.glob("*" + _SCROLLBACK_SUFFIX):
+            try:
+                total += p.stat().st_size
+                files += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return {"bytes": total, "files": files}
+
+
+def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
+    """Delete persisted scrollback files and drop the matching in-memory rings (so a
+    cleared session isn't re-served from memory). ``keys=None`` clears the whole cache;
+    otherwise only the given engine-qualified keys. Returns ``{removed, bytes_freed}``."""
+    try:
+        if keys is None:
+            paths = list(_SCROLLBACK_DIR.glob("*" + _SCROLLBACK_SUFFIX))
+        else:
+            paths = [_scrollback_path(k) for k in keys]
+    except OSError:
+        return {"removed": 0, "bytes_freed": 0}
+    removed = 0
+    freed = 0
+    for p in paths:
+        try:
+            sz = p.stat().st_size
+        except OSError:
+            continue  # not present → nothing to clear
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += sz
+        _drop_buffer(_key_from_path(p))
+    return {"removed": removed, "bytes_freed": freed}
+
+
 def _drop_buffer(key: str) -> None:
+    # In-memory only — the on-disk scrollback is durable and is removed solely by
+    # `clear_scrollback` (Settings cache management). Dropping `_LOADED_FROM_DISK` lets a
+    # later touch re-hydrate the ring from disk after an eviction.
     _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
+    _LOADED_FROM_DISK.discard(key)
 
 
 def _session_alive(buf_key: str) -> bool:
@@ -141,12 +263,14 @@ def _enforce_buffer_cap() -> None:
 
 
 def _buffer_append(key: str, data: bytes) -> None:
+    _ensure_loaded(key)  # hydrate prior scrollback from disk before the first append (#206)
     buf = _BUFFERS.get(key)
     if buf is None:
         buf = bytearray()
         _BUFFERS[key] = buf
     _BUFFERS.move_to_end(key)  # most-recently-used
     buf.extend(data)
+    _persist_append(key, data)  # mirror to disk so scrollback survives a restart (#206)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     _TOTALS.move_to_end(key)
     # Skip the working-signal stamp while inside the post-attach replay grace (#195):
@@ -194,6 +318,7 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
     The caller follows the payload with a ``{"t":"seq","n":total}`` control frame so the
     client adopts ``total`` as its authoritative offset for the next reconnect.
     """
+    _ensure_loaded(key)  # after a restart the ring is empty; restore it from disk (#206)
     total = _TOTALS.get(key, 0)
     ring = _BUFFERS.get(key) or b""
     if not ring or _in_alt_screen(bytes(ring)):
