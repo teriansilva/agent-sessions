@@ -4,6 +4,7 @@ import {
   trailerAreas,
   bodySectionAreas,
   parseDecl,
+  touchesUI,
 } from "../../scripts/resolve-visual-scope.mjs";
 
 const KNOWN = new Set(["login", "app-home", "new-session"]);
@@ -43,5 +44,14 @@ describe("resolve-visual-scope", () => {
     expect(trailerAreas("a\nVisual-Areas: x\nVisual-Areas: y")).toBe("y"); // last wins
     expect(bodySectionAreas("## Areas affected\nlogin")).toBe("login");
     expect(parseDecl("a, b  a")).toEqual(["a", "b"]);
+  });
+
+  it("touchesUI flags UI-affecting paths only (diff-fallback classifier, #211)", () => {
+    expect(touchesUI(["web/src/app/App.tsx"])).toBe(true);
+    expect(touchesUI(["src/agent_sessions/templates/login.html"])).toBe(true);
+    expect(touchesUI(["docs/x.css"])).toBe(true); // any *.css/svg/png/html
+    expect(touchesUI(["src/agent_sessions/main.py", "tests/test_api.py"])).toBe(false);
+    expect(touchesUI(["README.md", "pyproject.toml"])).toBe(false);
+    expect(touchesUI([])).toBe(false);
   });
 });
