@@ -115,6 +115,10 @@ class SessionStream:
             return
         os.close(slave)
         self._master = master
+        # This headless attach also triggers a dtach screen replay; suppress that burst
+        # from the working signal (#195) — otherwise startup discovery would light every
+        # session's dot for the grace window. Real output after it stamps normally.
+        webterm.note_attach(self.key)
         self._task = asyncio.create_task(self._drain(), name=f"session_stream:{self.key}")
 
     async def _drain(self) -> None:

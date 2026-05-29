@@ -128,6 +128,43 @@ def test_buffer_append_records_last_output_at(monkeypatch):
     webterm._LAST_OUTPUT_AT.clear()
 
 
+def test_attach_replay_grace_suppresses_working_stamp(monkeypatch):
+    # #195: bytes ingested within the post-attach grace window are the dtach screen
+    # replay, not agent activity — they must fill the scrollback ring but NOT stamp the
+    # working signal. Output after the window stamps normally.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    webterm._SUPPRESS_OUTPUT_UNTIL.clear()
+    k = "claude:z"
+
+    # Attach at t=1000 → grace covers up to t=1000 + _ATTACH_REPLAY_GRACE_S.
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0)
+    webterm.note_attach(k)
+    webterm._buffer_append(k, b"\x1b[2Jreplayed screen")  # the replay burst
+    # Scrollback got the bytes, but the working signal did NOT (still inside the window).
+    assert bytes(webterm._BUFFERS[k]) == b"\x1b[2Jreplayed screen"
+    assert webterm.get_last_output_at(k) is None
+
+    # A byte still inside the window (just before it closes) is also suppressed.
+    grace = webterm._ATTACH_REPLAY_GRACE_S
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0 + grace - 0.01)
+    webterm._buffer_append(k, b"more replay")
+    assert webterm.get_last_output_at(k) is None
+
+    # Past the window, genuine output stamps the working signal.
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0 + grace + 0.5)
+    webterm._buffer_append(k, b"real output")
+    assert webterm.get_last_output_at(k) == 1000.0 + grace + 0.5
+
+    webterm._drop_buffer(k)
+    assert k not in webterm._SUPPRESS_OUTPUT_UNTIL  # grace state evicted with the buffer
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    webterm._SUPPRESS_OUTPUT_UNTIL.clear()
+
+
 def test_claude_new_launch_argv_honors_bypass():
     # Hermes PR #56: the bypass choice must actually affect the launch, not be ignored.
     from agent_sessions import engines

@@ -72,16 +72,34 @@ _MAX_BUFFERS = 64
 _BUFFERS: OrderedDict[str, bytearray] = OrderedDict()
 _TOTALS: OrderedDict[str, int] = OrderedDict()
 # Per-key wall-clock of the last byte we observed flowing from the agent (#156). Powers the
-# "agent working" indicator. v1 caveat: only WS-attached sessions update this — bytes from
-# a headless session aren't observed by anyone (no `dtach -a` reader on the server until
-# slice 2 of #165 lands). Best-effort and bounded by the same LRU as the buffers.
+# "agent working" indicator (#156). Stamped from the byte-ingest path; the #183
+# SessionStream keeps it fresh even with no browser attached. Best-effort and bounded by
+# the same LRU as the buffers.
 _LAST_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
+
+# Post-attach replay grace (#195). A fresh ``dtach -a`` client triggers a screen REPLAY
+# (the TUI repaints its current state via SIGWINCH) — a byte burst that is NOT new agent
+# activity. For this long after an attach, ingested bytes still fill the scrollback ring
+# but DON'T stamp the working signal, so merely selecting a session (or server startup
+# discovery) can't flip the "agent working" dot. Genuine output after the window stamps
+# as before. Per key → ``time.time()`` after which output counts as real again.
+_ATTACH_REPLAY_GRACE_S = 0.5
+_SUPPRESS_OUTPUT_UNTIL: dict[str, float] = {}
+
+
+def note_attach(key: str) -> None:
+    """Open the post-attach replay-grace window for ``key`` (#195). Called by every reader
+    that attaches a fresh ``dtach -a`` client — the WS bridge (``run``) and the headless
+    ``SessionStream`` — so the replay burst it triggers doesn't register as agent activity.
+    """
+    _SUPPRESS_OUTPUT_UNTIL[key] = time.time() + _ATTACH_REPLAY_GRACE_S
 
 
 def _drop_buffer(key: str) -> None:
     _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
+    _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
 
 
 def _session_alive(buf_key: str) -> bool:
@@ -125,8 +143,13 @@ def _buffer_append(key: str, data: bytes) -> None:
     buf.extend(data)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     _TOTALS.move_to_end(key)
-    _LAST_OUTPUT_AT[key] = time.time()
-    _LAST_OUTPUT_AT.move_to_end(key)
+    # Skip the working-signal stamp while inside the post-attach replay grace (#195):
+    # the screen-redraw burst is not new agent activity. Scrollback (buf/_TOTALS) is
+    # always updated so a reattach still resumes the full screen.
+    now = time.time()
+    if now >= _SUPPRESS_OUTPUT_UNTIL.get(key, 0.0):
+        _LAST_OUTPUT_AT[key] = now
+        _LAST_OUTPUT_AT.move_to_end(key)
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
     _enforce_buffer_cap()
@@ -246,6 +269,11 @@ async def run(
         return
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
+
+    # This fresh dtach client will trigger a screen replay; don't let that burst flip the
+    # working dot (#195). Genuine output after the grace window stamps normally.
+    if buf_key:
+        note_attach(buf_key)
 
     # (Re)connect resume: replay history (or just the delta since the client's `have`
     # offset) so a reattach shows the prior conversation and a transient drop continues
