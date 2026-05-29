@@ -148,10 +148,19 @@ class ClaudeProvider:
         return argv
 
     def archive(self, native_id):
+        # Move the JSONL into the archive tree AND record the archived flag in the
+        # engine-agnostic sidecar (#194). The file move alone is not durable: a still-running
+        # ``claude`` process recreates its JSONL under ``projects/`` on its next write, which
+        # the scanner would then report as live. ``_row`` lets the sidecar override win over
+        # the on-disk tree, so the session stays archived regardless. Mirrors OpenCodeProvider.
         _archive.archive(native_id)
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=True)
 
     def unarchive(self, native_id):
+        # Move back to the live tree and clear the sidecar flag so the effective state is
+        # "live" again (else the sticky archived override from archive() would keep hiding it).
         _archive.unarchive(native_id)
+        _metadata.patch(f"{self.engine_id}:{native_id}", archived=False)
 
 
 class OpenCodeProvider:

@@ -56,6 +56,39 @@ def test_sessions_archived_filter(auth_cfg, fake_jsonl):
     assert archived["total"] == 1  # the one archived fixture
 
 
+def test_archived_claude_session_stays_archived_when_live_jsonl_recreated(auth_cfg, fake_jsonl):
+    """#194: archiving a claude session must stick even if a still-running agent recreates
+    its JSONL under projects/ after the move. The sidecar flag (sticky) + scanner dedup keep
+    it in the archived scope, exactly once — it must not bounce back into the active list."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "11111111-1111-1111-1111-111111111111"  # starts live in the fixture
+
+    r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True
+
+    # Simulate the live agent recreating its JSONL under projects/ after the archive move.
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / f"{uuid}.jsonl").write_text('{"cwd": "/home/user/claude/repo/a"}\n')
+
+    active = {s["uuid"] for s in c.get("/api/sessions?archived=0&limit=50").json()["sessions"]}
+    archived = [
+        s
+        for s in c.get("/api/sessions?archived=1&limit=50").json()["sessions"]
+        if s["uuid"] == uuid
+    ]
+    assert uuid not in active  # did NOT bounce back to active
+    assert len(archived) == 1  # stays archived, exactly once (no cross-tree duplicate)
+
+    # Unarchive clears the sticky flag → it returns to the active list.
+    r = c.post(f"/api/sessions/claude:{uuid}/unarchive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is False
+    active2 = {s["uuid"] for s in c.get("/api/sessions?archived=0&limit=50").json()["sessions"]}
+    assert uuid in active2
+
+
 # ---- filters: search / project / engine --------------------------------------
 
 # Fixture project keys (project_alias unset → key == cwd).

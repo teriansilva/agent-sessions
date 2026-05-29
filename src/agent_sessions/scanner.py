@@ -126,10 +126,18 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
 
 
 def scan(home: Path | None = None) -> list[Session]:
-    """Return every Claude Code session on disk, live + archived."""
+    """Return every Claude Code session on disk, live + archived.
+
+    A uuid present in BOTH trees means an archived session whose live JSONL was
+    recreated under ``projects/`` by a still-running ``claude`` process (#194). The
+    archived copy wins, so the session stays archived instead of bouncing back into
+    the active list (and the same id never appears in both scopes).
+    """
     home = home or Path.home()
     live = list(_walk(home / ".claude" / "projects", archived=False))
     archive = list(_walk(home / ".claude" / "projects-archive", archived=True))
+    archived_uuids = {s.uuid for s in archive}
+    live = [s for s in live if s.uuid not in archived_uuids]
     return live + archive
 
 

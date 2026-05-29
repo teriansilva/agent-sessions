@@ -1,6 +1,22 @@
 from agent_sessions import scanner
 
 
+def test_dedup_prefers_archive_when_uuid_in_both_trees(fake_jsonl):
+    """#194: a uuid present in BOTH the live and archive trees (an archived session whose
+    JSONL was recreated under projects/ by a still-running agent) must collapse to a SINGLE
+    archived row — never appear in both scopes / bounce back into the active list."""
+    uuid = "11111111-1111-1111-1111-111111111111"  # starts live in the fixture
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    arch = fake_jsonl / ".claude" / "projects-archive" / "-home-user-claude-repo-a"
+    arch.mkdir(parents=True, exist_ok=True)
+    # Put the same uuid in the archive tree while the live copy still exists.
+    (arch / f"{uuid}.jsonl").write_text((proj / f"{uuid}.jsonl").read_text())
+
+    rows = [r for r in scanner.scan(home=fake_jsonl) if r.uuid == uuid]
+    assert len(rows) == 1  # not duplicated across trees
+    assert rows[0].archived is True  # the archive copy wins
+
+
 def test_walks_live_and_archive(fake_jsonl):
     rows = scanner.scan(home=fake_jsonl)
     uuids = {r.uuid for r in rows}
