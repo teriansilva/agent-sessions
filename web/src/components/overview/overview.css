@@ -12,6 +12,12 @@
 .tr-overview .react-flow__background {
   background: var(--bg);
 }
+/* No rounded corners on the node wrappers — the HUD square-corner language (#211 4d). React
+ * Flow's base style.css rounds default node types; our custom nodes carry their own square
+ * frames, so flatten the wrapper defensively. */
+.tr-overview .react-flow__node {
+  border-radius: 0;
+}
 .tr-overview .react-flow__controls {
   border: 1px solid var(--border);
   border-radius: 0;
@@ -90,7 +96,9 @@
 }
 .tr-ov-path {
   color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 700;
+  letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -106,8 +114,11 @@
 }
 .tr-ov-count {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
   flex: none;
 }
 /* Folder-hierarchy edges + their (hidden, non-interactive) handles (#148). */

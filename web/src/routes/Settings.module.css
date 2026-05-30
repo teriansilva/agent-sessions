@@ -12,10 +12,13 @@
   margin: 4px 0 18px;
 }
 .head h1 {
-  font-size: 20px;
-  font-weight: 800;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   margin: 0;
-  color: var(--brand-soft);
+  color: var(--text-1, var(--brand-soft));
 }
 .back {
   display: inline-flex;
@@ -33,6 +36,7 @@
 }
 
 .section {
+  position: relative;
   max-width: 640px;
   margin: 0 auto 26px;
   background: var(--panel);
@@ -40,11 +44,47 @@
   border-radius: 0;
   padding: 16px 18px;
 }
+/* HUD corner brackets (#211 4d): accent ticks at two opposing corners frame each settings
+ * panel like the floating shell panels, without per-section JSX. */
+.section::before,
+.section::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: var(--accent);
+  border-style: solid;
+  pointer-events: none;
+}
+.section::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+.section::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+/* Section title → mono HUD label with a leading accent tick. */
 .section h2 {
-  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
   font-weight: 700;
-  margin: 0 0 6px;
-  color: var(--text);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+  color: var(--text-2, var(--text));
+}
+.section h2::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  height: 13px;
+  background: var(--accent);
 }
 .hint {
   margin: 0 0 12px;
@@ -107,9 +147,12 @@
 /* Accent picker (#211 Phase 2): preset dots + a native colour input + a free-text hex. */
 .subhead {
   margin: 18px 0 2px;
-  font-size: 13px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
 }
 .accents {
   display: flex;
