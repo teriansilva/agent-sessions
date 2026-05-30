@@ -7,6 +7,19 @@
   min-height: 0;
   background: #0e0e0e;
 }
+/* Panel header (#211 4c): a thin mono strip declaring the channel id + live status. Sits on
+ * the opaque terminal surface so it never competes with the agent's output for legibility. */
+.panelHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 26px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
+}
 /* Terminal area: the xterm host + the touch-capture overlay + status sit here, so the
  * overlay covers only the terminal and not the compose bar below it. */
 .termArea {

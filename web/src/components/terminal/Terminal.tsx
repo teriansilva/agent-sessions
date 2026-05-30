@@ -29,6 +29,22 @@ function statusText(s: TermStatus): string {
   }
 }
 
+/** Persistent HUD panel-header readout (#211 4c): a mono STATUS tag + LED class for the
+ *  reusable .hud-led primitive. Distinct from statusText (the transient corner overlay) — this
+ *  one is always present so the terminal panel always declares its link state. */
+function headStatus(s: TermStatus): { label: string; led: string } {
+  switch (s.kind) {
+    case "connected":
+      return { label: "LIVE", led: "up" };
+    case "connecting":
+      return { label: "CONNECTING", led: "" };
+    case "reconnecting":
+      return { label: "RECONNECTING", led: "" };
+    case "rejected":
+      return { label: "OFFLINE", led: "down" };
+  }
+}
+
 /** The live terminal: an xterm pane bridged to /ws/term/{engine}:{id} via TermSocket.
  *  Output is written verbatim; keystrokes and resize go back as JSON; reconnect +
  *  delta-resume (never-blank) is owned by TermSocket. Remount per session via `key`. */
@@ -286,6 +302,7 @@ export function Terminal({
   }, [theme, accent]);
 
   const text = statusText(status);
+  const head = headStatus(status);
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
@@ -297,6 +314,17 @@ export function Terminal({
   }, []);
   return (
     <div className={styles.wrap}>
+      {/* Panel header (#211 4c): mono channel id + a persistent STATUS // LIVE readout with a
+          semantic LED, so the terminal panel always declares which agent + link state it is. */}
+      <div className={styles.panelHead}>
+        <span className="hud-tag">
+          {engine.toUpperCase()} // <b className="num">{id.slice(0, 8)}</b>
+        </span>
+        <span className="hud-tag">
+          <span className={`hud-led ${head.led}`} aria-hidden="true" />
+          STATUS // <b className="num">{head.label}</b>
+        </span>
+      </div>
       <div className={styles.termArea}>
         {text && (
           <div
