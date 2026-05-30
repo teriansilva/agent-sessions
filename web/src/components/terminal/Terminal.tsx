@@ -213,6 +213,19 @@ export function Terminal({
       sendResize();
     };
     onConnected = () => refit(true);
+    // Coalesce resize bursts (#227): mobile's address-bar show/hide fires a stream of
+    // visualViewport / ResizeObserver events. Refitting on each one SIGWINCHes the agent into a
+    // full repaint per event, and a repaint-heavy TUI (e.g. Claude Code) piles those frames into
+    // scrollback as duplicated/garbled content. Debounce so a burst settles into ONE refit.
+    // (Connect + first-paint stay immediate via refit() — a fresh pty must be sized at once.)
+    let resizeTimer: number | undefined;
+    const refitSoon = () => {
+      if (resizeTimer != null) clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = undefined;
+        refit();
+      }, 120);
+    };
 
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
@@ -244,12 +257,13 @@ export function Terminal({
     };
     host.addEventListener("paste", onHostPaste, true);
 
-    const ro = new ResizeObserver(() => refit());
+    const ro = new ResizeObserver(() => refitSoon());
     ro.observe(host);
     // Mobile: the address bar showing/hiding changes the visual viewport height (dvh)
-    // well after first paint — refit so the terminal fills the new height.
+    // well after first paint — refit (debounced) so the terminal fills the new height
+    // without a per-event SIGWINCH storm (#227).
     const vv = window.visualViewport;
-    const onVV = () => refit();
+    const onVV = () => refitSoon();
     vv?.addEventListener("resize", onVV);
     // First fit after layout settles (open() can run before the flex/dvh height is final).
     const raf = requestAnimationFrame(() => refit());
@@ -270,6 +284,7 @@ export function Terminal({
     sock.connect();
     return () => {
       cancelAnimationFrame(raf);
+      if (resizeTimer != null) clearTimeout(resizeTimer);
       vv?.removeEventListener("resize", onVV);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
