@@ -161,64 +161,46 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Per-row "agent working" indicator (#156). Pulses while the server is seeing output
- * flow over the WS. Browser-attached-only in v1; a headless session not yet reconnected
- * to reports false. Reduced-motion: replace the pulse with a steady ring. */
-.workingDot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
-  vertical-align: middle;
-  border-radius: 50%;
-  background: var(--status-up); /* working = semantic green LED, independent of brand accent (#211) */
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-up) 30%, transparent);
-  animation: trWorkingPulse 1.4s ease-in-out infinite;
+/* Leading per-row status LED (#211 4b, was the working-only dot of #156). Layout only —
+ * the dot's appearance (green glow + blink when .up, dim + steady when .idle) comes from
+ * the global .hud-led primitive so it matches the topbar/classbar indicators. margin-top
+ * nudges the 6px dot onto the title's first baseline. */
+.led {
+  flex: none;
+  margin-top: 6px;
 }
-@keyframes trWorkingPulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
-  }
-  50% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .workingDot {
-    animation: none;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
-  }
-}
+/* Mono meta line: a demoted engine tag + project · relative-time, in the HUD mono voice. */
 .meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.03em;
   color: var(--text-muted);
-  font-size: 11px;
-  margin-top: 2px;
   white-space: nowrap;
+  overflow: hidden;
+}
+.metaText {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.badge {
+/* Engine, demoted from a prominent colored badge to a faint mono tag (#211 4b): the live
+ * LED is now the primary row signal, so the engine just needs to be legible, not loud. */
+.engineTag {
   flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  padding: 1px 4px;
-  margin-top: 2px;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: var(--badge-bg);
-  color: var(--badge-fg);
-}
-/* opencode keeps a warm/amber identity (vs the violet default badge), but tuned per
- * theme so it stays legible — the dark-brown/peach pair was unreadable in light. */
-.opencode {
-  background: #3a2f12;
-  color: #ffcc99;
-}
-:root[data-theme="light"] .opencode {
-  background: #fbe9c6;
-  color: #6b4e12;
+  padding: 0 4px;
+  line-height: 15px;
 }
 .empty {
   color: var(--text-muted);

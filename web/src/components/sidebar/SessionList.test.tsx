@@ -132,8 +132,9 @@ test("archiving a row calls api.archive and removes it from the active list", as
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
 });
 
-// #156: the working dot only renders for rows where the server reports `working: true`.
-test("renders the working dot only for sessions flagged working by the server (#156)", async () => {
+// #156 / #211 4b: every row has a status LED, but only a working row carries the meaningful
+// "agent working" status role — idle rows render a decorative (aria-hidden) dim dot.
+test("only a working row exposes the 'agent working' status LED (#156)", async () => {
   const idle = sess("claude:a", "Idle");
   const busy = sess("claude:b", "Busy");
   busy.working = true;
@@ -146,10 +147,10 @@ test("renders the working dot only for sessions flagged working by the server (#
   );
   await screen.findByText("Busy");
   const dots = await screen.findAllByRole("status", { name: /agent working/i });
-  // One dot — only the busy row carries it.
+  // One status LED — only the busy row carries it (the idle row's dot is aria-hidden).
   expect(dots).toHaveLength(1);
-  // The dot sits inside the title containing "Busy", not "Idle".
-  expect(dots[0].closest("[class*='title']")?.textContent).toMatch(/Busy/);
+  // The LED leads the row link whose title is "Busy", not "Idle".
+  expect(dots[0].closest("a")?.textContent).toMatch(/Busy/);
 });
 
 // #159: relative-time labels advance over time without a refetch — the sidebar shows

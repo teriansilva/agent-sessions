@@ -28,6 +28,14 @@
   position: relative;
   z-index: 1;
   background: transparent;
+  /* Make .app a backdrop ROOT (#211 4b). The frosted chrome — the floating panels and, on
+   * mobile, the off-canvas sidebar drawer — relies on backdrop-filter sampling the content
+   * behind it. On mobile a scrollable xterm pane is promoted to its own compositing layer,
+   * which a position:fixed drawer can't sample across, so the drawer's blur had nothing to
+   * frost (terminal text showed through sharp). isolation:isolate forces everything inside
+   * .app to flatten into the backdrop image the chrome samples, so the drawer (and panels)
+   * blur the terminal/canvas reliably. Same class of fix as keeping the canvas inside .app. */
+  isolation: isolate;
 }
 /* Collapsed (desktop only — mobile uses the off-canvas drawer, scoped below): no sidebar
  * column, pane full-width. */
@@ -363,6 +371,12 @@
     transform: translateX(-100%);
     transition: transform 0.18s ease;
     box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
+    /* The drawer floats over the live terminal, which is high-contrast text. .app's
+     * isolation:isolate lets the drawer's backdrop-filter actually blur it, but as a graceful
+     * fallback for devices that don't honor cross-layer blur, the mobile drawer is a touch more
+     * opaque than the desktop panel (70% vs 55%) so dense terminal text never bleeds through
+     * sharp — still translucent enough to read the field through it. */
+    background: color-mix(in srgb, var(--panel) 70%, transparent);
   }
   .app.navOpen .sidebar {
     transform: translateX(0);

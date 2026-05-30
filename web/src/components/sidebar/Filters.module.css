@@ -7,20 +7,23 @@
 .search,
 .selects select {
   width: 100%;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg-2, var(--bg)) 55%, transparent);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 6px 9px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
 }
 .search::placeholder {
   color: var(--text-muted);
+  letter-spacing: 0.04em;
 }
 .search:focus,
 .selects select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(124, 77, 219, 0.3);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
 }
 .selects {
   display: flex;
@@ -32,12 +35,16 @@
 }
 .clear {
   flex: none;
-  background: var(--panel);
+  background: color-mix(in srgb, var(--bg-2, var(--panel)) 55%, transparent);
   color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 0 10px;
   cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .clear:hover {
   border-color: var(--accent);
@@ -47,16 +54,19 @@
   display: flex;
   gap: 6px;
 }
-/* Segmented Active/Archived — a faint top sheen gives a subtle gloss, on theme. */
+/* Segmented Active/Archived — flat mono HUD chips (no gloss/gradient, #211). */
 .tabs button {
   flex: 1;
-  background: var(--panel);
+  background: color-mix(in srgb, var(--bg-2, var(--panel)) 55%, transparent);
   border: 1px solid var(--border);
   color: var(--text-muted);
   border-radius: 0;
   padding: 4px 0;
   cursor: pointer;
-  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .tabs button:hover {
   border-color: var(--accent);

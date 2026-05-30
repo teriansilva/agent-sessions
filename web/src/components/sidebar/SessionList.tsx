@@ -95,21 +95,26 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
         to={`/s/${s.engine}/${s.uuid}`}
         className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
       >
-        <span className={`${styles.badge} ${styles[s.engine] ?? ""}`}>{engineBadge(s.engine)}</span>
+        {/* Leading status LED (#211 4b): a live row pulses green and carries the meaningful
+            "agent working" status for screen readers; an idle row shows a dim, decorative dot.
+            Reuses the global .hud-led primitive so the indicator matches the topbar/classbar. */}
+        {s.working ? (
+          <span
+            className={`${styles.led} hud-led up`}
+            role="status"
+            aria-label="agent working"
+            title="agent working"
+          />
+        ) : (
+          <span className={`${styles.led} hud-led idle`} aria-hidden="true" title="idle" />
+        )}
         <div className={styles.body}>
-          <div className={styles.title}>
-            {s.working && (
-              <span
-                className={styles.workingDot}
-                role="status"
-                aria-label="agent working"
-                title="agent working"
-              />
-            )}
-            {s.title || "(untitled)"}
-          </div>
+          <div className={styles.title}>{s.title || "(untitled)"}</div>
           <div className={styles.meta}>
-            {displayProjectName(s.cwd, projectNames)} · {relTime(s.last_mtime)}
+            <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
+            <span className={styles.metaText}>
+              {displayProjectName(s.cwd, projectNames)} · {relTime(s.last_mtime)}
+            </span>
           </div>
         </div>
       </NavLink>
