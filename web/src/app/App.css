@@ -350,6 +350,18 @@
     display: flex;
     flex-direction: column;
   }
+  /* Solid chrome on mobile (#228): mobile Chrome (Android) often doesn't render the panels'
+   * backdrop-filter at all, so the translucent frosted backgrounds just leak the moving canvas
+   * + terminal through sharp and look broken. The blur isn't deliverable there, so degrade to
+   * near-opaque surfaces — a clean tactical-HUD look, with the ambient field still reading in
+   * the gaps between the floating panels. Desktop keeps the real frost. */
+  .hud-topbar,
+  .hud-classbar {
+    background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+  }
+  .terminal-pane {
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
+  }
   .hud-topbar {
     flex: none;
     position: relative;
@@ -371,12 +383,10 @@
     transform: translateX(-100%);
     transition: transform 0.18s ease;
     box-shadow: 2px 0 14px rgba(0, 0, 0, 0.45);
-    /* The drawer floats over the live terminal, which is high-contrast text. .app's
-     * isolation:isolate lets the drawer's backdrop-filter actually blur it, but as a graceful
-     * fallback for devices that don't honor cross-layer blur, the mobile drawer is a touch more
-     * opaque than the desktop panel (70% vs 55%) so dense terminal text never bleeds through
-     * sharp — still translucent enough to read the field through it. */
-    background: color-mix(in srgb, var(--panel) 70%, transparent);
+    /* Near-opaque drawer (#228): it floats over the live terminal, and mobile Chrome won't
+     * blur it, so a translucent drawer would show the high-contrast terminal text straight
+     * through. Solid keeps it readable; the box-shadow still separates it from the pane. */
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
   }
   .app.navOpen .sidebar {
     transform: translateX(0);
