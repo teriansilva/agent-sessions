@@ -11,23 +11,6 @@
   max-height: 50dvh;
   overflow-y: auto;
 }
-/* Channel header (#211 4c): frames the compose box as the input "channel" — a CH OPEN tag
- * with a live LED on the left, key-hints on the right, in the mono HUD voice. */
-.chHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 1px 2px 3px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.hints {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: var(--text-3);
-  white-space: nowrap;
-}
 .fields {
   display: flex;
   flex-direction: column;

@@ -134,14 +134,6 @@ export const Compose = forwardRef<
   return (
     <div className={styles.compose}>
       {open && (
-        <div className={styles.chHead}>
-          <span className="hud-tag">
-            <span className="hud-led up" aria-hidden="true" /> CH OPEN
-          </span>
-          <span className={styles.hints}>↵ SEND · ⇧↵ NEWLINE</span>
-        </div>
-      )}
-      {open && (
         <div className={styles.fields}>
           {attachments.length > 0 && (
             <div className={styles.pills}>
