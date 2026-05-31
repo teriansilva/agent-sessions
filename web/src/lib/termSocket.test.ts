@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TermSocket, type TermStatus } from "./termSocket";
 
 // Minimal fake WebSocket: lets a test drive open/message/close and capture sends.
@@ -33,6 +33,7 @@ class FakeWS {
   }
 }
 
+const created: TermSocket[] = [];
 function makeSocket() {
   const outputs: Uint8Array[] = [];
   const statuses: TermStatus[] = [];
@@ -46,12 +47,20 @@ function makeSocket() {
     },
     (u) => new FakeWS(u) as unknown as WebSocket,
   );
+  created.push(ts);
   return { ts, outputs, statuses, ids };
 }
 
 beforeEach(() => {
   FakeWS.instances = [];
   vi.useRealTimers();
+});
+
+// Close every socket a test made so its online/visibility listeners don't leak into the next
+// test (they'd react to the wake-path test's dispatched `online` event and skew instance counts).
+afterEach(() => {
+  for (const ts of created) ts.close();
+  created.length = 0;
 });
 
 test("tracks the consumed byte offset and reconnects with ?have=", () => {
@@ -154,6 +163,61 @@ test("close() stops reconnects for good", () => {
   vi.advanceTimersByTime(60_000);
   expect(FakeWS.instances).toHaveLength(1);
 });
+
+test("a hung handshake is closed by the connect watchdog and retried (#236)", () => {
+  vi.useFakeTimers();
+  const { ts } = makeSocket();
+  ts.connect();
+  const ws = FakeWS.instances[0];
+  // Never open() — simulate a handshake that hangs (network changed/died). The watchdog should
+  // close it well before the browser's ~30s socket timeout.
+  vi.advanceTimersByTime(8_000);
+  expect(ws.readyState).toBe(3); // watchdog closed the hung socket
+  ws.onclose?.({ code: 1006 }); // the browser then fires close → normal retry path
+  vi.advanceTimersByTime(ts.backoffMs(0));
+  expect(FakeWS.instances).toHaveLength(2); // retried in seconds, not ~30s
+});
+
+test("coming back online reconnects immediately without waiting out the backoff (#236)", () => {
+  vi.useFakeTimers();
+  const { ts } = makeSocket();
+  ts.connect();
+  FakeWS.instances[0].drop(1006); // transient drop → now idle in backoff
+  expect(FakeWS.instances).toHaveLength(1);
+  window.dispatchEvent(new Event("online")); // network is back
+  expect(FakeWS.instances).toHaveLength(2); // immediate retry — no timer advance needed
+  void ts; // closed by afterEach
+});
+
+test("a wake-created socket survives the previous (watchdog-closed) socket's late close (#236)", () => {
+  vi.useFakeTimers();
+  const { ts } = makeSocket();
+  ts.connect();
+  const ws1 = FakeWS.instances[0];
+  vi.advanceTimersByTime(8_000); // watchdog closes the hung ws1 (its onclose hasn't fired yet)
+  expect(ws1.readyState).toBe(3);
+  window.dispatchEvent(new Event("online")); // wake → replacement socket
+  const ws2 = FakeWS.instances[1];
+  ws2.open();
+  expect(ts.send({ t: "i", d: "x" })).toBe(true); // ws2 is the live socket
+  ws1.onclose?.({ code: 1006 }); // ws1's late close arrives — must be IGNORED (stale identity)
+  expect(ts.send({ t: "i", d: "x" })).toBe(true); // ws2 was NOT torn down
+  expect(FakeWS.instances).toHaveLength(2); // and no spurious extra reconnect was scheduled
+});
+
+test.each([4401, 4403, 4404, 4500])(
+  "a deliberate no-retry %i reject is not resurrected by an online wake (#236)",
+  (code) => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    FakeWS.instances[0].drop(code); // server's deliberate reject → terminal, no retry
+    expect(statuses.at(-1)).toMatchObject({ kind: "rejected" });
+    expect(FakeWS.instances).toHaveLength(1);
+    window.dispatchEvent(new Event("online")); // a wake must NOT undo the deliberate reject
+    expect(FakeWS.instances).toHaveLength(1);
+  },
+);
 
 test("send() only writes when the socket is open", () => {
   const { ts } = makeSocket();

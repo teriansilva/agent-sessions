@@ -42,6 +42,9 @@ const REJECT_REASON: Record<number, string> = {
 
 const BACKOFF_BASE_MS = 600;
 const BACKOFF_MAX_MS = 10_000;
+// A hung WS handshake (network changed/died) can otherwise sit ~20–30s before the browser
+// gives up and fires onclose. Bound it: if we're not open within this, close and retry (#236).
+const CONNECT_TIMEOUT_MS = 8_000;
 
 export type WsFactory = (url: string) => WebSocket;
 
@@ -51,11 +54,23 @@ export class TermSocket {
   private offset = 0;
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  // Set once a NO_RETRY reject (auth/origin/not-found/startup-failure) lands: terminal for this
+  // socket's lifetime, so a later online/visible wake can't resurrect a deliberate reject (#236).
+  // Reset only by a fresh TermSocket (the Terminal remounts per session / takeover).
+  private rejected = false;
 
   private readonly urlFor: (have: number) => string;
   private readonly handlers: TermSocketHandlers;
   private readonly wsFactory: WsFactory;
+
+  // Wake handlers (#236): when the device comes back online or the tab is refocused, retry
+  // immediately instead of waiting out a pending backoff / hung handshake.
+  private readonly onOnline = () => this.wake();
+  private readonly onVisible = () => {
+    if (typeof document === "undefined" || document.visibilityState === "visible") this.wake();
+  };
 
   constructor(
     urlFor: (have: number) => string,
@@ -65,6 +80,9 @@ export class TermSocket {
     this.urlFor = urlFor;
     this.handlers = handlers;
     this.wsFactory = wsFactory;
+    if (typeof window !== "undefined") window.addEventListener("online", this.onOnline);
+    if (typeof document !== "undefined")
+      document.addEventListener("visibilitychange", this.onVisible);
   }
 
   /** Backoff for reconnect attempt N (0-based): 0.6s, 1.2s, 2.4s … capped at 10s. */
@@ -85,12 +103,38 @@ export class TermSocket {
     const ws = this.wsFactory(this.urlFor(this.offset));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    // Watchdog (#236): if the handshake hasn't opened in time, close it so onclose runs the
+    // normal retry path in seconds rather than waiting out the browser's ~30s socket timeout.
+    this.clearConnectTimer();
+    this.connectTimer = setTimeout(() => {
+      if (this.ws !== ws) return; // superseded by a newer socket (a wake replaced us)
+      if (ws.readyState !== 1) {
+        try {
+          ws.close();
+        } catch {
+          /* already closing */
+        }
+      }
+    }, CONNECT_TIMEOUT_MS);
+    // Every handler is guarded by socket identity: after the watchdog closes a hung socket, a
+    // wake (online/visible) can create + open a replacement before the old socket's late
+    // onclose/onerror fires. Without the guard that stale event would clear `this.ws` and
+    // schedule a retry, tearing down the live replacement (Hermes #236).
     ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.clearConnectTimer();
       this.attempt = 0; // a successful open resets the backoff
       this.handlers.onStatus({ kind: "connected" });
     };
-    ws.onmessage = (ev: MessageEvent) => this.onMessage(ev.data);
-    ws.onclose = (ev: CloseEvent) => this.onClose(ev.code);
+    ws.onmessage = (ev: MessageEvent) => {
+      if (this.ws !== ws) return;
+      this.onMessage(ev.data);
+    };
+    ws.onclose = (ev: CloseEvent) => {
+      if (this.ws !== ws) return;
+      this.clearConnectTimer();
+      this.onClose(ev.code);
+    };
     ws.onerror = () => {
       try {
         ws.close();
@@ -98,6 +142,28 @@ export class TermSocket {
         /* already closing */
       }
     };
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
+  /** Online / tab-visible again: if we're idle in backoff (or closed), retry now instead of
+   *  waiting out the timer. A healthy in-progress (CONNECTING) or open socket is left alone —
+   *  the connect watchdog already bounds a hung handshake. (#236) */
+  private wake(): void {
+    if (this.stopped || this.rejected) return; // never resurrect a deliberate no-retry reject
+    const rs = this.ws?.readyState;
+    if (rs === 0 /* CONNECTING */ || rs === 1 /* OPEN */) return;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.attempt = 0;
+    this.connect();
   }
 
   private onMessage(data: unknown): void {
@@ -132,6 +198,7 @@ export class TermSocket {
     this.ws = null;
     if (this.stopped) return;
     if (NO_RETRY.has(code)) {
+      this.rejected = true;
       this.handlers.onStatus({ kind: "rejected", reason: REJECT_REASON[code] ?? "unavailable" });
       return;
     }
@@ -157,8 +224,12 @@ export class TermSocket {
   /** Stop for good (component unmount): no further reconnects. */
   close(): void {
     this.stopped = true;
+    if (typeof window !== "undefined") window.removeEventListener("online", this.onOnline);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", this.onVisible);
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.clearConnectTimer();
     if (this.ws) {
       try {
         this.ws.close();
