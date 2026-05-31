@@ -286,6 +286,18 @@ def test_resume_payload_alt_screen_sends_nothing():
     webterm._TOTALS.clear()
 
 
+def test_clean_load_payload_clears_only_on_a_fresh_full_load():
+    # #227: a fresh full load (have<=0) of a session that already has output returns a clear
+    # instead of replaying the width-fragile inline scrollback; everything else uses the normal
+    # resume payload.
+    from agent_sessions import webterm
+
+    assert webterm._clean_load_payload(0, 100) == webterm._CLEAN_LOAD_CLEAR
+    assert webterm._clean_load_payload(-1, 100) == webterm._CLEAN_LOAD_CLEAR
+    assert webterm._clean_load_payload(0, 0) is None  # brand-new session → nothing to clear
+    assert webterm._clean_load_payload(50, 100) is None  # transient reconnect → keep the delta
+
+
 def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
     # Audit MEDIUM: the retained-buffer set stays bounded. When every retained session
     # is dead (no surviving dtach master), exceeding the cap evicts the oldest first.

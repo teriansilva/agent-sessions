@@ -329,6 +329,26 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
     return bytes(ring), total
 
 
+# Clean-load clear sequence (#227): cursor home + clear screen + clear scrollback.
+_CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
+
+
+def _clean_load_payload(have: int, total: int) -> bytes | None:
+    """On a FRESH full load (``have<=0``) of a session that already has output, return a clear
+    instead of replaying the inline scrollback (#227).
+
+    The buffered bytes carry cursor-positioning written at whatever width(s) the agent rendered
+    at over the session; replayed at the client's current width they mis-position → the garbled
+    console. Clearing and letting the agent repaint its current frame at the right width (its
+    first resize delivers the SIGWINCH) avoids that. ``None`` → use the normal resume payload: a
+    brand-new session (nothing to clear) or a transient reconnect (``have>0``: small same-width
+    delta, replays seamlessly). Superseded by the planned width-aware server-side screen model.
+    """
+    if have <= 0 and total > 0:
+        return _CLEAN_LOAD_CLEAR
+    return None
+
+
 def _in_alt_screen(buf: bytes) -> bool:
     """True if the session is currently on the alternate screen buffer.
 
@@ -412,6 +432,17 @@ async def run(
     # frame. dtach has no scrollback of its own; alt-screen TUIs repaint via SIGWINCH.
     if buf_key:
         payload, total = _resume_payload(buf_key, have)
+        # Clean-load (#227): a FRESH full load (have<=0) would replay the raw inline scrollback,
+        # whose embedded cursor-positioning was written at whatever width(s) the agent rendered at
+        # over the session. Replayed at the client's current width those escapes mis-position →
+        # the garbled/chaotic console. So on a fresh load, skip the replay: clear the screen +
+        # scrollback and let the agent repaint its CURRENT frame at the right width (its first
+        # resize — sent right after connect — delivers the SIGWINCH that triggers the repaint).
+        # A transient reconnect (have>0) still replays its small, same-width delta seamlessly.
+        # (Superseded by the planned width-aware server-side screen model.)
+        clear = _clean_load_payload(have, total)
+        if clear is not None:
+            payload = clear
         if payload:
             with contextlib.suppress(Exception):
                 await ws.send_bytes(payload)
