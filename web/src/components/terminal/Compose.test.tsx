@@ -38,16 +38,18 @@ test("interrupt button is icon-only — no visible 'Interrupt' label (#186)", ()
   expect(btn).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
 });
 
-test("Send clears the line then bracketed-pastes the message then submits Enter (#180)", async () => {
+test("Send clears the line, bracketed-pastes the message, then submits a DEFERRED Enter (#180)", async () => {
   const user = userEvent.setup();
   renderCompose();
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  // Three discrete WS frames — clear, paste, Enter — so the agent reads the
-  // trailing ``\r`` as a discrete keystroke, not as part of the paste buffer.
+  // Clear + paste go out synchronously; the Enter is deferred to a later frame so the agent
+  // can't read the trailing ``\r`` as still inside the bracketed-paste buffer (the "press Enter
+  // twice" bug). Three discrete WS frames, never paste-end + \r in one packet.
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
   expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
-  expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter);
+  expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
+  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
 });
 
 test("Enter sends, Shift+Enter inserts a newline", async () => {

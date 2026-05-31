@@ -27,11 +27,14 @@ interface Attachment {
   path: string;
 }
 
-/** When the message carries an attachment, the agent (e.g. Claude Code) ingests the pasted
- *  image path asynchronously on the bracketed-paste end marker. An immediate Enter races
- *  that ingestion and is dropped, leaving the prompt typed but unsubmitted (#197 — #180's
- *  separate-frame split was necessary but not sufficient). Delaying the Enter by this much
- *  lets the paste settle first. Text-only send stays synchronous (no added latency). */
+/** The composed message is delivered as a bracketed paste followed by a separate Enter. The
+ *  Enter must land in a LATER task than the paste, or the agent (e.g. Claude Code) can read the
+ *  trailing \r as still inside the bracketed-paste buffer and leave the prompt typed but
+ *  unsubmitted — the "I had to press Enter twice" bug. #180 split the \r into its own WS frame
+ *  and #197 deferred it for attachments, but a same-tick text send still raced on slower/mobile
+ *  links. So ALWAYS defer the Enter; attachments (async image-path ingestion) need a longer beat.
+ *  ~60ms is imperceptible but reliably separates the PTY writes. */
+const ENTER_DELAY_MS = 60;
 const ENTER_DELAY_AFTER_ATTACHMENT_MS = 120;
 
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
@@ -77,27 +80,21 @@ export const Compose = forwardRef<
     for (const a of attachments) parts.push(a.path);
     const msg = parts.join(" ");
     if (!msg) return;
-    // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then
-    // paste the message, then submit as a SEPARATE frame.
-    // (#180) The previous form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into
-    // one WS frame → one PTY write → one read by the agent. With an attachment
-    // path appended the longer paste packet caused some agents to read the
-    // trailing ``\r`` as still inside the bracketed-paste buffer, leaving the
-    // prompt typed but unsubmitted. Splitting the ``\r`` into its own WS frame
-    // guarantees the agent sees it as a discrete Enter keystroke after the
-    // paste-end marker.
-    // (#197) Splitting the frame was not enough for image attachments: the agent
-    // ingests the pasted image path asynchronously, so an immediate Enter still
-    // races that work and is dropped. When the message carries an attachment,
-    // defer the Enter so the paste settles first; text-only send stays immediate.
-    const hasAttachment = attachments.length > 0;
+    // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
+    // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
+    // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
+    // → one PTY write → one read, so the agent could read the trailing ``\r`` as still inside the
+    // bracketed-paste buffer and leave the prompt typed but unsubmitted. Splitting the ``\r``
+    // into its own frame made it a discrete keystroke after the paste-end marker.
+    // (#197) Even split, an attachment's async image-path ingestion still raced an immediate
+    // Enter and dropped it, so the Enter was deferred for attachments.
+    // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
+    // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
+    // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
+    const enterDelay = attachments.length > 0 ? ENTER_DELAY_AFTER_ATTACHMENT_MS : ENTER_DELAY_MS;
     sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
     sendInput(bracketedPaste(msg));
-    if (hasAttachment) {
-      setTimeout(() => sendInput(KEYSEQ.enter), ENTER_DELAY_AFTER_ATTACHMENT_MS);
-    } else {
-      sendInput(KEYSEQ.enter);
-    }
+    setTimeout(() => sendInput(KEYSEQ.enter), enterDelay);
     setText("");
     setAttachments([]);
     if (taRef.current) taRef.current.style.height = "auto";
