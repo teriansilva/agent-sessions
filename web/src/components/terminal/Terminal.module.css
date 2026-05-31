@@ -20,6 +20,24 @@
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg-2) 40%, transparent);
 }
+/* Left side of the header: "<ENGINE> // <session title>" — the engine prefix is fixed, the
+ * title takes the remaining width and ellipsises so it can't push the STATUS readout off (#232). */
+.headLeft {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.headEng {
+  flex: none;
+}
+.headTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-weight: 600;
+}
 /* Terminal area: the xterm host + the touch-capture overlay + status sit here, so the
  * overlay covers only the terminal and not the compose bar below it. */
 .termArea {

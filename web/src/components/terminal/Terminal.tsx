@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { isPasteShortcut } from "../../lib/termKeys";
+import { useSessionsStore } from "../../app/sessionsStore";
 import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { attachTouchScroll } from "../../lib/touchScroll";
@@ -68,6 +69,10 @@ export function Terminal({
   const fitRef = useRef<FitAddon | null>(null);
   const { theme } = useTheme();
   const { accent } = useAccent();
+  // Resolve the human session title for the panel header (#232) from the shared store the
+  // sidebar fills — same lookup CurrentSessionLabel uses. Falls back to a short id before the
+  // list has loaded / for a fresh placeholder session. Read-only: it never re-keys the socket.
+  const { sessions } = useSessionsStore();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
@@ -318,6 +323,8 @@ export function Terminal({
 
   const text = statusText(status);
   const head = headStatus(status);
+  const row = sessions.find((s) => s.engine === engine && s.uuid === id);
+  const title = row?.title || row?.first_user_message || `${id.slice(0, 8)}…`;
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
@@ -332,8 +339,11 @@ export function Terminal({
       {/* Panel header (#211 4c): mono channel id + a persistent STATUS // LIVE readout with a
           semantic LED, so the terminal panel always declares which agent + link state it is. */}
       <div className={styles.panelHead}>
-        <span className="hud-tag">
-          {engine.toUpperCase()} // <b className="num">{id.slice(0, 8)}</b>
+        <span className={`hud-tag ${styles.headLeft}`}>
+          <span className={styles.headEng}>{engine.toUpperCase()} //</span>
+          <b className={styles.headTitle} title={title}>
+            {title}
+          </b>
         </span>
         <span className="hud-tag">
           <span className={`hud-led ${head.led}`} aria-hidden="true" />
