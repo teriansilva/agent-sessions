@@ -184,7 +184,16 @@ export function Terminal({
       (have) => {
         const f = wantsForce && !forceConsumed;
         forceConsumed = true;
-        return termWsUrl(engine, id, have, freshRef.current, { fp, tabId, force: f });
+        // Pass our current grid so the server sizes the pty to us from the start (#227) — a
+        // launched agent then renders at the right width instead of 80x24→reflow. cols/rows
+        // are populated by the pre-connect fit below (and stay current across reconnects).
+        return termWsUrl(engine, id, have, freshRef.current, {
+          fp,
+          tabId,
+          force: f,
+          cols: term.cols,
+          rows: term.rows,
+        });
       },
       {
         onOutput: (b) => term.write(b),
@@ -286,6 +295,14 @@ export function Terminal({
     }
     const detachTouch = attachTouchScroll(touchLayer ?? host, term);
 
+    // Fit once before connecting so term.cols/term.rows reflect the real layout — the connect
+    // URL then carries our actual grid and the server sizes the pty to it up front (#227),
+    // instead of launching the agent at 80x24 and reflowing on the first post-connect resize.
+    try {
+      fit.fit();
+    } catch {
+      /* host not measurable yet → server falls back to its default; refit() corrects on connect */
+    }
     sock.connect();
     return () => {
       cancelAnimationFrame(raf);

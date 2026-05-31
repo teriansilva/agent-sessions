@@ -15,7 +15,7 @@ export function termWsUrl(
   id: string,
   have: number,
   fresh?: FreshSession,
-  opts?: { fp?: string; tabId?: string; force?: boolean },
+  opts?: { fp?: string; tabId?: string; force?: boolean; cols?: number; rows?: number },
 ): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const key = `${encodeURIComponent(engine)}:${encodeURIComponent(id)}`;
@@ -30,5 +30,9 @@ export function termWsUrl(
   if (opts?.fp) params.set("fp", opts.fp);
   if (opts?.tabId) params.set("tab", opts.tabId);
   if (opts?.force) params.set("force", "1");
+  // Initial grid (#227): tell the server our real size up front so the PTY (and a launched
+  // agent) starts at the right width instead of 80x24 → reflow garbling on the first resize.
+  if (opts?.cols) params.set("cols", String(opts.cols));
+  if (opts?.rows) params.set("rows", String(opts.rows));
   return `${proto}://${location.host}/ws/term/${key}?${params.toString()}`;
 }

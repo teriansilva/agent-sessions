@@ -998,6 +998,19 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 have = max(0, int(ws.query_params.get("have", "0") or "0"))
             except (ValueError, TypeError):
                 have = 0
+
+            # Initial PTY size (#227): size the pty to the client's real grid up front, so a
+            # launched agent renders at the right width from its first frame instead of starting
+            # at 80x24 and then reflowing (garbling scrollback) when the client's first resize
+            # lands. A reconnect/attach also sizes the dtach-client pty correctly from the start.
+            def _dim(name: str, default: int, hi: int) -> int:
+                try:
+                    return max(1, min(hi, int(ws.query_params.get(name, "") or default)))
+                except (ValueError, TypeError):
+                    return default
+
+            init_cols = _dim("cols", 80, 500)
+            init_rows = _dim("rows", 24, 300)
             # Handoff to the server-owned SessionStream registry (#183 slice 2).
             # on_attach STOPS any running server-owned stream for this key, so the
             # WS bridge becomes the sole writer to ``_BUFFERS[phys_key]`` during
@@ -1046,6 +1059,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                     argv,
                     cwd=cwd,
                     buf_key=phys_key,
+                    cols=init_cols,
+                    rows=init_rows,
                     lock=lock,
                     have=have,
                     read_only_gate=read_only_gate,
