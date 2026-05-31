@@ -1,15 +1,4 @@
-import {
-  ArrowDown,
-  ArrowRightToLine,
-  ArrowUp,
-  Copy,
-  CornerDownLeft,
-  Paperclip,
-  Pencil,
-  Send,
-  Square,
-  X,
-} from "lucide-react";
+import { Pencil, Send, X } from "lucide-react";
 import {
   type ClipboardEvent as ReactClipboardEvent,
   forwardRef,
@@ -19,7 +8,8 @@ import {
 } from "react";
 import { api } from "../../lib/api";
 import { imageFilesFromData } from "../../lib/clipboardImages";
-import { bracketedPaste, KEYSEQ, type KeyName } from "../../lib/termKeys";
+import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
+import { KeyBar } from "./KeyBar";
 import styles from "./Compose.module.css";
 
 interface Attachment {
@@ -64,8 +54,6 @@ export const Compose = forwardRef<
   const [note, setNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-
-  const key = (name: KeyName) => sendInput(KEYSEQ[name]);
 
   const grow = () => {
     const ta = taRef.current;
@@ -193,48 +181,7 @@ export const Compose = forwardRef<
       )}
 
       <div className={styles.row}>
-        <div className={styles.keys}>
-          <button type="button" aria-label="Up" title="Up" onClick={() => key("up")}>
-            <ArrowUp size={16} />
-          </button>
-          <button type="button" aria-label="Down" title="Down" onClick={() => key("down")}>
-            <ArrowDown size={16} />
-          </button>
-          <button type="button" aria-label="Enter" title="Enter" onClick={() => key("enter")}>
-            <CornerDownLeft size={16} />
-          </button>
-          <button
-            type="button"
-            className={styles.txt}
-            aria-label="Escape"
-            title="Escape"
-            onClick={() => key("esc")}
-          >
-            esc
-          </button>
-          <button type="button" aria-label="Tab" title="Tab" onClick={() => key("tab")}>
-            <ArrowRightToLine size={16} />
-          </button>
-          <button
-            type="button"
-            aria-label="Interrupt (send Ctrl-C)"
-            title="Send Ctrl-C (interrupt)"
-            onClick={() => key("ctrlc")}
-          >
-            <Square size={14} fill="currentColor" />
-          </button>
-          <button
-            type="button"
-            aria-label="Attach file"
-            title="Attach an image or file"
-            onClick={() => fileRef.current?.click()}
-          >
-            <Paperclip size={16} />
-          </button>
-          <button type="button" aria-label="Copy" title="Copy selection" onClick={onCopy}>
-            <Copy size={16} />
-          </button>
-        </div>
+        <KeyBar sendInput={sendInput} onCopy={onCopy} onAttach={() => fileRef.current?.click()} />
         <span className={styles.spacer}>{note}</span>
         {open && (
           <button type="button" className={`${styles.send} shine`} title="Send + Enter" onClick={send}>
