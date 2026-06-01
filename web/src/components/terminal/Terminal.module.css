@@ -51,7 +51,6 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 4px 0 4px 6px;
 }
 /* On touch devices, xterm's hidden helper textarea sits over the text and would grab a
  * touch-drag (the gesture then went to the caret, not us — "scrolled one line then
