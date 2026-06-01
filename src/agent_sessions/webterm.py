@@ -79,6 +79,10 @@ _MAX_BUF = 4 * 1024 * 1024
 _MAX_BUFFERS = 64
 _BUFFERS: OrderedDict[str, bytearray] = OrderedDict()
 _TOTALS: OrderedDict[str, int] = OrderedDict()
+# Per-key width (cols) the buffer's bytes were last written at — i.e. the agent's current pty
+# width. Used to decide clean-load vs replay on a fresh load (#244): replay only when the
+# attaching client matches this width (no garble), else clear. Best-effort, in-memory.
+_LAST_COLS: dict[str, int] = {}
 # Per-key wall-clock of the last byte we observed flowing from the agent (#156). Powers the
 # "agent working" indicator (#156). Stamped from the byte-ingest path; the #183
 # SessionStream keeps it fresh even with no browser attached. Best-effort and bounded by
@@ -230,6 +234,19 @@ def _drop_buffer(key: str) -> None:
     _LOADED_FROM_DISK.discard(key)
 
 
+def _reset_ring(key: str) -> None:
+    """Drop the retained scrollback CONTENT (in-memory ring + on-disk mirror) while keeping the
+    monotonic ``_TOTALS`` offset. Called on a WIDTH change (#244) so the ring never holds bytes
+    written at a width different from the one a later same-width attach will replay at — which
+    would re-garble (Hermes #245). The agent repaints fresh at the new width; ``_TOTALS`` stays
+    monotonic so delta-resume offsets remain valid. (The width-aware screen model #242 makes this
+    unnecessary by re-rendering history at any width.)"""
+    _BUFFERS[key] = bytearray()
+    with contextlib.suppress(OSError):
+        _scrollback_path(key).unlink()
+    _LOADED_FROM_DISK.add(key)  # don't re-hydrate the now-removed file
+
+
 def _session_alive(buf_key: str) -> bool:
     """Is the dtach master for this engine-qualified session id still running?
 
@@ -333,18 +350,27 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
 _CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
 
 
-def _clean_load_payload(have: int, total: int) -> bytes | None:
-    """On a FRESH full load (``have<=0``) of a session that already has output, return a clear
-    instead of replaying the inline scrollback (#227).
+def _clean_load_payload(
+    have: int, total: int, client_cols: int, buffer_cols: int | None
+) -> bytes | None:
+    """On a FRESH full load (``have<=0``) of a session with output, return a clear instead of
+    replaying the inline scrollback — but ONLY when the client width differs from the width the
+    buffer was written at (#227 clean-load, narrowed by #244).
 
-    The buffered bytes carry cursor-positioning written at whatever width(s) the agent rendered
-    at over the session; replayed at the client's current width they mis-position → the garbled
-    console. Clearing and letting the agent repaint its current frame at the right width (its
-    first resize delivers the SIGWINCH) avoids that. ``None`` → use the normal resume payload: a
-    brand-new session (nothing to clear) or a transient reconnect (``have>0``: small same-width
-    delta, replays seamlessly). Superseded by the planned width-aware server-side screen model.
+    The garbling only happens on a width MISMATCH: the buffered cursor-positioning was written at
+    ``buffer_cols`` and mis-positions when replayed at a different ``client_cols``. When they match
+    (e.g. a desktop reload at the same width) the replay is clean, so keep the normal payload and
+    preserve scrollback. ``buffer_cols`` **unknown** (None — e.g. right after a restart, before any
+    width is recorded) is treated as a MISMATCH too: we must never trust bytes of unproven width
+    (a 120-col persisted ring replayed at 40 cols garbles), so we clear and let the agent repaint
+    at the client width — the ring is then reset/rebuilt at a known width (Hermes #245). Desktop
+    loses scroll-up only on the first load after a restart; the next same-width load replays it.
+
+    ``None`` → use the normal resume payload: width matches, a brand-new session (nothing to
+    clear), or a transient reconnect (``have>0``). Superseded by the width-aware screen model
+    (#242), which renders history clean at any width.
     """
-    if have <= 0 and total > 0:
+    if have <= 0 and total > 0 and client_cols != buffer_cols:
         return _CLEAN_LOAD_CLEAR
     return None
 
@@ -440,9 +466,19 @@ async def run(
         # resize — sent right after connect — delivers the SIGWINCH that triggers the repaint).
         # A transient reconnect (have>0) still replays its small, same-width delta seamlessly.
         # (Superseded by the planned width-aware server-side screen model.)
-        clear = _clean_load_payload(have, total)
+        # Width-conditional (#244): only clean-load when this client's width differs from the
+        # width the buffer was written at (`_LAST_COLS`); a matching width (e.g. a desktop reload)
+        # replays normally and keeps scrollback. Record this client's width as the buffer's
+        # current width going forward (the agent renders at it after the connect resize below).
+        prev_cols = _LAST_COLS.get(buf_key)
+        clear = _clean_load_payload(have, total, cols, prev_cols)
         if clear is not None:
+            # The retained ring was written at a DIFFERENT width — reset it so a later same-width
+            # attach can't replay the stale/mixed-width bytes and re-garble (Hermes #245). The
+            # agent repaints fresh at `cols` after the connect resize.
+            _reset_ring(buf_key)
             payload = clear
+        _LAST_COLS[buf_key] = cols
         if payload:
             with contextlib.suppress(Exception):
                 await ws.send_bytes(payload)
@@ -482,7 +518,16 @@ async def run(
                         os.write(master, obj.get("d", "").encode("utf-8", "replace"))
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
-                        _set_winsize(master, int(obj.get("rows", rows)), int(obj.get("cols", cols)))
+                        new_cols = int(obj.get("cols", cols))
+                        # A genuine WIDTH change re-renders the agent; without resetting, the ring
+                        # would hold mixed-width bytes and re-garble on a later same-width reload.
+                        # Reset so the ring stays single-width = the agent's current width (#245).
+                        # (Height-only resizes — the common mobile address-bar case — don't change
+                        # cols, so they never reset and scrollback survives them.)
+                        if buf_key and new_cols != _LAST_COLS.get(buf_key):
+                            _reset_ring(buf_key)
+                            _LAST_COLS[buf_key] = new_cols
+                        _set_winsize(master, int(obj.get("rows", rows)), new_cols)
                         # TIOCSWINSZ on the master doesn't reliably deliver SIGWINCH to
                         # the dtach client here, so dtach never forwards the new size to
                         # the agent's own pty (the terminal stayed a fixed size on window

@@ -286,16 +286,51 @@ def test_resume_payload_alt_screen_sends_nothing():
     webterm._TOTALS.clear()
 
 
-def test_clean_load_payload_clears_only_on_a_fresh_full_load():
-    # #227: a fresh full load (have<=0) of a session that already has output returns a clear
-    # instead of replaying the width-fragile inline scrollback; everything else uses the normal
-    # resume payload.
+def test_clean_load_payload_clears_only_on_a_fresh_load_with_a_width_mismatch():
+    # #244: a fresh full load (have<=0) clears (skips the width-fragile replay) ONLY when the
+    # client width differs from the width the buffer was written at; a matching width replays
+    # normally (keeps scrollback). Everything else uses the normal resume payload.
     from agent_sessions import webterm
 
-    assert webterm._clean_load_payload(0, 100) == webterm._CLEAN_LOAD_CLEAR
-    assert webterm._clean_load_payload(-1, 100) == webterm._CLEAN_LOAD_CLEAR
-    assert webterm._clean_load_payload(0, 0) is None  # brand-new session → nothing to clear
-    assert webterm._clean_load_payload(50, 100) is None  # transient reconnect → keep the delta
+    clear = webterm._CLEAN_LOAD_CLEAR
+    # Fresh load, width MISMATCH (e.g. mobile after a desktop session) → clear.
+    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=120) == clear
+    assert webterm._clean_load_payload(-1, 100, client_cols=40, buffer_cols=120) == clear
+    # Fresh load, width MATCHES (desktop reload at the same width) → replay, keep scrollback.
+    assert webterm._clean_load_payload(0, 100, client_cols=120, buffer_cols=120) is None
+    # Unknown buffer width (e.g. right after a restart) is treated as a MISMATCH → clear: never
+    # trust bytes of unproven width (the ring is reset + rebuilt at the client width, Hermes #245).
+    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=None) == clear
+    # Brand-new session (no output yet) → nothing to clear.
+    assert webterm._clean_load_payload(0, 0, client_cols=40, buffer_cols=120) is None
+    # Transient reconnect (have>0) → keep the delta regardless of width.
+    assert webterm._clean_load_payload(50, 100, client_cols=40, buffer_cols=120) is None
+
+
+def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp_path):
+    # #244/#245: a width change resets the retained ring (in-memory + disk mirror) but keeps the
+    # monotonic _TOTALS offset, so a stale/mixed-width ring can't be replayed garbled by a later
+    # same-width attach (the bug Hermes flagged on the first cut).
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SCROLLBACK_DIR", tmp_path)
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
+    k = "claude:reset"
+    webterm._buffer_append(k, b"x" * 50)
+    assert len(webterm._BUFFERS[k]) == 50
+    assert webterm._TOTALS[k] == 50
+    assert webterm._scrollback_path(k).exists()  # mirrored to disk
+
+    webterm._reset_ring(k)
+    assert bytes(webterm._BUFFERS[k]) == b""  # content gone — no stale bytes to replay
+    assert webterm._TOTALS[k] == 50  # offset preserved → delta-resume math stays valid
+    assert not webterm._scrollback_path(k).exists()  # disk mirror removed too
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
 
 
 def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
