@@ -1,0 +1,4 @@
+# Raw PTY traces for the snapshot serializer tests (#242). They intentionally
+# contain CR and trailing-whitespace bytes, so mark them binary: Git then skips
+# text normalization and `git diff --check` whitespace warnings for them.
+tests/fixtures/term/*.bin binary
