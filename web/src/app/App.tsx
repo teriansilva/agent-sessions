@@ -2,7 +2,6 @@ import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings a
 import { Suspense, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
-import { engineBadge, engineName } from "../lib/format";
 import { api } from "../lib/api";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Settings } from "../routes/Settings";
@@ -35,38 +34,6 @@ const COLLAPSE_KEY = "tr-sidebar-collapsed";
 
 type SidebarView = "list" | "overview";
 
-/** Parse `/s/:engine/:id` from a pathname (the header lives above <Routes>, so useParams
- *  can't see the match — parse the path directly). Returns null off a session route. */
-function parseSessionPath(pathname: string): { engine: string; id: string } | null {
-  const m = /^\/s\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-  return m ? { engine: decodeURIComponent(m[1]), id: decodeURIComponent(m[2]) } : null;
-}
-
-/** The current session's engine + title for the compact header. Engine comes from the
- *  URL (/s/:engine/:id); the title is resolved from the sidebar's loaded rows (shared via
- *  SessionsContext), falling back to a short id when the row isn't loaded yet. On the
- *  landing / settings routes there is no session → "New session". */
-function CurrentSessionLabel() {
-  const location = useLocation();
-  const parsed = parseSessionPath(location.pathname);
-  const { sessions } = useSessionsStore();
-  if (!parsed) {
-    return <span className="hdrTitle">New session</span>;
-  }
-  const { engine, id } = parsed;
-  const row = sessions.find((s) => s.engine === engine && s.uuid === id);
-  const title = row?.title || row?.first_user_message || `${id.slice(0, 8)}…`;
-  return (
-    <span className="hdrSession">
-      <span className={`hdrBadge ${engine}`}>{engineBadge(engine)}</span>
-      <span className="hdrEngine">{engineName(engine)}</span>
-      <span className="hdrSep">·</span>
-      <span className="hdrTitle" title={title}>
-        {title}
-      </span>
-    </span>
-  );
-}
 
 /** App shell — tactical-HUD framework (#211 redux). Three grid rows: a full-width command
  *  TOPBAR (brand + SYS/MISSION telemetry + overview/settings actions, carrying the single
@@ -171,7 +138,6 @@ function Layout() {
           </span>
           BATTLE<b>LAB</b>
         </span>
-        <CurrentSessionLabel />
         <span className="hud-telemetry">
           <SysClock />
           <MissionTimer />

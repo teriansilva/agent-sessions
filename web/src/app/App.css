@@ -212,7 +212,8 @@
 }
 
 /* Full-width command topbar (#211 redux): spans both columns — toggle, the prominent
- * BATTLELAB wordmark, the current-session label, SYS/MISSION telemetry, and the actions.
+ * BATTLELAB wordmark, SYS/MISSION telemetry, and the actions (the session title lives in
+ * the terminal panel header now, #243).
  * This replaces both the old sidebar header and the mobile bar (one bar for all widths). */
 .hud-topbar {
   grid-area: topbar;
@@ -226,50 +227,12 @@
   -webkit-backdrop-filter: blur(14px) saturate(120%);
   border-bottom: 1px solid var(--line);
 }
-/* SYS // clock + MISSION // timer, pushed to the right; the session label takes the slack. */
+/* SYS // clock + MISSION // timer, pushed to the right; takes the slack after the wordmark. */
 .hud-telemetry {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 22px;
-}
-/* Current-session label in the header. */
-.hdrSession {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  font-size: 13px;
-}
-.hdrBadge {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 0;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  background: var(--badge-bg);
-  color: var(--badge-fg);
-}
-.hdrEngine {
-  font-weight: 700;
-  color: var(--text);
-}
-.hdrSep {
-  color: var(--text-muted);
-}
-.hdrTitle {
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 /* Topbar actions (Overview + Settings) at the far right, after the telemetry. */
 .hud-topbar-actions {
@@ -284,12 +247,9 @@
   display: none;
 }
 @media (max-width: 640px) {
-  /* Topbar collapses to hamburger + wordmark; actions + session label move into the drawer. */
+  /* Topbar collapses to hamburger + wordmark; the Overview/Settings actions move into the
+   * drawer (the session title lives in the terminal panel header now, #243). */
   .hud-topbar-actions {
-    display: none;
-  }
-  .hud-topbar .hdrSession,
-  .hud-topbar .hdrTitle {
     display: none;
   }
   .sidebar-actions {
@@ -367,7 +327,7 @@
     position: relative;
     z-index: 40; /* above the drawer so the toggle is always reachable */
   }
-  /* Telemetry is noisy on a phone; the wordmark + session label + actions are enough. */
+  /* Telemetry is noisy on a phone; the wordmark + actions are enough. */
   .hud-telemetry {
     display: none;
   }

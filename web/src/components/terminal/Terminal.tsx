@@ -70,7 +70,7 @@ export function Terminal({
   const { theme } = useTheme();
   const { accent } = useAccent();
   // Resolve the human session title for the panel header (#232) from the shared store the
-  // sidebar fills — same lookup CurrentSessionLabel uses. Falls back to a short id before the
+  // sidebar fills (matched by engine+uuid). Falls back to a short id before the
   // list has loaded / for a fresh placeholder session. Read-only: it never re-keys the socket.
   const { sessions } = useSessionsStore();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
