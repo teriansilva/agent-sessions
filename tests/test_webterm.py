@@ -286,31 +286,55 @@ def test_resume_payload_alt_screen_sends_nothing():
     webterm._TOTALS.clear()
 
 
-def test_clean_load_payload_clears_only_on_a_fresh_load_with_a_width_mismatch():
-    # #244: a fresh full load (have<=0) clears (skips the width-fragile replay) ONLY when the
-    # client width differs from the width the buffer was written at; a matching width replays
-    # normally (keeps scrollback). Everything else uses the normal resume payload.
+def test_fresh_load_renders_width_aware_snapshot_and_keeps_ring():
+    # #242: a fresh inline load (have<=0, has history) replays a WIDTH-AWARE snapshot, not the raw
+    # bytes — so it loads cleanly at any width AND keeps scroll-up. The ring is NOT reset (history
+    # persists for the next attach). The snapshot reproduces the emulator's grid at client width.
+    from agent_sessions import termrender, webterm
+
+    # Raw with absolute cursor positioning written for a wide layout — the thing that garbles when
+    # replayed verbatim at a narrow width.
+    raw = b"\x1b[32mline one of history\x1b[0m\r\n\x1b[33mline two\x1b[0m\r\n$ prompt"
+    out, reset = webterm._fresh_load_payload(raw, have=0, total=len(raw), cols=40, rows=10)
+
+    assert reset is False  # ring kept — history persists
+    assert out != raw  # re-rendered, not a raw replay
+    assert out != webterm._CLEAN_LOAD_CLEAR  # and not a blanking clear
+    # The snapshot reproduces exactly what the emulator shows for the raw bytes at 40 cols.
+    assert termrender.screen_text(out, 40, 10) == termrender.screen_text(raw, 40, 10)
+
+
+def test_fresh_load_falls_back_to_clean_clear_when_snapshot_unavailable(monkeypatch):
+    # If the width-aware snapshot can't be produced (parse failure / over the size cap),
+    # render_snapshot returns None and we fall back to the #241 clean-load clear + ring reset,
+    # rather than replay raw garble.
+    from agent_sessions import termrender, webterm
+
+    monkeypatch.setattr(termrender, "render_snapshot", lambda *a, **k: None)
+    out, reset = webterm._fresh_load_payload(b"some history", have=0, total=12, cols=40, rows=10)
+    assert out == webterm._CLEAN_LOAD_CLEAR
+    assert reset is True
+
+
+def test_fresh_load_passthrough_for_reconnect_altscreen_and_new_session():
+    # Everything that is NOT a fresh inline load keeps its existing payload, no snapshot, no reset.
     from agent_sessions import webterm
 
-    clear = webterm._CLEAN_LOAD_CLEAR
-    # Fresh load, width MISMATCH (e.g. mobile after a desktop session) → clear.
-    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=120) == clear
-    assert webterm._clean_load_payload(-1, 100, client_cols=40, buffer_cols=120) == clear
-    # Fresh load, width MATCHES (desktop reload at the same width) → replay, keep scrollback.
-    assert webterm._clean_load_payload(0, 100, client_cols=120, buffer_cols=120) is None
-    # Unknown buffer width (e.g. right after a restart) is treated as a MISMATCH → clear: never
-    # trust bytes of unproven width (the ring is reset + rebuilt at the client width, Hermes #245).
-    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=None) == clear
-    # Brand-new session (no output yet) → nothing to clear.
-    assert webterm._clean_load_payload(0, 0, client_cols=40, buffer_cols=120) is None
-    # Transient reconnect (have>0) → keep the delta regardless of width.
-    assert webterm._clean_load_payload(50, 100, client_cols=40, buffer_cols=120) is None
+    # Transient reconnect (have>0): keep the same-width byte delta untouched.
+    assert webterm._fresh_load_payload(b"delta", have=5, total=100, cols=40, rows=10) == (
+        b"delta",
+        False,
+    )
+    # Alt-screen TUI: _resume_payload already yields b"" → stays no-replay (repaints via SIGWINCH).
+    assert webterm._fresh_load_payload(b"", have=0, total=100, cols=40, rows=10) == (b"", False)
+    # Brand-new session (no output yet): nothing to render.
+    assert webterm._fresh_load_payload(b"", have=0, total=0, cols=40, rows=10) == (b"", False)
 
 
 def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp_path):
-    # #244/#245: a width change resets the retained ring (in-memory + disk mirror) but keeps the
-    # monotonic _TOTALS offset, so a stale/mixed-width ring can't be replayed garbled by a later
-    # same-width attach (the bug Hermes flagged on the first cut).
+    # #242: _reset_ring (now the fresh-load fallback when a snapshot can't be produced) drops the
+    # retained ring (in-memory + disk mirror) but keeps the monotonic _TOTALS offset, so
+    # delta-resume math stays valid after the agent repaints fresh at the client width.
     from agent_sessions import webterm
 
     monkeypatch.setattr(webterm, "_SCROLLBACK_DIR", tmp_path)
