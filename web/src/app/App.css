@@ -66,7 +66,6 @@
   background: var(--panel);
   background: color-mix(in srgb, var(--panel) 55%, transparent);
   backdrop-filter: blur(7px) saturate(110%);
-  -webkit-backdrop-filter: blur(7px) saturate(110%);
   border: 1px solid var(--line);
 }
 .topbarActions {
@@ -192,7 +191,6 @@
   border: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 55%, transparent);
   backdrop-filter: blur(14px) saturate(120%);
-  -webkit-backdrop-filter: blur(14px) saturate(120%);
   min-width: 0;
   min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
   display: flex;
@@ -224,7 +222,6 @@
   padding: 0 18px;
   background: color-mix(in srgb, var(--bg-1) 55%, transparent);
   backdrop-filter: blur(7px) saturate(110%);
-  -webkit-backdrop-filter: blur(7px) saturate(110%);
   border-bottom: 1px solid var(--line);
 }
 /* SYS // clock + MISSION // timer, pushed to the right; takes the slack after the wordmark. */
@@ -282,7 +279,6 @@
   padding: 0 18px;
   background: color-mix(in srgb, var(--bg-1) 55%, transparent);
   backdrop-filter: blur(7px) saturate(110%);
-  -webkit-backdrop-filter: blur(7px) saturate(110%);
   border-top: 1px solid var(--line);
 }
 .navToggle {
