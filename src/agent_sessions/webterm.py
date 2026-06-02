@@ -350,27 +350,36 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
 _CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
 
 
-def _clean_load_payload(
-    have: int, total: int, client_cols: int, buffer_cols: int | None
-) -> bytes | None:
-    """On a FRESH full load (``have<=0``) of a session with output, return a clear instead of
-    replaying the inline scrollback — but ONLY when the client width differs from the width the
-    buffer was written at (#227 clean-load, narrowed by #244).
+def _is_same_width_continuation(have: int, buffer_cols: int | None, cols: int) -> bool:
+    """Whether a reconnect can be satisfied with the raw byte-delta instead of re-rendering the
+    scroll-up (#262). True only when the client already holds matching-width scrollback — it sent a
+    real in-ring offset (``have>0``) AND its width equals the width we last served it
+    (``buffer_cols==cols``), i.e. a brief WS blip on a live same-width session. Everything else —
+    a fresh load (``have<=0``), a cross-width client, or a post-restart reconnect where
+    ``_LAST_COLS`` was wiped (``buffer_cols`` is None) — is False, so the caller renders the
+    width-correct transcript rather than replaying the fixed-width raw ring at a wrong width."""
+    return have > 0 and buffer_cols == cols
+
+
+def _clean_load_payload(total: int, client_cols: int, buffer_cols: int | None) -> bytes | None:
+    """Clean-load fallback (#227, narrowed by #244) for when there's no transcript adapter: return a
+    clear instead of replaying the inline scrollback, but ONLY when the client width differs from
+    the width the buffer was written at. The caller already established this is **not** a same-width
+    continuation (#262), so a clear here means a fresh/cross-width/post-restart load of a session
+    whose raw ring can't be trusted at ``client_cols``.
 
     The garbling only happens on a width MISMATCH: the buffered cursor-positioning was written at
     ``buffer_cols`` and mis-positions when replayed at a different ``client_cols``. When they match
-    (e.g. a desktop reload at the same width) the replay is clean, so keep the normal payload and
-    preserve scrollback. ``buffer_cols`` **unknown** (None — e.g. right after a restart, before any
-    width is recorded) is treated as a MISMATCH too: we must never trust bytes of unproven width
-    (a 120-col persisted ring replayed at 40 cols garbles), so we clear and let the agent repaint
-    at the client width — the ring is then reset/rebuilt at a known width (Hermes #245). Desktop
-    loses scroll-up only on the first load after a restart; the next same-width load replays it.
+    (a desktop reload at the same width) the replay is clean, so keep the normal payload and keep
+    scrollback. ``buffer_cols`` **unknown** (None — e.g. right after a restart, before any width is
+    recorded) is treated as a MISMATCH too: we must never trust bytes of unproven width (a 120-col
+    persisted ring replayed at 40 cols garbles), so we clear and let the agent repaint at the client
+    width — the ring is then reset/rebuilt at a known width (Hermes #245).
 
-    ``None`` → use the normal resume payload: width matches, a brand-new session (nothing to
-    clear), or a transient reconnect (``have>0``). Superseded by the width-aware screen model
-    (#242), which renders history clean at any width.
+    ``None`` → use the normal resume payload: width matches, or a brand-new session (nothing to
+    clear). Superseded by the width-aware transcript (#242) wherever an adapter exists.
     """
-    if have <= 0 and total > 0 and client_cols != buffer_cols:
+    if total > 0 and client_cols != buffer_cols:
         return _CLEAN_LOAD_CLEAR
     return None
 
@@ -500,20 +509,28 @@ async def run(
     # frame. dtach has no scrollback of its own; alt-screen TUIs repaint via SIGWINCH.
     if buf_key:
         payload, total = _resume_payload(buf_key, have)
-        # Fresh load (have<=0): prefer the engine's SAVED TRANSCRIPT rendered at this client's width
-        # (#242) — clean, width-correct scroll-up — over the width-fragile raw replay. Run it off
-        # the event loop (disk read + parse). It falls back to the raw-byte clean-load (#241/#245)
-        # when there's no transcript adapter / nothing to render. A transient reconnect (have>0)
-        # keeps its exact same-width byte-delta untouched. `total` is unchanged in every case, so
-        # the `seq` frame below stays the real byte offset and delta-resume is unaffected.
-        if have <= 0:
+        # Scroll-up source (#262). The raw ring is authored at the agent's fixed pty width; replay
+        # at a DIFFERENT client width mis-positions its absolute cursor moves and garbles. So replay
+        # it ONLY for a genuine same-width continuation — a brief WS blip where the client still
+        # holds the matching-width scrollback and only needs the byte-delta. EVERY other case
+        # re-renders the engine's SAVED TRANSCRIPT (#242) at this client's width — clean,
+        # width-correct — and falls back to a clean-load clear when there's no adapter:
+        #   • fresh page load (have<=0) — client xterm is empty;
+        #   • cross-width client — the ring's width ≠ this client's;
+        #   • post-restart reconnect — the app dropped every WS and `_LAST_COLS` was wiped, so the
+        #     client reconnects with a STALE have>0 against the disk-restored wide ring (#206);
+        #     buffer_cols is None ⇒ not a continuation ⇒ transcript, instead of re-garbling.
+        # `total` is unchanged in every branch, so the `seq` frame below stays the real byte offset
+        # and delta-resume is unaffected.
+        buffer_cols = _LAST_COLS.get(buf_key)
+        if not _is_same_width_continuation(have, buffer_cols, cols):
             tpayload = await loop.run_in_executor(None, _transcript_payload, buf_key, cols)
             if tpayload is not None:
                 payload = tpayload
             else:
                 # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
                 # replay), reset the ring so a later same-width attach can't replay stale bytes.
-                clear = _clean_load_payload(have, total, cols, _LAST_COLS.get(buf_key))
+                clear = _clean_load_payload(total, cols, buffer_cols)
                 if clear is not None:
                     _reset_ring(buf_key)
                     payload = clear

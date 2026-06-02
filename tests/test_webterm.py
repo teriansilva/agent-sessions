@@ -333,25 +333,35 @@ def test_transcript_payload_none_on_unparseable_key(monkeypatch):
     assert webterm._transcript_payload("no-such-engine:whatever", 80) is None
 
 
-def test_clean_load_payload_clears_only_on_a_fresh_load_with_a_width_mismatch():
-    # #244: a fresh full load (have<=0) clears (skips the width-fragile replay) ONLY when the
-    # client width differs from the width the buffer was written at; a matching width replays
-    # normally (keeps scrollback). Everything else uses the normal resume payload.
+def test_clean_load_payload_clears_on_a_width_mismatch():
+    # #244/#262: the clean-load fallback (no transcript adapter) clears — skipping the width-fragile
+    # replay — whenever the client width differs from the buffer's written width. The caller only
+    # invokes it on a non-continuation, so `have` is no longer a parameter.
     from agent_sessions import webterm
 
     clear = webterm._CLEAN_LOAD_CLEAR
-    # Fresh load, width MISMATCH (e.g. mobile after a desktop session) → clear.
-    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=120) == clear
-    assert webterm._clean_load_payload(-1, 100, client_cols=40, buffer_cols=120) == clear
-    # Fresh load, width MATCHES (desktop reload at the same width) → replay, keep scrollback.
-    assert webterm._clean_load_payload(0, 100, client_cols=120, buffer_cols=120) is None
+    # Width MISMATCH (e.g. mobile after a desktop session) → clear.
+    assert webterm._clean_load_payload(100, client_cols=40, buffer_cols=120) == clear
+    # Width MATCHES (desktop reload at the same width) → replay, keep scrollback.
+    assert webterm._clean_load_payload(100, client_cols=120, buffer_cols=120) is None
     # Unknown buffer width (e.g. right after a restart) is treated as a MISMATCH → clear: never
     # trust bytes of unproven width (the ring is reset + rebuilt at the client width, Hermes #245).
-    assert webterm._clean_load_payload(0, 100, client_cols=40, buffer_cols=None) == clear
+    assert webterm._clean_load_payload(100, client_cols=40, buffer_cols=None) == clear
     # Brand-new session (no output yet) → nothing to clear.
-    assert webterm._clean_load_payload(0, 0, client_cols=40, buffer_cols=120) is None
-    # Transient reconnect (have>0) → keep the delta regardless of width.
-    assert webterm._clean_load_payload(50, 100, client_cols=40, buffer_cols=120) is None
+    assert webterm._clean_load_payload(0, client_cols=40, buffer_cols=120) is None
+
+
+def test_same_width_continuation_gates_raw_vs_transcript():
+    # #262: only a have>0 reconnect whose width matches the last-served width keeps the raw
+    # byte-delta (a brief same-width blip). Fresh load, cross-width, and post-restart
+    # (buffer_cols=None) all return False → the caller renders the transcript, not the raw ring.
+    from agent_sessions import webterm
+
+    cont = webterm._is_same_width_continuation
+    assert cont(have=120, buffer_cols=80, cols=80) is True  # same-width blip → raw delta
+    assert cont(have=0, buffer_cols=80, cols=80) is False  # fresh load → transcript
+    assert cont(have=120, buffer_cols=120, cols=40) is False  # cross-width → transcript
+    assert cont(have=120, buffer_cols=None, cols=40) is False  # post-restart (wiped) → transcript
 
 
 def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp_path):
