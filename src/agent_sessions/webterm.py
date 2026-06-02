@@ -31,7 +31,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import ptybridge, sessionlock
+from . import ptybridge, sessionlock, transcript
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -386,6 +386,48 @@ def _in_alt_screen(buf: bytes) -> bool:
     return buf.rfind(b"\x1b[?1049h") > buf.rfind(b"\x1b[?1049l")
 
 
+# Fresh-load scroll-up from the engine's saved conversation transcript (#242). On by default;
+# AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK=0 falls back to raw-byte clean-load everywhere.
+_TRANSCRIPT_SCROLLBACK = (os.environ.get("AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK", "1") or "1") != "0"
+# Engine id → display label for the "⏺ <label>" assistant marker.
+_ENGINE_LABEL = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "opencode"}
+
+
+def _transcript_payload(buf_key: str, cols: int) -> bytes | None:
+    """Render the engine's saved conversation transcript as a fresh-load scroll-up payload (#242):
+    ``clear + rendered conversation``, which scrolls into the client's xterm scrollback; the live
+    agent then repaints its current frame below. Width-correct semantic text (no width-fragile
+    raw-byte replay). Returns ``None`` to fall back to clean-load when the feature is off, the
+    engine has no transcript adapter, the id can't be parsed, or there's nothing to render.
+
+    Pure + side-effect-free (reads the on-disk transcript only); the caller runs it off the event
+    loop and still sends the real ``seq`` total afterwards, so delta-resume offsets are untouched.
+    """
+    if not _TRANSCRIPT_SCROLLBACK:
+        return None
+    try:
+        from . import engines
+
+        prov, native = engines.parse_key(buf_key)
+    except Exception:
+        return None
+    adapter = transcript.adapter_for(prov.engine_id)
+    if adapter is None:
+        return None
+    try:
+        turns = adapter(native, Path.home())
+        body = transcript.render(
+            turns, cols, assistant_label=_ENGINE_LABEL.get(prov.engine_id, prov.engine_id)
+        )
+    except Exception:
+        return None
+    if not body:
+        return None
+    # Clear screen+scrollback, then the rendered conversation, then a blank line; the live agent's
+    # repaint (triggered by the connect resize) draws its current frame below this scroll-up.
+    return _CLEAN_LOAD_CLEAR + body + b"\r\n"
+
+
 async def run(
     ws,
     argv: list[str],
@@ -458,26 +500,24 @@ async def run(
     # frame. dtach has no scrollback of its own; alt-screen TUIs repaint via SIGWINCH.
     if buf_key:
         payload, total = _resume_payload(buf_key, have)
-        # Clean-load (#227): a FRESH full load (have<=0) would replay the raw inline scrollback,
-        # whose embedded cursor-positioning was written at whatever width(s) the agent rendered at
-        # over the session. Replayed at the client's current width those escapes mis-position →
-        # the garbled/chaotic console. So on a fresh load, skip the replay: clear the screen +
-        # scrollback and let the agent repaint its CURRENT frame at the right width (its first
-        # resize — sent right after connect — delivers the SIGWINCH that triggers the repaint).
-        # A transient reconnect (have>0) still replays its small, same-width delta seamlessly.
-        # (Superseded by the planned width-aware server-side screen model.)
-        # Width-conditional (#244): only clean-load when this client's width differs from the
-        # width the buffer was written at (`_LAST_COLS`); a matching width (e.g. a desktop reload)
-        # replays normally and keeps scrollback. Record this client's width as the buffer's
-        # current width going forward (the agent renders at it after the connect resize below).
-        prev_cols = _LAST_COLS.get(buf_key)
-        clear = _clean_load_payload(have, total, cols, prev_cols)
-        if clear is not None:
-            # The retained ring was written at a DIFFERENT width — reset it so a later same-width
-            # attach can't replay the stale/mixed-width bytes and re-garble (Hermes #245). The
-            # agent repaints fresh at `cols` after the connect resize.
-            _reset_ring(buf_key)
-            payload = clear
+        # Fresh load (have<=0): prefer the engine's SAVED TRANSCRIPT rendered at this client's width
+        # (#242) — clean, width-correct scroll-up — over the width-fragile raw replay. Run it off
+        # the event loop (disk read + parse). It falls back to the raw-byte clean-load (#241/#245)
+        # when there's no transcript adapter / nothing to render. A transient reconnect (have>0)
+        # keeps its exact same-width byte-delta untouched. `total` is unchanged in every case, so
+        # the `seq` frame below stays the real byte offset and delta-resume is unaffected.
+        if have <= 0:
+            tpayload = await loop.run_in_executor(None, _transcript_payload, buf_key, cols)
+            if tpayload is not None:
+                payload = tpayload
+            else:
+                # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
+                # replay), reset the ring so a later same-width attach can't replay stale bytes.
+                clear = _clean_load_payload(have, total, cols, _LAST_COLS.get(buf_key))
+                if clear is not None:
+                    _reset_ring(buf_key)
+                    payload = clear
+        # Track this client's width for the clean-load fallback / resize logic (every connect).
         _LAST_COLS[buf_key] = cols
         if payload:
             with contextlib.suppress(Exception):

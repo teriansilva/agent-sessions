@@ -286,6 +286,53 @@ def test_resume_payload_alt_screen_sends_nothing():
     webterm._TOTALS.clear()
 
 
+_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypatch):
+    # #242 PR2: a fresh load resolves the engine's transcript adapter, renders it at the client
+    # width, and returns clear + rendered conversation (which scrolls into xterm scrollback).
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    turns = [transcript.Turn("user", "do the thing"), transcript.Turn("assistant", "done")]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    out = webterm._transcript_payload(f"claude:{_UUID}", 80)
+    assert out is not None
+    assert out.startswith(webterm._CLEAN_LOAD_CLEAR)  # clears first
+    assert b"do the thing" in out and b"done" in out  # the conversation
+
+
+def test_transcript_payload_none_when_disabled(monkeypatch):
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", False)
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+
+
+def test_transcript_payload_none_without_adapter_or_turns(monkeypatch):
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    # no adapter for the engine → fall back (None)
+    monkeypatch.setattr(transcript, "adapter_for", lambda eid: None)
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+    # adapter but empty conversation → fall back (None)
+    monkeypatch.setattr(transcript, "adapter_for", lambda eid: (lambda native, home: []))
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+
+
+def test_transcript_payload_none_on_unparseable_key(monkeypatch):
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    assert webterm._transcript_payload("no-such-engine:whatever", 80) is None
+
+
 def test_clean_load_payload_clears_only_on_a_fresh_load_with_a_width_mismatch():
     # #244: a fresh full load (have<=0) clears (skips the width-fragile replay) ONLY when the
     # client width differs from the width the buffer was written at; a matching width replays
