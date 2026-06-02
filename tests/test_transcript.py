@@ -81,6 +81,65 @@ def test_render_empty_is_empty():
     assert T.render([T.Turn("assistant", "   ")], 80) == b""
 
 
+# --- clean-log polish (#260) ---------------------------------------------------------------
+
+
+def test_render_strips_markdown_syntax():
+    md = "## Heading\n\n**bold** and `code` and ~~old~~\n- one\n* two\n```py\nx=1\n```"
+    out = T.render([T.Turn("assistant", md)], 80).decode("utf-8")
+    assert "**" not in out and "`" not in out and "~~" not in out
+    assert "# Heading" not in out and "Heading" in out
+    assert "bold" in out and "code" in out and "old" in out
+    assert "• one" in out and "• two" in out  # bullets normalized
+    assert "```" not in out and "x=1" in out  # fence stripped, code text kept
+
+
+def test_render_strips_markdown_but_keeps_width_exact():
+    md = "**" + ("word " * 40) + "** and `" + ("y" * 60) + "`"
+    for cols in (24, 50, 80):
+        lines = _visible_lines(T.render([T.Turn("assistant", md)], cols))
+        assert not [ln for ln in lines if len(ln) > cols]
+
+
+def test_render_result_is_single_dimmed_line():
+    lines = _visible_lines(T.render([T.Turn("tool", "first line\nsecond\nthird", "result")], 80))
+    body = [ln for ln in lines if ln.strip()]
+    assert any("⎿ first line" in ln for ln in body)
+    assert all("second" not in ln and "third" not in ln for ln in body)  # only first line
+
+
+def test_result_text_extracts_blocks_not_json():
+    # list-of-text-blocks → joined text (the #260 bug: was json.dumps'd to [{"type":...}])
+    assert T._result_text([{"type": "text", "text": "hello"}]) == "hello"
+    assert T._result_text("plain") == "plain"
+    # image / tool_reference blocks → a tag, never the raw blob (no base64 in scroll-up)
+    assert T._result_text([{"type": "image", "source": {"data": "AAAABBBB" * 999}}]) == "[image]"
+    assert "[tool_reference]" == T._result_text([{"type": "tool_reference", "tool_name": "x"}])
+    assert "{" not in T._result_text([{"type": "image", "source": {"data": "z" * 5000}}])
+
+
+def test_claude_parser_tool_result_list_content(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write_jsonl(
+        p,
+        [
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "content": [{"type": "text", "text": "RESULT OK"}]}
+                    ],
+                },
+            }
+        ],
+    )
+    turns = T.claude_turns_from_jsonl(p)
+    res = [t for t in turns if t.kind == "result"]
+    assert res and res[0].text == "RESULT OK"
+    assert "[{" not in res[0].text  # not the JSON wrapper
+
+
 # --- Claude adapter / parser ---------------------------------------------------------------
 
 

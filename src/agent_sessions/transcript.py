@@ -25,6 +25,7 @@ Two layers, so adding an engine is cheap:
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +56,56 @@ def _short(value: object, limit: int = _ARG_MAX) -> str:
     s = value if isinstance(value, str) else json.dumps(value, default=str)
     s = " ".join(s.split())  # collapse whitespace/newlines to one line
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _result_text(content: object) -> str:
+    """Pull the readable text out of a tool_result ``content`` instead of dumping its JSON wrapper
+    (#260). Claude stores results as a bare string, or a list of ``{"type":"text","text":…}`` blocks
+    — the latter was being ``json.dumps``'d, so the scroll-up showed ``[{"type":"text",…}]`` noise.
+    str → itself; list/dict of text blocks → their joined text; anything else → compact JSON so a
+    result never renders empty."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict):
+                t = p.get("text") or p.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+                elif p.get("type"):  # image / tool_reference / … → tag, never dump the blob
+                    parts.append(f"[{p['type']}]")
+        if parts:
+            return "\n".join(parts)
+    if isinstance(content, dict):
+        t = content.get("text") or content.get("content")
+        if isinstance(t, str):
+            return t
+        if content.get("type"):
+            return f"[{content['type']}]"
+    return json.dumps(content, default=str) if content else ""
+
+
+# Strip the common Markdown *syntax* so the log reads clean (no literal ``**`` / backticks / ``#``)
+# while keeping the words. Applied to message text BEFORE wrapping, so width stays exact.
+_MD_FENCE = re.compile(r"^[ \t]*```[^\n]*$", re.M)  # ```code-fence``` lines → removed
+_MD_HEAD = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.M)  # "### Heading" → "Heading"
+_MD_BULLET = re.compile(r"^([ \t]*)[-*][ \t]+", re.M)  # "- item" / "* item" → "• item"
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)  # **bold** → bold
+_MD_STRIKE = re.compile(r"~~(.+?)~~", re.S)  # ~~strike~~ → strike
+_MD_CODE = re.compile(r"`([^`]+)`")  # `code` → code
+
+
+def _clean_md(text: str) -> str:
+    text = _MD_FENCE.sub("", text)
+    text = _MD_HEAD.sub("", text)
+    text = _MD_BOLD.sub(r"\1", text)
+    text = _MD_STRIKE.sub(r"\1", text)
+    text = _MD_CODE.sub(r"\1", text)
+    text = _MD_BULLET.sub(r"\1• ", text)
+    return text
 
 
 # --- shared renderer -----------------------------------------------------------------------
@@ -112,16 +163,19 @@ def render(
         if t.kind == "tool":
             lines.append(_SGR_DIM + "  ⎿ " + _short(text.splitlines()[0], cols - 6) + _RESET)
         elif t.kind == "result":
-            for line in _wrap(_short(text, _RESULT_MAX), cols, "    "):
-                lines.append(_SGR_DIM + line + _RESET if line else line)
+            # One short dimmed line — the first non-blank line, truncated (#260). Results are
+            # context, not the focus; the live frame has the full thing.
+            first = next((ln for ln in text.splitlines() if ln.strip()), "")
+            if first:
+                lines.append(_SGR_DIM + "    ⎿ " + _short(first, cols - 7) + _RESET)
         elif t.role == "user":
             lines.append("")
             lines.append(_SGR_USER + "› You" + _RESET)
-            lines.extend(_wrap(text, cols))
+            lines.extend(_wrap(_clean_md(text), cols))
         else:  # assistant / system
             lines.append("")
             lines.append(_SGR_ASSISTANT + "⏺ " + assistant_label + _RESET)
-            lines.extend(_wrap(text, cols))
+            lines.extend(_wrap(_clean_md(text), cols))
     if not lines:
         return b""
     if len(lines) > max_lines:
@@ -204,8 +258,7 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
                 )
                 turns.append(Turn(role, f"{b.get('name', 'tool')}({_short(arg)})", "tool"))
             elif bt == "tool_result":
-                c = b.get("content")
-                txt = c if isinstance(c, str) else (json.dumps(c, default=str) if c else "")
+                txt = _result_text(b.get("content"))
                 if txt.strip():
                     turns.append(Turn("tool", txt, "result"))
             # "thinking" blocks are intentionally omitted from scroll-up.
