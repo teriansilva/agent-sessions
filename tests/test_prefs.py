@@ -70,6 +70,35 @@ def test_set_preserves_other_keys(tmp_path):
     assert data == {"keepme": 7, "theme": "dark"}
 
 
+def test_compose_default_unset_is_auto(tmp_path):
+    assert prefs.get_compose_default(tmp_path / "prefs.json") == "auto"
+
+
+def test_compose_default_round_trip(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.set_compose_default("open", p) == "open"
+    assert prefs.get_compose_default(p) == "open"
+    assert prefs.set_compose_default("collapsed", p) == "collapsed"
+    assert prefs.get_compose_default(p) == "collapsed"
+
+
+def test_compose_default_invalid_coerced_to_auto(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.set_compose_default("sideways", p) == "auto"
+    assert prefs.get_compose_default(p) == "auto"
+
+
+def test_compose_default_preserves_theme(tmp_path):
+    import json
+
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("light", p)
+    prefs.set_compose_default("open", p)
+    data = json.loads(p.read_text())
+    assert data["theme"] == "light"
+    assert data["compose_default"] == "open"
+
+
 # ---- endpoints ----------------------------------------------------------------
 
 
@@ -432,3 +461,34 @@ def test_set_accent_endpoint_without_clobbering_theme(auth_cfg, tmp_home):
     assert c.post("/api/prefs", json={"accent": "#00aaff"}, headers=hdrs).status_code == 200
     cfg = c.get("/api/config").json()
     assert cfg["accent"] == "#00aaff" and cfg["theme"] == "light"
+
+
+def test_config_exposes_compose_default(auth_cfg, tmp_home):
+    prefs.set_compose_default("open")
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["compose_default"] == "open"
+
+
+def test_set_compose_default_persists(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"compose_default": "collapsed"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"compose_default": "collapsed"}
+    assert c.get("/api/config").json()["compose_default"] == "collapsed"
+
+
+def test_set_compose_default_unknown_422(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"compose_default": "nope"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

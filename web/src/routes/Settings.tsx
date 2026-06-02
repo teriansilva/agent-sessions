@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useConfig } from "../app/config";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
@@ -964,6 +965,20 @@ export function Settings() {
     setSyncedAccent(accent);
     setHexDraft(accent);
   }
+  // Compose default (#254): persisted via /api/prefs; applies to sessions opened after the
+  // next config load. Seed from the loaded config and reflect external changes (other device).
+  const configCompose = useConfig()?.compose_default ?? "auto";
+  const [composeMode, setComposeMode] = useState<string>(configCompose);
+  const [syncedCompose, setSyncedCompose] = useState(configCompose);
+  if (configCompose !== syncedCompose) {
+    setSyncedCompose(configCompose);
+    setComposeMode(configCompose);
+  }
+  const chooseCompose = (mode: string) => {
+    const prev = composeMode;
+    setComposeMode(mode);
+    api.setPrefs({ compose_default: mode }).catch(() => setComposeMode(prev));
+  };
   const commitHex = () => {
     const norm = normalizeAccent(hexDraft);
     if (norm) setAccent(norm);
@@ -1064,6 +1079,34 @@ export function Settings() {
             }}
             onBlur={commitHex}
           />
+        </div>
+
+        <h3 className={styles.subhead} id="compose-h">
+          Compose box
+        </h3>
+        <p className={styles.hint}>
+          Default state when a session opens. Applies after the next reload.
+        </p>
+        <div className={styles.themes} role="radiogroup" aria-labelledby="compose-h">
+          {[
+            { id: "auto", label: "Auto", description: "Open on touch, collapsed on desktop" },
+            { id: "open", label: "Open", description: "Always expanded on load" },
+            { id: "collapsed", label: "Collapsed", description: "Always collapsed to the bar" },
+          ].map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={composeMode === o.id}
+              className={
+                composeMode === o.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard
+              }
+              onClick={() => chooseCompose(o.id)}
+            >
+              <span className={styles.themeName}>{o.label}</span>
+              <span className={styles.themeDesc}>{o.description}</span>
+            </button>
+          ))}
         </div>
       </section>
 

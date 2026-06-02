@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { isPasteShortcut } from "../../lib/termKeys";
+import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
@@ -75,6 +76,11 @@ export function Terminal({
   const { sessions } = useSessionsStore();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+  // Compose default state (#254): the per-user pref overrides the device heuristic. "auto"
+  // (and an unloaded config) keeps the heuristic — expanded on touch, collapsed on desktop.
+  const composeMode = useConfig()?.compose_default ?? "auto";
+  const composeDefaultOpen =
+    composeMode === "open" ? true : composeMode === "collapsed" ? false : coarse;
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
@@ -402,8 +408,14 @@ export function Terminal({
           </div>
         )}
       </div>
-      {/* Action/compose bar everywhere; expanded on touch, collapsed-to-the-bar on desktop. */}
-      <Compose ref={composeRef} sendInput={sendInput} onCopy={handleCopy} defaultOpen={coarse} />
+      {/* Action/compose bar everywhere; default state per the compose pref (#254), falling back
+          to the device heuristic — expanded on touch, collapsed-to-the-bar on desktop. */}
+      <Compose
+        ref={composeRef}
+        sendInput={sendInput}
+        onCopy={handleCopy}
+        defaultOpen={composeDefaultOpen}
+      />
     </div>
   );
 }

@@ -28,6 +28,11 @@ DEFAULT_THEME = "dark"
 SIDEBAR_VIEWS: tuple[str, ...] = ("list", "overview")
 DEFAULT_SIDEBAR_VIEW = "list"
 
+# Compose box default state on load. "auto" keeps the device heuristic (expanded on touch,
+# collapsed to the bar on desktop); "open"/"collapsed" force it the same on every device.
+COMPOSE_DEFAULTS: tuple[str, ...] = ("auto", "open", "collapsed")
+DEFAULT_COMPOSE = "auto"
+
 # Brand accent (#211 Phase 2): a #rrggbb hex driving --accent (and, via color-mix in
 # index.css, the derived accent-soft/glow + CTA tokens) plus the xterm cursor. User-
 # customizable; the preset palette lives client-side (web/src/theme/accent.ts). Default
@@ -54,6 +59,11 @@ def coerce_theme(value: object) -> str:
 def coerce_sidebar_view(value: object) -> str:
     """Narrow any input to a known sidebar view, falling back to the default."""
     return value if isinstance(value, str) and value in SIDEBAR_VIEWS else DEFAULT_SIDEBAR_VIEW
+
+
+def coerce_compose_default(value: object) -> str:
+    """Narrow any input to a known compose-default mode, falling back to the default."""
+    return value if isinstance(value, str) and value in COMPOSE_DEFAULTS else DEFAULT_COMPOSE
 
 
 def coerce_accent(value: object) -> str:
@@ -177,6 +187,16 @@ def get_sidebar_view(path: Path | None = None) -> str:
 def set_sidebar_view(view: str, path: Path | None = None) -> str:
     """Persist the sidebar view (invalid input → default). Preserves other keys (e.g. theme)."""
     return _set("sidebar_view", coerce_sidebar_view(view), path)
+
+
+def get_compose_default(path: Path | None = None) -> str:
+    """The persisted compose-default mode (auto|open|collapsed), or the default when unset."""
+    return coerce_compose_default(_load(path or _default_path()).get("compose_default"))
+
+
+def set_compose_default(mode: str, path: Path | None = None) -> str:
+    """Persist the compose-default mode (invalid input → default). Preserves other keys."""
+    return _set("compose_default", coerce_compose_default(mode), path)
 
 
 def get_accent(path: Path | None = None) -> str:

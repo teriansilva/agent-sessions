@@ -391,6 +391,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 # Sidebar body: the session list, or the squeezed Session Overview map (#139).
                 # Persisted per-user like the theme; the SPA applies it at load.
                 "sidebar_view": prefs.get_sidebar_view(),
+                # Compose box default state on load: auto (device heuristic) | open | collapsed.
+                # Per-user; the terminal applies it when mounting Compose.
+                "compose_default": prefs.get_compose_default(),
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed)
                 # and project cwds excluded from the map. Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -436,6 +439,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
                 raise HTTPException(status_code=422, detail="unknown sidebar_view")
             out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
+        if "compose_default" in payload:
+            if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
+                raise HTTPException(status_code=422, detail="unknown compose_default")
+            out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
             # The legacy `overview_excluded` write path is kept for clients still on the old

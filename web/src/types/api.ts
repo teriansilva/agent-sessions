@@ -51,6 +51,8 @@ export interface AppConfig {
   accent?: string;
   /** Per-user sidebar body: "list" (session list) or "overview" (squeezed map, #139). */
   sidebar_view?: "list" | "overview" | string;
+  /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
+  compose_default?: "auto" | "open" | "collapsed" | string;
   /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden globally. */
   overview_expanded?: string[];
   /** @deprecated Use `projects_hidden` (#174 — same data; broader scope). Emitted in
