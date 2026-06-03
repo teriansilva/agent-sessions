@@ -113,11 +113,26 @@ agent-sessions is a **single-admin** tool. Understand this before exposing it:
 agent-sessions/
 ├── pyproject.toml
 ├── src/agent_sessions/
-│   ├── main.py        FastAPI app factory (serves the React SPA + the API + ws terminal)
+│   ├── main.py        thin FastAPI app factory: create_app() builds shared state +
+│   │                  middlewares + lifespan, then calls each routes/ registrar
+│   ├── routes/        one register(app, *, deps) module per route group —
+│   │   ├── system.py      healthz, auth-check, version, engines, system, update, config, prefs
+│   │   ├── sessions.py    /api/sessions, /api/projects, rename, archive/unarchive
+│   │   ├── scrollback.py  /api/scrollback (+ clear)
+│   │   ├── upload.py      /api/upload
+│   │   ├── auth.py        login, /login/totp, logout, change-password, /api/password, 2FA
+│   │   ├── terminal.py    the /ws/term/{sid} websocket handler
+│   │   └── spa.py         GET / + the /{spa_path} SPA catch-all (registered last)
 │   ├── scanner.py     read ~/.claude/projects/ (live + archive)
 │   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/sort_key/project_alias
-│   ├── engines.py     per-engine providers (scan + launch_argv); claude/opencode/codex/gemini
-│   ├── webterm.py + ptybridge.py   the ws↔PTY bridge (xterm.js over /ws/term, dtach-backed)
+│   ├── engines/       per-engine providers (scan + launch_argv): base.py (contract +
+│   │                  patterns + binaries), claude/opencode/codex/gemini.py, registry.py
+│   │                  (parse_key/scan_all/…); __init__ re-exports the public surface
+│   ├── webterm.py     the ws↔PTY bridge run loop (xterm.js over /ws/term, dtach-backed)
+│   ├── scrollback.py  per-session scrollback ring + on-disk mirror + resume/scroll-up
+│   ├── transcript.py  engine-agnostic scroll-up renderer from the saved conversation
+│   ├── ptybridge.py   dtach create-or-attach argv + session-exists probe
+│   ├── session_stream.py  process-wide SessionRegistry + per-session readers (#183)
 │   ├── auth.py        cookie + CSRF + Origin + /api/auth-check for nginx auth_request
 │   └── templates/     login.html + login_totp.html + change_password.html (server-rendered pages)
 ├── web/               React + Vite + TS SPA (built to web/dist, served by main.py)
