@@ -14,20 +14,16 @@ import contextlib
 import hmac
 import json
 import os
-import re
 import time
 from pathlib import Path
 
 from fastapi import (
     Depends,
     FastAPI,
-    File,
     Form,
     HTTPException,
-    Query,
     Request,
     Response,
-    UploadFile,
     WebSocket,
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -36,19 +32,15 @@ from fastapi.templating import Jinja2Templates
 
 from . import (
     accounts,
-    archive,
     discover,
     engines,
     envfile,
     metadata,
-    prefs,
     ptybridge,
     scanner,
     session_stream,
     sessions,
-    sysinfo,
     twofactor,
-    update,
     webterm,
 )
 from .auth import (
@@ -56,7 +48,6 @@ from .auth import (
     AuthConfig,
     clear_preauth,
     clear_session,
-    current_csrf,
     decode_preauth,
     enforce_origin,
     hash_password,
@@ -68,7 +59,15 @@ from .auth import (
     session_uid,
     verify_password,
 )
-from .version import get_version
+from .routes import scrollback as scrollback_routes
+from .routes import sessions as sessions_routes
+from .routes import system as system_routes
+from .routes import upload as upload_routes
+
+# Re-export the "working" window (now owned by routes/sessions.py) under its historical
+# name here, so callers (and tests) that read agent_sessions.main._WORKING_WINDOW_S keep
+# resolving the same value (#265).
+from .routes.sessions import _WORKING_WINDOW_S as _WORKING_WINDOW_S
 
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -88,9 +87,6 @@ _SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
 _OC_RECONCILE_INTERVAL_S = 0.5
 # ~5 min of polling, then give up (session still served under the placeholder; no URL converge).
 _OC_RECONCILE_MAX_POLLS = 600
-# How long after the last byte from the agent we still call the session "working" (#156).
-# Picked to feel responsive without flapping between every keystroke of a streaming reply.
-_WORKING_WINDOW_S = 10.0
 
 
 async def _reconcile_opencode(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
@@ -306,168 +302,15 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 return RedirectResponse("/change-password", status_code=303)
         return await call_next(request)
 
-    @app.get("/healthz")
-    async def healthz() -> dict:
-        return {"ok": True}
-
-    @app.get("/api/auth-check")
-    async def auth_check(request: Request) -> Response:
-        # nginx `auth_request` only cares about the status code. In `none` mode there
-        # is no login → always 204. In single-user mode, 204 with a valid cookie, else 401.
-        if cfg.auth_mode == "none":
-            return Response(status_code=204)
-        if session_uid(cfg, request) is None:
-            raise HTTPException(status_code=401, detail="no session")
-        return Response(status_code=204)
-
-    @app.get("/api/version")
-    async def app_version(_: str = Depends(_logged_in)) -> JSONResponse:
-        # Runtime version for the dashboard + the self-update flow (#65). Authed.
-        return JSONResponse({"version": get_version()})
-
-    @app.get("/api/engines")
-    async def list_engines(_: str = Depends(_logged_in)) -> JSONResponse:
-        # Discovery for the Settings "Connected agents" section: every known provider
-        # with its presence + whether it can start a new session + the resolved binary
-        # path (or null). Authed; GET, so no CSRF.
-        return JSONResponse(
-            {
-                "engines": [
-                    {
-                        "id": p.engine_id,
-                        "present": p.is_present(),
-                        "supports_new": bool(getattr(p, "supports_new", False)),
-                        "bin": discover.resolve(p.engine_id),
-                    }
-                    for p in engines.all_providers()
-                ]
-            }
-        )
-
-    @app.get("/api/system")
-    async def system_info(_: str = Depends(_logged_in)) -> JSONResponse:
-        # Host/system info for the Settings "System" section. Stdlib only, every field
-        # fail-soft (omitted on error / non-Linux). No network interfaces / IPs. Authed.
-        return JSONResponse(sysinfo.collect())
-
-    @app.get("/api/update/check")
-    async def update_check(_: str = Depends(_logged_in)) -> JSONResponse:
-        # Compare the running version to the channel's latest on the remote (#65 Phase 5).
-        return JSONResponse(update.check())
-
-    @app.post("/api/update/apply")
-    async def update_apply(
-        _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
-    ) -> JSONResponse:
-        # Update to the channel's latest — no user-supplied ref/command. Re-runs the
-        # installer detached (atomic release + flip + restart + health-check + rollback).
-        if not update.apply():
-            raise HTTPException(status_code=503, detail="self-update unavailable (not an install)")
-        return JSONResponse({"status": "updating"}, status_code=202)
-
-    @app.get("/api/config")
-    async def app_config(request: Request, _: str = Depends(_logged_in)) -> JSONResponse:
-        # SPA bootstrap (#64): the CSRF token for mutations + which engines can start a
-        # new session (present + supports_new) + the terminal backend. Authed-only.
-        return JSONResponse(
-            {
-                "csrf": current_csrf(cfg, request) or "",
-                "new_session_engines": [
-                    p.engine_id
-                    for p in engines.present_providers()
-                    if getattr(p, "supports_new", False)
-                ],
-                "terminal_backend": "ws",
-                "must_change_password": _must_change["v"],
-                # "single-user" | "none" — lets the SPA hide login/logout UI when there
-                # is no login (#13 / #32 Phase 3).
-                "auth_mode": cfg.auth_mode,
-                # Per-user UI theme (#109). The SPA applies this at load so a non-default
-                # choice carries across devices; localStorage is the device cache.
-                "theme": prefs.get_theme(),
-                # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
-                # Applied at load like the theme; localStorage is the device cache.
-                "accent": prefs.get_accent(),
-                # Sidebar body: the session list, or the squeezed Session Overview map (#139).
-                # Persisted per-user like the theme; the SPA applies it at load.
-                "sidebar_view": prefs.get_sidebar_view(),
-                # Compose box default state on load: auto (device heuristic) | open | collapsed.
-                # Per-user; the terminal applies it when mounting Compose.
-                "compose_default": prefs.get_compose_default(),
-                # Session Overview view-state (#144): expanded cluster cwds (default collapsed)
-                # and project cwds excluded from the map. Per-user.
-                "overview_expanded": prefs.get_overview_expanded(),
-                # `overview_excluded` was the legacy name (#144); `projects_hidden` (#174) is
-                # the same idea but with broader scope (sidebar list + filter + map + picker).
-                # Both keys are emitted during the transition window so an old client tab still
-                # reads its hidden list; new clients prefer `projects_hidden`.
-                "overview_excluded": prefs.get_projects_hidden(),
-                "projects_hidden": prefs.get_projects_hidden(),
-                # Per-cwd custom project display names (#148).
-                "project_names": prefs.get_project_names(),
-                # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
-                # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
-                "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
-            }
-        )
-
-    @app.post("/api/prefs")
-    async def set_prefs(
-        request: Request,
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        # Persist UI preferences (#109 theme, #139 sidebar_view, #144 overview lists). Each
-        # provided key is validated server-side (unknown value → 422, never silently coerced
-        # on write); other persisted keys are preserved. At least one known key must be present.
-        try:
-            payload = await request.json()
-        except (ValueError, json.JSONDecodeError):
-            raise HTTPException(status_code=422, detail="invalid JSON") from None
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=422, detail="expected a JSON object")
-        out: dict[str, object] = {}
-        if "theme" in payload:
-            if payload["theme"] not in prefs.THEMES:
-                raise HTTPException(status_code=422, detail="unknown theme")
-            out["theme"] = prefs.set_theme(payload["theme"])
-        if "accent" in payload:
-            if not prefs.is_valid_accent(payload["accent"]):
-                raise HTTPException(status_code=422, detail="invalid accent")
-            out["accent"] = prefs.set_accent(payload["accent"])
-        if "sidebar_view" in payload:
-            if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
-                raise HTTPException(status_code=422, detail="unknown sidebar_view")
-            out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
-        if "compose_default" in payload:
-            if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
-                raise HTTPException(status_code=422, detail="unknown compose_default")
-            out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
-        for key, setter in (
-            ("overview_expanded", prefs.set_overview_expanded),
-            # The legacy `overview_excluded` write path is kept for clients still on the old
-            # API surface — internally it routes to the same `projects_hidden` storage so
-            # the two never diverge (#174).
-            ("overview_excluded", prefs.set_projects_hidden),
-            ("projects_hidden", prefs.set_projects_hidden),
-        ):
-            if key in payload:
-                v = payload[key]
-                if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
-                    raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
-                out[key] = setter(v)
-        if "project_names" in payload:
-            v = payload["project_names"]
-            if not isinstance(v, dict) or not all(
-                isinstance(k, str) and isinstance(val, str) for k, val in v.items()
-            ):
-                raise HTTPException(
-                    status_code=422, detail="project_names must be an object of string→string"
-                )
-            out["project_names"] = prefs.set_project_names(v)
-        if not out:
-            raise HTTPException(status_code=422, detail="no known preference key")
-        return JSONResponse(out)
+    # Info/settings routes (healthz, auth-check, version, engines, system, update
+    # check/apply, config, prefs) live in routes/system.py (agent-sessions#265).
+    system_routes.register(
+        app,
+        cfg=cfg,
+        logged_in=_logged_in,
+        csrf_guard=_csrf_guard,
+        must_change=_must_change,
+    )
 
     @app.post("/api/password")
     async def change_password_api(
@@ -700,175 +543,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         clear_session(resp)
         return resp
 
-    def _row(s, m: metadata.SessionMeta) -> dict:
-        key = engines.session_key(s)
-        # #156 working signal: last byte we observed flowing into the shared ring.
-        # Slice 2 (#183): the server-owned SessionStream writes under the PHYSICAL
-        # key (opencode placeholder for a reconciled new-session). The row id stays
-        # the LOGICAL key (real ``ses_…``) so the URL/sidebar are unchanged — but
-        # the lookup must resolve through the alias map first, or a headless
-        # reconciled-opencode row would always report idle.
-        phys_key = engines.physical_key(key)
-        last_out = webterm.get_last_output_at(phys_key)
-        return {
-            "id": key,
-            "engine": s.engine,
-            "uuid": s.uuid,
-            "short_uuid": s.short_uuid,
-            "cwd": s.cwd,
-            "project": m.project_alias or s.cwd,
-            "last_mtime": s.last_mtime,
-            "last_output_at": last_out,
-            "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
-            "first_user_message": s.first_user_message,
-            "title": m.title or s.first_user_message,
-            "sticky": m.sticky,
-            "sort_key": m.sort_key,
-            # Effective archive state: the sidecar override wins when set (lets a
-            # natively-archived opencode/codex row be unarchived), else the engine's
-            # native state (claude's JSONL tree / opencode.db time_archived).
-            "archived": m.archived if m.archived is not None else s.archived,
-        }
-
-    @app.get("/api/sessions")
-    async def list_sessions(
-        _: str = Depends(_logged_in),
-        limit: int = Query(20, ge=1, le=200),
-        offset: int = Query(0, ge=0),
-        archived: bool = Query(False),
-        q: str | None = Query(None),
-        project: str | None = Query(None),
-        engine: str | None = Query(None),
-    ) -> JSONResponse:
-        # Flat, paginated, newest-first. sticky floats to the top of the
-        # *first window* (a first-window concept, not a global pin).
-        meta_index = metadata.load()
-        # opencode new-session alias (#127): the live row is the real ``ses_…`` from
-        # scan_all (the placeholder never appears here — it isn't in opencode.db), so
-        # there is no ghost row to drop. But metadata set while the session was still on
-        # its placeholder (title/sticky/archive before reconcile) is keyed by the
-        # placeholder; resolve each scanned id to its physical key so that metadata
-        # follows the real row — one row, with its sidecar intact, no duplicate.
-        aliases = metadata.load_aliases()
-
-        def _meta_for(s) -> metadata.SessionMeta:
-            key = engines.session_key(s)
-            phys = engines.physical_key(key, aliases)
-            return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-
-        # Hidden projects (#174) are stripped server-side BEFORE pagination + facets are
-        # computed, so totals/next_offset/facet lists all describe the visible-to-the-user
-        # set. Filtering only on the client would make `total` and the filter dropdown lie.
-        # Hide is keyed by cwd (the row's `cwd` field), not the display name.
-        hidden = set(prefs.get_projects_hidden())
-        scoped = [
-            row
-            for s in engines.scan_all()
-            for row in [_row(s, _meta_for(s))]
-            if row["archived"] == archived and row["cwd"] not in hidden
-        ]
-        # Facets for the project/agent dropdowns: distinct values over the visible (already
-        # hide-filtered) archived-scoped set, computed BEFORE q/project/engine filtering —
-        # so the dropdowns list every project/engine present, including ones past the
-        # first page, regardless of what's currently filtered or loaded.
-        facets = {
-            "projects": sorted({r["project"] for r in scoped}),
-            "engines": sorted({r["engine"] for r in scoped}),
-        }
-        # Normalize filters; empty / whitespace-only means "no filter".
-        q_norm = (q or "").strip().casefold()
-        project_f = (project or "").strip() or None
-        engine_f = (engine or "").strip() or None
-
-        def _keep(r: dict) -> bool:
-            if q_norm and q_norm not in (r["title"] or "").casefold():
-                return False
-            if project_f is not None and r["project"] != project_f:
-                return False
-            if engine_f is not None and r["engine"] != engine_f:
-                return False
-            return True
-
-        # Filter BEFORE limit/offset so total + next_offset describe the filtered
-        # set and "load more" stays within results.
-        rows = [r for r in scoped if _keep(r)]
-        rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
-        window = rows[offset : offset + limit]
-        next_offset = offset + limit if offset + limit < len(rows) else None
-        return JSONResponse(
-            {
-                "sessions": window,
-                "next_offset": next_offset,
-                "total": len(rows),
-                "facets": facets,
-            }
-        )
-
-    @app.get("/api/projects")
-    async def list_projects(_: str = Depends(_logged_in)) -> JSONResponse:
-        # New-session picker + the Settings "Session overview" manager — hidden projects
-        # (#174) are excluded here too. Picking a hidden project as a start location would
-        # feel inconsistent with the user having explicitly said "I don't want to see this."
-        #
-        # Source from ALL engines (#196): the sidebar filter dropdown derives its options
-        # from /api/sessions facets, which are computed over engines.scan_all(). If this
-        # endpoint used the Claude-only scan (pickable_projects' default), an opencode/gemini
-        # cwd would appear in the filter but be unmanageable here — the two lists drift.
-        # Passing scan_all() unifies the superset so every filterable project is manageable.
-        hidden = set(prefs.get_projects_hidden())
-        return JSONResponse(
-            {
-                "projects": [
-                    {"cwd": c, "label": c}
-                    for c in scanner.pickable_projects(sessions=engines.scan_all())
-                    if c not in hidden
-                ]
-            }
-        )
-
-    def _archived_scrollback_keys() -> list[str]:
-        # Physical scrollback keys for every currently-archived session, across engines.
-        # Mirrors `_row`'s effective-archived + alias resolution so the keys line up with
-        # what `webterm` persisted (it keys the ring/disk by the PHYSICAL id). (#206)
-        meta_index = metadata.load()
-        aliases = metadata.load_aliases()
-        keys: list[str] = []
-        for s in engines.scan_all():
-            key = engines.session_key(s)
-            phys = engines.physical_key(key, aliases)
-            m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-            archived = m.archived if m.archived is not None else s.archived
-            if archived:
-                keys.append(phys)
-        return keys
-
-    @app.get("/api/scrollback")
-    async def scrollback_info(_: str = Depends(_logged_in)) -> JSONResponse:
-        # Size of the persisted-scrollback cache (#206), for the Settings cache panel.
-        return JSONResponse(webterm.scrollback_cache_stats())
-
-    @app.post("/api/scrollback/clear")
-    async def scrollback_clear(
-        request: Request,
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        # Clear the persisted-scrollback cache (#206). scope="all" wipes everything (also
-        # reclaims orphaned files from deleted sessions); scope="archived" clears only the
-        # caches of currently-archived sessions. Clearing drops the in-memory ring too, so
-        # a cleared session won't be re-served from memory.
-        try:
-            payload = await request.json()
-        except (ValueError, json.JSONDecodeError):
-            payload = {}
-        scope = payload.get("scope", "all") if isinstance(payload, dict) else "all"
-        if scope == "all":
-            result = webterm.clear_scrollback(None)
-        elif scope == "archived":
-            result = webterm.clear_scrollback(_archived_scrollback_keys())
-        else:
-            raise HTTPException(status_code=422, detail="scope must be 'all' or 'archived'")
-        return JSONResponse({"scope": scope, **result})
+    # Session-data routes (list/search + facets, projects, rename, archive/unarchive,
+    # archive-older) live in routes/sessions.py; scrollback stats/clear in
+    # routes/scrollback.py (agent-sessions#265). Both register here, before the ws
+    # handler + SPA catch-all, preserving registration order.
+    sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     @app.websocket("/ws/term/{sid}")
     async def ws_term(ws: WebSocket, sid: str) -> None:
@@ -1100,129 +780,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 if lock is not None:
                     lock.transfer()
 
-    @app.post("/api/sessions/{sid}/rename")
-    async def rename_session(
-        sid: str,
-        request: Request,
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        try:
-            key = engines.canonical_key(sid)
-        except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
-        payload = await request.json()
-        title = str(payload.get("title", "")).strip()
-        if not title:
-            raise HTTPException(status_code=422, detail="title required")
-        m = metadata.patch(key, title=title[:120])
-        return JSONResponse({"id": key, "title": m.title})
-
-    @app.post("/api/sessions/{sid}/archive")
-    async def archive_session(
-        sid: str, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
-    ) -> JSONResponse:
-        try:
-            prov, native = engines.parse_key(sid)
-        except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
-        try:
-            prov.archive(native)
-        except archive.ArchiveError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from None
-        except NotImplementedError:
-            raise HTTPException(
-                status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
-            ) from None
-        return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": True})
-
-    @app.post("/api/sessions/{sid}/unarchive")
-    async def unarchive_session(
-        sid: str, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
-    ) -> JSONResponse:
-        try:
-            prov, native = engines.parse_key(sid)
-        except engines.EngineError:
-            raise HTTPException(status_code=404, detail="unknown session") from None
-        try:
-            prov.unarchive(native)
-        except archive.ArchiveError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from None
-        except NotImplementedError:
-            raise HTTPException(
-                status_code=400, detail=f"unarchive not supported for engine {prov.engine_id}"
-            ) from None
-        return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": False})
-
-    @app.post("/api/sessions/archive-older")
-    async def archive_older(
-        request: Request, _user: str = Depends(_logged_in), _csrf: None = Depends(_csrf_guard)
-    ) -> JSONResponse:
-        # Bulk-archive every (non-archived) session whose last activity is older than `hours`
-        # (#142). Reuses the per-session archive; engines that can't archive (opencode/codex)
-        # are skipped, not errored. Reversible — the archived sessions can be unarchived.
-        try:
-            payload = await request.json()
-        except (ValueError, json.JSONDecodeError):
-            raise HTTPException(status_code=422, detail="invalid JSON") from None
-        hours = payload.get("hours") if isinstance(payload, dict) else None
-        # Reject non-numbers, bool (a bool is an int in Python), ≤0, and absurd horizons.
-        if (
-            not isinstance(hours, int | float)
-            or isinstance(hours, bool)
-            or hours <= 0
-            or hours > 24 * 3650
-        ):
-            raise HTTPException(status_code=422, detail="hours must be a positive number")
-        cutoff = time.time() - hours * 3600.0
-        archived = 0
-        skipped = 0
-        for s in engines.scan_all():
-            if s.archived or (s.last_mtime or 0) >= cutoff:
-                continue
-            try:
-                prov, native = engines.parse_key(engines.session_key(s))
-                prov.archive(native)
-                archived += 1
-            except (NotImplementedError, archive.ArchiveError, engines.EngineError):
-                skipped += 1  # engine can't archive / lost the file → leave it, keep going
-        return JSONResponse({"archived": archived, "skipped": skipped})
-
-    @app.post("/api/upload")
-    async def upload_context(
-        file: UploadFile = File(...),
-        _user: str = Depends(_logged_in),
-        _csrf: None = Depends(_csrf_guard),
-    ) -> JSONResponse:
-        # Save a pasted/dropped image or file so a Claude/opencode session can read
-        # it by path (the web terminal can't carry image paste itself). Lands in a
-        # shared ~/.agent-sessions/uploads/ — never in a project working tree.
-        # Stream-read with a hard cap so a huge upload can't exhaust memory.
-        max_bytes = 25 * 1024 * 1024
-        size, chunks = 0, []
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > max_bytes:
-                raise HTTPException(status_code=413, detail="file too large (max 25 MB)")
-            chunks.append(chunk)
-        if not size:
-            raise HTTPException(status_code=422, detail="empty upload")
-        # Sanitise to a bare, safe basename — no path separators, no traversal.
-        raw_name = Path(file.filename or "upload").name
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:80] or "upload"
-        dest_dir = Path.home() / ".agent-sessions" / "uploads"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        dest = dest_dir / f"{stamp}-{safe}"
-        n = 1
-        while dest.exists():
-            dest = dest_dir / f"{stamp}-{n}-{safe}"
-            n += 1
-        dest.write_bytes(b"".join(chunks))
-        return JSONResponse({"path": str(dest), "name": safe})
+    # Upload route (save a pasted/dropped file to the shared uploads dir) lives in
+    # routes/upload.py (agent-sessions#265). Registered before the SPA catch-all.
+    upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # SPA history fallback (registered LAST so it never shadows the API/ws/auth routes
     # above). A real built file (sw.js, manifest.webmanifest, favicon…) is served as-is;
