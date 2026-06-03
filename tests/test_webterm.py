@@ -82,7 +82,7 @@ def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
     # (not an absolute path) must close deterministically (4500). Regression for #51.
     from agent_sessions import engines
 
-    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     code = _close_code(c, "/ws/term/claude:11111111-1111-1111-1111-111111111111", headers)
@@ -201,7 +201,7 @@ def test_ws_releases_launch_lock_on_launch_failure(fake_jsonl, auth_cfg, monkeyp
     from agent_sessions import engines, sessionlock
 
     key = _GOOD
-    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError → 4500
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError → 4500
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     assert _close_code(c, f"/ws/term/{key}", headers) == 4500
@@ -471,7 +471,7 @@ def test_ws_opencode_placeholder_passes_validation_on_new(
     # opencode/dtach. The launch cwd must be a pickable project.
     from agent_sessions import engines, scanner
 
-    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare name → PtyBridgeError → 4500
+    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -572,7 +572,7 @@ def test_ws_opencode_resume_real_id_with_aliased_dead_master(
     from agent_sessions import engines, metadata
 
     OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
-    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -590,7 +590,7 @@ def test_ws_opencode_placeholder_launch_failure_releases_lock(
     # not BUSY (4409).
     from agent_sessions import engines, scanner
 
-    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)

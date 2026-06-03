@@ -78,7 +78,7 @@ def test_parse_key_rejects_bad_ids(bad):
 
 
 def test_claude_launch_argv_resume(monkeypatch):
-    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
     argv = engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=True)
     assert argv == ["claude", "--resume", _U1, "--dangerously-skip-permissions"]
     assert engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=False) == [
@@ -89,7 +89,7 @@ def test_claude_launch_argv_resume(monkeypatch):
 
 
 def test_claude_new_launch_argv(monkeypatch):
-    monkeypatch.setattr(engines, "CLAUDE_BIN", "claude")
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
     argv = engines.ClaudeProvider().new_launch_argv(_U1, cwd="/tmp/x", bypass=True)
     assert argv == ["claude", "--session-id", _U1, "--dangerously-skip-permissions"]
 
@@ -164,7 +164,7 @@ def test_opencode_archive_unarchive_via_sidecar(tmp_path, monkeypatch):
 
 
 def test_opencode_launch_argv(monkeypatch):
-    monkeypatch.setattr(engines, "OPENCODE_BIN", "opencode")
+    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")
     argv = engines.OpenCodeProvider().launch_argv(_OC_TOP, cwd="/tmp/other", bypass=True)
     assert argv == ["opencode", "/tmp/other", "--session", _OC_TOP]
 
