@@ -1,58 +1,0 @@
-[38;2;45;255;124m╭────────────────────────────────────────────────────────────────────────────────────────╮
-│ agent-sessions                                                                         │
-╰────────────────────────────────────────────────────────────────────────────────────────╯[0m
-[1;34m› user[0]:[0m please summarise file section 0 in detail
-[32m● [0mHere is turn 0: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet 
-[90m    1 │ [0m[36mresult row 0.0 = 1[0m
-[90m    2 │ [0m[36mresult row 0.1 = 2[0m
-[90m    3 │ [0m[36mresult row 0.2 = 3[0m
-[1;34m› user[1]:[0m please summarise file section 1 in detail
-[32m● [0mHere is turn 1: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet 
-[90m    1 │ [0m[36mresult row 1.0 = 2[0m
-[90m    2 │ [0m[36mresult row 1.1 = 4[0m
-[90m    3 │ [0m[36mresult row 1.2 = 6[0m
-[1;34m› user[2]:[0m please summarise file section 2 in detail
-[32m● [0mHere is turn 2: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet 
-[90m    1 │ [0m[36mresult row 2.0 = 3[0m
-[90m    2 │ [0m[36mresult row 2.1 = 6[0m
-[90m    3 │ [0m[36mresult row 2.2 = 9[0m
-[1;34m› user[3]:[0m please summarise file section 3 in detail
-[32m● [0mHere is turn 3: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet 
-[90m    1 │ [0m[36mresult row 3.0 = 4[0m
-[90m    2 │ [0m[36mresult row 3.1 = 8[0m
-[90m    3 │ [0m[36mresult row 3.2 = 12[0m
-
-[33m⠋ working[0m
-[1A[2K[33m⠙ working.[0m
-[1A[2K[33m⠹ working..[0m
-[1A[2K[33m⠸ working...[0m
-[1A[2K[1;32m✓ done[0m
-[38;2;45;255;124m╭────────────────────────────────────────────────╮
-│ agent-sessions                                 │
-╰────────────────────────────────────────────────╯[0m
-[1;34m› user[0]:[0m please summarise file section 0 in detail
-[32m● [0mHere is turn 0: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo
-[90m    1 │ [0m[36mresult row 0.0 = 1[0m
-[90m    2 │ [0m[36mresult row 0.1 = 2[0m
-[90m    3 │ [0m[36mresult row 0.2 = 3[0m
-[1;34m› user[1]:[0m please summarise file section 1 in detail
-[32m● [0mHere is turn 1: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo
-[90m    1 │ [0m[36mresult row 1.0 = 2[0m
-[90m    2 │ [0m[36mresult row 1.1 = 4[0m
-[90m    3 │ [0m[36mresult row 1.2 = 6[0m
-[1;34m› user[2]:[0m please summarise file section 2 in detail
-[32m● [0mHere is turn 2: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo
-[90m    1 │ [0m[36mresult row 2.0 = 3[0m
-[90m    2 │ [0m[36mresult row 2.1 = 6[0m
-[90m    3 │ [0m[36mresult row 2.2 = 9[0m
-[1;34m› user[3]:[0m please summarise file section 3 in detail
-[32m● [0mHere is turn 3: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo
-[90m    1 │ [0m[36mresult row 3.0 = 4[0m
-[90m    2 │ [0m[36mresult row 3.1 = 8[0m
-[90m    3 │ [0m[36mresult row 3.2 = 12[0m
-
-[33m⠋ working[0m
-[1A[2K[33m⠙ working.[0m
-[1A[2K[33m⠹ working..[0m
-[1A[2K[33m⠸ working...[0m
-[1A[2K[1;32m✓ done[0m
