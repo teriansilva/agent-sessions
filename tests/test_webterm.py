@@ -260,7 +260,7 @@ def test_resume_payload_full_replay_when_have_fell_behind_ring(monkeypatch):
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
-    monkeypatch.setattr(webterm, "_MAX_BUF", 10)
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUF", 10)
     k = "claude:dr2"
     webterm._buffer_append(k, b"abcdefghijklmnop")  # 16 bytes → ring trimmed to last 10
     assert webterm._TOTALS[k] == 16
@@ -294,7 +294,7 @@ def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypat
     # width, and returns clear + rendered conversation (which scrolls into xterm scrollback).
     from agent_sessions import transcript, webterm
 
-    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
     turns = [transcript.Turn("user", "do the thing"), transcript.Turn("assistant", "done")]
     monkeypatch.setattr(
         transcript,
@@ -310,14 +310,14 @@ def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypat
 def test_transcript_payload_none_when_disabled(monkeypatch):
     from agent_sessions import webterm
 
-    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", False)
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", False)
     assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
 
 
 def test_transcript_payload_none_without_adapter_or_turns(monkeypatch):
     from agent_sessions import transcript, webterm
 
-    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
     # no adapter for the engine → fall back (None)
     monkeypatch.setattr(transcript, "adapter_for", lambda eid: None)
     assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
@@ -329,7 +329,7 @@ def test_transcript_payload_none_without_adapter_or_turns(monkeypatch):
 def test_transcript_payload_none_on_unparseable_key(monkeypatch):
     from agent_sessions import webterm
 
-    monkeypatch.setattr(webterm, "_TRANSCRIPT_SCROLLBACK", True)
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
     assert webterm._transcript_payload("no-such-engine:whatever", 80) is None
 
 
@@ -370,7 +370,7 @@ def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp
     # same-width attach (the bug Hermes flagged on the first cut).
     from agent_sessions import webterm
 
-    monkeypatch.setattr(webterm, "_SCROLLBACK_DIR", tmp_path)
+    monkeypatch.setattr(webterm.scrollback, "_SCROLLBACK_DIR", tmp_path)
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
     webterm._LOADED_FROM_DISK.clear()
@@ -397,8 +397,8 @@ def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
-    monkeypatch.setattr(webterm, "_MAX_BUFFERS", 4)
-    monkeypatch.setattr(webterm, "_session_alive", lambda k: False)  # all dead → evictable
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
+    monkeypatch.setattr(webterm.scrollback, "_session_alive", lambda k: False)  # all dead → evict
 
     for i in range(10):
         webterm._buffer_append(f"claude:s{i}", b"y")
@@ -419,10 +419,10 @@ def test_idle_live_session_never_evicted(monkeypatch):
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
-    monkeypatch.setattr(webterm, "_MAX_BUFFERS", 4)
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
     live = "claude:live-idle"
     # Only `live` is alive; every other (churning) session is dead/evictable.
-    monkeypatch.setattr(webterm, "_session_alive", lambda k: k == live)
+    monkeypatch.setattr(webterm.scrollback, "_session_alive", lambda k: k == live)
 
     webterm._buffer_append(live, b"important history")  # written ONCE, then idle
     for i in range(20):  # heavy churn from other sessions, well past the cap

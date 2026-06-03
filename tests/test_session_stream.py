@@ -49,7 +49,7 @@ def test_stream_drains_bytes_into_buffer_ring(monkeypatch):
     # This test is about the drain → ring + working stamp, not the #195 post-attach
     # replay grace (covered in test_webterm). Neutralize the grace so the immediately
     # emitted marker stamps the working signal as before.
-    monkeypatch.setattr(webterm, "_ATTACH_REPLAY_GRACE_S", 0.0)
+    monkeypatch.setattr(webterm.scrollback, "_ATTACH_REPLAY_GRACE_S", 0.0)
 
     async def run() -> None:
         s = session_stream.SessionStream(engine="claude", session_id="abc")
@@ -125,7 +125,7 @@ def test_registry_discover_spawns_streams_for_each_live(monkeypatch):
     webterm._LAST_OUTPUT_AT.clear()
     # Not exercising the #195 replay grace here — neutralize it so the streams' first
     # bytes stamp last_output_at (the discovery assertion below).
-    monkeypatch.setattr(webterm, "_ATTACH_REPLAY_GRACE_S", 0.0)
+    monkeypatch.setattr(webterm.scrollback, "_ATTACH_REPLAY_GRACE_S", 0.0)
 
     async def run() -> None:
         reg = session_stream.SessionRegistry()
@@ -308,7 +308,7 @@ def test_snapshot_working_flag_decays(monkeypatch):
     _patch_physical_key(monkeypatch)
     # The decay assertion needs the first byte to stamp working; neutralize the #195
     # post-attach replay grace (covered separately in test_webterm).
-    monkeypatch.setattr(webterm, "_ATTACH_REPLAY_GRACE_S", 0.0)
+    monkeypatch.setattr(webterm.scrollback, "_ATTACH_REPLAY_GRACE_S", 0.0)
 
     async def run() -> None:
         reg = session_stream.SessionRegistry()

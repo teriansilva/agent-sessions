@@ -22,7 +22,7 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
     ``Path.home()``, so setting ``$HOME`` later is not enough)."""
     from agent_sessions import webterm
 
-    monkeypatch.setattr(webterm, "_SCROLLBACK_DIR", tmp_path / "scrollback-cache")
+    monkeypatch.setattr(webterm.scrollback, "_SCROLLBACK_DIR", tmp_path / "scrollback-cache")
     for d in (
         webterm._BUFFERS,
         webterm._TOTALS,
