@@ -56,6 +56,11 @@ export class TermSocket {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  // Monotonic id of the CURRENT underlying socket — bumped on every successful open. A caller that
+  // sends a multi-frame message (Compose: clear → paste → deferred Enter) can capture this and tell
+  // whether a reconnect happened between frames, so it never fires a bare Enter onto a fresh socket
+  // that never received the paste (the empty-compose bug #287).
+  private connId = 0;
   // Set once a NO_RETRY reject (auth/origin/not-found/startup-failure) lands: terminal for this
   // socket's lifetime, so a later online/visible wake can't resurrect a deliberate reject (#236).
   // Reset only by a fresh TermSocket (the Terminal remounts per session / takeover).
@@ -95,6 +100,13 @@ export class TermSocket {
     return this.offset;
   }
 
+  /** Id of the current live socket (bumped on each open). 0 before the first open. A caller can
+   *  capture it after one frame and compare before a later frame to detect an intervening reconnect
+   *  (#287). */
+  get connectionId(): number {
+    return this.connId;
+  }
+
   connect(): void {
     this.stopped = false;
     this.handlers.onStatus(
@@ -124,6 +136,7 @@ export class TermSocket {
       if (this.ws !== ws) return;
       this.clearConnectTimer();
       this.attempt = 0; // a successful open resets the backoff
+      this.connId += 1; // a new live socket — callers gate multi-frame sends on this (#287)
       this.handlers.onStatus({ kind: "connected" });
     };
     ws.onmessage = (ev: MessageEvent) => {

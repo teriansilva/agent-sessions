@@ -42,12 +42,16 @@ export interface ComposeHandle {
 export const Compose = forwardRef<
   ComposeHandle,
   {
-    sendInput: (d: string) => void;
+    /** Send one frame to the PTY; returns whether it was actually delivered (socket OPEN). */
+    sendInput: (d: string) => boolean;
+    /** Id of the current socket (bumped on reconnect) — `send` uses it to avoid an empty submit
+     *  when a reconnect splits its clear/paste/Enter frames (#287). Optional for older callers. */
+    connEpoch?: () => number;
     onCopy: () => void;
     /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
     defaultOpen?: boolean;
   }
->(function Compose({ sendInput, onCopy, defaultOpen = true }, ref) {
+>(function Compose({ sendInput, connEpoch, onCopy, defaultOpen = true }, ref) {
   const [open, setOpen] = useState(defaultOpen);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -63,11 +67,21 @@ export const Compose = forwardRef<
   };
 
   const send = () => {
+    const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
+    const savedAttachments = attachments;
     const parts: string[] = [];
     if (text.trim()) parts.push(text.trim());
     for (const a of attachments) parts.push(a.path);
     const msg = parts.join(" ");
     if (!msg) return;
+    // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
+    // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
+    const abortNotDelivered = () => {
+      setText(savedText);
+      setAttachments(savedAttachments);
+      setNote("reconnecting — not sent, try again");
+      setTimeout(() => setNote(""), 3000);
+    };
     // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
     // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
     // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
@@ -80,9 +94,30 @@ export const Compose = forwardRef<
     // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
     // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
     const enterDelay = attachments.length > 0 ? ENTER_DELAY_AFTER_ATTACHMENT_MS : ENTER_DELAY_MS;
+    // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
+    // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it submits
+    // an EMPTY turn (#287). Keep the text so the user can resend, and say why.
     sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-    sendInput(bracketedPaste(msg));
-    setTimeout(() => sendInput(KEYSEQ.enter), enterDelay);
+    if (!sendInput(bracketedPaste(msg))) {
+      abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
+      return;
+    }
+    // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end marker
+    // (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead socket while
+    // the Enter would hit a FRESH socket that never received it → empty turn. Gate on the socket id:
+    // if it changed, re-send clear+paste on the new socket first (the clear prevents any doubling) —
+    // and if THAT re-paste also fails (a second reconnect), abort instead of submitting empty.
+    const epoch = connEpoch?.();
+    setTimeout(() => {
+      if (epoch !== undefined && connEpoch?.() !== epoch) {
+        sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+        if (!sendInput(bracketedPaste(msg))) {
+          abortNotDelivered();
+          return;
+        }
+      }
+      sendInput(KEYSEQ.enter);
+    }, enterDelay);
     setText("");
     setAttachments([]);
     if (taRef.current) taRef.current.style.height = "auto";

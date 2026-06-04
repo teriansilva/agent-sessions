@@ -12,12 +12,12 @@ let sendInput: ReturnType<typeof vi.fn>;
 let onCopy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
-  sendInput = vi.fn();
+  sendInput = vi.fn(() => true); // default: every frame is delivered (socket OPEN)
   onCopy = vi.fn();
 });
 
-function renderCompose() {
-  return render(<Compose sendInput={sendInput} onCopy={onCopy} />);
+function renderCompose(connEpoch: () => number = () => 1) {
+  return render(<Compose sendInput={sendInput} connEpoch={connEpoch} onCopy={onCopy} />);
 }
 
 test("nav keys send their control sequence to the PTY", async () => {
@@ -50,6 +50,66 @@ test("Send clears the line, bracketed-pastes the message, then submits a DEFERRE
   expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
   expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
   await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+});
+
+test("does NOT submit a bare Enter when the paste wasn't delivered — no empty turn (#287)", async () => {
+  // The empty-compose bug: a clear/paste sent mid-reconnect is dropped, but the deferred Enter still
+  // lands on the reconnected socket → an empty turn. When the paste isn't delivered we must abort and
+  // KEEP the text, never fire the Enter.
+  const user = userEvent.setup();
+  sendInput = vi.fn(() => false); // socket down → nothing delivers
+  renderCompose();
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // clear + paste were attempted, but NO Enter is ever scheduled.
+  await new Promise((r) => setTimeout(r, 200));
+  expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
+  expect((ta as HTMLTextAreaElement).value).toBe("hello world"); // text preserved for a retry
+});
+
+test("re-sends clear+paste on the new socket before Enter if a reconnect split the frames (#287)", async () => {
+  // The paste went to socket A, then a reconnect → the deferred Enter would hit socket B which never
+  // got the paste. Detect the socket-id change and re-send clear+paste on B before submitting.
+  const user = userEvent.setup();
+  let epoch = 1;
+  renderCompose(() => epoch);
+  await user.type(screen.getByRole("textbox"), "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(sendInput).toHaveBeenCalledTimes(2); // clear + paste on socket A
+  epoch = 2; // a reconnect happens before the deferred Enter fires
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  // The deferred batch re-sent clear+paste (on B) AND then the Enter — 5 calls total, Enter last.
+  const calls = sendInput.mock.calls.map((c) => c[0]);
+  expect(calls).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+    KEYSEQ.enter,
+  ]);
+});
+
+test("a SECOND reconnect during the deferred retry still never submits an empty Enter (#287)", async () => {
+  // The re-paste on the new socket can ALSO fail if a second reconnect lands. Mirror the first-send
+  // guard: no Enter, and restore the text for a retry.
+  const user = userEvent.setup();
+  let pastes = 0;
+  sendInput = vi.fn((d) => {
+    if (d === bracketedPaste("hello world")) {
+      pastes += 1;
+      return pastes === 1; // first paste delivers; the re-paste (2nd) does NOT
+    }
+    return true;
+  });
+  let epoch = 1;
+  renderCompose(() => epoch);
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  epoch = 2; // reconnect before the deferred Enter → re-paste path, which then fails to deliver
+  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("hello world")); // text restored
+  expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
 });
 
 test("Enter sends, Shift+Enter inserts a newline", async () => {

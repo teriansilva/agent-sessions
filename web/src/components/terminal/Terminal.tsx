@@ -109,10 +109,12 @@ export function Terminal({
   // prop changes can't move it; a genuine session switch remounts via `key` and re-seeds it.
   const freshRef = useRef(fresh);
 
-  // Send raw input to the PTY (used by the mobile action bar / compose).
-  const sendInput = useCallback((d: string) => {
-    sockRef.current?.send({ t: "i", d });
-  }, []);
+  // Send raw input to the PTY (used by the mobile action bar / compose). Returns whether the frame
+  // was actually delivered (socket OPEN) — Compose uses this so it never submits a bare Enter after
+  // a clear/paste that got dropped mid-reconnect (the empty-compose bug #287).
+  const sendInput = useCallback((d: string) => sockRef.current?.send({ t: "i", d }) ?? false, []);
+  // Current socket id (bumped each reconnect) so Compose can detect a reconnect between its frames.
+  const connEpoch = useCallback(() => sockRef.current?.connectionId ?? -1, []);
   // Copy the current selection, or the whole buffer if nothing is selected.
   const handleCopy = useCallback(() => {
     const t = termRef.current;
@@ -428,6 +430,7 @@ export function Terminal({
       <Compose
         ref={composeRef}
         sendInput={sendInput}
+        connEpoch={connEpoch}
         onCopy={handleCopy}
         defaultOpen={composeDefaultOpen}
       />
