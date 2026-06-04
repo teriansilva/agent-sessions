@@ -4,13 +4,21 @@ import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
+import { getDeviceLabel } from "../../lib/deviceLabel";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { isPasteShortcut } from "../../lib/termKeys";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
-import { TermSocket, type TermRole, type TermStatus } from "../../lib/termSocket";
+import {
+  TermSocket,
+  type TermGateHolder,
+  type TermRole,
+  type TermStatus,
+} from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
+import { GateOverlay } from "./GateOverlay";
 import { attachTouchScroll } from "../../lib/touchScroll";
 import { useAccent } from "../../theme/accentStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
@@ -89,6 +97,15 @@ export function Terminal({
   // until the server says otherwise — backward-compatible with the pre-slice-3
   // server which never sends a role frame at all.
   const [role, setRole] = useState<TermRole>("owner");
+  // Single-active-viewer gate (#293, flag on): non-null when this device is NOT the active
+  // viewer (someone else holds the session, or we were just taken over). `gateMode`
+  // distinguishes "opened while active elsewhere" from "got taken over mid-session".
+  const [gate, setGate] = useState<TermGateHolder | null>(null);
+  const [gateMode, setGateMode] = useState<"busy" | "taken">("busy");
+  // True once the server confirmed us as owner (a {t:"role","role":"owner"} frame). Lets a
+  // subsequent gate frame tell "taken over" (we WERE owner) from "in use" (we never were).
+  const confirmedOwnerRef = useRef(false);
+  const navigate = useNavigate();
   // Bumped by the Take-over button to force a reconnect with ?force=1.
   const [takeoverEpoch, setTakeoverEpoch] = useState(0);
   // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
@@ -209,6 +226,7 @@ export function Terminal({
           force: f,
           cols: term.cols,
           rows: term.rows,
+          label: getDeviceLabel(),
         });
       },
       {
@@ -225,7 +243,23 @@ export function Terminal({
           }
         },
         onId: (sid) => onReconcileIdRef.current?.(sid),
-        onRole: (r) => setRole(r),
+        onRole: (r) => {
+          setRole(r);
+          // We're the active viewer again → clear any gate and remember we held it (so a
+          // later demotion gate reads as "taken over", not "in use").
+          if (r === "owner") {
+            confirmedOwnerRef.current = true;
+            setGate(null);
+          }
+        },
+        // {t:"gate"} (#293): we're NOT the active viewer. Show the gate; "taken" if we WERE
+        // owner (demoted mid-session), else "busy" (opened while active elsewhere). Reset the
+        // owner flag — a take-over (force reconnect) re-confirms it via a fresh role frame.
+        onGate: (holder) => {
+          setGateMode(confirmedOwnerRef.current ? "taken" : "busy");
+          confirmedOwnerRef.current = false;
+          setGate(holder ?? { label: "" });
+        },
       },
     );
     sockRef.current = sock;
@@ -423,6 +457,16 @@ export function Terminal({
               Take over
             </button>
           </div>
+        )}
+        {/* Single-active-viewer gate (#293, flag on): full take-over page over the blurred
+            console. Take over = force-reconnect (promotes this device); Cancel = new session. */}
+        {gate && (
+          <GateOverlay
+            holder={gate}
+            mode={gateMode}
+            onTakeover={takeover}
+            onCancel={() => navigate("/")}
+          />
         )}
       </div>
       {/* Action/compose bar everywhere; default state per the compose pref (#254), falling back

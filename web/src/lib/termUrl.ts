@@ -15,7 +15,14 @@ export function termWsUrl(
   id: string,
   have: number,
   fresh?: FreshSession,
-  opts?: { fp?: string; tabId?: string; force?: boolean; cols?: number; rows?: number },
+  opts?: {
+    fp?: string;
+    tabId?: string;
+    force?: boolean;
+    cols?: number;
+    rows?: number;
+    label?: string;
+  },
 ): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const key = `${encodeURIComponent(engine)}:${encodeURIComponent(id)}`;
@@ -30,6 +37,9 @@ export function termWsUrl(
   if (opts?.fp) params.set("fp", opts.fp);
   if (opts?.tabId) params.set("tab", opts.tabId);
   if (opts?.force) params.set("force", "1");
+  // Display-only device name for the take-over gate (#293). The server stores it on the
+  // owner record and echoes it to other devices; it is never used for authorization.
+  if (opts?.label) params.set("label", opts.label);
   // Initial grid (#227): tell the server our real size up front so the PTY (and a launched
   // agent) starts at the right width instead of 80x24 → reflow garbling on the first resize.
   if (opts?.cols) params.set("cols", String(opts.cols));

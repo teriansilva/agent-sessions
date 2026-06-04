@@ -16,6 +16,13 @@ export type TermStatus =
 
 export type TermRole = "owner" | "secondary";
 
+/** The current holder shown on the take-over gate (#293). `label` is the holder's
+ *  display-only device name; `since` is a unix timestamp (seconds) of when they took it. */
+export interface TermGateHolder {
+  label: string;
+  since?: number;
+}
+
 export interface TermSocketHandlers {
   onOutput: (bytes: Uint8Array) => void;
   onStatus: (status: TermStatus) => void;
@@ -27,6 +34,11 @@ export interface TermSocketHandlers {
    *  WS holds the owner role or is a read-only secondary. Sent on connect, and again
    *  when a force takeover demotes the previous owner mid-session. */
   onRole?: (role: TermRole) => void;
+  /** Single-active-viewer take-over (#293, flag on): this WS is NOT the active viewer
+   *  (someone else holds the session) — render the gate with `holder` and offer Take over
+   *  (a reconnect with force=1) / Cancel. Sent instead of any PTY stream for a passive
+   *  attach, and again if this owner is demoted mid-session. */
+  onGate?: (holder: TermGateHolder | null) => void;
 }
 
 // Deliberate server rejects — never reconnect on these (would hammer the backend).
@@ -189,6 +201,7 @@ export class TermSocket {
           n?: number;
           sid?: string;
           role?: TermRole;
+          holder?: TermGateHolder | null;
         };
         if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
@@ -196,6 +209,8 @@ export class TermSocket {
         // {"t":"role","role":"owner"|"secondary"} — per-tab claim verdict (#184).
         else if (msg.t === "role" && (msg.role === "owner" || msg.role === "secondary"))
           this.handlers.onRole?.(msg.role);
+        // {"t":"gate","holder":{label,since}} — single-active-viewer: not the active viewer (#293).
+        else if (msg.t === "gate") this.handlers.onGate?.(msg.holder ?? null);
       } catch {
         /* ignore malformed control frame */
       }

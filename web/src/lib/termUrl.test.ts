@@ -27,6 +27,13 @@ test("engine and id are URL-encoded into the path segment", () => {
   expect(termWsUrl("open code", "a/b", 0)).toContain("/ws/term/open%20code:a%2Fb?");
 });
 
+test("the device label is forwarded for the take-over gate, omitted when absent (#293)", () => {
+  const url = termWsUrl("claude", "id1", 0, undefined, { label: "Mac · Chrome" });
+  expect(new URL(url.replace(/^ws/, "http")).searchParams.get("label")).toBe("Mac · Chrome");
+  const bare = new URL(termWsUrl("claude", "id1", 0).replace(/^ws/, "http")).searchParams;
+  expect(bare.has("label")).toBe(false);
+});
+
 test("the initial grid (cols/rows) is forwarded so the server sizes the pty up front (#227)", () => {
   const url = termWsUrl("claude", "id1", 0, undefined, { cols: 96, rows: 30 });
   const q = new URL(url.replace(/^ws/, "http")).searchParams;

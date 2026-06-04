@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { ThemeCtx } from "../../theme/themeStore";
@@ -119,7 +120,12 @@ beforeEach(() => {
 });
 
 function wrap(node: ReactNode) {
-  return <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>{node}</ThemeCtx.Provider>;
+  // Terminal uses useNavigate (gate Cancel → new session, #293), so it needs a Router context.
+  return (
+    <MemoryRouter>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>{node}</ThemeCtx.Provider>
+    </MemoryRouter>
+  );
 }
 
 const PLACEHOLDER = "new-11111111-1111-1111-1111-111111111111";

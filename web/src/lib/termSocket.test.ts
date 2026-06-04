@@ -228,3 +228,19 @@ test("send() only writes when the socket is open", () => {
   expect(ts.send({ t: "i", d: "x" })).toBe(true);
   expect(ws.sent).toEqual([JSON.stringify({ t: "i", d: "x" })]);
 });
+
+test("a gate control frame fires onGate with the holder, null when absent (#293)", () => {
+  const gates: (unknown | null)[] = [];
+  const ts = new TermSocket(
+    () => "/ws/term/claude:abc?have=0",
+    { onOutput: () => {}, onStatus: () => {}, onGate: (h) => gates.push(h) },
+    (u) => new FakeWS(u) as unknown as WebSocket,
+  );
+  created.push(ts);
+  ts.connect();
+  const ws = FakeWS.instances[0];
+  ws.open();
+  ws.message(JSON.stringify({ t: "gate", holder: { label: "Mac · Chrome", since: 1700 } }));
+  ws.message(JSON.stringify({ t: "gate" })); // no holder → null
+  expect(gates).toEqual([{ label: "Mac · Chrome", since: 1700 }, null]);
+});
