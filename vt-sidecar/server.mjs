@@ -11,6 +11,7 @@
 // resize→read→restore in snapshot is atomic w.r.t. other requests.
 import net from "node:net";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { EmulatorPool } from "./emulator.mjs";
 
 export const VERSION = "1";
@@ -83,8 +84,18 @@ export function createServer(pool = new EmulatorPool()) {
   });
 }
 
-// CLI entry: listen on $AGENT_SESSIONS_VT_SIDECAR_SOCK (or argv[2]).
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// CLI entry: listen on $AGENT_SESSIONS_VT_SIDECAR_SOCK (or argv[2]). `import.meta.url` resolves
+// symlinks but `process.argv[1]` does NOT, so when the installer launches us through its stable
+// `current/...` symlink the naive `url === file://argv[1]` compare is FALSE and the bundled server
+// exits without ever listening (#290 — flag-on prod silently fell back to transcript). Compare the
+// REAL paths so it matches whether launched directly (tests, staging checkout) or via a symlink.
+const isMain = (() => {
+  try {
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   const sockPath = process.env.AGENT_SESSIONS_VT_SIDECAR_SOCK || process.argv[2];
   if (!sockPath) {
