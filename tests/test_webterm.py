@@ -235,6 +235,65 @@ def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
     lock.transfer()
 
 
+def test_set_winsize_floors_zero_to_one():
+    # A 0×0 controlling tty makes Ink-style agents render into nothing (the #293/#292
+    # garble at the source). _set_winsize must never pass 0 to TIOCSWINSZ.
+    import os
+    import struct
+    import termios
+
+    from agent_sessions import webterm
+
+    master, slave = os.openpty()
+    try:
+        webterm._set_winsize(slave, 0, 0)
+        rows, cols, _, _ = struct.unpack(
+            "HHHH", __import__("fcntl").ioctl(slave, termios.TIOCGWINSZ, b"\0" * 8)
+        )
+        assert rows >= 1 and cols >= 1  # floored, never 0
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_pump_in_drops_degenerate_resize_keeps_valid(tmp_path, monkeypatch):
+    # #293 Phase 3: a spurious 0×0 / 1-col resize (mobile layout glitch) must NOT reach the
+    # agent pty — sizing it to 0×0 while the VT mirror floors at 2×2 desyncs the widths and
+    # garbles scroll-up. A real resize still applies.
+    import asyncio
+    import json as _json
+
+    from agent_sessions import webterm
+
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, rows, cols: calls.append((rows, cols)))
+
+    class FakeWS:
+        def __init__(self, frames):
+            self._frames = list(frames)
+
+        async def receive(self):
+            return self._frames.pop(0) if self._frames else {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            pass
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    frames = [
+        {"text": _json.dumps({"t": "r", "cols": 0, "rows": 0})},  # degenerate → dropped
+        {"text": _json.dumps({"t": "r", "cols": 100, "rows": 40})},  # real → applied
+    ]
+    # A silent, short-lived agent; buf_key=None so we isolate the pty-sizing path.
+    asyncio.run(webterm.run(FakeWS(frames), ["sleep", "1"], cwd=str(tmp_path), buf_key=None))
+    assert (0, 0) not in calls  # the degenerate resize never sized the pty
+    assert (40, 100) in calls  # the real resize did
+
+
 def test_resume_payload_tracks_total_and_serves_full_then_delta():
     # Delta-resume: _TOTALS counts every byte; have=0 → full replay; have within the
     # ring → only the bytes since `have`; have==total → nothing new.

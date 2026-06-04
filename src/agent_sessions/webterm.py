@@ -66,6 +66,10 @@ from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stay
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    # Never size a pty to 0 in either axis: a 0×0 controlling tty makes Ink-style agents
+    # render into nothing (the #292/#293 garble at the source). Floor at 1 as a last-resort
+    # guard; callers should already drop degenerate resizes (see pump_in).
+    rows, cols = max(1, rows), max(1, cols)
     with contextlib.suppress(OSError):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
@@ -243,6 +247,18 @@ async def run(
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
                         new_cols = int(obj.get("cols", cols))
+                        new_rows = int(obj.get("rows", rows))
+                        # Drop spurious/degenerate resizes (a transient 0×0 / 1-col frame from a
+                        # mobile layout or address-bar glitch). Sizing the agent pty to 0×0 while
+                        # the VT mirror floors at 2×2 desyncs agent-width from mirror-feed-width →
+                        # the absolute-cursor repaints don't overwrite → garbled scroll-up. That
+                        # desync IS the #293/#292 garble (the repro session had a 0×0 agent pty).
+                        # Ignore anything below a real terminal so the agent + mirror stay in
+                        # lockstep; clamp the upper bound to the same envelope as the initial grid.
+                        if new_cols < 2 or new_rows < 2:
+                            continue
+                        new_cols = min(500, new_cols)
+                        new_rows = min(300, new_rows)
                         # A genuine WIDTH change re-renders the agent; without resetting, the ring
                         # would hold mixed-width bytes and re-garble on a later same-width reload.
                         # Reset so the ring stays single-width = the agent's current width (#245).
@@ -257,7 +273,6 @@ async def run(
                             and not vtsidecar.enabled()
                         ):
                             scrollback._reset_ring(buf_key)
-                        new_rows = int(obj.get("rows", rows))
                         if buf_key:
                             scrollback._LAST_COLS[buf_key] = new_cols
                             scrollback._LAST_ROWS[buf_key] = new_rows
