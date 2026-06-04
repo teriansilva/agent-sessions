@@ -186,14 +186,22 @@ export function Terminal({
     const tabId = getTabId();
     const wantsForce = takeoverEpoch > 0;
     let forceConsumed = false;
+    // new=1 (launch) is a one-shot too: the FIRST connect launches the session; a reconnect must
+    // ATTACH the now-existing session, not relaunch it. Re-sending new=1 makes the server run
+    // `claude --session-id <id>` again → claude rejects the existing id ("session already in use")
+    // → EOF → reconnect loop. EXCEPTION: an opencode placeholder (`new-<uuid>`) keeps new=1 until it
+    // converges to its real id (#127) — the session doesn't exist under a real id yet.
+    let freshConsumed = false;
     const sock = new TermSocket(
       (have) => {
         const f = wantsForce && !forceConsumed;
         forceConsumed = true;
+        const keepFresh = !freshConsumed || id.startsWith("new-");
+        const fresh = keepFresh ? freshRef.current : undefined;
         // Pass our current grid so the server sizes the pty to us from the start (#227) — a
         // launched agent then renders at the right width instead of 80x24→reflow. cols/rows
         // are populated by the pre-connect fit below (and stay current across reconnects).
-        return termWsUrl(engine, id, have, freshRef.current, {
+        return termWsUrl(engine, id, have, fresh, {
           fp,
           tabId,
           force: f,
@@ -205,7 +213,14 @@ export function Terminal({
         onOutput: (b) => term.write(b),
         onStatus: (s) => {
           setStatus(s);
-          if (s.kind === "connected") onConnected();
+          if (s.kind === "connected") {
+            // The socket OPENED → the server received new=1 and launched. Only NOW stop sending the
+            // launch params: if a first attempt is closed (watchdog / transient drop) BEFORE it
+            // opens, the server never saw the launch, so the retry must relaunch — not attach to a
+            // not-yet-existent session. (opencode `new-` placeholders keep new=1 until converged.)
+            freshConsumed = true;
+            onConnected();
+          }
         },
         onId: (sid) => onReconcileIdRef.current?.(sid),
         onRole: (r) => setRole(r),

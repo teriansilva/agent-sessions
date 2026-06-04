@@ -19,7 +19,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import ptybridge, transcript
+from . import ptybridge, transcript, vtsidecar
 
 # `_TOTALS[key]` is a monotonic count of *all* bytes ever sent for the key (not just
 # what's still in the ring). It powers delta-resume: a reconnecting client reports the
@@ -51,6 +51,10 @@ _TOTALS: OrderedDict[str, int] = OrderedDict()
 # width. Used to decide clean-load vs replay on a fresh load (#244): replay only when the
 # attaching client matches this width (no garble), else clear. Best-effort, in-memory.
 _LAST_COLS: dict[str, int] = {}
+# Per-key height (rows) the agent's pty is at — companion to `_LAST_COLS`, tracked so the VT live
+# mirror (#273) can size its emulator to the agent's full geometry (height matters: Ink's cursor-up
+# repaints must overwrite within the same screen height or they duplicate). Best-effort, in-memory.
+_LAST_ROWS: dict[str, int] = {}
 # Per-key wall-clock of the last byte we observed flowing from the agent (#156). Powers the
 # "agent working" indicator (#156). Stamped from the byte-ingest path; the #183
 # SessionStream keeps it fresh even with no browser attached. Best-effort and bounded by
@@ -200,6 +204,8 @@ def _drop_buffer(key: str) -> None:
     _LAST_OUTPUT_AT.pop(key, None)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
+    # Tear down the session's VT-sidecar emulator too (#273). No-op unless the flag is on.
+    vtsidecar.note_session_end(key)
 
 
 def _reset_ring(key: str) -> None:
@@ -255,6 +261,11 @@ def _buffer_append(key: str, data: bytes) -> None:
         _BUFFERS[key] = buf
     _BUFFERS.move_to_end(key)  # most-recently-used
     buf.extend(data)
+    # Feed the VT live mirror (#273) the same bytes, in order. No-op unless the flag is on AND a
+    # client has opened the session (note_resize), so detached-but-unviewed sessions cost nothing.
+    # This is the single chokepoint for ALL agent output — both the attached WS pump and the
+    # server-owned SessionStream drain land here — so the mirror stays current either way.
+    vtsidecar.note_feed(key, data)
     _persist_append(key, data)  # mirror to disk so scrollback survives a restart (#206)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     _TOTALS.move_to_end(key)
@@ -403,3 +414,30 @@ def _transcript_payload(buf_key: str, cols: int) -> bytes | None:
     # Clear screen+scrollback, then the rendered conversation, then a blank line; the live agent's
     # repaint (triggered by the connect resize) draws its current frame below this scroll-up.
     return _CLEAN_LOAD_CLEAR + body + b"\r\n"
+
+
+async def _vt_snapshot_payload(buf_key: str, cols: int, rows: int) -> bytes | None:
+    """Path B faithful scroll-up (#271/#273): snapshot the session's LIVE mirror emulator — the
+    persistent emulator fed the agent's PTY output incrementally and resized in step with the agent
+    (see ``vtsidecar`` + ``_buffer_append``) — reflowed to the client width and framed like the
+    transcript payload (clear + rows + blank line).
+
+    The mirror is the only faithful source: it processed every byte in order at the agent geometry,
+    so Ink's repaints overwrote in place and scrollback holds each line once (no duplication). The
+    superseded one-shot ``rebuild`` from the saved ring could not — the ring is a mixed-geometry
+    soup of repaints and duplicated.
+
+    Flag-gated + fail-safe: returns ``None`` when the flag is off, the session isn't mirrored yet
+    (cold — e.g. just deployed / never attached this process), it's alt-screen, or the sidecar is
+    unhealthy/slow — so the caller falls back to the (clean) transcript path, NEVER a dup-prone
+    ring replay. Synthetic scroll-up; the caller leaves ``_TOTALS``/``have``/``seq`` untouched."""
+    if not vtsidecar.enabled():
+        return None
+    _ensure_loaded(buf_key)
+    ring = bytes(_BUFFERS.get(buf_key) or b"")
+    if not ring or _in_alt_screen(ring):
+        return None  # nothing to show / alt-screen TUIs repaint themselves
+    snap = await vtsidecar.live_snapshot(buf_key, cols, rows)
+    if not snap:
+        return None  # cold mirror → caller falls back to the clean transcript, not a dup replay
+    return _CLEAN_LOAD_CLEAR + snap + b"\r\n"

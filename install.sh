@@ -28,6 +28,8 @@ KEEP_RELEASES=3
 NODE_VERSION="${AGENT_SESSIONS_NODE_VERSION:-22.14.0}"
 NODE_MIN_MAJOR=20
 NPM=npm  # resolved by ensure_node() to the system npm or the vendored one
+NODE_BIN=node  # resolved by ensure_node() to the system OR vendored node — persisted to the env so the
+               # VT sidecar can run at runtime even when Node was only vendored to build (Hermes #273)
 
 RELEASES="$PREFIX/releases"
 CURRENT="$PREFIX/current"
@@ -56,10 +58,10 @@ ensure_node() {
   # Resolve $NPM to a Node >= $NODE_MIN_MAJOR. Order: a new-enough system Node > a distro
   # install > a vendored static Node (downloaded into $PREFIX/.toolchain, no sudo).
   _node_ok() { have node && [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -ge "$NODE_MIN_MAJOR" ]; }
-  if _node_ok && have npm; then NPM=npm; return; fi
+  if _node_ok && have npm; then NPM=npm; NODE_BIN="$(command -v node)"; return; fi
   log "Node >= $NODE_MIN_MAJOR not found — trying to install it…"
   _pkg_install nodejs npm >/dev/null 2>&1 || true
-  if _node_ok && have npm; then NPM=npm; return; fi
+  if _node_ok && have npm; then NPM=npm; NODE_BIN="$(command -v node)"; return; fi
   # Vendor a pinned static Node — fully self-contained, no sudo, no system change.
   arch="$(uname -m)"
   case "$arch" in
@@ -79,6 +81,7 @@ ensure_node() {
   fi
   PATH="$ndir/bin:$PATH"; export PATH   # so the vendored node + vite are found by npm
   NPM="$ndir/bin/npm"
+  NODE_BIN="$ndir/bin/node"
 }
 
 ensure_prereqs() {
@@ -140,6 +143,7 @@ build_release() {
   "$rel/venv/bin/pip" install --quiet --upgrade pip
   "$rel/venv/bin/pip" install --quiet "$rel/src"
   build_web "$rel"
+  build_sidecar "$rel"
 }
 
 build_web() {
@@ -155,6 +159,24 @@ build_web() {
   ( cd "$rel/src/web" && "$NPM" ci --no-audit --no-fund --silent && "$NPM" run build --silent ) \
     || die "UI build failed — see the npm output above"
   [ -f "$rel/src/web/dist/index.html" ] || die "UI build produced no dist/index.html"
+}
+
+build_sidecar() {
+  # Build the VT scrollback sidecar (#273) into <rel>/src/vt-sidecar/dist/server.mjs — a small Node
+  # esbuild bundle the app spawns when AGENT_SESSIONS_VT_SCROLLBACK=1. Built in EVERY release so the
+  # faithful-console scroll-up is ready the moment the flag is flipped; dist is git-ignored (no stale
+  # artifact). Same vendored-Node toolchain as the UI build. Graceful: skip when absent, so an older
+  # release (no vt-sidecar/) still installs. NOTE: enabling the flag also needs `node` on the runtime
+  # PATH — without it the app fails safe to the transcript scroll-up (the build here is harmless).
+  rel="$1"
+  if [ "${AGENT_SESSIONS_SKIP_WEB_BUILD:-0}" = 1 ]; then
+    log "skipping sidecar build (AGENT_SESSIONS_SKIP_WEB_BUILD=1)"; return 0
+  fi
+  [ -f "$rel/src/vt-sidecar/package.json" ] || { log "no vt-sidecar/ in this release — skipping"; return 0; }
+  log "building the VT scrollback sidecar…"
+  ( cd "$rel/src/vt-sidecar" && "$NPM" ci --no-audit --no-fund --silent && "$NPM" run build --silent ) \
+    || die "vt-sidecar build failed — see the npm output above"
+  [ -f "$rel/src/vt-sidecar/dist/server.mjs" ] || die "vt-sidecar build produced no dist/server.mjs"
 }
 
 write_env_if_absent() {
@@ -200,6 +222,16 @@ migrate_env() {
   umask 077
   _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
   _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
+  # Point the VT sidecar (#273) at the built bundle via the stable `current` symlink, so flipping
+  # AGENT_SESSIONS_VT_SCROLLBACK=1 later is a one-liner (the prod pip install is non-editable, so the
+  # package can't resolve vt-sidecar relative to itself). The flag itself is intentionally NOT set
+  # here — VT ships OFF (byte-identical to the transcript scroll-up) until explicitly enabled.
+  _env_set_if_absent AGENT_SESSIONS_VT_SIDECAR_JS "$CURRENT/src/vt-sidecar/dist/server.mjs"
+  # Persist the Node binary the installer resolved (system OR the vendored static Node under
+  # $PREFIX/.toolchain). The runtime unit's PATH may not include the vendored toolchain, and the app
+  # spawns the sidecar by this path — so the flag flip "just works" even on a host with no system
+  # Node (Hermes #273). "node" when the build was skipped (CI) → app falls back to `node` on PATH.
+  _env_set_if_absent AGENT_SESSIONS_VT_SIDECAR_NODE "$NODE_BIN"
 }
 
 render_unit() {

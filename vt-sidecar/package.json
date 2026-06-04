@@ -1,0 +1,17 @@
+{
+  "name": "vt-sidecar",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Path B faithful-scrollback VT emulator sidecar (#271/#273)",
+  "scripts": {
+    "test": "node --test",
+    "build": "esbuild server.mjs --bundle --platform=node --format=esm --outfile=dist/server.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "5.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0"
+  }
+}

@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import metadata, session_stream
+from . import metadata, reaper, session_stream, vtsidecar
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -129,15 +129,37 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Raise the default thread-pool ceiling (#280). Each live session's SessionStream._drain
+        # parks one default-executor thread for the session's whole life, and the pool defaults to
+        # only min(32, cpu+4). Past that, attach-time work (transcript render) can't get a thread
+        # and the terminal "reconnects" forever. With many concurrent sessions that ceiling is low.
+        with contextlib.suppress(Exception):
+            from concurrent.futures import ThreadPoolExecutor
+
+            asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=512))
         # Best-effort: a discovery error must not block the app from serving
         # (the existing /api/sessions HTTP path keeps working as fallback).
         with contextlib.suppress(Exception):
             await registry.discover()
+        # Path B VT scrollback sidecar (#271/#273): spawn it iff AGENT_SESSIONS_VT_SCROLLBACK is on
+        # (no-op otherwise). Best-effort — a failed spawn just leaves the attach path on transcript.
+        with contextlib.suppress(Exception):
+            await vtsidecar.ensure_started()
+        # Idle-session reaper (#279): tear down STALE (detached + long-idle) sessions so PTYs/
+        # memory/tasks don't accumulate until the app slows. Disabled unless
+        # AGENT_SESSIONS_REAP_IDLE_SECONDS > 0; defaults to dry-run (logs candidates, kills
+        # nothing). Never reaps an attached or recently-active session.
+        reaper_task = asyncio.create_task(reaper.run(registry))
         try:
             yield
         finally:
+            reaper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await reaper_task
             with contextlib.suppress(Exception):
                 await registry.stop_all()
+            with contextlib.suppress(Exception):
+                await vtsidecar.stop()
 
     app = FastAPI(
         title="agent-sessions",
