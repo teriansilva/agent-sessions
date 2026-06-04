@@ -445,3 +445,26 @@ def test_empty_fp_or_tab_grants_legacy_attach_without_recording(monkeypatch):
         assert entry is not None and entry.get("owner") is None
 
     asyncio.run(run())
+
+
+def test_session_stream_sizes_pty_to_avoid_0x0(monkeypatch):
+    # #297: a headless SessionStream must size its reader pty (last-known geometry, else 80x24)
+    # BEFORE dtach attaches — an unsized openpty() is 0x0, and dtach (-r winch) would relay that
+    # to the live agent, collapsing it to 0x0 (renders into nothing, poisons the byte ring).
+    _set_argv(monkeypatch, lambda e, s: ["/bin/sh", "-c", "sleep 5"])
+    _patch_physical_key(monkeypatch)
+    monkeypatch.setattr(webterm.scrollback, "_ATTACH_REPLAY_GRACE_S", 0.0)
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        session_stream.webterm, "_set_winsize", lambda fd, rows, cols: calls.append((rows, cols))
+    )
+
+    async def run():
+        s = session_stream.SessionStream("claude", "sz")
+        await s.start()
+        await s.stop()
+
+    asyncio.run(run())
+    assert calls, "the reader pty must be sized before dtach attaches"
+    assert (24, 80) in calls  # sane default (no last-known geometry for a fresh key) — never 0x0
+    assert (0, 0) not in calls

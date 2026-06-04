@@ -99,6 +99,14 @@ class SessionStream:
         """Spawn the dtach client on a fresh PTY and start draining bytes."""
         argv = ptybridge.attach_argv(engine=self.engine, session_id=self.session_id)
         master, slave = os.openpty()
+        # Size the reader's pty to the session's last-known geometry (else a sane default) BEFORE
+        # dtach attaches. An unsized `openpty()` is 0×0, and dtach (`-r winch`) relays the
+        # attaching client's size to the running program — so a headless reader at 0×0 collapses
+        # the live agent to 0×0, which renders into nothing and poisons the byte ring with
+        # degenerate-width frames (#297; a big contributor to the garble saga). Never attach at 0×0.
+        last_cols = webterm.scrollback._LAST_COLS.get(self.key) or 80
+        last_rows = webterm.scrollback._LAST_ROWS.get(self.key) or 24
+        webterm._set_winsize(slave, max(1, int(last_rows)), max(1, int(last_cols)))
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *argv,

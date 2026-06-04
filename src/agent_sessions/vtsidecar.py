@@ -244,13 +244,22 @@ class _Sidecar:
         except RuntimeError:
             return
         c, r = max(2, int(cols)), max(2, int(rows))
+        prev = self._geom.get(key)
+        # A WIDTH change means the mirror's existing scrollback was authored at the OLD width;
+        # reflowing absolute-positioned TUI (Claude/Ink) to a new width garbles it — that is the
+        # #293 cross-/mixed-width garble (e.g. a desktop-rendered session opened on a phone). So
+        # treat a width change like a desync: drop the emulator and rebuild SINGLE-width from here.
+        # The pre-resize backlog then fails safe to the clean transcript (live_snapshot → None until
+        # it re-warms), so the snapshot is NEVER cross-width and can NEVER garble. A height-only
+        # change (mobile address bar) keeps the buffer and just resizes.
+        width_changed = prev is not None and prev[0] != c
         was_dirty = key in self._dirty
         self._geom[key] = (c, r)
         self._ensure_mirror_pump()
         try:
-            if was_dirty:
-                # Drop the desynced emulator first so `open` rebuilds a clean one fed from here
-                # forward; its pre-desync history is served by the transcript until it re-warms.
+            if was_dirty or width_changed:
+                # Drop the desynced/old-width emulator first so `open` rebuilds a clean one fed from
+                # here forward; its pre-reset history is served by the transcript until it re-warms.
                 self._mirror_q.put_nowait(("end", {"key": key}, None))
             self._mirror_q.put_nowait(("open", {"key": key, "cols": c, "rows": r}, None))
             # Clear dirty ONLY once the recovery ops are actually queued. If the queue was full we

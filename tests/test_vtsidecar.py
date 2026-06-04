@@ -173,6 +173,50 @@ def test_live_mirror_feeds_are_ordered_and_gated(monkeypatch, tmp_path):
     assert all(r[1] != "claude:ungated" for r in received), "un-opened session's feed dropped"
 
 
+def test_width_change_resets_the_mirror_height_change_does_not(monkeypatch, tmp_path):
+    # #293 garble-proofing: a WIDTH change means the mirror's scrollback was authored at the old
+    # width; reflowing absolute-positioned TUI to a new width garbles. So a width change must DROP
+    # the emulator (end) and rebuild single-width (open) — never reflow mixed-width content. A
+    # height-only change (mobile address bar) keeps the buffer and just reopens.
+    import json as _json
+
+    sock = str(tmp_path / "vt.sock")
+    monkeypatch.setenv("AGENT_SESSIONS_VT_SCROLLBACK", "1")
+    monkeypatch.setenv("AGENT_SESSIONS_VT_SIDECAR_SOCK", sock)
+    ops: list[tuple] = []
+
+    async def go():
+        async def handle(reader, writer):
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                req = _json.loads(line)
+                ops.append((req["op"], req.get("cols")))
+                writer.write((_json.dumps({"id": req["id"], "ok": True}) + "\n").encode())
+                await writer.drain()
+
+        server = await asyncio.start_unix_server(handle, path=sock)
+        client = vtsidecar._Sidecar()
+        try:
+            client.note_resize("claude:m", 80, 24)  # initial open @80
+            client.note_resize("claude:m", 80, 40)  # height-only change → just reopen, no end
+            client.note_resize("claude:m", 50, 40)  # WIDTH change → end + reopen @50
+            await asyncio.wait_for(client._mirror_q.join(), 5)
+        finally:
+            await client.stop()
+            await _close_server(server)
+
+    asyncio.run(go())
+    op_names = [o[0] for o in ops]
+    # Exactly ONE end, and it precedes the @50 reopen (the width change), not the height change.
+    assert op_names.count("end") == 1, f"width change should reset exactly once: {op_names}"
+    end_idx = op_names.index("end")
+    assert ops[end_idx + 1] == ("open", 50), "the reset reopens at the NEW width"
+    # The height-only change (80→80, 24→40) did NOT trigger an end before its reopen.
+    assert ops[:3] == [("open", 80), ("open", 80), ("end", None)], ops[:3]
+
+
 def test_node_bin_prefers_explicit_path(monkeypatch, tmp_path):
     # The installer records the resolved Node (system OR vendored under $PREFIX/.toolchain) in
     # AGENT_SESSIONS_VT_SIDECAR_NODE so the sidecar runs even when the unit PATH lacks it (#273).
