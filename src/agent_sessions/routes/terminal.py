@@ -3,6 +3,15 @@ self-owned ws terminal (attach / resume / new-session), single-writer policy, th
 server-owned SessionStream handoff, and per-tab claim/demote. Moved verbatim from
 ``main.create_app``.
 
+Two attach models live here, selected by ``owner.takeover_enabled()`` (#293,
+default OFF):
+- **flag OFF** — the original #184 path: in-memory ``SessionRegistry`` claim, a
+  non-owner streams read-only with input gated.
+- **flag ON** — single-active-viewer (``_serve_takeover``): ownership is anchored
+  in a runtime-dir file (so prod + staging, which share the dtach masters,
+  arbitrate correctly) and a non-owner is INERT — it gets a ``gate`` frame, no
+  PTY stream, and must reconnect with ``force=1`` to take over.
+
 The opencode new-session reconcile coroutine (``_reconcile_opencode``) and its
 ``_OC_RECONCILE_*`` tunables stay in ``main`` and are passed in as ``reconcile_opencode``:
 tests monkeypatch ``main._OC_RECONCILE_INTERVAL_S`` / ``main._OC_RECONCILE_MAX_POLLS`` and
@@ -20,6 +29,7 @@ from fastapi import FastAPI, WebSocket
 
 from .. import (
     engines,
+    owner,
     ptybridge,
     scanner,
     session_stream,
@@ -27,6 +37,118 @@ from .. import (
     webterm,
 )
 from ..auth import AuthConfig, origin_matches, session_uid
+
+# How often the active viewer re-asserts its lease (#293). Must be < owner.LEASE_S so a
+# live holder never reads as stale; the same call doubles as the demotion check — it
+# returns False the moment another viewer (this process OR the other instance sharing the
+# runtime dir) has taken the owner file, at which point we stop streaming and show the gate.
+_HEARTBEAT_S = 2.0
+
+
+def _holder_view(holder: dict | None) -> dict | None:
+    """The gate payload's view of the current holder. ``label`` is client-supplied and
+    UNTRUSTED — length-capped here and escaped by the UI; never used for authorization."""
+    if not holder:
+        return None
+    return {"label": str(holder.get("label", ""))[:80], "since": holder.get("since")}
+
+
+async def _await_disconnect(ws: WebSocket) -> None:
+    """Hold a gated (passive / demoted) socket open until the client goes away. The
+    client's 'Take over' reconnects with ``force=1`` (a fresh WS), mirroring #184 — so
+    there is no in-band take-over message to police on the inert socket."""
+    while True:
+        msg = await ws.receive()
+        if msg.get("type") == "websocket.disconnect":
+            return
+
+
+async def _heartbeat_guard(engine: str, sid: str, conn_id: str, stop: asyncio.Event) -> None:
+    """Keep the owner lease warm and detect demotion. Fires ``stop`` when the on-disk
+    owner record stops naming us (taken over from this or the other instance)."""
+    try:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_S)
+            if not await owner.heartbeat(engine, sid, conn_id):
+                stop.set()
+                return
+    except asyncio.CancelledError:
+        raise
+
+
+async def _serve_takeover(
+    ws: WebSocket,
+    *,
+    registry: session_stream.SessionRegistry,
+    engine: str,
+    phys_native: str,
+    phys_key: str,
+    argv: list[str],
+    cwd: str,
+    init_cols: int,
+    init_rows: int,
+    lock,
+    have: int,
+    fp: str,
+    tab_id: str,
+    force: bool,
+    label: str,
+) -> None:
+    """Single-active-viewer attach (#293). Claims the runtime-dir owner file; a non-owner
+    is INERT (gate frame, no PTY stream, no resize) until it reconnects with ``force=1``.
+    The owner streams as usual with a heartbeat/demotion guard; if another viewer takes
+    over mid-session it stops streaming and shows the gate on the still-open socket."""
+    conn_id = owner.new_conn_id()
+    role, holder = await owner.claim(
+        engine, phys_native, conn_id=conn_id, fp=fp, tab_id=tab_id, label=label, force=force
+    )
+    if role != "owner":
+        # Passive: inert gate, no attach / no stream / no resize. (Hermes: a gated
+        # connection must not start a PTY stream or resize path just to show the gate.)
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({"t": "gate", "holder": _holder_view(holder)}))
+        with contextlib.suppress(Exception):
+            await _await_disconnect(ws)
+        return
+    # Owner: become the sole writer and stream, guarded by the heartbeat/demotion poll.
+    attached = False
+    stop = asyncio.Event()
+    guard = asyncio.create_task(_heartbeat_guard(engine, phys_native, conn_id, stop))
+    try:
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({"t": "role", "role": "owner"}))
+        with contextlib.suppress(Exception):
+            await registry.on_attach(engine, phys_native)
+        attached = True
+        await webterm.run(
+            ws,
+            argv,
+            cwd=cwd,
+            buf_key=phys_key,
+            cols=init_cols,
+            rows=init_rows,
+            lock=lock,
+            have=have,
+            stop_event=stop,
+        )
+    finally:
+        guard.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await guard
+        # release() is conn_id-guarded: if we were taken over it names someone else and
+        # this is a no-op (we never clobber the new owner).
+        with contextlib.suppress(Exception):
+            await owner.release(engine, phys_native, conn_id)
+        if attached:
+            with contextlib.suppress(Exception):
+                await registry.on_detach(engine, phys_native)
+    if stop.is_set():
+        # Demoted while still connected (webterm.run left the socket open): show the gate.
+        holder = owner.read_owner(engine, phys_native)
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({"t": "gate", "holder": _holder_view(holder)}))
+        with contextlib.suppress(Exception):
+            await _await_disconnect(ws)
 
 
 def register(
@@ -192,14 +314,40 @@ def register(
             # server-owned stream if the dtach master is still alive. Best-effort
             # — registry errors must not affect the browser path.
             registry = app.state.session_registry
+            fp = ws.query_params.get("fp", "") or ""
+            tab_id = ws.query_params.get("tab", "") or ""
+            force = ws.query_params.get("force", "") == "1"
+            # Single-active-viewer + explicit take-over (#293), flag-gated (default OFF →
+            # the #184 path below is byte-identical, so merging this is a prod no-op). The
+            # flag-on path anchors ownership in a runtime-dir file so prod + staging — which
+            # SHARE the dtach masters — arbitrate correctly, and a non-owner is INERT: it
+            # gets the gate, not a read-only byte stream.
+            if owner.takeover_enabled():
+                label = (ws.query_params.get("label", "") or "")[:80]
+                await _serve_takeover(
+                    ws,
+                    registry=registry,
+                    engine=prov.engine_id,
+                    phys_native=phys_native,
+                    phys_key=phys_key,
+                    argv=argv,
+                    cwd=cwd,
+                    init_cols=init_cols,
+                    init_rows=init_rows,
+                    lock=lock,
+                    have=have,
+                    fp=fp,
+                    tab_id=tab_id,
+                    force=force,
+                    label=label,
+                )
+                return
+            # ---- #184 path (flag OFF): in-memory claim + read-only secondary stream ----
             with contextlib.suppress(Exception):
                 await registry.on_attach(prov.engine_id, phys_native)
             # Per-tab claim (#184 slice 3): empty fp/tab from an older client
             # falls through as "owner with no recorded claim" (backward-compat).
             # ``force=1`` lets a deliberate takeover demote a stale or recent owner.
-            fp = ws.query_params.get("fp", "") or ""
-            tab_id = ws.query_params.get("tab", "") or ""
-            force = ws.query_params.get("force", "") == "1"
             role = "owner"
             claim_obj: session_stream.Claim | None = None
             with contextlib.suppress(Exception):

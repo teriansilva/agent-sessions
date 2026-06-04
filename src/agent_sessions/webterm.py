@@ -88,6 +88,7 @@ async def run(
     lock: sessionlock.SessionLock | None = None,
     have: int = 0,
     read_only_gate: asyncio.Event | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -106,6 +107,12 @@ async def run(
     when set, input frames (``i``, ``r``, raw bytes) are silently dropped server-
     side so a misbehaving secondary client can never write to the agent. Output
     keeps streaming so the secondary tab is read-only, not blind.
+
+    ``stop_event`` (single-active-viewer take-over, #293): when set, the bridge
+    stops pumping and returns WITHOUT closing the websocket — the caller (the
+    take-over route) sends the gate frame on the still-open socket and waits for
+    the client to reconnect with ``force=1``. The dtach client is still detached
+    (the agent keeps running); only this viewer's stream ends.
     """
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
@@ -270,13 +277,21 @@ async def run(
                     os.write(master, msg["bytes"])
 
     tasks = [asyncio.create_task(pump_out()), asyncio.create_task(pump_in())]
+    # A demotion (another viewer took over, #293) ends the stream alongside the pumps.
+    stop_waiter = asyncio.create_task(stop_event.wait()) if stop_event is not None else None
+    waiters = tasks + ([stop_waiter] if stop_waiter is not None else [])
     try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
     finally:
         for t in tasks:
             t.cancel()
+        if stop_waiter is not None:
+            stop_waiter.cancel()
         with contextlib.suppress(Exception):
             await asyncio.gather(*tasks, return_exceptions=True)
+        if stop_waiter is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stop_waiter
         with contextlib.suppress(OSError):
             os.close(master)
         # Detach (don't kill the agent): terminate our dtach client; the master persists.
@@ -284,8 +299,11 @@ async def run(
             proc.terminate()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(proc.wait(), timeout=3)
-        with contextlib.suppress(Exception):
-            await ws.close()
+        # On a demotion we leave the socket OPEN so the route can send the gate frame;
+        # every other exit (client gone / agent died) closes it as before.
+        if stop_event is None or not stop_event.is_set():
+            with contextlib.suppress(Exception):
+                await ws.close()
         # Reclaim the scrollback for a session whose dtach master has exited — there's
         # nothing left to resume. Live sessions keep their buffer (master still alive).
         scrollback._maybe_evict_ended(buf_key)
