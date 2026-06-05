@@ -1,5 +1,5 @@
 import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { api } from "../lib/api";
@@ -72,6 +72,13 @@ function Layout() {
     setNavOpen(false);
   }, [location.pathname]);
 
+  // Same-route nav targets — New session (Link to="/"), the already-active session row, and
+  // Overview/Settings when you're already there — don't change location.pathname, so the
+  // route-change effect above never fires and the off-canvas drawer would stay open (#283).
+  // The sidebar links/rows call this directly on tap. It touches ONLY navOpen, never the
+  // persisted desktop `collapsed` flag, so it's a harmless no-op on desktop.
+  const closeMobileDrawer = useCallback(() => setNavOpen(false), []);
+
   useEffect(() => {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
@@ -143,7 +150,12 @@ function Layout() {
           <MissionTimer />
         </span>
         <span className="hud-topbar-actions">
-          <Link to="/overview" className="gear" aria-label="Open session overview">
+          <Link
+            to="/overview"
+            className="gear"
+            aria-label="Open session overview"
+            onClick={closeMobileDrawer}
+          >
             <Network size={18} />
           </Link>
           <Link
@@ -151,6 +163,7 @@ function Layout() {
             state={{ returnTo: location.pathname }}
             className="gear"
             aria-label="Settings"
+            onClick={closeMobileDrawer}
           >
             <SettingsIcon size={18} />
           </Link>
@@ -167,7 +180,12 @@ function Layout() {
         </header>
         {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
         <div className="sidebar-actions">
-          <Link to="/overview" className="gear" aria-label="Open session overview">
+          <Link
+            to="/overview"
+            className="gear"
+            aria-label="Open session overview"
+            onClick={closeMobileDrawer}
+          >
             <Network size={18} />
             <span>Overview</span>
           </Link>
@@ -176,6 +194,7 @@ function Layout() {
             state={{ returnTo: location.pathname }}
             className="gear"
             aria-label="Settings"
+            onClick={closeMobileDrawer}
           >
             <SettingsIcon size={18} />
             <span>Settings</span>
@@ -209,7 +228,7 @@ function Layout() {
               </Suspense>
             </ChunkErrorBoundary>
           ) : (
-            <SessionList />
+            <SessionList onNavigate={closeMobileDrawer} />
           )}
         </div>
         <footer className="sidebar-foot">

@@ -13,9 +13,12 @@ interface RowProps {
   s: Session;
   onRename: (id: string, title: string) => Promise<void>;
   onToggleArchive: (id: string, currentlyArchived: boolean) => Promise<void>;
+  /** Close the mobile drawer on tap — tapping the already-active row is a same-route no-op,
+   *  so the route-change effect in App won't fire (#283). */
+  onNavigate?: () => void;
 }
 
-function Row({ s, onRename, onToggleArchive }: RowProps) {
+function Row({ s, onRename, onToggleArchive, onNavigate }: RowProps) {
   const { projectNames } = useOverviewPrefs();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
@@ -94,6 +97,7 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
       <NavLink
         to={`/s/${s.engine}/${s.uuid}`}
         className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
+        onClick={onNavigate}
       >
         {/* Leading status LED (#211 4b): a live row pulses green and carries the meaningful
             "agent working" status for screen readers; an idle row shows a dim, decorative dot.
@@ -145,9 +149,15 @@ function Row({ s, onRename, onToggleArchive }: RowProps) {
   );
 }
 
+interface SessionListProps {
+  /** Close the mobile off-canvas drawer on tap. Threaded onto New session and the session
+   *  rows because those can be same-route no-ops that the route-change effect misses (#283). */
+  onNavigate?: () => void;
+}
+
 /** Sidebar: filters + facets + paginated session list. Rows link to the session
  *  URL (open/switch) and expose rename + archive/unarchive actions. */
-export function SessionList() {
+export function SessionList({ onNavigate }: SessionListProps = {}) {
   const {
     sessions,
     total,
@@ -194,7 +204,7 @@ export function SessionList() {
 
   return (
     <div className={styles.wrap}>
-      <Link to="/" className={`${styles.newBtn} shine`}>
+      <Link to="/" className={`${styles.newBtn} shine`} onClick={onNavigate}>
         <Plus size={16} />
         New session
       </Link>
@@ -212,7 +222,13 @@ export function SessionList() {
       ) : (
         <ul className={styles.list} aria-label={`${total} sessions`}>
           {sessions.map((s) => (
-            <Row key={s.id} s={s} onRename={renameRow} onToggleArchive={setArchived} />
+            <Row
+              key={s.id}
+              s={s}
+              onRename={renameRow}
+              onToggleArchive={setArchived}
+              onNavigate={onNavigate}
+            />
           ))}
           {hasMore && (
             <li className={styles.more}>

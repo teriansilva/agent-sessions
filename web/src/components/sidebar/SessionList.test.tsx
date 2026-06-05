@@ -80,6 +80,23 @@ test("marks the row matching the current URL as the active session (#18)", async
   expect(other).not.toHaveAttribute("aria-current");
 });
 
+test("calls onNavigate when New session or a session row is tapped (#283 drawer-close)", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  render(
+    <MemoryRouter initialEntries={["/s/claude/a"]}>
+      <SessionList onNavigate={onNavigate} />
+    </MemoryRouter>,
+  );
+  // The already-active row is a same-route no-op, so its onClick is what closes the drawer.
+  await user.click(await screen.findByRole("link", { name: /First/ }));
+  expect(onNavigate).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole("link", { name: /new session/i }));
+  expect(onNavigate).toHaveBeenCalledTimes(2);
+});
+
 test("shows the empty state when there are no sessions", async () => {
   mockSessions.mockResolvedValue(pageOf([]));
   render(

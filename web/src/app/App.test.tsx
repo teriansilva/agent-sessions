@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import App from "./App";
 
@@ -31,6 +31,26 @@ beforeEach(() => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
 });
+
+afterEach(() => {
+  // The mobile tests below install matchMedia; the desktop tests rely on it being absent
+  // (jsdom has none → isMobile defaults false). Remove it so state can't leak between tests.
+  delete (window as { matchMedia?: unknown }).matchMedia;
+});
+
+// Force the ≤800px breakpoint so isMobile becomes true and the off-canvas drawer is in play.
+function mockMobileViewport() {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query.includes("max-width: 800px"),
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+}
 
 test("the command topbar carries the Settings entrypoint (#211 redux)", async () => {
   const { container } = render(<App />);
@@ -78,4 +98,31 @@ test("sidebar List ⇄ Map toggle swaps the body and persists the choice (#139)"
   await userEvent.click(screen.getByRole("tab", { name: /list/i }));
   expect(api.setSidebarView).toHaveBeenCalledWith("list");
   await waitFor(() => expect(screen.queryByTestId("sidebar-overview")).not.toBeInTheDocument());
+});
+
+// #283: on mobile, same-route nav targets (New session / Overview / Settings while already on
+// that route) don't change location.pathname, so the route-change effect never closes the
+// drawer. The shared closeMobileDrawer handler wired onto those links must close it in one tap.
+// Default route in jsdom is "/", so all three of these are same-route no-ops on mount.
+test.each([
+  ["New session", /new session/i],
+  ["Overview", /open session overview/i],
+  ["Settings", /^settings$/i],
+])("mobile: tapping same-route %s closes the open drawer in one tap (#283)", async (_label, name) => {
+  mockMobileViewport();
+  const { container } = render(<App />);
+  const app = container.querySelector(".app") as HTMLElement;
+
+  // Open the off-canvas drawer (mobile toggle drives navOpen, not the desktop collapse flag).
+  await userEvent.click(await screen.findByRole("button", { name: "Open session list" }));
+  expect(app).toHaveClass("navOpen");
+
+  // Tap the same-route link — there can be two copies (topbar + in-drawer); either carries the
+  // close handler, so the first is enough.
+  const links = await screen.findAllByRole("link", { name });
+  await userEvent.click(links[0]);
+
+  await waitFor(() => expect(app).not.toHaveClass("navOpen"));
+  // The desktop collapse flag must stay untouched (the two surfaces are independent, #128).
+  expect(app).not.toHaveClass("collapsed");
 });
