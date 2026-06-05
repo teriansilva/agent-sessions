@@ -336,8 +336,34 @@ export function Terminal({
     const vv = window.visualViewport;
     const onVV = () => refitSoon();
     vv?.addEventListener("resize", onVV);
-    // First fit after layout settles (open() can run before the flex/dvh height is final).
-    const raf = requestAnimationFrame(() => refit());
+    // Connect only once the measured grid is STABLE. The panel size can still be settling when
+    // the terminal mounts — a fast in-app session switch (observed rows 61→66), or occasionally
+    // even a reload — and connecting before it settles makes the follow-up resize SIGWINCH the
+    // agent into a clear+repaint that WIPES the just-delivered transcript scroll-up (the
+    // fragments-on-switch/reload RACE). Re-measure each frame until two readings agree, THEN
+    // connect — so switch and reload both attach at the final grid with no correcting resize.
+    // Capped so a never-settling layout still connects.
+    let settleRaf = 0;
+    let settleC = -1;
+    let settleR = -1;
+    let settleTries = 0;
+    const connectWhenStable = () => {
+      if (sock !== sockRef.current) return; // superseded by a remount
+      try {
+        fit.fit();
+      } catch {
+        /* host not measurable yet → try again next frame */
+      }
+      const c = term.cols;
+      const r = term.rows;
+      if ((c > 1 && r > 1 && c === settleC && r === settleR) || settleTries++ >= 30) {
+        sock.connect(); // grid held for a frame → settled → attach at the final size
+      } else {
+        settleC = c;
+        settleR = r;
+        settleRaf = requestAnimationFrame(connectWhenStable);
+      }
+    };
 
     // Touch scroll: on coarse-pointer devices lay a transparent capture surface over the
     // terminal area — claiming the touch there (xterm never sees it) is the only thing
@@ -352,17 +378,11 @@ export function Terminal({
     }
     const detachTouch = attachTouchScroll(touchLayer ?? host, term);
 
-    // Fit once before connecting so term.cols/term.rows reflect the real layout — the connect
-    // URL then carries our actual grid and the server sizes the pty to it up front (#227),
-    // instead of launching the agent at 80x24 and reflowing on the first post-connect resize.
-    try {
-      fit.fit();
-    } catch {
-      /* host not measurable yet → server falls back to its default; refit() corrects on connect */
-    }
-    sock.connect();
+    // Attach once the grid is stable (see connectWhenStable) — NOT synchronously, or a still-
+    // settling panel makes the post-connect resize wipe the transcript scroll-up (the race).
+    connectWhenStable();
     return () => {
-      cancelAnimationFrame(raf);
+      cancelAnimationFrame(settleRaf);
       if (resizeTimer != null) clearTimeout(resizeTimer);
       vv?.removeEventListener("resize", onVV);
       host.removeEventListener("paste", onHostPaste, true);

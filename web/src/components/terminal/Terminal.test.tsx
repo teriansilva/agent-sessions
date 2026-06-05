@@ -115,7 +115,13 @@ beforeEach(() => {
   loadedAddons.length = 0;
   xterms.length = 0;
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-  vi.stubGlobal("requestAnimationFrame", () => 0);
+  // Invoke the callback synchronously: the connect-when-stable settle loop (#299) re-measures
+  // across frames until the grid holds steady, and the mocked xterm reports a constant 80×24, so
+  // it settles + connects within a couple of synchronous ticks.
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    cb(0);
+    return 0;
+  });
   vi.stubGlobal("cancelAnimationFrame", () => {});
 });
 
@@ -140,6 +146,18 @@ test("a fresh launch opens one socket whose URL carries new=1 for the placeholde
   expect(url).toContain(`opencode:${encodeURIComponent(PLACEHOLDER)}`);
   expect(url).toContain("new=1");
   expect(url).toContain("cwd=%2Fproj");
+});
+
+test("does not connect until the grid settles — guards the fragments-on-switch race", () => {
+  // The bug: on a fast in-app session switch the panel height isn't final on mount (observed
+  // rows 61→66). Connecting at the un-settled size, then correcting it, SIGWINCHes the agent
+  // into a clear+repaint that WIPES the just-delivered transcript scroll-up. Fix: connect only
+  // once the measured grid holds steady across frames. With rAF suppressed the settle loop can't
+  // advance, so connect must NOT have fired — proving the attach is deferred, not synchronous.
+  vi.stubGlobal("requestAnimationFrame", () => 0); // never settles → never connects
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  expect(sockets).toHaveLength(1);
+  expect(sockets[0].connect).not.toHaveBeenCalled();
 });
 
 // The regression for Hermes's #131 finding: SessionView drops the fresh-launch route state
