@@ -474,15 +474,19 @@ body.hud-static-grid {
 .hud-led.idle { background: var(--text-3); box-shadow: none; animation: none; }
 @keyframes hud-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.32; } }
 
-/* Button glitch (#211) — replaces the old shine sweep (per the user's request). Purely
- * cosmetic: no layout shift, pointer-events unchanged, the button stays clickable. Fired
- * rarely on a random button (see useButtonGlitch) and briefly on :active for press feedback. */
+/* Button glitch (#211) — replaces the old shine sweep (per the user's request). Cosmetic
+ * flicker via `filter` + a sub-pixel `transform` jitter. Fired rarely on a random button
+ * (see ButtonGlitch) and briefly on :active for press feedback.
+ * MUST NOT animate `clip-path` (or anything that changes the button's box): `clip-path`
+ * removes the clipped region from HIT-TESTING, so a click landing in the clipped slice mid-
+ * animation misses the button and no navigation fires — the ":active glitch ate my click,
+ * had to click New session a couple of times" bug. Keep this purely visual. */
 @keyframes hud-btn-glitch {
-  0%   { transform: none; filter: none; clip-path: inset(0 0 0 0); }
-  25%  { transform: translate(-1px, 0); filter: brightness(1.3) contrast(1.2); clip-path: inset(0 0 58% 0); }
-  50%  { transform: translate(1px, 0);  filter: none; clip-path: inset(54% 0 0 0); }
-  75%  { transform: translate(-1px, 0); clip-path: inset(0 0 26% 0); }
-  100% { transform: none; filter: none; clip-path: inset(0 0 0 0); }
+  0%   { transform: none; filter: none; }
+  25%  { transform: translate(-1px, 0); filter: brightness(1.35) contrast(1.25); }
+  50%  { transform: translate(1px, 0);  filter: brightness(0.9) contrast(1.35); }
+  75%  { transform: translate(-1px, 0); filter: brightness(1.2) contrast(1.15); }
+  100% { transform: none; filter: none; }
 }
 .shine.glitching { animation: hud-btn-glitch 280ms steps(1, end); }
 .shine:active { animation: hud-btn-glitch 160ms steps(1, end); }
