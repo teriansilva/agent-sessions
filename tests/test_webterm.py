@@ -720,3 +720,31 @@ def test_drop_buffer_keeps_disk_then_rehydrates():
     payload, total = webterm._resume_payload(k, 0)
     assert payload == b"persist me"
     assert total == len(b"persist me")
+
+
+def test_force_repaint_nudges_cols_then_restores(monkeypatch):
+    """#304: a fresh attach to a dtach session shows nothing (a same-size attach delivers no
+    SIGWINCH, so a winch-only-repaint agent like claude never redraws → blank/fragments on switch).
+    _force_repaint nudges the pty one column narrower then back — SIGWINCHing the dtach client
+    each time, mirroring the resize path — to force one clean full repaint. Pin that exact
+    sequence so the fix can't be silently dropped (it fixed 'switch shows blank/fragments')."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)  # drop the real inter-nudge delay
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    asyncio.run(webterm._force_repaint(7, _Proc(), 24, 80))
+    assert calls == [
+        ("size", 24, 79),  # nudge one column narrower
+        ("sig", _signal.SIGWINCH),
+        ("size", 24, 80),  # restore the real width
+        ("sig", _signal.SIGWINCH),
+    ]

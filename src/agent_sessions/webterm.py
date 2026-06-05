@@ -74,6 +74,33 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+# Fresh-attach repaint nudge (#304). A same-size attach delivers no SIGWINCH, so an agent that
+# only redraws on a geometry change (Ink/claude, ratatui/codex) never repaints — a BLANK screen
+# on an idle session, or FRAGMENTS over a live one, when you switch to it (dtach keeps no screen
+# to replay, so nothing else shows the current frame). After such an attach we briefly nudge the
+# pty one column narrower and back, forcing ONE clean full repaint of the current screen — no
+# reconstruction, the SSH/tmux-reattach feel. _SETTLE lets the attach + agent connect first;
+# _GAP lets the agent commit the first winch before we restore the real width.
+_NUDGE_SETTLE_S = 0.2
+_NUDGE_GAP_S = 0.12
+
+
+async def _force_repaint(
+    master: int, proc: asyncio.subprocess.Process, rows: int, cols: int
+) -> None:
+    """Force one full repaint from a winch-only-repaint agent: nudge the pty cols-1 → cols (#304).
+
+    Mirrors the resize path: TIOCSWINSZ alone doesn't reliably reach the agent through the dtach
+    client, so we also SIGWINCH it. Best-effort (closed master / exited agent suppressed). Validated
+    in isolation: claude blank→clean; opencode already self-repaints and is unaffected."""
+    with contextlib.suppress(ProcessLookupError, OSError):
+        _set_winsize(master, rows, max(1, cols - 1))
+        proc.send_signal(signal.SIGWINCH)
+        await asyncio.sleep(_NUDGE_GAP_S)
+        _set_winsize(master, rows, cols)
+        proc.send_signal(signal.SIGWINCH)
+
+
 def _read(fd: int) -> bytes:
     try:
         return os.read(fd, 65536)
@@ -291,6 +318,15 @@ async def run(
                 with contextlib.suppress(OSError):
                     os.write(master, msg["bytes"])
 
+    async def _nudge_repaint() -> None:
+        # Only a FRESH attach needs it (#304): a have>0 reconnect is a live-session blip that
+        # already holds its screen, and nudging it would cause a needless reflow flicker.
+        if have > 0:
+            return
+        await asyncio.sleep(_NUDGE_SETTLE_S)
+        await _force_repaint(master, proc, rows, cols)
+
+    nudge_task = asyncio.create_task(_nudge_repaint())
     tasks = [asyncio.create_task(pump_out()), asyncio.create_task(pump_in())]
     # A demotion (another viewer took over, #293) ends the stream alongside the pumps.
     stop_waiter = asyncio.create_task(stop_event.wait()) if stop_event is not None else None
@@ -300,10 +336,11 @@ async def run(
     finally:
         for t in tasks:
             t.cancel()
+        nudge_task.cancel()  # short-lived; cancel in case we tore down mid-nudge
         if stop_waiter is not None:
             stop_waiter.cancel()
         with contextlib.suppress(Exception):
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*tasks, nudge_task, return_exceptions=True)
         if stop_waiter is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter
