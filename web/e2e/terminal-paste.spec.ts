@@ -30,7 +30,10 @@ test("Ctrl+V over the terminal sends no raw ^V keystroke to the PTY (#209)", asy
   await page.addInitScript(RECORDING_WS);
   await page.goto("/s/claude/paste-keys");
   await expect(page.locator(".xterm")).toBeVisible();
-  await page.waitForTimeout(60); // let the (stubbed) socket open so sends aren't dropped
+  // Wait for the socket to actually OPEN — sends are dropped before readyState 1. The terminal now
+  // attaches only once the grid goes quiet (#304), which can land past a fixed delay, so gate on the
+  // connect-time resize frame appearing in __sent rather than a timeout.
+  await page.waitForFunction(() => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0);
 
   // A REAL (trusted) Ctrl+V so xterm runs its actual key path — without the custom handler
   // this is exactly what would emit ^V to the PTY.
@@ -48,7 +51,8 @@ test("a text paste over the terminal still reaches the PTY (#181 path intact)", 
   await page.addInitScript(RECORDING_WS);
   await page.goto("/s/claude/paste-text");
   await expect(page.locator(".xterm")).toBeVisible();
-  await page.waitForTimeout(60);
+  // Wait for the socket to OPEN (see the #304 note above) before pasting, so the frame isn't dropped.
+  await page.waitForFunction(() => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0);
 
   // Synthesize a text paste on a node inside the terminal host; the capture-phase listener
   // forwards it via term.paste(text) (#181).

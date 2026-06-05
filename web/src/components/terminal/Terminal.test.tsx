@@ -23,6 +23,11 @@ type FakeXterm = {
   paste: ReturnType<typeof vi.fn>;
 };
 const xterms: FakeXterm[] = [];
+// Drives a CHANGING grid for the connect-when-quiet test: each fit() applies the next entry to the
+// live xterm and advances (holding the last). Empty (the default) → fit is a no-op and the mocked
+// xterm keeps its constant 80×24, so every other test is unaffected.
+let gridScript: Array<{ cols: number; rows: number }> = [];
+let gridIdx = 0;
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
@@ -61,7 +66,16 @@ vi.mock("@xterm/xterm", () => ({
 }));
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
-    fit() {}
+    // Default: no-op (constant 80×24). When a test sets gridScript, apply the next size to the live
+    // xterm and advance — so connectWhenStable sees a grid that settles over several frames.
+    fit() {
+      if (!gridScript.length) return;
+      const term = xterms[xterms.length - 1] as unknown as { cols: number; rows: number } | undefined;
+      if (!term) return;
+      term.cols = gridScript[gridIdx].cols;
+      term.rows = gridScript[gridIdx].rows;
+      if (gridIdx < gridScript.length - 1) gridIdx++;
+    }
   },
 }));
 // Capture the click handler passed to WebLinksAddon so the test can fire it directly and
@@ -85,20 +99,34 @@ interface FakeSocket {
   send: ReturnType<typeof vi.fn>;
   // #184 hook: tests can fire the role frame as if the server sent one.
   emitRole?: (role: "owner" | "secondary") => void;
+  // Grid size measured at the moment connect() fired — lets the connect-when-quiet test assert the
+  // attach happened at the SETTLED size, not an in-flight one. Captured from the live xterm directly
+  // (NOT via url(), which would consume the one-shot force flag the #184 takeover test depends on).
+  connectCols?: number;
+  connectRows?: number;
 }
 const sockets: FakeSocket[] = [];
 vi.mock("../../lib/termSocket", () => ({
   TermSocket: class {
     url: (have: number) => string;
-    connect = vi.fn();
+    connect: ReturnType<typeof vi.fn>;
     close = vi.fn();
     send = vi.fn();
     emitRole: (role: "owner" | "secondary") => void;
+    connectCols?: number;
+    connectRows?: number;
     constructor(
       urlFor: (have: number) => string,
       handlers: { onRole?: (role: "owner" | "secondary") => void },
     ) {
       this.url = urlFor;
+      this.connect = vi.fn(() => {
+        const term = xterms[xterms.length - 1] as unknown as
+          | { cols: number; rows: number }
+          | undefined;
+        this.connectCols = term?.cols;
+        this.connectRows = term?.rows;
+      });
       this.emitRole = (role) => handlers.onRole?.(role);
       sockets.push(this as unknown as FakeSocket);
     }
@@ -114,6 +142,8 @@ beforeEach(() => {
   sockets.length = 0;
   loadedAddons.length = 0;
   xterms.length = 0;
+  gridScript = [];
+  gridIdx = 0;
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   // Invoke the callback synchronously: the connect-when-stable settle loop (#299) re-measures
   // across frames until the grid holds steady, and the mocked xterm reports a constant 80×24, so
@@ -158,6 +188,26 @@ test("does not connect until the grid settles — guards the fragments-on-switch
   render(wrap(<Terminal engine="claude" id="abc" />));
   expect(sockets).toHaveLength(1);
   expect(sockets[0].connect).not.toHaveBeenCalled();
+});
+
+test("attaches at the SETTLED grid, not an in-flight one — fixes 'switch almost always needs F5'", () => {
+  // The real failure: on an in-app session switch the panel keeps resizing for several frames after
+  // mount (mobile drawer-close / address-bar settle — the observed rows 61→66). The OLD loop trusted
+  // the FIRST two equal frames, so it attached at the in-flight 61, then the settle to 66 SIGWINCHed
+  // the agent into a clear+repaint that WIPED the scroll-up → only F5 (a fresh, pre-settled load)
+  // recovered. The grid below holds 61 for two frames (enough to fool the old "two agree" rule), then
+  // settles to 66. The fix waits for a QUIET window, so connect must land at 66 — the final size.
+  gridScript = [
+    { cols: 80, rows: 61 },
+    { cols: 80, rows: 61 },
+    { cols: 80, rows: 66 },
+  ];
+  render(wrap(<Terminal engine="claude" id="abc" />));
+  expect(sockets).toHaveLength(1);
+  expect(sockets[0].connect).toHaveBeenCalledTimes(1);
+  // Attached at the settled grid (66), NOT the transient 61 the old code would have used.
+  expect(sockets[0].connectRows).toBe(66);
+  expect(sockets[0].connectCols).toBe(80);
 });
 
 // The regression for Hermes's #131 finding: SessionView drops the fresh-launch route state

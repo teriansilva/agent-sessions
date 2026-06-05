@@ -336,17 +336,26 @@ export function Terminal({
     const vv = window.visualViewport;
     const onVV = () => refitSoon();
     vv?.addEventListener("resize", onVV);
-    // Connect only once the measured grid is STABLE. The panel size can still be settling when
-    // the terminal mounts — a fast in-app session switch (observed rows 61→66), or occasionally
-    // even a reload — and connecting before it settles makes the follow-up resize SIGWINCH the
-    // agent into a clear+repaint that WIPES the just-delivered transcript scroll-up (the
-    // fragments-on-switch/reload RACE). Re-measure each frame until two readings agree, THEN
-    // connect — so switch and reload both attach at the final grid with no correcting resize.
-    // Capped so a never-settling layout still connects.
+    // Connect only once the measured grid has gone QUIET. On a fast in-app session switch the panel
+    // is still settling when the terminal mounts — the mobile sidebar-drawer close animation, an
+    // address-bar / visualViewport correction (observed rows 61→66) — so the grid keeps changing for
+    // several frames AFTER the first couple agree. Attaching at that un-settled size, then correcting
+    // it, SIGWINCHes the agent into a clear+repaint that WIPES the just-delivered scroll-up — the
+    // "switch almost always needs F5" race. A reload doesn't hit it because a fresh page load measures
+    // the settled size once.
+    //
+    // So don't trust a momentary match: require the grid to hold UNCHANGED for a quiet window, and
+    // RESET that window on any change. A bounded settle (a drawer animation is continuous frame-to-
+    // frame change) therefore keeps resetting the counter until it ends, and we attach at the final
+    // grid with no correcting resize. Frame-counted (not wall-clock) so it's deterministic under test;
+    // capped so a never-quiet layout still connects.
+    const QUIET_FRAMES = 8; // grid must hold steady this many frames (~130ms) before we trust it
+    const MAX_FRAMES = 90; //  ~1.5s hard cap so a perpetually-jittering layout still attaches
     let settleRaf = 0;
-    let settleC = -1;
-    let settleR = -1;
-    let settleTries = 0;
+    let lastC = -1;
+    let lastR = -1;
+    let quietFrames = 0;
+    let totalFrames = 0;
     const connectWhenStable = () => {
       if (sock !== sockRef.current) return; // superseded by a remount
       try {
@@ -356,11 +365,16 @@ export function Terminal({
       }
       const c = term.cols;
       const r = term.rows;
-      if ((c > 1 && r > 1 && c === settleC && r === settleR) || settleTries++ >= 30) {
-        sock.connect(); // grid held for a frame → settled → attach at the final size
+      if (c > 1 && r > 1 && c === lastC && r === lastR) {
+        quietFrames++;
       } else {
-        settleC = c;
-        settleR = r;
+        lastC = c;
+        lastR = r;
+        quietFrames = 0; // the grid moved → restart the quiet window (waits out the settle)
+      }
+      if (quietFrames >= QUIET_FRAMES || totalFrames++ >= MAX_FRAMES) {
+        sock.connect(); // grid quiet → settled → attach at the final size, no correcting resize
+      } else {
         settleRaf = requestAnimationFrame(connectWhenStable);
       }
     };
