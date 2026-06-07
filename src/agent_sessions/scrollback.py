@@ -381,12 +381,16 @@ _TRANSCRIPT_SCROLLBACK = (os.environ.get("AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK",
 _ENGINE_LABEL = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "opencode"}
 
 
-def _transcript_payload(buf_key: str, cols: int) -> bytes | None:
+def _transcript_payload(buf_key: str, cols: int, rows: int = 24) -> bytes | None:
     """Render the engine's saved conversation transcript as a fresh-load scroll-up payload (#242):
-    ``clear + rendered conversation``, which scrolls into the client's xterm scrollback; the live
-    agent then repaints its current frame below. Width-correct semantic text (no width-fragile
-    raw-byte replay). Returns ``None`` to fall back to clean-load when the feature is off, the
-    engine has no transcript adapter, the id can't be parsed, or there's nothing to render.
+    ``clear + rendered conversation + a full viewport of blank lines``. The blank lines push the
+    WHOLE transcript into xterm's scrollback (above the visible screen) so the live agent repaints
+    its current frame into a BLANK viewport — its repaint can't overwrite the transcript (the
+    "half a page or nothing" bug, #301). Scroll-up then lands straight on the transcript.
+
+    Width-correct semantic text (no width-fragile raw-byte replay). Returns ``None`` to fall back to
+    clean-load when the feature is off, the engine has no transcript adapter, the id can't be
+    parsed, or there's nothing to render.
 
     Pure + side-effect-free (reads the on-disk transcript only); the caller runs it off the event
     loop and still sends the real ``seq`` total afterwards, so delta-resume offsets are untouched.
@@ -411,9 +415,10 @@ def _transcript_payload(buf_key: str, cols: int) -> bytes | None:
         return None
     if not body:
         return None
-    # Clear screen+scrollback, then the rendered conversation, then a blank line; the live agent's
-    # repaint (triggered by the connect resize) draws its current frame below this scroll-up.
-    return _CLEAN_LOAD_CLEAR + body + b"\r\n"
+    # Clear, then the rendered conversation, then a FULL viewport of blank lines so the whole
+    # transcript scrolls up into xterm's scrollback. The live agent repaints into the blank viewport
+    # below — it can't clobber the transcript above (#301). Scroll-up lands on the transcript.
+    return _CLEAN_LOAD_CLEAR + body + b"\r\n" * max(1, rows)
 
 
 async def _vt_snapshot_payload(buf_key: str, cols: int, rows: int) -> bytes | None:

@@ -53,8 +53,12 @@ def test_render_styles_roles_and_kinds():
         assistant_label="Claude",
     )
     text = out.decode("utf-8")
-    assert "› You" in text and "hello there" in text
-    assert "⏺ Claude" in text and "hi back" in text
+    # #301 — looks like the real console now: no "You"/"Claude" labels; user = grey-bg block,
+    # assistant = a green ● dot.
+    assert "› You" not in text and "⏺ Claude" not in text
+    assert "hello there" in text and "hi back" in text
+    assert "●" in text  # assistant dot marker
+    assert "\x1b[48;5;238m" in text  # user grey background block
     assert "⎿ Bash(ls -la)" in text  # tool call → one-line summary
     assert "total 0" in text  # tool result → shown (truncated)
 

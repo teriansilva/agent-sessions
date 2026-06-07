@@ -14,3 +14,4 @@ env
 *.creds
 *.pem
 *.key
+.venv-local/

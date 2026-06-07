@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import re
-import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,56 +87,126 @@ def _result_text(content: object) -> str:
     return json.dumps(content, default=str) if content else ""
 
 
-# Strip the common Markdown *syntax* so the log reads clean (no literal ``**`` / backticks / ``#``)
-# while keeping the words. Applied to message text BEFORE wrapping, so width stays exact.
-_MD_FENCE = re.compile(r"^[ \t]*```[^\n]*$", re.M)  # ```code-fence``` lines → removed
-_MD_HEAD = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.M)  # "### Heading" → "Heading"
+# Render the common Markdown to ANSI (#301) so the scroll-up reads like the real console: bold,
+# inline code, and headings are STYLED (not stripped). Wrapping is ANSI-aware (see _wrap), so the
+# inline escapes don't break width.
+_MD_FENCE = re.compile(r"^[ \t]*```[^\n]*$", re.M)  # ```code-fence``` lines → removed (code kept)
+_MD_HEAD = re.compile(r"^([ \t]*)#{1,6}[ \t]+(.+?)[ \t]*$", re.M)  # "### Heading" → bold heading
 _MD_BULLET = re.compile(r"^([ \t]*)[-*][ \t]+", re.M)  # "- item" / "* item" → "• item"
-_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)  # **bold** → bold
-_MD_STRIKE = re.compile(r"~~(.+?)~~", re.S)  # ~~strike~~ → strike
-_MD_CODE = re.compile(r"`([^`]+)`")  # `code` → code
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)  # **bold** → ANSI bold
+_MD_STRIKE = re.compile(r"~~(.+?)~~", re.S)  # ~~strike~~ → text
+_MD_CODE = re.compile(r"`([^`]+)`")  # `code` → ANSI cyan
+# *italic* / _italic_ — single delimiter, matched (backref) pair, applied AFTER bold so ** is gone;
+# not adjacent to a word char (so it won't fire on a*b math) and no inner edge whitespace.
+_MD_ITALIC = re.compile(r"(?<![\w*])([*_])(?!\s)([^*_\n]+?)(?<!\s)\1(?![\w*])")
+
+_SGR_BOLD = "\x1b[1m"
+_SGR_BOLD_OFF = "\x1b[22m"
+_SGR_ITALIC = "\x1b[3m"
+_SGR_ITALIC_OFF = "\x1b[23m"
+_SGR_CODE = "\x1b[36m"
+_SGR_CODE_OFF = "\x1b[39m"
 
 
-def _clean_md(text: str) -> str:
+def _render_md(text: str) -> str:
     text = _MD_FENCE.sub("", text)
-    text = _MD_HEAD.sub("", text)
-    text = _MD_BOLD.sub(r"\1", text)
+    text = _MD_HEAD.sub(r"\1" + _SGR_BOLD + r"\2" + _SGR_BOLD_OFF, text)
+    text = _MD_BOLD.sub(_SGR_BOLD + r"\1" + _SGR_BOLD_OFF, text)
+    text = _MD_ITALIC.sub(_SGR_ITALIC + r"\2" + _SGR_ITALIC_OFF, text)
     text = _MD_STRIKE.sub(r"\1", text)
-    text = _MD_CODE.sub(r"\1", text)
+    text = _MD_CODE.sub(_SGR_CODE + r"\1" + _SGR_CODE_OFF, text)
     text = _MD_BULLET.sub(r"\1• ", text)
     return text
 
 
 # --- shared renderer -----------------------------------------------------------------------
 
-_SGR_USER = "\x1b[1;36m"  # bright cyan  "› You"
-_SGR_ASSISTANT = "\x1b[1;32m"  # bright green "⏺ <engine>"
+_SGR_ASSISTANT = "\x1b[1;32m"  # bright green ● dot for the assistant turn
 _SGR_DIM = "\x1b[90m"  # grey         tool calls / results
 _RESET = "\x1b[0m"
+# User messages render as a grey-background block (like the real console), filled to the terminal
+# width so the band spans the whole line.
+_SGR_USER_BG = "\x1b[48;5;238m"
+_BG_OFF = "\x1b[49m"
+
+
+def _bg_block(lines: list[str], width: int) -> list[str]:
+    """Wrap each line in the user-message grey background, padded to ``width`` so the band fills."""
+    out: list[str] = []
+    for ln in lines:
+        pad = " " * max(0, width - _vis_len(ln))
+        out.append(_SGR_USER_BG + ln + pad + _BG_OFF)
+    return out
+
+
+def _dot_block(text: str, width: int) -> list[str]:
+    """Assistant turn: first line prefixed with a green ● dot, continuations hanging-indented 2."""
+    wrapped = _wrap(text, width, indent="  ") or [""]
+    wrapped[0] = _SGR_ASSISTANT + "●" + _RESET + " " + wrapped[0][2:]
+    return wrapped
+
 
 # Default bounds (Hermes #242: bound history rows + input messages independently of raw caps).
 DEFAULT_MAX_MESSAGES = 400
 DEFAULT_MAX_LINES = 4000
 
 
-def _wrap(text: str, width: int, indent: str = "") -> list[str]:
-    """Wrap ``text`` to ``width`` columns (per paragraph), preserving blank lines. Plain text only
-    — no terminal escapes — so the result is width-correct at any width (the whole point).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-    Note: ``textwrap`` counts code points, so a line dense with double-width glyphs (CJK / some
-    emoji) can be slightly wider than ``width`` visually — bounded and rare in code transcripts,
-    and a vast improvement over the raw-byte garble. A wcwidth-aware wrap is a later refinement.
+
+def _vis_len(s: str) -> int:
+    """Visible width of ``s`` (ANSI SGR escapes are zero-width)."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _split_long(word: str, width: int) -> list[str]:
+    """Hard-break a word wider than ``width`` VISIBLE columns, keeping ANSI escapes attached."""
+    out: list[str] = []
+    cur, vis, i = "", 0, 0
+    while i < len(word):
+        m = _ANSI_RE.match(word, i)
+        if m:
+            cur += m.group()
+            i = m.end()
+            continue
+        if vis >= width:
+            out.append(cur)
+            cur, vis = "", 0
+        cur += word[i]
+        vis += 1
+        i += 1
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _wrap(text: str, width: int, indent: str = "") -> list[str]:
+    """Word-wrap ``text`` to ``width`` VISIBLE columns (ANSI SGR escapes count as zero-width), per
+    paragraph, preserving blank lines. ANSI-aware so rendered-markdown bold/code escapes don't break
+    the wrap.
+
+    Note: counts code points for visible width, so a run of double-width glyphs (CJK) can be
+    slightly wide — bounded, rare in code transcripts; a wcwidth-aware wrap is a later refinement.
     """
     out: list[str] = []
     avail = max(1, width - len(indent))
     for para in text.split("\n"):
-        if not para.strip():
+        if not _ANSI_RE.sub("", para).strip():
             out.append("")
             continue
-        for line in textwrap.wrap(para, avail, break_long_words=True, break_on_hyphens=False) or [
-            ""
-        ]:
-            out.append(indent + line)
+        cur, vis = "", 0
+        for word in para.split(" "):
+            for piece in _split_long(word, avail) if _vis_len(word) > avail else [word]:
+                pv = _vis_len(piece)
+                if cur and vis + 1 + pv > avail:
+                    out.append(indent + cur)
+                    cur, vis = "", 0
+                if cur:
+                    cur += " " + piece
+                    vis += 1 + pv
+                else:
+                    cur, vis = piece, pv
+        out.append(indent + cur)
     return out
 
 
@@ -169,13 +238,13 @@ def render(
             if first:
                 lines.append(_SGR_DIM + "    ⎿ " + _short(first, cols - 7) + _RESET)
         elif t.role == "user":
+            # User turn: a grey-background block (like the real console), no "You" label (#301).
             lines.append("")
-            lines.append(_SGR_USER + "› You" + _RESET)
-            lines.extend(_wrap(_clean_md(text), cols))
+            lines.extend(_bg_block(_wrap(_render_md(text), cols), cols))
         else:  # assistant / system
+            # Assistant turn: a green ● dot + rendered markdown, no "Claude" label (#301).
             lines.append("")
-            lines.append(_SGR_ASSISTANT + "⏺ " + assistant_label + _RESET)
-            lines.extend(_wrap(_clean_md(text), cols))
+            lines.extend(_dot_block(_render_md(text), cols))
     if not lines:
         return b""
     if len(lines) > max_lines:

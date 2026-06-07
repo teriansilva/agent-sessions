@@ -218,7 +218,7 @@ async def run(
                 payload = vtpayload
             else:
                 tpayload = await loop.run_in_executor(
-                    None, scrollback._transcript_payload, buf_key, cols
+                    None, scrollback._transcript_payload, buf_key, cols, rows
                 )
                 if tpayload is not None:
                     payload = tpayload
