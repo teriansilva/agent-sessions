@@ -6,10 +6,10 @@ garbles / duplicates / loses the history — and there is no faithful way to ref
 absolute-positioned grid to a narrower screen (proved by the reverted pyte attempt, PR #248/#249).
 
 Instead, render scroll-up from the engine's OWN saved conversation — the real messages it persists
-for ``resume``/``continue`` (Claude's ``*.jsonl``, codex rollout JSONL, opencode's SQLite,
-gemini's ``logs.json``). That's *semantic text*: it wraps cleanly at any width, is fast (no escape
-parsing), and can't misfire — there are no cursor escapes in it. The live terminal then owns only
-the current frame.
+for ``resume``/``continue`` (Claude's ``*.jsonl``, codex rollout JSONL, opencode's SQLite
+``message``/``part`` tables, gemini's ``tmp/<hash>/chats/session-*.jsonl``). That's *semantic
+text*: it wraps cleanly at any width, is fast (no escape parsing), and can't misfire — there are no
+cursor escapes in it. The live terminal then owns only the current frame.
 
 Two layers, so adding an engine is cheap:
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -350,3 +351,224 @@ def _claude_adapter(native_id: str, home: Path) -> list[Turn]:
 
 
 register_adapter("claude", _claude_adapter)
+
+
+def _read_tail(path: Path) -> bytes:
+    """Read the last ``_TAIL_BYTES`` of ``path`` from the next line boundary (so a huge JSONL
+    transcript parses in ~constant time — we only need the last ``max_messages``). Fail-soft: an
+    unreadable file yields ``b""``."""
+    try:
+        with path.open("rb") as fh:
+            size = path.stat().st_size
+            if size > _TAIL_BYTES:
+                fh.seek(size - _TAIL_BYTES)
+                fh.readline()  # discard the (likely partial) first line after the seek
+            return fh.read()
+    except OSError:
+        return b""
+
+
+def _jsonl_dicts(data: bytes) -> list[dict]:
+    """Every JSON-object line in ``data`` (blank / unparseable lines skipped)."""
+    out: list[dict] = []
+    for raw in data.split(b"\n"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            o = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(o, dict):
+            out.append(o)
+    return out
+
+
+# --- codex --------------------------------------------------------------------------------
+
+
+def codex_rollout_path(native_id: str, home: Path) -> Path | None:
+    """Resolve a codex session id to its rollout JSONL under ``<codex-sessions>/<date>/`` (the date
+    dir isn't known from the id → glob ``rollout-*<id>.jsonl``). The sessions dir is the same
+    env-overridable location the provider discovers from (``base._codex_sessions_dir``), so a
+    configured store renders in scroll-up too — not just in the sidebar."""
+    from .engines import base
+
+    try:
+        return next(base._codex_sessions_dir(home).glob(f"**/rollout-*{native_id}.jsonl"), None)
+    except OSError:
+        return None
+
+
+def _codex_turns_from_records(recs: list[dict]) -> list[Turn]:
+    """Flatten codex rollout ``response_item`` records into Turns (user/assistant messages, function
+    calls + their output). ``reasoning`` (hidden thinking) and developer/system messages are
+    skipped."""
+    turns: list[Turn] = []
+    for o in recs:
+        if o.get("type") != "response_item":
+            continue
+        p = o.get("payload") or {}
+        pt = p.get("type")
+        if pt == "message":
+            role = p.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = " ".join(
+                b.get("text", "")
+                for b in (p.get("content") or [])
+                if isinstance(b, dict) and b.get("text")
+            ).strip()
+            # Codex injects an `<environment_context>` / `<user_instructions>` XML preamble as the
+            # first "user" message — machine context, not conversation. Skip it.
+            if text and not text.startswith(("<environment_context", "<user_instructions")):
+                turns.append(Turn(role, text, "text"))
+        elif pt == "function_call":
+            arg = p.get("arguments") or p.get("name", "")
+            turns.append(Turn("assistant", f"{p.get('name', 'tool')}({_short(arg)})", "tool"))
+        elif pt == "function_call_output":
+            txt = _result_text(p.get("output"))
+            if txt.strip():
+                turns.append(Turn("tool", txt, "result"))
+    return turns
+
+
+def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
+    path = codex_rollout_path(native_id, home)
+    if path is None:
+        return []
+    return _codex_turns_from_records(_jsonl_dicts(_read_tail(path)))[-DEFAULT_MAX_MESSAGES:]
+
+
+register_adapter("codex", _codex_adapter)
+
+
+# --- opencode -----------------------------------------------------------------------------
+
+
+def _opencode_message_turns(role: str, part_rows: list[tuple]) -> list[Turn]:
+    """One opencode message's parts → Turns. text → message; tool → one-line summary;
+    step-start/step-finish/reasoning are omitted (chrome / hidden thinking)."""
+    r = "user" if role == "user" else "assistant"
+    turns: list[Turn] = []
+    for (pdata,) in part_rows:
+        try:
+            p = json.loads(pdata)
+        except (ValueError, TypeError):
+            continue
+        pt = p.get("type")
+        if pt == "text" and (p.get("text") or "").strip():
+            turns.append(Turn(r, p["text"].strip(), "text"))
+        elif pt == "tool":
+            st = p.get("state") if isinstance(p.get("state"), dict) else {}
+            arg = st.get("input") if isinstance(st, dict) else ""
+            turns.append(Turn("assistant", f"{p.get('tool', 'tool')}({_short(arg)})", "tool"))
+    return turns
+
+
+def _opencode_adapter(native_id: str, home: Path) -> list[Turn]:
+    """opencode keeps its conversation in SQLite (``message`` + ``part`` tables). Take the last
+    ``DEFAULT_MAX_MESSAGES`` messages for the session (``id`` is a monotonic ULID), oldest-first,
+    and expand each into its part Turns. Read-only + fail-soft: any sqlite error → ``[]``. The DB
+    is the same env-overridable path the provider reads (``base._opencode_db``)."""
+    from .engines import base
+
+    db = Path(base._opencode_db(home))
+    if not db.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT id, data FROM message WHERE session_id=? ORDER BY id DESC LIMIT ?",
+            (native_id, DEFAULT_MAX_MESSAGES),
+        ).fetchall()
+        rows = rows[::-1]  # oldest-first
+        turns: list[Turn] = []
+        for mid, mdata in rows:
+            try:
+                role = (json.loads(mdata) or {}).get("role", "assistant")
+            except (ValueError, TypeError):
+                role = "assistant"
+            parts = conn.execute(
+                "SELECT data FROM part WHERE message_id=? ORDER BY id", (mid,)
+            ).fetchall()
+            turns.extend(_opencode_message_turns(role, parts))
+        return turns
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+register_adapter("opencode", _opencode_adapter)
+
+
+# --- gemini -------------------------------------------------------------------------------
+
+
+def _gemini_text(content: object) -> str:
+    """Visible text of a gemini message ``content`` — a bare string, or a list of ``{"text": …}``
+    parts (joined). Non-text parts (e.g. function calls) contribute nothing here."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [str(i["text"]) for i in content if isinstance(i, dict) and i.get("text")]
+        return " ".join(parts).strip()
+    return ""
+
+
+def gemini_chat_path(native_id: str, home: Path) -> Path | None:
+    """Resolve a gemini session uuid to its chat JSONL under
+    ``home/.gemini/tmp/<projectHash>/chats/session-<ts>-<short>.jsonl``. The project dir isn't known
+    from the id, so glob by the filename's short suffix (first 8 chars of the uuid) and confirm via
+    the file's ``sessionId`` header — the short suffix can collide, the header can't. Only an EXACT
+    header match resolves; on no match we return ``None`` (→ clean raw-byte fallback) rather than a
+    same-short-prefix neighbour, which would render a *different* session's conversation. The tmp
+    dir is the same env-overridable location the provider scans (``base._gemini_tmp_dir``)."""
+    from .engines import base
+
+    root = base._gemini_tmp_dir(home)
+    short = native_id[:8]
+    try:
+        candidates = list(root.glob(f"*/chats/session-*{short}*.jsonl"))
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            with path.open("rb") as fh:
+                header = json.loads(fh.readline() or b"{}")
+        except (OSError, ValueError):
+            continue
+        if isinstance(header, dict) and header.get("sessionId") == native_id:
+            return path
+    return None
+
+
+def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES) -> list[Turn]:
+    """Parse a gemini chat JSONL into Turns. ``user`` records → user messages; ``gemini`` records →
+    assistant messages (the ``thoughts`` field — hidden thinking — is omitted); the ``kind:"main"``
+    header and ``info`` records are skipped. gemini stores no tool-call records in the chat log."""
+    recs = _jsonl_dicts(_read_tail(path))
+    turns: list[Turn] = []
+    for o in recs[-max_messages:]:
+        t = o.get("type")
+        if t == "user":
+            text = _gemini_text(o.get("content"))
+            if text:
+                turns.append(Turn("user", text, "text"))
+        elif t == "gemini":
+            text = _gemini_text(o.get("content"))
+            if text:
+                turns.append(Turn("assistant", text, "text"))
+    return turns
+
+
+def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
+    path = gemini_chat_path(native_id, home)
+    return _gemini_turns_from_jsonl(path) if path is not None else []
+
+
+register_adapter("gemini", _gemini_adapter)

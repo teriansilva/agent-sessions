@@ -48,21 +48,26 @@ GEMINI_BIN = os.environ.get("AGENT_SESSIONS_GEMINI_BIN") or shutil.which("gemini
 # --- per-engine store locations (env-overridable) -------------------------------------------
 
 
-def _gemini_tmp_dir() -> Path:
+# ``home`` defaults to ``Path.home()`` (providers call these with no args); it's injectable so the
+# transcript adapters can resolve the SAME store under a test home, while the env override — when
+# set — still wins for both providers and adapters (single source of truth for the path contract).
+def _gemini_tmp_dir(home: Path | None = None) -> Path:
     return Path(
-        os.environ.get("AGENT_SESSIONS_GEMINI_TMP_DIR") or (Path.home() / ".gemini" / "tmp")
+        os.environ.get("AGENT_SESSIONS_GEMINI_TMP_DIR")
+        or ((home or Path.home()) / ".gemini" / "tmp")
     )
 
 
-def _codex_sessions_dir() -> Path:
+def _codex_sessions_dir(home: Path | None = None) -> Path:
     return Path(
-        os.environ.get("AGENT_SESSIONS_CODEX_SESSIONS_DIR") or (Path.home() / ".codex" / "sessions")
+        os.environ.get("AGENT_SESSIONS_CODEX_SESSIONS_DIR")
+        or ((home or Path.home()) / ".codex" / "sessions")
     )
 
 
-def _opencode_db() -> str:
+def _opencode_db(home: Path | None = None) -> str:
     return os.environ.get("AGENT_SESSIONS_OPENCODE_DB") or str(
-        Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+        (home or Path.home()) / ".local" / "share" / "opencode" / "opencode.db"
     )
 
 
