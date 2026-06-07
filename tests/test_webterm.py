@@ -553,6 +553,47 @@ def test_ws_opencode_placeholder_rejects_unpickable_cwd(fake_jsonl, opencode_db,
     assert _close_code(c, url, headers) == 4404
 
 
+_CDX_PLACEHOLDER = "codex:new-22222222-2222-2222-2222-222222222222"
+_CDX_REAL = "codex:019e2ba1-1590-7003-8e4a-51ab62cec96e"
+
+
+def test_ws_codex_placeholder_passes_validation_on_new(fake_jsonl, auth_cfg, monkeypatch, tmp_path):
+    # codex new-session (#315): the new-<uuid> placeholder passes the ws id gate AND the
+    # reconciling-provider placeholder guard on new=1, reaching LAUNCH (forced to 4500 via a
+    # bare bin) — proving validation accepted it without needing a real codex/dtach.
+    from agent_sessions import engines, scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))  # empty baseline
+    monkeypatch.setattr(engines.base, "CODEX_BIN", "codex")  # bare → PtyBridgeError → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_CDX_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500  # past validation + guard, into launch
+
+
+def test_ws_codex_real_uuid_rejected_on_new(fake_jsonl, auth_cfg, monkeypatch, tmp_path):
+    # Regression (Hermes #318): a NON-placeholder (real/arbitrary) codex uuid on new=1 must be
+    # REJECTED before launch. codex mints its own id, so a real id here would key the
+    # socket/lock/scrollback by an existing session's identity and never reconcile. The cwd is
+    # pickable, so the 4404 is the reconciling-provider placeholder guard, not the cwd check.
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_CDX_REAL}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4404
+
+
+def test_ws_codex_placeholder_rejected_on_resume(fake_jsonl, auth_cfg):
+    # Without new=1 the placeholder isn't a valid id (resume/attach requires a real uuid) → 4404.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_CDX_PLACEHOLDER}", headers) == 4404
+
+
 class _FakeWS:
     """Minimal ws stand-in capturing control frames sent by the reconcile coroutine."""
 
@@ -571,14 +612,14 @@ def test_reconcile_single_id_persists_alias_and_converges(tmp_home, monkeypatch)
 
     from agent_sessions import engines, main, metadata
 
-    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.001)
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
     prov = engines.get("opencode")
     placeholder = "new-11111111-1111-1111-1111-111111111111"
     real = "ses_reconciled000000000000000"
     monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: real)
 
     ws = _FakeWS()
-    asyncio.run(main._reconcile_opencode(ws, prov, placeholder, "/cwd", set()))
+    asyncio.run(main._reconcile_new_session(ws, prov, placeholder, "/cwd", set()))
 
     assert metadata.load_aliases() == {f"opencode:{placeholder}": f"opencode:{real}"}
     assert ws.sent and json.loads(ws.sent[-1]) == {"t": "id", "sid": f"opencode:{real}"}
@@ -590,12 +631,12 @@ def test_reconcile_ambiguous_no_alias_no_converge(tmp_home, monkeypatch):
 
     from agent_sessions import engines, main, metadata
 
-    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.001)
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
     prov = engines.get("opencode")
     monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: ["ses_a000", "ses_b000"])
 
     ws = _FakeWS()
-    asyncio.run(main._reconcile_opencode(ws, prov, "new-x", "/cwd", set()))
+    asyncio.run(main._reconcile_new_session(ws, prov, "new-x", "/cwd", set()))
 
     assert metadata.load_aliases() == {}  # no alias recorded
     assert ws.sent == []  # no converge frame
@@ -608,13 +649,13 @@ def test_reconcile_timeout_when_row_never_written(tmp_home, monkeypatch):
 
     from agent_sessions import engines, main, metadata
 
-    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0.0001)
-    monkeypatch.setattr(main, "_OC_RECONCILE_MAX_POLLS", 3)
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.0001)
+    monkeypatch.setattr(main, "_RECONCILE_MAX_POLLS", 3)
     prov = engines.get("opencode")
     monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: None)
 
     ws = _FakeWS()
-    asyncio.run(main._reconcile_opencode(ws, prov, "new-x", "/cwd", set()))
+    asyncio.run(main._reconcile_new_session(ws, prov, "new-x", "/cwd", set()))
 
     assert metadata.load_aliases() == {}
     assert ws.sent == []

@@ -37,6 +37,7 @@ class OpenCodeProvider:
     # a persisted placeholder→real alias. The ws route + alias layer do the reconcile; the
     # provider only supplies the snapshot/diff primitives and the new-launch argv.
     supports_new = True
+    new_session_reconciles = True  # mints its own id → placeholder/reconcile flow (#127/#315)
 
     def _query_rows(self) -> list:
         """Read top-level opencode sessions, RAISING ``sqlite3.Error`` on a real read

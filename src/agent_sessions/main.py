@@ -63,36 +63,38 @@ _WEB_DIST = Path(
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
 _SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
 
-# opencode new-session reconcile tunables (#127). opencode mints its own ``ses_…`` id and
-# may not write the DB row until the first message, so we poll opencode.db (read-only) for
-# the new id rather than blocking the terminal. Bounded interval; no hard deadline — if
-# the row never appears we just keep serving under the placeholder (the timeout path).
-# These + ``_reconcile_opencode`` stay here (not routes/terminal.py) because tests
-# monkeypatch them on ``main`` and call ``main._reconcile_opencode`` directly (#265).
-_OC_RECONCILE_INTERVAL_S = 0.5
+# New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
+# ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``) may not write that id until the
+# first message/output, so we poll the engine's store (read-only) for the new id rather than
+# blocking the terminal. Bounded interval; no hard deadline — if the id never appears we keep
+# serving under the placeholder (the timeout path). These + ``_reconcile_new_session`` stay
+# here (not routes/terminal.py) because tests monkeypatch them on ``main`` and call
+# ``main._reconcile_new_session`` directly (#265).
+_RECONCILE_INTERVAL_S = 0.5
 # ~5 min of polling, then give up (session still served under the placeholder; no URL converge).
-_OC_RECONCILE_MAX_POLLS = 600
+_RECONCILE_MAX_POLLS = 600
 
 
-async def _reconcile_opencode(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
-    """Discover opencode's real ``ses_…`` for a placeholder launch, persist the alias,
-    converge the client (#127).
+async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
+    """Discover a mint-its-own-id engine's real session id for a placeholder launch, persist
+    the alias, converge the client (#127 opencode / #315 codex). Engine-agnostic: drives any
+    provider exposing ``reconcile_new_session`` (the per-engine store diff lives in the provider).
 
-    Runs concurrently with the PTY bridge. Polls opencode.db (read-only, fail-soft) for a
-    session id in ``cwd`` not in ``snapshot``:
-      * exactly one new id → that's ours: persist ``opencode:<placeholder> →
-        opencode:<real>`` and send ``{"t":"id","sid":"opencode:<real>"}`` so the client
-        replaces the URL and the sidebar de-dupes. One-shot, then stop.
+    Runs concurrently with the PTY bridge. Polls ``prov.reconcile_new_session(cwd, snapshot)``
+    (read-only, fail-soft) for a session id in ``cwd`` not in ``snapshot``:
+      * exactly one new id → that's ours: persist ``<engine>:<placeholder> → <engine>:<real>``
+        and send ``{"t":"id","sid":"<engine>:<real>"}`` so the client replaces the URL and the
+        sidebar de-dupes. One-shot, then stop.
       * ≥2 new ids (two same-cwd launches in the window) → AMBIGUOUS: do NOT guess; keep
         serving under the placeholder and stop reconciling (fail-safe — never the wrong
         session).
-      * none yet → opencode hasn't written the row (may wait for first input); poll again.
-    If the row never appears within the poll budget we stop quietly; the session keeps
-    running under the placeholder (timeout path, never blocks the terminal).
+      * none yet → the engine hasn't written the id (may wait for first input); poll again.
+    If the id never appears within the poll budget we stop quietly; the session keeps running
+    under the placeholder (timeout path, never blocks the terminal).
     """
     placeholder_key = f"{prov.engine_id}:{placeholder}"
-    for _ in range(_OC_RECONCILE_MAX_POLLS):
-        await asyncio.sleep(_OC_RECONCILE_INTERVAL_S)
+    for _ in range(_RECONCILE_MAX_POLLS):
+        await asyncio.sleep(_RECONCILE_INTERVAL_S)
         result = await asyncio.to_thread(prov.reconcile_new_session, cwd, snapshot)
         if result is None:
             continue  # not written yet → keep polling
@@ -289,13 +291,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
-    # ``_reconcile_opencode`` is passed in (it + its tunables stay module-level for tests).
+    # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).
     terminal_routes.register(
         app,
         cfg=cfg,
         registry=registry,
         must_change=_must_change,
-        reconcile_opencode=_reconcile_opencode,
+        reconcile_new_session=_reconcile_new_session,
     )
 
     # Upload route (save a pasted/dropped file to the shared uploads dir). Registered

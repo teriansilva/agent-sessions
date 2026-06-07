@@ -70,7 +70,8 @@ def test_placeholder_accepted_only_on_new_path():
 
 
 def test_placeholder_only_for_opencode():
-    # The placeholder shape is opencode-specific; another engine must not accept it.
+    # The placeholder is accepted only by reconciling engines (opencode, codex — see test_codex).
+    # A non-reconciling engine like claude (it pins its own id) must not accept it.
     with pytest.raises(engines.EngineError):
         engines.parse_key(f"claude:{_PLACEHOLDER}", allow_new_placeholder=True)
 
@@ -195,9 +196,9 @@ def test_reconcile_does_not_converge_when_alias_persist_fails(tmp_home, monkeypa
         raise OSError("disk full")
 
     monkeypatch.setattr(metadata, "set_alias", boom)
-    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0)
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0)
     ws, prov = _FakeWS(), _FakeProv(_REAL)
-    asyncio.run(main._reconcile_opencode(ws, prov, _PLACEHOLDER, _CWD, set()))
+    asyncio.run(main._reconcile_new_session(ws, prov, _PLACEHOLDER, _CWD, set()))
     assert ws.sent == []  # never converged
     assert prov.calls >= 1  # but it did try to reconcile
 
@@ -205,9 +206,9 @@ def test_reconcile_does_not_converge_when_alias_persist_fails(tmp_home, monkeypa
 def test_reconcile_converges_after_alias_persist_succeeds(tmp_home, monkeypatch):
     # The happy path: alias persisted (real→placeholder resolvable on a later attach), THEN
     # the client is converged exactly once.
-    monkeypatch.setattr(main, "_OC_RECONCILE_INTERVAL_S", 0)
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0)
     ws, prov = _FakeWS(), _FakeProv(_REAL)
-    asyncio.run(main._reconcile_opencode(ws, prov, _PLACEHOLDER, _CWD, set()))
+    asyncio.run(main._reconcile_new_session(ws, prov, _PLACEHOLDER, _CWD, set()))
     assert ws.sent == [json.dumps({"t": "id", "sid": _REAL_KEY})]
     assert metadata.load_aliases() == {_PLACEHOLDER_KEY: _REAL_KEY}
 

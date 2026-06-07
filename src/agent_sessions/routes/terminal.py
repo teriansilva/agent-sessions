@@ -12,10 +12,10 @@ default OFF):
   arbitrate correctly) and a non-owner is INERT — it gets a ``gate`` frame, no
   PTY stream, and must reconnect with ``force=1`` to take over.
 
-The opencode new-session reconcile coroutine (``_reconcile_opencode``) and its
-``_OC_RECONCILE_*`` tunables stay in ``main`` and are passed in as ``reconcile_opencode``:
-tests monkeypatch ``main._OC_RECONCILE_INTERVAL_S`` / ``main._OC_RECONCILE_MAX_POLLS`` and
-call ``main._reconcile_opencode`` directly, so those bindings must live in that module.
+The new-session reconcile coroutine (``_reconcile_new_session``) and its ``_RECONCILE_*``
+tunables stay in ``main`` and are passed in as ``reconcile_new_session``: tests monkeypatch
+``main._RECONCILE_INTERVAL_S`` / ``main._RECONCILE_MAX_POLLS`` and call
+``main._reconcile_new_session`` directly, so those bindings must live in that module.
 """
 
 from __future__ import annotations
@@ -157,7 +157,7 @@ def register(
     cfg: AuthConfig,
     registry: session_stream.SessionRegistry,
     must_change: dict,
-    reconcile_opencode,
+    reconcile_new_session,
 ) -> None:
     @app.websocket("/ws/term/{sid}")
     async def ws_term(ws: WebSocket, sid: str) -> None:
@@ -213,9 +213,9 @@ def register(
         action, lock = sessions.open_action(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
-        # opencode new-session reconcile (#127): set when this connection launches an
-        # opencode placeholder; runs concurrently with the PTY bridge to discover
-        # opencode's real ``ses_…`` id, persist the alias, and converge the client URL.
+        # New-session reconcile (#127 opencode / #315 codex): set when this connection
+        # launches a mint-its-own-id placeholder; runs concurrently with the PTY bridge to
+        # discover the engine's real id, persist the alias, and converge the client URL.
         reconcile_task = None
         try:
             if action == sessions.ATTACH:
@@ -242,23 +242,31 @@ def register(
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
-                # opencode can't pin a new-session id: it launches under the placeholder
-                # and we DB-diff opencode.db to find the real id (#127). Snapshot the
-                # cwd's existing ids BEFORE launch so the diff attributes the one new id
-                # to us; then arm the concurrent reconcile. A None snapshot means the
-                # baseline read FAILED (not empty) — we skip reconciliation entirely rather
-                # than risk misattributing a pre-existing row, and serve under the placeholder.
-                oc_snapshot = None
-                if engines.is_opencode_new_placeholder(f"{prov.engine_id}:{native}"):
-                    oc_snapshot = prov.snapshot_session_ids(new_cwd)
+                # Mint-its-own-id engines (opencode, codex) can't pin a new-session id: they
+                # launch under the placeholder and we diff the engine's store to find the real
+                # id (#127/#315). Snapshot the cwd's existing ids BEFORE launch so the diff
+                # attributes the one new id to us; then arm the concurrent reconcile. A None
+                # snapshot means the baseline read FAILED (not empty) — we skip reconciliation
+                # entirely rather than risk misattributing a pre-existing id, and serve under
+                # the placeholder.
+                new_snapshot = None
+                if getattr(prov, "new_session_reconciles", False):
+                    # A mint-its-own-id engine MUST launch under a ``new-<uuid>`` placeholder,
+                    # never a real id: its ``new_launch_argv`` ignores ``native`` and starts a
+                    # FRESH process, so a real id here would key the socket/lock/scrollback by an
+                    # existing session's identity (collision) and skip reconcile. Reject before
+                    # launch (the client always mints a placeholder for these engines).
+                    if not engines.is_new_session_placeholder(f"{prov.engine_id}:{native}"):
+                        return await reject(4404)
+                    new_snapshot = prov.snapshot_session_ids(new_cwd)
                 try:
                     launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
                 except NotImplementedError:
                     return await reject(4404)  # engine can't pin a new-session id
                 cwd = new_cwd
-                if oc_snapshot is not None:
+                if new_snapshot is not None:
                     reconcile_task = asyncio.create_task(
-                        reconcile_opencode(ws, prov, native, new_cwd, oc_snapshot)
+                        reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)
                     )
             else:
                 # Resume an EXISTING scanned session.

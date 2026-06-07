@@ -51,12 +51,22 @@ def session_key(s: Session) -> str:
     return f"{s.engine}:{s.uuid}"
 
 
-def is_opencode_new_placeholder(raw: str) -> bool:
-    """True if ``raw`` is an ``opencode:new-<uuid>`` new-session placeholder (#127)."""
+def is_new_session_placeholder(raw: str) -> bool:
+    """True if ``raw`` is an ``<engine>:new-<uuid>`` new-session placeholder for an engine that
+    mints its own id and reconciles (opencode, codex — #127/#315). Engine-agnostic: gated on the
+    provider's ``new_session_reconciles`` flag, not a hard-coded engine id."""
     if ":" not in raw:
         return False
     engine_id, _, native = raw.partition(":")
-    return engine_id == "opencode" and bool(base._NEW_PLACEHOLDER_RE.match(native))
+    prov = _BY_ID.get(engine_id)
+    return bool(getattr(prov, "new_session_reconciles", False)) and bool(
+        base._NEW_PLACEHOLDER_RE.match(native)
+    )
+
+
+def is_opencode_new_placeholder(raw: str) -> bool:
+    """Deprecated back-compat alias of :func:`is_new_session_placeholder`."""
+    return is_new_session_placeholder(raw)
 
 
 def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.EngineProvider, str]:
@@ -67,10 +77,11 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
     on an unknown engine or a native id that fails the provider's pattern — this is
     the validation gate before any dispatch.
 
-    ``allow_new_placeholder`` (set ONLY by the ws ``new=1`` launch path, #127) also
-    accepts the opencode ``new-<uuid>`` placeholder, which opencode mints-its-own-id
-    flow needs. It is NOT accepted on the resume/attach path, so a placeholder can
-    never be used to attach to or resume an arbitrary session.
+    ``allow_new_placeholder`` (set ONLY by the ws ``new=1`` launch path, #127/#315) also
+    accepts the ``new-<uuid>`` placeholder for any engine whose ``new_session_reconciles``
+    flag is set (opencode, codex — they mint their own id). It is NOT accepted on the
+    resume/attach path, so a placeholder can never be used to attach to or resume an
+    arbitrary session.
     """
     if ":" in raw:
         engine_id, _, native = raw.partition(":")
@@ -82,7 +93,7 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
         native = raw
     if (
         allow_new_placeholder
-        and prov.engine_id == "opencode"
+        and getattr(prov, "new_session_reconciles", False)
         and base._NEW_PLACEHOLDER_RE.match(native)
     ):
         return prov, native
