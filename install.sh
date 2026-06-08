@@ -30,6 +30,12 @@ NODE_MIN_MAJOR=20
 NPM=npm  # resolved by ensure_node() to the system npm or the vendored one
 NODE_BIN=node  # resolved by ensure_node() to the system OR vendored node — persisted to the env so the
                # VT sidecar can run at runtime even when Node was only vendored to build (Hermes #273)
+# Python toolchain. The app needs CPython >= 3.11. ensure_python() resolves $PY to a system
+# python, else vendors a pinned, relocatable standalone CPython (python-build-standalone) into
+# $PREFIX/.toolchain — the Python analogue of the vendored Node above (no sudo, no system change).
+PY=python3  # resolved by ensure_python() to the system OR vendored interpreter
+PY_VERSION="${AGENT_SESSIONS_PYTHON_VERSION:-3.12.13}"
+PBS_TAG="${AGENT_SESSIONS_PBS_TAG:-20260602}"  # python-build-standalone release tag for PY_VERSION
 
 RELEASES="$PREFIX/releases"
 CURRENT="$PREFIX/current"
@@ -41,6 +47,12 @@ log()  { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+_sha256() {  # print the hex SHA-256 of file $1 using whatever tool exists (empty if none)
+  if   have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum;    then shasum -a 256 "$1" | awk '{print $1}'
+  else echo ""
+  fi
+}
 
 # --- prerequisites: auto-install everything we can, vendor what we can't ----------
 # Goal: a self-contained install that "just works". A package the operator can't get
@@ -84,17 +96,96 @@ ensure_node() {
   NODE_BIN="$ndir/bin/node"
 }
 
+_confirm() {  # y/n on the controlling tty. Default Yes. Auto-yes via AGENT_SESSIONS_ASSUME_YES=1;
+              # no tty to ask on (a non-interactive pipe) → proceed, like the vendored-Node path.
+  [ "${AGENT_SESSIONS_ASSUME_YES:-0}" = 1 ] && return 0
+  if [ -r /dev/tty ]; then
+    printf '%s ' "$1" > /dev/tty
+    read _ans < /dev/tty 2>/dev/null || _ans=""
+    case "$_ans" in [Nn]*) return 1 ;; *) return 0 ;; esac
+  fi
+  return 0
+}
+
+_ensure_venv_module() {  # Debian/Ubuntu split venv into python3-venv; a vendored standalone python
+                         # already ships it, so this is a no-op for the vendored interpreter.
+  "$PY" -m venv --help >/dev/null 2>&1 && return
+  log "python venv module missing — installing…"
+  _pkg_install python3-venv >/dev/null 2>&1 || _pkg_install python3 >/dev/null 2>&1 || true
+  "$PY" -m venv --help >/dev/null 2>&1 \
+    || die "install the python3 venv module for your distro (e.g. python3-venv) and re-run"
+}
+
+ensure_python() {
+  # Resolve $PY to a CPython >= 3.11. Order: an explicit override > a new-enough system python
+  # (newest name first, so a python3.12 beside an old default python3 wins) > a distro install >
+  # a vendored standalone CPython downloaded into $PREFIX/.toolchain (no sudo, no system change) —
+  # the Python analogue of ensure_node's vendored Node. The vendor step ASKS first on a terminal
+  # (the operator's machine, a ~30 MB download); AGENT_SESSIONS_ASSUME_YES=1 / no tty → proceed.
+  _py_ok() { [ -n "$1" ] && "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' >/dev/null 2>&1; }
+
+  if [ -n "${AGENT_SESSIONS_PYTHON:-}" ]; then
+    _py_ok "$AGENT_SESSIONS_PYTHON" \
+      || die "AGENT_SESSIONS_PYTHON=$AGENT_SESSIONS_PYTHON is not a python >= 3.11"
+    PY="$AGENT_SESSIONS_PYTHON"; _ensure_venv_module; return
+  fi
+  for cand in python3.13 python3.12 python3.11 python3 python; do
+    if have "$cand" && _py_ok "$(command -v "$cand")"; then
+      PY="$(command -v "$cand")"; _ensure_venv_module; return
+    fi
+  done
+  # No system Python >= 3.11. We deliberately DON'T try a distro `python3` install here: on the
+  # stale distros that land here (e.g. Ubuntu whose python3 is 3.10) it can't supply >= 3.11 and
+  # would only burn a pointless sudo prompt right before the download. Go straight to vendoring a
+  # pinned standalone CPython (relocatable, no root) — ask first.
+  _confirm "No system Python >= 3.11 found. Download a private one (~30 MB, no root) into $PREFIX/.toolchain? [Y/n]" \
+    || die "Python >= 3.11 required. Install it (e.g. your distro's python3.12 + python3.12-venv), set AGENT_SESSIONS_PYTHON=/path/to/python3.12, or re-run and accept the download."
+  os="$(uname -s)"; arch="$(uname -m)"
+  case "$os" in
+    Linux)  plat=unknown-linux-gnu ;;
+    Darwin) plat=apple-darwin ;;
+    *) die "no prebuilt Python for OS '$os' — install python3.11+ and re-run" ;;
+  esac
+  case "$arch" in
+    x86_64|amd64) pa=x86_64 ;;
+    aarch64|arm64) pa=aarch64 ;;
+    *) die "no prebuilt Python for arch '$arch' — install python3.11+ and re-run" ;;
+  esac
+  asset="cpython-${PY_VERSION}+${PBS_TAG}-${pa}-${plat}-install_only.tar.gz"
+  url="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${asset}"
+  # Supply-chain pin: the expected SHA-256 per supported asset, from the release's SHA256SUMS.
+  # A `curl | sh` install (esp. the no-tty auto-proceed) must NOT trust a mutable release URL on
+  # TLS alone — we verify the tarball against this digest before unpacking and refuse on mismatch.
+  # These pins are tied to PY_VERSION+PBS_TAG above; bump all four together when those change.
+  case "${pa}-${plat}" in
+    x86_64-unknown-linux-gnu)  want_sha=9be5c21b78dbc371e739bc7faf3b007b8e607335f780bdd2e0dd44a6e3580d76 ;;
+    aarch64-unknown-linux-gnu) want_sha=f0c9ea0022b2dfdf0a4733e962ba8cc883c45d26df26116b9802b658240a25d7 ;;
+    x86_64-apple-darwin)       want_sha=e6776f05a160f9d44f9c2bc8bd1e252037856808528bf910dea791bdf70a7224 ;;
+    aarch64-apple-darwin)      want_sha=0c21806e8690e4b20a6c2e9dc662f46196c5ba719686e8dd60f00af6ff409a75 ;;
+    *) die "no pinned checksum for ${pa}-${plat} at Python ${PY_VERSION} — install python3.11+ and re-run" ;;
+  esac
+  tdir="$PREFIX/.toolchain"; pdir="$tdir/cpython-${PY_VERSION}"
+  if [ ! -x "$pdir/bin/python3" ]; then
+    mkdir -p "$tdir"
+    log "fetching a self-contained Python ${PY_VERSION} (${pa}/${plat})…"
+    curl -fsSL "$url" -o "$tdir/python.tar.gz" || die "could not download standalone Python ${PY_VERSION}"
+    got_sha="$(_sha256 "$tdir/python.tar.gz")"
+    [ -n "$got_sha" ] || die "no sha256 tool (sha256sum/shasum) to verify the Python download — install one and re-run"
+    [ "$got_sha" = "$want_sha" ] \
+      || { rm -f "$tdir/python.tar.gz"; die "Python download checksum mismatch (expected $want_sha, got $got_sha) — refusing to use it"; }
+    rm -rf "$tdir/python"
+    tar -xzf "$tdir/python.tar.gz" -C "$tdir" || die "could not unpack standalone Python"
+    rm -rf "$pdir"; mv "$tdir/python" "$pdir"   # the install_only tarball extracts to ./python
+    rm -f "$tdir/python.tar.gz"
+  fi
+  PY="$pdir/bin/python3"
+  _py_ok "$PY" || die "the vendored Python looks broken — set AGENT_SESSIONS_PYTHON to a python >= 3.11"
+}
+
 ensure_prereqs() {
   have curl || die "curl not found — install curl and re-run"
   have git || { log "git missing — installing…"; _pkg_install git || die "install git and re-run"; }
-  have python3 || die "python3 not found — install python3.11+ and re-run"
-  python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' \
-    || die "python3 >= 3.11 required"
-  if ! python3 -m venv --help >/dev/null 2>&1; then
-    log "python venv module missing — installing…"
-    _pkg_install python3-venv >/dev/null 2>&1 || _pkg_install python3 >/dev/null 2>&1 \
-      || die "install the python3 venv module for your distro and re-run"
-  fi
+  ensure_python
   # The ws terminal attaches agents under a persistent dtach master.
   have dtach || { log "dtach missing (terminal pane) — installing…"; _pkg_install dtach >/dev/null 2>&1 \
     || log "could not auto-install dtach — install it so the terminal pane works"; }
@@ -107,7 +198,7 @@ ensure_prereqs() {
 preflight_report() {
   log "prerequisites:"
   log "  git      $(command -v git || echo MISSING)"
-  log "  python3  $(command -v python3 || echo MISSING) ($(python3 -V 2>&1 | awk '{print $2}'))"
+  log "  python   ${PY:-MISSING} ($("${PY:-python3}" -V 2>&1 | awk '{print $2}'))"
   log "  node     $(command -v node || echo '(vendored)') ($(node -v 2>/dev/null || echo "v$NODE_VERSION vendored"))"
   log "  dtach    $(command -v dtach || echo 'MISSING — terminal pane degraded')"
 }
@@ -139,7 +230,7 @@ build_release() {
   mkdir -p "$rel"
   mv "$tmp/src" "$rel/src"   # source is plain files — safe to relocate
   rm -rf "$tmp"
-  python3 -m venv "$rel/venv"   # built at its final path → valid shebangs
+  "$PY" -m venv "$rel/venv"   # built at its final path (with the resolved python) → valid shebangs
   "$rel/venv/bin/pip" install --quiet --upgrade pip
   "$rel/venv/bin/pip" install --quiet "$rel/src"
   build_web "$rel"

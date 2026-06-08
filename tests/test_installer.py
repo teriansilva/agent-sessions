@@ -52,9 +52,21 @@ def test_install_sh_builds_and_serves_react_ui():
 
 def test_install_sh_self_contained_toolchain():
     s = INSTALL_SH.read_text()
-    # Missing prereqs are auto-installed (distro) or vendored (Node), not just rejected.
+    # Missing prereqs are auto-installed (distro) or vendored (Node/Python), not just rejected.
     assert "_pkg_install" in s
     assert "ensure_node" in s and "nodejs.org/dist" in s  # vendored Node fallback, no sudo
+    # Python >= 3.11 is resolved (override > system > distro) and, as a last resort, a pinned
+    # relocatable standalone CPython is vendored into the toolchain dir — no sudo (#333).
+    assert "ensure_python" in s and "python-build-standalone" in s
+    assert "AGENT_SESSIONS_PYTHON" in s  # explicit interpreter override is honored
+    # Supply chain: the vendored-Python tarball is checksum-pinned and verified BEFORE unpack/use —
+    # TLS + a mutable release URL alone is not enough for a rootless `curl | sh` path (#333).
+    assert "want_sha" in s and "checksum mismatch" in s and "_sha256" in s
+    # All four supported assets carry a pinned digest (linux x86_64/aarch64, macOS x86_64/arm64).
+    for sha in ("9be5c21b", "f0c9ea00", "e6776f05", "0c21806e"):
+        assert sha in s, f"missing pinned checksum {sha}"
+    # Verification must precede extraction (refuse a tampered tarball before it is unpacked).
+    assert s.index("checksum mismatch") < s.index("could not unpack standalone Python")
     assert "dtach" in s  # ws-PTY backend ensured
     assert "preflight_report" in s  # up-front validation summary
 
