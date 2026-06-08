@@ -1,8 +1,34 @@
 # agent-sessions (BattleLab)
 
-A mobile-first, self-hostable web organizer for your AI-coding CLI sessions.
+**A mobile-first, self-hosted command deck for your AI-coding agents.** One web app that organizes
+every session from **Claude Code, Codex, opencode, and Gemini**, with a real terminal that survives
+reboots and deploys — drive your whole fleet from a laptop or a phone.
 
-> _"Command & Code"_
+> _"Command & Code"_ · [battlelab.superstatus.io](https://battlelab.superstatus.io)
+
+![license: MIT](https://img.shields.io/badge/license-MIT-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini-ffb000)
+
+### Why
+
+- **Every agent, one place.** A live sidebar of all your sessions across four engines, grouped by
+  project, newest-first, with per-row engine badges + filtering.
+- **Persistent terminals.** Each session runs under its own detached PTY (`dtach`) — reattach after
+  a tab close, reboot, or app upgrade and the conversation is right where you left it.
+- **Console-style scroll-up.** Scroll back into clean, rendered history (markdown + `●` turn markers)
+  for *all four* engines — not a width-fragile byte replay.
+- **Start new sessions** for Claude, Codex, and opencode straight from the picker.
+- **Mobile-first.** A touch-ready terminal with a real compose bar, control keys, and image paste.
+- **One-line, rootless install.** No root, no system daemon; atomic releases with one-step rollback
+  and an opt-in self-updater.
+
+```sh
+curl -fsSL https://battlelab.superstatus.io/install.sh | sh
+```
+
+> Single-admin tool — it launches agents with permission bypass by design. Run it on your own host,
+> **behind a reverse proxy (TLS + auth)**. See [Security / trust model](#security--trust-model).
+
+---
 
 A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, and gemini — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / …). No ttyd, no Zellij.
 
@@ -13,13 +39,13 @@ Engines live behind a small provider interface (`engines.py`); identity is engin
 Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx).
 
 ```sh
-# Read the script before piping it to a shell.
-curl -fsSL https://<your-forge>/<you>/agent-sessions/raw/branch/main/install.sh | sh
+# Read the script first if you like — it's plain POSIX sh.
+curl -fsSL https://battlelab.superstatus.io/install.sh | sh
 ```
 
-> Replace `https://<your-forge>/<you>/agent-sessions` with your repository URL. A worked
-> reverse-proxy example lives in [`deploy/nginx.example.conf`](deploy/nginx.example.conf);
-> a full self-host walkthrough is in [`INSTALL.md`](INSTALL.md).
+> A worked reverse-proxy example lives in [`deploy/nginx.example.conf`](deploy/nginx.example.conf);
+> a full self-host walkthrough is in [`INSTALL.md`](INSTALL.md). To install from a fork/mirror,
+> set `AGENT_SESSIONS_REPO=https://github.com/<you>/agent-sessions.git` before running the script.
 
 Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (the **only** sudo step, and it's prompted). On a fresh install it prints the generated admin credentials **once**:
 
@@ -54,7 +80,7 @@ agent-sessions 0.3.1 installed.
 ~/.config/systemd/user/agent-sessions.service
 ```
 
-Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/opencode/codex) and record their paths in `env`.
+Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/codex/opencode/gemini) and record their paths in `env`.
 
 Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
 
@@ -192,7 +218,7 @@ All state-changing routes require the CSRF token + an Origin/Referer matching `A
 
 ## Conventions
 
-See [`CLAUDE.md`](CLAUDE.md) (= `AGENTS.md` symlink) and [`CONTRIBUTING.md`](CONTRIBUTING.md). Key points:
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the full reference in [`docs/reference.md`](docs/reference.md). Key points:
 
 - **Shell-free** engine launchers — providers build argv lists; the ws bridge runs them under `dtach`. Pinned by tests + a CI grep.
 - **Session = URL = socket identity:** one `{engine}:{id}` ⇒ one dtach master ⇒ one writer; attach, never relaunch.

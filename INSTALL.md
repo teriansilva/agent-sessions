@@ -22,12 +22,13 @@ install the `venv` module). Everything lives under `~/.local/share/agent-session
 
 ```sh
 # Always read a script before piping it to a shell.
-curl -fsSL https://<your-forge>/<you>/agent-sessions/raw/branch/main/install.sh -o install.sh
+curl -fsSL https://battlelab.superstatus.io/install.sh -o install.sh
 less install.sh
 sh install.sh
 ```
 
-(Replace `https://<your-forge>/<you>/agent-sessions` with your repository URL.)
+To install from a fork or mirror, set `AGENT_SESSIONS_REPO=https://github.com/<you>/agent-sessions.git`
+before running the script.
 
 On a fresh install the credentials are printed **once** (only the PBKDF2 hash is stored). The
 first login forces a password change before anything else is reachable.
