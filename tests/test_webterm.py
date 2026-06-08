@@ -763,12 +763,13 @@ def test_drop_buffer_keeps_disk_then_rehydrates():
     assert total == len(b"persist me")
 
 
-def test_force_repaint_nudges_cols_then_restores(monkeypatch):
-    """#304: a fresh attach to a dtach session shows nothing (a same-size attach delivers no
+def test_force_repaint_shrinks_2d_then_restores(monkeypatch):
+    """#304/#329: a fresh attach to a dtach session shows nothing (a same-size attach delivers no
     SIGWINCH, so a winch-only-repaint agent like claude never redraws → blank/fragments on switch).
-    _force_repaint nudges the pty one column narrower then back — SIGWINCHing the dtach client
-    each time, mirroring the resize path — to force one clean full repaint. Pin that exact
-    sequence so the fix can't be silently dropped (it fixed 'switch shows blank/fragments')."""
+    _force_repaint shrinks the pty in BOTH dims, then restores — SIGWINCHing the dtach client each
+    time, mirroring the resize path — to force one clean full repaint. The shrink is 2-D (not a
+    1-col nudge) so the intermediate frame can't render byte-identical for a width-stable idle frame
+    (#329: that left 'only some sessions' blank). Pin the sequence so the fix can't regress."""
     import asyncio
     import signal as _signal
 
@@ -784,8 +785,23 @@ def test_force_repaint_nudges_cols_then_restores(monkeypatch):
 
     asyncio.run(webterm._force_repaint(7, _Proc(), 24, 80))
     assert calls == [
-        ("size", 24, 79),  # nudge one column narrower
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),  # 2-D shrink
         ("sig", _signal.SIGWINCH),
-        ("size", 24, 80),  # restore the real width
+        ("size", 24, 80),  # restore the real geometry
         ("sig", _signal.SIGWINCH),
     ]
+
+
+def test_force_repaint_floors_small_terminals(monkeypatch):
+    # On a tiny terminal the shrink must never go below 2 (TIOCSWINSZ 0/1 desyncs agent vs mirror).
+    import asyncio
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append((r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)
+    asyncio.run(
+        webterm._force_repaint(7, type("P", (), {"send_signal": lambda s, x: None})(), 3, 4)
+    )
+    assert calls[0] == (2, 2)  # floored, not 1 or 0

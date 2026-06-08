@@ -979,6 +979,20 @@ export function Settings() {
     setComposeMode(mode);
     api.setPrefs({ compose_default: mode }).catch(() => setComposeMode(prev));
   };
+  // Experimental: VT scrollback (#329) — faithful real-frame scroll-up on switch. Persisted via
+  // /api/prefs; the server flips it live (best-effort starts the sidecar). Optimistic with rollback.
+  const configVt = useConfig()?.vt_scrollback ?? false;
+  const [vtScrollback, setVtScrollback] = useState<boolean>(configVt);
+  const [syncedVt, setSyncedVt] = useState(configVt);
+  if (configVt !== syncedVt) {
+    setSyncedVt(configVt);
+    setVtScrollback(configVt);
+  }
+  const toggleVt = (on: boolean) => {
+    const prev = vtScrollback;
+    setVtScrollback(on);
+    api.setPrefs({ vt_scrollback: on }).catch(() => setVtScrollback(prev));
+  };
   const commitHex = () => {
     const norm = normalizeAccent(hexDraft);
     if (norm) setAccent(norm);
@@ -1108,6 +1122,25 @@ export function Settings() {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className={styles.section} aria-labelledby="experimental-h">
+        <h2 id="experimental-h">Experimental</h2>
+        <h3 className={styles.subhead}>Faithful scroll-up (VT)</h3>
+        <p className={styles.hint}>
+          Seeds the terminal with the agent&rsquo;s real current frame when you switch sessions
+          (via the VT sidecar) instead of relying on a repaint nudge &mdash; more accurate, but
+          experimental and can rarely garble. Takes effect on the next session switch; turn it off
+          if you see issues.
+        </p>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={vtScrollback}
+            onChange={(e) => toggleVt(e.currentTarget.checked)}
+          />
+          <span>{vtScrollback ? "Enabled" : "Disabled"}</span>
+        </label>
       </section>
 
       <OverviewCard />

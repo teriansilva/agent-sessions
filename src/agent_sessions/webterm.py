@@ -74,27 +74,45 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-# Fresh-attach repaint nudge (#304). A same-size attach delivers no SIGWINCH, so an agent that
-# only redraws on a geometry change (Ink/claude, ratatui/codex) never repaints — a BLANK screen
-# on an idle session, or FRAGMENTS over a live one, when you switch to it (dtach keeps no screen
-# to replay, so nothing else shows the current frame). After such an attach we briefly nudge the
-# pty one column narrower and back, forcing ONE clean full repaint of the current screen — no
-# reconstruction, the SSH/tmux-reattach feel. _SETTLE lets the attach + agent connect first;
-# _GAP lets the agent commit the first winch before we restore the real width.
-_NUDGE_SETTLE_S = 0.2
-_NUDGE_GAP_S = 0.12
+# Fresh-attach repaint nudge (#304/#329). A same-size attach delivers no SIGWINCH, so an agent
+# that only redraws on a geometry change (Ink/claude, ratatui/codex) never repaints — a BLANK
+# screen on an idle session, or FRAGMENTS over a live one, when you switch to it (dtach keeps no
+# screen to replay, so nothing else shows the current frame). After such an attach we briefly
+# shrink the pty and restore it, forcing ONE clean full repaint of the current screen — no
+# reconstruction, the SSH/tmux-reattach feel.
+#
+# #329 hardening — why a 1-column nudge wasn't enough (blank "only on some sessions"):
+#  * The shrink→restore pair must be processed by the agent as TWO distinct resizes. Ink/ratatui
+#    DEBOUNCE rapid SIGWINCHs; if the pair (and the client's own connect-resize) coalesce, the net
+#    size is UNCHANGED and the agent rewrites nothing → blank. So _GAP must exceed the debounce
+#    window, and _SETTLE must let the client's connect-resize land FIRST.
+#  * The intermediate frame must DIFFER from the agent's internal screen model, or its reconciler
+#    writes nothing even after a real resize. A 1-col change renders byte-identical for a
+#    width-stable idle frame (a short input box) — exactly the sessions that stayed blank. A
+#    larger, 2-D shrink (cols and rows) reflows + moves the bottom-anchored UI, so the rewrite
+#    can't be skipped.
+_NUDGE_SETTLE_S = 0.3
+_NUDGE_GAP_S = 0.25
+# How much to shrink for the intermediate frame — enough that the agent's re-layout can't match
+# its model. Bounded so the transient frame stays sane on small terminals.
+_NUDGE_COLS_DELTA = 8
+_NUDGE_ROWS_DELTA = 2
 
 
 async def _force_repaint(
     master: int, proc: asyncio.subprocess.Process, rows: int, cols: int
 ) -> None:
-    """Force one full repaint from a winch-only-repaint agent: nudge the pty cols-1 → cols (#304).
+    """Force one full repaint from a winch-only-repaint agent: shrink the pty, then restore (#329).
 
     Mirrors the resize path: TIOCSWINSZ alone doesn't reliably reach the agent through the dtach
-    client, so we also SIGWINCH it. Best-effort (closed master / exited agent suppressed). Validated
-    in isolation: claude blank→clean; opencode already self-repaints and is unaffected."""
+    client, so we also SIGWINCH it. The shrink is 2-D and held past the agent's resize-debounce so
+    the pair is seen as two distinct resizes whose intermediate frame can't match the agent's
+    internal model (a 1-col nudge could, leaving width-stable idle frames blank — #329). Best-effort
+    (closed master / exited agent suppressed)."""
+    nudge_rows = max(2, rows - _NUDGE_ROWS_DELTA)
+    nudge_cols = max(2, cols - _NUDGE_COLS_DELTA)
     with contextlib.suppress(ProcessLookupError, OSError):
-        _set_winsize(master, rows, max(1, cols - 1))
+        _set_winsize(master, nudge_rows, nudge_cols)
         proc.send_signal(signal.SIGWINCH)
         await asyncio.sleep(_NUDGE_GAP_S)
         _set_winsize(master, rows, cols)

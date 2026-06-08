@@ -4,12 +4,13 @@ system, update check/apply, config, prefs. Moved verbatim from ``main.create_app
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import discover, engines, prefs, sysinfo, twofactor, update
+from .. import discover, engines, prefs, sysinfo, twofactor, update, vtsidecar
 from ..auth import AuthConfig, current_csrf, session_uid
 from ..version import get_version
 
@@ -124,6 +125,9 @@ def register(
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
+                # Experimental (#329): faithful real-frame scroll-up via the VT sidecar. The
+                # effective on/off bit (pref override, else env default) for the Settings toggle.
+                "vt_scrollback": vtsidecar.enabled(),
             }
         )
 
@@ -159,6 +163,18 @@ def register(
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")
             out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
+        if "vt_scrollback" in payload:
+            # Experimental (#329): flip VT-scrollback live + persist it. Turning it ON also
+            # (best-effort) starts the sidecar so it takes effect without an app restart.
+            v = payload["vt_scrollback"]
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail="vt_scrollback must be a boolean")
+            prefs.set_vt_scrollback(v)
+            vtsidecar.set_enabled(v)
+            if v:
+                with contextlib.suppress(Exception):
+                    await vtsidecar.ensure_started()
+            out["vt_scrollback"] = vtsidecar.enabled()
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
             # The legacy `overview_excluded` write path is kept for clients still on the old

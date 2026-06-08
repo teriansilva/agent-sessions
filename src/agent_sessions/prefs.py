@@ -199,6 +199,19 @@ def set_compose_default(mode: str, path: Path | None = None) -> str:
     return _set("compose_default", coerce_compose_default(mode), path)
 
 
+def get_vt_scrollback(path: Path | None = None) -> bool | None:
+    """The experimental VT-scrollback toggle (#329): ``True``/``False`` when the user has set it,
+    or ``None`` when unset — so the caller falls back to the ``AGENT_SESSIONS_VT_SCROLLBACK`` env
+    default instead of forcing a value."""
+    v = _load(path or _default_path()).get("vt_scrollback")
+    return v if isinstance(v, bool) else None
+
+
+def set_vt_scrollback(value: bool, path: Path | None = None) -> bool:
+    """Persist the experimental VT-scrollback toggle. Preserves other keys."""
+    return _set("vt_scrollback", bool(value), path)
+
+
 def get_accent(path: Path | None = None) -> str:
     """The persisted brand accent (#rrggbb), or the default when unset/unreadable/invalid."""
     return coerce_accent(_load(path or _default_path()).get("accent"))

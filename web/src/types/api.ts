@@ -70,6 +70,9 @@ export interface AppConfig {
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;
+  /** Experimental (#329): faithful real-frame scroll-up via the VT sidecar. The effective
+   *  on/off bit (pref override, else env default); drives the Settings → Experimental toggle. */
+  vt_scrollback?: boolean;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never

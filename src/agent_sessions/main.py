@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import metadata, reaper, session_stream, vtsidecar
+from . import metadata, prefs, reaper, session_stream, vtsidecar
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -143,8 +143,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # (the existing /api/sessions HTTP path keeps working as fallback).
         with contextlib.suppress(Exception):
             await registry.discover()
-        # Path B VT scrollback sidecar (#271/#273): spawn it iff AGENT_SESSIONS_VT_SCROLLBACK is on
-        # (no-op otherwise). Best-effort — a failed spawn just leaves the attach path on transcript.
+        # Path B VT scrollback sidecar (#271/#273): spawn it iff VT scrollback is on (no-op
+        # otherwise). Best-effort — a failed spawn just leaves the attach path on transcript.
+        # A persisted experimental UI toggle (#329) overrides the AGENT_SESSIONS_VT_SCROLLBACK
+        # env default when the user has set it.
+        _vt_pref = prefs.get_vt_scrollback()
+        if _vt_pref is not None:
+            vtsidecar.set_enabled(_vt_pref)
         with contextlib.suppress(Exception):
             await vtsidecar.ensure_started()
         # Idle-session reaper (#279): tear down STALE (detached + long-idle) sessions so PTYs/

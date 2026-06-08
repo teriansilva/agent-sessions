@@ -492,3 +492,49 @@ def test_set_compose_default_unknown_422(auth_cfg, tmp_home):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+def test_vt_scrollback_toggle_via_prefs(auth_cfg, tmp_home, monkeypatch):
+    # Experimental VT toggle (#329): /api/prefs flips it live + /api/config reflects it. Don't
+    # actually spawn the Node sidecar in tests, and keep the in-memory override from leaking.
+    from agent_sessions import vtsidecar
+
+    async def _noop() -> None:
+        pass
+
+    monkeypatch.setattr(vtsidecar, "ensure_started", _noop)
+    monkeypatch.setattr(vtsidecar, "_runtime_override", None)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    assert c.get("/api/config").json()["vt_scrollback"] is False  # default off (env unset)
+
+    r = c.post(
+        "/api/prefs",
+        json={"vt_scrollback": True},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200 and r.json() == {"vt_scrollback": True}
+    assert c.get("/api/config").json()["vt_scrollback"] is True
+
+    r = c.post(
+        "/api/prefs",
+        json={"vt_scrollback": False},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.json() == {"vt_scrollback": False}
+    assert c.get("/api/config").json()["vt_scrollback"] is False
+
+
+def test_vt_scrollback_non_bool_422(auth_cfg, tmp_home, monkeypatch):
+    from agent_sessions import vtsidecar
+
+    monkeypatch.setattr(vtsidecar, "_runtime_override", None)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"vt_scrollback": "yes"},  # not a boolean
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

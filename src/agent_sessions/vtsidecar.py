@@ -34,8 +34,24 @@ _CONNECT_TIMEOUT = 1.0
 _STREAM_LIMIT = 32 * 1024 * 1024
 
 
+# Runtime override for the VT-scrollback flag, set by the experimental Settings toggle (#329).
+# None ⇒ use the env default. In-memory so enabled() stays cheap on the hot attach path;
+# persistence is the caller's job (prefs.set_vt_scrollback). Seeded from the persisted pref at
+# startup (main.py), then flipped live by POST /api/prefs.
+_runtime_override: bool | None = None
+
+
 def enabled() -> bool:
+    if _runtime_override is not None:
+        return _runtime_override
     return (os.environ.get("AGENT_SESSIONS_VT_SCROLLBACK", "0") or "0") != "0"
+
+
+def set_enabled(value: bool) -> None:
+    """Override the VT-scrollback flag for this process (the experimental UI toggle, #329).
+    Overrides the env default; the caller persists the choice via ``prefs.set_vt_scrollback``."""
+    global _runtime_override
+    _runtime_override = bool(value)
 
 
 def _sock_path() -> str:
