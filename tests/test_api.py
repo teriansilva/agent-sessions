@@ -94,7 +94,7 @@ def test_archived_claude_session_stays_archived_when_live_jsonl_recreated(auth_c
 # Fixture project keys (project_alias unset → key == cwd).
 _REPO_A = "/home/user/claude/repo/a"  # sessions 1111 + 2222
 _TMP_OTHER = "/tmp/other"  # session 3333
-_example-app = "/home/user/claude/example-app"  # session 5555
+_DEMOAPP = "/home/user/claude/demoapp.io"  # session 5555
 _OLD = "/home/user/claude/old"  # archived 4444
 
 
@@ -153,7 +153,7 @@ def test_no_match_is_empty_but_facets_remain(auth_cfg, fake_jsonl):
     assert d["next_offset"] is None
     # facets are computed over the full archived-scoped set, so they survive a
     # zero-match filter (the dropdowns must still offer every project).
-    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _example-app}
+    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _DEMOAPP}
 
 
 # ---- filtered pagination ------------------------------------------------------
@@ -184,7 +184,7 @@ def test_facets_cover_full_set_beyond_first_page(auth_cfg, fake_jsonl):
     # Only one row loaded, but every live project must still be an option.
     d = c.get("/api/sessions?limit=1&offset=0").json()
     assert len(d["sessions"]) == 1
-    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _example-app}
+    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _DEMOAPP}
     assert d["facets"]["engines"] == ["claude"]
 
 

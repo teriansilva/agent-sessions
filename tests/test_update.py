@@ -96,3 +96,19 @@ def test_cli_autoupdate(monkeypatch, capsys):
     monkeypatch.setattr(update, "autoupdate", lambda: "up-to-date")
     assert cli.main(["autoupdate"]) == 0
     assert capsys.readouterr().out.strip() == "up-to-date"
+
+
+def test_repo_url_defaults_public_and_honors_override(monkeypatch):
+    # Public mirror (#322): the shipped default points at the PUBLIC GitHub repo so a public
+    # self-hoster's updater resolves there. Internal deploys override via AGENT_SESSIONS_REPO
+    # (the Forgejo URL) and must keep working — the env override wins.
+    monkeypatch.delenv("AGENT_SESSIONS_REPO", raising=False)
+    assert update._repo_url() == "https://github.com/teriansilva/agent-sessions.git"
+    # the public default is a github.com URL (no internal host)
+    assert update._DEFAULT_REPO.startswith("https://github.com/")
+
+    # An override (internal deploys point at a private mirror) must win — using an example host
+    # here so this very test stays clean of internal references.
+    override = "https://git.example.com/org/agent-sessions.git"
+    monkeypatch.setenv("AGENT_SESSIONS_REPO", override)
+    assert update._repo_url() == override

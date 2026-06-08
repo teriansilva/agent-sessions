@@ -5,7 +5,7 @@
  * seeded ephemeral instance. Single browser, viewport sizes driven per-shot, so run with
  * one project: `playwright test e2e/visual.spec.ts --project=desktop` (the `visual` script).
  *
- *   E2E_BASE_URL=https://terminal.example.com VISUAL_USER=admin VISUAL_PASS=… \
+ *   E2E_BASE_URL=https://your-domain.example VISUAL_USER=admin VISUAL_PASS=… \
  *   VISUAL_OUT=/abs/out VISUAL_AREAS=all HEAD_SHA=$(git rev-parse HEAD) \
  *   npm run visual
  */
@@ -127,7 +127,7 @@ test("visual capture", async ({ browser }, info) => {
         await page.setViewportSize(VIEWPORTS[vp]);
         await page.goto(p.path, { waitUntil: "domcontentloaded", timeout: 20000 });
         await waitForReady(page, p);
-        // Guard against the example-app "login-redirect screenshot" quirk: an authed area that
+        // Guard against the demoapp "login-redirect screenshot" quirk: an authed area that
         // rendered the server /login form means auth didn't take — fail the shot rather than
         // capture a misleading login page as e.g. "settings".
         if (p.requireAuth === "admin" && (await page.locator('form[action="/login"]').count()) > 0) {

@@ -1,7 +1,7 @@
 """Cross-instance session ownership, anchored in the runtime dir (#293).
 
 Single-active-viewer take-over (#293) needs an owner record that stays correct
-even when **two app processes attach the SAME dtach masters**. On example-host
+even when **two app processes attach the SAME dtach masters**. On a shared host
 prod and staging share ``AGENT_SESSIONS_RUNTIME_DIR`` (same ``…/pty`` dir, so
 the same ``.sock`` files), which means an in-process owner table (the #184
 ``Claim``) can't arbitrate between them: each process would believe it holds the

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 
 // Ambient tactical-HUD "data-flow" backdrop (#211 Phase 4): faint drifting signal trails +
 // a subtle grid behind the whole app, radial-masked so it fades at the edges. Mirrors the
-// landing canvas + the family design language (example-org.com/DESIGN.md). Honors
+// landing canvas + the family design language (the shared design system). Honors
 // prefers-reduced-motion (renders nothing animated) and is hidden on the light theme via CSS
 // (a static grid takes over there — see index.css), so this only animates on dark.
 //

@@ -1,5 +1,5 @@
 // Visual-capture registry (#96) — the universe of screens the Playwright capture
-// screenshots at every screen format. Mirrors example-app/tests/visual/paths.ts,
+// screenshots at every screen format. Mirrors demoapp.io/tests/visual/paths.ts,
 // adapted to agent-sessions (single-admin form login, no OIDC/seed-from-Docker).
 //
 // `web/visual/paths.test.ts` enforces: name uniqueness, non-empty description, every

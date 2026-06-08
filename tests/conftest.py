@@ -61,13 +61,13 @@ def fake_jsonl(tmp_home) -> Path:
     (proj2 / "33333333-3333-3333-3333-333333333333.jsonl").write_text(
         '{"type":"user","message":{"content":"hello tmp"}}\n'
     )
-    # A dotted-path project: the dir name is lossy (example-app and
-    # example-app/io both encode to ...-example-app-io), but the JSONL carries the
+    # A dotted-path project: the dir name is lossy (demoapp.io and
+    # demoapp/io both encode to ...-demoapp-io), but the JSONL carries the
     # real cwd. The scanner must prefer the JSONL cwd over the decode.
-    proj3 = projects / "-home-user-claude-example-app-io"
+    proj3 = projects / "-home-user-claude-demoapp-io"
     proj3.mkdir(parents=True)
     (proj3 / "55555555-5555-5555-5555-555555555555.jsonl").write_text(
-        '{"type":"user","cwd":"/home/user/claude/example-app",'
+        '{"type":"user","cwd":"/home/user/claude/demoapp.io",'
         '"message":{"content":"dotted path session"}}\n'
     )
     # An archived one — same shape, different root.
@@ -84,7 +84,7 @@ def auth_cfg(tmp_path, monkeypatch) -> AuthConfig:
     monkeypatch.setenv("AGENT_SESSIONS_USERNAME", "marcus")
     monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", hash_password("hunter2"))
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
-    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://terminal.example.com")
+    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
     # Isolate the 2FA store (#116) to a tmp path — otherwise twofactor.default_path()
     # resolves under the real HOME and the auth/login tests read the operator's real,
     # possibly-enabled 2fa.json, making the suite outcome host-dependent (Hermes #140).

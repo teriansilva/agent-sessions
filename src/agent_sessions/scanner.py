@@ -5,8 +5,8 @@ Source of truth: ``~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`` (live) and
 
 Each JSONL is one session. The directory name is a **lossy** encoding of the
 cwd — Claude Code replaces ``/`` *and* ``.`` (and other non-alphanumerics)
-with ``-``, so ``example-app`` and ``example-app/io`` both become
-``...-example-app-io`` and can't be told apart. The authoritative cwd is the
+with ``-``, so ``demoapp.io`` and ``demoapp/io`` both become
+``...-demoapp-io`` and can't be told apart. The authoritative cwd is the
 ``cwd`` field recorded inside the JSONL; we read that and only fall back to
 decoding the directory name when a file has no ``cwd`` field. This matters
 because the cwd feeds the open-session allowlist + the ws launch dir.
@@ -49,7 +49,7 @@ def _decode_cwd(dirname: str) -> str:
 
     Claude Code's directory encoding replaces BOTH ``/`` and ``.`` (and any
     other non-alphanumeric) with ``-``, so the dir name is **lossy** — e.g.
-    ``example-app`` and ``example-app/io`` both encode to ``...-example-app-io``.
+    ``demoapp.io`` and ``demoapp/io`` both encode to ``...-demoapp-io``.
     We can't reverse it reliably. This is therefore only a fallback for when the
     JSONL itself has no ``cwd`` field; ``_read_session_meta`` prefers the real
     cwd recorded inside the session file.
@@ -62,7 +62,7 @@ def _decode_cwd(dirname: str) -> str:
 def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
     """Single pass over a JSONL: return (real_cwd_or_None, first_user_message).
 
-    Claude Code records carry the true ``cwd`` (e.g. ``/home/u/claude/example-app``),
+    Claude Code records carry the true ``cwd`` (e.g. ``/home/u/claude/demoapp.io``),
     which is authoritative — unlike the lossy directory name. We grab the first
     ``cwd`` we see and the first user message text, then stop.
     """

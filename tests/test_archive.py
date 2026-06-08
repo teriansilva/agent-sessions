@@ -17,11 +17,7 @@ def test_archive_moves_jsonl_and_scanner_reflects_it(fake_jsonl):
     assert row.archived is True
     # file physically moved into projects-archive, preserving the dir name
     moved = (
-        fake_jsonl
-        / ".claude"
-        / "projects-archive"
-        / "-home-user-claude-repo-a"
-        / f"{uuid}.jsonl"
+        fake_jsonl / ".claude" / "projects-archive" / "-home-user-claude-repo-a" / f"{uuid}.jsonl"
     )
     assert moved.is_file()
 

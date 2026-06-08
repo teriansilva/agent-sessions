@@ -125,18 +125,18 @@ test("chip order is deterministic: sticky first, then most-recent, then id", () 
 test("links a nested project to its parent with an edge, child placed below", () => {
   const input = [
     s({ id: "claude:root", cwd: "/home/u/claude" }),
-    s({ id: "claude:child", cwd: "/home/u/claude/example-app" }),
+    s({ id: "claude:child", cwd: "/home/u/claude/demoapp.io" }),
   ];
   const { nodes, edges } = buildOverview(input, { nowS: NOW });
   expect(edges).toHaveLength(1);
   expect(edges[0]).toMatchObject({
     source: "group:/home/u/claude",
-    target: "group:/home/u/claude/example-app",
+    target: "group:/home/u/claude/demoapp.io",
   });
   const y = Object.fromEntries(
     nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.position.y]),
   );
-  expect(y["group:/home/u/claude/example-app"]).toBeGreaterThan(y["group:/home/u/claude"]);
+  expect(y["group:/home/u/claude/demoapp.io"]).toBeGreaterThan(y["group:/home/u/claude"]);
 });
 
 test("path matching is boundary-aware: /claude is NOT a parent of /claude-foo", () => {

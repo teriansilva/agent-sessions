@@ -25,8 +25,8 @@ const sessions = [
     engine: "claude",
     uuid: "c",
     short_uuid: "c",
-    cwd: "/home/u/claude/example-app",
-    project: "example-app",
+    cwd: "/home/u/claude/demoapp.io",
+    project: "demoapp.io",
     last_mtime: now - 100,
     first_user_message: "",
     title: "Child session",
@@ -52,7 +52,7 @@ test.beforeEach(async ({ page }) => {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions, next_offset: null, total: 2, facets: { projects: ["/home/u/claude", "/home/u/claude/example-app"], engines: ["claude"] } },
+      json: { sessions, next_offset: null, total: 2, facets: { projects: ["/home/u/claude", "/home/u/claude/demoapp.io"], engines: ["claude"] } },
     }),
   );
   await page.route("**/api/projects", (r) => r.fulfill({ json: { projects: [] } }));

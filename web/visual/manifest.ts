@@ -1,6 +1,6 @@
 // Pure pieces of the visual capture (#96) — argument parsing + manifest shaping,
 // unit-tested in manifest.test.ts. The Playwright orchestration lives in
-// web/e2e/visual.spec.ts and consumes these. Mirrors example-app's split so the
+// web/e2e/visual.spec.ts and consumes these. Mirrors demoapp.io's split so the
 // logic is tested without a browser.
 
 import { KNOWN_AREA_KEYS, VIEWPORT_NAMES, type ViewportName } from "./paths.js";

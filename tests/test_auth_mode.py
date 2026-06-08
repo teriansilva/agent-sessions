@@ -30,7 +30,7 @@ def none_cfg(monkeypatch) -> AuthConfig:
     monkeypatch.delenv("AGENT_SESSIONS_PASSWORD_HASH", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_AUTH_MODE", "none")
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
-    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://terminal.example.com")
+    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
     return AuthConfig.from_env()
 
 

@@ -266,7 +266,7 @@ def test_force_password_change_precedes_2fa(auth_cfg, tmp_path, monkeypatch):
 def none_cfg(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_AUTH_MODE", "none")
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
-    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://terminal.example.com")
+    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
     monkeypatch.setenv("AGENT_SESSIONS_2FA_FILE", str(tmp_path / "2fa.json"))
     monkeypatch.delenv("AGENT_SESSIONS_USERNAME", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_PASSWORD_HASH", raising=False)

@@ -41,14 +41,14 @@ def test_cwd_decoding_fallback(fake_jsonl):
 
 
 def test_jsonl_cwd_beats_lossy_dirname(fake_jsonl):
-    # The example-app session's dir name encodes to ...-example-app-io, which
-    # would wrongly decode to /home/user/claude/example-app/io. The JSONL
+    # The demoapp.io session's dir name encodes to ...-demoapp-io, which
+    # would wrongly decode to /home/user/claude/demoapp/io. The JSONL
     # carries the real cwd, which must win.
     rows = scanner.scan(home=fake_jsonl)
     row = next(r for r in rows if r.uuid.startswith("55555555"))
-    assert row.cwd == "/home/user/claude/example-app"
+    assert row.cwd == "/home/user/claude/demoapp.io"
     # And the wrong decoded form must NOT appear anywhere.
-    assert "/home/user/claude/example-app/io" not in {r.cwd for r in rows}
+    assert "/home/user/claude/demoapp/io" not in {r.cwd for r in rows}
 
 
 def test_first_user_message_string(fake_jsonl):
@@ -73,7 +73,7 @@ def test_scanned_cwds_set(fake_jsonl):
     assert scanner.scanned_cwds(rows) == {
         "/home/user/claude/repo/a",
         "/tmp/other",
-        "/home/user/claude/example-app",
+        "/home/user/claude/demoapp.io",
         "/home/user/claude/old",
     }
 
@@ -112,9 +112,7 @@ def test_pickable_projects_skips_hidden_dirs(fake_jsonl):
 
 def test_ignores_non_uuid_files(fake_jsonl):
     # Drop a noise file alongside; scanner must skip it.
-    junk = (
-        fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / "not-a-uuid.jsonl"
-    )
+    junk = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / "not-a-uuid.jsonl"
     junk.write_text("garbage")
     rows = scanner.scan(home=fake_jsonl)
     assert all(r.uuid != "not-a-uuid" for r in rows)
