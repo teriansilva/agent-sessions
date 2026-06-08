@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { api, ApiError } from "../../lib/api";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { imageFilesFromData } from "../../lib/clipboardImages";
@@ -106,8 +107,14 @@ export function Terminal({
   // subsequent gate frame tell "taken over" (we WERE owner) from "in use" (we never were).
   const confirmedOwnerRef = useRef(false);
   const navigate = useNavigate();
-  // Bumped by the Take-over button to force a reconnect with ?force=1.
+  // Bumped to tear down + reopen the socket. `takeoverEpoch` is the Take-over path (#184) and
+  // `reconnectEpoch` is a plain reattach (e.g. after a #331 restart). Whether the fresh connect
+  // demands ?force=1 is decided ONLY by `forceNextConnectRef` (set by takeover, consumed by the
+  // effect) — NOT by which epoch moved — so a restart reattach never silently force-takes-over a
+  // session another tab may have claimed during the restart window (Hermes #332).
   const [takeoverEpoch, setTakeoverEpoch] = useState(0);
+  const [reconnectEpoch, setReconnectEpoch] = useState(0);
+  const forceNextConnectRef = useRef(false);
   // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
   // current one WITHOUT the socket effect depending on it (a changing callback identity
   // must never tear down + relaunch the live terminal). Updated in an effect (writing a
@@ -203,7 +210,11 @@ export function Terminal({
     // takeover (the server would shut out a legitimate prior owner).
     const fp = getBrowserFp();
     const tabId = getTabId();
-    const wantsForce = takeoverEpoch > 0;
+    // Force is armed ONLY by the Take-over button (forceNextConnectRef), and consumed here so it
+    // applies to exactly this effect's fresh connect — a restart/reconnect epoch bump leaves it
+    // false → a plain attach, never a silent takeover (#332).
+    const wantsForce = forceNextConnectRef.current;
+    forceNextConnectRef.current = false;
     let forceConsumed = false;
     // new=1 (launch) is a one-shot too: the FIRST connect launches the session; a reconnect must
     // ATTACH the now-existing session, not relaunch it. Re-sending new=1 makes the server run
@@ -413,7 +424,7 @@ export function Terminal({
     // `fresh` is intentionally excluded — it's read once via freshRef so self-convergence
     // (which clears route state) can't tear down + relaunch the live terminal. See freshRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, id, takeoverEpoch]);
+  }, [engine, id, takeoverEpoch, reconnectEpoch]);
 
   // Re-theme the live terminal on theme/accent change WITHOUT tearing it down. Colours apply
   // immediately; if the font/size changed, fit() recomputes the grid and xterm's
@@ -438,10 +449,50 @@ export function Terminal({
     setAtBottom(true);
   }, []);
   const takeover = useCallback(() => {
-    // Bumping the epoch tears down the current socket and reconnects with
-    // ?force=1, which demotes the prior owner on the server (#184).
+    // Arm the one-shot force flag, then bump the epoch: the effect reconnects and the fresh
+    // connect carries ?force=1, demoting the prior owner on the server (#184).
+    forceNextConnectRef.current = true;
     setTakeoverEpoch((n) => n + 1);
   }, []);
+  // Manual session restart (#331): recover a WEDGED session (agent alive but no longer painting).
+  // POST kills the live master; the next attach finds no master and resumes from disk — so once it
+  // returns we bump the reconnect epoch to reattach (which relaunches via the engine's resume argv).
+  // The conversation is preserved on disk. A different active viewer 409s; offer a forced retry.
+  const [restarting, setRestarting] = useState(false);
+  const restart = useCallback(async () => {
+    if (restarting) return;
+    if (
+      !window.confirm(
+        "Restart this session? The agent process is killed and the conversation is resumed " +
+          "from disk. Use this when the terminal is stuck/blank and won't respond.",
+      )
+    )
+      return;
+    const sid = `${engine}:${id}`;
+    const opts = { fp: getBrowserFp(), tabId: getTabId() };
+    setRestarting(true);
+    try {
+      try {
+        await api.restart(sid, opts);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          if (!window.confirm("Another viewer is active on this session. Restart anyway?")) return;
+          await api.restart(sid, { ...opts, force: true });
+        } else {
+          throw e;
+        }
+      }
+      // Reattach (NOT a takeover): the master is gone, so a plain fresh connect relaunches +
+      // resumes. forceNextConnectRef stays false → no ?force=1, so if another tab claimed the
+      // session during the restart window we don't silently demote it (Hermes #332).
+      setReconnectEpoch((n) => n + 1);
+    } catch {
+      // Best-effort: leave the terminal as-is so the user can retry (a transient failure shows no
+      // change rather than a broken state).
+    } finally {
+      setRestarting(false);
+    }
+  }, [engine, id, restarting]);
   return (
     <div className={styles.wrap}>
       {/* Panel header (#211 4c): mono channel id + a persistent STATUS // LIVE readout with a
@@ -457,6 +508,16 @@ export function Terminal({
           <span className={`hud-led ${head.led}`} aria-hidden="true" />
           STATUS // <b className="num">{head.label}</b>
         </span>
+        <button
+          type="button"
+          className={styles.restartBtn}
+          onClick={restart}
+          disabled={restarting}
+          title="Restart this session: kill the agent process and resume from disk (recovers a stuck/blank terminal)"
+          aria-label="Restart session"
+        >
+          {restarting ? "RESTARTING…" : "RESTART"}
+        </button>
       </div>
       <div className={styles.termArea}>
         {text && (

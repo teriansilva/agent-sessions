@@ -173,6 +173,15 @@ export const api = {
   /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
   archiveOlder: (hours: number) =>
     postJson<{ archived: number; skipped: number }>("/api/sessions/archive-older", { hours }),
+  /** Restart a WEDGED session (#331): kill the live agent process so the next attach resumes it
+   *  from disk (conversation preserved). `fp`/`tabId` identify this tab against the owner lease;
+   *  `force` overrides the owner guard when a *different* active viewer holds the session (else the
+   *  call 409s with the holder). CSRF-guarded. */
+  restart: (id: string, opts: { fp?: string; tabId?: string; force?: boolean } = {}) =>
+    postJson<{ id: string; restarted: boolean; master: string }>(
+      `/api/sessions/${enc(id)}/restart`,
+      { fp: opts.fp, tab_id: opts.tabId, force: opts.force ?? false },
+    ),
   /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
   scrollbackInfo: () => getJson<{ bytes: number; files: number }>("/api/scrollback"),
   /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */

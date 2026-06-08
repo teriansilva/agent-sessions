@@ -34,8 +34,12 @@ import logging
 import os
 import signal
 import time
+from typing import TYPE_CHECKING
 
 from . import engines, ptybridge, vtsidecar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = logging.getLogger("agent_sessions.reaper")
 
@@ -176,6 +180,54 @@ def _still_stale(registry, key: str, ttl: int, now: float | None = None) -> bool
     return False
 
 
+async def terminate_master(
+    engine: str,
+    sid: str,
+    *,
+    key: str | None = None,
+    grace_s: float = _REAP_GRACE_S,
+    spare_if: Callable[[], bool] | None = None,
+) -> str:
+    """Terminate the ``dtach`` master (+ agent process group) for one session and free its in-memory
+    VT mirror. Shared by the idle reaper (#279) and the manual session-restart endpoint (#331) so
+    there is a single process-management path.
+
+    SIGTERM the master's process group, wait ``grace_s``, then escalate to SIGKILL if it is still
+    alive. The on-disk transcript is never touched → the session stays fully resumable; only the
+    live process + PTY (+ VT mirror, when ``key`` is given) are reclaimed.
+
+    ``spare_if`` is an optional predicate re-checked right before SIGTERM **and** right before the
+    SIGKILL escalation; returning ``False`` aborts the kill (the reaper uses it to spare a session
+    that got (re)attached or became active in the grace window). Returns the outcome:
+    ``"gone"`` (no master found), ``"spared"`` (``spare_if`` vetoed), ``"term"`` (exited on
+    SIGTERM), or ``"kill"`` (needed SIGKILL).
+    """
+
+    def _free_mirror() -> None:
+        if key is not None:
+            with contextlib.suppress(Exception):
+                vtsidecar.note_session_end(key)
+
+    pid = _find_master_pid(engine, sid)
+    if pid is None:
+        _free_mirror()  # already gone — still drop any stale mirror
+        return "gone"
+    if spare_if is not None and not spare_if():
+        return "spared"
+    _signal_tree(pid, signal.SIGTERM)
+    await asyncio.sleep(grace_s)
+    outcome = "term"
+    if _alive(pid):
+        # The grace window is exactly when a reattach is most likely — re-validate before the
+        # harder SIGKILL.
+        if spare_if is not None and not spare_if():
+            return "spared"
+        _signal_tree(pid, signal.SIGKILL)
+        outcome = "kill"
+    _free_mirror()
+    return outcome
+
+
 async def _reap_one(registry, row: dict, *, idle_s: int, dry: bool, ttl: int) -> None:
     key = row["id"]
     engine = row["engine"]
@@ -190,34 +242,24 @@ async def _reap_one(registry, row: dict, *, idle_s: int, dry: bool, ttl: int) ->
     )
     if dry:
         return
-    # Tear down the live session: SIGTERM the process group (dtach master + agent), and escalate to
-    # SIGKILL if it doesn't exit within the grace. The registry's own SessionStream sees EOF and
-    # self-cleans (_watch_end drops the entry). History is on disk → the session stays resumable;
-    # only the live process + PTY are reclaimed.
-    pid = _find_master_pid(engine, sid)
-    if pid is None:
-        log.warning("reaper: no dtach master PID found for %s (already gone?)", key)
-        return
-    # Re-validate against the LIVE registry immediately before signaling: this candidate came from
-    # the sweep's one snapshot, and an earlier candidate's SIGTERM grace may have elapsed since —
-    # long enough for a client to (re)attach or the agent to emit. Never kill a now-active session.
+    # Tear down the live session via the shared helper: SIGTERM the process group (dtach master +
+    # agent), escalate to SIGKILL after the grace, and free the VT mirror. The registry's own
+    # SessionStream sees EOF and self-cleans (_watch_end drops the entry). History is on disk → the
+    # session stays resumable; only the live process + PTY are reclaimed. ``spare_if`` re-checks the
+    # LIVE registry before each signal so a candidate that got (re)attached since the sweep snapshot
+    # — or during the SIGTERM grace — is never killed.
     if not _still_stale(registry, key, ttl):
         log.info("reaper: %s became active before reap — sparing", key)
         return
-    _signal_tree(pid, signal.SIGTERM)
-    await asyncio.sleep(_REAP_GRACE_S)
-    if _alive(pid):
-        # Re-validate again before the harder SIGKILL — the grace window is exactly when a reattach
-        # is most likely.
-        if not _still_stale(registry, key, ttl):
-            log.info("reaper: %s became active during grace — not escalating to SIGKILL", key)
-            return
-        log.warning("reaper: %s survived SIGTERM, escalating to SIGKILL", key)
-        _signal_tree(pid, signal.SIGKILL)
-    # Free the in-memory VT live mirror for this session (no-op when the flag is off). The on-disk
-    # scrollback/transcript is intentionally left intact so scroll-up survives a later resume.
-    with contextlib.suppress(Exception):
-        vtsidecar.note_session_end(key)
+    outcome = await terminate_master(
+        engine, sid, key=key, spare_if=lambda: _still_stale(registry, key, ttl)
+    )
+    if outcome == "gone":
+        log.warning("reaper: no dtach master PID found for %s (already gone?)", key)
+    elif outcome == "spared":
+        log.info("reaper: %s became active before/during reap — sparing", key)
+    elif outcome == "kill":
+        log.warning("reaper: %s survived SIGTERM, escalated to SIGKILL", key)
 
 
 async def sweep(registry, *, now: float | None = None) -> list[str]:

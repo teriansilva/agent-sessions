@@ -420,6 +420,22 @@ class SessionRegistry:
                 return ("owner", new_claim)
             return ("secondary", None)
 
+    def current_owner(self, engine: str, sid: str) -> Claim | None:
+        """The session's CURRENT live owner claim (fp/tab), or ``None`` when it is unclaimed, its
+        lease has gone stale, or the session is unknown. A read-only point snapshot for the manual
+        restart authority check (#331) in the flag-OFF in-memory ownership mode — it never mutates
+        state or extends the lease (unlike ``claim``/``refresh``). A one-tick-stale read is fine for
+        that guard, so it skips ``self._lock`` and is safe to call synchronously from a request
+        handler."""
+        _pe, _ps, key = self._resolve_phys(engine, sid)
+        entry = self._sessions.get(key)
+        if entry is None:
+            return None
+        existing = entry.get("owner")
+        if not isinstance(existing, Claim) or existing.is_stale():
+            return None
+        return existing
+
     async def refresh(self, engine: str, sid: str, fp: str, tab_id: str) -> bool:
         """Heartbeat: bump the lease's ``last_seen`` if the caller is the current
         owner. Returns ``True`` on a successful bump, ``False`` if the caller is

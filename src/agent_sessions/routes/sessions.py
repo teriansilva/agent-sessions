@@ -5,20 +5,32 @@ from ``main.create_app``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from .. import archive, engines, metadata, prefs, scanner, webterm
+from .. import (
+    archive,
+    engines,
+    metadata,
+    owner,
+    prefs,
+    ptybridge,
+    reaper,
+    scanner,
+    scrollback,
+    webterm,
+)
 
 # How long after the last byte from the agent we still call the session "working" (#156).
 # Picked to feel responsive without flapping between every keystroke of a streaming reply.
 _WORKING_WINDOW_S = 10.0
 
 
-def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(s, m: metadata.SessionMeta) -> dict:
         key = engines.session_key(s)
         # #156 working signal: last byte we observed flowing into the shared ring.
@@ -232,3 +244,97 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             except (NotImplementedError, archive.ArchiveError, engines.EngineError):
                 skipped += 1  # engine can't archive / lost the file → leave it, keep going
         return JSONResponse({"archived": archived, "skipped": skipped})
+
+    @app.post("/api/sessions/{sid}/restart")
+    async def restart_session(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Recover a WEDGED session (#331): an agent process that is alive but has stopped reading
+        # input AND painting (e.g. claude stalled mid-turn) can't be fixed by the rendering layer —
+        # there is no live frame to draw. This kills the live dtach master via the shared reaper
+        # helper and wipes the session's local terminal state, so the next ws attach finds no master
+        # and relaunches it via the engine's resume argv. The on-disk transcript is untouched → the
+        # conversation is preserved; only the stuck process + PTY + scrollback/mirror are dropped.
+        try:
+            prov, native = engines.parse_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        # Resolve to the PHYSICAL key the ws route keys live resources by (opencode placeholder
+        # alias → its real id), so socket / owner / scrollback / VT mirror are all addressed under
+        # the SAME mapping terminal.py uses (Hermes #331).
+        phys_key = engines.physical_key(f"{prov.engine_id}:{native}")
+        _eng, _, phys_native = phys_key.partition(":")
+
+        # Body is optional; a tab identifies itself with (fp, tab_id) — the same pair both ownership
+        # models key on — and may pass force=true to override the owner guard.
+        payload: dict = {}
+        with contextlib.suppress(ValueError, json.JSONDecodeError):
+            body = await request.json()
+            if isinstance(body, dict):
+                payload = body
+        fp = str(payload.get("fp", "") or "")
+        tab_id = str(payload.get("tab_id", "") or "")
+        force = bool(payload.get("force", False))
+
+        def _blocking_holder() -> dict | None:
+            # The session's CURRENT live owner IF it is a DIFFERENT viewer than this caller, else
+            # None. Mode-aware + authoritative (Hermes #332), never client-inferred:
+            #   • takeover ON  → the on-disk lease (owner.read_owner); shared across prod+staging.
+            #   • takeover OFF → the in-memory SessionRegistry claim (the #184 default path); the
+            #     disk lease is empty in this mode, so without this a passive tab would see no
+            #     holder and could nuke a session another active tab owns.
+            # Either model naming a live, non-matching (fp, tab_id) blocks a non-forced restart.
+            rec = owner.read_owner(prov.engine_id, phys_native)
+            if rec is not None:
+                same = rec.get("fp") == fp and rec.get("tab_id") == tab_id
+                live = (time.time() - float(rec.get("last_seen", 0.0))) <= owner.LEASE_S
+                if live and not same:
+                    return {"label": str(rec.get("label", ""))[:80], "since": rec.get("since")}
+            if registry is not None:
+                claim = registry.current_owner(prov.engine_id, phys_native)
+                if claim is not None and not claim.matches(fp, tab_id):
+                    return {"label": "", "since": getattr(claim, "last_seen", None)}
+            return None
+
+        if not force:
+            holder = _blocking_holder()
+            if holder is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "another viewer is active", "holder": holder},
+                )
+
+        # Kill the master (shared reaper path: SIGTERM → grace → SIGKILL, frees the VT mirror). The
+        # initial guard above is a point-in-time check; a viewer could (re)claim between it and the
+        # signals (TOCTOU, Hermes #332). So unless this is an explicit force, re-assert the SAME
+        # predicate right before SIGTERM and before SIGKILL via spare_if — a session that became
+        # owned by someone else in that window is SPARED (no kill), and we skip all cleanup so its
+        # lease + local terminal state are left intact.
+        spare_if = None if force else (lambda: _blocking_holder() is None)
+        outcome = await reaper.terminate_master(
+            prov.engine_id, phys_native, key=phys_key, spare_if=spare_if
+        )
+        if outcome == "spared":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "another viewer became active during restart"},
+            )
+
+        # Clean the rest of the local terminal state so the resume starts from a clean slate (no
+        # stale-width ring replay): persisted scrollback + in-memory ring + VT mirror
+        # (clear_scrollback → _drop_buffer), the now-meaningless owner lease, and any socket the
+        # master left behind on a hard SIGKILL (a clean exit unlinks its own). Only reached when the
+        # restart was NOT vetoed — so we never erase a lease that a new owner just took.
+        with contextlib.suppress(Exception):
+            scrollback.clear_scrollback([phys_key])
+        with contextlib.suppress(Exception):
+            owner.clear_owner(prov.engine_id, phys_native)
+        with contextlib.suppress(OSError):
+            ptybridge.socket_path(prov.engine_id, phys_native).unlink()
+
+        # Idempotent: "gone" (no live master) is a successful no-op — the next open launches it
+        # fresh regardless. The client reconnects its ws to trigger the resume.
+        return JSONResponse({"id": phys_key, "restarted": outcome != "gone", "master": outcome})

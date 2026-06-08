@@ -201,6 +201,25 @@ def _release_sync(engine: str, sid: str, conn_id: str) -> bool:
         return False
 
 
+def clear_owner(engine: str, sid: str) -> bool:
+    """Force-remove the owner record for a session, regardless of which ``conn_id`` holds it.
+
+    Used by the manual restart path (#331): once the dtach master has been killed the old owner
+    lease is meaningless, so it is cleared unconditionally so the resumed session's first viewer
+    claims cleanly (rather than landing ``passive`` behind a ghost holder whose lease has not yet
+    aged out). Unlike ``_release_sync`` this is NOT ``conn_id``-guarded — restart is an explicit,
+    privileged teardown. The sibling ``.owner.lock`` is left in place (never unlinked — that races
+    the flock; see ``_flock``). Returns ``True`` iff a record was present and removed.
+    """
+    owner_p, lock_p = _paths(engine, sid)
+    with _flock(lock_p):
+        try:
+            owner_p.unlink()
+            return True
+        except OSError:
+            return False
+
+
 # ---- read paths (no lock — a stale read is acceptable for display/poll) -----
 
 

@@ -292,7 +292,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Session-data routes (list/search + facets, projects, rename, archive/unarchive,
     # archive-older) live in routes/sessions.py; scrollback stats/clear in
     # routes/scrollback.py. Both register here, before the ws handler + SPA catch-all.
-    sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;

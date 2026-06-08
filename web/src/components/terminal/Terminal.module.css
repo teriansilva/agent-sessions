@@ -175,6 +175,31 @@
 .takeoverBtn:focus-visible {
   background: color-mix(in srgb, var(--accent) 90%, white);
 }
+/* Manual session-restart control (#331): a compact HUD-tag button in the panel header. Recovers a
+ * wedged session (kill the agent process → resume from disk). Muted by default so it reads as a
+ * recovery affordance, not a primary action; warms toward the accent on hover/focus. */
+.restartBtn {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.restartBtn:hover,
+.restartBtn:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.restartBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .secondaryBanner {
     background: var(--bg);
