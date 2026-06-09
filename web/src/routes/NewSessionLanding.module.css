@@ -142,3 +142,28 @@
   color: var(--text-3);
   cursor: default;
 }
+
+/* Scoped create-folder form (#335 Phase 3). */
+.newFolder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: -2px 0 4px;
+}
+.newFolder input,
+.newFolder select {
+  flex: 1 1 auto;
+  min-width: 100px;
+}
+.newFolderBtn {
+  flex: none;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.newFolderBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

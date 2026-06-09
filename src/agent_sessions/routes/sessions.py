@@ -18,6 +18,7 @@ from .. import (
     metadata,
     owner,
     prefs,
+    project_dirs,
     ptybridge,
     reaper,
     scanner,
@@ -163,6 +164,33 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             hidden = set(prefs.get_projects_hidden())
             projects = [c for c in all_pickable if c not in hidden]
         return JSONResponse({"projects": [{"cwd": c, "label": c} for c in projects]})
+
+    @app.post("/api/projects/mkdir")
+    async def make_project_dir(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Create a new project directory from the UI (#335 Phase 3), scoped to an operator-
+        # configured base root (AGENT_SESSIONS_PROJECT_ROOTS). Disabled by default — with no roots
+        # the write surface does not exist. ALL containment/validation lives in project_dirs (the
+        # security boundary): realpath-under-root + single-component name. Returns the new cwd; the
+        # client then offers it as a start location (and it becomes pickable once a session runs).
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        root = payload.get("root")
+        name = payload.get("name")
+        if not isinstance(root, str) or not isinstance(name, str):
+            raise HTTPException(status_code=422, detail="root and name must be strings")
+        try:
+            cwd = project_dirs.create_project_dir(root, name)
+        except project_dirs.ProjectDirError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse({"cwd": cwd})
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

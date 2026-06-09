@@ -163,6 +163,11 @@ export const api = {
     postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
   upload,
   projects: () => getJson<{ projects: Project[] }>("/api/projects"),
+  /** Create a new project directory under a configured base root (#335 Phase 3). CSRF-guarded;
+   *  returns the new absolute cwd. 404 if the feature is disabled, 403/422 on a rejected
+   *  root/name. */
+  mkdir: (root: string, name: string) =>
+    postJson<{ cwd: string }>("/api/projects/mkdir", { root, name }),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),

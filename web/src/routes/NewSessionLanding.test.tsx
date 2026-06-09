@@ -15,7 +15,10 @@ vi.mock("react-router-dom", async (orig) => {
 });
 vi.mock("../lib/api", async (orig) => {
   const actual = await orig<typeof import("../lib/api")>();
-  return { ...actual, api: { projects: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}) } };
+  return {
+    ...actual,
+    api: { projects: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}), mkdir: vi.fn() },
+  };
 });
 const mockProjects = vi.mocked(api.projects);
 
@@ -127,4 +130,25 @@ test("Set as default persists the selected project (#335 Phase 2)", async () => 
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "/a" });
   // after saving it reflects the default state (aria-label flips)
   expect(screen.getByRole("button", { name: /this is your default project/i })).toBeDisabled();
+});
+
+test("create-folder makes a dir under a root and selects it (#335 Phase 3)", async () => {
+  mockProjects.mockResolvedValue({ projects: [{ cwd: "/code/a", label: "/code/a" }] });
+  vi.mocked(api.mkdir).mockResolvedValue({ cwd: "/code/newproj" });
+  renderLanding(["claude"], { project_roots: ["/code"] });
+  await screen.findByRole("option", { name: "/code/a" });
+  await userEvent.click(screen.getByRole("button", { name: /new folder/i }));
+  await userEvent.type(screen.getByLabelText(/new folder name/i), "newproj");
+  await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+  expect(api.mkdir).toHaveBeenCalledWith("/code", "newproj");
+  // the new (not-yet-pickable) dir becomes selectable + is selected
+  await screen.findByRole("option", { name: "/code/newproj" });
+  expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("/code/newproj");
+});
+
+test("no New folder control when no roots are configured (#335 Phase 3)", async () => {
+  mockProjects.mockResolvedValue({ projects: [{ cwd: "/code/a", label: "/code/a" }] });
+  renderLanding(["claude"]);
+  await screen.findByRole("option", { name: "/code/a" });
+  expect(screen.queryByRole("button", { name: /new folder/i })).toBeNull();
 });

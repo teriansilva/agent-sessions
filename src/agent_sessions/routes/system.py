@@ -10,7 +10,7 @@ import json
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import discover, engines, prefs, sysinfo, twofactor, update, vtsidecar
+from .. import discover, engines, prefs, project_dirs, sysinfo, twofactor, update, vtsidecar
 from ..auth import AuthConfig, current_csrf, session_uid
 from ..version import get_version
 
@@ -128,6 +128,9 @@ def register(
                 # Preferred new-session start dir (#335 Phase 2); the picker pre-selects it when
                 # still pickable, else falls back silently.
                 "default_project": prefs.get_default_project(),
+                # Base dirs under which the UI may create a new project folder (#335 Phase 3).
+                # Empty ⇒ the "New folder" affordance is hidden + the mkdir endpoint is a no-op.
+                "project_roots": project_dirs.project_roots(),
                 # Per-cwd custom project display names (#148).
                 "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never

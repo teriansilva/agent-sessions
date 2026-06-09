@@ -918,3 +918,80 @@ def test_default_project_non_string_422(auth_cfg, fake_jsonl):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+# ---- scoped create-folder (#335 Phase 3) --------------------------------------
+
+
+def test_mkdir_creates_under_configured_root(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
+    import os
+
+    root = tmp_path / "code"
+    root.mkdir()
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/projects/mkdir", json={"root": str(root), "name": "newproj"}, headers=hdr)
+    assert r.status_code == 200
+    assert r.json()["cwd"] == os.path.realpath(root / "newproj")
+    assert (root / "newproj").is_dir()
+    # exposed in config so the UI can show the "New folder" affordance + its roots
+    assert c.get("/api/config").json()["project_roots"] == [os.path.realpath(root)]
+
+
+def test_mkdir_disabled_when_no_roots_404(auth_cfg, fake_jsonl, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_PROJECT_ROOTS", raising=False)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/projects/mkdir",
+        json={"root": "/x", "name": "y"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 404
+    assert c.get("/api/config").json()["project_roots"] == []
+
+
+def test_mkdir_bad_name_422(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
+    root = tmp_path / "code"
+    root.mkdir()
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/projects/mkdir",
+        json={"root": str(root), "name": "../escape"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+
+
+def test_mkdir_root_not_allowed_403(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
+    root = tmp_path / "code"
+    root.mkdir()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/projects/mkdir",
+        json={"root": str(other), "name": "x"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_mkdir_requires_csrf(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
+    root = tmp_path / "code"
+    root.mkdir()
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post(
+        "/api/projects/mkdir",
+        json={"root": str(root), "name": "x"},
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403

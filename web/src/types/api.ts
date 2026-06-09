@@ -71,6 +71,9 @@ export interface AppConfig {
   /** Preferred new-session start directory (#335 Phase 2). The picker pre-selects it when it's
    *  still a pickable project, else falls back to the first option. "" / absent = no preference. */
   default_project?: string;
+  /** Base dirs under which the UI may create a new project folder (#335 Phase 3). Empty/absent ⇒
+   *  the "New folder" affordance is hidden and the mkdir endpoint is disabled. */
+  project_roots?: string[];
   /** Per-cwd custom project display names (#148). */
   project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a

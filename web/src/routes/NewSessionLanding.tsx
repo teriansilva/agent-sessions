@@ -37,6 +37,37 @@ export function NewSessionLanding() {
     api.setPrefs({ default_project: cwd }).catch(() => setSavedDefault(null));
   };
 
+  // Scoped create-folder (#335 Phase 3). Only offered when the server reports configured roots.
+  const roots = config?.project_roots ?? [];
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newRoot, setNewRoot] = useState("");
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+
+  const createFolder = async () => {
+    const root = newRoot || roots[0] || "";
+    const name = newName.trim();
+    if (!root || !name || creating) return;
+    setCreating(true);
+    setFolderError(null);
+    try {
+      const { cwd: created } = await api.mkdir(root, name);
+      // A brand-new empty dir isn't "pickable" yet (no sessions), so add it locally + select it;
+      // it becomes pickable server-side once a session runs there.
+      setProjects((prev) =>
+        prev.some((p) => p.cwd === created) ? prev : [...prev, { cwd: created, label: created }],
+      );
+      setCwdChoice(created);
+      setShowNewFolder(false);
+      setNewName("");
+    } catch {
+      setFolderError("Couldn’t create that folder — check the name.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     api
@@ -119,6 +150,59 @@ export function NewSessionLanding() {
             {isDefault ? "✓ Default project" : "Set as default project"}
           </button>
         )}
+
+        {roots.length > 0 &&
+          (!showNewFolder ? (
+            <button
+              type="button"
+              className={styles.setDefault}
+              onClick={() => setShowNewFolder(true)}
+            >
+              + New folder
+            </button>
+          ) : (
+            <div className={styles.newFolder}>
+              {roots.length > 1 && (
+                <select
+                  value={newRoot || roots[0]}
+                  onChange={(e) => setNewRoot(e.target.value)}
+                  aria-label="Base directory"
+                >
+                  {roots.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <input
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="folder name"
+                aria-label="New folder name"
+              />
+              <button
+                type="button"
+                className={styles.newFolderBtn}
+                onClick={createFolder}
+                disabled={!newName.trim() || creating}
+              >
+                {creating ? "Creating…" : "Create"}
+              </button>
+              <button
+                type="button"
+                className={styles.newFolderBtn}
+                onClick={() => {
+                  setShowNewFolder(false);
+                  setFolderError(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ))}
+        {folderError && <p className={styles.error}>{folderError}</p>}
 
         <label className={styles.checkbox}>
           <input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} />
