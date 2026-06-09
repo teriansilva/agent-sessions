@@ -250,3 +250,19 @@ def test_install_sh_optin_autoupdate_timer():
     assert "Environment=AGENT_SESSIONS_AUTOUPDATE=1" in s
     assert "Environment=AGENT_SESSIONS_CHANNEL=" in s
     assert "Environment=AGENT_SESSIONS_REPO=" in s
+
+
+def test_uninstall_sh_is_safe_and_complete():
+    p = REPO / "uninstall.sh"
+    assert p.is_file()
+    assert subprocess.run(["sh", "-n", str(p)]).returncode == 0  # parses
+    s = p.read_text()
+    # Removes what the installer created…
+    for token in ("systemctl --user", "daemon-reload", ".local/share", "-update.timer"):
+        assert token in s, f"uninstall.sh missing {token!r}"
+    assert "rm -rf" in s and "_confirm" in s  # destructive but confirmed first
+    # …and NEVER deletes the agents' own conversation stores. The only lines mentioning them
+    # must be comments / the "kept" note, never an `rm`.
+    for ln in s.splitlines():
+        code = ln.split("#", 1)[0]
+        assert not ("rm " in code and any(d in code for d in (".claude", ".codex", ".gemini"))), ln
