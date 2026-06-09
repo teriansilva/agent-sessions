@@ -671,3 +671,18 @@
   color: var(--danger, #ff9a9a);
   font-size: 12px;
 }
+
+/* Project-visibility mode toggle (#335). */
+.modeRow {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+}
+.modeOpt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}

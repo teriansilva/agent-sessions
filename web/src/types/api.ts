@@ -62,6 +62,12 @@ export interface AppConfig {
    *  are present. The hide affects the sidebar list, the project filter, the new-session
    *  picker, and the overview map. */
   projects_hidden?: string[];
+  /** Project-visibility mode (#335): "all" (legacy denylist, default) or "included" (curated
+   *  allowlist — only `projects_included` cwds show; new dirs never auto-appear). Mode-exclusive:
+   *  in "included" mode `projects_hidden` is ignored and `projects_included` is authoritative. */
+  projects_mode?: "all" | "included" | string;
+  /** The "included"-mode allowlist of visible project cwds (#335). Ignored in "all" mode. */
+  projects_included?: string[];
   /** Per-cwd custom project display names (#148). */
   project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a

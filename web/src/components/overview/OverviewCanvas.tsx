@@ -42,8 +42,17 @@ export function OverviewCanvas({
   partial?: boolean;
   compact?: boolean;
 }) {
-  const { expanded, excluded, projectNames, toggle, expandAll, collapseAll } = useOverviewPrefs();
+  const { expanded, excluded, projectsMode, includedProjects, projectNames, toggle, expandAll, collapseAll } =
+    useOverviewPrefs();
   const navigate = useNavigate();
+  // The set of session cwds the map must DROP, resolved for the active mode (#335). `all` mode
+  // drops the denylist (unchanged); `included` mode drops everything NOT in the allowlist. The map
+  // takes an exclusion set, so we compute the mode-appropriate one here — keeping it in lockstep
+  // with the server-filtered sidebar/facets.
+  const dropped = useMemo(() => {
+    if (projectsMode !== "included") return excluded;
+    return new Set(sessions.map((s) => s.cwd).filter((cwd) => !includedProjects.has(cwd)));
+  }, [projectsMode, excluded, includedProjects, sessions]);
 
   // All node interaction goes through React Flow's onNodeClick. This is required, not just
   // convenient: RF only sets pointer-events:all on a node when it's selectable/draggable OR
@@ -71,13 +80,20 @@ export function OverviewCanvas({
   }, [pathname]);
 
   const { nodes, edges } = useMemo(
-    () => buildOverview(sessions, { includeArchived, expanded, excluded, activeId, names: projectNames }),
-    [sessions, includeArchived, expanded, excluded, activeId, projectNames],
+    () =>
+      buildOverview(sessions, {
+        includeArchived,
+        expanded,
+        excluded: dropped,
+        activeId,
+        names: projectNames,
+      }),
+    [sessions, includeArchived, expanded, dropped, activeId, projectNames],
   );
-  // Cwds available to expand (non-excluded) — drives "Expand all".
+  // Cwds available to expand (still visible) — drives "Expand all".
   const allCwds = useMemo(
-    () => [...new Set(sessions.filter((s) => !excluded.has(s.cwd)).map((s) => s.cwd))],
-    [sessions, excluded],
+    () => [...new Set(sessions.filter((s) => !dropped.has(s.cwd)).map((s) => s.cwd))],
+    [sessions, dropped],
   );
 
   if (!nodes.length) {

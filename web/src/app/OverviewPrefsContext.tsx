@@ -10,6 +10,8 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
   const [expanded, setExpandedState] = useState<Set<string>>(new Set());
   const [excluded, setExcludedState] = useState<Set<string>>(new Set());
   const [projectNames, setProjectNamesState] = useState<Record<string, string>>({});
+  const [mode, setModeState] = useState<"all" | "included">("all");
+  const [included, setIncludedState] = useState<Set<string>>(new Set());
   const [synced, setSynced] = useState(false);
 
   useEffect(() => {
@@ -22,6 +24,8 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
       new Set(config.projects_hidden ?? config.overview_excluded ?? []),
     );
     setProjectNamesState({ ...(config.project_names ?? {}) });
+    setModeState(config.projects_mode === "included" ? "included" : "all"); // #335
+    setIncludedState(new Set(config.projects_included ?? []));
     setSynced(true);
   }, [config, synced]);
 
@@ -35,6 +39,13 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
     // we send the new key so old clients keep seeing the data on their next config load.
     api.setPrefs({ projects_hidden: [...next] }).catch(() => {});
   };
+  const persistIncluded = (next: Set<string>) => {
+    setIncludedState(next);
+    api.setPrefs({ projects_included: [...next] }).catch(() => {});
+  };
+  // Mirror of the server `prefs.project_visible` resolver — mode-EXCLUSIVE so the map + Settings
+  // agree with the server-filtered sidebar/facets (#335).
+  const isVisible = (cwd: string) => (mode === "included" ? included.has(cwd) : !excluded.has(cwd));
   const value: OverviewPrefs = {
     expanded,
     hiddenProjects: excluded, // same Set under both names (#174)
@@ -62,6 +73,28 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
       else delete next[cwd]; // blank clears the custom name
       setProjectNamesState(next);
       api.setPrefs({ project_names: next }).catch(() => {});
+    },
+    projectsMode: mode,
+    includedProjects: included,
+    isVisible,
+    setProjectsMode: (m) => {
+      setModeState(m);
+      api.setPrefs({ projects_mode: m }).catch(() => {});
+    },
+    // Route a show/hide toggle to the list the CURRENT mode consults (#335): the allowlist in
+    // `included` mode, the denylist in `all` mode — never both, so they can't drift.
+    setProjectVisible: (cwd, visible) => {
+      if (mode === "included") {
+        const next = new Set(included);
+        if (visible) next.add(cwd);
+        else next.delete(cwd);
+        persistIncluded(next);
+      } else {
+        const next = new Set(excluded);
+        if (visible) next.delete(cwd);
+        else next.add(cwd);
+        persistHidden(next);
+      }
     },
   };
 

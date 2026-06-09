@@ -23,6 +23,18 @@ export interface OverviewPrefs {
   setProjectHidden: (cwd: string, hidden: boolean) => void;
   /** Set (or, with an empty/blank name, clear) a project's custom name. */
   setProjectName: (cwd: string, name: string) => void;
+  /** Project-visibility mode (#335): "all" (legacy denylist) or "included" (curated allowlist). */
+  projectsMode: "all" | "included";
+  /** The "included"-mode allowlist of visible cwds (#335). Ignored in "all" mode. */
+  includedProjects: Set<string>;
+  /** Client mirror of the server's `project_visible` resolver: is this cwd shown? Mode-exclusive
+   *  (`all` hides only denylisted, `included` shows only allowlisted) — keeps the map + Settings in
+   *  lockstep with the server-filtered sidebar/facets (#335). */
+  isVisible: (cwd: string) => boolean;
+  /** Switch the visibility mode and persist it (#335). */
+  setProjectsMode: (mode: "all" | "included") => void;
+  /** Show/hide a project, routed to the denylist (`all`) or allowlist (`included`) per mode (#335). */
+  setProjectVisible: (cwd: string, visible: boolean) => void;
 }
 
 export const OverviewPrefsCtx = createContext<OverviewPrefs | null>(null);
@@ -42,6 +54,11 @@ export function useOverviewPrefs(): OverviewPrefs {
       setExcluded: () => {},
       setProjectHidden: () => {},
       setProjectName: () => {},
+      projectsMode: "all",
+      includedProjects: new Set(),
+      isVisible: () => true,
+      setProjectsMode: () => {},
+      setProjectVisible: () => {},
     }
   );
 }

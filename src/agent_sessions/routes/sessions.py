@@ -87,16 +87,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             phys = engines.physical_key(key, aliases)
             return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
 
-        # Hidden projects (#174) are stripped server-side BEFORE pagination + facets are
-        # computed, so totals/next_offset/facet lists all describe the visible-to-the-user
-        # set. Filtering only on the client would make `total` and the filter dropdown lie.
-        # Hide is keyed by cwd (the row's `cwd` field), not the display name.
+        # Project visibility (#174 hide-list, generalized by #335). Stripped server-side BEFORE
+        # pagination + facets, so totals/next_offset/facets all describe the visible-to-the-user
+        # set (filtering only on the client would make `total` + the filter lie). The shared
+        # `prefs.project_visible` resolver is mode-aware: `all` hides denylisted cwds, `included`
+        # shows only allowlisted ones. Keyed by the row's `cwd`, not the display name.
+        mode = prefs.get_projects_mode()
         hidden = set(prefs.get_projects_hidden())
+        included = set(prefs.get_projects_included())
         scoped = [
             row
             for s in engines.scan_all()
             for row in [_row(s, _meta_for(s))]
-            if row["archived"] == archived and row["cwd"] not in hidden
+            if row["archived"] == archived
+            and prefs.project_visible(row["cwd"], mode=mode, hidden=hidden, included=included)
         ]
         # Facets for the project/agent dropdowns: distinct values over the visible (already
         # hide-filtered) archived-scoped set, computed BEFORE q/project/engine filtering —
@@ -137,25 +141,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     @app.get("/api/projects")
     async def list_projects(_: str = Depends(logged_in)) -> JSONResponse:
-        # New-session picker + the Settings "Session overview" manager — hidden projects
-        # (#174) are excluded here too. Picking a hidden project as a start location would
-        # feel inconsistent with the user having explicitly said "I don't want to see this."
+        # New-session picker + the Settings project manager.
         #
-        # Source from ALL engines (#196): the sidebar filter dropdown derives its options
-        # from /api/sessions facets, which are computed over engines.scan_all(). If this
-        # endpoint used the Claude-only scan (pickable_projects' default), an opencode/gemini
-        # cwd would appear in the filter but be unmanageable here — the two lists drift.
-        # Passing scan_all() unifies the superset so every filterable project is manageable.
-        hidden = set(prefs.get_projects_hidden())
-        return JSONResponse(
-            {
-                "projects": [
-                    {"cwd": c, "label": c}
-                    for c in scanner.pickable_projects(sessions=engines.scan_all())
-                    if c not in hidden
-                ]
-            }
-        )
+        # `all` mode (#174): hidden projects are excluded — picking a hidden project as a start
+        # location would feel inconsistent with the user having said "I don't want to see this."
+        #
+        # `included` mode (#335): NOT filtered by the allowlist. This list must stay the FULL
+        # discovered set so (a) the picker can start a session in any directory — that launch
+        # auto-includes it, which is how a dir enters the curated sidebar — and (b) the Settings
+        # manager can show every dir to curate. Filtering here would lock the user into their
+        # current allowlist with no way to add a new dir (chicken-and-egg).
+        #
+        # Source from ALL engines (#196): the sidebar filter dropdown derives its options from
+        # /api/sessions facets (over engines.scan_all()). A Claude-only scan here would let an
+        # opencode/gemini cwd appear in the filter but be unmanageable — the two lists drift.
+        # scan_all() unifies the superset so every filterable project is manageable.
+        all_pickable = scanner.pickable_projects(sessions=engines.scan_all())
+        if prefs.get_projects_mode() == "included":
+            projects = list(all_pickable)
+        else:
+            hidden = set(prefs.get_projects_hidden())
+            projects = [c for c in all_pickable if c not in hidden]
+        return JSONResponse({"projects": [{"cwd": c, "label": c} for c in projects]})
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(

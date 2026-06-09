@@ -30,6 +30,7 @@ from fastapi import FastAPI, WebSocket
 from .. import (
     engines,
     owner,
+    prefs,
     ptybridge,
     scanner,
     session_stream,
@@ -264,6 +265,15 @@ def register(
                 except NotImplementedError:
                     return await reject(4404)  # engine can't pin a new-session id
                 cwd = new_cwd
+                # Auto-include the launch cwd in `included` mode (#335): now that the new-session
+                # request has PASSED validation (cwd is a real pickable project) and the launch is
+                # accepted, add the dir to the allowlist so the session is visible in the curated
+                # sidebar now. Reached only past the 4404 rejections above, so a typo/invalid
+                # cwd never grows the list. No-op in `all` mode; best-effort (a write must never
+                # block the terminal).
+                if prefs.get_projects_mode() == "included":
+                    with contextlib.suppress(Exception):
+                        prefs.add_project_included(new_cwd)
                 if new_snapshot is not None:
                     reconcile_task = asyncio.create_task(
                         reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)

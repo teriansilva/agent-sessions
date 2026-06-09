@@ -538,3 +538,39 @@ def test_vt_scrollback_non_bool_422(auth_cfg, tmp_home, monkeypatch):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+def test_project_visible_resolver_is_mode_exclusive():
+    from agent_sessions import prefs
+
+    hidden = {"/a"}
+    included = {"/b"}
+    # all mode: only the denylist matters (included is ignored)
+    assert prefs.project_visible("/a", mode="all", hidden=hidden, included=included) is False
+    assert prefs.project_visible("/b", mode="all", hidden=hidden, included=included) is True
+    assert prefs.project_visible("/x", mode="all", hidden=hidden, included=included) is True
+    # included mode: only the allowlist matters (hidden is ignored), new/unlisted dirs stay hidden
+    assert prefs.project_visible("/b", mode="included", hidden=hidden, included=included) is True
+    assert prefs.project_visible("/a", mode="included", hidden=hidden, included=included) is False
+    assert prefs.project_visible("/x", mode="included", hidden=hidden, included=included) is False
+
+
+def test_projects_mode_and_included_roundtrip(tmp_home):
+    from agent_sessions import prefs
+
+    assert prefs.get_projects_mode() == "all"  # safe default
+    assert prefs.get_projects_included() == []
+    assert prefs.set_projects_mode("included") == "included"
+    assert prefs.get_projects_mode() == "included"
+    assert prefs.set_projects_mode("bogus") == "all"  # invalid coerces to default
+    prefs.set_projects_included(["/p/a", "/p/b", "/p/a"])  # dedup
+    assert prefs.get_projects_included() == ["/p/a", "/p/b"]
+
+
+def test_add_project_included_is_idempotent(tmp_home):
+    from agent_sessions import prefs
+
+    prefs.set_projects_included(["/p/a"])
+    assert prefs.add_project_included("/p/b") == ["/p/a", "/p/b"]
+    assert prefs.add_project_included("/p/b") == ["/p/a", "/p/b"]  # already present → no-op
+    assert prefs.add_project_included("") == ["/p/a", "/p/b"]  # empty → no-op

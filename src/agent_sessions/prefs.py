@@ -269,6 +269,63 @@ def set_projects_hidden(cwds: object, path: Path | None = None) -> list[str]:
     return _set("projects_hidden", coerce_str_list(cwds), path)
 
 
+# Project-visibility mode (#335). "all" = the legacy denylist (`projects_hidden`): every project
+# shows unless explicitly hidden — the DEFAULT, so upgrades / fresh installs stay unchanged.
+# "included"
+# = a curated allowlist: ONLY cwds in `projects_included` show, and a new/unlisted directory never
+# auto-appears. The lists are mode-EXCLUSIVE (Hermes #335): `all` consults only `projects_hidden`,
+# `included` consults only `projects_included` — never the confusing intersection of both.
+PROJECT_MODES: tuple[str, ...] = ("all", "included")
+DEFAULT_PROJECT_MODE = "all"
+
+
+def coerce_project_mode(value: object) -> str:
+    """Narrow any input to a known project-visibility mode, falling back to the default."""
+    return value if isinstance(value, str) and value in PROJECT_MODES else DEFAULT_PROJECT_MODE
+
+
+def get_projects_mode(path: Path | None = None) -> str:
+    """The project-visibility mode (all|included); default `all` (legacy denylist)."""
+    return coerce_project_mode(_load(path or _default_path()).get("projects_mode"))
+
+
+def set_projects_mode(mode: str, path: Path | None = None) -> str:
+    """Persist the project-visibility mode (invalid input → default). Preserves other keys."""
+    return _set("projects_mode", coerce_project_mode(mode), path)
+
+
+def get_projects_included(path: Path | None = None) -> list[str]:
+    """The curated allowlist of project cwds shown in `included` mode (#335). Ignored in `all`
+    mode. Normalized on read."""
+    return coerce_str_list(_load(path or _default_path()).get("projects_included"))
+
+
+def set_projects_included(cwds: object, path: Path | None = None) -> list[str]:
+    """Persist the included-project allowlist (#335). Preserves other keys."""
+    return _set("projects_included", coerce_str_list(cwds), path)
+
+
+def add_project_included(cwd: str, path: Path | None = None) -> list[str]:
+    """Idempotently add one cwd to the include-list (#335). Used by auto-include-on-accepted-launch;
+    the caller only invokes it in `included` mode, so it never grows the list in `all` mode."""
+    cur = get_projects_included(path)
+    if cwd and cwd not in cur:
+        cur.append(cwd)
+        return set_projects_included(cur, path)
+    return cur
+
+
+def project_visible(cwd: str, *, mode: str, hidden: set[str], included: set[str]) -> bool:
+    """Whether a project ``cwd`` is visible, given the resolved mode + the two sets (#335). The
+    single source of truth threaded through /api/sessions (list + facets), /api/projects (picker),
+    and the overview, so the four surfaces can't drift. Pure + mode-EXCLUSIVE: `included` shows only
+    allowlisted cwds (a new/unlisted dir stays hidden); any other mode (`all`) hides only
+    denylisted cwds."""
+    if mode == "included":
+        return cwd in included
+    return cwd not in hidden
+
+
 def get_project_names(path: Path | None = None) -> dict[str, str]:
     """Per-cwd custom display names for projects (#148). Normalized on read."""
     return coerce_str_map(_load(path or _default_path()).get("project_names"))

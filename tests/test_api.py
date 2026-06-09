@@ -819,3 +819,81 @@ def test_scrollback_clear_rejects_bad_scope_and_requires_csrf(auth_cfg, fake_jso
         ).status_code
         == 403
     )
+
+
+# ---- project visibility: include-list mode (#335) -----------------------------
+
+
+def test_included_mode_filters_sessions_to_allowlist(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
+    assert len(projects) >= 2  # the fixture has several distinct project cwds
+    keep = projects[0]
+    r = c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": [keep]},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    d = c.get("/api/sessions?limit=200").json()
+    # only the allowlisted project survives — list + facets agree
+    assert d["facets"]["projects"] == [keep]
+    assert all(s["project"] == keep for s in d["sessions"])
+
+
+def test_all_mode_hide_still_excludes(auth_cfg, fake_jsonl):
+    # Regression: the legacy denylist behavior is unchanged in the default mode.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
+    drop = projects[0]
+    c.post("/api/prefs", json={"projects_hidden": [drop]}, headers=hdr)
+    after = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
+    assert drop not in after
+
+
+def test_projects_picker_unfiltered_in_included_mode(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    all_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert all_cwds
+    keep = sorted(all_cwds)[0]
+    c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": [keep]},
+        headers=hdr,
+    )
+    # the picker still offers EVERY discovered dir (start anywhere → auto-include), not just the
+    # allowlist — otherwise the curated mode would lock you out of adding a new project.
+    incl_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert incl_cwds == all_cwds
+
+
+def test_config_exposes_projects_mode_and_included(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    cfg = c.get("/api/config").json()
+    assert cfg["projects_mode"] == "all" and cfg["projects_included"] == []
+    c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": ["/x"]},
+        headers=hdr,
+    )
+    cfg = c.get("/api/config").json()
+    assert cfg["projects_mode"] == "included" and cfg["projects_included"] == ["/x"]
+
+
+def test_projects_mode_invalid_422(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"projects_mode": "bogus"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

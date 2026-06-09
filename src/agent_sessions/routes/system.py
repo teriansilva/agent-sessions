@@ -120,6 +120,11 @@ def register(
                 # reads its hidden list; new clients prefer `projects_hidden`.
                 "overview_excluded": prefs.get_projects_hidden(),
                 "projects_hidden": prefs.get_projects_hidden(),
+                # Project-visibility model (#335): mode (all|included) + the `included`-mode
+                # allowlist. `all` (default) keeps the legacy hide-list behavior unchanged; the
+                # client applies the same mode-exclusive rule as the server's `project_visible`.
+                "projects_mode": prefs.get_projects_mode(),
+                "projects_included": prefs.get_projects_included(),
                 # Per-cwd custom project display names (#148).
                 "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
@@ -175,6 +180,11 @@ def register(
                 with contextlib.suppress(Exception):
                     await vtsidecar.ensure_started()
             out["vt_scrollback"] = vtsidecar.enabled()
+        if "projects_mode" in payload:
+            # Project-visibility mode (#335): all|included.
+            if payload["projects_mode"] not in prefs.PROJECT_MODES:
+                raise HTTPException(status_code=422, detail="unknown projects_mode")
+            out["projects_mode"] = prefs.set_projects_mode(payload["projects_mode"])
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
             # The legacy `overview_excluded` write path is kept for clients still on the old
@@ -182,6 +192,8 @@ def register(
             # the two never diverge (#174).
             ("overview_excluded", prefs.set_projects_hidden),
             ("projects_hidden", prefs.set_projects_hidden),
+            # `included`-mode allowlist (#335).
+            ("projects_included", prefs.set_projects_included),
         ):
             if key in payload:
                 v = payload[key]

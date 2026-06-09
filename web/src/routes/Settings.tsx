@@ -697,7 +697,16 @@ function ProjectRow({
 /** Session overview (#174): hierarchical project tree with inverse-checkbox + rename modal.
  *  Hide is GLOBAL — affects sidebar list, project filter, new-session picker, and the map. */
 function OverviewCard() {
-  const { hiddenProjects, projectNames, setProjectHidden, setProjectName } = useOverviewPrefs();
+  const {
+    hiddenProjects,
+    includedProjects,
+    projectsMode,
+    isVisible,
+    setProjectVisible,
+    setProjectsMode,
+    projectNames,
+    setProjectName,
+  } = useOverviewPrefs();
   const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
   const [renaming, setRenaming] = useState<{ cwd: string; trigger: HTMLElement | null } | null>(
     null,
@@ -714,27 +723,56 @@ function OverviewCard() {
     };
   }, []);
 
-  // Union of: known (discovered) cwds ∪ hidden ∪ named — so a hidden project (which
-  // /api/projects now omits server-side per #174) AND a rename for an inactive project
-  // are both still editable here.
+  // Union of: known (discovered) cwds ∪ hidden ∪ included ∪ named — so a curated-but-inactive
+  // project (hidden in `all` mode, or included-but-not-currently-discovered in `included` mode)
+  // and a rename for an inactive project all stay editable here.
   const rows = useMemo(() => {
     const known = new Set((projects ?? []).map((p) => p.cwd));
-    const all = new Set<string>([...known, ...hiddenProjects, ...Object.keys(projectNames)]);
+    const all = new Set<string>([
+      ...known,
+      ...hiddenProjects,
+      ...includedProjects,
+      ...Object.keys(projectNames),
+    ]);
     const tree = buildProjectTree(all);
     return flattenTree(tree).map((n) => ({
       cwd: n.cwd,
       depth: n.depth,
       stale: !known.has(n.cwd),
     }));
-  }, [projects, hiddenProjects, projectNames]);
+  }, [projects, hiddenProjects, includedProjects, projectNames]);
 
+  const curated = projectsMode === "included";
   return (
     <section className={styles.section} aria-labelledby="overview-h">
       <h2 id="overview-h">Session overview</h2>
+      {/* Visibility mode (#335). "Show all" = the legacy denylist (untick to hide). "Only included"
+       *  = a curated allowlist: only ticked projects show, and a new directory never auto-appears
+       *  until you tick it (starting a session in a directory also adds it automatically). */}
+      <div className={styles.modeRow} role="radiogroup" aria-label="Project visibility">
+        <label className={styles.modeOpt}>
+          <input
+            type="radio"
+            name="projects-mode"
+            checked={!curated}
+            onChange={() => setProjectsMode("all")}
+          />
+          Show all (hide a few)
+        </label>
+        <label className={styles.modeOpt}>
+          <input
+            type="radio"
+            name="projects-mode"
+            checked={curated}
+            onChange={() => setProjectsMode("included")}
+          />
+          Only included
+        </label>
+      </div>
       <p className={styles.hint}>
-        Untick a project to hide it everywhere — sidebar, filter, new-session picker, and the
-        overview map. Click a name to give the project a custom display name. Filtering still
-        uses the full path under the hood.
+        {curated
+          ? "Only ticked projects show — sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically). Click a name for a custom display name."
+          : "Untick a project to hide it everywhere — sidebar, filter, new-session picker, and the overview map. Click a name to give the project a custom display name. Filtering still uses the full path under the hood."}
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>
@@ -748,9 +786,12 @@ function OverviewCard() {
               cwd={r.cwd}
               depth={r.depth}
               stale={r.stale}
-              hidden={hiddenProjects.has(r.cwd)}
+              // Reuse ProjectRow's inverse-checkbox: `hidden` = NOT visible under the current mode;
+              // a toggle routes through `setProjectVisible`, which writes the allowlist (included)
+              // or the denylist (all) — never both (#335).
+              hidden={!isVisible(r.cwd)}
               currentName={projectNames[r.cwd] ?? ""}
-              onToggleHidden={setProjectHidden}
+              onToggleHidden={(cwd, hidden) => setProjectVisible(cwd, !hidden)}
               onOpenRename={(cwd, trigger) => setRenaming({ cwd, trigger })}
             />
           ))}
