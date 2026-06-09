@@ -162,7 +162,11 @@ export function Terminal({
     const term = new Xterm({
       cursorBlink: true,
       fontSize: t0.fontSize,
-      scrollback: 10000,
+      // Lines of live (dtach-stream) scroll-up the browser retains while connected — distinct
+      // from the rendered transcript. 50k keeps a deep session in reach; xterm stores lines
+      // compactly so the memory cost is modest. Pairs with the server ring (_MAX_BUF) that backs
+      // reconnect replay.
+      scrollback: 50000,
       fontFamily: t0.fontFamily,
       theme: { ...xtermTheme(theme), cursor: accent },
     });
