@@ -1,0 +1,288 @@
+/* Session Overview canvas (#139). React Flow base CSS is imported by OverviewCanvas; these
+ * rules theme it to our tokens and style the custom nodes. Everything is scoped under
+ * .tr-overview so it can't leak into the rest of the app. */
+
+.tr-overview {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* React Flow chrome → our tokens. */
+.tr-overview .react-flow__background {
+  background: var(--bg);
+}
+/* No rounded corners on the node wrappers — the HUD square-corner language (#211 4d). React
+ * Flow's base style.css rounds default node types; our custom nodes carry their own square
+ * frames, so flatten the wrapper defensively. */
+.tr-overview .react-flow__node {
+  border-radius: 0;
+}
+.tr-overview .react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+.tr-overview .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  fill: currentColor;
+}
+.tr-overview .react-flow__controls-button:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.tr-overview .react-flow__minimap {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.tr-overview .react-flow__attribution {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+.tr-overview .react-flow__attribution a {
+  color: var(--text-muted);
+}
+
+/* Project cluster container. The node wrapper keeps pointer events ENABLED (default) so the
+ * header toggle <button> is hit-testable; chips are separate React Flow nodes on top and stay
+ * clickable. (We deliberately don't disable the wrapper — that would also disable the header
+ * button. The minor cost: dragging on a cluster's empty body doesn't pan the canvas; users
+ * pan over the background / between clusters instead.) (#144) */
+.tr-ov-group {
+  width: 100%;
+  height: 100%;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
+}
+/* The cluster header is a collapse/expand toggle (button reset). */
+.tr-ov-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.tr-ov-group-head:hover .tr-ov-path {
+  color: var(--accent);
+}
+.tr-ov-group.collapsed .tr-ov-group-head {
+  border-bottom: 0; /* header-only box */
+}
+.tr-ov-chev {
+  flex: none;
+  color: var(--text-muted);
+}
+.tr-ov-group-head .tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.tr-ov-path {
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Real path shown under a custom name, to disambiguate duplicate friendly names (#148). */
+.tr-ov-cwd {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-count {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+  flex: none;
+}
+/* Folder-hierarchy edges + their (hidden, non-interactive) handles (#148). */
+.tr-overview .react-flow__edge-path {
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.tr-ov-handle {
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  min-width: 0;
+  min-height: 0;
+  width: 1px;
+  height: 1px;
+}
+
+/* Session chip. */
+.tr-ov-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 176px;
+  height: 46px;
+  padding: 0 10px;
+  background: var(--row-hover);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--eng, var(--accent));
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition:
+    border-color 0.12s,
+    transform 0.12s;
+}
+.tr-ov-chip:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.tr-ov-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tr-ov-chip.archived {
+  opacity: 0.45;
+}
+/* The currently-open session — highlighted in sync with the sidebar's active row (#149). */
+.tr-ov-chip.selected {
+  border-color: var(--accent);
+  background: var(--row-hover);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.tr-ov-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--eng, var(--accent));
+}
+.tr-ov-dot.active {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 25%, transparent);
+}
+.tr-ov-dot.idle {
+  background: transparent;
+}
+/* Agent currently emitting output (#156). Stronger signal than `active` — pulses to
+ * draw the eye. Reduced-motion users get a steady ring instead of the animation. */
+.tr-ov-dot.working {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  animation: tr-ov-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tr-ov-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--eng, var(--accent)) 12%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-ov-dot.working {
+    animation: none;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
+  }
+}
+.tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tr-ov-ttl {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+.tr-ov-sub {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.tr-ov-eng {
+  margin-left: auto;
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--eng, var(--accent));
+}
+
+/* Empty / loading / error states. */
+.tr-ov-state {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--bg);
+}
+/* Expand-all / Collapse-all toolbar (#144), top-right over the canvas. */
+.tr-ov-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+}
+.tr-ov-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.tr-ov-toolbar button:hover {
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+.tr-ov-partial {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 12px;
+}
