@@ -326,6 +326,19 @@ def project_visible(cwd: str, *, mode: str, hidden: set[str], included: set[str]
     return cwd not in hidden
 
 
+def get_default_project(path: Path | None = None) -> str:
+    """The preferred new-session start directory (#335 Phase 2), or "" when unset. The picker
+    pre-selects it ONLY when it is still a pickable project (validated client-side on read); a
+    stale value (dir gone) silently falls back to the picker's first option — never an error."""
+    v = _load(path or _default_path()).get("default_project")
+    return v if isinstance(v, str) else ""
+
+
+def set_default_project(cwd: object, path: Path | None = None) -> str:
+    """Persist the preferred new-session cwd (or "" to clear). Preserves other keys."""
+    return _set("default_project", cwd if isinstance(cwd, str) else "", path)
+
+
 def get_project_names(path: Path | None = None) -> dict[str, str]:
     """Per-cwd custom display names for projects (#148). Normalized on read."""
     return coerce_str_map(_load(path or _default_path()).get("project_names"))

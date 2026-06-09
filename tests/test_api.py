@@ -897,3 +897,24 @@ def test_projects_mode_invalid_422(auth_cfg, fake_jsonl):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+def test_default_project_config_and_prefs(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.get("/api/config").json()["default_project"] == ""
+    r = c.post("/api/prefs", json={"default_project": "/p/x"}, headers=hdr)
+    assert r.status_code == 200 and r.json() == {"default_project": "/p/x"}
+    assert c.get("/api/config").json()["default_project"] == "/p/x"
+
+
+def test_default_project_non_string_422(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"default_project": 123},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422

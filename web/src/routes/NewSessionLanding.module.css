@@ -122,3 +122,23 @@
   font-size: 12px;
   margin: 0;
 }
+
+/* "Set as default project" affordance (#335 Phase 2). */
+.setDefault {
+  align-self: flex-start;
+  margin: -2px 0 4px;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.setDefault:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.setDefault:disabled {
+  color: var(--text-3);
+  cursor: default;
+}

@@ -19,10 +19,23 @@ export function NewSessionLanding() {
   const [error, setError] = useState<string | null>(null);
 
   const engines = config?.new_session_engines ?? [];
-  // Effective selection: the user's explicit choice, else the first available option.
-  // Derived (not effect-set) so there are no defaulting cascades.
+  // Preferred start dir (#335 Phase 2): honor it ONLY when it's still a pickable project (a stale
+  // value silently falls back). `savedDefault` tracks a just-saved value so the button reflects it
+  // without a config refetch.
+  const [savedDefault, setSavedDefault] = useState<string | null>(null);
+  const effectiveDefault = savedDefault ?? config?.default_project ?? "";
+  const validDefault = projects.some((p) => p.cwd === effectiveDefault) ? effectiveDefault : "";
+  // Effective selection: the user's explicit choice, else the preferred default, else the first
+  // option. Derived (not effect-set) so there are no defaulting cascades.
   const engine = engineChoice || engines[0] || "";
-  const cwd = cwdChoice || projects[0]?.cwd || "";
+  const cwd = cwdChoice || validDefault || projects[0]?.cwd || "";
+  const isDefault = cwd !== "" && cwd === effectiveDefault;
+
+  const setAsDefault = () => {
+    if (!cwd || isDefault) return;
+    setSavedDefault(cwd);
+    api.setPrefs({ default_project: cwd }).catch(() => setSavedDefault(null));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -90,6 +103,22 @@ export function NewSessionLanding() {
             )}
           </select>
         </label>
+
+        {projects.length > 0 && cwd && (
+          <button
+            type="button"
+            className={styles.setDefault}
+            onClick={setAsDefault}
+            disabled={isDefault}
+            aria-label={
+              isDefault
+                ? "This is your default project"
+                : "Set the selected project as the default for new sessions"
+            }
+          >
+            {isDefault ? "✓ Default project" : "Set as default project"}
+          </button>
+        )}
 
         <label className={styles.checkbox}>
           <input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} />

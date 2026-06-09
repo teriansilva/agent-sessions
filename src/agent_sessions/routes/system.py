@@ -125,6 +125,9 @@ def register(
                 # client applies the same mode-exclusive rule as the server's `project_visible`.
                 "projects_mode": prefs.get_projects_mode(),
                 "projects_included": prefs.get_projects_included(),
+                # Preferred new-session start dir (#335 Phase 2); the picker pre-selects it when
+                # still pickable, else falls back silently.
+                "default_project": prefs.get_default_project(),
                 # Per-cwd custom project display names (#148).
                 "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
@@ -185,6 +188,13 @@ def register(
             if payload["projects_mode"] not in prefs.PROJECT_MODES:
                 raise HTTPException(status_code=422, detail="unknown projects_mode")
             out["projects_mode"] = prefs.set_projects_mode(payload["projects_mode"])
+        if "default_project" in payload:
+            # Preferred new-session cwd (#335 Phase 2); "" clears it. Stored verbatim — the picker
+            # validates pickability on read, so a stale value just falls back, never errors.
+            v = payload["default_project"]
+            if not isinstance(v, str):
+                raise HTTPException(status_code=422, detail="default_project must be a string")
+            out["default_project"] = prefs.set_default_project(v)
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
             # The legacy `overview_excluded` write path is kept for clients still on the old

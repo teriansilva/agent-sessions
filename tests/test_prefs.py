@@ -574,3 +574,13 @@ def test_add_project_included_is_idempotent(tmp_home):
     assert prefs.add_project_included("/p/b") == ["/p/a", "/p/b"]
     assert prefs.add_project_included("/p/b") == ["/p/a", "/p/b"]  # already present → no-op
     assert prefs.add_project_included("") == ["/p/a", "/p/b"]  # empty → no-op
+
+
+def test_default_project_roundtrip(tmp_home):
+    from agent_sessions import prefs
+
+    assert prefs.get_default_project() == ""  # unset
+    assert prefs.set_default_project("/p/a") == "/p/a"
+    assert prefs.get_default_project() == "/p/a"
+    assert prefs.set_default_project("") == ""  # cleared
+    assert prefs.get_default_project() == ""

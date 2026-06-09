@@ -15,12 +15,17 @@ vi.mock("react-router-dom", async (orig) => {
 });
 vi.mock("../lib/api", async (orig) => {
   const actual = await orig<typeof import("../lib/api")>();
-  return { ...actual, api: { projects: vi.fn() } };
+  return { ...actual, api: { projects: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}) } };
 });
 const mockProjects = vi.mocked(api.projects);
 
-function renderLanding(engines = ["claude"]) {
-  const config: AppConfig = { csrf: "x", new_session_engines: engines, terminal_backend: "ws" };
+function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
+  const config: AppConfig = {
+    csrf: "x",
+    new_session_engines: engines,
+    terminal_backend: "ws",
+    ...extra,
+  };
   return render(
     <ConfigCtx.Provider value={config}>
       <MemoryRouter>
@@ -88,4 +93,38 @@ test("Start is disabled until a project is available", async () => {
   // No projects → the only option is the placeholder and Start stays disabled.
   await screen.findByRole("option", { name: /no projects found/i });
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+});
+
+test("pre-selects the default project when it is pickable (#335 Phase 2)", async () => {
+  mockProjects.mockResolvedValue({
+    projects: [
+      { cwd: "/a", label: "/a" },
+      { cwd: "/b", label: "/b" },
+    ],
+  });
+  renderLanding(["claude"], { default_project: "/b" });
+  await screen.findByRole("option", { name: "/b" });
+  // the select lands on the default, not the first option
+  expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("/b");
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  const [, opts] = navigateMock.mock.calls[0] as [string, { state: { fresh: { cwd: string } } }];
+  expect(opts.state.fresh.cwd).toBe("/b");
+});
+
+test("falls back to the first project when the default is stale (#335 Phase 2)", async () => {
+  mockProjects.mockResolvedValue({ projects: [{ cwd: "/a", label: "/a" }] });
+  renderLanding(["claude"], { default_project: "/gone" });
+  await screen.findByRole("option", { name: "/a" });
+  expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("/a");
+});
+
+test("Set as default persists the selected project (#335 Phase 2)", async () => {
+  mockProjects.mockResolvedValue({ projects: [{ cwd: "/a", label: "/a" }] });
+  renderLanding(["claude"]);
+  await screen.findByRole("option", { name: "/a" });
+  // accessible name comes from the aria-label (verbose for screen readers)
+  await userEvent.click(screen.getByRole("button", { name: /set the selected project as the default/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "/a" });
+  // after saving it reflects the default state (aria-label flips)
+  expect(screen.getByRole("button", { name: /this is your default project/i })).toBeDisabled();
 });

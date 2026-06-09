@@ -68,6 +68,9 @@ export interface AppConfig {
   projects_mode?: "all" | "included" | string;
   /** The "included"-mode allowlist of visible project cwds (#335). Ignored in "all" mode. */
   projects_included?: string[];
+  /** Preferred new-session start directory (#335 Phase 2). The picker pre-selects it when it's
+   *  still a pickable project, else falls back to the first option. "" / absent = no preference. */
+  default_project?: string;
   /** Per-cwd custom project display names (#148). */
   project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
