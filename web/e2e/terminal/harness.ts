@@ -66,7 +66,7 @@ function mockApi(page: Page, sessions: BenchSession[]) {
   page.route("**/api/version", (r) => r.fulfill({ json: { version: "bench" } }));
   page.route("**/api/engines", (r) => r.fulfill({ json: { engines: ["claude"] } }));
   page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  page.route("**/api/projects", (r) => r.fulfill({ json: { projects: [{ cwd: "/home/u/proj", label: "proj" }] } }));
+  page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [{ cwd: "/home/u/proj", label: "proj" }] } }));
   page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   page.route("**/api/sessions**", (r) =>
     r.fulfill({

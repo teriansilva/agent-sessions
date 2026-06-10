@@ -873,6 +873,42 @@ def test_projects_picker_unfiltered_in_included_mode(auth_cfg, fake_jsonl):
     assert incl_cwds == all_cwds
 
 
+def test_projects_visible_param_applies_included_allowlist(auth_cfg, fake_jsonl):
+    # ?visible=1 (#335 follow-up): the new-session dropdown mirrors the curated sidebar -
+    # in `included` mode only the allowlist comes back; the unfiltered default (Settings
+    # curation surface) is untouched.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    all_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert len(all_cwds) >= 2
+    keep = sorted(all_cwds)[0]
+    c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": [keep]},
+        headers=hdr,
+    )
+    visible = {p["cwd"] for p in c.get("/api/projects?visible=1").json()["projects"]}
+    assert visible == {keep}
+    # default stays the full set for Settings
+    assert {p["cwd"] for p in c.get("/api/projects").json()["projects"]} == all_cwds
+
+
+def test_projects_visible_param_drops_hidden_in_all_mode(auth_cfg, fake_jsonl):
+    # ?visible=1 in the default `all` mode behaves like the legacy picker: denylisted
+    # cwds are dropped.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    all_cwds = sorted(p["cwd"] for p in c.get("/api/projects").json()["projects"])
+    assert len(all_cwds) >= 2
+    drop = all_cwds[0]
+    c.post("/api/prefs", json={"projects_hidden": [drop]}, headers=hdr)
+    visible = {p["cwd"] for p in c.get("/api/projects?visible=1").json()["projects"]}
+    assert drop not in visible
+    assert set(all_cwds) - {drop} <= visible
+
+
 def test_config_exposes_projects_mode_and_included(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)

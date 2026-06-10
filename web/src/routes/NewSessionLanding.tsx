@@ -71,7 +71,9 @@ export function NewSessionLanding() {
   useEffect(() => {
     let alive = true;
     api
-      .projects()
+      // visible: the picker mirrors the curated sidebar (#335) — excluded/hidden dirs don't
+      // resurface here; Settings still fetches the unfiltered list for curation.
+      .projects({ visible: true })
       .then((r) => {
         if (alive) setProjects(r.projects);
       })

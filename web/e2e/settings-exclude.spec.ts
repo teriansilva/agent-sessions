@@ -18,7 +18,7 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route("**/api/projects", (r) =>
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
     r.fulfill({
       json: {
         projects: [

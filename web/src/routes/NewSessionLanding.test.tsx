@@ -48,6 +48,8 @@ test("starts a session: mints an id and navigates with the fresh launch params",
   mockProjects.mockResolvedValue({ projects: [{ cwd: "/home/m/proj", label: "/home/m/proj" }] });
   renderLanding();
   await screen.findByRole("option", { name: "/home/m/proj" });
+  // The picker mirrors the curated sidebar (#335): it must request the filtered list.
+  expect(mockProjects).toHaveBeenCalledWith({ visible: true });
 
   await user.click(screen.getByRole("button", { name: /start session/i }));
   expect(navigateMock).toHaveBeenCalledTimes(1);

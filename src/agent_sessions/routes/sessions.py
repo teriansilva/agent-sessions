@@ -141,24 +141,38 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         )
 
     @app.get("/api/projects")
-    async def list_projects(_: str = Depends(logged_in)) -> JSONResponse:
+    async def list_projects(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
         # New-session picker + the Settings project manager.
         #
         # `all` mode (#174): hidden projects are excluded — picking a hidden project as a start
         # location would feel inconsistent with the user having said "I don't want to see this."
         #
-        # `included` mode (#335): NOT filtered by the allowlist. This list must stay the FULL
-        # discovered set so (a) the picker can start a session in any directory — that launch
-        # auto-includes it, which is how a dir enters the curated sidebar — and (b) the Settings
-        # manager can show every dir to curate. Filtering here would lock the user into their
-        # current allowlist with no way to add a new dir (chicken-and-egg).
+        # `included` mode (#335): by default NOT filtered by the allowlist. The default list must
+        # stay the FULL discovered set so the Settings manager can show every dir to curate —
+        # filtering it would lock the user into their current allowlist with no way to add a new
+        # dir (chicken-and-egg).
+        #
+        # `?visible=1` opts into the mode-aware filter (the prefs.project_visible source of truth,
+        # same as /api/sessions): the new-session picker uses it so the dropdown mirrors the
+        # curated sidebar instead of resurfacing every excluded dir. New dirs still enter the
+        # allowlist via the Settings manager, the scoped create-folder flow, or a launch into a
+        # not-yet-included cwd (the auto-include in the terminal route is unchanged).
         #
         # Source from ALL engines (#196): the sidebar filter dropdown derives its options from
         # /api/sessions facets (over engines.scan_all()). A Claude-only scan here would let an
         # opencode/gemini cwd appear in the filter but be unmanageable — the two lists drift.
         # scan_all() unifies the superset so every filterable project is manageable.
         all_pickable = scanner.pickable_projects(sessions=engines.scan_all())
-        if prefs.get_projects_mode() == "included":
+        mode = prefs.get_projects_mode()
+        if request.query_params.get("visible") == "1":
+            hidden = set(prefs.get_projects_hidden())
+            included = set(prefs.get_projects_included())
+            projects = [
+                c
+                for c in all_pickable
+                if prefs.project_visible(c, mode=mode, hidden=hidden, included=included)
+            ]
+        elif mode == "included":
             projects = list(all_pickable)
         else:
             hidden = set(prefs.get_projects_hidden())

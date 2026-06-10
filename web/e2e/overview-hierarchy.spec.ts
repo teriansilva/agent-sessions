@@ -55,7 +55,7 @@ test.beforeEach(async ({ page }) => {
       json: { sessions, next_offset: null, total: 2, facets: { projects: ["/home/u/claude", "/home/u/claude/demoapp.io"], engines: ["claude"] } },
     }),
   );
-  await page.route("**/api/projects", (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
 });
