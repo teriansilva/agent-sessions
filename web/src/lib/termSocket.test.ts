@@ -136,6 +136,20 @@ describe("close codes", () => {
     vi.advanceTimersByTime(ts.backoffMs(0));
     expect(FakeWS.instances).toHaveLength(2);
   });
+
+  test("4502 (transient start failure) reconnects with backoff, never terminal (#346)", () => {
+    vi.useFakeTimers();
+    const { ts, statuses } = makeSocket();
+    ts.connect();
+    FakeWS.instances[0].drop(4502); // spawn EAGAIN / timeout under resource pressure
+    expect(statuses.at(-1)).toMatchObject({ kind: "reconnecting" }); // not "rejected"
+    vi.advanceTimersByTime(ts.backoffMs(0));
+    expect(FakeWS.instances).toHaveLength(2);
+    // Still failing → keeps retrying (capped backoff); the condition is transient.
+    FakeWS.instances[1].drop(4502);
+    vi.advanceTimersByTime(ts.backoffMs(1));
+    expect(FakeWS.instances).toHaveLength(3);
+  });
 });
 
 test("reconnect backoff grows and caps, and a successful open resets it", () => {

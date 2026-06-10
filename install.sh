@@ -339,6 +339,16 @@ Type=simple
 # alone so a service restart (every deploy) does NOT kill the user's live session. The
 # new broker rediscovers the still-alive masters via the existing sock files.
 KillMode=process
+# #346 Phase A: session children (dtach masters + agents + their builds) currently share
+# this cgroup, and the systemd default OOMPolicy=stop fails the WHOLE unit when the kernel
+# OOM-kills ANY of them — restarting the broker and dropping every websocket (observed on
+# example-host 2026-06-08, twice in 10 min). \`continue\` confines the damage to the killed
+# process; the broker's own MainPID dying still fails the unit via Restart=on-failure.
+OOMPolicy=continue
+# Same shared-cgroup problem for the task budget: the user-slice default (~2175) is easily
+# exhausted by session workloads (test runners), and at the ceiling fork fails → PTY spawns
+# die with EAGAIN. Generous explicit ceiling until #346 Phase B isolates sessions in scopes.
+TasksMax=8192
 # Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini,
 # which commonly live there) are on PATH — otherwise the claude CLI nags
 # "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile

@@ -98,6 +98,13 @@ _NUDGE_GAP_S = 0.25
 _NUDGE_COLS_DELTA = 8
 _NUDGE_ROWS_DELTA = 2
 
+# Upper bound on creating the dtach client/master subprocess (#346 Phase A). Spawning is
+# normally instant; under resource pressure (task-limit EAGAIN, memory stalls) it can fail
+# slowly or hang, and an unbounded spawn wedges this connection's coroutine. Timeout and
+# OSError both close 4502 (transient, client retries) — never 4500, which is reserved for
+# non-retryable launch misconfiguration and permanently kills the client's terminal.
+SPAWN_TIMEOUT_S = 15.0
+
 
 async def _force_repaint(
     master: int, proc: asyncio.subprocess.Process, rows: int, cols: int
@@ -171,25 +178,31 @@ async def run(
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            cwd=cwd,
-            env=env,
-            start_new_session=True,  # own session → the slave becomes the controlling tty
-            close_fds=True,
-            # Hand the single-writer lock fd to the dtach master it forks, so the flock
-            # lives exactly as long as the running agent (survives an app restart). dtach
-            # never closes inherited fds it doesn't manage. pass_fds forces inheritance.
-            pass_fds=(lock.fd,) if lock is not None else (),
+        proc = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *argv,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=cwd,
+                env=env,
+                start_new_session=True,  # own session → the slave becomes the controlling tty
+                close_fds=True,
+                # Hand the single-writer lock fd to the dtach master it forks, so the flock
+                # lives exactly as long as the running agent (survives an app restart). dtach
+                # never closes inherited fds it doesn't manage. pass_fds forces inheritance.
+                pass_fds=(lock.fd,) if lock is not None else (),
+            ),
+            timeout=SPAWN_TIMEOUT_S,
         )
-    except OSError:
+    except (TimeoutError, OSError):
+        # Transient start failure (EAGAIN at the cgroup task ceiling, spawn stall under
+        # memory pressure). 4502 = retryable: the client backs off and reconnects, instead
+        # of the pre-#346 behaviour of dying permanently on a momentary resource blip.
         os.close(master)
         os.close(slave)
         with contextlib.suppress(Exception):
-            await ws.close(code=4500)
+            await ws.close(code=4502)
         return
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()

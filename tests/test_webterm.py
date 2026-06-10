@@ -222,7 +222,7 @@ def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
 
     async def fake_exec(*argv, **kwargs):
         captured["pass_fds"] = kwargs.get("pass_fds")
-        raise OSError("stop before pumping")  # → webterm closes + ws.close(4500), returns
+        raise OSError("stop before pumping")  # → webterm closes + ws.close(4502), returns
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
@@ -233,6 +233,50 @@ def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
     asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path), lock=lock))
     assert lock.fd in (captured["pass_fds"] or ())
     lock.transfer()
+
+
+def test_webterm_run_spawn_failure_closes_4502(tmp_path, monkeypatch):
+    # #346 Phase A: a transient spawn failure (fork EAGAIN at the cgroup task ceiling)
+    # must close 4502 (client retries with backoff) — NOT 4500, which the client treats
+    # as terminal and would leave a dead terminal until a page reload.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    async def fake_exec(*argv, **kwargs):
+        raise OSError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    codes = []
+
+    class FakeWS:
+        async def close(self, code=None):
+            codes.append(code)
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path)))
+    assert codes == [4502]
+
+
+def test_webterm_run_spawn_hang_times_out_to_4502(tmp_path, monkeypatch):
+    # A spawn that hangs (resource pressure) must not wedge the connection coroutine
+    # forever — SPAWN_TIMEOUT_S bounds it, then the same retryable close fires.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    async def hung_exec(*argv, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", hung_exec)
+    monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 0.05)
+    codes = []
+
+    class FakeWS:
+        async def close(self, code=None):
+            codes.append(code)
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path)))
+    assert codes == [4502]
 
 
 def test_set_winsize_floors_zero_to_one():

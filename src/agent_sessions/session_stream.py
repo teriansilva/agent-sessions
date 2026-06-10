@@ -108,15 +108,18 @@ class SessionStream:
         last_rows = webterm.scrollback._LAST_ROWS.get(self.key) or 24
         webterm._set_winsize(slave, max(1, int(last_rows)), max(1, int(last_cols)))
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                start_new_session=True,
-                close_fds=True,
+            self._proc = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    start_new_session=True,
+                    close_fds=True,
+                ),
+                timeout=webterm.SPAWN_TIMEOUT_S,  # bounded like the viewer path (#346 Phase A)
             )
-        except OSError:
+        except (TimeoutError, OSError):
             os.close(master)
             os.close(slave)
             self.ended.set()

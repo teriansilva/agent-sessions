@@ -42,8 +42,12 @@ export interface TermSocketHandlers {
 }
 
 // Deliberate server rejects — never reconnect on these (would hammer the backend).
-// 4409 (BUSY: another writer holds the lock) is intentionally NOT here: we retry and
-// end up attaching once the live master is up. Kept explicit, not a numeric range.
+// Close-code taxonomy (#346): 4401/4403 auth/origin, 4404 not-found, 4500 non-retryable
+// launch misconfiguration — all terminal. Intentionally NOT here, so they reconnect with
+// backoff: 4409 (BUSY: another writer holds the lock — retry until the live master is up)
+// and 4502 (transient start failure: spawn timeout / EAGAIN under resource pressure — the
+// condition clears, so the client must keep trying rather than die on a momentary blip).
+// Kept explicit, not a numeric range.
 const NO_RETRY = new Set([4401, 4403, 4404, 4500]);
 const REJECT_REASON: Record<number, string> = {
   4401: "session expired — please sign in again",
