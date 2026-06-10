@@ -4,15 +4,54 @@ system, update check/apply, config, prefs. Moved verbatim from ``main.create_app
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import discover, engines, prefs, project_dirs, sysinfo, twofactor, update, vtsidecar
+from .. import (
+    discover,
+    engines,
+    prefs,
+    project_dirs,
+    ptybridge,
+    scopedspawn,
+    sysinfo,
+    twofactor,
+    update,
+    vtsidecar,
+)
 from ..auth import AuthConfig, current_csrf, session_uid
 from ..version import get_version
+
+
+def _dtach_master_sock(parts: list[bytes]) -> str | None:
+    """The socket path iff ``parts`` is a real ``dtach -c <sock> …`` master cmdline.
+
+    Strict on purpose (Hermes #354): argv[0]'s basename must be the configured dtach
+    binary's, and the socket must be the argument immediately after ``-c`` — dtach's
+    own argv contract. Anything looser maps unrelated processes that merely carry a
+    ``-c`` flag and a ``*.sock`` argument (e.g. ``python -c … foo.sock``) as masters,
+    and the operator view would report a wrong pid/scope/footprint for the session.
+    """
+    if not parts or not parts[0]:
+        return None
+    want = os.path.basename(ptybridge.DTACH_BIN).encode()
+    if os.path.basename(parts[0]) != want:
+        return None
+    try:
+        i = parts.index(b"-c")
+    except ValueError:
+        return None
+    if i + 1 >= len(parts) or not parts[i + 1].endswith(b".sock"):
+        return None
+    try:
+        return parts[i + 1].decode()
+    except UnicodeDecodeError:
+        return None
 
 
 def register(
@@ -66,6 +105,42 @@ def register(
         # Host/system info for the Settings "System" section. Stdlib only, every field
         # fail-soft (omitted on error / non-Linux). No network interfaces / IPs. Authed.
         return JSONResponse(sysinfo.collect())
+
+    @app.get("/api/system/sessions")
+    async def system_sessions(_: str = Depends(logged_in)) -> JSONResponse:
+        # Per-session isolation view (#346 Phase C; feeds #279's operator surface).
+        # One /proc walk maps every live `dtach -c <sock>` master to its pid, then the
+        # scope unit + cgroup footprint are read back from the kernel — stateless, so
+        # it stays correct across broker restarts and reports pre-scopes masters as
+        # scope: null. Off the sidebar hot path on purpose (operator-priced, not
+        # poll-priced); the walk runs in the thread pool to keep the event loop clean.
+        def _collect() -> list[dict]:
+            masters: dict[str, int] = {}
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{name}/cmdline", "rb") as fh:
+                        parts = fh.read().split(b"\0")
+                except OSError:
+                    continue
+                sock_arg = _dtach_master_sock(parts)
+                if sock_arg is not None:
+                    with contextlib.suppress(ValueError):
+                        masters[sock_arg] = int(name)
+            rows = []
+            for sock in sorted(ptybridge.runtime_dir().glob("*.sock")):
+                pid = masters.get(str(sock))
+                row: dict = {"sock": sock.name, "pid": pid, "scope": None}
+                if pid is not None:
+                    row["scope"] = scopedspawn.scope_of(pid)
+                    stats = scopedspawn.scope_stats(pid)
+                    if stats:
+                        row.update(stats)
+                rows.append(row)
+            return rows
+
+        return JSONResponse({"sessions": await asyncio.to_thread(_collect)})
 
     @app.get("/api/update/check")
     async def update_check(_: str = Depends(logged_in)) -> JSONResponse:

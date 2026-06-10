@@ -153,3 +153,48 @@ def test_lock_fd_inherited_through_systemd_run(tmp_path, monkeypatch):
 async def _wait(proc):
     with contextlib.suppress(Exception):
         await asyncio.wait_for(proc.wait(), timeout=10)
+
+
+# ---- Phase C observability: stateless scope discovery -----------------------------
+
+
+def test_scope_of_reads_proc_cgroup(tmp_path, monkeypatch):
+    proc = tmp_path / "proc" / "4242"
+    proc.mkdir(parents=True)
+    (proc / "cgroup").write_text(
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/as-claude-abc-d3adb33f.scope\n"
+    )
+    monkeypatch.setattr(scopedspawn, "_PROC_ROOT", str(tmp_path / "proc"))
+    assert scopedspawn.scope_of(4242) == "as-claude-abc-d3adb33f.scope"
+
+
+def test_scope_of_ignores_foreign_units(tmp_path, monkeypatch):
+    # A master inside the broker service (pre-scopes) or any non-`as-` unit reports as
+    # unscoped — the listing must not mislabel foreign cgroups as session isolation.
+    proc = tmp_path / "proc" / "4242"
+    proc.mkdir(parents=True)
+    (proc / "cgroup").write_text(
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/agent-sessions.service\n"
+    )
+    monkeypatch.setattr(scopedspawn, "_PROC_ROOT", str(tmp_path / "proc"))
+    assert scopedspawn.scope_of(4242) is None
+    assert scopedspawn.scope_stats(4242) is None  # gated on scope_of
+
+
+def test_scope_stats_reads_cgroup_counters(tmp_path, monkeypatch):
+    rel = "/user.slice/as-claude-abc-d3adb33f.scope"
+    proc = tmp_path / "proc" / "77"
+    proc.mkdir(parents=True)
+    (proc / "cgroup").write_text(f"0::{rel}\n")
+    cg = tmp_path / "cg" / rel.lstrip("/")
+    cg.mkdir(parents=True)
+    (cg / "memory.current").write_text("123456789\n")
+    (cg / "pids.current").write_text("42\n")
+    monkeypatch.setattr(scopedspawn, "_PROC_ROOT", str(tmp_path / "proc"))
+    monkeypatch.setattr(scopedspawn, "CGROUP_ROOT", str(tmp_path / "cg"))
+    assert scopedspawn.scope_stats(77) == {"memory_bytes": 123456789, "tasks": 42}
+
+
+def test_scope_of_gone_pid_is_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(scopedspawn, "_PROC_ROOT", str(tmp_path / "proc"))
+    assert scopedspawn.scope_of(99999) is None

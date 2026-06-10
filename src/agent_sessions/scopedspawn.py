@@ -162,3 +162,63 @@ def reset_cache_for_tests() -> None:
     _probe_state = None
     _logged_disabled = False
     _logged_unavailable = False
+
+
+# ---- observability (#346 Phase C) — stateless discovery from the cgroup tree ------
+#
+# No wrap-time bookkeeping: the kernel already knows which scope a master landed in,
+# and reading it back survives broker restarts and never goes stale.
+
+CGROUP_ROOT = "/sys/fs/cgroup"
+_PROC_ROOT = "/proc"  # overridable in tests
+
+
+def scope_of(pid: int) -> str | None:
+    """The ``as-…scope`` unit ``pid`` lives in, or None (unscoped / not Linux / gone).
+
+    Reads ``/proc/<pid>/cgroup`` (v2: a single ``0::<path>`` line) and returns the
+    unit only for scopes this module created — foreign scopes report as None so the
+    listing can't mislabel e.g. a left-over manually-run unit as session isolation.
+    """
+    try:
+        with open(f"{_PROC_ROOT}/{pid}/cgroup", encoding="utf-8") as fh:
+            for line in fh:
+                path = line.strip().rpartition(":")[2]
+                leaf = path.rpartition("/")[2]
+                if leaf.startswith("as-") and leaf.endswith(".scope"):
+                    return leaf
+    except OSError:
+        pass
+    return None
+
+
+def _cgroup_path_of(pid: int) -> str | None:
+    try:
+        with open(f"{_PROC_ROOT}/{pid}/cgroup", encoding="utf-8") as fh:
+            for line in fh:
+                return line.strip().rpartition(":")[2]
+    except OSError:
+        pass
+    return None
+
+
+def scope_stats(pid: int) -> dict[str, int] | None:
+    """``memory.current`` / ``pids.current`` of the scope ``pid`` lives in.
+
+    Only meaningful when the pid is in one of our ``as-…scope`` units (the whole
+    session tree shares that cgroup, so the numbers are the session's true footprint).
+    Returns None when unscoped or the controllers aren't readable.
+    """
+    if scope_of(pid) is None:
+        return None
+    path = _cgroup_path_of(pid)
+    if not path:
+        return None
+    out: dict[str, int] = {}
+    for key, fname in (("memory_bytes", "memory.current"), ("tasks", "pids.current")):
+        try:
+            with open(f"{CGROUP_ROOT}{path}/{fname}", encoding="utf-8") as fh:
+                out[key] = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+    return out or None

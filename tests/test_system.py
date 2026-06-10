@@ -82,3 +82,78 @@ def test_system_no_network_fields_and_disk(auth_cfg, fake_jsonl):
     # disk_usage(Path.home()) works on any platform with a real fs.
     assert "disk_total" in d and "disk_free" in d
     assert d["disk_total"] >= d["disk_free"] >= 0
+
+
+# ---- /api/system/sessions (#346 Phase C) ---------------------------------------
+
+
+def test_system_sessions_requires_auth(auth_cfg):
+    c = _client(auth_cfg)
+    assert c.get("/api/system/sessions").status_code == 401
+
+
+def test_system_sessions_lists_socks_with_scope_fields(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
+    # Shape contract: one row per live sock file; pid/scope are null when no master
+    # matches (nothing in /proc binds these socks) — the endpoint must not error.
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path / "pty"))
+    from agent_sessions import ptybridge
+
+    d = ptybridge.runtime_dir()
+    (d / "claude-aaaa.sock").touch()
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.get("/api/system/sessions")
+    assert r.status_code == 200
+    rows = r.json()["sessions"]
+    names = {row["sock"] for row in rows}
+    assert "claude-aaaa.sock" in names
+    row = next(x for x in rows if x["sock"] == "claude-aaaa.sock")
+    assert row["pid"] is None and row["scope"] is None
+
+
+def test_dtach_master_sock_matcher_is_strict():
+    # Hermes #354: only a real `dtach -c <sock>` cmdline maps; lookalikes don't.
+    from agent_sessions.routes.system import _dtach_master_sock
+
+    assert (
+        _dtach_master_sock([b"/usr/bin/dtach", b"-c", b"/run/u/claude-a.sock", b"-z"])
+        == "/run/u/claude-a.sock"
+    )
+    assert _dtach_master_sock([b"dtach", b"-c", b"/x/y.sock"]) == "/x/y.sock"
+    # python -c '…' with a sock-looking trailing arg (the reproduced false positive)
+    py = [b"/usr/bin/python3", b"-c", b"import time", b"/x/claude-f.sock"]
+    assert _dtach_master_sock(py) is None
+    # the sock must IMMEDIATELY follow -c
+    assert _dtach_master_sock([b"/usr/bin/dtach", b"-c", b"-z", b"/x/y.sock"]) is None
+    # dtach attach mode (-a) is a viewer, not a master
+    assert _dtach_master_sock([b"/usr/bin/dtach", b"-a", b"/x/y.sock"]) is None
+    assert _dtach_master_sock([]) is None and _dtach_master_sock([b""]) is None
+
+
+def test_system_sessions_ignores_non_dtach_sock_lookalike(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):
+    # Endpoint-level regression for the Hermes #354 false positive: a non-dtach process
+    # whose argv contains `-c` and our sock path must NOT be reported as the master.
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path / "pty"))
+    from agent_sessions import ptybridge
+
+    sock = ptybridge.runtime_dir() / "claude-false.sock"
+    sock.touch()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(20)", "-c", str(sock)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        c = _client(auth_cfg)
+        _login(c, auth_cfg)
+        rows = c.get("/api/system/sessions").json()["sessions"]
+        row = next(x for x in rows if x["sock"] == "claude-false.sock")
+        assert row["pid"] is None and row["scope"] is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
