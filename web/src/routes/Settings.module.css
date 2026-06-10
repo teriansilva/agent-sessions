@@ -758,3 +758,104 @@
   font-size: 13px;
   cursor: pointer;
 }
+
+/* AI session review (#356). */
+.aiField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  max-width: 560px;
+}
+.aiFieldLabel {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiInput {
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+}
+.aiInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.aiKeyBadge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.aiModelRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.aiModelRow > select,
+.aiModelRow > input {
+  flex: 1;
+  min-width: 0;
+}
+.aiIntervalRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiIntervalInput {
+  width: 90px;
+}
+.aiPrompt {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.aiActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.aiToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.aiExcludedList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aiExcludedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+}
+.aiExcludedTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

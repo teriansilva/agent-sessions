@@ -35,6 +35,7 @@ from .auth import (
     require_session,
     session_uid,
 )
+from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
@@ -300,6 +301,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # routes/scrollback.py. Both register here, before the ws handler + SPA catch-all.
     sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+
+    # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
+    ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).

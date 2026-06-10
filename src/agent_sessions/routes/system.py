@@ -209,6 +209,9 @@ def register(
                 # VT scrollback (#329): faithful real-frame scroll-up via the VT sidecar. The
                 # effective on/off bit (pref override, else env default) for the Settings toggle.
                 "vt_scrollback": vtsidecar.enabled(),
+                # AI session review config (#356) — the PUBLIC view only: the API key is
+                # write-only and surfaces here solely as `api_key_set` (never the value).
+                "ai_review": prefs.public_ai_review(),
             }
         )
 
@@ -277,6 +280,16 @@ def register(
                 if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                     raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
                 out[key] = setter(v)
+        if "ai_review" in payload:
+            # AI review config (#356): a REAL nested validator (URL shape, length caps,
+            # interval floor, max_input_chars bounds, unknown-key rejection) — never a
+            # nested pass-through. The api_key is masked-sentinel: ""/mask → unchanged,
+            # null → cleared, anything else → replaced. The echo is the PUBLIC view.
+            err = prefs.validate_ai_review_patch(payload["ai_review"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_ai_review(payload["ai_review"])
+            out["ai_review"] = prefs.public_ai_review()
         if "project_names" in payload:
             v = payload["project_names"]
             if not isinstance(v, dict) or not all(

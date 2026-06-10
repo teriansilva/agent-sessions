@@ -188,6 +188,31 @@ export const api = {
       `/api/sessions/${enc(id)}/restart`,
       { fp: opts.fp, tab_id: opts.tabId, force: opts.force ?? false },
     ),
+  /** AI review (#356): server-proxied model listing from the configured endpoint — the
+   *  API key never reaches the browser. 400 = not configured, 502 = endpoint can't list
+   *  (the Settings dropdown falls back to free-text entry). */
+  aiReviewModels: (opts?: { refresh?: boolean }) =>
+    getJson<{ models: string[] }>(`/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`),
+  /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
+   *  endpoint isn't configured; 502 when the review failed (last good result stays). */
+  reviewNow: (id: string) =>
+    postJson<{
+      id: string;
+      title: string;
+      ai_summary: string;
+      ai_title: string;
+      intervention_required: boolean;
+      intervention_reason: string;
+      reviewed_at: number | null;
+      review_excluded: boolean;
+    }>(`/api/sessions/${enc(id)}/review`),
+  /** AI review (#356): set (or toggle, when `excluded` is omitted) the per-session
+   *  exclude-from-review flag. CSRF-guarded. */
+  reviewExclude: (id: string, excluded?: boolean) =>
+    postJson<{ id: string; review_excluded: boolean }>(
+      `/api/sessions/${enc(id)}/review-exclude`,
+      excluded === undefined ? undefined : { excluded },
+    ),
   /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
   scrollbackInfo: () => getJson<{ bytes: number; files: number }>("/api/scrollback"),
   /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */

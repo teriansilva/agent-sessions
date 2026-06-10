@@ -53,9 +53,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "last_output_at": last_out,
             "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
             "first_user_message": s.first_user_message,
-            "title": m.title or s.first_user_message,
+            # Display precedence (#356, mitigates #284): user title → ai_title → first
+            # message — via THE shared helper, so search (`q` matches the displayed
+            # title) and every row consumer agree.
+            "title": metadata.display_title(m, s.first_user_message),
             "sticky": m.sticky,
             "sort_key": m.sort_key,
+            # AI review surface (#356): summary line, advisory badge + reason, stale-age
+            # source (reviewed_at), and the per-session opt-out for the row menu.
+            "ai_summary": m.ai_summary,
+            "ai_title": m.ai_title,
+            "intervention_required": m.intervention_required,
+            "intervention_reason": m.intervention_reason,
+            "reviewed_at": m.reviewed_at,
+            "review_excluded": m.review_excluded,
             # Effective archive state: the sidecar override wins when set (lets a
             # natively-archived opencode/codex row be unarchived), else the engine's
             # native state (claude's JSONL tree / opencode.db time_archived).

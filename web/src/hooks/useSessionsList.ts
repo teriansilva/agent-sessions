@@ -185,6 +185,36 @@ export function useSessionsList() {
     setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
   }, []);
 
+  // Manual "Review now" (#356): run one AI review and fold the result into the row in
+  // place (summary, badge, and the possibly-new display title) — no refetch flicker.
+  const reviewRow = useCallback(async (id: string) => {
+    const r = await api.reviewNow(id);
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              title: r.title || s.title,
+              ai_summary: r.ai_summary,
+              ai_title: r.ai_title,
+              intervention_required: r.intervention_required,
+              intervention_reason: r.intervention_reason,
+              reviewed_at: r.reviewed_at,
+              review_excluded: r.review_excluded,
+            }
+          : s,
+      ),
+    );
+  }, []);
+
+  // Per-session exclude-from-review toggle (#356); the row stays, only the flag flips.
+  const setReviewExcluded = useCallback(async (id: string, excluded: boolean) => {
+    const r = await api.reviewExclude(id, excluded);
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, review_excluded: r.review_excluded } : s)),
+    );
+  }, []);
+
   return {
     sessions,
     total,
@@ -198,5 +228,7 @@ export function useSessionsList() {
     clear,
     renameRow,
     setArchived,
+    reviewRow,
+    setReviewExcluded,
   };
 }

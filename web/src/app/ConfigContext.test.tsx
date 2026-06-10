@@ -1,5 +1,6 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useConfigRefresh } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 
 function jsonResponse(body: unknown) {
@@ -37,5 +38,31 @@ describe("ConfigProvider forced first-login change (#95)", () => {
       </ConfigProvider>,
     );
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/change-password"));
+  });
+});
+
+describe("ConfigProvider refresh (Hermes #367)", () => {
+  it("useConfigRefresh refetches /api/config on demand", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ csrf: "t", new_session_engines: [], terminal_backend: "ws" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Child() {
+      const refresh = useConfigRefresh();
+      return (
+        <button type="button" onClick={refresh}>
+          refetch
+        </button>
+      );
+    }
+    render(
+      <ConfigProvider>
+        <Child />
+      </ConfigProvider>,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "refetch" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 });

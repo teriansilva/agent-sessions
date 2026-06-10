@@ -207,3 +207,59 @@
   padding: 14px 12px;
   font-size: 12px;
 }
+
+/* AI review (#356): one-line summary under the title, the amber "needs a human" badge,
+ * and the reviewing-spinner on the row's Review-now action. */
+.summary {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-2, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.summaryExcluded {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+.summaryStale {
+  color: var(--text-3, var(--text-muted));
+  font-style: italic;
+}
+.alertBadge {
+  flex: none;
+  margin-top: 2px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg, #000);
+  background: var(--accent, #ffb000);
+  animation: alertPulse 1.6s ease-in-out infinite;
+}
+@keyframes alertPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .alertBadge {
+    animation: none;
+  }
+}
+.spin {
+  animation: reviewSpin 1.2s linear infinite;
+}
+@keyframes reviewSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}

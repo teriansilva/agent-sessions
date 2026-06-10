@@ -26,6 +26,7 @@ import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { buildProjectTree, flattenTree } from "../lib/projectTree";
+import { AiReviewSettings } from "./AiReviewSettings";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
 import { useAccent } from "../theme/accentStore";
@@ -1130,19 +1131,6 @@ function ScrollbackCacheCard() {
   );
 }
 
-/** AI Review (#356): the tab is reserved here so the deep link is stable; the actual
- *  panel ships with #356 and replaces this placeholder. */
-function AiReviewPlaceholder() {
-  return (
-    <section className={styles.section} aria-labelledby="ai-review-h">
-      <h2 id="ai-review-h">AI Review</h2>
-      <p className={styles.hint}>
-        Automatic AI review of your sessions arrives with #356 — this tab is its future home.
-      </p>
-    </section>
-  );
-}
-
 /** Settings (#109, tabbed in #357): a keyboard-accessible tab shell over the existing
  *  sections — Appearance, Projects, AI Review (#356 placeholder), Security, System,
  *  Maintenance, About. Deep-linkable as /settings/:tab. Reached via the gear in the topbar. */
@@ -1381,7 +1369,7 @@ export function Settings() {
           </>
         )}
 
-        {tab === "ai-review" && <AiReviewPlaceholder />}
+        {tab === "ai-review" && <AiReviewSettings />}
 
         {tab === "security" && (
           <>

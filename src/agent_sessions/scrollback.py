@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -378,6 +379,41 @@ def _buffer_append(key: str, data: bytes) -> None:
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
     _enforce_buffer_cap()
+
+
+# ANSI/VT escape stripper for the live-tail accessor (#356): CSI sequences, OSC strings
+# (BEL- or ST-terminated), other ESC-prefixed singles, and the remaining C0 controls
+# except \n and \t. Bounded input keeps the regex work cheap.
+_ANSI_ESCAPES = re.compile(
+    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC … BEL / OSC … ST
+    rb"|\x1b\[[0-9;:?<=>]*[ -/]*[@-~]"  # CSI
+    rb"|\x1b[@-Z\\^_]"  # other ESC singles (incl. ESC ( … handled below)
+    rb"|\x1b[()][0-9A-Za-z]"  # charset designations
+    rb"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"  # stray C0 controls (keep \n \t; \r handled after)
+)
+
+
+def live_tail_text(key: str, max_chars: int = 4000) -> str:
+    """Bounded, ANSI-stripped plain text from the tail of the session's live output ring
+    (#356): the NARROW accessor the AI-review engine uses, so review code never reaches
+    into the ``_BUFFERS`` module globals directly. Pure CPU over a bounded slice (no I/O
+    beyond the one-time ring hydrate), so it is safe to call from a worker thread off the
+    event loop. Returns ``""`` when the session has no observed output (headless / no PTY
+    / evicted) — the caller falls back to transcript-only review."""
+    if max_chars <= 0:
+        return ""
+    _ensure_loaded(key)
+    ring = _BUFFERS.get(key)
+    if not ring:
+        return ""
+    # Escapes inflate raw bytes well past their visible text; an 8× slice bounds the
+    # strip work while almost always covering max_chars of visible output.
+    raw = bytes(ring[-(max_chars * 8) :])
+    text = _ANSI_ESCAPES.sub(b"", raw).decode("utf-8", "replace")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Collapse the blank-line runs full-screen repaints leave behind.
+    text = re.sub(r"\n[ \t]*\n[ \t\n]*", "\n\n", text)
+    return text[-max_chars:]
 
 
 def get_last_output_at(key: str) -> float | None:

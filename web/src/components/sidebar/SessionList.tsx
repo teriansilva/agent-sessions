@@ -1,6 +1,17 @@
-import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  Eye,
+  EyeOff,
+  Pencil,
+  Plus,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
+import { useConfig } from "../../app/config";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
@@ -9,20 +20,66 @@ import type { Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import styles from "./SessionList.module.css";
 
+/** Activity since the last successful review makes the summary stale (#356): the AI's
+ *  one-liner describes an older state, so the row exposes the review's age instead of
+ *  letting an old green summary read as current. Small grace so the review that *caused*
+ *  the latest mtime bump doesn't immediately flag itself. */
+const REVIEW_STALE_GRACE_S = 60;
+
+function reviewIsStale(s: Session): boolean {
+  return (
+    s.reviewed_at != null && s.last_mtime > s.reviewed_at + REVIEW_STALE_GRACE_S
+  );
+}
+
 interface RowProps {
   s: Session;
   onRename: (id: string, title: string) => Promise<void>;
   onToggleArchive: (id: string, currentlyArchived: boolean) => Promise<void>;
+  /** AI review (#356): manual "Review now" + per-session exclude toggle. Undefined when
+   *  the feature is unconfigured (the controls are hidden). */
+  onReviewNow?: (id: string) => Promise<void>;
+  onToggleReviewExcluded?: (id: string, excluded: boolean) => Promise<void>;
   /** Close the mobile drawer on tap — tapping the already-active row is a same-route no-op,
    *  so the route-change effect in App won't fire (#283). */
   onNavigate?: () => void;
 }
 
-function Row({ s, onRename, onToggleArchive, onNavigate }: RowProps) {
+function Row({
+  s,
+  onRename,
+  onToggleArchive,
+  onReviewNow,
+  onToggleReviewExcluded,
+  onNavigate,
+}: RowProps) {
   const { projectNames } = useOverviewPrefs();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
   const [busy, setBusy] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+
+  const reviewNow = async () => {
+    if (!onReviewNow) return;
+    setReviewing(true);
+    try {
+      await onReviewNow(s.id);
+    } catch {
+      /* fail-soft (#356): the last good result + its stale age keep showing */
+    } finally {
+      setReviewing(false);
+    }
+  };
+
+  const toggleExcluded = async () => {
+    if (!onToggleReviewExcluded) return;
+    setBusy(true);
+    try {
+      await onToggleReviewExcluded(s.id, !s.review_excluded);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const commit = async () => {
     const title = draft.trim();
@@ -112,8 +169,38 @@ function Row({ s, onRename, onToggleArchive, onNavigate }: RowProps) {
         ) : (
           <span className={`${styles.led} hud-led idle`} aria-hidden="true" title="idle" />
         )}
+        {/* Amber ⚠/“!” badge (#356): advisory “needs a human”, reason as tooltip. */}
+        {s.intervention_required && !s.review_excluded && (
+          <span
+            className={styles.alertBadge}
+            role="img"
+            aria-label={`intervention required: ${s.intervention_reason || "see session"}`}
+            title={s.intervention_reason || "Intervention required"}
+          >
+            !
+          </span>
+        )}
         <div className={styles.body}>
           <div className={styles.title}>{s.title || "(untitled)"}</div>
+          {/* One-line AI summary (#356) — or the exclusion marker; stale-age hint when
+              there has been activity since the last successful review. */}
+          {s.review_excluded ? (
+            <div className={`${styles.summary} ${styles.summaryExcluded}`}>
+              Excluded from AI review
+            </div>
+          ) : (
+            s.ai_summary && (
+              <div className={styles.summary}>
+                {s.ai_summary}
+                {reviewIsStale(s) && s.reviewed_at != null && (
+                  <span className={styles.summaryStale}>
+                    {" "}
+                    · reviewed {relTime(s.reviewed_at)}
+                  </span>
+                )}
+              </div>
+            )
+          )}
           <div className={styles.meta}>
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
             <span className={styles.metaText}>
@@ -123,6 +210,32 @@ function Row({ s, onRename, onToggleArchive, onNavigate }: RowProps) {
         </div>
       </NavLink>
       <div className={styles.actions}>
+        {onReviewNow && !s.review_excluded && (
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label="Review session now"
+            title="Review now"
+            disabled={busy || reviewing}
+            onClick={() => void reviewNow()}
+          >
+            <Sparkles size={15} className={reviewing ? styles.spin : undefined} />
+          </button>
+        )}
+        {onToggleReviewExcluded && (
+          <button
+            type="button"
+            className={styles.iconBtn}
+            aria-label={
+              s.review_excluded ? "Include in AI review" : "Exclude from AI review"
+            }
+            title={s.review_excluded ? "Include in AI review" : "Exclude from AI review"}
+            disabled={busy || reviewing}
+            onClick={() => void toggleExcluded()}
+          >
+            {s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />}
+          </button>
+        )}
         <button
           type="button"
           className={styles.iconBtn}
@@ -171,7 +284,13 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     clear,
     renameRow,
     setArchived,
+    reviewRow,
+    setReviewExcluded,
   } = useSessionsList();
+
+  // AI review controls (#356) only appear once the endpoint is configured — an
+  // unconfigured install keeps the lean three-button row.
+  const aiConfigured = useConfig()?.ai_review?.configured ?? false;
 
   // Publish the loaded rows so the compact header can resolve the current session's title.
   const { setSessions } = useSessionsStore();
@@ -227,6 +346,8 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               s={s}
               onRename={renameRow}
               onToggleArchive={setArchived}
+              onReviewNow={aiConfigured ? reviewRow : undefined}
+              onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
               onNavigate={onNavigate}
             />
           ))}

@@ -11,11 +11,13 @@ missing/empty/corrupt file by returning defaults.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Mirror of web/src/theme/themes.ts THEME_IDS. Kept in sync by
 # tests/test_prefs.py (server) + the SPA registry test (client).
@@ -133,12 +135,19 @@ def coerce_str_map(
     return out
 
 
-def _set(key: str, value: str | list[str] | dict[str, str], path: Path | None = None):
+def _set(key: str, value: object, path: Path | None = None):
     """Persist a single pref key. Read-modify-write under an exclusive flock so a concurrent
-    writer (or a different key) can't clobber the rest of the document."""
+    writer (or a different key) can't clobber the rest of the document.
+
+    The file is explicitly chmod'd to 0600 on every write (#356): prefs.json now carries a
+    secret (the AI-review API key), and the historical create path inherited the process
+    umask — so a pre-existing world-readable file stays readable forever unless we assert
+    the tight mode ourselves. Owner-only is correct for every other pref too."""
     path = path or _default_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
     with path.open("r+") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
@@ -350,3 +359,157 @@ def get_project_names(path: Path | None = None) -> dict[str, str]:
 def set_project_names(names: object, path: Path | None = None) -> dict[str, str]:
     """Persist the custom project-name map (normalized; empty names drop entries)."""
     return _set("project_names", coerce_str_map(names), path)
+
+
+# --- AI session review (#356) --------------------------------------------------------
+# One nested `ai_review` block: the OpenAI-compatible endpoint config + the review prompt.
+# The API key lives here too (prefs.json is chmod 0600 — see `_set`), but it is WRITE-ONLY
+# through the HTTP surface: `public_ai_review()` (what /api/config returns) replaces it with
+# `api_key_set`, and a POST carrying the mask sentinel / an empty string preserves the stored
+# value — only a non-empty new value replaces it, an explicit JSON null clears it.
+
+# What a client sees in the key field when a key is stored; round-tripping it back means
+# "unchanged". Deliberately not a plausible key shape.
+AI_REVIEW_KEY_MASK = "********"
+
+DEFAULT_AI_REVIEW_PROMPT = (
+    "You monitor coding-agent terminal sessions. From the transcript tail and live terminal "
+    'output, return strict JSON: {"summary": one line (max 100 chars) of what the session is '
+    'doing, "title": short imperative title, "intervention_required": true only if the '
+    'agent is blocked on the user (permission prompt, question, fatal error), "reason": one '
+    "short line when true}. Be conservative about intervention_required. Output only the JSON "
+    "object, no markdown."
+)
+
+# Server-owned bounds (#356): every write is validated against these (422 on violation),
+# so a malformed/abusive block can never be persisted via the API.
+AI_REVIEW_BASE_URL_MAX = 1000
+AI_REVIEW_KEY_MAX = 4096
+AI_REVIEW_MODEL_MAX = 200
+AI_REVIEW_PROMPT_MAX = 8000
+AI_REVIEW_INTERVAL_MIN = 1
+AI_REVIEW_INTERVAL_MAX = 24 * 60
+AI_REVIEW_INPUT_CHARS_MIN = 1_000
+AI_REVIEW_INPUT_CHARS_MAX = 200_000
+
+_AI_REVIEW_DEFAULTS: dict[str, object] = {
+    "enabled": False,
+    "base_url": "",
+    "api_key": "",
+    "model": "",
+    "interval_minutes": 5,
+    "prompt": DEFAULT_AI_REVIEW_PROMPT,
+    "max_input_chars": 24_000,
+}
+
+
+def _valid_base_url(value: object) -> bool:
+    """A syntactically sane OpenAI-compatible base URL: http(s), has a host, bounded.
+    Empty is allowed (unconfigured)."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if s == "":
+        return True
+    if len(s) > AI_REVIEW_BASE_URL_MAX:
+        return False
+    try:
+        parts = urlsplit(s)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def get_ai_review(path: Path | None = None) -> dict:
+    """The full stored `ai_review` block (INCLUDING the API key) with defaults applied and
+    every field coerced to its type. Server-side use only — HTTP surfaces must go through
+    `public_ai_review()` so the key never leaves the process."""
+    raw = _load(path or _default_path()).get("ai_review")
+    out = dict(_AI_REVIEW_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in ("base_url", "api_key", "model", "prompt"):
+            if isinstance(raw.get(k), str):
+                out[k] = raw[k]
+        if isinstance(raw.get("enabled"), bool):
+            out["enabled"] = raw["enabled"]
+        for k, lo, hi in (
+            ("interval_minutes", AI_REVIEW_INTERVAL_MIN, AI_REVIEW_INTERVAL_MAX),
+            ("max_input_chars", AI_REVIEW_INPUT_CHARS_MIN, AI_REVIEW_INPUT_CHARS_MAX),
+        ):
+            v = raw.get(k)
+            if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
+                out[k] = v
+    if not str(out["prompt"]).strip():
+        out["prompt"] = DEFAULT_AI_REVIEW_PROMPT  # empty prompt can never strand reviews
+    return out
+
+
+def public_ai_review(path: Path | None = None) -> dict:
+    """The client-safe view of the block: the key is replaced by `api_key_set`, plus
+    `configured` (endpoint usable for proxy calls) and the default prompt for the
+    reset-to-default control. This is what /api/config and POST /api/prefs echo."""
+    full = get_ai_review(path)
+    pub = {k: v for k, v in full.items() if k != "api_key"}
+    pub["api_key_set"] = bool(full["api_key"])
+    pub["configured"] = bool(str(full["base_url"]).strip() and full["api_key"])
+    pub["default_prompt"] = DEFAULT_AI_REVIEW_PROMPT
+    return pub
+
+
+def validate_ai_review_patch(patch: object) -> str | None:
+    """Server-side schema validation for a partial `ai_review` write (#356): returns a
+    human-readable error (→ 422) or None when acceptable. Unknown keys are rejected so a
+    typo'd field can't silently no-op; the api_key accepts the mask/empty (preserve) and
+    null (clear) sentinels."""
+    if not isinstance(patch, dict):
+        return "ai_review must be an object"
+    unknown = set(patch) - set(_AI_REVIEW_DEFAULTS)
+    if unknown:
+        return f"unknown ai_review fields: {sorted(unknown)}"
+    if "enabled" in patch and not isinstance(patch["enabled"], bool):
+        return "ai_review.enabled must be a boolean"
+    if "base_url" in patch and not _valid_base_url(patch["base_url"]):
+        return "ai_review.base_url must be an http(s) URL"
+    if "api_key" in patch:
+        v = patch["api_key"]
+        if v is not None and not isinstance(v, str):
+            return "ai_review.api_key must be a string or null"
+        if isinstance(v, str) and len(v) > AI_REVIEW_KEY_MAX:
+            return "ai_review.api_key is too long"
+    if "model" in patch and not (
+        isinstance(patch["model"], str) and len(patch["model"]) <= AI_REVIEW_MODEL_MAX
+    ):
+        return "ai_review.model must be a string of bounded length"
+    if "prompt" in patch and not (
+        isinstance(patch["prompt"], str) and len(patch["prompt"]) <= AI_REVIEW_PROMPT_MAX
+    ):
+        return "ai_review.prompt must be a string of bounded length"
+    for k, lo, hi in (
+        ("interval_minutes", AI_REVIEW_INTERVAL_MIN, AI_REVIEW_INTERVAL_MAX),
+        ("max_input_chars", AI_REVIEW_INPUT_CHARS_MIN, AI_REVIEW_INPUT_CHARS_MAX),
+    ):
+        if k in patch:
+            v = patch[k]
+            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
+                return f"ai_review.{k} must be an integer between {lo} and {hi}"
+    return None
+
+
+def set_ai_review(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block into the stored one (masked-sentinel key handling)
+    and persist. Returns the new full block (server-side view, including the key)."""
+    cur = get_ai_review(path)
+    new = dict(cur)
+    for k in ("enabled", "base_url", "model", "prompt", "interval_minutes", "max_input_chars"):
+        if k in patch:
+            new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
+    if not str(new["prompt"]).strip():
+        new["prompt"] = DEFAULT_AI_REVIEW_PROMPT
+    if "api_key" in patch:
+        v = patch["api_key"]
+        if v is None:
+            new["api_key"] = ""  # explicit clear
+        elif isinstance(v, str) and v.strip() not in ("", AI_REVIEW_KEY_MASK):
+            new["api_key"] = v.strip()  # only a real new value replaces the stored key
+    _set("ai_review", new, path)
+    return new

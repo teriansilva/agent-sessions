@@ -22,6 +22,36 @@ export interface Session {
   sticky: boolean;
   sort_key: number;
   archived: boolean;
+  /** AI review (#356): one-line summary from the last successful review. */
+  ai_summary?: string;
+  /** AI-generated title. Display precedence is resolved SERVER-side into `title`
+   *  (user title → ai_title → first message); this field is informational. */
+  ai_title?: string;
+  /** Advisory "needs a human" flag from the last review + its short reason. */
+  intervention_required?: boolean;
+  intervention_reason?: string;
+  /** Wall-clock (s) of the last SUCCESSFUL review — the stale-age source: a failed
+   *  review never bumps it, so an old result is visibly old. null/absent = never. */
+  reviewed_at?: number | null;
+  /** Per-session opt-out from AI review. */
+  review_excluded?: boolean;
+}
+
+/** AI session review config (#356) — the PUBLIC view from /api/config. The API key is
+ *  write-only: only `api_key_set` ever crosses the wire. */
+export interface AiReviewConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  interval_minutes: number;
+  prompt: string;
+  max_input_chars: number;
+  /** A key is stored server-side (its value is never echoed). */
+  api_key_set: boolean;
+  /** Base URL + key present — the /models proxy + Review now are usable. */
+  configured: boolean;
+  /** Server's default prompt, for the reset-to-default control. */
+  default_prompt: string;
 }
 
 export interface SessionsPage {
@@ -81,6 +111,8 @@ export interface AppConfig {
    *  effective on/off bit (pref override, else env default); drives the Settings →
    *  Appearance toggle (promoted out of "Experimental" in #357 Phase 2). */
   vt_scrollback?: boolean;
+  /** AI session review (#356): public config block (write-only key → `api_key_set`). */
+  ai_review?: AiReviewConfig;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never

@@ -2,15 +2,23 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
+import { ConfigCtx } from "../../app/config";
 import { api } from "../../lib/api";
-import type { Session, SessionsPage } from "../../types/api";
+import type { AppConfig, Session, SessionsPage } from "../../types/api";
 import { SessionList } from "./SessionList";
 
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
   return {
     ...actual,
-    api: { sessions: vi.fn(), rename: vi.fn(), archive: vi.fn(), unarchive: vi.fn() },
+    api: {
+      sessions: vi.fn(),
+      rename: vi.fn(),
+      archive: vi.fn(),
+      unarchive: vi.fn(),
+      reviewNow: vi.fn(),
+      reviewExclude: vi.fn(),
+    },
   };
 });
 
@@ -200,4 +208,148 @@ test("relative-time labels advance over time without a refetch (#159)", async ()
   } finally {
     vi.useRealTimers();
   }
+});
+
+// ---- AI review surface (#356): summary line, badge, stale hint, row actions ----
+
+const AI_CONFIG = {
+  csrf: "t",
+  new_session_engines: [],
+  terminal_backend: "ws",
+  ai_review: {
+    enabled: true,
+    base_url: "https://ai.example/v1",
+    model: "m",
+    interval_minutes: 5,
+    prompt: "p",
+    max_input_chars: 24000,
+    api_key_set: true,
+    configured: true,
+    default_prompt: "p",
+  },
+} as unknown as AppConfig;
+
+function renderWithAi(ui: React.ReactElement) {
+  return render(<ConfigCtx.Provider value={AI_CONFIG}>{ui}</ConfigCtx.Provider>);
+}
+
+test("renders the AI summary line and the intervention badge with its reason (#356)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  mockSessions.mockResolvedValue(
+    pageOf([
+      {
+        ...sess("claude:a", "Fix CI"),
+        ai_summary: "Editing systemd limits; tests rerunning",
+        intervention_required: true,
+        intervention_reason: "waiting on permission prompt",
+        reviewed_at: now,
+        last_mtime: now,
+      },
+    ]),
+  );
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Editing systemd limits; tests rerunning")).toBeInTheDocument();
+  const badge = screen.getByRole("img", { name: /intervention required/i });
+  expect(badge).toHaveAttribute("title", "waiting on permission prompt");
+  // Fresh review (no newer activity) → no stale hint.
+  expect(screen.queryByText(/· reviewed/)).not.toBeInTheDocument();
+});
+
+test("exposes the stale age when there has been activity since the last review (#356)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  mockSessions.mockResolvedValue(
+    pageOf([
+      {
+        ...sess("claude:a", "Fix CI"),
+        ai_summary: "All tests green",
+        reviewed_at: now - 7200,
+        last_mtime: now,
+      },
+    ]),
+  );
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText(/All tests green/)).toBeInTheDocument();
+  expect(screen.getByText(/· reviewed/)).toBeInTheDocument();
+});
+
+test("an excluded session shows the exclusion marker instead of a summary (#356)", async () => {
+  mockSessions.mockResolvedValue(
+    pageOf([
+      {
+        ...sess("claude:a", "rotate creds"),
+        ai_summary: "should not show",
+        intervention_required: true,
+        review_excluded: true,
+      },
+    ]),
+  );
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("Excluded from AI review")).toBeInTheDocument();
+  expect(screen.queryByText("should not show")).not.toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: /intervention required/i })).not.toBeInTheDocument();
+});
+
+test("Review now calls the API and folds the result into the row (#356)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "untitled work")]));
+  vi.mocked(api.reviewNow).mockResolvedValue({
+    id: "claude:a",
+    title: "Refit the pipeline",
+    ai_summary: "Pipeline being refit",
+    ai_title: "Refit the pipeline",
+    intervention_required: false,
+    intervention_reason: "",
+    reviewed_at: Math.floor(Date.now() / 1000),
+    review_excluded: false,
+  });
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("untitled work");
+  await user.click(screen.getByRole("button", { name: "Review session now" }));
+  expect(api.reviewNow).toHaveBeenCalledWith("claude:a");
+  // Title precedence: the AI title becomes the display title for an untitled session.
+  expect(await screen.findByText("Refit the pipeline")).toBeInTheDocument();
+  expect(screen.getByText("Pipeline being refit")).toBeInTheDocument();
+});
+
+test("the exclude toggle flips review_excluded via the API (#356)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.reviewExclude).mockResolvedValue({ id: "claude:a", review_excluded: true });
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await user.click(screen.getByRole("button", { name: "Exclude from AI review" }));
+  expect(api.reviewExclude).toHaveBeenCalledWith("claude:a", true);
+  expect(await screen.findByText("Excluded from AI review")).toBeInTheDocument();
+});
+
+test("AI review row actions stay hidden while the endpoint is unconfigured (#356)", async () => {
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  expect(screen.queryByRole("button", { name: "Review session now" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Exclude from AI review" })).not.toBeInTheDocument();
 });

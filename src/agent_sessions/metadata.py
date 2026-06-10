@@ -62,6 +62,28 @@ class SessionMeta:
     # so a row already archived natively (opencode.db time_archived) can be unarchived.
     # Claude archives by moving its JSONL and never writes this, so it stays None.
     archived: bool | None = None
+    # AI session review (#356). `ai_title` is a SEPARATE field from `title` on purpose:
+    # the reviewer never overwrites a user's manual rename — display precedence is
+    # resolved by `display_title` (user title → ai_title → first user message).
+    ai_summary: str = ""
+    ai_title: str = ""
+    intervention_required: bool = False
+    intervention_reason: str = ""
+    # Wall-clock of the last SUCCESSFUL review. A failed review never touches these
+    # fields, so the last good result stays — visibly stale via this timestamp — rather
+    # than masquerading as fresh (#356 staleness semantics).
+    reviewed_at: float | None = None
+    # Input fingerprint captured at review time; the scheduler (#356 Phase 2) re-reviews
+    # only when the current fingerprint differs.
+    review_fingerprint: str = ""
+    review_excluded: bool = False
+
+
+def display_title(meta: SessionMeta, first_user_message: str) -> str:
+    """THE display-title precedence (#356, mitigates #284): a manual rename always wins,
+    the AI title fills the gap, the first user message is the legacy fallback. Single
+    helper so every row-shaping / search / filter path agrees."""
+    return meta.title or meta.ai_title or first_user_message
 
 
 def _default_path() -> Path:
@@ -130,6 +152,18 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             sort_key=int(val.get("sort_key", 0)),
             project_alias=str(val.get("project_alias", "")),
             archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
+            ai_summary=str(val.get("ai_summary", "") or ""),
+            ai_title=str(val.get("ai_title", "") or ""),
+            intervention_required=bool(val.get("intervention_required", False)),
+            intervention_reason=str(val.get("intervention_reason", "") or ""),
+            reviewed_at=(
+                float(val["reviewed_at"])
+                if isinstance(val.get("reviewed_at"), int | float)
+                and not isinstance(val.get("reviewed_at"), bool)
+                else None
+            ),
+            review_fingerprint=str(val.get("review_fingerprint", "") or ""),
+            review_excluded=bool(val.get("review_excluded", False)),
         )
     return out
 
@@ -144,7 +178,22 @@ def patch(
     SessionMeta.
     """
     path = _default_path()
-    allowed = {"title", "sticky", "sort_key", "project_alias", "archived"}
+    allowed = {
+        "title",
+        "sticky",
+        "sort_key",
+        "project_alias",
+        "archived",
+        # AI review fields (#356) — written by review.py / the exclude toggle, never by
+        # the rename path, so a review can't clobber a user's title.
+        "ai_summary",
+        "ai_title",
+        "intervention_required",
+        "intervention_reason",
+        "reviewed_at",
+        "review_fingerprint",
+        "review_excluded",
+    }
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown metadata fields: {sorted(bad)}")
@@ -175,6 +224,13 @@ def patch(
             "sort_key": existing.get("sort_key", 0),
             "project_alias": existing.get("project_alias", ""),
             "archived": existing.get("archived"),
+            "ai_summary": existing.get("ai_summary", ""),
+            "ai_title": existing.get("ai_title", ""),
+            "intervention_required": existing.get("intervention_required", False),
+            "intervention_reason": existing.get("intervention_reason", ""),
+            "reviewed_at": existing.get("reviewed_at"),
+            "review_fingerprint": existing.get("review_fingerprint", ""),
+            "review_excluded": existing.get("review_excluded", False),
         }
         meta_dict.update(fields)
         data[key] = meta_dict
@@ -184,6 +240,31 @@ def patch(
 
 def get(key: str, path: Path | None = None) -> SessionMeta:
     return load(path).get(key, SessionMeta())
+
+
+def resolve_key(key: str, path: Path | None = None) -> str:
+    """The sidecar key a metadata write/read for ``key`` should target (Hermes on PR #367).
+
+    For a reconciled opencode/codex session the row id is the LOGICAL real id, while
+    metadata set before reconcile (title/sticky/archive) lives under the PLACEHOLDER
+    physical key (#127). The list read path prefers the logical entry
+    (``meta_index.get(key) or meta_index.get(phys)``), so a write that blindly creates a
+    sparse logical-key sidecar would SHADOW the physical one — hiding the existing
+    title/sticky/archive state. Resolution rule (single source of truth, mirroring the
+    read precedence): an existing logical entry wins; else an existing physical entry;
+    else the logical key (fresh sidecar).
+    """
+    index = load(path)
+    if key in index:
+        return key
+    # Lazy import: the engines package imports this module at init, so a top-level
+    # import here would be circular. By call time both modules are loaded.
+    from . import engines
+
+    phys = engines.physical_key(key, load_aliases(path))
+    if phys != key and phys in index:
+        return phys
+    return key
 
 
 def load_aliases(path: Path | None = None) -> dict[str, str]:
@@ -241,4 +322,13 @@ def set_alias(placeholder_key: str, real_key: str) -> None:
         _rewrite_in_place(fh, data)
 
 
-__all__ = ["SessionMeta", "load", "patch", "get", "load_aliases", "set_alias"]
+__all__ = [
+    "SessionMeta",
+    "display_title",
+    "load",
+    "patch",
+    "get",
+    "resolve_key",
+    "load_aliases",
+    "set_alias",
+]

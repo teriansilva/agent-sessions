@@ -35,6 +35,9 @@ vi.mock("../lib/api", async () => {
       projects: vi.fn(),
       scrollbackInfo: vi.fn(),
       clearScrollback: vi.fn(),
+      sessions: vi.fn(),
+      aiReviewModels: vi.fn(),
+      reviewExclude: vi.fn(),
     },
   };
 });
@@ -113,6 +116,15 @@ beforeEach(() => {
   vi.mocked(api.projects).mockResolvedValue({ projects: [] });
   vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 0, files: 0 });
   vi.mocked(api.clearScrollback).mockResolvedValue({ scope: "all", removed: 0, bytes_freed: 0 });
+  // AI Review tab (#356): no sessions excluded, model listing unsupported by default.
+  vi.mocked(api.sessions).mockResolvedValue({
+    sessions: [],
+    next_offset: null,
+    total: 0,
+    facets: { projects: [], engines: [] },
+  });
+  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: [] });
+  vi.mocked(api.reviewExclude).mockResolvedValue({ id: "x", review_excluded: false });
 });
 
 // ---- Tab shell: routing + deep links (#357 Phase 1) ----
@@ -212,7 +224,7 @@ test("the active panel is a labelled tabpanel wired to its tab", async () => {
 test.each([
   ["appearance", ["Appearance"]],
   ["projects", ["Session overview", "Default project"]],
-  ["ai-review", ["AI Review"]],
+  ["ai-review", ["AI session review", "Review prompt", "Excluded sessions"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["system", ["Connected agents", "System", "Updates"]],
   ["maintenance", ["Maintenance", "Scrollback cache"]],
@@ -225,9 +237,12 @@ test.each([
   await flushFetches();
 });
 
-test("the AI Review tab is a placeholder pointing at #356", async () => {
+test("the AI Review tab renders the #356 panel (write-only key, prompt, exclusions)", async () => {
   renderSettings("dark", "#ffb000", "/settings/ai-review");
-  expect(screen.getByText(/arrives with #356/i)).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "AI session review" }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText(/API key/i)).toBeInTheDocument();
   await flushFetches();
 });
 
