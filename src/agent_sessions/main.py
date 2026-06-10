@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import metadata, prefs, reaper, session_stream, vtsidecar
+from . import ai_review_loop, metadata, prefs, reaper, session_stream, vtsidecar
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -164,12 +164,18 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # AGENT_SESSIONS_REAP_IDLE_SECONDS > 0; defaults to dry-run (logs candidates, kills
         # nothing). Never reaps an attached or recently-active session.
         reaper_task = asyncio.create_task(reaper.run(registry))
+        # Periodic AI session review (#356 Phase 2): same reaper pattern. The task exits
+        # immediately under the AGENT_SESSIONS_AI_REVIEW_LOOP=0 kill-switch; otherwise it
+        # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
+        # it live without a restart.
+        review_task = asyncio.create_task(ai_review_loop.run(registry))
         try:
             yield
         finally:
-            reaper_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reaper_task
+            for task in (reaper_task, review_task):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
             with contextlib.suppress(Exception):
                 await registry.stop_all()
             with contextlib.suppress(Exception):

@@ -1,4 +1,4 @@
-"""AI session review engine (#356, Phase 1: manual reviews).
+"""AI session review engine (#356).
 
 One bounded, non-streaming chat completion per review against the user-configured
 OpenAI-compatible endpoint (prefs `ai_review` block): the input is the engine's saved
@@ -13,7 +13,8 @@ JSON, empty input — raises :class:`ReviewError` and persists NOTHING, so the l
 result (and its ``reviewed_at`` stale age) survives instead of a failure masquerading as a
 fresh review. The API key never appears in errors or logs; callers surface ``str(exc)``.
 
-The periodic scheduler lands in Phase 2; this module is deliberately scheduler-free.
+The periodic scheduler lives in ``ai_review_loop`` (#356 Phase 2); this module stays
+deliberately scheduler-free.
 """
 
 from __future__ import annotations

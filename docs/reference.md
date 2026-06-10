@@ -148,6 +148,7 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 | `AGENT_SESSIONS_TAKEOVER` | Single-active-viewer take-over for a live session. |
 | `AGENT_SESSIONS_PROJECT_ROOTS` | `os.pathsep`-separated base dirs under which the new-session UI may create a project folder (#335). Empty/unset ⇒ the "New folder" feature is OFF (the `POST /api/projects/mkdir` endpoint is disabled). Folder creation is `realpath`-contained strictly under a listed root. |
 | `AGENT_SESSIONS_SESSION_TTL` · `_REAP_*` | Idle-session reaper tunables. |
+| `AGENT_SESSIONS_AI_REVIEW_LOOP` | Kill-switch for the periodic AI review loop (#356). `0` ⇒ the background task is never started, overriding the Settings `enabled` toggle; any other value (default) arms the loop, which still only reviews while AI review is enabled + configured in Settings. Manual "Review now" is unaffected. |
 | `AGENT_SESSIONS_INSTANCE` | Label for running multiple instances on one host. |
 
 > Source of truth is the code — `grep -rhoE 'AGENT_SESSIONS_[A-Z_]+' src/`. The installer seeds the
