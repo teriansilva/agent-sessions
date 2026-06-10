@@ -40,7 +40,10 @@ def register(app: FastAPI, *, logged_in) -> None:
         _: str = Depends(logged_in),
         before: int | None = Query(None, ge=0),
         lines: int | None = Query(None, ge=1),
-        cols: int = Query(80, ge=20, le=500),
+        # No le= bound: very wide clients legitimately report cols>500 (the ws grid
+        # CLAMPS to 500 rather than rejecting — mirror that, or every wide terminal
+        # gets a 422 → permanent error pill instead of history).
+        cols: int = Query(80, ge=1),
     ) -> JSONResponse:
         try:
             prov, native = engines.parse_key(sid)
@@ -65,7 +68,7 @@ def register(app: FastAPI, *, logged_in) -> None:
             page = await loop.run_in_executor(
                 None,
                 lambda: history.fetch_page(
-                    engine_id, native, before=before, cols=cols, lines=lines
+                    engine_id, native, before=before, cols=max(20, min(500, cols)), lines=lines
                 ),
             )
         finally:

@@ -408,3 +408,16 @@ def test_fetch_page_single_huge_turn_still_progresses(tmp_path, monkeypatch):
     assert page.ansi  # progress: the one turn is served, truncated to the lines cap
     assert page.ansi.count(b"\r\n") + 1 <= 5
     assert page.cursor is None and page.has_more is False
+
+
+def test_wide_client_cols_clamped_not_rejected(auth_cfg, tmp_home):
+    # Prod regression (2026-06-10): a 666-col terminal got 422 from the le=500 bound and
+    # showed a permanent error pill on every wide session. Wide clients clamp to the ws
+    # grid's 500-col envelope; tiny values floor-clamp. Never 422 on geometry.
+    _write_jsonl(tmp_home)
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.get(f"/api/sessions/claude:{SID}/history?cols=666&before=20")
+    assert r.status_code == 200 and r.json()["ansi"]  # clamped render, real content
+    r2 = c.get(f"/api/sessions/claude:{SID}/history?cols=1")
+    assert r2.status_code == 200
