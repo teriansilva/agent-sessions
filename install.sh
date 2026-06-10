@@ -341,8 +341,8 @@ Type=simple
 KillMode=process
 # #346 Phase A: session children (dtach masters + agents + their builds) currently share
 # this cgroup, and the systemd default OOMPolicy=stop fails the WHOLE unit when the kernel
-# OOM-kills ANY of them — restarting the broker and dropping every websocket (observed on
-# example-host 2026-06-08, twice in 10 min). \`continue\` confines the damage to the killed
+# OOM-kills ANY of them — restarting the broker and dropping every websocket (observed
+# in production 2026-06-08, twice in 10 min). \`continue\` confines the damage to the killed
 # process; the broker's own MainPID dying still fails the unit via Restart=on-failure.
 OOMPolicy=continue
 # Same shared-cgroup problem for the task budget: the user-slice default (~2175) is easily
