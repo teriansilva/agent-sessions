@@ -161,3 +161,84 @@ def test_unlink_if_stale_leaves_alive_sock_alone(_runtime):
 
 def test_unlink_if_stale_noop_when_absent(_runtime):
     assert ptybridge.unlink_if_stale("claude", "never-existed") is False
+
+
+# ---- #355: tri-state probe — UNKNOWN (timeout) must never unlink a live master ----
+
+
+def test_probe_dead_is_decisive_and_fast(tmp_path, monkeypatch):
+    # No listener behind the file → ECONNREFUSED → DEAD on the first attempt; a
+    # missing path is DEAD too. Both must not burn the timeout ladder.
+    import socket as socket_mod
+    import time as time_mod
+
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path))
+    sock = ptybridge.socket_path("test", "refused")
+    srv = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    srv.bind(str(sock))
+    srv.listen(1)
+    srv.close()  # file remains, nobody listening → refused
+    t0 = time_mod.monotonic()
+    assert ptybridge.probe_master(sock) == ptybridge.DEAD
+    assert time_mod.monotonic() - t0 < 0.5  # decisive, no ladder
+    assert ptybridge.probe_master(tmp_path / "absent.sock") == ptybridge.DEAD
+    # decisive dead → unlink_if_stale removes the orphan (the pre-#355 behavior kept)
+    assert ptybridge.unlink_if_stale("test", "refused") is True
+    assert not sock.exists()
+
+
+def test_probe_alive_with_pending_backlog(tmp_path, monkeypatch):
+    # A listening socket is ALIVE even if the app never accept()s (kernel backlog).
+    import socket as socket_mod
+
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path))
+    sock = ptybridge.socket_path("test", "alive")
+    srv = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    srv.bind(str(sock))
+    srv.listen(8)
+    try:
+        assert ptybridge.probe_master(sock) == ptybridge.ALIVE
+        assert ptybridge.unlink_if_stale("test", "alive") is False
+        assert sock.exists()
+    finally:
+        srv.close()
+
+
+def test_probe_unknown_on_timeout_never_unlinks(tmp_path, monkeypatch):
+    # THE #355 regression: a starved master (connect backlog full → probe times out)
+    # is UNKNOWN, not dead — unlink_if_stale must refuse to remove the sock, or the
+    # next `dtach -c` would bind a second master (split-brain). The old single
+    # 0.2 s probe read this exact state as dead.
+    import socket as socket_mod
+
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(ptybridge, "_PROBE_TIMEOUTS_S", (0.05, 0.05))
+    sock = ptybridge.socket_path("test", "starved")
+    srv = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    srv.bind(str(sock))
+    srv.listen(0)  # minimal backlog; never accept()
+    fillers = []
+    try:
+        # Fill the backlog so further connects block until timeout.
+        for _ in range(4):
+            c = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+            c.setblocking(False)
+            try:
+                c.connect(str(sock))
+            except (BlockingIOError, OSError):
+                pass
+            fillers.append(c)
+        verdict = ptybridge.probe_master(sock)
+        if verdict != ptybridge.UNKNOWN:
+            import pytest
+
+            pytest.skip(f"kernel accepted past listen(0) backlog (verdict={verdict})")
+        # UNKNOWN → the destructive step must refuse; the sock survives.
+        assert ptybridge.unlink_if_stale("test", "starved") is False
+        assert sock.exists()
+        # ...and the boolean view stays conservative for ATTACH routing.
+        assert ptybridge.session_exists("test", "starved") is False
+    finally:
+        for c in fillers:
+            c.close()
+        srv.close()

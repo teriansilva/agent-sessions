@@ -14,6 +14,7 @@ that attaches to these sockets lives in the web layer.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -23,10 +24,24 @@ from pathlib import Path
 
 DTACH_BIN = os.environ.get("AGENT_SESSIONS_DTACH_BIN") or shutil.which("dtach") or "dtach"
 
-# Short non-blocking probe to verify a dtach master is actually accepting connections
-# on a `.sock` file (vs an orphan file left by a master that died without unlinking).
-# Local UNIX socket; 200 ms is generous and never user-perceptible.
-_PROBE_TIMEOUT_S = 0.2
+# Tri-state master probe (#355). Verdicts: a successful connect or a decisive errno
+# (refused/missing — both immediate) settle on the first attempt; only timeouts walk
+# the escalating ladder, i.e. the extra budget is spent exactly where the old single
+# 0.2 s attempt mis-verdicted a starved-but-alive master as dead.
+_PROBE_TIMEOUTS_S = (0.2, 0.5, 1.0)
+
+# Errnos that PROVE no master holds the socket: nothing listening (orphan file from a
+# crashed master) or the path gone/not a socket. Anything else — most importantly a
+# connect timeout on a loaded host — is UNKNOWN, never "dead": a false dead on the
+# LAUNCH path unlinks a live master's sock and `dtach -c` then creates a SECOND
+# master on the same path (the #165 split-brain).
+_DEAD_ERRNOS = frozenset(
+    {errno.ECONNREFUSED, errno.ENOENT, errno.ENOTSOCK, errno.ENOTDIR, errno.EISDIR}
+)
+
+ALIVE = "alive"
+DEAD = "dead"
+UNKNOWN = "unknown"
 
 # Only these chars are allowed in the socket filename; everything else is
 # squashed so an engine id / session id can never escape the runtime dir or
@@ -94,25 +109,44 @@ def launch_argv(*, engine: str, session_id: str, launch_argv: Iterable[str]) -> 
     return [DTACH_BIN, "-c", sock, "-z", "-E", "-r", "winch", *argv]
 
 
-def _master_alive(sock_path: Path) -> bool:
-    """True if a dtach master is actually accepting on ``sock_path``.
-
-    Probes via a short non-blocking UNIX connect. Returns False when the file
-    doesn't exist, is the wrong type, no one is listening (orphan sock from a
-    crashed master that didn't unlink), or the OS rejects the connect for any
-    reason. Best-effort and conservative: a transient failure looks dead, which
-    is the safe direction (the caller will then take the LAUNCH path under the
-    fcntl lock — which is itself idempotent if the master is actually alive).
-    """
+def _probe_once(sock_path: Path, timeout: float) -> str:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(_PROBE_TIMEOUT_S)
+    s.settimeout(timeout)
     try:
         s.connect(str(sock_path))
-        return True
-    except OSError:
-        return False
+        return ALIVE
+    except TimeoutError:
+        return UNKNOWN
+    except OSError as e:
+        return DEAD if e.errno in _DEAD_ERRNOS else UNKNOWN
     finally:
         s.close()
+
+
+def probe_master(sock_path: Path) -> str:
+    """Tri-state liveness of the master on ``sock_path``: ALIVE / DEAD / UNKNOWN.
+
+    ALIVE and DEAD are decisive. UNKNOWN means every attempt timed out — on a
+    starved host a live master can be too slow to accept within budget, so a
+    caller with destructive consequences (socket unlink) must NOT read UNKNOWN
+    as dead (#355).
+    """
+    for t in _PROBE_TIMEOUTS_S:
+        verdict = _probe_once(sock_path, t)
+        if verdict is not UNKNOWN:
+            return verdict
+    return UNKNOWN
+
+
+def _master_alive(sock_path: Path) -> bool:
+    """Boolean view of :func:`probe_master` for the ATTACH-vs-LAUNCH decision.
+
+    UNKNOWN maps to False: routing to LAUNCH is non-destructive by itself
+    (``dtach -c`` refuses an existing sock and the client retries), while the
+    destructive step — removing the sock — is verdict-aware in
+    `unlink_if_stale` and never fires on UNKNOWN.
+    """
+    return probe_master(sock_path) is ALIVE
 
 
 def session_exists(engine: str, session_id: str) -> bool:
@@ -147,7 +181,10 @@ def unlink_if_stale(engine: str, session_id: str) -> bool:
         return False
     if not p.exists():
         return False
-    if _master_alive(p):
+    # Destructive step gated on a DECISIVE dead verdict (#355): UNKNOWN (probe
+    # timeouts under load) must never unlink — the master may be alive and a
+    # subsequent `dtach -c` would bind a second master to the same session.
+    if probe_master(p) is not DEAD:
         return False
     try:
         p.unlink()
