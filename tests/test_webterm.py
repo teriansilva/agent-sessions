@@ -849,3 +849,171 @@ def test_force_repaint_floors_small_terminals(monkeypatch):
         webterm._force_repaint(7, type("P", (), {"send_signal": lambda s, x: None})(), 3, 4)
     )
     assert calls[0] == (2, 2)  # floored, not 1 or 0
+
+
+# ---- #349: resize-vs-nudge coalescing + blank-attach nudge ------------------------
+
+
+class _FakeProc:
+    """Stands in for the dtach client: keeps the slave end open so the master doesn't
+    EOF, records signals, and resolves wait() once terminated."""
+
+    def __init__(self, slave_fd):
+        import os as _os
+
+        self.pid = 4242
+        self._slave_dup = _os.dup(slave_fd)
+        self._done = None  # asyncio.Event, created lazily on the running loop
+        self.signals = []
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+
+    def _finish(self):
+        import asyncio as _aio
+        import os as _os
+
+        if self._slave_dup is not None:
+            with __import__("contextlib").suppress(OSError):
+                _os.close(self._slave_dup)
+            self._slave_dup = None
+        if self._done is None:
+            self._done = _aio.Event()
+        self._done.set()
+
+    def terminate(self):
+        self._finish()
+
+    def kill(self):
+        self._finish()
+
+    async def wait(self):
+        import asyncio as _aio
+
+        if self._done is None:
+            self._done = _aio.Event()
+        await self._done.wait()
+        return 0
+
+
+class _ScriptedWS:
+    """Feeds a scripted message sequence to pump_in; sends are no-ops."""
+
+    def __init__(self, script):
+        self._script = list(script)  # items: ("sleep", s) | dict ws message
+
+    async def receive(self):
+        import asyncio as _aio
+
+        while self._script:
+            item = self._script.pop(0)
+            if isinstance(item, tuple) and item[0] == "sleep":
+                await _aio.sleep(item[1])
+                continue
+            return item
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, b):
+        pass
+
+    async def send_text(self, t):
+        pass
+
+    async def close(self, code=None):
+        pass
+
+
+def _run_349(monkeypatch, *, key, have, script, settle=0.05):
+    """Drive webterm.run with a fake dtach proc; return the _force_repaint call log."""
+    import asyncio
+
+    from agent_sessions import webterm
+
+    calls = []
+
+    async def record_repaint(master, proc, rows, cols):
+        calls.append((rows, cols))
+
+    monkeypatch.setattr(webterm, "_force_repaint", record_repaint)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", settle)
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    ws = _ScriptedWS(script)
+    asyncio.run(webterm.run(ws, ["dtach"], cwd="/tmp", buf_key=key, have=have))
+    return calls
+
+
+def _resize(cols, rows):
+    import json
+
+    return {"type": "websocket.receive", "text": json.dumps({"t": "r", "cols": cols, "rows": rows})}
+
+
+def test_resize_burst_in_attach_window_yields_one_trailing_repaint(monkeypatch):
+    # #349 core: width changes during the attach window must re-arm exactly ONE
+    # debounced trailing repaint, restored at the LATEST accepted geometry — not the
+    # attach-time grid, and not one repaint per resize.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-1"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")  # have<total → real delta payload
+    webterm.scrollback._LAST_COLS[key] = 80  # same-width continuation at cols=80
+    try:
+        calls = _run_349(
+            monkeypatch,
+            key=key,
+            have=5,
+            script=[
+                _resize(70, 20),
+                _resize(90, 30),
+                _resize(100, 40),  # rapid burst — only this final geometry may repaint
+                ("sleep", 0.35),  # let the debounced trailing nudge fire
+            ],
+        )
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == [(40, 100)]
+
+
+def test_have_resume_with_real_delta_does_not_nudge(monkeypatch):
+    # The non-blank have>0 reconnect keeps the #304 no-flicker behavior.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-2"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm.scrollback._LAST_COLS[key] = 80
+    try:
+        calls = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == []
+
+
+def test_blank_have_reconnect_still_nudges(monkeypatch):
+    # #349: a have>0 reconnect whose attach delivered NOTHING visible (cold attach
+    # after a broker restart: empty ring, no transcript) must nudge — otherwise an
+    # idle agent leaves the client on a blank screen until the next input byte.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-3"
+    webterm._BUFFERS.pop(key, None)  # empty ring, no _LAST_COLS → cold attach
+    calls = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
+    assert calls == [(24, 80)]
+
+
+def test_up_to_date_same_width_reconnect_does_not_nudge(monkeypatch):
+    # Hermes #359: have == total on a same-width continuation delivers an EMPTY delta —
+    # that is "up to date", not "blank"; nudging it would flicker every quiet reconnect.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-4"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm.scrollback._LAST_COLS[key] = 80
+    try:
+        calls = _run_349(monkeypatch, key=key, have=10, script=[("sleep", 0.3)])
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == []

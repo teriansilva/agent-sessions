@@ -365,7 +365,14 @@ export function Terminal({
     // grid with no correcting resize. Frame-counted (not wall-clock) so it's deterministic under test;
     // capped so a never-quiet layout still connects.
     const QUIET_FRAMES = 8; // grid must hold steady this many frames (~130ms) before we trust it
-    const MAX_FRAMES = 90; //  ~1.5s hard cap so a perpetually-jittering layout still attaches
+    // Hard cap so a perpetually-jittering layout still attaches. Mobile address-bar /
+    // keyboard animations regularly outlast 1.5s, and connecting mid-animation attaches
+    // at an intermediate width — feeding the resize-vs-nudge coalescing blank (#349) and
+    // dirtying the VT mirror. Coarse-pointer devices get double the budget; the QUIET
+    // path still connects desktops and settled mobiles after ~130ms.
+    const coarse =
+      typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches;
+    const MAX_FRAMES = coarse ? 180 : 90; // ~3s mobile / ~1.5s desktop
     let settleRaf = 0;
     let lastC = -1;
     let lastR = -1;

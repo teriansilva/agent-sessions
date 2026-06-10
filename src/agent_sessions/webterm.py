@@ -98,6 +98,14 @@ _NUDGE_GAP_S = 0.25
 _NUDGE_COLS_DELTA = 8
 _NUDGE_ROWS_DELTA = 2
 
+# Re-nudge window (#349): a client resize landing within this many seconds of attach can
+# coalesce with the fresh-attach nudge inside the agent's own resize debounce — shrink +
+# client-resize + restore net out to zero geometry change and the agent never repaints
+# (the mobile keyboard/address-bar blank). A WIDTH-changing resize inside this window
+# therefore schedules one debounced TRAILING repaint at the latest accepted geometry,
+# making the nudge un-coalesceable instead of re-tuning timing constants.
+_RENUDGE_WINDOW_S = 2.0
+
 # Upper bound on creating the dtach client/master subprocess (#346 Phase A). Spawning is
 # normally instant; under resource pressure (task-limit EAGAIN, memory stalls) it can fail
 # slowly or hang, and an unbounded spawn wedges this connection's coroutine. Timeout and
@@ -223,6 +231,12 @@ async def run(
     # offset) so a reattach shows the prior conversation and a transient drop continues
     # seamlessly — never blank. Then send the authoritative byte offset as a control
     # frame. dtach has no scrollback of its own; alt-screen TUIs repaint via SIGWINCH.
+    # `blank_attach` (#349): true when this attach delivered nothing the user can see —
+    # no payload at all, or only the clean-load clear. Such an attach must always get
+    # the repaint nudge (even at have>0): an idle agent would otherwise leave the
+    # client staring at a cleared screen until its next input byte.
+    blank_attach = True
+    payload_is_clear = False
     if buf_key:
         payload, total = scrollback._resume_payload(buf_key, have)
         # Scroll-up source (#262). The raw ring is authored at the agent's fixed pty width; replay
@@ -239,6 +253,12 @@ async def run(
         # `total` is unchanged in every branch, so the `seq` frame below stays the real byte offset
         # and delta-resume is unaffected.
         buffer_cols = scrollback._LAST_COLS.get(buf_key)
+        if scrollback._is_same_width_continuation(have, buffer_cols, cols):
+            # Same-width continuation: the client already holds a valid screen and the
+            # (possibly empty) payload is just the byte delta — an empty delta means
+            # "up to date", NOT blank. Never nudge it (Hermes #359: the #304 no-flicker
+            # reconnect must survive the blank-attach rule).
+            blank_attach = False
         if not scrollback._is_same_width_continuation(have, buffer_cols, cols):
             # Path B (#271/#273): the faithful real-console snapshot from the VT sidecar, rebuilt
             # from the ring at this client's width. Flag-gated + fail-safe (None when off/unhealthy)
@@ -263,13 +283,36 @@ async def run(
                         if not vtsidecar.enabled():
                             scrollback._reset_ring(buf_key)
                         payload = clear
+                        payload_is_clear = True
         # Track this client's width for the clean-load fallback / resize logic (every connect).
         scrollback._LAST_COLS[buf_key] = cols
         if payload:
+            blank_attach = payload_is_clear
             with contextlib.suppress(Exception):
                 await ws.send_bytes(payload)
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "seq", "n": total}))
+
+    # Latest ACCEPTED geometry (#349): nudges must restore to what the client most
+    # recently negotiated, not the attach-time grid — restoring stale attach geometry
+    # would undo a mobile width that settled during the attach window.
+    cur = {"rows": rows, "cols": cols}
+    attach_at = time.monotonic()
+    renudge: dict = {"task": None}
+
+    def _schedule_trailing_nudge() -> None:
+        # Debounce: a mobile resize burst (keyboard + address-bar animation) collapses
+        # to exactly one trailing repaint after the geometry quiets. Cancelled (with the
+        # whole bundle) on disconnect.
+        t = renudge["task"]
+        if t is not None and not t.done():
+            t.cancel()
+
+        async def _trail() -> None:
+            await asyncio.sleep(_NUDGE_SETTLE_S)
+            await _force_repaint(master, proc, cur["rows"], cur["cols"])
+
+        renudge["task"] = asyncio.create_task(_trail())
 
     async def pump_out() -> None:
         while True:
@@ -345,17 +388,27 @@ async def run(
                         # size and resizes the program → the live agent re-renders wider.
                         with contextlib.suppress(ProcessLookupError, OSError):
                             proc.send_signal(signal.SIGWINCH)
+                        # #349: a WIDTH change inside the attach window can coalesce with
+                        # the fresh-attach nudge into a net-zero geometry event the agent
+                        # never repaints for. Re-arm one trailing repaint at the latest
+                        # accepted geometry instead of trusting timing.
+                        width_changed = new_cols != cur["cols"]
+                        cur["cols"], cur["rows"] = new_cols, new_rows
+                        if width_changed and time.monotonic() - attach_at <= _RENUDGE_WINDOW_S:
+                            _schedule_trailing_nudge()
             elif msg.get("bytes") is not None and not _gated():
                 with contextlib.suppress(OSError):
                     os.write(master, msg["bytes"])
 
     async def _nudge_repaint() -> None:
-        # Only a FRESH attach needs it (#304): a have>0 reconnect is a live-session blip that
-        # already holds its screen, and nudging it would cause a needless reflow flicker.
-        if have > 0:
+        # A FRESH attach needs it (#304); a have>0 reconnect normally doesn't (it holds
+        # its screen, nudging would flicker) — EXCEPT when this attach delivered nothing
+        # visible (`blank_attach`, #349): an idle agent must still be forced to paint or
+        # the client sits on a cleared screen until its next input byte.
+        if have > 0 and not blank_attach:
             return
         await asyncio.sleep(_NUDGE_SETTLE_S)
-        await _force_repaint(master, proc, rows, cols)
+        await _force_repaint(master, proc, cur["rows"], cur["cols"])
 
     nudge_task = asyncio.create_task(_nudge_repaint())
     tasks = [asyncio.create_task(pump_out()), asyncio.create_task(pump_in())]
@@ -368,10 +421,13 @@ async def run(
         for t in tasks:
             t.cancel()
         nudge_task.cancel()  # short-lived; cancel in case we tore down mid-nudge
+        if renudge["task"] is not None:
+            renudge["task"].cancel()  # stale trailing repaint must not fire post-disconnect
         if stop_waiter is not None:
             stop_waiter.cancel()
         with contextlib.suppress(Exception):
-            await asyncio.gather(*tasks, nudge_task, return_exceptions=True)
+            renudge_tasks = [renudge["task"]] if renudge["task"] is not None else []
+            await asyncio.gather(*tasks, nudge_task, *renudge_tasks, return_exceptions=True)
         if stop_waiter is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter
