@@ -419,3 +419,37 @@ def test_gemini_adapter_short_prefix_collision_does_not_cross_sessions(tmp_path)
     assert T.adapter_for("gemini")(target, tmp_path) == []
     # And the neighbour still resolves correctly for ITS own id.
     assert [t.text for t in T.adapter_for("gemini")(other, tmp_path)] == ["WRONG SESSION"]
+
+
+# --- render_with_boundary (#348 / Hermes #365 r2) -------------------------------------------
+
+
+def test_render_boundary_zero_when_nothing_truncated():
+    out, boundary = T.render_with_boundary(_turns_sample(), 80)
+    assert out == T.render(_turns_sample(), 80)
+    assert boundary == 0  # the render covers the whole turn list
+
+
+def test_render_boundary_is_exact_turn_index_at_a_clean_cut():
+    # 2 lines per turn (blank spacer + content). max_lines=4 keeps exactly the last 2 turns;
+    # the cut lands ON a turn start → boundary is that turn's index.
+    turns = [T.Turn("user" if i % 2 == 0 else "assistant", f"T{i}") for i in range(6)]
+    out, boundary = T.render_with_boundary(turns, 80, max_lines=4)
+    assert boundary == 4
+    text = out.decode()
+    assert "T4" in text and "T5" in text and "T3" not in text
+
+
+def test_render_boundary_steps_past_a_turn_cut_mid_render():
+    # max_lines=3 keeps the last turn whole plus only the TAIL of the one before it: that
+    # partially-shown turn is NOT covered, so the boundary is one past it — a pager using
+    # before=boundary re-serves it whole instead of losing its head (overlap beats a hole).
+    turns = [T.Turn("user" if i % 2 == 0 else "assistant", f"T{i}") for i in range(6)]
+    out, boundary = T.render_with_boundary(turns, 80, max_lines=3)
+    assert boundary == 5
+    assert "T5" in out.decode()
+
+
+def test_render_boundary_empty_render_is_zero():
+    assert T.render_with_boundary([], 80) == (b"", 0)
+    assert T.render_with_boundary([T.Turn("user", "   ")], 80) == (b"", 0)

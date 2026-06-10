@@ -37,6 +37,7 @@ from .auth import (
 )
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
+from .routes import history as history_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import spa as spa_routes
@@ -308,6 +309,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
+    # Paged transcript history for scroll-up lazy-load (#348 Phase 3). GET-only (no CSRF
+    # surface); additive — the ws attach payload + delta-resume contract are untouched.
+    history_routes.register(app, logged_in=_logged_in)
     # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 

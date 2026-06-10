@@ -145,6 +145,9 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 | `AGENT_SESSIONS_TRANSCRIPT_MAX_LINES` | Transcript scroll-up render cap in lines (#348). Default `20000`; non-numeric/garbage falls back to the default, values are floored at `1`. |
 | `AGENT_SESSIONS_TRANSCRIPT_MAX_MESSAGES` | Max conversation messages read for the transcript render (#348). Default `2000`; same fallback/floor rules. |
 | `AGENT_SESSIONS_TRANSCRIPT_TAIL_BYTES` | How much of the engine's session log tail is parsed for the transcript (#348). Default `8388608` (8 MiB); same fallback/floor rules. |
+| `AGENT_SESSIONS_HISTORY_PAGE_TURNS` | Turns per scroll-up history page (#348 Phase 3) — the **width-independent cursor step**: a page always consumes exactly this many turns, so the same cursor selects the same turn window at any terminal width. Default `50`; floored at `1`. |
+| `AGENT_SESSIONS_HISTORY_PAGE_LINES` | Rendered-lines cap per history page. Render-output cap ONLY: truncates the page's rendered text oldest-first, never moves the cursor. Default `500`. |
+| `AGENT_SESSIONS_HISTORY_PAGE_BYTES` | Rendered-bytes cap per history page. Same render-only truncation rule. Default `524288` (512 KiB). |
 | `AGENT_SESSIONS_TAKEOVER` | Single-active-viewer take-over for a live session. |
 | `AGENT_SESSIONS_PROJECT_ROOTS` | `os.pathsep`-separated base dirs under which the new-session UI may create a project folder (#335). Empty/unset ⇒ the "New folder" feature is OFF (the `POST /api/projects/mkdir` endpoint is disabled). Folder creation is `realpath`-contained strictly under a listed root. |
 | `AGENT_SESSIONS_SESSION_TTL` · `_REAP_*` | Idle-session reaper tunables. |

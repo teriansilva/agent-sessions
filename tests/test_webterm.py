@@ -394,7 +394,8 @@ _UUID = "11111111-1111-1111-1111-111111111111"
 
 def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypatch):
     # #242 PR2: a fresh load resolves the engine's transcript adapter, renders it at the client
-    # width, and returns clear + rendered conversation (which scrolls into xterm scrollback).
+    # width, and returns clear + rendered conversation (which scrolls into xterm scrollback)
+    # plus the exact history cursor for the {"t":"hist"} frame (#348 / Hermes #365 r2).
     from agent_sessions import transcript, webterm
 
     monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
@@ -404,10 +405,84 @@ def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypat
         "adapter_for",
         lambda eid: (lambda native, home: turns) if eid == "claude" else None,
     )
-    out = webterm._transcript_payload(f"claude:{_UUID}", 80)
-    assert out is not None
+    res = webterm._transcript_payload(f"claude:{_UUID}", 80)
+    assert res is not None
+    out, cursor = res
     assert out.startswith(webterm._CLEAN_LOAD_CLEAR)  # clears first
     assert b"do the thing" in out and b"done" in out  # the conversation
+    assert cursor == 0  # nothing truncated → the payload covers the whole transcript
+
+
+def test_transcript_payload_exports_exact_truncation_boundary(monkeypatch):
+    # Hermes #365 r2 finding 1: when the attach render truncates, the payload must carry the
+    # EXACT first rendered turn index — the {"t":"hist"} cursor the client seeds `before=` from —
+    # not leave the server to re-derive the boundary at the (possibly resized) request width.
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    # 10 turns, each rendering as a blank spacer + one content line (2 lines/turn).
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(10)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    monkeypatch.setattr(transcript, "DEFAULT_MAX_LINES", 6)  # keeps the newest 3 turns exactly
+    res = webterm._transcript_payload(f"claude:{_UUID}", 80)
+    assert res is not None
+    out, cursor = res
+    assert b"T07" in out and b"T09" in out and b"T06" not in out
+    assert cursor == 7  # exact: turns[7:] delivered → first lazy page must use before=7
+
+
+def test_ws_attach_sends_hist_frame_with_exact_boundary_after_seq(tmp_path, monkeypatch):
+    """Hermes #365 r2 finding 1, wire-level: a transcript attach must EXPORT its exact turn
+    boundary — {"t":"hist","cursor":N} right after the seq frame — so the client's first
+    lazy-load request carries `before=N` instead of trusting the server's width-dependent
+    re-derivation (a resize between attach and first lazy-load skipped turns)."""
+    import asyncio
+    import json as _json
+
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(10)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    monkeypatch.setattr(transcript, "DEFAULT_MAX_LINES", 6)  # newest 3 turns → boundary 7
+
+    sent_text: list[str] = []
+    sent_bytes: list[bytes] = []
+
+    class FakeWS:
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            sent_bytes.append(bytes(b))
+
+        async def send_text(self, t):
+            sent_text.append(t)
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), ["sleep", "1"], cwd=str(tmp_path), buf_key=f"claude:{_UUID}"))
+    frames = [_json.loads(t) for t in sent_text]
+    kinds = [f.get("t") for f in frames]
+    assert "seq" in kinds and "hist" in kinds
+    assert kinds.index("hist") == kinds.index("seq") + 1  # hist follows seq directly
+    assert next(f for f in frames if f["t"] == "hist") == {"t": "hist", "cursor": 7}
+    # And the attach payload itself was the transcript render (clear + newest turns).
+    assert sent_bytes and sent_bytes[0].startswith(webterm._CLEAN_LOAD_CLEAR)
+    assert b"T09" in sent_bytes[0] and b"T06" not in sent_bytes[0]
 
 
 def test_transcript_payload_none_when_disabled(monkeypatch):
@@ -425,7 +500,7 @@ def test_transcript_payload_none_without_adapter_or_turns(monkeypatch):
     monkeypatch.setattr(transcript, "adapter_for", lambda eid: None)
     assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
     # adapter but empty conversation → fall back (None)
-    monkeypatch.setattr(transcript, "adapter_for", lambda eid: (lambda native, home: []))
+    monkeypatch.setattr(transcript, "adapter_for", lambda eid: lambda native, home: [])
     assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
 
 

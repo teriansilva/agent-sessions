@@ -22,6 +22,20 @@ export interface BenchOptions {
    *  injected scroll-up (the #299 mechanism). Default true — so the bench proves the #300 fix
    *  (connect-at-stable-size → no spurious resize → history survives). */
   wipeOnResizeChange?: boolean;
+  /** Scroll-up lazy-load (#348 Phase 3): sequential responses for the mocked
+   *  `GET /api/sessions/<sid>/history` route — the Nth fetch gets `lazyPages[N]`; past the
+   *  end (or when omitted) the route answers the empty end-of-history shape. `delayMs`
+   *  holds the response so a spec can observe the loading pill. `status` (e.g. 500)
+   *  makes that call fail so a spec can exercise the error + retry pill. */
+  lazyPages?: LazyHistoryPage[];
+}
+
+export interface LazyHistoryPage {
+  ansi: string;
+  cursor: number | null;
+  has_more: boolean;
+  delayMs?: number;
+  status?: number;
 }
 
 const now = 1_700_000_000;
@@ -143,9 +157,26 @@ function attachTripwires(page: Page) {
 
 /** Boot the bench: tripwires + mocked /api + the in-page fake terminal server. Returns nothing;
  *  call before page.goto. */
+/** Mock the paged transcript-history endpoint (#348 Phase 3). Registered AFTER the generic
+ *  `/api/sessions**` route so it takes precedence (Playwright matches newest-first). Serves
+ *  `pages` sequentially; exhausted/omitted → the empty end-of-history shape. */
+function mockHistoryApi(page: Page, pages: LazyHistoryPage[] = []) {
+  let call = 0;
+  page.route(/\/api\/sessions\/[^/]+\/history(\?.*)?$/, async (route) => {
+    const p = pages[call++] ?? { ansi: "", cursor: null, has_more: false };
+    if (p.delayMs) await new Promise((r) => setTimeout(r, p.delayMs));
+    if (p.status && p.status >= 400) {
+      await route.fulfill({ status: p.status, json: { detail: "bench error" } });
+      return;
+    }
+    await route.fulfill({ json: { ansi: p.ansi, cursor: p.cursor, has_more: p.has_more } });
+  });
+}
+
 export async function setupBench(page: Page, opts: BenchOptions) {
   attachTripwires(page);
   mockApi(page, opts.sessions);
+  mockHistoryApi(page, opts.lazyPages);
   const history = opts.history ?? Object.fromEntries(
     opts.sessions.map((s) => [`${s.engine}:${s.uuid}`, defaultHistory(`${s.engine}:${s.uuid}`)]),
   );

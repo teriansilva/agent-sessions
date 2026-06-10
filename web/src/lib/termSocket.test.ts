@@ -258,3 +258,21 @@ test("a gate control frame fires onGate with the holder, null when absent (#293)
   ws.message(JSON.stringify({ t: "gate" })); // no holder → null
   expect(gates).toEqual([{ label: "Mac · Chrome", since: 1700 }, null]);
 });
+
+test("a hist control frame fires onHist with the exact attach cursor (#348)", () => {
+  const cursors: number[] = [];
+  const ts = new TermSocket(
+    () => "/ws/term/claude:abc?have=0",
+    { onOutput: () => {}, onStatus: () => {}, onHist: (c) => cursors.push(c) },
+    (u) => new FakeWS(u) as unknown as WebSocket,
+  );
+  created.push(ts);
+  ts.connect();
+  const ws = FakeWS.instances[0];
+  ws.open();
+  ws.message(JSON.stringify({ t: "seq", n: 123 }));
+  ws.message(JSON.stringify({ t: "hist", cursor: 7 }));
+  ws.message(JSON.stringify({ t: "hist" })); // malformed (no cursor) → ignored
+  expect(cursors).toEqual([7]);
+  expect(ts.consumed).toBe(123); // the hist frame never disturbs the seq offset
+});

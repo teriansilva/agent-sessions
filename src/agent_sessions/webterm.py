@@ -238,6 +238,10 @@ async def run(
     # client staring at a cleared screen until its next input byte.
     blank_attach = True
     payload_is_clear = False
+    # Exact first-page cursor for scroll-up lazy-load (#348 / Hermes #365 r2): set when the
+    # attach payload came from the transcript renderer, which knows the first turn index it
+    # delivered. Sent to the client as {"t":"hist","cursor":N} right after the seq frame.
+    hist_cursor: int | None = None
     if buf_key:
         payload, total = scrollback._resume_payload(buf_key, have)
         # Scroll-up source (#262). The raw ring is authored at the agent's fixed pty width; replay
@@ -273,11 +277,11 @@ async def run(
             if vtpayload is not None:
                 payload = vtpayload
             else:
-                tpayload = await loop.run_in_executor(
+                tres = await loop.run_in_executor(
                     None, scrollback._transcript_payload, buf_key, cols, rows
                 )
-                if tpayload is not None:
-                    payload = tpayload
+                if tres is not None:
+                    payload, hist_cursor = tres
                 else:
                     # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
                     # replay), reset the ring so a later same-width attach can't replay stale bytes.
@@ -299,6 +303,14 @@ async def run(
                 await ws.send_bytes(payload)
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "seq", "n": total}))
+        if hist_cursor is not None:
+            # The transcript attach path EXPORTS its exact turn boundary (#348 / Hermes #365
+            # r2 finding 1): the client seeds its history loader from this frame and always
+            # sends `before=` — the server never re-derives the "already delivered" boundary
+            # from rendered line counts at a possibly different width (a resize between
+            # attach and the first lazy-load made that re-derivation skip turns).
+            with contextlib.suppress(Exception):
+                await ws.send_text(json.dumps({"t": "hist", "cursor": hist_cursor}))
 
     # Latest ACCEPTED geometry (#349): nudges must restore to what the client most
     # recently negotiated, not the attach-time grid — restoring stale attach geometry

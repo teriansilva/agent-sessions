@@ -3,10 +3,12 @@
 // factory — unit-tested with a fake socket, independent of xterm/DOM.
 //
 // Protocol (server = webterm.run): binary frames are raw PTY output; string frames are
-// JSON control frames. The only control frame today is {"t":"seq","n":<total>}, the
-// server's authoritative absolute byte offset. We track how many bytes we've consumed
-// and reconnect with `?have=<offset>` so the server replays only the delta — the screen
-// continues seamlessly across a drop instead of blanking or re-replaying everything.
+// JSON control frames. {"t":"seq","n":<total>} is the server's authoritative absolute
+// byte offset: we track how many bytes we've consumed and reconnect with `?have=<offset>`
+// so the server replays only the delta — the screen continues seamlessly across a drop
+// instead of blanking or re-replaying everything. {"t":"hist","cursor":N} (#348) follows
+// seq on a transcript attach and carries the exact turn boundary of the attach payload
+// for the scroll-up lazy-loader.
 
 export type TermStatus =
   | { kind: "connecting" }
@@ -39,6 +41,12 @@ export interface TermSocketHandlers {
    *  (a reconnect with force=1) / Cancel. Sent instead of any PTY stream for a passive
    *  attach, and again if this owner is demoted mid-session. */
   onGate?: (holder: TermGateHolder | null) => void;
+  /** Scroll-up lazy-load first-page cursor (#348, Hermes #365 r2): sent right after `seq`
+   *  when the attach payload came from the transcript renderer, carrying the EXACT turn
+   *  index the payload starts at. The terminal seeds its HistoryLoader from it so the
+   *  first /history request asks for `before=<cursor>` — the server never re-derives the
+   *  attach boundary at a (possibly resized) later width. */
+  onHist?: (cursor: number) => void;
 }
 
 // Deliberate server rejects — never reconnect on these (would hammer the backend).
@@ -206,6 +214,7 @@ export class TermSocket {
           sid?: string;
           role?: TermRole;
           holder?: TermGateHolder | null;
+          cursor?: number;
         };
         if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
@@ -215,6 +224,9 @@ export class TermSocket {
           this.handlers.onRole?.(msg.role);
         // {"t":"gate","holder":{label,since}} — single-active-viewer: not the active viewer (#293).
         else if (msg.t === "gate") this.handlers.onGate?.(msg.holder ?? null);
+        // {"t":"hist","cursor":N} — exact first-page history cursor of a transcript attach (#348).
+        else if (msg.t === "hist" && typeof msg.cursor === "number")
+          this.handlers.onHist?.(msg.cursor);
       } catch {
         /* ignore malformed control frame */
       }

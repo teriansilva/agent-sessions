@@ -205,3 +205,71 @@
     background: var(--bg);
   }
 }
+
+/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): slim centered pill
+ * OVERLAYS at the top edge of the terminal viewport — absolutely positioned, never
+ * buffer rows, so a page prepend can't shift them. Three states: loading (spinner,
+ * accent), start-of-history (muted), error (status-down, whole pill = tap-to-retry).
+ * z-index 7: above the touch-capture overlay so the retry tap lands. */
+.histPillRow {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top, 0));
+  left: 0;
+  right: 0;
+  z-index: 7;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.histPill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 24px);
+  padding: 4px 12px;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  white-space: nowrap;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.histPillMuted {
+  color: var(--text-3);
+  border-color: var(--border);
+  box-shadow: none;
+}
+.histPillError {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 40%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--status-down) 15%, transparent);
+  cursor: pointer;
+}
+.histPillError .histRetry {
+  color: var(--accent);
+}
+.histSpin {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: histRot 0.8s linear infinite;
+}
+@keyframes histRot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .histSpin {
+    animation: none;
+  }
+}

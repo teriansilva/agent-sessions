@@ -3,6 +3,7 @@
 import type {
   AppConfig,
   EnginesResponse,
+  HistoryPage,
   Project,
   SessionsPage,
   SessionsQuery,
@@ -188,6 +189,19 @@ export const api = {
       `/api/sessions/${enc(id)}/restart`,
       { fp: opts.fp, tab_id: opts.tabId, force: opts.force ?? false },
     ),
+  /** One page of older transcript history for scroll-up lazy-load (#348 Phase 3). GET —
+   *  no CSRF. `before` is the exact turn boundary: seeded from the attach's {"t":"hist"}
+   *  frame for the first page, then the returned `cursor` for each next-older page.
+   *  Omitting it (no hist frame received) gets the server's width-independent
+   *  APPROXIMATE fallback — everything older than the newest page-sized turn window. */
+  history: (id: string, q: { before?: number; lines?: number; cols?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.before !== undefined) p.set("before", String(q.before));
+    if (q.lines !== undefined) p.set("lines", String(q.lines));
+    if (q.cols !== undefined) p.set("cols", String(q.cols));
+    const qs = p.toString();
+    return getJson<HistoryPage>(`/api/sessions/${enc(id)}/history${qs ? `?${qs}` : ""}`);
+  },
   /** AI review (#356): server-proxied model listing from the configured endpoint — the
    *  API key never reaches the browser. 400 = not configured, 502 = endpoint can't list
    *  (the Settings dropdown falls back to free-text entry). */

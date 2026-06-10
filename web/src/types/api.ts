@@ -165,6 +165,16 @@ export interface UpdateInfo {
   update_available: boolean;
 }
 
+/** One page of older transcript history for scroll-up lazy-load (#348 Phase 3).
+ *  `cursor` is a stable per-engine TURN index (never a rendered-line offset): pass it
+ *  back as `before` to fetch the next-older page. `null` cursor + `has_more=false`
+ *  means the oldest turn was reached (or the engine has no transcript at all). */
+export interface HistoryPage {
+  ansi: string;
+  cursor: number | null;
+  has_more: boolean;
+}
+
 export interface SessionsQuery {
   limit?: number;
   offset?: number;

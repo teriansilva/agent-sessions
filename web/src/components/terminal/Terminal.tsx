@@ -8,6 +8,8 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
+import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
+import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { isPasteShortcut } from "../../lib/termKeys";
 import { useConfig } from "../../app/config";
@@ -93,6 +95,12 @@ export function Terminal({
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
+  // Scroll-up lazy-load (#348 Phase 3): pill state (loading / start-of-history / error)
+  // + whether the viewport sits at the very top of the scrollback (the end pill only
+  // shows there). `histRetryRef` holds the effect-scoped retry closure for the error pill.
+  const [histState, setHistState] = useState<HistoryState>("idle");
+  const [atTop, setAtTop] = useState(false);
+  const histRetryRef = useRef<() => void>(() => {});
   // Per-tab ownership (#184 slice 3): the server's verdict on whether this WS
   // bridge holds the owner role or is a read-only secondary. Default is "owner"
   // until the server says otherwise — backward-compatible with the pre-slice-3
@@ -204,7 +212,112 @@ export function Terminal({
       return buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE;
     };
     const updateAtBottom = () => setAtBottom(computeAtBottom());
-    term.onScroll?.(updateAtBottom);
+
+    // --- Scroll-up lazy-load (#348 Phase 3) ----------------------------------------
+    // xterm.js cannot prepend into an existing buffer, so older pages live in a client-
+    // side buffer and the whole terminal is RE-WRITTEN on each prepend (the issue-
+    // sanctioned fallback, only ever triggered at the very top of the scrollback):
+    // reset → fetched pages (oldest-first) → a viewport of blank lines → the recorded
+    // live stream. The blank gap pushes the pages fully into scrollback so the stream's
+    // leading clear (ESC[2J) can't eat the page tail — the same framing the server's
+    // transcript attach payload uses. ESC[3J (clear-scrollback) is stripped from the
+    // replay: in the original it wiped pre-attach junk; replayed it would wipe the
+    // prepended pages. After the rewrite the viewport is re-anchored so the previously-
+    // top visible line stays put. Pills are OVERLAYS (see JSX), never buffer rows.
+    const STREAM_BUF_CAP = 2 * 1024 * 1024; // chars; same order as the server ring cap
+    // Fetched older pages are BOUNDED too (Hermes #365): ~8 server pages at the default
+    // 512 KiB page-bytes cap. The cap is a VISIBLE floor, not a rolling window (r2): when
+    // the next page won't fit, the loader latches "capped" — the "older history beyond
+    // local cap" pill — instead of evict-rewind-refetching the same page forever. A
+    // server scrollback wipe (ESC[3J) resets the buffer + loader and lifts the latch.
+    const PAGES_BUF_CAP = 4 * 1024 * 1024; // chars
+    const streamDecoder = new TextDecoder();
+    let streamBuf = ""; // everything the socket delivered, decoded — the rewrite source
+    const pagesBuf = new PagesBuffer(PAGES_BUF_CAP); // fetched older pages, oldest-first
+    let rewriting = false;
+    const loader = new HistoryLoader(
+      (q) => api.history(`${engine}:${id}`, { before: q.before, cols: q.cols }),
+      setHistState,
+    );
+    const recordOutput = (b: Uint8Array) => {
+      streamBuf += streamDecoder.decode(b, { stream: true });
+      // A server-sent scrollback wipe (ESC[3J — clean-load / transcript re-render) means
+      // everything before it is no longer on screen; keep only the post-wipe stream (as
+      // a plain screen clear) so a rewrite reproduces what the user actually sees. The
+      // fetched pages are part of that cleared scrollback: purge them and reset the
+      // loader, or the next rewrite would resurrect what the server cleared (#365).
+      const { buf, wiped } = foldWipe(streamBuf);
+      streamBuf = buf;
+      if (wiped) {
+        pagesBuf.clear();
+        loader.reset();
+      }
+      if (streamBuf.length > STREAM_BUF_CAP) {
+        // Trim at a line boundary so a sliced ANSI sequence can't garble a rewrite.
+        const cut = streamBuf.indexOf("\n", streamBuf.length - STREAM_BUF_CAP);
+        streamBuf = cut >= 0 ? streamBuf.slice(cut + 1) : streamBuf.slice(-STREAM_BUF_CAP);
+      }
+    };
+    setHistState("idle");
+    setAtTop(false);
+    const prependPage = (ansi: string) => {
+      if (!pagesBuf.prepend(ansi)) {
+        // Depth cap reached (Hermes #365 r2): retaining this page would mean evicting it
+        // straight back out (the new page IS the deepest — see PagesBuffer). The old
+        // rewind-and-discard looped: still at the top, same page refetched, no visible
+        // progress. Latch instead: the cap pill replaces the start-of-history pill and
+        // auto-fetching stops until a server wipe resets the buffer + loader.
+        loader.latchCap();
+        return;
+      }
+      const before = term.buffer.active.length;
+      rewriting = true;
+      term.reset();
+      const content =
+        pagesBuf.text() +
+        "\r\n".repeat(Math.max(1, term.rows)) +
+        streamBuf.replaceAll("\x1b[3J", ""); // belt-and-braces: never wipe the pages
+      term.write(content, () => {
+        rewriting = false;
+        // Anchor: the previously-top visible line (old buffer line 0 — we only prepend
+        // at the very top) now sits `added` lines down; scroll back to it.
+        const added = Math.max(0, term.buffer.active.length - before);
+        if (added > 0) term.scrollToLine(added);
+      });
+    };
+    const maybeLoadOlder = () => {
+      if (rewriting || id.startsWith("new-")) return; // placeholder: no transcript yet
+      void loader.requestOlder(term.cols).then((page) => {
+        if (sock !== sockRef.current) return; // superseded by a remount mid-fetch
+        if (page?.ansi) prependPage(page.ansi);
+      });
+    };
+    histRetryRef.current = () => {
+      void loader.retry(term.cols).then((page) => {
+        if (sock !== sockRef.current) return;
+        if (page?.ansi) prependPage(page.ansi);
+      });
+    };
+    // "Top" = the very first scrollback line of the NORMAL buffer is in view (an
+    // alt-screen TUI has no scrollback to extend — never fetch there). The DOM
+    // viewport's scrollTop is consulted alongside buffer.viewportY because xterm fires
+    // `onScroll` only for scrollLines-driven scrolls (touch/API) — a desktop mouse-wheel
+    // scroll moves the DOM `.xterm-viewport` without emitting it, so we listen to that
+    // element's `scroll` event too (its ydisp sync can lag a frame; scrollTop doesn't).
+    const vpEl = host.querySelector<HTMLElement>(".xterm-viewport");
+    const atTopNow = () => {
+      const buf = term.buffer.active;
+      if (buf.type !== "normal" || buf.baseY <= 0) return false;
+      return buf.viewportY === 0 || (vpEl !== null && vpEl.scrollTop === 0);
+    };
+    const onScrolled = () => {
+      updateAtBottom();
+      const top = atTopNow();
+      setAtTop(top);
+      if (top) maybeLoadOlder();
+    };
+    term.onScroll?.(onScrolled);
+    vpEl?.addEventListener("scroll", onScrolled, { passive: true });
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -245,7 +358,10 @@ export function Terminal({
         });
       },
       {
-        onOutput: (b) => term.write(b),
+        onOutput: (b) => {
+          recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
+          term.write(b);
+        },
         onStatus: (s) => {
           setStatus(s);
           if (s.kind === "connected") {
@@ -258,6 +374,11 @@ export function Terminal({
           }
         },
         onId: (sid) => onReconcileIdRef.current?.(sid),
+        // {t:"hist"} (#348 / Hermes #365 r2): the transcript attach's EXACT turn boundary.
+        // Seed the loader so the first lazy-load sends `before=<cursor>` — never the
+        // width-dependent server guess. Arrives right after seq; the attach payload's
+        // leading ESC[3J already purged pagesBuf + reset the loader (recordOutput above).
+        onHist: (cursor) => loader.seed(cursor),
         onRole: (r) => {
           setRole(r);
           // We're the active viewer again → clear any gate and remember we held it (so a
@@ -421,6 +542,7 @@ export function Terminal({
       cancelAnimationFrame(settleRaf);
       if (resizeTimer != null) clearTimeout(resizeTimer);
       vv?.removeEventListener("resize", onVV);
+      vpEl?.removeEventListener("scroll", onScrolled);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       touchLayer?.remove();
@@ -540,6 +662,55 @@ export function Terminal({
           </div>
         )}
         <div ref={hostRef} className={styles.term} />
+        {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely
+            positioned overlays at the terminal top — never buffer rows, so a page
+            prepend can't shift them. */}
+        {histState === "loading" && (
+          <div className={styles.histPillRow}>
+            <span className={styles.histPill} role="status" data-hist-pill="loading">
+              <span className={styles.histSpin} aria-hidden="true" />
+              loading older history…
+            </span>
+          </div>
+        )}
+        {histState === "end" && atTop && (
+          <div className={styles.histPillRow}>
+            <span
+              className={`${styles.histPill} ${styles.histPillMuted}`}
+              role="status"
+              data-hist-pill="end"
+            >
+              — start of history —
+            </span>
+          </div>
+        )}
+        {/* Local depth cap (Hermes #365 r2): the last fetched page couldn't be retained.
+            Takes the start-of-history pill's slot; no further auto-fetches fire. */}
+        {histState === "capped" && atTop && (
+          <div className={styles.histPillRow}>
+            <span
+              className={`${styles.histPill} ${styles.histPillMuted}`}
+              role="status"
+              data-hist-pill="capped"
+            >
+              — older history beyond local cap —
+            </span>
+          </div>
+        )}
+        {histState === "error" && (
+          <div className={styles.histPillRow}>
+            <button
+              type="button"
+              className={`${styles.histPill} ${styles.histPillError}`}
+              data-hist-pill="error"
+              aria-label="Couldn't load older history — tap to retry"
+              onClick={() => histRetryRef.current()}
+            >
+              couldn&apos;t load older history —{" "}
+              <span className={styles.histRetry}>tap to retry ↻</span>
+            </button>
+          </div>
+        )}
         {coarse && !atBottom && (
           <button
             type="button"

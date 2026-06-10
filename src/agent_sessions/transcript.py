@@ -229,17 +229,48 @@ def render(
     cols: int,
     *,
     assistant_label: str = "Agent",
-    max_lines: int = DEFAULT_MAX_LINES,
+    max_lines: int | None = None,
 ) -> bytes:
     """Render ``turns`` as flat, wrapped ANSI for injection as xterm scrollback at ``cols`` wide.
 
     Width-correct at any width (it wraps plain text — no cursor escapes). Bounded to the last
-    ``max_lines`` rendered lines. Returns UTF-8 bytes; the caller decides framing (e.g. a leading
-    clear + a trailing separator before the live frame). Empty input → ``b""``.
+    ``max_lines`` rendered lines (``None`` → the live :data:`DEFAULT_MAX_LINES`). Returns UTF-8
+    bytes; the caller decides framing (e.g. a leading clear + a trailing separator before the
+    live frame). Empty input → ``b""``.
     """
+    return render_with_boundary(turns, cols, assistant_label=assistant_label, max_lines=max_lines)[
+        0
+    ]
+
+
+def render_with_boundary(
+    turns: list[Turn],
+    cols: int,
+    *,
+    assistant_label: str = "Agent",
+    max_lines: int | None = None,
+) -> tuple[bytes, int]:
+    """:func:`render`, plus the EXACT turn boundary the output covers.
+
+    The second element is the smallest index ``N`` such that every turn from ``N`` on is fully
+    present in the rendered text — i.e. ``turns[:N]`` were truncated away by ``max_lines``. When
+    the cap sliced INTO a turn, that turn counts as NOT covered (``N`` is one past it), so a
+    history pager requesting ``before=N`` re-serves it whole instead of losing its head; a
+    one-turn overlap on screen beats a hole. ``N == 0`` ⇔ nothing was truncated.
+
+    This is the attach-side source of the ``{"t":"hist","cursor":N}`` control frame (Hermes #365
+    r2 finding 1): the renderer that BUILT the attach payload is the only place that knows the
+    exact boundary, so it exports it instead of the history endpoint re-deriving it later from
+    rendered line counts at whatever width that request happens to carry (a resize between
+    attach and first lazy-load made the re-derived boundary skip turns).
+    """
+    if max_lines is None:
+        max_lines = DEFAULT_MAX_LINES  # live attr so tests/operators can tune it
     cols = max(20, cols)
     lines: list[str] = []
-    for t in turns:
+    owner: list[int] = []  # lines[i] was emitted by turns[owner[i]] — the boundary's map
+    for ti, t in enumerate(turns):
+        emitted = len(lines)
         text = (t.text or "").rstrip()
         if not text:
             continue
@@ -259,11 +290,17 @@ def render(
             # Assistant turn: a green ● dot + rendered markdown, no "Claude" label (#301).
             lines.append("")
             lines.extend(_dot_block(_render_md(text), cols))
+        owner.extend([ti] * (len(lines) - emitted))
     if not lines:
-        return b""
+        return b"", 0
+    boundary = 0
     if len(lines) > max_lines:
+        cut = len(lines) - max_lines  # index of the first SURVIVING line
+        first_kept = owner[cut]
+        # Cut mid-turn → that turn's head is gone: it is not covered, boundary is one past it.
+        boundary = first_kept if owner[cut - 1] != first_kept else first_kept + 1
         lines = lines[-max_lines:]
-    return "\r\n".join(lines).encode("utf-8", "replace")
+    return "\r\n".join(lines).encode("utf-8", "replace"), boundary
 
 
 # --- per-engine adapters -------------------------------------------------------------------
