@@ -247,12 +247,16 @@ async def run(
         # width-correct — and falls back to a clean-load clear when there's no adapter:
         #   • fresh page load (have<=0) — client xterm is empty;
         #   • cross-width client — the ring's width ≠ this client's;
-        #   • post-restart reconnect — the app dropped every WS and `_LAST_COLS` was wiped, so the
-        #     client reconnects with a STALE have>0 against the disk-restored wide ring (#206);
-        #     buffer_cols is None ⇒ not a continuation ⇒ transcript, instead of re-garbling.
+        #   • post-restart CROSS-width reconnect — the width sidecar (#348) restores the
+        #     ring's authored width on rehydrate, so a SAME-width have>0 reconnect after a
+        #     restart IS a continuation now and replays the ring delta; only a client at a
+        #     different width (or a missing sidecar from a pre-#348 mirror ⇒ buffer_cols
+        #     None) lands here and gets the width-correct transcript instead (#206).
         # `total` is unchanged in every branch, so the `seq` frame below stays the real byte offset
         # and delta-resume is unaffected.
-        buffer_cols = scrollback._LAST_COLS.get(buf_key)
+        # Authored width of the replayable ring (None when unknown/mixed) — the raw
+        # continuation contract, NOT merely the last client width (Hermes #360 r4).
+        buffer_cols = scrollback.ring_cols(buf_key)
         if scrollback._is_same_width_continuation(have, buffer_cols, cols):
             # Same-width continuation: the client already holds a valid screen and the
             # (possibly empty) payload is just the byte delta — an empty delta means
@@ -284,8 +288,10 @@ async def run(
                             scrollback._reset_ring(buf_key)
                         payload = clear
                         payload_is_clear = True
-        # Track this client's width for the clean-load fallback / resize logic (every connect).
-        scrollback._LAST_COLS[buf_key] = cols
+        # Track this client's width for the clean-load fallback / resize logic (every
+        # connect) — attach-aware so the persisted sidecar only ever claims a width the
+        # retained ring was actually authored at (Hermes #360 round 3).
+        scrollback.note_attach_width(buf_key, cols)
         if payload:
             blank_attach = payload_is_clear
             with contextlib.suppress(Exception):
@@ -368,14 +374,21 @@ async def run(
                         # EXCEPT with VT on (#273): the live mirror tracks the agent's geometry and
                         # reflows on resize, so the ring is no longer the scroll-up source and must
                         # NOT be wiped — else a width change destroys delta-resume continuity.
-                        if (
-                            buf_key
-                            and new_cols != scrollback._LAST_COLS.get(buf_key)
-                            and not vtsidecar.enabled()
-                        ):
+                        ring_width_changed = bool(
+                            buf_key and new_cols != scrollback._LAST_COLS.get(buf_key)
+                        )
+                        if ring_width_changed and not vtsidecar.enabled():
                             scrollback._reset_ring(buf_key)
                         if buf_key:
-                            scrollback._LAST_COLS[buf_key] = new_cols
+                            # VT on + width change keeps the (now mixed-width) ring →
+                            # drop the persisted single-width claim (Hermes #360 r3);
+                            # otherwise the ring was reset or the width is unchanged,
+                            # so persisting stays truthful.
+                            scrollback.note_cols(
+                                buf_key,
+                                new_cols,
+                                persist=not (ring_width_changed and vtsidecar.enabled()),
+                            )
                             scrollback._LAST_ROWS[buf_key] = new_rows
                             # Track the agent's new pty geometry on the live mirror so subsequent
                             # bytes render at the right size (repaints overwrite, no dup) (#273).

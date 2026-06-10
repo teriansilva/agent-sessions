@@ -13,6 +13,7 @@ names, so ``webterm.<name>`` keeps working for callers and tests.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import time
 from collections import OrderedDict
@@ -20,6 +21,13 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import ptybridge, transcript, vtsidecar
+
+log = logging.getLogger("agent_sessions.scrollback")
+
+# Once-per-key marker for the VT→transcript downgrade log (#348 Phase 2): when the live
+# mirror is enabled but can't serve a snapshot (cold/dirty/unhealthy), the attach silently
+# fell back to the capped transcript — operators had no signal that depth degraded.
+_VT_DOWNGRADE_LOGGED: set[str] = set()
 
 # `_TOTALS[key]` is a monotonic count of *all* bytes ever sent for the key (not just
 # what's still in the ring). It powers delta-resume: a reconnecting client reports the
@@ -123,6 +131,72 @@ def _scrollback_path(key: str) -> Path:
     return _SCROLLBACK_DIR / (key.replace(":", "__") + _SCROLLBACK_SUFFIX)
 
 
+def _cols_path(key: str) -> Path:
+    # Companion to the byte mirror (#348 Phase 1): the authored width of the persisted
+    # ring. Restored on rehydrate so a post-restart same-width reconnect is recognized as
+    # a continuation instead of discarding the ring for the capped transcript fallback.
+    return _SCROLLBACK_DIR / (key.replace(":", "__") + ".cols")
+
+
+# Keys whose retained raw ring holds bytes authored at MORE THAN ONE width (VT keeps the
+# ring across width changes as the mirror's feed, #273). Such a ring must never be served
+# as a raw same-width continuation — in-memory or post-restart (Hermes #360 r3+r4). The
+# marker clears when the ring is reset/dropped (single-width again by construction).
+_RING_MIXED: set[str] = set()
+
+
+def ring_cols(key: str) -> int | None:
+    """The authored width of the retained raw ring, usable for the same-width
+    continuation decision — None when unknown OR the ring is mixed-width."""
+    return None if key in _RING_MIXED else _LAST_COLS.get(key)
+
+
+def note_cols(key: str, cols: int, *, persist: bool = True) -> None:
+    """Track the agent-pty width for ``key``; optionally persist it beside the mirror.
+
+    The PERSISTED width is a contract about the retained raw bytes — "this ring was
+    authored at this width" — not merely the last client width (Hermes #360 round 3:
+    stamping a 40-col client onto a 120-col ring made a post-restart 40-col reconnect
+    a fake continuation that replayed cross-width garble). ``persist=False`` updates
+    only the in-memory tracker AND drops any on-disk claim, because the retained bytes
+    are no longer known to be single-width."""
+    _LAST_COLS[key] = cols
+    if not persist:
+        # The retained ring now mixes widths: poison neither the on-disk claim NOR the
+        # in-memory continuation check (Hermes #360 r4 — the same-process variant).
+        _RING_MIXED.add(key)
+        with contextlib.suppress(OSError):
+            _cols_path(key).unlink()
+        return
+    _RING_MIXED.discard(key)
+    try:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        _cols_path(key).write_text(str(int(cols)))
+    except OSError:
+        pass  # best-effort, like the mirror itself
+
+
+def note_attach_width(key: str, cols: int) -> None:
+    """Attach-time width bookkeeping (#348). Keeps the persisted sidecar truthful:
+
+    * ring empty or already authored at ``cols`` → coherent: persist the width.
+    * retained bytes at a DIFFERENT/unknown width, VT off → mirror the #245 resize
+      policy at attach: reset the ring (the agent re-renders at this client's width
+      from here on; the old bytes could only ever garble a later same-width replay),
+      then persist the now-truthful width.
+    * same, VT on → the ring is the mirror's feed and must not be wiped (#273), but it
+      is mixed-width — drop the persisted claim so a post-restart reconnect renders
+      the width-correct transcript instead of faking a continuation.
+    """
+    _ensure_loaded(key)
+    ring_len = len(_BUFFERS.get(key) or b"")
+    coherent = ring_len == 0 or ring_cols(key) == cols
+    if not coherent and not vtsidecar.enabled():
+        _reset_ring(key)
+        coherent = True
+    note_cols(key, cols, persist=coherent)
+
+
 def _key_from_path(p: Path) -> str:
     engine, _, native = p.name[: -len(_SCROLLBACK_SUFFIX)].partition("__")
     return f"{engine}:{native}" if native else engine
@@ -154,6 +228,12 @@ def _ensure_loaded(key: str) -> None:
     _LOADED_FROM_DISK.add(key)
     if key in _BUFFERS:  # already live in this process — the ring is authoritative
         return
+    # Restore the ring's authored width first (#348 Phase 1) — without it the post-restart
+    # reconnect can never be a same-width continuation and the hydrated ring goes unused.
+    # Independent of ring bytes existing: the width survives even an empty/missing mirror.
+    if key not in _LAST_COLS:
+        with contextlib.suppress(OSError, ValueError):
+            _LAST_COLS[key] = int(_cols_path(key).read_text().strip())
     try:
         data = _scrollback_path(key).read_bytes()[-_MAX_BUF:]
     except OSError:
@@ -203,6 +283,10 @@ def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
             p.unlink()
         except OSError:
             continue
+        # The width sidecar travels with the mirror (#348): stale cols without bytes
+        # would make the next attach claim a continuation it can't actually serve.
+        with contextlib.suppress(OSError):
+            _cols_path(_key_from_path(p)).unlink()
         removed += 1
         freed += sz
         _drop_buffer(_key_from_path(p))
@@ -233,6 +317,7 @@ def _reset_ring(key: str) -> None:
     with contextlib.suppress(OSError):
         _scrollback_path(key).unlink()
     _LOADED_FROM_DISK.add(key)  # don't re-hydrate the now-removed file
+    _RING_MIXED.discard(key)  # empty ring is single-width by construction
 
 
 def _session_alive(buf_key: str) -> bool:
@@ -347,10 +432,12 @@ def _is_same_width_continuation(have: int, buffer_cols: int | None, cols: int) -
     """Whether a reconnect can be satisfied with the raw byte-delta instead of re-rendering the
     scroll-up (#262). True only when the client already holds matching-width scrollback — it sent a
     real in-ring offset (``have>0``) AND its width equals the width we last served it
-    (``buffer_cols==cols``), i.e. a brief WS blip on a live same-width session. Everything else —
-    a fresh load (``have<=0``), a cross-width client, or a post-restart reconnect where
-    ``_LAST_COLS`` was wiped (``buffer_cols`` is None) — is False, so the caller renders the
-    width-correct transcript rather than replaying the fixed-width raw ring at a wrong width."""
+    (``buffer_cols==cols``) — a brief WS blip on a live same-width session, or a SAME-width
+    ``have>0`` reconnect after a broker restart: the width sidecar (#348) restores the ring's
+    authored width on rehydrate, so restarts no longer demote these to the transcript. Everything
+    else — a fresh load (``have<=0``), a cross-width client, or a pre-#348 mirror without a width
+    sidecar (``buffer_cols`` is None) — is False, so the caller renders the width-correct
+    transcript rather than replaying the fixed-width raw ring at a wrong width."""
     return have > 0 and buffer_cols == cols
 
 
@@ -458,5 +545,11 @@ async def _vt_snapshot_payload(buf_key: str, cols: int, rows: int) -> bytes | No
         return None  # nothing to show / alt-screen TUIs repaint themselves
     snap = await vtsidecar.live_snapshot(buf_key, cols, rows)
     if not snap:
+        # Downgrade to the capped transcript — log once per key so a chronically dirty /
+        # unhealthy mirror is visible to operators instead of silently shallow (#348).
+        if buf_key not in _VT_DOWNGRADE_LOGGED:
+            _VT_DOWNGRADE_LOGGED.add(buf_key)
+            log.info("vt mirror unavailable for %s — attach degraded to transcript", buf_key)
         return None  # cold mirror → caller falls back to the clean transcript, not a dup replay
+    _VT_DOWNGRADE_LOGGED.discard(buf_key)  # healthy again → a later downgrade logs again
     return _CLEAN_LOAD_CLEAR + snap + b"\r\n"

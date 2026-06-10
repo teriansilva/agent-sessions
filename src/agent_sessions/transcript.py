@@ -25,6 +25,7 @@ Two layers, so adding an engine is cheap:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Callable
@@ -148,8 +149,20 @@ def _dot_block(text: str, width: int) -> list[str]:
 
 
 # Default bounds (Hermes #242: bound history rows + input messages independently of raw caps).
-DEFAULT_MAX_MESSAGES = 400
-DEFAULT_MAX_LINES = 4000
+# Env-overridable and raised (#348 Phase 2): the old 400/4000 caps made days-old sessions
+# render a thin slice — the operator-visible "tiny scrollback". Render runs in the thread
+# pool and the output is bounded by these, so deeper defaults are paid only on attach.
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+DEFAULT_MAX_MESSAGES = _env_int("AGENT_SESSIONS_TRANSCRIPT_MAX_MESSAGES", 2000)
+DEFAULT_MAX_LINES = _env_int("AGENT_SESSIONS_TRANSCRIPT_MAX_LINES", 20000)
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -275,7 +288,7 @@ def adapter_for(engine_id: str) -> TranscriptAdapter | None:
 # Read at most this many bytes from the END of a transcript. We only need the last
 # `max_messages`, and even a few hundred KB of JSONL holds far more than that — so a multi-MB
 # transcript parses in ~the same time as a small one (keeps the parse well under budget, #242).
-_TAIL_BYTES = 2 * 1024 * 1024
+_TAIL_BYTES = _env_int("AGENT_SESSIONS_TRANSCRIPT_TAIL_BYTES", 8 * 1024 * 1024)
 
 
 def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES) -> list[Turn]:
