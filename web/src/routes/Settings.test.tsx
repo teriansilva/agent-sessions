@@ -210,8 +210,8 @@ test("the active panel is a labelled tabpanel wired to its tab", async () => {
 // Every existing settings control still has a home: each tab renders its sections (#357
 // zero-behavioural-change guarantee — components moved, not changed).
 test.each([
-  ["appearance", ["Appearance", "Experimental"]],
-  ["projects", ["Session overview"]],
+  ["appearance", ["Appearance"]],
+  ["projects", ["Session overview", "Default project"]],
   ["ai-review", ["AI Review"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["system", ["Connected agents", "System", "Updates"]],
@@ -301,6 +301,20 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
   await userEvent.type(field, "zzz{Enter}");
   expect(setAccent).not.toHaveBeenCalled();
   expect(field).toHaveValue("#ffb000"); // reset to the active accent
+  await flushFetches();
+});
+
+// VT scrollback promoted out of "Experimental" into Appearance (#357 Phase 2) — the
+// Experimental section was VT-only and is gone; the toggle's API path is unchanged.
+test("VT scrollback lives in Appearance and the Experimental section is gone (#357)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/appearance");
+  expect(screen.queryByRole("heading", { name: "Experimental" })).not.toBeInTheDocument();
+  // The toggle renders inside the Appearance tabpanel with its own subhead.
+  const panel = screen.getByRole("tabpanel");
+  expect(panel).toHaveAttribute("id", "settings-panel-appearance");
+  expect(screen.getByRole("heading", { name: /faithful scroll-up \(vt\)/i })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("checkbox", { name: /disabled/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ vt_scrollback: true });
   await flushFetches();
 });
 
@@ -472,7 +486,81 @@ test("Session overview: a name seeded after /api/config resolves is shown on the
   await screen.findByRole("button", { name: /rename ~\/alpha/i });
   expect(screen.queryByText("Saved Alpha")).not.toBeInTheDocument();
   rerender(tree(seeded));
-  await waitFor(() => expect(screen.getByText("Saved Alpha")).toBeInTheDocument());
+  // The name shows on the row's rename button (it ALSO labels the default-project
+  // option since #357 Phase 2, so scope to the button rather than a bare text query).
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /rename ~\/alpha/i })).toHaveTextContent(
+      "Saved Alpha",
+    ),
+  );
+});
+
+// ---- Default project (#335 Phase 2, surfaced in #357 Phase 2) ----
+
+/** Mounts the Projects tab with a real ConfigCtx value so the picker can seed from
+ *  `config.default_project` (renderSettings has no config provider). */
+function renderProjectsTab(config: Partial<AppConfig> = {}) {
+  const cfg: AppConfig = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "single-user",
+    two_factor_enabled: false,
+    ...config,
+  };
+  render(
+    <MemoryRouter initialEntries={["/settings/projects"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ConfigCtx.Provider value={cfg}>
+          <OverviewPrefsProvider>
+            <Routes>
+              <Route path="/settings/:tab" element={<Settings />} />
+            </Routes>
+          </OverviewPrefsProvider>
+        </ConfigCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+}
+
+test("Default project: lists the pickable (visible) projects and persists a choice", async () => {
+  vi.mocked(api.projects).mockResolvedValue({
+    projects: [
+      { cwd: "/home/u/alpha", label: "Alpha" },
+      { cwd: "/home/u/beta", label: "Beta" },
+    ],
+  });
+  renderProjectsTab();
+  const select = await screen.findByRole("combobox", { name: "Default project" });
+  await waitFor(() => expect(select).toBeEnabled());
+  // The picker mirrors the new-session picker's pickable set (#335): visible projects only.
+  expect(api.projects).toHaveBeenCalledWith({ visible: true });
+  expect(select).toHaveValue(""); // no default stored → the "no default" option
+  await userEvent.selectOptions(select, "/home/u/beta");
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "/home/u/beta" });
+  expect(select).toHaveValue("/home/u/beta");
+});
+
+test("Default project: seeds from config.default_project and '' clears it", async () => {
+  vi.mocked(api.projects).mockResolvedValue({
+    projects: [{ cwd: "/home/u/alpha", label: "Alpha" }],
+  });
+  renderProjectsTab({ default_project: "/home/u/alpha" });
+  const select = await screen.findByRole("combobox", { name: "Default project" });
+  await waitFor(() => expect(select).toHaveValue("/home/u/alpha"));
+  await userEvent.selectOptions(select, "");
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "" });
+  expect(select).toHaveValue("");
+});
+
+test("Default project: a stale stored default stays visible (and clearable), never hidden", async () => {
+  // The new-session picker silently falls back for a gone dir; the Settings control instead
+  // SHOWS the stored value so the user can see + clear it.
+  vi.mocked(api.projects).mockResolvedValue({ projects: [] });
+  renderProjectsTab({ default_project: "/home/u/gone" });
+  const select = await screen.findByRole("combobox", { name: "Default project" });
+  await waitFor(() => expect(select).toHaveValue("/home/u/gone"));
+  expect(screen.getByRole("option", { name: /not currently active/i })).toBeInTheDocument();
 });
 
 // ---- Back link (#155) ----

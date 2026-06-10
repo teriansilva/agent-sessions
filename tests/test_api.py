@@ -273,9 +273,10 @@ def test_hidden_projects_filtered_from_projects_endpoint(auth_cfg, fake_jsonl, t
     assert "/tmp/other" not in {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
 
 
-def test_legacy_overview_excluded_post_routes_to_projects_hidden(auth_cfg, fake_jsonl, tmp_home):
-    """A client still POSTing the legacy `overview_excluded` key must end up writing the
-    new `projects_hidden` storage, so existing tabs in the wild stay functional."""
+def test_legacy_overview_excluded_post_is_retired_422(auth_cfg, fake_jsonl, tmp_home):
+    """The legacy `overview_excluded` write alias is retired (#357 Phase 2): no client
+    has sent it since #174, so the key now falls through to the no-known-key 422 — and
+    it must never reach the `projects_hidden` storage."""
     from agent_sessions import prefs
 
     c = _client(auth_cfg)
@@ -285,8 +286,8 @@ def test_legacy_overview_excluded_post_routes_to_projects_hidden(auth_cfg, fake_
         json={"overview_excluded": ["/tmp/other"]},
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
-    assert r.status_code == 200
-    assert prefs.get_projects_hidden() == ["/tmp/other"]
+    assert r.status_code == 422
+    assert prefs.get_projects_hidden() == []
 
 
 # ---- rename -------------------------------------------------------------------

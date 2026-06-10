@@ -18,11 +18,9 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
     if (synced || !config) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setExpandedState(new Set(config.overview_expanded ?? []));
-    // Prefer the new `projects_hidden` key (#174) when present; fall back to the legacy
-    // `overview_excluded` so a transition install keeps its existing hides.
-    setExcludedState(
-      new Set(config.projects_hidden ?? config.overview_excluded ?? []),
-    );
+    // `projects_hidden` (#174) is the only hide-list key: the legacy `overview_excluded`
+    // is retired (#357 Phase 2) — the server union-merges old on-disk values at startup.
+    setExcludedState(new Set(config.projects_hidden ?? []));
     setProjectNamesState({ ...(config.project_names ?? {}) });
     setModeState(config.projects_mode === "included" ? "included" : "all"); // #335
     setIncludedState(new Set(config.projects_included ?? []));
@@ -35,8 +33,6 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
   };
   const persistHidden = (next: Set<string>) => {
     setExcludedState(next);
-    // Server routes `projects_hidden` (or the legacy `overview_excluded`) to the same store;
-    // we send the new key so old clients keep seeing the data on their next config load.
     api.setPrefs({ projects_hidden: [...next] }).catch(() => {});
   };
   const persistIncluded = (next: Set<string>) => {

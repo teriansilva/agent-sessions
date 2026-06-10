@@ -1,7 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { api } from "../lib/api";
 import App from "./App";
 
 // Mock the whole API surface the shell touches on load so render is deterministic.
@@ -10,7 +9,6 @@ vi.mock("../lib/api", () => ({
     config: vi.fn().mockResolvedValue({ csrf: "x", new_session_engines: [], terminal_backend: "ws" }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
     setTheme: vi.fn().mockResolvedValue({ theme: "dark" }),
-    setSidebarView: vi.fn().mockResolvedValue({ sidebar_view: "overview" }),
     sessions: vi
       .fn()
       .mockResolvedValue({ sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } }),
@@ -103,18 +101,26 @@ test("the command topbar carries the overview entrypoint (#139/#211)", async () 
   expect(link).toHaveAttribute("href", "/overview");
 });
 
-test("sidebar List ⇄ Map toggle swaps the body and persists the choice (#139)", async () => {
+test("sidebar List ⇄ Map toggle swaps the body and persists device-locally (#139/#357)", async () => {
   render(<App />);
   // Defaults to List → the session list shows, the overview is not mounted.
   expect(screen.queryByTestId("sidebar-overview")).not.toBeInTheDocument();
 
+  // The server `sidebar_view` pref is retired (#357 Phase 2): the choice persists in
+  // localStorage only — no /api/prefs write.
   await userEvent.click(await screen.findByRole("tab", { name: /map/i }));
-  expect(api.setSidebarView).toHaveBeenCalledWith("overview");
+  expect(localStorage.getItem("tr-sidebar-view")).toBe("overview");
   expect(await screen.findByTestId("sidebar-overview")).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("tab", { name: /list/i }));
-  expect(api.setSidebarView).toHaveBeenCalledWith("list");
+  expect(localStorage.getItem("tr-sidebar-view")).toBe("list");
   await waitFor(() => expect(screen.queryByTestId("sidebar-overview")).not.toBeInTheDocument());
+});
+
+test("the Map choice survives a remount via localStorage (#357)", async () => {
+  localStorage.setItem("tr-sidebar-view", "overview");
+  render(<App />);
+  expect(await screen.findByTestId("sidebar-overview")).toBeInTheDocument();
 });
 
 // #283: on mobile, same-route nav targets (New session / Overview / Settings while already on

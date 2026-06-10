@@ -180,20 +180,15 @@ def register(
                 # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
                 # Applied at load like the theme; localStorage is the device cache.
                 "accent": prefs.get_accent(),
-                # Sidebar body: the session list, or the squeezed Session Overview map (#139).
-                # Persisted per-user like the theme; the SPA applies it at load.
-                "sidebar_view": prefs.get_sidebar_view(),
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
-                # Session Overview view-state (#144): expanded cluster cwds (default collapsed)
-                # and project cwds excluded from the map. Per-user.
+                # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
+                # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
-                # `overview_excluded` was the legacy name (#144); `projects_hidden` (#174) is
-                # the same idea but with broader scope (sidebar list + filter + map + picker).
-                # Both keys are emitted during the transition window so an old client tab still
-                # reads its hidden list; new clients prefer `projects_hidden`.
-                "overview_excluded": prefs.get_projects_hidden(),
+                # Project cwds hidden globally (#174): sidebar list + filter + map + picker.
+                # The legacy `overview_excluded` alias is retired (#357 Phase 2) — old on-disk
+                # values are union-merged into `projects_hidden` once at startup.
                 "projects_hidden": prefs.get_projects_hidden(),
                 # Project-visibility model (#335): mode (all|included) + the `included`-mode
                 # allowlist. `all` (default) keeps the legacy hide-list behavior unchanged; the
@@ -211,7 +206,7 @@ def register(
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
-                # Experimental (#329): faithful real-frame scroll-up via the VT sidecar. The
+                # VT scrollback (#329): faithful real-frame scroll-up via the VT sidecar. The
                 # effective on/off bit (pref override, else env default) for the Settings toggle.
                 "vt_scrollback": vtsidecar.enabled(),
             }
@@ -223,7 +218,7 @@ def register(
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        # Persist UI preferences (#109 theme, #139 sidebar_view, #144 overview lists). Each
+        # Persist UI preferences (#109 theme, #144 overview lists, #211 accent). Each
         # provided key is validated server-side (unknown value → 422, never silently coerced
         # on write); other persisted keys are preserved. At least one known key must be present.
         try:
@@ -241,16 +236,12 @@ def register(
             if not prefs.is_valid_accent(payload["accent"]):
                 raise HTTPException(status_code=422, detail="invalid accent")
             out["accent"] = prefs.set_accent(payload["accent"])
-        if "sidebar_view" in payload:
-            if payload["sidebar_view"] not in prefs.SIDEBAR_VIEWS:
-                raise HTTPException(status_code=422, detail="unknown sidebar_view")
-            out["sidebar_view"] = prefs.set_sidebar_view(payload["sidebar_view"])
         if "compose_default" in payload:
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")
             out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
         if "vt_scrollback" in payload:
-            # Experimental (#329): flip VT-scrollback live + persist it. Turning it ON also
+            # VT scrollback (#329): flip it live + persist it. Turning it ON also
             # (best-effort) starts the sidecar so it takes effect without an app restart.
             v = payload["vt_scrollback"]
             if not isinstance(v, bool):
@@ -275,10 +266,8 @@ def register(
             out["default_project"] = prefs.set_default_project(v)
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
-            # The legacy `overview_excluded` write path is kept for clients still on the old
-            # API surface — internally it routes to the same `projects_hidden` storage so
-            # the two never diverge (#174).
-            ("overview_excluded", prefs.set_projects_hidden),
+            # `projects_hidden` is the only hide-list key (#174); the legacy
+            # `overview_excluded` write alias is retired (#357 Phase 2).
             ("projects_hidden", prefs.set_projects_hidden),
             # `included`-mode allowlist (#335).
             ("projects_included", prefs.set_projects_included),

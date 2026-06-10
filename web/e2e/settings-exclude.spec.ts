@@ -14,7 +14,7 @@ test.beforeEach(async ({ page }) => {
         terminal_backend: "ws",
         auth_mode: "none",
         overview_expanded: [],
-        overview_excluded: [],
+        projects_hidden: [],
       },
     }),
   );

@@ -146,9 +146,6 @@ export const api = {
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
   /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
   setAccent: (accent: string) => postJson<{ accent: string }>("/api/prefs", { accent }),
-  /** Persist the sidebar view (list|overview) server-side, per-user (#139). CSRF-guarded. */
-  setSidebarView: (view: string) =>
-    postJson<{ sidebar_view: string }>("/api/prefs", { sidebar_view: view }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   setPrefs: (partial: Record<string, unknown>) =>
     postJson<Record<string, unknown>>("/api/prefs", partial),

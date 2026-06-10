@@ -122,6 +122,12 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
 
+    # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
+    # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
+    # (or on a fresh install); best-effort — a bad prefs file must not block startup.
+    with contextlib.suppress(Exception):
+        prefs.migrate_overview_excluded()
+
     # Slice 2 of the session-stability foundation (#183): the registry is the
     # process-wide source of truth for every live dtach session. The lifespan
     # context discovers live sessions on startup (so the sidebar's working dot +

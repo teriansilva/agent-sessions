@@ -562,6 +562,26 @@
   padding: 7px 9px;
   font: inherit;
 }
+/* Default-project picker (#357 Phase 2) — same field language as the other inputs. */
+.defaultProject {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.defaultProject:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.defaultProject:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .confirmRow {
   display: inline-flex;
   flex-wrap: wrap;

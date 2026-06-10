@@ -1,8 +1,7 @@
 import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
-import { api } from "../lib/api";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
@@ -13,7 +12,6 @@ import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
-import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
@@ -31,6 +29,9 @@ const SidebarOverview = lazyWithReload(
 );
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
+// Sidebar List ⇄ Map choice, device-local. The server-side `sidebar_view` pref is retired
+// (#357 Phase 2) — this is layout state like the collapse flag, not a cross-device setting.
+const VIEW_KEY = "tr-sidebar-view";
 
 type SidebarView = "list" | "overview";
 
@@ -83,22 +84,15 @@ function Layout() {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
-  // Sidebar body: session list or the squeezed Session Overview map (#139). Per-user,
-  // persisted server-side like the theme; reconcile to the server value once config loads.
-  const config = useConfig();
-  const [sidebarView, setSidebarView] = useState<SidebarView>("list");
-  const viewReconciled = useRef(false);
-  useEffect(() => {
-    if (viewReconciled.current || !config?.sidebar_view) return;
-    viewReconciled.current = true;
-    // One-time sync to the server-persisted value once /api/config loads (same pattern as
-    // the theme reconcile + the drawer-close effect below).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (config.sidebar_view === "overview") setSidebarView("overview");
-  }, [config?.sidebar_view]);
+  // Sidebar body: session list or the squeezed Session Overview map (#139). Device-local
+  // layout state persisted in localStorage (like the collapse flag) — the server-side
+  // `sidebar_view` pref is retired (#357 Phase 2).
+  const [sidebarView, setSidebarView] = useState<SidebarView>(() =>
+    localStorage.getItem(VIEW_KEY) === "overview" ? "overview" : "list",
+  );
   const chooseView = (v: SidebarView) => {
     setSidebarView(v);
-    api.setSidebarView(v).catch(() => {}); // best-effort; applies locally regardless
+    localStorage.setItem(VIEW_KEY, v);
   };
 
   // The header toggle drives ONLY the current surface: the mobile drawer (≤800px) or the

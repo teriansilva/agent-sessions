@@ -49,18 +49,13 @@ export interface AppConfig {
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;
-  /** Per-user sidebar body: "list" (session list) or "overview" (squeezed map, #139). */
-  sidebar_view?: "list" | "overview" | string;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
-  /** Overview (#144): expanded cluster cwds (default collapsed) + cwds hidden globally. */
+  /** Overview (#144): expanded cluster cwds (default collapsed). */
   overview_expanded?: string[];
-  /** @deprecated Use `projects_hidden` (#174 — same data; broader scope). Emitted in
-   *  parallel during the transition window so an old client tab still reads its hides. */
-  overview_excluded?: string[];
-  /** Cwds hidden globally from the UI (#174). Wins over `overview_excluded` when both
-   *  are present. The hide affects the sidebar list, the project filter, the new-session
-   *  picker, and the overview map. */
+  /** Cwds hidden globally from the UI (#174): sidebar list, project filter, new-session
+   *  picker, and the overview map. The legacy `overview_excluded` alias is retired
+   *  (#357 Phase 2) — the server migrates old on-disk values into this key. */
   projects_hidden?: string[];
   /** Project-visibility mode (#335): "all" (legacy denylist, default) or "included" (curated
    *  allowlist — only `projects_included` cwds show; new dirs never auto-appear). Mode-exclusive:
@@ -82,8 +77,9 @@ export interface AppConfig {
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;
-  /** Experimental (#329): faithful real-frame scroll-up via the VT sidecar. The effective
-   *  on/off bit (pref override, else env default); drives the Settings → Experimental toggle. */
+  /** Faithful real-frame scroll-up via the VT sidecar (#329; garble-proof since #298). The
+   *  effective on/off bit (pref override, else env default); drives the Settings →
+   *  Appearance toggle (promoted out of "Experimental" in #357 Phase 2). */
   vt_scrollback?: boolean;
 }
 

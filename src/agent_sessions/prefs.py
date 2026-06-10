@@ -24,10 +24,6 @@ from pathlib import Path
 THEMES: tuple[str, ...] = ("dark", "light")
 DEFAULT_THEME = "dark"
 
-# Sidebar body: the session list, or the squeezed Session Overview map (#139).
-SIDEBAR_VIEWS: tuple[str, ...] = ("list", "overview")
-DEFAULT_SIDEBAR_VIEW = "list"
-
 # Compose box default state on load. "auto" keeps the device heuristic (expanded on touch,
 # collapsed to the bar on desktop); "open"/"collapsed" force it the same on every device.
 COMPOSE_DEFAULTS: tuple[str, ...] = ("auto", "open", "collapsed")
@@ -56,11 +52,6 @@ def coerce_theme(value: object) -> str:
     return value if isinstance(value, str) and value in THEMES else DEFAULT_THEME
 
 
-def coerce_sidebar_view(value: object) -> str:
-    """Narrow any input to a known sidebar view, falling back to the default."""
-    return value if isinstance(value, str) and value in SIDEBAR_VIEWS else DEFAULT_SIDEBAR_VIEW
-
-
 def coerce_compose_default(value: object) -> str:
     """Narrow any input to a known compose-default mode, falling back to the default."""
     return value if isinstance(value, str) and value in COMPOSE_DEFAULTS else DEFAULT_COMPOSE
@@ -85,8 +76,8 @@ def coerce_accent(value: object) -> str:
 
 def is_valid_accent(value: object) -> bool:
     """True iff ``value`` is a hex colour we accept. The write endpoint uses this to reject
-    garbage with a 422 (same contract as theme/sidebar_view) rather than silently coercing
-    a bad payload to the default on write."""
+    garbage with a 422 (same contract as theme) rather than silently coercing a bad
+    payload to the default on write."""
     if not isinstance(value, str):
         return False
     s = value.strip()
@@ -106,7 +97,7 @@ def _load(path: Path) -> dict:
 
 def coerce_str_list(value: object, cap: int = 2000) -> list[str]:
     """Narrow any input to a bounded list of unique strings (drops non-strings/dupes).
-    Used for the overview's expanded/excluded path lists (#144)."""
+    Used for the overview's expanded list (#144) + the project hide/include lists."""
     if not isinstance(value, list):
         return []
     out: list[str] = []
@@ -175,18 +166,8 @@ def get_theme(path: Path | None = None) -> str:
 
 
 def set_theme(theme: str, path: Path | None = None) -> str:
-    """Persist a theme (invalid input → default). Preserves other keys (e.g. sidebar_view)."""
+    """Persist a theme (invalid input → default). Preserves other keys (e.g. accent)."""
     return _set("theme", coerce_theme(theme), path)
-
-
-def get_sidebar_view(path: Path | None = None) -> str:
-    """The persisted sidebar view (list|overview), or the default when unset/invalid."""
-    return coerce_sidebar_view(_load(path or _default_path()).get("sidebar_view"))
-
-
-def set_sidebar_view(view: str, path: Path | None = None) -> str:
-    """Persist the sidebar view (invalid input → default). Preserves other keys (e.g. theme)."""
-    return _set("sidebar_view", coerce_sidebar_view(view), path)
 
 
 def get_compose_default(path: Path | None = None) -> str:
@@ -200,7 +181,7 @@ def set_compose_default(mode: str, path: Path | None = None) -> str:
 
 
 def get_vt_scrollback(path: Path | None = None) -> bool | None:
-    """The experimental VT-scrollback toggle (#329): ``True``/``False`` when the user has set it,
+    """The VT-scrollback toggle (#329): ``True``/``False`` when the user has set it,
     or ``None`` when unset — so the caller falls back to the ``AGENT_SESSIONS_VT_SCROLLBACK`` env
     default instead of forcing a value."""
     v = _load(path or _default_path()).get("vt_scrollback")
@@ -208,7 +189,7 @@ def get_vt_scrollback(path: Path | None = None) -> bool | None:
 
 
 def set_vt_scrollback(value: bool, path: Path | None = None) -> bool:
-    """Persist the experimental VT-scrollback toggle. Preserves other keys."""
+    """Persist the VT-scrollback toggle. Preserves other keys."""
     return _set("vt_scrollback", bool(value), path)
 
 
@@ -233,40 +214,62 @@ def set_overview_expanded(cwds: object, path: Path | None = None) -> list[str]:
     return _set("overview_expanded", coerce_str_list(cwds), path)
 
 
-def get_overview_excluded(path: Path | None = None) -> list[str]:
-    """Project cwds hidden from the overview map (#144). Legacy reader — kept so the
-    transition window from `overview_excluded` to `projects_hidden` (#174) is invisible
-    to existing on-disk prefs; prefer `get_projects_hidden`."""
-    return coerce_str_list(_load(path or _default_path()).get("overview_excluded"))
-
-
-def set_overview_excluded(cwds: object, path: Path | None = None) -> list[str]:
-    """Persist the excluded-project cwds. Preserves other keys."""
-    return _set("overview_excluded", coerce_str_list(cwds), path)
-
-
 def get_projects_hidden(path: Path | None = None) -> list[str]:
-    """Project cwds globally hidden from the UI (#174). Hide is broader than the legacy
-    `overview_excluded`: an unchecked project also disappears from the sidebar list, the
-    project filter dropdown, and the new-session picker — not just the overview map.
+    """Project cwds globally hidden from the UI (#174). Hide is broader than the retired
+    `overview_excluded` (#144): an unchecked project also disappears from the sidebar list,
+    the project filter dropdown, and the new-session picker — not just the overview map.
 
-    Precedence on a transition install: the new `projects_hidden` key wins when present;
-    otherwise read the legacy `overview_excluded` (so a user who already excluded projects
-    from the map keeps that behavior, now globally). Normalization happens only on a real
-    write (see `set_projects_hidden`)."""
-    data = _load(path or _default_path())
-    if "projects_hidden" in data:
-        return coerce_str_list(data.get("projects_hidden"))
-    return coerce_str_list(data.get("overview_excluded"))
+    The legacy `overview_excluded` read-fallback is gone (#357 Phase 2): a one-time
+    union-merge into `projects_hidden` runs at app startup instead (see
+    `migrate_overview_excluded`), so an old on-disk file still keeps every hide."""
+    return coerce_str_list(_load(path or _default_path()).get("projects_hidden"))
 
 
 def set_projects_hidden(cwds: object, path: Path | None = None) -> list[str]:
-    """Persist the hidden-project cwds under the new key (#174). Preserves other keys.
-
-    We do NOT delete the legacy `overview_excluded` from disk here: the reader
-    (`get_projects_hidden`) explicitly prefers `projects_hidden` when present, so a
-    legacy key lying around is benign and the on-disk diff stays minimal."""
+    """Persist the hidden-project cwds (#174). Preserves other keys."""
     return _set("projects_hidden", coerce_str_list(cwds), path)
+
+
+def migrate_overview_excluded(path: Path | None = None) -> list[str] | None:
+    """One-time migration retiring the legacy `overview_excluded` key (#357 Phase 2).
+
+    When the legacy key is on disk: union-merge it into `projects_hidden` (existing
+    `projects_hidden` entries first, then any legacy hides not already present — no
+    hidden project lost, #174 precedence preserved for duplicates), write the normalized
+    form once, and drop the legacy key. When it is absent — the steady state after the
+    first run — this is a pure no-op: nothing is written, so re-runs are idempotent.
+
+    Returns the merged list when a migration happened, else ``None``. Runs at app
+    startup (main.create_app); a missing/corrupt file is tolerated like every read."""
+    path = path or _default_path()
+    if not path.exists():
+        return None
+    with path.open("r+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                data = json.load(fh)
+                if not isinstance(data, dict):
+                    return None
+            except json.JSONDecodeError:
+                return None
+            if "overview_excluded" not in data:
+                return None  # already migrated (or never legacy) → never rewrite
+            merged = coerce_str_list(data.get("projects_hidden"))
+            seen = set(merged)
+            for cwd in coerce_str_list(data.pop("overview_excluded")):
+                if cwd not in seen:
+                    seen.add(cwd)
+                    merged.append(cwd)
+            data["projects_hidden"] = merged
+            fh.seek(0)
+            fh.truncate()
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+            return merged
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # Project-visibility mode (#335). "all" = the legacy denylist (`projects_hidden`): every project
