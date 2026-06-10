@@ -70,7 +70,7 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/settings",
     name: "settings",
-    description: "Settings — theme + accent picker, About, support link (#109/#211)",
+    description: "Settings — tabbed shell, Appearance tab (theme + accent + compose) (#109/#211/#357)",
     requireAuth: "admin",
     waitFor: SPA_MOUNTED,
   },

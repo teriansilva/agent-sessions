@@ -12,8 +12,15 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { type CSSProperties, useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
@@ -25,6 +32,12 @@ import { useAccent } from "../theme/accentStore";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type { EngineInfo, SystemInfo, TwoFactorEnrollment, UpdateInfo } from "../types/api";
+import {
+  DEFAULT_SETTINGS_TAB,
+  isSettingsTab,
+  SETTINGS_TABS,
+  type SettingsTabId,
+} from "./settingsTabs";
 import styles from "./Settings.module.css";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
@@ -35,6 +48,62 @@ const SOURCE_URL = "https://github.com/teriansilva/agent-sessions";
 const CONTACT_USER = "contact";
 const CONTACT_DOMAIN = "superstatus.io";
 const contactAddr = () => `${CONTACT_USER}@${CONTACT_DOMAIN}`;
+
+/** Keyboard-accessible tablist (WAI-ARIA tabs pattern): roving tabindex, ArrowLeft/Right
+ *  with wrap-around, Home/End, selection follows focus. Switching tabs navigates to the
+ *  canonical `/settings/:tab` URL; the router state (the #155 returnTo) rides along so the
+ *  back button keeps working across tab switches. */
+function SettingsTablist({ active }: { active: SettingsTabId }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const select = (index: number, opts?: { replace?: boolean }) => {
+    const tab = SETTINGS_TABS[index];
+    refs.current[index]?.focus();
+    if (tab.id !== active) {
+      navigate(`/settings/${tab.id}`, { replace: opts?.replace, state: location.state });
+    }
+  };
+
+  const onKeyDown = (e: KeyboardEvent, index: number) => {
+    const last = SETTINGS_TABS.length - 1;
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    else if (e.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = last;
+    if (next === null) return;
+    e.preventDefault();
+    // Keyboard roving replaces the history entry so arrowing across the bar doesn't
+    // stack one entry per keypress.
+    select(next, { replace: true });
+  };
+
+  return (
+    <nav className={styles.tabs} role="tablist" aria-label="Settings sections">
+      {SETTINGS_TABS.map((t, i) => (
+        <button
+          key={t.id}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          type="button"
+          role="tab"
+          id={`settings-tab-${t.id}`}
+          aria-selected={t.id === active}
+          aria-controls={`settings-panel-${t.id}`}
+          tabIndex={t.id === active ? 0 : -1}
+          className={t.id === active ? `${styles.tab} ${styles.active}` : styles.tab}
+          onClick={() => select(i)}
+          onKeyDown={(e) => onKeyDown(e, i)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
 
 /** Connected agents (discovery): every known engine with a presence dot, a "can start
  *  new" badge, and the resolved binary path. */
@@ -991,8 +1060,22 @@ function ScrollbackCacheCard() {
   );
 }
 
-/** Settings (#109): theme picker (applies app-wide + to the terminal), an About section
- *  with the running version, and a support link. Reached via the gear in the sidebar. */
+/** AI Review (#356): the tab is reserved here so the deep link is stable; the actual
+ *  panel ships with #356 and replaces this placeholder. */
+function AiReviewPlaceholder() {
+  return (
+    <section className={styles.section} aria-labelledby="ai-review-h">
+      <h2 id="ai-review-h">AI Review</h2>
+      <p className={styles.hint}>
+        Automatic AI review of your sessions arrives with #356 — this tab is its future home.
+      </p>
+    </section>
+  );
+}
+
+/** Settings (#109, tabbed in #357): a keyboard-accessible tab shell over the existing
+ *  sections — Appearance, Projects, AI Review (#356 placeholder), Security, System,
+ *  Maintenance, About. Deep-linkable as /settings/:tab. Reached via the gear in the topbar. */
 export function Settings() {
   const { theme, setTheme } = useTheme();
   const { accent, setAccent } = useAccent();
@@ -1041,14 +1124,23 @@ export function Settings() {
   };
   const [version, setVersion] = useState<string | null>(null);
   // Return to wherever the gear was tapped from (#155) — the session, overview, or landing —
-  // instead of always dropping to the new-session landing. Only trust an in-app path.
+  // instead of always dropping to the new-session landing. Only trust an in-app path, and
+  // never Settings itself (any tab URL) — no loop (#357).
   const location = useLocation();
   const returnTo = (() => {
     const r = (location.state as { returnTo?: unknown } | null)?.returnTo;
-    return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") && r !== "/settings"
+    return typeof r === "string" &&
+      r.startsWith("/") &&
+      !r.startsWith("//") &&
+      r !== "/settings" &&
+      !r.startsWith("/settings/")
       ? r
       : "/";
   })();
+  // Canonical tab from the URL (#357): /settings/:tab. Bare /settings and unknown tabs
+  // both land on the first tab via a replace-redirect (state rides along so the #155
+  // back link survives the hop).
+  const { tab } = useParams<{ tab: string }>();
 
   useEffect(() => {
     let alive = true;
@@ -1063,6 +1155,10 @@ export function Settings() {
     };
   }, []);
 
+  if (!isSettingsTab(tab)) {
+    return <Navigate to={`/settings/${DEFAULT_SETTINGS_TAB}`} replace state={location.state} />;
+  }
+
   return (
     <div className={styles.wrap}>
       <header className={styles.head}>
@@ -1072,188 +1168,233 @@ export function Settings() {
         <h1>Settings</h1>
       </header>
 
-      <section className={styles.section} aria-labelledby="appearance-h">
-        <h2 id="appearance-h">Appearance</h2>
-        <p className={styles.hint}>Choose how BattleLab looks.</p>
-        <div className={styles.themes} role="radiogroup" aria-label="Theme">
-          {THEME_LIST.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="radio"
-              aria-checked={theme === t.id}
-              className={theme === t.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard}
-              onClick={() => setTheme(t.id)}
-            >
-              <span className={`${styles.swatch} ${styles[`sw_${t.id}`]}`} aria-hidden="true" />
-              <span className={styles.themeName}>{t.label}</span>
-              <span className={styles.themeDesc}>{t.description}</span>
-            </button>
-          ))}
-        </div>
+      <SettingsTablist active={tab} />
 
-        <h3 className={styles.subhead} id="accent-h">
-          Accent
-        </h3>
-        <p className={styles.hint}>The brand colour — buttons, highlights, the terminal cursor.</p>
-        <div className={styles.accents} role="radiogroup" aria-labelledby="accent-h">
-          {ACCENT_PRESETS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              role="radio"
-              aria-checked={accent === p.hex}
-              aria-label={p.label}
-              title={p.label}
-              className={accent === p.hex ? `${styles.accentDot} ${styles.active}` : styles.accentDot}
-              style={{ "--dot": p.hex } as CSSProperties}
-              onClick={() => setAccent(p.hex)}
-            />
-          ))}
-          <label className={styles.accentCustom} title="Custom colour">
-            <input
-              type="color"
-              aria-label="Custom accent colour"
-              value={accent}
-              onChange={(e) => setAccent(e.target.value)}
-            />
-          </label>
-          <input
-            type="text"
-            inputMode="text"
-            spellCheck={false}
-            className={styles.accentHex}
-            aria-label="Accent hex value"
-            value={hexDraft}
-            onChange={(e) => setHexDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitHex();
-              }
-            }}
-            onBlur={commitHex}
-          />
-        </div>
+      <div
+        role="tabpanel"
+        id={`settings-panel-${tab}`}
+        aria-labelledby={`settings-tab-${tab}`}
+        className={styles.panel}
+      >
+        {tab === "appearance" && (
+          <>
+            <section className={styles.section} aria-labelledby="appearance-h">
+              <h2 id="appearance-h">Appearance</h2>
+              <p className={styles.hint}>Choose how BattleLab looks.</p>
+              <div className={styles.themes} role="radiogroup" aria-label="Theme">
+                {THEME_LIST.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme === t.id}
+                    className={
+                      theme === t.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard
+                    }
+                    onClick={() => setTheme(t.id)}
+                  >
+                    <span
+                      className={`${styles.swatch} ${styles[`sw_${t.id}`]}`}
+                      aria-hidden="true"
+                    />
+                    <span className={styles.themeName}>{t.label}</span>
+                    <span className={styles.themeDesc}>{t.description}</span>
+                  </button>
+                ))}
+              </div>
 
-        <h3 className={styles.subhead} id="compose-h">
-          Compose box
-        </h3>
-        <p className={styles.hint}>
-          Default state when a session opens. Applies after the next reload.
-        </p>
-        <div className={styles.themes} role="radiogroup" aria-labelledby="compose-h">
-          {[
-            { id: "auto", label: "Auto", description: "Open on touch, collapsed on desktop" },
-            { id: "open", label: "Open", description: "Always expanded on load" },
-            { id: "collapsed", label: "Collapsed", description: "Always collapsed to the bar" },
-          ].map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              role="radio"
-              aria-checked={composeMode === o.id}
-              className={
-                composeMode === o.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard
-              }
-              onClick={() => chooseCompose(o.id)}
-            >
-              <span className={styles.themeName}>{o.label}</span>
-              <span className={styles.themeDesc}>{o.description}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+              <h3 className={styles.subhead} id="accent-h">
+                Accent
+              </h3>
+              <p className={styles.hint}>
+                The brand colour — buttons, highlights, the terminal cursor.
+              </p>
+              <div className={styles.accents} role="radiogroup" aria-labelledby="accent-h">
+                {ACCENT_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={accent === p.hex}
+                    aria-label={p.label}
+                    title={p.label}
+                    className={
+                      accent === p.hex ? `${styles.accentDot} ${styles.active}` : styles.accentDot
+                    }
+                    style={{ "--dot": p.hex } as CSSProperties}
+                    onClick={() => setAccent(p.hex)}
+                  />
+                ))}
+                <label className={styles.accentCustom} title="Custom colour">
+                  <input
+                    type="color"
+                    aria-label="Custom accent colour"
+                    value={accent}
+                    onChange={(e) => setAccent(e.target.value)}
+                  />
+                </label>
+                <input
+                  type="text"
+                  inputMode="text"
+                  spellCheck={false}
+                  className={styles.accentHex}
+                  aria-label="Accent hex value"
+                  value={hexDraft}
+                  onChange={(e) => setHexDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitHex();
+                    }
+                  }}
+                  onBlur={commitHex}
+                />
+              </div>
 
-      <section className={styles.section} aria-labelledby="experimental-h">
-        <h2 id="experimental-h">Experimental</h2>
-        <h3 className={styles.subhead}>Faithful scroll-up (VT)</h3>
-        <p className={styles.hint}>
-          Seeds the terminal with the agent&rsquo;s real current frame when you switch sessions
-          (via the VT sidecar) instead of relying on a repaint nudge &mdash; more accurate, but
-          experimental and can rarely garble. Takes effect on the next session switch; turn it off
-          if you see issues.
-        </p>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={vtScrollback}
-            onChange={(e) => toggleVt(e.currentTarget.checked)}
-          />
-          <span>{vtScrollback ? "Enabled" : "Disabled"}</span>
-        </label>
-      </section>
+              <h3 className={styles.subhead} id="compose-h">
+                Compose box
+              </h3>
+              <p className={styles.hint}>
+                Default state when a session opens. Applies after the next reload.
+              </p>
+              <div className={styles.themes} role="radiogroup" aria-labelledby="compose-h">
+                {[
+                  { id: "auto", label: "Auto", description: "Open on touch, collapsed on desktop" },
+                  { id: "open", label: "Open", description: "Always expanded on load" },
+                  { id: "collapsed", label: "Collapsed", description: "Always collapsed to the bar" },
+                ].map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={composeMode === o.id}
+                    className={
+                      composeMode === o.id
+                        ? `${styles.themeCard} ${styles.active}`
+                        : styles.themeCard
+                    }
+                    onClick={() => chooseCompose(o.id)}
+                  >
+                    <span className={styles.themeName}>{o.label}</span>
+                    <span className={styles.themeDesc}>{o.description}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
 
-      <OverviewCard />
+            <section className={styles.section} aria-labelledby="experimental-h">
+              <h2 id="experimental-h">Experimental</h2>
+              <h3 className={styles.subhead}>Faithful scroll-up (VT)</h3>
+              <p className={styles.hint}>
+                Seeds the terminal with the agent&rsquo;s real current frame when you switch
+                sessions (via the VT sidecar) instead of relying on a repaint nudge &mdash; more
+                accurate, but experimental and can rarely garble. Takes effect on the next session
+                switch; turn it off if you see issues.
+              </p>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={vtScrollback}
+                  onChange={(e) => toggleVt(e.currentTarget.checked)}
+                />
+                <span>{vtScrollback ? "Enabled" : "Disabled"}</span>
+              </label>
+            </section>
+          </>
+        )}
 
-      <TwoFactorCard />
+        {tab === "projects" && <OverviewCard />}
 
-      <AccountCard />
+        {tab === "ai-review" && <AiReviewPlaceholder />}
 
-      <ConnectedAgents />
+        {tab === "security" && (
+          <>
+            <TwoFactorCard />
+            <AccountCard />
+          </>
+        )}
 
-      <SystemCard />
+        {tab === "system" && (
+          <>
+            <ConnectedAgents />
+            <SystemCard />
+            <UpdatesCard />
+          </>
+        )}
 
-      <UpdatesCard />
+        {tab === "maintenance" && (
+          <>
+            <CleanupCard />
+            <ScrollbackCacheCard />
+          </>
+        )}
 
-      <CleanupCard />
+        {tab === "about" && (
+          <>
+            <section className={styles.section} aria-labelledby="support-h">
+              <h2 id="support-h">Support</h2>
+              <p className={styles.blurb}>
+                If BattleLab saves you time, you can support its development.
+              </p>
+              <a
+                className={`${styles.coffee} shine`}
+                href={BUY_ME_A_COFFEE}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Coffee size={16} /> Buy me a coffee
+              </a>
+            </section>
 
-      <ScrollbackCacheCard />
-
-      <section className={styles.section} aria-labelledby="support-h">
-        <h2 id="support-h">Support</h2>
-        <p className={styles.blurb}>If BattleLab saves you time, you can support its development.</p>
-        <a
-          className={`${styles.coffee} shine`}
-          href={BUY_ME_A_COFFEE}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Coffee size={16} /> Buy me a coffee
-        </a>
-      </section>
-
-      <section className={styles.section} aria-labelledby="about-h">
-        <h2 id="about-h">About</h2>
-        <p className={styles.brandLine}>
-          Battle<b>Lab</b>
-        </p>
-        <p className={styles.hint}>Command &amp; Code</p>
-        <p className={styles.blurb}>
-          The mobile-first organizer for your AI-coding sessions — claude, opencode, codex and
-          gemini, all in one place.
-        </p>
-        <dl className={styles.meta}>
-          <dt>Version</dt>
-          <dd>{version ?? "…"}</dd>
-          <dt>Created by</dt>
-          <dd>
-            <a
-              className={styles.nameLink}
-              href="https://superstatus.io"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Marcus Braun
-            </a>
-          </dd>
-        </dl>
-        <div className={styles.aboutLinks}>
-          <a className={styles.aboutLink} href={SOURCE_URL} target="_blank" rel="noopener noreferrer">
-            <Code2 size={15} /> Source code
-          </a>
-          <a
-            className={styles.aboutLink}
-            href={`mailto:${contactAddr()}`}
-            onClick={(e) => {
-              // Assemble the mailto at click time so the literal address is never in the DOM at rest.
-              (e.currentTarget as HTMLAnchorElement).href = `mailto:${contactAddr()}`;
-            }}
-          >
-            <Mail size={15} /> {CONTACT_USER}&#64;{CONTACT_DOMAIN}
-          </a>
-        </div>
-      </section>
+            <section className={styles.section} aria-labelledby="about-h">
+              <h2 id="about-h">About</h2>
+              <p className={styles.brandLine}>
+                Battle<b>Lab</b>
+              </p>
+              <p className={styles.hint}>Command &amp; Code</p>
+              <p className={styles.blurb}>
+                The mobile-first organizer for your AI-coding sessions — claude, opencode, codex
+                and gemini, all in one place.
+              </p>
+              <dl className={styles.meta}>
+                <dt>Version</dt>
+                <dd>{version ?? "…"}</dd>
+                <dt>Created by</dt>
+                <dd>
+                  <a
+                    className={styles.nameLink}
+                    href="https://superstatus.io"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Marcus Braun
+                  </a>
+                </dd>
+              </dl>
+              <div className={styles.aboutLinks}>
+                <a
+                  className={styles.aboutLink}
+                  href={SOURCE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Code2 size={15} /> Source code
+                </a>
+                <a
+                  className={styles.aboutLink}
+                  href={`mailto:${contactAddr()}`}
+                  onClick={(e) => {
+                    // Assemble the mailto at click time so the literal address is never in the DOM at rest.
+                    (e.currentTarget as HTMLAnchorElement).href = `mailto:${contactAddr()}`;
+                  }}
+                >
+                  <Mail size={15} /> {CONTACT_USER}&#64;{CONTACT_DOMAIN}
+                </a>
+              </div>
+            </section>
+          </>
+        )}
+      </div>
     </div>
   );
 }

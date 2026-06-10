@@ -15,7 +15,8 @@ test("Settings back returns to the originating session (#155)", async ({ page },
   } else {
     await page.locator(".hud-topbar").getByRole("link", { name: "Settings" }).click();
   }
-  await expect(page).toHaveURL(/\/settings$/);
+  // #357: bare /settings replace-redirects to the canonical first tab.
+  await expect(page).toHaveURL(/\/settings\/appearance$/);
 
   await page.getByRole("link", { name: "Back to sessions" }).click();
   await expect(page).toHaveURL(/\/s\/claude\/back-test$/);
@@ -23,6 +24,7 @@ test("Settings back returns to the originating session (#155)", async ({ page },
 
 test("Settings back falls back to the landing when opened directly (#155)", async ({ page }) => {
   await page.goto("/settings");
+  await expect(page).toHaveURL(/\/settings\/appearance$/); // canonical redirect (#357)
   await page.getByRole("link", { name: "Back to sessions" }).click();
   // No return state → land on the new-session page (the safe default).
   await expect(page.getByRole("heading", { name: /start a new session/i })).toBeVisible();

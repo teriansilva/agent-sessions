@@ -35,6 +35,54 @@
   border-color: var(--accent);
 }
 
+/* Tab bar (#357 Phase 1): mono HUD pills, horizontally scrollable on narrow screens so the
+ * full tab set stays reachable at 390px without wrapping or overflowing the page. */
+.tabs {
+  display: flex;
+  gap: 6px;
+  max-width: 640px;
+  margin: 0 auto 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tab {
+  flex: none;
+  padding: 7px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.tab.active {
+  color: var(--on-accent, #14161a);
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 14px var(--accent-glow, rgba(255, 176, 0, 0.22));
+}
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The active panel — sections inside keep their own spacing. */
+.panel {
+  min-width: 0;
+}
+
 .section {
   position: relative;
   max-width: 640px;
@@ -241,6 +289,10 @@
 .meta dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+  /* #289 mobile breakage: long values (platform strings, paths) overflowed the System card
+   * at narrow widths — let the grid cell shrink and the value wrap instead. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .nameLink {
   color: var(--brand-soft);

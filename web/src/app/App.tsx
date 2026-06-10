@@ -253,7 +253,10 @@ function Layout() {
           <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
             <Routes>
               <Route path="/" element={<NewSessionLanding />} />
+              {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
+                  same component, which replace-redirects to the first tab (state preserved). */}
               <Route path="/settings" element={<Settings />} />
+              <Route path="/settings/:tab" element={<Settings />} />
               <Route path="/overview" element={<Overview />} />
               <Route path="/s/:engine/:id" element={<SessionView />} />
               <Route path="*" element={<Navigate to="/" replace />} />

@@ -30,6 +30,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   delete document.documentElement.dataset.theme;
+  // App mounts a BrowserRouter on the real jsdom location — navigations leak across tests
+  // in this file, so pin every test back to the landing route.
+  window.history.replaceState(null, "", "/");
 });
 
 afterEach(() => {
@@ -61,6 +64,20 @@ test("the command topbar carries the Settings entrypoint (#211 redux)", async ()
   const link = within(topbar).getByRole("link", { name: "Settings" });
   expect(link).toHaveAttribute("href", "/settings");
   await waitFor(() => expect(link).toBeInTheDocument());
+});
+
+// #357: the Settings links keep pointing at the canonical bare /settings entry; the route
+// shell replace-redirects to the first tab, so every Settings navigation lands on a tab URL.
+test("clicking the topbar Settings link lands on the first settings tab (#357)", async () => {
+  const { container } = render(<App />);
+  await screen.findAllByRole("link", { name: "Settings" });
+  const topbar = container.querySelector(".hud-topbar") as HTMLElement;
+  await userEvent.click(within(topbar).getByRole("link", { name: "Settings" }));
+  expect(await screen.findByRole("tab", { name: "Appearance" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(window.location.pathname).toBe("/settings/appearance");
 });
 
 test("desktop: the single command-bar toggle collapses then re-expands the sidebar (#132/#211)", async () => {

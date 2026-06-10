@@ -46,7 +46,8 @@ test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #1
     await r.fulfill({ json: prefsBody });
   });
 
-  await page.goto("/settings");
+  // Deep-link straight into the Projects tab (#357 canonical /settings/:tab form).
+  await page.goto("/settings/projects");
   const alpha = page.getByRole("checkbox", { name: /alpha/i });
   await expect(alpha).toBeVisible();
   // New (#174) inverse semantics: nothing hidden → row is shown → checkbox is checked.
