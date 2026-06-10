@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -33,11 +34,14 @@ from .. import (
     prefs,
     ptybridge,
     scanner,
+    scopedspawn,
     session_stream,
     sessions,
     webterm,
 )
 from ..auth import AuthConfig, origin_matches, session_uid
+
+log = logging.getLogger("agent_sessions.terminal")
 
 # How often the active viewer re-asserts its lease (#293). Must be < owner.LEASE_S so a
 # live holder never reads as stale; the same call doubles as the demotion check — it
@@ -302,6 +306,15 @@ def register(
                     argv = ptybridge.launch_argv(
                         engine=prov.engine_id, session_id=phys_native, launch_argv=launch
                     )
+                    # Per-session transient scope (#346 Phase B): the dtach master + the
+                    # agent tree it forks land in their own cgroup, so one runaway session
+                    # can't fail the broker unit or drain its task budget. Falls through
+                    # unwrapped when scopes are disabled/unavailable (logged inside wrap).
+                    argv, scope_unit = scopedspawn.wrap(
+                        argv, engine=prov.engine_id, session_id=phys_native
+                    )
+                    if scope_unit is not None:
+                        log.info("launching %s in scope %s", phys_key, scope_unit)
             except ptybridge.PtyBridgeError:
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
             # Delta-resume: a reconnecting client reports the absolute byte offset it

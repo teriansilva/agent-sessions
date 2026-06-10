@@ -260,3 +260,52 @@ gate input. New clients always send the pair.
   force takeover, stale lease, heartbeat, legacy attach).
 - Vitest on `Terminal`: fp + tab in URL on every connect; banner appears on
   secondary; Take-over reconnects with `force=1` exactly once.
+
+## Per-session systemd scopes (#346 Phase B)
+
+Session masters used to spawn as direct broker children, so every agent process
+tree shared `agent-sessions.service`'s cgroup — one runaway session's OOM kill
+failed the whole unit (pre-Phase-A `OOMPolicy` default) and every session drew
+from one `TasksMax` budget. On LAUNCH the built dtach argv is now wrapped by
+`scopedspawn.wrap()`:
+
+```
+systemd-run --user --scope --collect --quiet \
+  --unit as-<engine>-<sid8>-<nonce>.scope \
+  -p TasksMax=512 … -- dtach -c <sock> -z -E -r winch <agent argv…>
+```
+
+- `--scope` fork/execs the payload in-process, so the PTY wiring, the
+  controlling tty (`start_new_session`) and the single-writer lock fd
+  (`pass_fds`) pass through unchanged — pinned by an integration test that
+  asserts the flock survives into the payload on hosts with a user manager.
+- `--collect` GCs the scope when its last process exits; the random nonce in
+  the unit name means kill → instant relaunch never collides with a
+  not-yet-collected predecessor.
+- Only LAUNCH is scoped. Viewer attaches (`dtach -a`) and headless
+  `SessionStream` readers stay in the broker cgroup — they die with their
+  websocket and would add a systemd round-trip per reconnect.
+- The reaper and manual Restart (#331) are unaffected: they find masters by
+  `/proc` cmdline scan and signal by process group, both cgroup-agnostic.
+
+### Configuration
+
+| Env | Default | Meaning |
+|---|---|---|
+| `AGENT_SESSIONS_SESSION_SCOPES` | `1` | `0` disables scoping entirely (logged once as *disabled (config)*). |
+| `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=512` | Space-separated `Key=Value` systemd properties applied per scope. Strictly validated (`Key=Value` charset) so env contents can never inject argv tokens. Memory limits are deliberately not defaulted — opt in after verifying controller delegation on staging. |
+| `AGENT_SESSIONS_SYSTEMD_RUN_BIN` | `systemd-run` | Override for tests/unusual installs. |
+
+### Fallback ladder (OSS installs, non-systemd hosts)
+
+A session is never refused because isolation is unavailable:
+
+1. Flag off → plain spawn, one-shot `disabled (config)` log line.
+2. `systemd-run --user` probe fails (no binary, no user manager, no DBus) →
+   plain spawn, one-shot `unavailable (probe)` warning; the failed probe is
+   re-tried after a cooldown so a transiently broken user manager recovers.
+3. A scope creation that fails at spawn time exits immediately → the websocket
+   closes `4502` (retryable, Phase A) and the next attempt re-runs the ladder.
+
+Existing masters keep running in whatever cgroup they were born in; the scope
+applies from each session's next launch. No migration is needed.
