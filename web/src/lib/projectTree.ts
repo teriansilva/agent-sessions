@@ -20,6 +20,31 @@ export function nearestAncestor(cwd: string, present: Iterable<string>): string 
   return best;
 }
 
+/** The id of the project entity whose adopted folder is the most specific boundary-aware
+ *  prefix of `cwd` (#361) — "" when no entity owns it. Same rule as `nearestAncestor`
+ *  (so `/a` owns `/a/b` but never `/a-foo`) and the SAME semantics as the server-side
+ *  resolver's folder step (`projects.owning_project`): the new-session picker uses it to
+ *  predict what folder resolution will yield, so an explicit pick that matches is NOT
+ *  stamped as per-session metadata. */
+export function owningProjectId(
+  cwd: string,
+  entities: Iterable<{ id: string; folders: string[] }>,
+): string {
+  if (!cwd) return "";
+  let best = "";
+  let bestLen = -1;
+  for (const e of entities) {
+    for (const f of e.folders) {
+      const pfx = f.endsWith("/") ? f : `${f}/`;
+      if ((cwd === f || cwd.startsWith(pfx)) && f.length > bestLen) {
+        best = e.id;
+        bestLen = f.length;
+      }
+    }
+  }
+  return best;
+}
+
 export interface TreeNode {
   cwd: string;
   parent: string | undefined;

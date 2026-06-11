@@ -17,6 +17,19 @@ test("renders project + agent options from facets", () => {
   expect(screen.getByLabelText("Filter by agent")).toBeInTheDocument(); // shown: >1 engine
 });
 
+test("a facet ref with a count renders as Name (N) (#361)", () => {
+  const counted = {
+    projects: [
+      { kind: "project" as const, id: "p-1", name: "SampleProject", color: "", count: 3 },
+      { ...folderRef("/home/m/claude"), count: 2 },
+    ],
+    engines: ["claude"],
+  };
+  render(<FiltersBar filters={base} facets={counted} onChange={noop} onClear={noop} />);
+  expect(screen.getByRole("option", { name: "SampleProject (3)" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "~/claude (2)" })).toBeInTheDocument();
+});
+
 test("agent select is hidden when only one engine exists", () => {
   render(
     <FiltersBar

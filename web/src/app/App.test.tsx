@@ -13,6 +13,7 @@ vi.mock("../lib/api", () => ({
       .fn()
       .mockResolvedValue({ sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } }),
     folders: vi.fn().mockResolvedValue({ folders: [] }),
+    projectEntities: vi.fn().mockResolvedValue({ projects: [] }),
   },
   setCsrfToken: vi.fn(),
   gotoChangePassword: vi.fn(),

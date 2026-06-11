@@ -27,6 +27,7 @@ import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { buildProjectTree, flattenTree } from "../lib/projectTree";
 import { AiReviewSettings } from "./AiReviewSettings";
+import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
 import { useAccent } from "../theme/accentStore";
@@ -1364,6 +1365,9 @@ export function Settings() {
 
         {tab === "projects" && (
           <>
+            {/* Entities first (#361 Phase 3): what sessions BELONG to. The folder
+                visibility/rename cards below stay about where sessions LAUNCH. */}
+            <ProjectsManagerCard />
             <OverviewCard />
             <DefaultProjectCard />
           </>

@@ -202,6 +202,28 @@
   padding: 0 4px;
   line-height: 15px;
 }
+/* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
+ * engine tag · time — an entity name leads with its color dot, an unassigned folder
+ * group gets a muted-italic folder marker. Inline (not flex) so the metaText ellipsis
+ * keeps truncating the whole line. */
+.projectChip {
+  color: var(--text-muted);
+}
+.projectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+}
+.folderChip {
+  color: var(--text-muted);
+}
+.folderMark {
+  color: var(--text-3, var(--text-muted));
+  font-style: italic;
+}
 .empty {
   color: var(--text-muted);
   padding: 14px 12px;

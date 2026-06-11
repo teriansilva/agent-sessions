@@ -17,10 +17,18 @@ vi.mock("../lib/api", async (orig) => {
   const actual = await orig<typeof import("../lib/api")>();
   return {
     ...actual,
-    api: { folders: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}), mkdir: vi.fn() },
+    api: {
+      folders: vi.fn(),
+      setPrefs: vi.fn().mockResolvedValue({}),
+      mkdir: vi.fn(),
+      projectEntities: vi.fn(),
+      createProject: vi.fn(),
+      setSessionProject: vi.fn(),
+    },
   };
 });
 const mockProjects = vi.mocked(api.folders);
+const mockEntities = vi.mocked(api.projectEntities);
 
 function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
   const config: AppConfig = {
@@ -41,6 +49,11 @@ function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
 beforeEach(() => {
   navigateMock.mockReset();
   mockProjects.mockReset();
+  mockEntities.mockReset();
+  mockEntities.mockResolvedValue({ projects: [] });
+  vi.mocked(api.setSessionProject).mockReset();
+  vi.mocked(api.setSessionProject).mockResolvedValue({ id: "x", project_id: "" });
+  vi.mocked(api.createProject).mockReset();
 });
 
 test("starts a session: mints an id and navigates with the fresh launch params", async () => {
@@ -153,4 +166,115 @@ test("no New folder control when no roots are configured (#335 Phase 3)", async 
   renderLanding(["claude"]);
   await screen.findByRole("option", { name: "/code/a" });
   expect(screen.queryByRole("button", { name: /new folder/i })).toBeNull();
+});
+
+// ---- Project entity picker (#361 Phase 3) ----
+
+const ENTITIES = [
+  { id: "p-a", name: "Alpha", color: "", folders: ["/a"], archived: false, created_at: 0, session_count: 1 },
+  { id: "p-b", name: "Beta", color: "", folders: ["/b"], archived: false, created_at: 0, session_count: 2 },
+];
+
+function mockTwoFoldersWithEntities() {
+  mockProjects.mockResolvedValue({
+    folders: [
+      { cwd: "/a", label: "/a" },
+      { cwd: "/b", label: "/b" },
+    ],
+  });
+  mockEntities.mockResolvedValue({ projects: ENTITIES });
+}
+
+test("the project select defaults to the owning entity of the selected folder (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  renderLanding(["claude"]);
+  const sel = (await screen.findByRole("combobox", {
+    name: "Assign to project",
+  })) as HTMLSelectElement;
+  // /a is the first (selected) folder → Alpha owns it.
+  expect(sel.value).toBe("p-a");
+  expect(screen.getByRole("option", { name: "none (group by folder)" })).toBeInTheDocument();
+});
+
+test("while untouched, the project select follows the folder selection (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  renderLanding(["claude"]);
+  const project = (await screen.findByRole("combobox", {
+    name: "Assign to project",
+  })) as HTMLSelectElement;
+  const folder = screen.getByRole("combobox", { name: "Folder" });
+  await userEvent.selectOptions(folder, "/b");
+  expect(project.value).toBe("p-b");
+  // The owning entity IS the folder-resolution result — Start must not stamp it.
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  expect(api.setSessionProject).not.toHaveBeenCalled();
+});
+
+test("choosing none never stamps a project (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  renderLanding(["claude"]);
+  const project = await screen.findByRole("combobox", { name: "Assign to project" });
+  await userEvent.selectOptions(project, "");
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  expect(navigateMock).toHaveBeenCalledTimes(1);
+  expect(api.setSessionProject).not.toHaveBeenCalled();
+});
+
+test("an explicit non-default choice stamps the project with the navigated session key (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  renderLanding(["claude"]);
+  const project = await screen.findByRole("combobox", { name: "Assign to project" });
+  // cwd stays /a (owned by Alpha) but the user explicitly picks Beta.
+  await userEvent.selectOptions(project, "p-b");
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  const [path] = navigateMock.mock.calls[0] as [string, unknown];
+  const id = path.split("/").pop();
+  expect(api.setSessionProject).toHaveBeenCalledWith(`claude:${id}`, "p-b");
+});
+
+test("opencode stamping uses the new-<uuid> placeholder key the navigation uses (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  renderLanding(["opencode"]);
+  const project = await screen.findByRole("combobox", { name: "Assign to project" });
+  await userEvent.selectOptions(project, "p-b");
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  const [path] = navigateMock.mock.calls[0] as [string, unknown];
+  const id = path.split("/").pop() as string;
+  expect(id).toMatch(/^new-[0-9a-f-]{36}$/);
+  expect(api.setSessionProject).toHaveBeenCalledWith(`opencode:${id}`, "p-b");
+});
+
+test("inline create makes a standalone project and selects it (#361)", async () => {
+  mockTwoFoldersWithEntities();
+  vi.mocked(api.createProject).mockResolvedValue({
+    id: "p-new",
+    name: "Zed",
+    color: "",
+    folders: [],
+    archived: false,
+    created_at: 0,
+  });
+  renderLanding(["claude"]);
+  await screen.findByRole("combobox", { name: "Assign to project" });
+  await userEvent.click(screen.getByRole("button", { name: /new project/i }));
+  await userEvent.type(screen.getByLabelText("New project name"), "Zed");
+  await userEvent.click(screen.getByRole("button", { name: /^create$/i }));
+  // Standalone (no folder adoption — that lives in Settings).
+  expect(api.createProject).toHaveBeenCalledWith({ name: "Zed" });
+  const project = (await screen.findByRole("combobox", {
+    name: "Assign to project",
+  })) as HTMLSelectElement;
+  expect(project.value).toBe("p-new");
+  // A folder-less project is never the folder-resolution result → Start stamps it.
+  await userEvent.click(screen.getByRole("button", { name: /start session/i }));
+  expect(api.setSessionProject).toHaveBeenCalledWith(expect.stringMatching(/^claude:/), "p-new");
+});
+
+test("no project select renders when there are no entities (#361)", async () => {
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/a", label: "/a" }] });
+  renderLanding(["claude"]);
+  await screen.findByRole("option", { name: "/a" });
+  expect(screen.queryByRole("combobox", { name: "Assign to project" })).toBeNull();
+  // …but the create affordance is how the FIRST project gets made.
+  expect(screen.getByRole("button", { name: /new project/i })).toBeInTheDocument();
 });

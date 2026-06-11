@@ -38,6 +38,12 @@ vi.mock("../lib/api", async () => {
       sessions: vi.fn(),
       aiReviewModels: vi.fn(),
       reviewExclude: vi.fn(),
+      projectEntities: vi.fn(),
+      createProject: vi.fn(),
+      patchProject: vi.fn(),
+      deleteProject: vi.fn(),
+      archiveProject: vi.fn(),
+      unarchiveProject: vi.fn(),
     },
   };
 });
@@ -125,6 +131,8 @@ beforeEach(() => {
   });
   vi.mocked(api.aiReviewModels).mockResolvedValue({ models: [] });
   vi.mocked(api.reviewExclude).mockResolvedValue({ id: "x", review_excluded: false });
+  // Projects manager (#361 Phase 3): no entities by default.
+  vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] });
 });
 
 // ---- Tab shell: routing + deep links (#357 Phase 1) ----
@@ -223,7 +231,7 @@ test("the active panel is a labelled tabpanel wired to its tab", async () => {
 // zero-behavioural-change guarantee — components moved, not changed).
 test.each([
   ["appearance", ["Appearance"]],
-  ["projects", ["Session overview", "Default project"]],
+  ["projects", ["Projects", "Session overview", "Default project"]],
   ["ai-review", ["AI session review", "Review prompt", "Excluded sessions"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["system", ["Connected agents", "System", "Updates"]],

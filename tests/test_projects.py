@@ -383,8 +383,24 @@ def test_facets_list_entities_before_folder_groups(auth_cfg, fake_jsonl):
     ]
     facets = c.get("/api/sessions?limit=50").json()["facets"]["projects"]
     # entity first despite the "Z" name; folder groups follow, alphabetical
-    assert facets[0] == {"kind": "project", "id": pid, "name": "Zeta", "color": ""}
+    assert facets[0] == {"kind": "project", "id": pid, "name": "Zeta", "color": "", "count": 1}
     assert [f["kind"] for f in facets[1:]] == ["folder", "folder"]
+
+
+def test_facet_refs_carry_counts(auth_cfg, fake_jsonl):
+    # Each distinct facet ref reports how many scoped rows resolve to it (#361 Phase 3) —
+    # the dropdown renders "Name (N)". Counts live on the FACET copies only; the per-row
+    # `project` ref shape is unchanged.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
+    d = c.get("/api/sessions?limit=50").json()
+    counts = {(f["kind"], f["id"]): f["count"] for f in d["facets"]["projects"]}
+    assert counts[("project", pid)] == 2  # both repo/a fixture sessions
+    assert counts[("folder", _TMP_OTHER)] == 1
+    assert counts[("folder", _DEMOAPP)] == 1
+    assert all("count" not in r["project"] for r in d["sessions"])
 
 
 def test_filter_by_entity_id_and_bare_cwd_back_compat(auth_cfg, fake_jsonl):

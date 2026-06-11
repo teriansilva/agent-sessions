@@ -34,9 +34,11 @@ export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
           <option value="">All projects</option>
           {facets.projects.map((p) => (
             // Entities show their own name; folder groups keep the per-cwd custom-name
-            // (#148) / shortened-path display exactly as before #361.
+            // (#148) / shortened-path display exactly as before #361. A server-side
+            // member count (#361 Phase 3) renders as "Name (N)"; older servers omit it.
             <option key={`${p.kind}:${p.id}`} value={p.id}>
-              {p.kind === "project" ? p.name : displayProjectName(p.id, projectNames)}
+              {(p.kind === "project" ? p.name : displayProjectName(p.id, projectNames)) +
+                (p.count != null ? ` (${p.count})` : "")}
             </option>
           ))}
         </select>

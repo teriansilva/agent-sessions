@@ -89,6 +89,30 @@ test("a project-assigned row shows the entity name, not the folder path (#361)",
   expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
 });
 
+test("the project chip shows a color dot for a colored entity; folder rows get a decorative marker (#361)", async () => {
+  const colored = {
+    ...sess("claude:p", "Colored"),
+    project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
+  };
+  mockSessions.mockResolvedValue(pageOf([colored, sess("claude:q", "Plain")], { total: 2 }));
+  const { container } = render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Colored");
+  // The dot carries the entity color inline; it's decorative (aria-hidden).
+  const dot = container.querySelector('[class*="projectDot"]') as HTMLElement;
+  expect(dot).not.toBeNull();
+  expect(dot.style.background).toBe("rgb(95, 215, 255)");
+  expect(dot).toHaveAttribute("aria-hidden", "true");
+  // The folder marker is a separate aria-hidden span, so the visible text content the
+  // tests (and screen readers' name computation) rely on stays the project name/path.
+  const mark = container.querySelector('[class*="folderMark"]') as HTMLElement;
+  expect(mark).toHaveAttribute("aria-hidden", "true");
+  expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
+});
+
 test("marks the row matching the current URL as the active session (#18)", async () => {
   mockSessions.mockResolvedValue(
     pageOf([sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")], { total: 2 }),

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { buildProjectTree, flattenTree, nearestAncestor } from "./projectTree";
+import { buildProjectTree, flattenTree, nearestAncestor, owningProjectId } from "./projectTree";
 
 // nearestAncestor — the core boundary-aware rule (#148 carry-over, #174 extract).
 
@@ -20,6 +20,30 @@ test("nearestAncestor: picks the longest match when multiple ancestors are prese
 test("nearestAncestor: skips absent intermediates (no synthetic nodes)", () => {
   const present = new Set(["/a", "/a/b/c/d"]);
   expect(nearestAncestor("/a/b/c/d", present)).toBe("/a");
+});
+
+// owningProjectId — the client-side mirror of the server resolver's folder step (#361).
+
+test("owningProjectId: boundary-aware, not a string prefix", () => {
+  const entities = [{ id: "p-a", folders: ["/a"] }];
+  expect(owningProjectId("/a", entities)).toBe("p-a"); // exact match
+  expect(owningProjectId("/a/b/c", entities)).toBe("p-a"); // nested
+  expect(owningProjectId("/a-foo", entities)).toBe(""); // sibling sharing a string prefix
+  expect(owningProjectId("/elsewhere", entities)).toBe("");
+  expect(owningProjectId("", entities)).toBe("");
+});
+
+test("owningProjectId: the most specific adopted folder wins across entities", () => {
+  const entities = [
+    { id: "p-outer", folders: ["/a"] },
+    { id: "p-inner", folders: ["/a/b"] },
+  ];
+  expect(owningProjectId("/a/b/c", entities)).toBe("p-inner");
+  expect(owningProjectId("/a/z", entities)).toBe("p-outer");
+});
+
+test("owningProjectId: an entity with no folders never owns anything", () => {
+  expect(owningProjectId("/a", [{ id: "p-x", folders: [] }])).toBe("");
 });
 
 // buildProjectTree — the resolved map both surfaces will consume.

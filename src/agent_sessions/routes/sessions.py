@@ -151,14 +151,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # (already hide-filtered) archived-scoped set, computed BEFORE q/project/engine
         # filtering — so the dropdowns list every project/engine present, including ones
         # past the first page, regardless of what's currently filtered or loaded.
-        # Entities sort first (alphabetical), then unassigned folder groups.
+        # Entities sort first (alphabetical), then unassigned folder groups. Each facet
+        # ref carries a `count` of scoped rows resolving to it (#361 Phase 3) — copied,
+        # not mutated in place, because the same ref dict is embedded in the rows.
         distinct: dict[tuple[str, str], dict] = {}
+        ref_counts: dict[tuple[str, str], int] = {}
         for r in scoped:
             ref = r["project"]
-            distinct.setdefault((ref["kind"], ref["id"]), ref)
+            key = (ref["kind"], ref["id"])
+            distinct.setdefault(key, ref)
+            ref_counts[key] = ref_counts.get(key, 0) + 1
         facets = {
             "projects": sorted(
-                distinct.values(),
+                ({**ref, "count": ref_counts[key]} for key, ref in distinct.items()),
                 key=lambda ref: (ref["kind"] != "project", ref["name"].casefold(), ref["id"]),
             ),
             "engines": sorted({r["engine"] for r in scoped}),

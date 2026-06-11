@@ -5,6 +5,8 @@ import type {
   EnginesResponse,
   Folder,
   HistoryPage,
+  ProjectArchiveReport,
+  ProjectEntity,
   SessionsPage,
   SessionsQuery,
   SystemInfo,
@@ -91,6 +93,38 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+/** A CSRF-guarded JSON mutation that surfaces the server's `detail` string in the thrown
+ *  ApiError (#361): folder-adoption conflicts (409) carry an explanation the Projects
+ *  manager shows inline — the generic "PATCH … → 409" would tell the user nothing. */
+async function mutateJson<T>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const r = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `${method} ${path} → ${r.status}`);
+  }
+  return (await r.json()) as T;
+}
+
+const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
+  mutateJson<T>("PATCH", path, body);
+
+const deleteJson = <T>(path: string): Promise<T> => mutateJson<T>("DELETE", path);
+
 /** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
 async function postVoid(path: string, body?: unknown): Promise<void> {
   const r = await fetch(path, {
@@ -171,6 +205,37 @@ export const api = {
    *  root/name. */
   mkdir: (root: string, name: string) =>
     postJson<{ cwd: string }>("/api/folders/mkdir", { root, name }),
+  /** Project ENTITIES (#361): what sessions BELONG to (folders above stay where they
+   *  LAUNCH). Archived entities are hidden unless `includeArchived` (Settings opts in). */
+  projectEntities: (opts?: { includeArchived?: boolean }) =>
+    getJson<{ projects: ProjectEntity[] }>(
+      `/api/projects${opts?.includeArchived ? "?include_archived=1" : ""}`,
+    ),
+  /** Create an entity (#361). "From a folder" is just `folders: [cwd]`; adopting a folder
+   *  (or one nested under/above) already owned by another project is a 409 whose detail
+   *  string names the conflict. CSRF-guarded. */
+  createProject: (body: { name: string; color?: string; folders?: string[] }) =>
+    mutateJson<Omit<ProjectEntity, "session_count">>("POST", "/api/projects", body),
+  /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
+   *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
+  patchProject: (id: string, body: { name?: string; color?: string; folders?: string[] }) =>
+    patchJson<Omit<ProjectEntity, "session_count">>(`/api/projects/${enc(id)}`, body),
+  /** Remove the ENTITY only (#361): members revert to folder grouping on the next
+   *  resolve — session files are never touched. CSRF-guarded. */
+  deleteProject: (id: string) =>
+    deleteJson<{ deleted: boolean; id: string }>(`/api/projects/${enc(id)}`),
+  /** Bulk archive/unarchive every member session (#361 Phase 2). Idempotent + blindly
+   *  retryable — after a partial failure, re-calling retries only the failed set. */
+  archiveProject: (id: string) =>
+    mutateJson<ProjectArchiveReport>("POST", `/api/projects/${enc(id)}/archive`),
+  unarchiveProject: (id: string) =>
+    mutateJson<ProjectArchiveReport>("POST", `/api/projects/${enc(id)}/unarchive`),
+  /** Session → project assignment (#361): one sidecar metadata write. `null`/"" clears;
+   *  an unknown project id is a 422. Engine stores stay read-only. */
+  setSessionProject: (sid: string, projectId: string | null) =>
+    patchJson<{ id: string; project_id: string }>(`/api/sessions/${enc(sid)}/metadata`, {
+      project_id: projectId,
+    }),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),

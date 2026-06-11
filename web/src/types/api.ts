@@ -72,6 +72,33 @@ export interface ProjectRef {
   name: string;
   /** Entity color (#285 spends it); absent on folder refs. */
   color?: string;
+  /** Scoped rows resolving to this ref — set on FACET refs only (#361 Phase 3),
+   *  never on a session row's `project`. */
+  count?: number;
+}
+
+/** A project entity from GET /api/projects (#361): what the Settings manager edits.
+ *  `session_count` is the resolver's member count at read time (GET only — the
+ *  create/patch responses omit it). */
+export interface ProjectEntity {
+  id: string;
+  name: string;
+  color: string;
+  folders: string[];
+  archived: boolean;
+  created_at: number;
+  session_count: number;
+}
+
+/** Bulk archive/unarchive report from POST /api/projects/{id}/(un)archive (#361 Phase 2).
+ *  Idempotent + blindly retryable: re-calling after a partial failure retries only the
+ *  failed members (the rest report `already_*`). Result keys mirror the direction:
+ *  archived/already_archived/failed or unarchived/already_unarchived/failed. */
+export interface ProjectArchiveReport {
+  id: string;
+  archived: boolean;
+  sessions: { id: string; result: string; reason?: string }[];
+  counts: Record<string, number>;
 }
 
 /** A launch-location folder from GET /api/folders — the pre-#361 "project" picker row.
