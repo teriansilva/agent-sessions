@@ -3,8 +3,8 @@
 import type {
   AppConfig,
   EnginesResponse,
+  Folder,
   HistoryPage,
-  Project,
   SessionsPage,
   SessionsQuery,
   SystemInfo,
@@ -160,16 +160,17 @@ export const api = {
   regenerate2fa: (proof: { code?: string; password?: string }) =>
     postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
   upload,
-  /** Project list. `visible: true` applies the mode-aware visibility filter (#335) — the
-   *  new-session picker uses it so the dropdown mirrors the curated sidebar; Settings omits
-   *  it to get the full discovered set for curation. */
-  projects: (opts?: { visible?: boolean }) =>
-    getJson<{ projects: Project[] }>(`/api/projects${opts?.visible ? "?visible=1" : ""}`),
+  /** Launch-folder list (#361: behaviour-preserving rename of the old /api/projects).
+   *  `visible: true` applies the mode-aware visibility filter (#335) — the new-session
+   *  picker uses it so the dropdown mirrors the curated sidebar; Settings omits it to
+   *  get the full discovered set for curation. */
+  folders: (opts?: { visible?: boolean }) =>
+    getJson<{ folders: Folder[] }>(`/api/folders${opts?.visible ? "?visible=1" : ""}`),
   /** Create a new project directory under a configured base root (#335 Phase 3). CSRF-guarded;
    *  returns the new absolute cwd. 404 if the feature is disabled, 403/422 on a rejected
    *  root/name. */
   mkdir: (root: string, name: string) =>
-    postJson<{ cwd: string }>("/api/projects/mkdir", { root, name }),
+    postJson<{ cwd: string }>("/api/folders/mkdir", { root, name }),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
-import type { Project } from "../types/api";
+import type { Folder } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project and start a new
@@ -12,7 +12,7 @@ import styles from "./NewSessionLanding.module.css";
 export function NewSessionLanding() {
   const config = useConfig();
   const navigate = useNavigate();
-  const [projects, setProjects] = useState<Project[]>([]);
+  const [projects, setProjects] = useState<Folder[]>([]);
   const [engineChoice, setEngineChoice] = useState("");
   const [cwdChoice, setCwdChoice] = useState("");
   const [bypass, setBypass] = useState(true);
@@ -73,9 +73,9 @@ export function NewSessionLanding() {
     api
       // visible: the picker mirrors the curated sidebar (#335) — excluded/hidden dirs don't
       // resurface here; Settings still fetches the unfiltered list for curation.
-      .projects({ visible: true })
+      .folders({ visible: true })
       .then((r) => {
-        if (alive) setProjects(r.projects);
+        if (alive) setProjects(r.folders);
       })
       .catch(() => {
         if (alive) setError("Couldn’t load projects.");

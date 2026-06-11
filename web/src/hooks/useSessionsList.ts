@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../lib/api";
-import type { Session, SessionsQuery } from "../types/api";
+import type { ProjectRef, Session, SessionsQuery } from "../types/api";
 
 const PAGE = 20;
 /** Background refresh cadence — keeps the sidebar live without hammering the server (#159). */
@@ -16,7 +16,7 @@ export interface Filters {
 const EMPTY: Filters = { q: "", project: "", engine: "", archived: false };
 
 interface Facets {
-  projects: string[];
+  projects: ProjectRef[];
   engines: string[];
 }
 

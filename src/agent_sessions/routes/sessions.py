@@ -1,6 +1,6 @@
-"""Session-data routes (agent-sessions#265): list/search sessions + facets, the
-project list, rename, archive/unarchive, and bulk archive-older. Moved verbatim
-from ``main.create_app``.
+"""Session-data routes (agent-sessions#265): list/search sessions + facets, project
+entities (#361), the launch-folder list, rename, archive/unarchive, and bulk
+archive-older. Moved verbatim from ``main.create_app``.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from .. import (
     owner,
     prefs,
     project_dirs,
+    projects,
     ptybridge,
     reaper,
     scanner,
@@ -32,7 +33,7 @@ _WORKING_WINDOW_S = 10.0
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
-    def _row(s, m: metadata.SessionMeta) -> dict:
+    def _row(s, m: metadata.SessionMeta, project_index: dict[str, projects.Project]) -> dict:
         key = engines.session_key(s)
         # #156 working signal: last byte we observed flowing into the shared ring.
         # Slice 2 (#183): the server-owned SessionStream writes under the PHYSICAL
@@ -48,7 +49,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "uuid": s.uuid,
             "short_uuid": s.short_uuid,
             "cwd": s.cwd,
-            "project": m.project_alias or s.cwd,
+            # Structured project ref (#361): what the session BELONGS to, resolved by
+            # THE shared resolver (explicit project_id → adopted-folder match → the
+            # implicit folder group). `cwd` above stays the launch location. Breaking
+            # change from the old `project_alias or cwd` string — the SPA (the only
+            # consumer) moves in the same PR; with zero entities every ref is a folder
+            # ref whose id == cwd, so behaviour is unchanged.
+            "project": projects.resolve(
+                s.cwd, m.project_id, project_index, alias=m.project_alias
+            ).as_dict(),
             "last_mtime": s.last_mtime,
             "last_output_at": last_out,
             "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
@@ -99,27 +108,59 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             phys = engines.physical_key(key, aliases)
             return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
 
-        # Project visibility (#174 hide-list, generalized by #335). Stripped server-side BEFORE
-        # pagination + facets, so totals/next_offset/facets all describe the visible-to-the-user
-        # set (filtering only on the client would make `total` + the filter lie). The shared
-        # `prefs.project_visible` resolver is mode-aware: `all` hides denylisted cwds, `included`
-        # shows only allowlisted ones. Keyed by the row's `cwd`, not the display name.
+        sessions = list(engines.scan_all())
+        # One-shot legacy migration (#361): per-session `project_alias` renames become
+        # project entities adopting that cwd. Idempotence is a flag inside the store
+        # (checked under its lock), so this is a cheap read once it has run.
+        projects.ensure_alias_migration(
+            [
+                (engines.session_key(s), s.cwd, m.project_alias)
+                for s in sessions
+                for m in [_meta_for(s)]
+                if m.project_alias
+            ]
+        )
+        project_index = projects.load()
+
+        # Visibility (#174/#335, refined by #361): folder visibility governs UNASSIGNED
+        # folder-groups only. Once a session resolves to a project entity it is visible
+        # iff the project is not archived — the user created the project explicitly, so
+        # a hidden folder never hides an adopted project's sessions (archiving the
+        # project is the hide mechanism). Stripped server-side BEFORE pagination +
+        # facets, so totals/next_offset/facets all describe the visible-to-the-user set.
         mode = prefs.get_projects_mode()
         hidden = set(prefs.get_projects_hidden())
         included = set(prefs.get_projects_included())
+
+        def _visible(row: dict) -> bool:
+            # Project-resolved rows are always visible: hiding members happens through
+            # the per-session archived flag (project archive, #361 Phase 2, archives
+            # every member), never by dropping live rows — a row must always be
+            # reachable in exactly one of the active/archived views.
+            if row["project"]["kind"] == "project":
+                return True
+            return prefs.project_visible(row["cwd"], mode=mode, hidden=hidden, included=included)
+
         scoped = [
             row
-            for s in engines.scan_all()
-            for row in [_row(s, _meta_for(s))]
-            if row["archived"] == archived
-            and prefs.project_visible(row["cwd"], mode=mode, hidden=hidden, included=included)
+            for s in sessions
+            for row in [_row(s, _meta_for(s), project_index)]
+            if row["archived"] == archived and _visible(row)
         ]
-        # Facets for the project/agent dropdowns: distinct values over the visible (already
-        # hide-filtered) archived-scoped set, computed BEFORE q/project/engine filtering —
-        # so the dropdowns list every project/engine present, including ones past the
-        # first page, regardless of what's currently filtered or loaded.
+        # Facets for the project/agent dropdowns: distinct resolved refs over the visible
+        # (already hide-filtered) archived-scoped set, computed BEFORE q/project/engine
+        # filtering — so the dropdowns list every project/engine present, including ones
+        # past the first page, regardless of what's currently filtered or loaded.
+        # Entities sort first (alphabetical), then unassigned folder groups.
+        distinct: dict[tuple[str, str], dict] = {}
+        for r in scoped:
+            ref = r["project"]
+            distinct.setdefault((ref["kind"], ref["id"]), ref)
         facets = {
-            "projects": sorted({r["project"] for r in scoped}),
+            "projects": sorted(
+                distinct.values(),
+                key=lambda ref: (ref["kind"] != "project", ref["name"].casefold(), ref["id"]),
+            ),
             "engines": sorted({r["engine"] for r in scoped}),
         }
         # Normalize filters; empty / whitespace-only means "no filter".
@@ -130,8 +171,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         def _keep(r: dict) -> bool:
             if q_norm and q_norm not in (r["title"] or "").casefold():
                 return False
-            if project_f is not None and r["project"] != project_f:
-                return False
+            if project_f is not None:
+                # Project filter (#361): matches the resolved ref id (entity id, or the
+                # cwd for an unassigned folder group). The bare-cwd form is kept for
+                # back-compat — a row whose cwd equals the filter matches even when it
+                # now resolves into a project, which is exactly the pre-#361 result set.
+                if r["project"]["id"] != project_f and r["cwd"] != project_f:
+                    return False
             if engine_f is not None and r["engine"] != engine_f:
                 return False
             return True
@@ -153,7 +199,133 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     @app.get("/api/projects")
     async def list_projects(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
-        # New-session picker + the Settings project manager.
+        # Project ENTITIES (#361) — id/name/color/folders/archived + a resolved member
+        # count. The launch-folder list this endpoint used to serve moved verbatim to
+        # GET /api/folders (the SPA is the only consumer and moved with it). Archived
+        # entities are hidden by default; Settings opts in via ?include_archived=1.
+        include_archived = request.query_params.get("include_archived") == "1"
+        project_index = projects.load()
+        meta_index = metadata.load()
+        aliases = metadata.load_aliases()
+        counts: dict[str, int] = {}
+        for s in engines.scan_all():
+            key = engines.session_key(s)
+            phys = engines.physical_key(key, aliases)
+            m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+            ref = projects.resolve(s.cwd, m.project_id, project_index)
+            if ref.kind == "project":
+                counts[ref.id] = counts.get(ref.id, 0) + 1
+        out = [
+            {**p.as_dict(), "session_count": counts.get(p.id, 0)}
+            for p in sorted(project_index.values(), key=lambda p: (p.name.casefold(), p.id))
+            if include_archived or not p.archived
+        ]
+        return JSONResponse({"projects": out})
+
+    @app.post("/api/projects")
+    async def create_project(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Create an entity (#361): {name, color?, folders?}. "From a folder" is just
+        # folders=[cwd]. Folder adoption is exclusive — a folder (or a folder nested
+        # under / above one) already adopted by another project is a 409.
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        folders = payload.get("folders", [])
+        if not isinstance(folders, list):
+            raise HTTPException(status_code=422, detail="folders must be a list")
+        try:
+            p = projects.create(payload.get("name"), color=payload.get("color"), folders=folders)
+        except projects.ProjectError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse(p.as_dict())
+
+    @app.patch("/api/projects/{pid}")
+    async def patch_project(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Rename / recolor / adopt-release folders (#361). The archived flag is NOT
+        # settable here — archiving has member-session semantics and lands as the
+        # dedicated /archive + /unarchive endpoints in Phase 2.
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        unknown = set(payload) - {"name", "color", "folders"}
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
+        try:
+            p = projects.update(
+                pid,
+                name=payload.get("name"),
+                color=payload.get("color"),
+                folders=payload.get("folders"),
+            )
+        except projects.ProjectError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse(p.as_dict())
+
+    @app.delete("/api/projects/{pid}")
+    async def delete_project(
+        pid: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Removes the ENTITY only (#361): member sessions lose their assignment and
+        # revert to folder grouping on the next resolve (a dangling project_id is
+        # ignored, never an error). Session files are never touched.
+        try:
+            projects.delete(pid)
+        except projects.ProjectError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse({"deleted": True, "id": pid})
+
+    @app.patch("/api/sessions/{sid}/metadata")
+    async def patch_session_metadata(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Session → project assignment is ONE metadata write (#361): {"project_id":
+        # "p-…"} assigns, ""/null clears. This is the seam the AI auto-sorter
+        # (follow-up to #356) will drive. Sidecar-only — engine stores stay read-only.
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict) or "project_id" not in payload:
+            raise HTTPException(status_code=422, detail="project_id required")
+        pid = payload.get("project_id")
+        if pid is None:
+            pid = ""
+        if not isinstance(pid, str):
+            raise HTTPException(status_code=422, detail="project_id must be a string")
+        if pid and pid not in projects.load():
+            raise HTTPException(status_code=422, detail="unknown project")
+        m = metadata.patch(metadata.resolve_key(key), project_id=pid)
+        return JSONResponse({"id": key, "project_id": m.project_id})
+
+    @app.get("/api/folders")
+    async def list_folders(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
+        # Launch-location folders: the new-session picker + the Settings folder manager.
+        # Behaviour-preserving rename of the pre-#361 GET /api/projects (folders stay
+        # what they were — where sessions launch; project entities live above).
         #
         # `all` mode (#174): hidden projects are excluded — picking a hidden project as a start
         # location would feel inconsistent with the user having said "I don't want to see this."
@@ -178,19 +350,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if request.query_params.get("visible") == "1":
             hidden = set(prefs.get_projects_hidden())
             included = set(prefs.get_projects_included())
-            projects = [
+            folders = [
                 c
                 for c in all_pickable
                 if prefs.project_visible(c, mode=mode, hidden=hidden, included=included)
             ]
         elif mode == "included":
-            projects = list(all_pickable)
+            folders = list(all_pickable)
         else:
             hidden = set(prefs.get_projects_hidden())
-            projects = [c for c in all_pickable if c not in hidden]
-        return JSONResponse({"projects": [{"cwd": c, "label": c} for c in projects]})
+            folders = [c for c in all_pickable if c not in hidden]
+        return JSONResponse({"folders": [{"cwd": c, "label": c} for c in folders]})
 
-    @app.post("/api/projects/mkdir")
+    @app.post("/api/folders/mkdir")
     async def make_project_dir(
         request: Request,
         _user: str = Depends(logged_in),

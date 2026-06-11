@@ -41,6 +41,10 @@ def tmp_home(tmp_path, monkeypatch) -> Path:
         "AGENT_SESSIONS_METADATA",
         str(tmp_path / ".config" / "agent-sessions" / "metadata.json"),
     )
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_PROJECTS",
+        str(tmp_path / ".config" / "agent-sessions" / "projects.json"),
+    )
     return tmp_path
 
 

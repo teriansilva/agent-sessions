@@ -55,7 +55,14 @@ class SessionMeta:
     title: str = ""
     sticky: bool = False
     sort_key: int = 0
+    # Legacy per-session display-name override for a cwd. RETIRED from the write path
+    # by #361 (project entities supersede it); still read one release as the folder-ref
+    # name fallback for sessions the one-shot alias→entity migration never saw.
     project_alias: str = ""
+    # Explicit project assignment (#361): the id of a project entity in projects.json.
+    # "" = unassigned (resolution falls back to adopted-folder matching, then to the
+    # implicit folder group). A dangling id (deleted project) is ignored on read.
+    project_id: str = ""
     # App-side archive override for engines whose store we treat as read-only
     # (opencode.db, codex rollouts). Tri-state: None = no override (use the engine's
     # native archived state); True/False = explicit override in *both* directions —
@@ -151,6 +158,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             sticky=bool(val.get("sticky", False)),
             sort_key=int(val.get("sort_key", 0)),
             project_alias=str(val.get("project_alias", "")),
+            project_id=str(val.get("project_id", "") or ""),
             archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
             ai_summary=str(val.get("ai_summary", "") or ""),
             ai_title=str(val.get("ai_title", "") or ""),
@@ -182,7 +190,9 @@ def patch(
         "title",
         "sticky",
         "sort_key",
-        "project_alias",
+        # "project_alias" is deliberately ABSENT: write path retired by #361 (the
+        # alias→entity migration); existing values are preserved on rewrite below.
+        "project_id",
         "archived",
         # AI review fields (#356) — written by review.py / the exclude toggle, never by
         # the rename path, so a review can't clobber a user's title.
@@ -223,6 +233,7 @@ def patch(
             "sticky": existing.get("sticky", False),
             "sort_key": existing.get("sort_key", 0),
             "project_alias": existing.get("project_alias", ""),
+            "project_id": existing.get("project_id", ""),
             "archived": existing.get("archived"),
             "ai_summary": existing.get("ai_summary", ""),
             "ai_title": existing.get("ai_title", ""),

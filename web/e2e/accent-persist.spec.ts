@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
   await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));

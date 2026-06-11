@@ -9,9 +9,11 @@ import type { ProjectGroupData } from "../../lib/overviewGraph";
  *  (#144/#149). The (hidden) handles let the folder-hierarchy edges attach top/bottom (#148).
  *  When a custom name is set, the real path is shown as a subtitle to disambiguate. */
 export function ProjectGroupNode({ data }: NodeProps) {
-  const { project, cwd, count, collapsed, name } = data as ProjectGroupData;
+  const { project, kind, cwd, count, collapsed, name } = data as ProjectGroupData;
   const Chevron = collapsed ? ChevronRight : ChevronDown;
-  const label = name || shortCwd(cwd) || project;
+  // #361: a project-entity group is labelled by the resolved entity name (its path
+  // shows as the subtitle); folder groups keep the custom-name/path display.
+  const label = kind === "project" ? project : name || shortCwd(cwd) || project;
   return (
     <div className={`tr-ov-group${collapsed ? " collapsed" : ""}`}>
       <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />
@@ -23,7 +25,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
         <Chevron size={14} className="tr-ov-chev" aria-hidden="true" />
         <span className="tr-ov-meta">
           <span className="tr-ov-path">{label}</span>
-          {name && <span className="tr-ov-cwd">{shortCwd(cwd)}</span>}
+          {(name || kind === "project") && <span className="tr-ov-cwd">{shortCwd(cwd)}</span>}
         </span>
         <span className="tr-ov-count">
           {count} session{count === 1 ? "" : "s"}

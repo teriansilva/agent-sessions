@@ -1,11 +1,12 @@
 import { useOverviewPrefs } from "../../app/overviewPrefs";
 import type { Filters } from "../../hooks/useSessionsList";
 import { displayProjectName } from "../../lib/format";
+import type { ProjectRef } from "../../types/api";
 import styles from "./Filters.module.css";
 
 interface Props {
   filters: Filters;
-  facets: { projects: string[]; engines: string[] };
+  facets: { projects: ProjectRef[]; engines: string[] };
   onChange: (patch: Partial<Filters>) => void;
   onClear: () => void;
 }
@@ -32,8 +33,10 @@ export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
         >
           <option value="">All projects</option>
           {facets.projects.map((p) => (
-            <option key={p} value={p}>
-              {displayProjectName(p, projectNames)}
+            // Entities show their own name; folder groups keep the per-cwd custom-name
+            // (#148) / shortened-path display exactly as before #361.
+            <option key={`${p.kind}:${p.id}`} value={p.id}>
+              {p.kind === "project" ? p.name : displayProjectName(p.id, projectNames)}
             </option>
           ))}
         </select>

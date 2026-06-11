@@ -143,7 +143,7 @@ agent-sessions/
 │   │                  middlewares + lifespan, then calls each routes/ registrar
 │   ├── routes/        one register(app, *, deps) module per route group —
 │   │   ├── system.py      healthz, auth-check, version, engines, system, update, config, prefs
-│   │   ├── sessions.py    /api/sessions, /api/projects, rename, archive/unarchive
+│   │   ├── sessions.py    /api/sessions, /api/projects (entities, #361), /api/folders, rename, archive/unarchive
 │   │   ├── scrollback.py  /api/scrollback (+ clear)
 │   │   ├── upload.py      /api/upload
 │   │   ├── auth.py        login, /login/totp, logout, change-password, /api/password, 2FA
@@ -206,7 +206,8 @@ This is acceptable **only** because agent-sessions is a single-admin tool, on th
 
 - `GET /api/sessions?limit=20&offset=0&archived=0` — flat, newest-first, paginated (`{sessions, next_offset, total, facets}`).
   Optional filters: `q` (case-insensitive title substring; trimmed, empty = no filter), `project` (exact key), `engine` (exact; `claude` / `opencode`). Filters are applied **before** `limit`/`offset` so `total` and "load more" describe the filtered set. `facets: {projects, engines}` are the distinct values over the full archived-scoped set (computed pre-filter) so the sidebar dropdowns list every option, including rows past the first page.
-- `GET /api/projects` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
+- `GET /api/folders` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
+- `GET/POST/PATCH/DELETE /api/projects` — project ENTITIES (#361): `{id, name, color, folders, archived, session_count}`; session → project assignment via `PATCH /api/sessions/{sid}/metadata` `{project_id}`
 - `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
 - `POST /api/sessions/{uuid}/archive` · `/unarchive` — move the JSONL between `projects/` and `projects-archive/`
 - `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`); `POST /api/prefs` `{theme}`

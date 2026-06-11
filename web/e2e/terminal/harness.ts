@@ -57,7 +57,7 @@ function mockApi(page: Page, sessions: BenchSession[]) {
     uuid: s.uuid,
     short_uuid: s.uuid,
     cwd: "/home/u/proj",
-    project: "proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
     last_mtime: now - i,
     first_user_message: "",
     title: s.title,
@@ -80,11 +80,11 @@ function mockApi(page: Page, sessions: BenchSession[]) {
   page.route("**/api/version", (r) => r.fulfill({ json: { version: "bench" } }));
   page.route("**/api/engines", (r) => r.fulfill({ json: { engines: ["claude"] } }));
   page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [{ cwd: "/home/u/proj", label: "proj" }] } }));
+  page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }));
   page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: items, next_offset: null, total: items.length, facets: { projects: ["/home/u/proj"], engines: ["claude"] } },
+      json: { sessions: items, next_offset: null, total: items.length, facets: { projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }], engines: ["claude"] } },
     }),
   );
 }

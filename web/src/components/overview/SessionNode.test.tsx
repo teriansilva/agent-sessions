@@ -11,7 +11,7 @@ const sess = (over: Partial<Session> = {}): Session =>
     uuid: "u1",
     short_uuid: "u1",
     cwd: "/p",
-    project: "p",
+    project: { kind: "folder" as const, id: "/p", name: "p" },
     last_mtime: 0,
     first_user_message: "",
     title: "My session",

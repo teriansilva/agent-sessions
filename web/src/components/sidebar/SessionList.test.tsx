@@ -33,7 +33,7 @@ function sess(id: string, title: string, engine = "claude"): Session {
     uuid: id.split(":")[1],
     short_uuid: id.slice(0, 8),
     cwd: "/home/m/claude",
-    project: "/home/m/claude",
+    project: { kind: "folder" as const, id: "/home/m/claude", name: "/home/m/claude" },
     last_mtime: Math.floor(Date.now() / 1000),
     first_user_message: "",
     title,
@@ -70,6 +70,23 @@ test("renders session rows from the API", async () => {
   );
   expect(await screen.findByText("First")).toBeInTheDocument();
   expect(screen.getByText("Second")).toBeInTheDocument();
+});
+
+test("a project-assigned row shows the entity name, not the folder path (#361)", async () => {
+  const inProject = {
+    ...sess("claude:p", "Assigned"),
+    project: { kind: "project" as const, id: "p-1234", name: "SampleProject", color: "" },
+  };
+  mockSessions.mockResolvedValue(pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Assigned");
+  // entity name on the assigned row; the unassigned row keeps the shortened cwd
+  expect(screen.getByText(/SampleProject/)).toBeInTheDocument();
+  expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
 });
 
 test("marks the row matching the current URL as the active session (#18)", async () => {

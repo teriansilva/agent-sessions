@@ -17,10 +17,10 @@ vi.mock("../lib/api", async (orig) => {
   const actual = await orig<typeof import("../lib/api")>();
   return {
     ...actual,
-    api: { projects: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}), mkdir: vi.fn() },
+    api: { folders: vi.fn(), setPrefs: vi.fn().mockResolvedValue({}), mkdir: vi.fn() },
   };
 });
-const mockProjects = vi.mocked(api.projects);
+const mockProjects = vi.mocked(api.folders);
 
 function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
   const config: AppConfig = {
@@ -45,7 +45,7 @@ beforeEach(() => {
 
 test("starts a session: mints an id and navigates with the fresh launch params", async () => {
   const user = userEvent.setup();
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/home/m/proj", label: "/home/m/proj" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/home/m/proj", label: "/home/m/proj" }] });
   renderLanding();
   await screen.findByRole("option", { name: "/home/m/proj" });
   // The picker mirrors the curated sidebar (#335): it must request the filtered list.
@@ -69,7 +69,7 @@ test.each([
 
 test("opencode new session navigates to a new-<uuid> placeholder, not a bare uuid (#163)", async () => {
   const user = userEvent.setup();
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/home/m/proj", label: "/home/m/proj" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/home/m/proj", label: "/home/m/proj" }] });
   renderLanding(["opencode"]); // single engine → opencode is the effective selection
   await screen.findByRole("option", { name: "/home/m/proj" });
 
@@ -80,20 +80,20 @@ test("opencode new session navigates to a new-<uuid> placeholder, not a bare uui
 });
 
 test("the agent picker is hidden when there is only one engine", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/x", label: "/x" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/x", label: "/x" }] });
   renderLanding(["claude"]);
   await screen.findByRole("option", { name: "/x" });
   expect(screen.queryByText("Agent")).not.toBeInTheDocument();
 });
 
 test("the agent picker is shown with more than one engine", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/x", label: "/x" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/x", label: "/x" }] });
   renderLanding(["claude", "opencode"]);
   expect(await screen.findByText("Agent")).toBeInTheDocument();
 });
 
 test("Start is disabled until a project is available", async () => {
-  mockProjects.mockResolvedValue({ projects: [] });
+  mockProjects.mockResolvedValue({ folders: [] });
   renderLanding();
   // No projects → the only option is the placeholder and Start stays disabled.
   await screen.findByRole("option", { name: /no projects found/i });
@@ -102,7 +102,7 @@ test("Start is disabled until a project is available", async () => {
 
 test("pre-selects the default project when it is pickable (#335 Phase 2)", async () => {
   mockProjects.mockResolvedValue({
-    projects: [
+    folders: [
       { cwd: "/a", label: "/a" },
       { cwd: "/b", label: "/b" },
     ],
@@ -117,14 +117,14 @@ test("pre-selects the default project when it is pickable (#335 Phase 2)", async
 });
 
 test("falls back to the first project when the default is stale (#335 Phase 2)", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/a", label: "/a" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/a", label: "/a" }] });
   renderLanding(["claude"], { default_project: "/gone" });
   await screen.findByRole("option", { name: "/a" });
   expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("/a");
 });
 
 test("Set as default persists the selected project (#335 Phase 2)", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/a", label: "/a" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/a", label: "/a" }] });
   renderLanding(["claude"]);
   await screen.findByRole("option", { name: "/a" });
   // accessible name comes from the aria-label (verbose for screen readers)
@@ -135,7 +135,7 @@ test("Set as default persists the selected project (#335 Phase 2)", async () => 
 });
 
 test("create-folder makes a dir under a root and selects it (#335 Phase 3)", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/code/a", label: "/code/a" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/code/a", label: "/code/a" }] });
   vi.mocked(api.mkdir).mockResolvedValue({ cwd: "/code/newproj" });
   renderLanding(["claude"], { project_roots: ["/code"] });
   await screen.findByRole("option", { name: "/code/a" });
@@ -149,7 +149,7 @@ test("create-folder makes a dir under a root and selects it (#335 Phase 3)", asy
 });
 
 test("no New folder control when no roots are configured (#335 Phase 3)", async () => {
-  mockProjects.mockResolvedValue({ projects: [{ cwd: "/code/a", label: "/code/a" }] });
+  mockProjects.mockResolvedValue({ folders: [{ cwd: "/code/a", label: "/code/a" }] });
   renderLanding(["claude"]);
   await screen.findByRole("option", { name: "/code/a" });
   expect(screen.queryByRole("button", { name: /new folder/i })).toBeNull();

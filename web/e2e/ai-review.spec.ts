@@ -27,7 +27,7 @@ const SESSIONS = {
       uuid: "aaaaaaaa-0000-0000-0000-000000000001",
       short_uuid: "aaaaaaaa",
       cwd: "/home/u/infra",
-      project: "/home/u/infra",
+      project: { kind: "folder", id: "/home/u/infra", name: "/home/u/infra" },
       last_mtime: NOW,
       first_user_message: "fix the runner",
       title: "Fix CI runner fork-EAGAIN limits",
@@ -44,7 +44,7 @@ const SESSIONS = {
   ],
   next_offset: null,
   total: 1,
-  facets: { projects: ["/home/u/infra"], engines: ["claude"] },
+  facets: { projects: [{ kind: "folder", id: "/home/u/infra", name: "/home/u/infra" }], engines: ["claude"] },
 };
 
 test.beforeEach(async ({ page }) => {
@@ -62,7 +62,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
   await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
   await page.route("**/api/sessions**", (r) => r.fulfill({ json: SESSIONS }));
   await page.route("**/api/ai-review/models**", (r) =>
     r.fulfill({ json: { models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"] } }),

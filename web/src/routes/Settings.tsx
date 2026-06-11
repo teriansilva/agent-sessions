@@ -34,7 +34,7 @@ import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type {
   EngineInfo,
-  Project,
+  Folder,
   SystemInfo,
   TwoFactorEnrollment,
   UpdateInfo,
@@ -791,8 +791,8 @@ function OverviewCard() {
   useEffect(() => {
     let alive = true;
     api
-      .projects()
-      .then((d) => alive && setProjects(d.projects))
+      .folders()
+      .then((d) => alive && setProjects(d.folders))
       .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
     return () => {
       alive = false;
@@ -898,7 +898,7 @@ function OverviewCard() {
 function DefaultProjectCard() {
   const config = useConfig();
   const { projectNames } = useOverviewPrefs();
-  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [projects, setProjects] = useState<Folder[] | null>(null);
   const configDefault = config?.default_project ?? "";
   const [choice, setChoice] = useState(configDefault);
   const [syncedDefault, setSyncedDefault] = useState(configDefault);
@@ -911,8 +911,8 @@ function DefaultProjectCard() {
     let alive = true;
     api
       // visible: mirror the new-session picker (#335) — hidden projects aren't offered.
-      .projects({ visible: true })
-      .then((d) => alive && setProjects(d.projects))
+      .folders({ visible: true })
+      .then((d) => alive && setProjects(d.folders))
       .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
     return () => {
       alive = false;

@@ -31,7 +31,9 @@ All state-changing routes require the CSRF token **and** an `Origin`/`Referer` e
 | Route | Purpose |
 |---|---|
 | `GET /api/sessions?limit=&offset=&archived=&q=&project=&engine=` | Flat, newest-first, paginated list: `{sessions, next_offset, total, facets}`. Filters apply before paging; `facets:{projects,engines}` cover the full set. |
-| `GET /api/projects` | New-session picker: scanned cwds ∪ validated project roots. |
+| `GET /api/folders` | New-session picker (launch folders): scanned cwds ∪ validated project roots. |
+| `GET/POST/PATCH/DELETE /api/projects` | Project entities (#361): `{id,name,color,folders,archived,session_count}`; `?include_archived=1` opts archived in. |
+| `PATCH /api/sessions/{sid}/metadata` `{project_id}` | Assign/clear a session's project (sidecar-only write). |
 | `POST /api/sessions/{sid}/rename` `{title}` | Persist a title to the metadata sidecar. |
 | `POST /api/sessions/{sid}/archive` · `/unarchive` | Move the Claude JSONL between `projects/` and `projects-archive/` (engine-agnostic sidecar flag for non-file engines). |
 | `POST /api/sessions/archive-older` | Bulk-archive sessions older than a cutoff. |
@@ -149,7 +151,7 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 | `AGENT_SESSIONS_HISTORY_PAGE_LINES` | Rendered-lines cap per history page. Render-output cap ONLY: truncates the page's rendered text oldest-first, never moves the cursor. Default `500`. |
 | `AGENT_SESSIONS_HISTORY_PAGE_BYTES` | Rendered-bytes cap per history page. Same render-only truncation rule. Default `524288` (512 KiB). |
 | `AGENT_SESSIONS_TAKEOVER` | Single-active-viewer take-over for a live session. |
-| `AGENT_SESSIONS_PROJECT_ROOTS` | `os.pathsep`-separated base dirs under which the new-session UI may create a project folder (#335). Empty/unset ⇒ the "New folder" feature is OFF (the `POST /api/projects/mkdir` endpoint is disabled). Folder creation is `realpath`-contained strictly under a listed root. |
+| `AGENT_SESSIONS_PROJECT_ROOTS` | `os.pathsep`-separated base dirs under which the new-session UI may create a project folder (#335). Empty/unset ⇒ the "New folder" feature is OFF (the `POST /api/folders/mkdir` endpoint is disabled). Folder creation is `realpath`-contained strictly under a listed root. |
 | `AGENT_SESSIONS_SESSION_TTL` · `_REAP_*` | Idle-session reaper tunables. |
 | `AGENT_SESSIONS_AI_REVIEW_LOOP` | Kill-switch for the periodic AI review loop (#356). `0` ⇒ the background task is never started, overriding the Settings `enabled` toggle; any other value (default) arms the loop, which still only reviews while AI review is enabled + configured in Settings. Manual "Review now" is unaffected. |
 | `AGENT_SESSIONS_INSTANCE` | Label for running multiple instances on one host. |

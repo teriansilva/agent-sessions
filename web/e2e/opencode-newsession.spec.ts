@@ -15,8 +15,8 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
-    r.fulfill({ json: { projects: [{ cwd: "/home/u/proj", label: "/home/u/proj" }] } }),
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "/home/u/proj" }] } }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));

@@ -14,7 +14,7 @@ const sessions = [
     uuid: "aaa",
     short_uuid: "aaa",
     cwd: "/home/u/proj",
-    project: "proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
     last_mtime: now,
     first_user_message: "",
     title: "First session",
@@ -28,7 +28,7 @@ const sessions = [
     uuid: "bbb",
     short_uuid: "bbb",
     cwd: "/home/u/proj",
-    project: "proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
     last_mtime: now - 1000,
     first_user_message: "",
     title: "Second session",
@@ -53,10 +53,10 @@ test.beforeEach(async ({ page }) => {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions, next_offset: null, total: sessions.length, facets: { projects: ["/home/u/proj"], engines: ["claude", "opencode"] } },
+      json: { sessions, next_offset: null, total: sessions.length, facets: { projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }], engines: ["claude", "opencode"] } },
     }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [{ cwd: "/home/u/proj", label: "proj" }] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }));
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
 });

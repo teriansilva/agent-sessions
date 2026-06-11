@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Session } from "../types/api";
-import { ACTIVE_WINDOW_S, buildOverview } from "./overviewGraph";
+import { ACTIVE_WINDOW_S, buildOverview, expandableCwds } from "./overviewGraph";
 
 const NOW = 1_700_000_000;
 
@@ -10,7 +10,7 @@ function s(over: Partial<Session> & { id: string }): Session {
     uuid: over.id,
     short_uuid: over.id.slice(0, 6),
     cwd: "/home/u/proj",
-    project: "proj",
+    project: { kind: "folder" as const, id: "/home/u/proj", name: "proj" },
     last_mtime: NOW,
     first_user_message: "",
     title: over.id,
@@ -27,9 +27,9 @@ const allExpanded = (sessions: Session[]) => new Set(sessions.map((x) => x.cwd))
 test("groups sessions by cwd and emits one group node per project", () => {
   const { nodes } = buildOverview(
     [
-      s({ id: "claude:a", cwd: "/p/one", project: "one" }),
-      s({ id: "claude:b", cwd: "/p/one", project: "one" }),
-      s({ id: "opencode:c", cwd: "/p/two", project: "two" }),
+      s({ id: "claude:a", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
+      s({ id: "claude:b", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
+      s({ id: "opencode:c", cwd: "/p/two", project: { kind: "folder" as const, id: "/p/two", name: "two" } }),
     ],
     { nowS: NOW },
   );
@@ -201,4 +201,36 @@ test("activeId marks the matching chip selected (#149 sidebar sync)", () => {
   );
   expect(byId["claude:a"]).toMatchObject({ selected: true });
   expect(byId["claude:b"]).toMatchObject({ selected: false });
+});
+
+test("cwd visibility prefs never drop project-resolved sessions (#361)", () => {
+  const inProject = s({
+    id: "claude:p",
+    cwd: "/p/hidden",
+    project: { kind: "project" as const, id: "p-1", name: "Side" },
+  });
+  const inFolder = s({
+    id: "claude:f",
+    cwd: "/p/hidden",
+    project: { kind: "folder" as const, id: "/p/hidden", name: "/p/hidden" },
+  });
+  const { nodes } = buildOverview([inProject, inFolder], {
+    nowS: NOW,
+    excluded: new Set(["/p/hidden"]),
+  });
+  const group = nodes.find((n) => n.id === "group:/p/hidden");
+  // the folder-grouped session is dropped by the pref; the project member survives
+  expect(group?.data).toMatchObject({ project: "Side", kind: "project", count: 1 });
+});
+
+test("Expand all covers project-resolved clusters whose cwd is hidden (#361)", () => {
+  const inProject = s({
+    id: "claude:p",
+    cwd: "/p/hidden",
+    project: { kind: "project" as const, id: "p-1", name: "Side" },
+  });
+  const plain = s({ id: "claude:f", cwd: "/p/dropped" });
+  expect(expandableCwds([inProject, plain], new Set(["/p/hidden", "/p/dropped"]))).toEqual([
+    "/p/hidden",
+  ]);
 });

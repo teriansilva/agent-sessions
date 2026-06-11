@@ -25,6 +25,8 @@ const ROW_GAP = 64;
 
 export interface ProjectGroupData extends Record<string, unknown> {
   project: string;
+  /** Resolved ref kind (#361): "project" groups label by entity name, never the path. */
+  kind: "project" | "folder";
   cwd: string;
   count: number;
   collapsed: boolean;
@@ -86,18 +88,45 @@ export interface BuildOptions {
  *  folder nesting (nearest present ancestor only) and laid out as a layered tidy tree: depth
  *  = nesting level → row; siblings spread left→right with parents centered over their
  *  children. Group nodes precede their session-chip children (React Flow requirement). */
+/** Cwds offered to "Expand all" — the same visibility predicate as `buildOverview`
+ *  (#361): project-resolved rows stay on the map when their cwd is hidden, so their
+ *  clusters must be expandable too. */
+export function expandableCwds(sessions: Session[], dropped: Set<string>): string[] {
+  return [
+    ...new Set(
+      sessions
+        .filter((s) => s.project.kind === "project" || !dropped.has(s.cwd))
+        .map((s) => s.cwd),
+    ),
+  ];
+}
+
 export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
   const expanded = opts.expanded ?? new Set<string>();
   const excluded = opts.excluded ?? new Set<string>();
   const names = opts.names ?? {};
+  // cwd visibility prefs apply to FOLDER-grouped sessions only (#361): a session
+  // resolved to a project entity stays on the map even when its launch folder is
+  // hidden / not allowlisted — mirroring the server's sidebar/facet rule.
   const visible = (opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)).filter(
-    (s) => !excluded.has(s.cwd),
+    (s) => s.project.kind === "project" || !excluded.has(s.cwd),
   );
 
-  const groups = new Map<string, { project: string; items: Session[]; maxMtime: number }>();
+  const groups = new Map<
+    string,
+    { project: string; kind: "project" | "folder"; items: Session[]; maxMtime: number }
+  >();
   for (const s of visible) {
-    const g = groups.get(s.cwd) ?? { project: s.project || s.cwd, items: [], maxMtime: 0 };
+    // #361: `s.project` is a structured ref now; a folder ref's name is the pre-#361
+    // `project_alias or cwd` string, so rendering is unchanged. Clustering stays keyed
+    // by cwd until the map becomes project-keyed in #361 Phase 4.
+    const g = groups.get(s.cwd) ?? {
+      project: s.project.name,
+      kind: s.project.kind,
+      items: [],
+      maxMtime: 0,
+    };
     g.items.push(s);
     g.maxMtime = Math.max(g.maxMtime, s.last_mtime || 0);
     groups.set(s.cwd, g);
@@ -172,6 +201,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
       position: pos.get(cwd)!,
       data: {
         project: g.project,
+        kind: g.kind,
         cwd,
         count: g.items.length,
         collapsed: !isExpanded,

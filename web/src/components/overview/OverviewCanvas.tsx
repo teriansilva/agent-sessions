@@ -14,6 +14,7 @@ import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { engineColor } from "../../lib/format";
 import {
   buildOverview,
+  expandableCwds,
   type ProjectGroupData,
   type SessionNodeData,
 } from "../../lib/overviewGraph";
@@ -92,7 +93,7 @@ export function OverviewCanvas({
   );
   // Cwds available to expand (still visible) — drives "Expand all".
   const allCwds = useMemo(
-    () => [...new Set(sessions.filter((s) => !dropped.has(s.cwd)).map((s) => s.cwd))],
+    () => expandableCwds(sessions, dropped),
     [sessions, dropped],
   );
 

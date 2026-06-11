@@ -9,7 +9,9 @@ export interface Session {
   uuid: string;
   short_uuid: string;
   cwd: string;
-  project: string;
+  /** Resolved project ref (#361): entity or implicit folder group. `cwd` stays the
+   *  launch location; with zero entities this is always `{kind:"folder", id: cwd}`. */
+  project: ProjectRef;
   last_mtime: number;
   /** Wall-clock of the last byte the agent emitted that we observed (#156). null when
    * the server hasn't seen output for this session in this process (no WS attached). */
@@ -58,10 +60,23 @@ export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
   total: number;
-  facets: { projects: string[]; engines: string[] };
+  facets: { projects: ProjectRef[]; engines: string[] };
 }
 
-export interface Project {
+/** What a session BELONGS to (#361): a project entity, or the implicit folder group
+ *  (pre-#361 behaviour — id is the cwd). Resolved server-side by the shared resolver. */
+export interface ProjectRef {
+  kind: "project" | "folder";
+  /** Entity id (`p-…`) or the cwd for a folder ref — also the `project` filter value. */
+  id: string;
+  name: string;
+  /** Entity color (#285 spends it); absent on folder refs. */
+  color?: string;
+}
+
+/** A launch-location folder from GET /api/folders — the pre-#361 "project" picker row.
+ *  Folders stay where sessions LAUNCH; project entities are what sessions BELONG to. */
+export interface Folder {
   cwd: string;
   label: string;
 }

@@ -2,7 +2,11 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { FiltersBar } from "./Filters";
 
-const facets = { projects: ["/home/m/claude", "/tmp/x"], engines: ["claude", "opencode"] };
+const folderRef = (cwd: string) => ({ kind: "folder" as const, id: cwd, name: cwd.split("/").pop() ?? cwd });
+const facets = {
+  projects: [folderRef("/home/m/claude"), folderRef("/tmp/x")],
+  engines: ["claude", "opencode"],
+};
 const base = { q: "", project: "", engine: "", archived: false };
 const noop = () => {};
 

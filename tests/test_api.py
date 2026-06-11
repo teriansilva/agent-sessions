@@ -123,7 +123,9 @@ def test_filter_by_project(auth_cfg, fake_jsonl):
     _login(c, auth_cfg)
     d = c.get(f"/api/sessions?project={_REPO_A}&limit=50").json()
     assert d["total"] == 2
-    assert all(s["project"] == _REPO_A for s in d["sessions"])
+    assert all(
+        s["project"] == {"kind": "folder", "id": _REPO_A, "name": _REPO_A} for s in d["sessions"]
+    )
 
 
 def test_filter_by_engine(auth_cfg, fake_jsonl):
@@ -153,7 +155,7 @@ def test_no_match_is_empty_but_facets_remain(auth_cfg, fake_jsonl):
     assert d["next_offset"] is None
     # facets are computed over the full archived-scoped set, so they survive a
     # zero-match filter (the dropdowns must still offer every project).
-    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _DEMOAPP}
+    assert {p["id"] for p in d["facets"]["projects"]} == {_REPO_A, _TMP_OTHER, _DEMOAPP}
 
 
 # ---- filtered pagination ------------------------------------------------------
@@ -184,7 +186,7 @@ def test_facets_cover_full_set_beyond_first_page(auth_cfg, fake_jsonl):
     # Only one row loaded, but every live project must still be an option.
     d = c.get("/api/sessions?limit=1&offset=0").json()
     assert len(d["sessions"]) == 1
-    assert set(d["facets"]["projects"]) == {_REPO_A, _TMP_OTHER, _DEMOAPP}
+    assert {p["id"] for p in d["facets"]["projects"]} == {_REPO_A, _TMP_OTHER, _DEMOAPP}
     assert d["facets"]["engines"] == ["claude"]
 
 
@@ -192,7 +194,7 @@ def test_facets_scoped_by_archived(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/sessions?archived=1&limit=50").json()
-    assert d["facets"]["projects"] == [_OLD]
+    assert [p["id"] for p in d["facets"]["projects"]] == [_OLD]
     assert d["facets"]["engines"] == ["claude"]
 
 
@@ -202,9 +204,9 @@ def test_facets_scoped_by_archived(auth_cfg, fake_jsonl):
 def test_projects_endpoint(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    r = c.get("/api/projects")
+    r = c.get("/api/folders")
     assert r.status_code == 200
-    cwds = {p["cwd"] for p in r.json()["projects"]}
+    cwds = {p["cwd"] for p in r.json()["folders"]}
     assert "/tmp/other" in cwds
 
 
@@ -229,10 +231,11 @@ def test_projects_endpoint_includes_all_engines(auth_cfg, fake_jsonl, tmp_home, 
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     # The opencode-only cwd appears in the filter facets …
-    facet_projects = set(c.get("/api/sessions?limit=100").json()["facets"]["projects"])
+    facets = c.get("/api/sessions?limit=100").json()["facets"]
+    facet_projects = {p["id"] for p in facets["projects"]}
     assert "/tmp/oc-only" in facet_projects
     # … and is therefore manageable via /api/projects (previously Claude-only → it drifted).
-    picker = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    picker = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     assert "/tmp/oc-only" in picker
 
 
@@ -250,14 +253,14 @@ def test_hidden_projects_filtered_from_sessions_and_facets(auth_cfg, fake_jsonl,
     # Sanity: before hiding, /tmp/other is present.
     before = c.get("/api/sessions?limit=100").json()
     assert "/tmp/other" in {row["cwd"] for row in before["sessions"]}
-    assert "/tmp/other" in {p for p in before["facets"]["projects"]} or before["facets"]["projects"]
+    assert "/tmp/other" in {p["id"] for p in before["facets"]["projects"]}
     pre_total = before["total"]
 
     # Hide it via the new key and confirm it's absent server-side.
     prefs.set_projects_hidden(["/tmp/other"])
     after = c.get("/api/sessions?limit=100").json()
     assert "/tmp/other" not in {row["cwd"] for row in after["sessions"]}
-    assert "/tmp/other" not in after["facets"]["projects"]
+    assert "/tmp/other" not in {p["id"] for p in after["facets"]["projects"]}
     assert after["total"] <= pre_total  # the hidden rows are gone from the total too
 
 
@@ -268,9 +271,9 @@ def test_hidden_projects_filtered_from_projects_endpoint(auth_cfg, fake_jsonl, t
 
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    assert "/tmp/other" in {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert "/tmp/other" in {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     prefs.set_projects_hidden(["/tmp/other"])
-    assert "/tmp/other" not in {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    assert "/tmp/other" not in {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
 
 
 def test_legacy_overview_excluded_post_is_retired_422(auth_cfg, fake_jsonl, tmp_home):
@@ -831,7 +834,7 @@ def test_included_mode_filters_sessions_to_allowlist(auth_cfg, fake_jsonl):
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
     assert len(projects) >= 2  # the fixture has several distinct project cwds
-    keep = projects[0]
+    keep = projects[0]["id"]
     r = c.post(
         "/api/prefs",
         json={"projects_mode": "included", "projects_included": [keep]},
@@ -840,8 +843,8 @@ def test_included_mode_filters_sessions_to_allowlist(auth_cfg, fake_jsonl):
     assert r.status_code == 200
     d = c.get("/api/sessions?limit=200").json()
     # only the allowlisted project survives — list + facets agree
-    assert d["facets"]["projects"] == [keep]
-    assert all(s["project"] == keep for s in d["sessions"])
+    assert [p["id"] for p in d["facets"]["projects"]] == [keep]
+    assert all(s["project"]["id"] == keep for s in d["sessions"])
 
 
 def test_all_mode_hide_still_excludes(auth_cfg, fake_jsonl):
@@ -850,17 +853,17 @@ def test_all_mode_hide_still_excludes(auth_cfg, fake_jsonl):
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
-    drop = projects[0]
+    drop = projects[0]["id"]
     c.post("/api/prefs", json={"projects_hidden": [drop]}, headers=hdr)
     after = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
-    assert drop not in after
+    assert drop not in {p["id"] for p in after}
 
 
 def test_projects_picker_unfiltered_in_included_mode(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    all_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    all_cwds = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     assert all_cwds
     keep = sorted(all_cwds)[0]
     c.post(
@@ -870,7 +873,7 @@ def test_projects_picker_unfiltered_in_included_mode(auth_cfg, fake_jsonl):
     )
     # the picker still offers EVERY discovered dir (start anywhere → auto-include), not just the
     # allowlist — otherwise the curated mode would lock you out of adding a new project.
-    incl_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    incl_cwds = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     assert incl_cwds == all_cwds
 
 
@@ -881,7 +884,7 @@ def test_projects_visible_param_applies_included_allowlist(auth_cfg, fake_jsonl)
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    all_cwds = {p["cwd"] for p in c.get("/api/projects").json()["projects"]}
+    all_cwds = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     assert len(all_cwds) >= 2
     keep = sorted(all_cwds)[0]
     c.post(
@@ -889,10 +892,10 @@ def test_projects_visible_param_applies_included_allowlist(auth_cfg, fake_jsonl)
         json={"projects_mode": "included", "projects_included": [keep]},
         headers=hdr,
     )
-    visible = {p["cwd"] for p in c.get("/api/projects?visible=1").json()["projects"]}
+    visible = {p["cwd"] for p in c.get("/api/folders?visible=1").json()["folders"]}
     assert visible == {keep}
     # default stays the full set for Settings
-    assert {p["cwd"] for p in c.get("/api/projects").json()["projects"]} == all_cwds
+    assert {p["cwd"] for p in c.get("/api/folders").json()["folders"]} == all_cwds
 
 
 def test_projects_visible_param_drops_hidden_in_all_mode(auth_cfg, fake_jsonl):
@@ -901,11 +904,11 @@ def test_projects_visible_param_drops_hidden_in_all_mode(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    all_cwds = sorted(p["cwd"] for p in c.get("/api/projects").json()["projects"])
+    all_cwds = sorted(p["cwd"] for p in c.get("/api/folders").json()["folders"])
     assert len(all_cwds) >= 2
     drop = all_cwds[0]
     c.post("/api/prefs", json={"projects_hidden": [drop]}, headers=hdr)
-    visible = {p["cwd"] for p in c.get("/api/projects?visible=1").json()["projects"]}
+    visible = {p["cwd"] for p in c.get("/api/folders?visible=1").json()["folders"]}
     assert drop not in visible
     assert set(all_cwds) - {drop} <= visible
 
@@ -969,7 +972,7 @@ def test_mkdir_creates_under_configured_root(auth_cfg, fake_jsonl, tmp_path, mon
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    r = c.post("/api/projects/mkdir", json={"root": str(root), "name": "newproj"}, headers=hdr)
+    r = c.post("/api/folders/mkdir", json={"root": str(root), "name": "newproj"}, headers=hdr)
     assert r.status_code == 200
     assert r.json()["cwd"] == os.path.realpath(root / "newproj")
     assert (root / "newproj").is_dir()
@@ -982,7 +985,7 @@ def test_mkdir_disabled_when_no_roots_404(auth_cfg, fake_jsonl, monkeypatch):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = c.post(
-        "/api/projects/mkdir",
+        "/api/folders/mkdir",
         json={"root": "/x", "name": "y"},
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
@@ -997,7 +1000,7 @@ def test_mkdir_bad_name_422(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = c.post(
-        "/api/projects/mkdir",
+        "/api/folders/mkdir",
         json={"root": str(root), "name": "../escape"},
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
@@ -1013,7 +1016,7 @@ def test_mkdir_root_not_allowed_403(auth_cfg, fake_jsonl, tmp_path, monkeypatch)
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = c.post(
-        "/api/projects/mkdir",
+        "/api/folders/mkdir",
         json={"root": str(other), "name": "x"},
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
@@ -1027,7 +1030,7 @@ def test_mkdir_requires_csrf(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     r = c.post(
-        "/api/projects/mkdir",
+        "/api/folders/mkdir",
         json={"root": str(root), "name": "x"},
         headers={"Origin": auth_cfg.origin},
     )

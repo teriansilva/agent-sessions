@@ -32,7 +32,7 @@ vi.mock("../lib/api", async () => {
       logout: vi.fn(),
       archiveOlder: vi.fn(),
       setPrefs: vi.fn(),
-      projects: vi.fn(),
+      folders: vi.fn(),
       scrollbackInfo: vi.fn(),
       clearScrollback: vi.fn(),
       sessions: vi.fn(),
@@ -113,7 +113,7 @@ beforeEach(() => {
   vi.mocked(api.logout).mockResolvedValue(undefined);
   vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 0, skipped: 0 });
   vi.mocked(api.setPrefs).mockResolvedValue({});
-  vi.mocked(api.projects).mockResolvedValue({ projects: [] });
+  vi.mocked(api.folders).mockResolvedValue({ folders: [] });
   vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 0, files: 0 });
   vi.mocked(api.clearScrollback).mockResolvedValue({ scope: "all", removed: 0, bytes_freed: 0 });
   // AI Review tab (#356): no sessions excluded, model listing unsupported by default.
@@ -437,8 +437,8 @@ test("Account: Sign out hidden when auth_mode is none (#141)", async () => {
 // ---- Projects tab ----
 
 test("Session overview: unticking a project hides it + persists via projects_hidden (#174)", async () => {
-  vi.mocked(api.projects).mockResolvedValue({
-    projects: [
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
       { cwd: "/home/u/alpha", label: "Alpha" },
       { cwd: "/home/u/beta", label: "Beta" },
     ],
@@ -454,8 +454,8 @@ test("Session overview: unticking a project hides it + persists via projects_hid
 });
 
 test("Session overview: renaming via the modal persists via setProjectName (#174)", async () => {
-  vi.mocked(api.projects).mockResolvedValue({
-    projects: [{ cwd: "/home/u/alpha", label: "Alpha" }],
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
   });
   renderSettings("dark", "#ffb000", "/settings/projects");
   // Click the project NAME (a button now, not an inline input) → opens the rename modal.
@@ -470,7 +470,7 @@ test("Session overview: renaming via the modal persists via setProjectName (#174
 });
 
 test("Session overview: a name seeded after /api/config resolves is shown on the row (#161/#174)", async () => {
-  vi.mocked(api.projects).mockResolvedValue({ projects: [{ cwd: "/home/u/alpha", label: "Alpha" }] });
+  vi.mocked(api.folders).mockResolvedValue({ folders: [{ cwd: "/home/u/alpha", label: "Alpha" }] });
   // OverviewPrefs seeds projectNames from ConfigCtx, which is null until /api/config resolves —
   // and the row can mount first. Start with null config, then deliver it with a saved name and
   // assert the row's clickable name reflects it (post-#174 the name lives on the button label,
@@ -539,8 +539,8 @@ function renderProjectsTab(config: Partial<AppConfig> = {}) {
 }
 
 test("Default project: lists the pickable (visible) projects and persists a choice", async () => {
-  vi.mocked(api.projects).mockResolvedValue({
-    projects: [
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
       { cwd: "/home/u/alpha", label: "Alpha" },
       { cwd: "/home/u/beta", label: "Beta" },
     ],
@@ -549,7 +549,7 @@ test("Default project: lists the pickable (visible) projects and persists a choi
   const select = await screen.findByRole("combobox", { name: "Default project" });
   await waitFor(() => expect(select).toBeEnabled());
   // The picker mirrors the new-session picker's pickable set (#335): visible projects only.
-  expect(api.projects).toHaveBeenCalledWith({ visible: true });
+  expect(api.folders).toHaveBeenCalledWith({ visible: true });
   expect(select).toHaveValue(""); // no default stored → the "no default" option
   await userEvent.selectOptions(select, "/home/u/beta");
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "/home/u/beta" });
@@ -557,8 +557,8 @@ test("Default project: lists the pickable (visible) projects and persists a choi
 });
 
 test("Default project: seeds from config.default_project and '' clears it", async () => {
-  vi.mocked(api.projects).mockResolvedValue({
-    projects: [{ cwd: "/home/u/alpha", label: "Alpha" }],
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
   });
   renderProjectsTab({ default_project: "/home/u/alpha" });
   const select = await screen.findByRole("combobox", { name: "Default project" });
@@ -571,7 +571,7 @@ test("Default project: seeds from config.default_project and '' clears it", asyn
 test("Default project: a stale stored default stays visible (and clearable), never hidden", async () => {
   // The new-session picker silently falls back for a gone dir; the Settings control instead
   // SHOWS the stored value so the user can see + clear it.
-  vi.mocked(api.projects).mockResolvedValue({ projects: [] });
+  vi.mocked(api.folders).mockResolvedValue({ folders: [] });
   renderProjectsTab({ default_project: "/home/u/gone" });
   const select = await screen.findByRole("combobox", { name: "Default project" });
   await waitFor(() => expect(select).toHaveValue("/home/u/gone"));

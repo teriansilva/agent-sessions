@@ -204,7 +204,12 @@ function Row({
           <div className={styles.meta}>
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
             <span className={styles.metaText}>
-              {displayProjectName(s.cwd, projectNames)} · {relTime(s.last_mtime)}
+              {/* #361: an assigned/adopted project shows its entity name; unassigned
+                  rows keep the per-cwd custom-name (#148) / shortened-path display. */}
+              {s.project.kind === "project"
+                ? s.project.name
+                : displayProjectName(s.cwd, projectNames)}{" "}
+              · {relTime(s.last_mtime)}
             </span>
           </div>
         </div>
