@@ -123,6 +123,11 @@ test("scroll to top → loading pill → older page above with anchor held → s
   await scrollUpUntil(page, mobile, async () =>
     (await rowsText(page)).includes("OLDEST-PAGE-BEGIN"),
   );
+  // The INLINE start-of-history rule sits in the buffer above the oldest content —
+  // visible while scrolling past the boundary, not only as the at-top overlay pill.
+  await scrollUpUntil(page, mobile, async () =>
+    (await rowsText(page)).includes("start of history"),
+  );
 
   // 5. Scroll-to-bottom behaviour unchanged: the live tail is still reachable below.
   if (!mobile) {

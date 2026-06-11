@@ -314,6 +314,25 @@ export function Terminal({
       // to a page of turns can legitimately appear on both sides when the attach was
       // served from the VT mirror/ring. Mark the boundary instead of pretending the
       // buffer is one continuous stream.
+      // Inline start-of-history rule (operator report): the overlay pill only shows
+      // at the absolute viewport top, but the point where history BEGINS should be
+      // visible in the buffer itself while scrolling past it — same idiom as the
+      // transcript seam below. Included once the loader has latched "end" (the page
+      // that exhausted history is part of THIS rewrite, so the rule lands with it).
+      const startRule =
+        loader.state === "end"
+          ? (() => {
+              const lbl = " start of history ";
+              const f = Math.max(4, term.cols - lbl.length);
+              return (
+                "\x1b[38;5;240m" +
+                "─".repeat(Math.floor(f / 2)) +
+                lbl +
+                "─".repeat(Math.ceil(f / 2)) +
+                "\x1b[0m\r\n"
+              );
+            })()
+          : "";
       const seamLabel = " older history ↑ (transcript) ";
       const fill = Math.max(4, term.cols - seamLabel.length);
       const seam =
@@ -323,6 +342,7 @@ export function Terminal({
         "─".repeat(Math.ceil(fill / 2)) +
         "\x1b[0m";
       const content =
+        startRule +
         pagesBuf.text() +
         "\r\n" +
         seam +
