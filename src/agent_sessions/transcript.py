@@ -107,6 +107,9 @@ _SGR_BOLD_OFF = "\x1b[22m"
 _SGR_ITALIC = "\x1b[3m"
 _SGR_ITALIC_OFF = "\x1b[23m"
 _SGR_CODE = "\x1b[36m"
+# Bold amber (256-color 214 ≈ the app's #ffb000 accent) for the user-turn gutter marker.
+_SGR_USER_MARK = "\x1b[1;38;5;214m"
+_SGR_MARK_OFF = "\x1b[22;39m"
 _SGR_CODE_OFF = "\x1b[39m"
 
 
@@ -133,11 +136,18 @@ _BG_OFF = "\x1b[49m"
 
 
 def _bg_block(lines: list[str], width: int) -> list[str]:
-    """Wrap each line in the user-message grey background, padded to ``width`` so the band fills."""
+    """User turn: grey background band with a bold amber ``❯`` gutter on the first line.
+
+    The band alone read ambiguously in long sessions ("not clear what I wrote and what
+    the agent wrote") — the marker mirrors the assistant's green ● so the two voices are
+    distinguishable at a glance even when a band spans many wrapped lines. Continuations
+    indent 2 under the marker; every line keeps the full-width band."""
     out: list[str] = []
-    for ln in lines:
-        pad = " " * max(0, width - _vis_len(ln))
-        out.append(_SGR_USER_BG + ln + pad + _BG_OFF)
+    for i, ln in enumerate(lines):
+        gutter = (_SGR_USER_MARK + "❯" + _SGR_MARK_OFF + " ") if i == 0 else "  "
+        body = gutter + ln
+        pad = " " * max(0, width - _vis_len(body))
+        out.append(_SGR_USER_BG + body + pad + _BG_OFF)
     return out
 
 
@@ -285,7 +295,7 @@ def render_with_boundary(
         elif t.role == "user":
             # User turn: a grey-background block (like the real console), no "You" label (#301).
             lines.append("")
-            lines.extend(_bg_block(_wrap(_render_md(text), cols), cols))
+            lines.extend(_bg_block(_wrap(_render_md(text), max(10, cols - 2)), cols))
         else:  # assistant / system
             # Assistant turn: a green ● dot + rendered markdown, no "Claude" label (#301).
             lines.append("")

@@ -453,3 +453,18 @@ def test_render_boundary_steps_past_a_turn_cut_mid_render():
 def test_render_boundary_empty_render_is_zero():
     assert T.render_with_boundary([], 80) == (b"", 0)
     assert T.render_with_boundary([T.Turn("user", "   ")], 80) == (b"", 0)
+
+
+def test_user_turn_carries_amber_gutter_marker():
+    # Operator report (2026-06-11): user vs agent turns were not distinguishable in long
+    # transcripts. First user line carries the bold-amber ❯ on the grey band; assistant
+    # turns keep the green ● — two distinct voices at a glance.
+    from agent_sessions import transcript
+
+    out = transcript.render(
+        [transcript.Turn("user", "hello there"), transcript.Turn("assistant", "hi")], cols=40
+    ).decode()
+    assert "\x1b[1;38;5;214m❯" in out  # amber marker on the user band
+    user_line = next(ln for ln in out.split("\r\n") if "hello there" in ln)
+    assert transcript._SGR_USER_BG in user_line  # band kept
+    assert "●" in out  # assistant dot unchanged
