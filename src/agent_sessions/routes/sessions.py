@@ -254,8 +254,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         # Rename / recolor / adopt-release folders (#361). The archived flag is NOT
-        # settable here — archiving has member-session semantics and lands as the
-        # dedicated /archive + /unarchive endpoints in Phase 2.
+        # settable here — archiving has member-session semantics; use the dedicated
+        # /archive + /unarchive endpoints below.
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
@@ -275,6 +275,74 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse(p.as_dict())
+
+    def _bulk_project_archive(pid: str, *, archive_members: bool) -> JSONResponse:
+        # Project archive/unarchive (#361 Phase 2). Membership = THE resolver's view at
+        # call time: sessions explicitly assigned (`project_id == pid`) PLUS sessions
+        # folder-resolved into the project; a dangling `project_id` (deleted project)
+        # is never swept in (the resolver drops it before it can match).
+        #
+        # Idempotent + blindly retryable: the ENTITY flag is set first, then each
+        # member is reported as archived/unarchived, already_*, or failed(+reason) —
+        # so after a partial failure the UI re-calls the same endpoint and only the
+        # failed set is retried (the rest report already_*). Engine-aware via the
+        # provider archive path: Claude moves its JSONL (+ sidecar flag, #194);
+        # opencode/codex/gemini write the sidecar tri-state override only.
+        index = projects.load()
+        if pid not in index:
+            raise HTTPException(status_code=404, detail="unknown project")
+        try:
+            projects.update(pid, archived=archive_members)
+        except projects.ProjectError as e:  # store vanished between load and write
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+
+        meta_index = metadata.load()
+        aliases = metadata.load_aliases()
+        done, already, failed = (
+            ("archived", "already_archived", "failed")
+            if archive_members
+            else ("unarchived", "already_unarchived", "failed")
+        )
+        results: list[dict] = []
+        for s in engines.scan_all():
+            key = engines.session_key(s)
+            phys = engines.physical_key(key, aliases)
+            m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+            ref = projects.resolve(s.cwd, m.project_id, index, alias=m.project_alias)
+            if ref.kind != "project" or ref.id != pid:
+                continue
+            effective = m.archived if m.archived is not None else s.archived
+            if effective == archive_members:
+                results.append({"id": key, "result": already})
+                continue
+            try:
+                prov, native = engines.parse_key(key)
+                prov.archive(native) if archive_members else prov.unarchive(native)
+                results.append({"id": key, "result": done})
+            except (archive.ArchiveError, engines.EngineError, NotImplementedError) as e:
+                results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
+        return JSONResponse(
+            {
+                "id": pid,
+                "archived": archive_members,
+                "sessions": results,
+                "counts": {
+                    r: sum(1 for x in results if x["result"] == r) for r in (done, already, failed)
+                },
+            }
+        )
+
+    @app.post("/api/projects/{pid}/archive")
+    async def archive_project(
+        pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return _bulk_project_archive(pid, archive_members=True)
+
+    @app.post("/api/projects/{pid}/unarchive")
+    async def unarchive_project(
+        pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return _bulk_project_archive(pid, archive_members=False)
 
     @app.delete("/api/projects/{pid}")
     async def delete_project(
