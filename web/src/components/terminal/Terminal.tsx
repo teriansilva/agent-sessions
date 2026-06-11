@@ -234,6 +234,41 @@ export function Terminal({
     const streamDecoder = new TextDecoder();
     let streamBuf = ""; // everything the socket delivered, decoded — the rewrite source
     const rewriteQueue: Uint8Array[] = []; // live chunks held back while a rewrite is in flight
+    // Blank-attach repaint backstop (#349 follow-up, operator report): some idle
+    // sessions paint fragments or nothing on selection — the server-side nudge can be
+    // coalesced/missed, and only a REAL geometry change reliably makes winch-repaint
+    // agents redraw. When an attach delivers (almost) no bytes, the CLIENT jiggles
+    // rows−1 → rows. Rows-only on purpose: a width change would reset the scrollback
+    // ring / dirty the VT mirror. The client owns the resize channel, so nothing can
+    // interleave inside its pair (unlike the server nudge racing the connect resize),
+    // and the spacing exceeds the agents' resize debounce → two distinct repaints.
+    let attachBytes = 0;
+    let jiggleTimers: ReturnType<typeof setTimeout>[] = [];
+    const clearJiggle = () => {
+      for (const t of jiggleTimers) clearTimeout(t);
+      jiggleTimers = [];
+    };
+    const armRepaintBackstop = () => {
+      attachBytes = 0;
+      clearJiggle();
+      jiggleTimers.push(
+        setTimeout(() => {
+          if (sock !== sockRef.current) return;
+          // "Blank" means essentially nothing: the broken case is fragments (a status
+          // line, a stray word) — well under half a KB. Anything beyond that is real
+          // content a jiggle would pointlessly flicker (and, in the bench, wipe).
+          if (attachBytes >= 512) return;
+          if (term.rows <= 4) return;
+          sock.send({ t: "r", cols: term.cols, rows: term.rows - 1 });
+          jiggleTimers.push(
+            setTimeout(() => {
+              if (sock !== sockRef.current) return;
+              sock.send({ t: "r", cols: term.cols, rows: term.rows });
+            }, 320),
+          );
+        }, 800),
+      );
+    };
     const pagesBuf = new PagesBuffer(PAGES_BUF_CAP); // fetched older pages, oldest-first
     let rewriting = false;
     const loader = new HistoryLoader(
@@ -396,6 +431,7 @@ export function Terminal({
       },
       {
         onOutput: (b) => {
+          attachBytes += b.byteLength; // repaint-backstop signal: did this attach paint anything?
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
           else term.write(b);
@@ -409,6 +445,10 @@ export function Terminal({
             // not-yet-existent session. (opencode `new-` placeholders keep new=1 until converged.)
             freshConsumed = true;
             onConnected();
+            // Backstop only a TRUE fresh attach (consumed offset 0). A caught-up
+            // reconnect (have == total) correctly receives no delta while the screen
+            // is already painted — jiggling it would wipe a good frame (Hermes #374).
+            if (sock.consumed === 0) armRepaintBackstop();
           }
         },
         onId: (sid) => onReconcileIdRef.current?.(sid),
@@ -581,6 +621,7 @@ export function Terminal({
       if (resizeTimer != null) clearTimeout(resizeTimer);
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
+      clearJiggle();
       document.removeEventListener("wheel", armOnUserScroll, true);
       document.removeEventListener("touchmove", armOnUserScroll, true);
       document.removeEventListener("keydown", armOnUserScroll, true);

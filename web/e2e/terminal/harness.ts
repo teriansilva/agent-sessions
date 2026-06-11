@@ -98,6 +98,7 @@ function fakeWsScript() {
   const enc = new TextEncoder();
   window.WebSocket = class {
     constructor(url) {
+      window.__BENCH_LAST_WS__ = this; // test hook: drop the live socket to force a reconnect
       this.url = url; this.readyState = 0; this.binaryType = "blob";
       this.onopen = null; this.onmessage = null; this.onclose = null; this.onerror = null;
       const u = new URL(url, location.href);
