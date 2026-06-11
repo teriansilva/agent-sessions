@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Session } from "../types/api";
-import { ACTIVE_WINDOW_S, buildOverview, expandableCwds } from "./overviewGraph";
+import { ACTIVE_WINDOW_S, buildOverview, expandableKeys } from "./overviewGraph";
 
 const NOW = 1_700_000_000;
 
@@ -218,9 +218,10 @@ test("cwd visibility prefs never drop project-resolved sessions (#361)", () => {
     nowS: NOW,
     excluded: new Set(["/p/hidden"]),
   });
-  const group = nodes.find((n) => n.id === "group:/p/hidden");
+  const group = nodes.find((n) => n.id === "group:project:p-1");
   // the folder-grouped session is dropped by the pref; the project member survives
   expect(group?.data).toMatchObject({ project: "Side", kind: "project", count: 1 });
+  expect(nodes.some((n) => n.id === "group:/p/hidden")).toBe(false);
 });
 
 test("Expand all covers project-resolved clusters whose cwd is hidden (#361)", () => {
@@ -230,7 +231,100 @@ test("Expand all covers project-resolved clusters whose cwd is hidden (#361)", (
     project: { kind: "project" as const, id: "p-1", name: "Side" },
   });
   const plain = s({ id: "claude:f", cwd: "/p/dropped" });
-  expect(expandableCwds([inProject, plain], new Set(["/p/hidden", "/p/dropped"]))).toEqual([
-    "/p/hidden",
+  expect(expandableKeys([inProject, plain], new Set(["/p/hidden", "/p/dropped"]))).toEqual([
+    "project:p-1",
   ]);
+});
+
+// ---- entity clustering (#361 Phase 4) -----------------------------------------
+
+const ref = (over: Partial<Session["project"]> = {}): Session["project"] => ({
+  kind: "project" as const,
+  id: "p-1",
+  name: "Side",
+  ...over,
+});
+
+test("an entity spanning two cwds yields ONE merged group, keyed project:<id>", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/app", project: ref() }),
+    s({ id: "claude:b", cwd: "/p/lib", project: ref() }),
+    s({ id: "claude:c", cwd: "/p/lib", project: ref() }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  const groups = nodes.filter((n) => n.type === "projectGroup");
+  expect(groups).toHaveLength(1);
+  expect(groups[0].id).toBe("group:project:p-1");
+  expect(groups[0].data).toMatchObject({
+    project: "Side",
+    kind: "project",
+    groupKey: "project:p-1",
+    count: 3,
+    cwdCount: 2,
+    cwd: "/p/app", // representative: first sorted member cwd
+  });
+});
+
+test("a folderless explicit assignment lands in its entity group (#361)", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/adopted", project: ref() }),
+    // explicit per-session assignment from an unrelated cwd → same cluster
+    s({ id: "claude:x", cwd: "/elsewhere/scratch", project: ref() }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  const groups = nodes.filter((n) => n.type === "projectGroup");
+  expect(groups).toHaveLength(1);
+  expect(groups[0].data).toMatchObject({ groupKey: "project:p-1", count: 2, cwdCount: 2 });
+  expect(nodes.some((n) => n.id === "group:/elsewhere/scratch")).toBe(false);
+});
+
+test("folder fallback grouping/ids are unchanged next to entity groups", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
+    s({ id: "claude:b", cwd: "/p/two", project: ref() }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  expect(nodes.find((n) => n.id === "group:/p/one")?.data).toMatchObject({
+    kind: "folder",
+    groupKey: "/p/one",
+    cwd: "/p/one",
+    cwdCount: 1,
+  });
+  expect(nodes.some((n) => n.id === "group:project:p-1")).toBe(true);
+});
+
+test("nesting edges link FOLDER groups only — entity groups are roots (#361 Phase 4)", () => {
+  const input = [
+    s({ id: "claude:r", cwd: "/a", project: { kind: "folder" as const, id: "/a", name: "a" } }),
+    s({ id: "claude:c", cwd: "/a/b", project: { kind: "folder" as const, id: "/a/b", name: "b" } }),
+    // an entity member nested under /a must NOT get a hierarchy edge
+    s({ id: "claude:p", cwd: "/a/proj", project: ref() }),
+  ];
+  const { nodes, edges } = buildOverview(input, { nowS: NOW });
+  expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["group:/a->group:/a/b"]);
+  // the entity group sits in the root row, alongside /a
+  const y = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.position.y]),
+  );
+  expect(y["group:project:p-1"]).toBe(y["group:/a"]);
+});
+
+test("entity clusters expand by their project:<id> toggle key", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/app", project: ref() }),
+    s({ id: "claude:b", cwd: "/p/lib", project: ref() }),
+  ];
+  const collapsed = buildOverview(input, { nowS: NOW, expanded: new Set(["/p/app"]) });
+  expect(collapsed.nodes.filter((n) => n.type === "session")).toHaveLength(0); // cwd key ≠ toggle key
+  const open = buildOverview(input, { nowS: NOW, expanded: new Set(["project:p-1"]) });
+  expect(open.nodes.filter((n) => n.type === "session").map((n) => n.parentId)).toEqual([
+    "group:project:p-1",
+    "group:project:p-1",
+  ]);
+});
+
+test("entity color passes through to the group node data", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/app", project: ref({ color: "#5fd7ff" }) })];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ color: "#5fd7ff" });
 });

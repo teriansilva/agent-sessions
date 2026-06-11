@@ -12,6 +12,12 @@ export function shortCwd(cwd: string): string {
   return cwd.replace(/^\/home\/[^/]+\//, "~/");
 }
 
+/** Last path segment — the default entity name when promoting a folder cluster to a
+ *  project (#361 Phase 4). Falls back to the input for degenerate paths ("/", ""). */
+export function pathBase(cwd: string): string {
+  return cwd.replace(/\/+$/, "").split("/").pop() || cwd;
+}
+
 /** A project's display label: the user's custom name for this cwd (#148) if set, else the
  *  shortened path. Display-only — filtering/identity stays keyed by the raw cwd. */
 export function displayProjectName(cwd: string, names?: Record<string, string>): string {

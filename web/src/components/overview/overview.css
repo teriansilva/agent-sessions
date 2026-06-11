@@ -121,6 +121,46 @@
   color: var(--text-3, var(--text-muted));
   flex: none;
 }
+/* Entity color marker (#361 Phase 4) — pairs with the tinted top border on .tr-ov-group. */
+.tr-ov-proj-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+/* Inline create-project failure (409 detail) in the header's subtitle slot (#361 Phase 4). */
+.tr-ov-err {
+  font-size: 10px;
+  color: var(--status-down);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* "Make this a project" on a folder-fallback cluster (#361 Phase 4). Owns its click
+ * (stopPropagation) so it never doubles as the header's collapse toggle. */
+.tr-ov-mkproj {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3, var(--text-muted));
+  cursor: pointer;
+}
+.tr-ov-mkproj:hover {
+  color: var(--accent);
+  border-color: var(--border);
+  background: var(--row-hover);
+}
+.tr-ov-mkproj:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 /* Folder-hierarchy edges + their (hidden, non-interactive) handles (#148). */
 .tr-overview .react-flow__edge-path {
   stroke: var(--border);
@@ -272,6 +312,36 @@
   color: var(--text);
   background: var(--row-hover);
   border-color: var(--accent);
+}
+/* Inline "+ New project" name input (#361 Phase 4) — same chrome as the toolbar buttons. */
+.tr-ov-newproj {
+  display: inline-flex;
+  gap: 6px;
+}
+.tr-ov-newproj input {
+  width: 140px;
+  font-size: 11px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 8px;
+}
+.tr-ov-newproj input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.tr-ov-toolbar-err {
+  position: absolute;
+  top: 42px;
+  right: 10px;
+  z-index: 6;
+  max-width: 320px;
+  font-size: 11px;
+  color: var(--status-down);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  padding: 4px 9px;
 }
 .tr-ov-partial {
   position: absolute;

@@ -1,8 +1,9 @@
 // Pure transform: a flat session list → React Flow nodes/edges for the Session Overview.
 // Kept independent of @xyflow/react at runtime (type-only import) so the grouping, hierarchy,
 // and layout are unit-testable without mounting the canvas. Node styling lives in the node
-// components; here we group by cwd, derive the folder hierarchy (#148), place a layered tree,
-// and classify chips.
+// components; here we group by resolved project ref (#361 Phase 4: entity groups merge their
+// member cwds; folder fallbacks stay keyed by cwd), derive the folder hierarchy (#148), place
+// a layered tree, and classify chips.
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
@@ -27,11 +28,21 @@ export interface ProjectGroupData extends Record<string, unknown> {
   project: string;
   /** Resolved ref kind (#361): "project" groups label by entity name, never the path. */
   kind: "project" | "folder";
+  /** Expand/collapse toggle key (#361 Phase 4): the cwd for folder groups (so pre-Phase-4
+   *  prefs survive) or `project:<id>` for entity groups. The node id is `group:<groupKey>`. */
+  groupKey: string;
+  /** Representative cwd: the only one for a folder group; the lexicographically first member
+   *  cwd for an entity group (display falls back to a folder count when cwdCount > 1). */
   cwd: string;
+  /** Distinct member cwds — entity groups merge sessions across all their folders (#361). */
+  cwdCount: number;
   count: number;
   collapsed: boolean;
-  /** Custom per-cwd display name (#148); falls back to the path when unset. */
+  /** Custom per-cwd display name (#148); falls back to the path when unset. Folder groups
+   *  only — an entity group is always labelled by its entity name. */
   name?: string;
+  /** Entity color (#361) — rendered as a tinted top border + dot on the group node. */
+  color?: string;
 }
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
@@ -73,7 +84,8 @@ export interface BuildOptions {
   nowS?: number;
   /** Include archived sessions (default: hidden). */
   includeArchived?: boolean;
-  /** Cwds whose cluster is expanded. Anything not here is collapsed (header only) — the
+  /** Toggle keys (`groupKey`) of expanded clusters: cwds for folder groups, `project:<id>`
+   *  for entity groups (#361 Phase 4). Anything not here is collapsed (header only) — the
    *  overview defaults to collapsed (#144). */
   expanded?: Set<string>;
   /** Cwds hidden from the map entirely (#144). */
@@ -84,23 +96,30 @@ export interface BuildOptions {
   names?: Record<string, string>;
 }
 
-/** Build the project hierarchy graph. Clusters (one per cwd) are linked parent→child by
- *  folder nesting (nearest present ancestor only) and laid out as a layered tidy tree: depth
- *  = nesting level → row; siblings spread left→right with parents centered over their
- *  children. Group nodes precede their session-chip children (React Flow requirement). */
-/** Cwds offered to "Expand all" — the same visibility predicate as `buildOverview`
+/** A session's cluster key (#361 Phase 4): the entity ref for project members (merging their
+ *  sessions across cwds), the launch cwd for the folder fallback. */
+const groupKeyOf = (s: Session): string =>
+  s.project.kind === "project" ? `project:${s.project.id}` : s.cwd;
+
+/** Toggle keys offered to "Expand all" — the same visibility predicate as `buildOverview`
  *  (#361): project-resolved rows stay on the map when their cwd is hidden, so their
  *  clusters must be expandable too. */
-export function expandableCwds(sessions: Session[], dropped: Set<string>): string[] {
+export function expandableKeys(sessions: Session[], dropped: Set<string>): string[] {
   return [
     ...new Set(
       sessions
         .filter((s) => s.project.kind === "project" || !dropped.has(s.cwd))
-        .map((s) => s.cwd),
+        .map(groupKeyOf),
     ),
   ];
 }
 
+/** Build the project hierarchy graph. Clusters (one per resolved ref: per entity for
+ *  project members, per cwd for the folder fallback) are linked parent→child by folder
+ *  nesting (#148, folder groups only — entity groups are always roots) and laid out as a
+ *  layered tidy tree: depth = nesting level → row; siblings spread left→right with parents
+ *  centered over their children. Group nodes precede their session-chip children (React
+ *  Flow requirement). */
 export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
   const expanded = opts.expanded ?? new Set<string>();
@@ -115,44 +134,57 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
 
   const groups = new Map<
     string,
-    { project: string; kind: "project" | "folder"; items: Session[]; maxMtime: number }
+    {
+      project: string;
+      kind: "project" | "folder";
+      items: Session[];
+      maxMtime: number;
+      cwds: Set<string>;
+      color?: string;
+    }
   >();
   for (const s of visible) {
-    // #361: `s.project` is a structured ref now; a folder ref's name is the pre-#361
-    // `project_alias or cwd` string, so rendering is unchanged. Clustering stays keyed
-    // by cwd until the map becomes project-keyed in #361 Phase 4.
-    const g = groups.get(s.cwd) ?? {
+    // #361 Phase 4: cluster by the resolved ref — an entity group merges its sessions
+    // across every member cwd (adopted folders AND folderless explicit assignments);
+    // the folder fallback stays keyed by cwd, byte-compatible with pre-Phase-4 ids.
+    const key = groupKeyOf(s);
+    const g = groups.get(key) ?? {
       project: s.project.name,
       kind: s.project.kind,
       items: [],
       maxMtime: 0,
+      cwds: new Set<string>(),
+      color: undefined,
     };
     g.items.push(s);
+    g.cwds.add(s.cwd);
     g.maxMtime = Math.max(g.maxMtime, s.last_mtime || 0);
-    groups.set(s.cwd, g);
+    if (s.project.color) g.color = s.project.color;
+    groups.set(key, g);
   }
 
   // Hierarchy (parent/children/depth) — extracted to `./projectTree` so the Settings card
-  // can render the same tree (#174). The shapes the rest of the function consumes are
-  // unchanged.
+  // can render the same tree (#174). Folder-nesting edges apply among FOLDER groups only
+  // (their keys are cwds); entity groups are roots laid out alongside (#361 Phase 4).
   const present = new Set(groups.keys());
-  const tree = buildProjectTree(present);
+  const folderKeys = [...present].filter((k) => groups.get(k)!.kind === "folder");
+  const tree = buildProjectTree(folderKeys);
   const parent = new Map<string, string | undefined>(
     [...tree.values()].map((n) => [n.cwd, n.parent]),
   );
   const children = new Map<string, string[]>(
     [...tree.values()].map((n) => [n.cwd, n.children]),
   );
-  const depthOf = (cwd: string): number => tree.get(cwd)?.depth ?? 0;
-  const sizeOf = (cwd: string) =>
-    expanded.has(cwd) ? groupSize(groups.get(cwd)!.items.length) : { w: COLLAPSED_W, h: HEADER_H };
+  const depthOf = (key: string): number => tree.get(key)?.depth ?? 0;
+  const sizeOf = (key: string) =>
+    expanded.has(key) ? groupSize(groups.get(key)!.items.length) : { w: COLLAPSED_W, h: HEADER_H };
 
   // Row Y by depth (each row as tall as its tallest cluster).
   const maxDepth = present.size ? Math.max(...[...present].map(depthOf)) : 0;
   const rowH: number[] = [];
-  for (const cwd of present) {
-    const d = depthOf(cwd);
-    rowH[d] = Math.max(rowH[d] ?? 0, sizeOf(cwd).h);
+  for (const key of present) {
+    const d = depthOf(key);
+    rowH[d] = Math.max(rowH[d] ?? 0, sizeOf(key).h);
   }
   const rowY: number[] = [];
   let acc = 0;
@@ -161,18 +193,18 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     acc += (rowH[d] ?? HEADER_H) + ROW_GAP;
   }
 
-  // Deterministic ordering: most-recent first, then cwd. Roots + each child list.
+  // Deterministic ordering: most-recent first, then key. Roots + each child list.
   const byRecent = (a: string, b: string) =>
     groups.get(b)!.maxMtime - groups.get(a)!.maxMtime || a.localeCompare(b);
-  const roots = [...present].filter((c) => !parent.get(c)).sort(byRecent);
+  const roots = [...present].filter((k) => !parent.get(k)).sort(byRecent);
   for (const ks of children.values()) ks.sort(byRecent);
 
   // Tidy-tree layout: leaves consume the x-cursor; a parent centers over its children.
   const pos = new Map<string, { x: number; y: number }>();
   let cursor = 0;
-  const place = (cwd: string): number => {
-    const { w } = sizeOf(cwd);
-    const kids = children.get(cwd) ?? [];
+  const place = (key: string): number => {
+    const { w } = sizeOf(key);
+    const kids = children.get(key) ?? [];
     let cx: number;
     if (kids.length === 0) {
       cx = cursor + w / 2;
@@ -181,7 +213,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
       const cs = kids.map(place);
       cx = (cs[0] + cs[cs.length - 1]) / 2;
     }
-    pos.set(cwd, { x: cx - w / 2, y: rowY[depthOf(cwd)] });
+    pos.set(key, { x: cx - w / 2, y: rowY[depthOf(key)] });
     return cx;
   };
   for (const r of roots) place(r);
@@ -189,23 +221,29 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   // DFS emit: each group node immediately followed by its chips; parent before children.
-  const emit = (cwd: string) => {
-    const g = groups.get(cwd)!;
-    const isExpanded = expanded.has(cwd);
+  const emit = (key: string) => {
+    const g = groups.get(key)!;
+    const isExpanded = expanded.has(key);
     const { w, h } = isExpanded ? groupSize(g.items.length) : { w: COLLAPSED_W, h: HEADER_H };
     const cols = isExpanded ? groupSize(g.items.length).cols : 1;
-    const groupId = `group:${cwd}`;
+    const groupId = `group:${key}`;
+    // Representative cwd: a folder group's key IS its cwd; an entity group shows its
+    // first (sorted) member cwd, or just the folder count when it spans several.
+    const cwd = g.kind === "folder" ? key : [...g.cwds].sort()[0];
     nodes.push({
       id: groupId,
       type: "projectGroup",
-      position: pos.get(cwd)!,
+      position: pos.get(key)!,
       data: {
         project: g.project,
         kind: g.kind,
+        groupKey: key,
         cwd,
+        cwdCount: g.cwds.size,
         count: g.items.length,
         collapsed: !isExpanded,
-        name: names[cwd],
+        name: g.kind === "folder" ? names[key] : undefined,
+        color: g.color,
       } satisfies ProjectGroupData,
       style: { width: w, height: h },
       draggable: false,
@@ -238,9 +276,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
         });
       });
     }
-    for (const kid of children.get(cwd) ?? []) {
+    for (const kid of children.get(key) ?? []) {
       edges.push({
-        id: `e:${cwd}->${kid}`,
+        id: `e:${key}->${kid}`,
         source: groupId,
         target: `group:${kid}`,
         type: "smoothstep",

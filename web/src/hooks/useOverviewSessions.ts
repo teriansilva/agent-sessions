@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { Session } from "../types/api";
 
@@ -13,17 +13,25 @@ export interface OverviewSessions {
   error: string | null;
   /** True if the page cap was hit before next_offset went null (showing a subset). */
   partial: boolean;
+  /** Re-pull the full list (#361 Phase 4: a create-project mutation changed resolution).
+   *  The current list stays on screen while the reload runs — `loading` only gates the
+   *  initial fetch, so the canvas never unmounts mid-refetch. */
+  refetch: () => void;
 }
 
+type SessionsState = Omit<OverviewSessions, "refetch">;
+
 /** Fetch (nearly) all non-archived sessions for the overview, paging to completion under a
- *  hard cap. Read-only; one shot on mount. */
+ *  hard cap. One shot on mount; `refetch` re-runs it after a mutation. */
 export function useOverviewSessions(): OverviewSessions {
-  const [state, setState] = useState<OverviewSessions>({
+  const [state, setState] = useState<SessionsState>({
     sessions: [],
     loading: true,
     error: null,
     partial: false,
   });
+  const [gen, setGen] = useState(0);
+  const refetch = useCallback(() => setGen((g) => g + 1), []);
 
   useEffect(() => {
     let alive = true;
@@ -51,7 +59,7 @@ export function useOverviewSessions(): OverviewSessions {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [gen]);
 
-  return state;
+  return { ...state, refetch };
 }
