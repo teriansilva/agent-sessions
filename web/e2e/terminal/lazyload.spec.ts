@@ -103,9 +103,15 @@ test("scroll to top → loading pill → older page above with anchor held → s
   // 2. Page lands: the pill clears and the ANCHOR HELD — the previously-top visible
   //    line is still in the viewport (the rewrite re-scrolled to it).
   await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({ timeout: 5000 });
-  await expect(page.locator(".xterm-rows")).toContainText(ATTACH_TOP);
-  // The older page is NOT in the viewport yet — it sits ABOVE the anchor.
-  expect(await rowsText(page)).not.toContain("OLDER-PAGE-END");
+  // Anchor-held is asserted on DESKTOP only: wheel steps are discrete, so exactly one
+  // page has landed here. Mobile touch momentum can legitimately chain a second fetch
+  // before this point (since #348 arming, fetches only follow real gestures), making
+  // the instantaneous viewport content timing-dependent; the anchor code is identical.
+  if (!mobile) {
+    await expect(page.locator(".xterm-rows")).toContainText(ATTACH_TOP);
+    // The older page is NOT in the viewport yet — it sits ABOVE the anchor.
+    expect(await rowsText(page)).not.toContain("OLDER-PAGE-END");
+  }
 
   // 3. Scrolling further up reveals the prepended older page above the anchor.
   await scrollUpUntil(page, mobile, async () => (await rowsText(page)).includes("OLDER-PAGE"));
@@ -154,4 +160,30 @@ test("history fetch error shows the retry pill; tap retries the same cursor", as
     (await rowsText(page)).includes("OLDEST-PAGE-BEGIN"),
   );
   await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="end"]').isVisible());
+});
+
+test("attach lands at the live tail with NO auto-fetch until a real scroll (#348 regression)", async ({
+  page,
+}, testInfo) => {
+  // Opening a session must never auto-trigger history: during attach xterm's layout
+  // fires viewport scroll events while scrollTop is transiently 0, which used to fetch
+  // + rewrite + anchor the user near the TOP of history ("opens scrolled up" / torn
+  // frames). The detector now arms only on a real wheel/touch/keyboard gesture.
+  let fetches = 0;
+  page.on("request", (req) => {
+    if (req.url().includes("/history")) fetches += 1;
+  });
+  await page.goto("/s/claude/aaa");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await page.waitForTimeout(1200); // room for any spurious attach-time trigger to fire
+  expect(fetches).toBe(0); // nothing fetched without user intent
+  // The viewport sits at the live tail, not anchored up in history.
+  await expect(page.locator(".xterm-rows")).not.toContainText(ATTACH_TOP);
+  // A real gesture still arms the loader (sanity: the feature is not dead).
+  const mobile = testInfo.project.name === "mobile";
+  for (let i = 0; i < 30 && fetches === 0; i++) {
+    await scrollUpOnce(page, mobile);
+    await page.waitForTimeout(60);
+  }
+  expect(fetches).toBeGreaterThan(0);
 });

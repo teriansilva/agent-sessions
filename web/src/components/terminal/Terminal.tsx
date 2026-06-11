@@ -233,6 +233,7 @@ export function Terminal({
     const PAGES_BUF_CAP = 4 * 1024 * 1024; // chars
     const streamDecoder = new TextDecoder();
     let streamBuf = ""; // everything the socket delivered, decoded — the rewrite source
+    const rewriteQueue: Uint8Array[] = []; // live chunks held back while a rewrite is in flight
     const pagesBuf = new PagesBuffer(PAGES_BUF_CAP); // fetched older pages, oldest-first
     let rewriting = false;
     const loader = new HistoryLoader(
@@ -278,11 +279,18 @@ export function Terminal({
         "\r\n".repeat(Math.max(1, term.rows)) +
         streamBuf.replaceAll("\x1b[3J", ""); // belt-and-braces: never wipe the pages
       term.write(content, () => {
-        rewriting = false;
         // Anchor: the previously-top visible line (old buffer line 0 — we only prepend
         // at the very top) now sits `added` lines down; scroll back to it.
         const added = Math.max(0, term.buffer.active.length - before);
         if (added > 0) term.scrollToLine(added);
+        // Live output that arrived DURING the rewrite was queued (writing it mid-rewrite
+        // interleaves into the replayed content → torn frames / stray letters — the
+        // "fractions of text" regression). Flush it after the anchor so ordering holds.
+        rewriting = false;
+        if (rewriteQueue.length) {
+          for (const chunk of rewriteQueue) term.write(chunk);
+          rewriteQueue.length = 0;
+        }
       });
     };
     const maybeLoadOlder = () => {
@@ -310,14 +318,28 @@ export function Terminal({
       if (buf.type !== "normal" || buf.baseY <= 0) return false;
       return buf.viewportY === 0 || (vpEl !== null && vpEl.scrollTop === 0);
     };
+    // Auto-fetch arms only after a REAL scroll gesture (wheel / touch / keyboard paging).
+    // During attach, xterm's layout fires viewport scroll events while scrollTop is still
+    // transiently 0 — the detector saw "at top", fetched, and the rewrite anchored the
+    // user near the TOP of history instead of the live tail (the "opens scrolled up"
+    // regression). Programmatic scrolls must never arm it.
+    let userScrolled = false;
+    const armOnUserScroll = () => {
+      userScrolled = true;
+    };
     const onScrolled = () => {
       updateAtBottom();
       const top = atTopNow();
       setAtTop(top);
-      if (top) maybeLoadOlder();
+      if (top && userScrolled) maybeLoadOlder();
     };
     term.onScroll?.(onScrolled);
     vpEl?.addEventListener("scroll", onScrolled, { passive: true });
+    // Document-level (capture): the coarse-pointer touch layer overlays the terminal
+    // OUTSIDE host's subtree, so host-scoped listeners never see mobile gestures.
+    document.addEventListener("wheel", armOnUserScroll, { passive: true, capture: true });
+    document.addEventListener("touchmove", armOnUserScroll, { passive: true, capture: true });
+    document.addEventListener("keydown", armOnUserScroll, true);
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -360,7 +382,8 @@ export function Terminal({
       {
         onOutput: (b) => {
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
-          term.write(b);
+          if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
+          else term.write(b);
         },
         onStatus: (s) => {
           setStatus(s);
@@ -543,6 +566,9 @@ export function Terminal({
       if (resizeTimer != null) clearTimeout(resizeTimer);
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
+      document.removeEventListener("wheel", armOnUserScroll, true);
+      document.removeEventListener("touchmove", armOnUserScroll, true);
+      document.removeEventListener("keydown", armOnUserScroll, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       touchLayer?.remove();
