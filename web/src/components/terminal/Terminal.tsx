@@ -274,8 +274,23 @@ export function Terminal({
       const before = term.buffer.active.length;
       rewriting = true;
       term.reset();
+      // Honest seam (#348): the pages above are a TRANSCRIPT render while everything
+      // below is the live byte replay — two sources with no shared coordinate, so up
+      // to a page of turns can legitimately appear on both sides when the attach was
+      // served from the VT mirror/ring. Mark the boundary instead of pretending the
+      // buffer is one continuous stream.
+      const seamLabel = " older history ↑ (transcript) ";
+      const fill = Math.max(4, term.cols - seamLabel.length);
+      const seam =
+        "\x1b[38;5;240m" +
+        "─".repeat(Math.floor(fill / 2)) +
+        seamLabel +
+        "─".repeat(Math.ceil(fill / 2)) +
+        "\x1b[0m";
       const content =
         pagesBuf.text() +
+        "\r\n" +
+        seam +
         "\r\n".repeat(Math.max(1, term.rows)) +
         streamBuf.replaceAll("\x1b[3J", ""); // belt-and-braces: never wipe the pages
       term.write(content, () => {

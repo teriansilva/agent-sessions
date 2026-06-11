@@ -187,3 +187,18 @@ test("attach lands at the live tail with NO auto-fetch until a real scroll (#348
   }
   expect(fetches).toBeGreaterThan(0);
 });
+
+test("a seam divider marks where transcript pages end and the live region begins", async ({
+  page,
+}, testInfo) => {
+  // The prepended pages are a transcript render; the region below is the live byte
+  // replay. The two can overlap by up to a page (no shared coordinate), so the seam is
+  // marked honestly instead of reading as one continuous — and duplicated — stream.
+  const mobile = testInfo.project.name === "mobile";
+  await page.goto("/s/claude/aaa");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="loading"]').isVisible());
+  await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({ timeout: 5000 });
+  await scrollUpUntil(page, mobile, async () => (await rowsText(page)).includes("older history"));
+  expect(await rowsText(page)).toContain("older history ↑ (transcript)");
+});
