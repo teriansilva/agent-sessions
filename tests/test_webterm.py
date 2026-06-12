@@ -1092,3 +1092,34 @@ def test_up_to_date_same_width_reconnect_does_not_nudge(monkeypatch):
     finally:
         webterm._drop_buffer(key)
     assert calls == []
+
+
+def test_synthetic_attach_payload_ends_with_live_screen_seam(monkeypatch):
+    # Operator report ("still a mess"): a transcript/VT attach payload ends at "now",
+    # and the dtach replay below shows the same screen again — the boundary must be
+    # marked or the duplicate reads as corruption.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    key = "claude:seam-1"
+    webterm._BUFFERS.pop(key, None)
+    monkeypatch.setattr(
+        webterm.scrollback, "_transcript_payload", lambda k, c, r: (b"HISTORY-TAIL", 3)
+    )
+    sent = []
+
+    class WS(_ScriptedWS):
+        async def send_bytes(self, b):
+            sent.append(bytes(b))
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", 0.01)
+    asyncio.run(webterm.run(WS([("sleep", 0.1)]), ["dtach"], cwd="/tmp", buf_key=key, have=0))
+    payload = b"".join(sent)
+    assert b"HISTORY-TAIL" in payload
+    assert "live screen ↓".encode() in payload
+    assert payload.find(b"HISTORY-TAIL") < payload.find("live screen ↓".encode())

@@ -273,15 +273,20 @@ async def run(
             # from the ring at this client's width. Flag-gated + fail-safe (None when off/unhealthy)
             # — then we fall back to transcript scroll-up, then a clean-load clear. Synthetic:
             # `total` is unchanged so the `seq` frame + delta-resume are unaffected.
+            # transcript/VT scroll-up ends at "now" → the live replay below duplicates
+            # the tail; `synthetic` marks payloads that need the boundary rule.
+            synthetic = False
             vtpayload = await scrollback._vt_snapshot_payload(buf_key, cols, rows)
             if vtpayload is not None:
                 payload = vtpayload
+                synthetic = True
             else:
                 tres = await loop.run_in_executor(
                     None, scrollback._transcript_payload, buf_key, cols, rows
                 )
                 if tres is not None:
                     payload, hist_cursor = tres
+                    synthetic = True
                 else:
                     # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
                     # replay), reset the ring so a later same-width attach can't replay stale bytes.
@@ -297,6 +302,20 @@ async def run(
         # connect) — attach-aware so the persisted sidecar only ever claims a width the
         # retained ring was actually authored at (Hermes #360 round 3).
         scrollback.note_attach_width(buf_key, cols)
+        if payload and not payload_is_clear and locals().get("synthetic"):
+            # Mark the boundary between the synthetic scroll-up above and the live dtach
+            # replay below (same idiom as the client-side seams): both representations
+            # end at "now", so the current screen appears twice — unlabelled, that reads
+            # as corruption (operator: "still a mess"). `synthetic` exists only when the
+            # non-continuation branch ran; same-width raw continuations are byte-accurate
+            # (nothing duplicated) and stay unmarked.
+            _label = " live screen ↓ "
+            _fill = max(4, cols - len(_label))
+            payload += (
+                b"\r\n\x1b[38;5;240m"
+                + ("─" * (_fill // 2) + _label + "─" * (_fill - _fill // 2)).encode()
+                + b"\x1b[0m\r\n"
+            )
         if payload:
             blank_attach = payload_is_clear
             with contextlib.suppress(Exception):
