@@ -1,0 +1,304 @@
+"""Info/settings routes (agent-sessions#265): healthz, auth-check, version, engines,
+system, update check/apply, config, prefs. Moved verbatim from ``main.create_app``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+
+from .. import (
+    discover,
+    engines,
+    prefs,
+    project_dirs,
+    ptybridge,
+    scopedspawn,
+    sysinfo,
+    twofactor,
+    update,
+    vtsidecar,
+)
+from ..auth import AuthConfig, current_csrf, session_uid
+from ..version import get_version
+
+
+def _dtach_master_sock(parts: list[bytes]) -> str | None:
+    """The socket path iff ``parts`` is a real ``dtach -c <sock> …`` master cmdline.
+
+    Strict on purpose (Hermes #354): argv[0]'s basename must be the configured dtach
+    binary's, and the socket must be the argument immediately after ``-c`` — dtach's
+    own argv contract. Anything looser maps unrelated processes that merely carry a
+    ``-c`` flag and a ``*.sock`` argument (e.g. ``python -c … foo.sock``) as masters,
+    and the operator view would report a wrong pid/scope/footprint for the session.
+    """
+    if not parts or not parts[0]:
+        return None
+    want = os.path.basename(ptybridge.DTACH_BIN).encode()
+    if os.path.basename(parts[0]) != want:
+        return None
+    try:
+        i = parts.index(b"-c")
+    except ValueError:
+        return None
+    if i + 1 >= len(parts) or not parts[i + 1].endswith(b".sock"):
+        return None
+    try:
+        return parts[i + 1].decode()
+    except UnicodeDecodeError:
+        return None
+
+
+def register(
+    app: FastAPI,
+    *,
+    cfg: AuthConfig,
+    logged_in,
+    csrf_guard,
+    must_change: dict,
+) -> None:
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        return {"ok": True}
+
+    @app.get("/api/auth-check")
+    async def auth_check(request: Request) -> Response:
+        # nginx `auth_request` only cares about the status code. In `none` mode there
+        # is no login → always 204. In single-user mode, 204 with a valid cookie, else 401.
+        if cfg.auth_mode == "none":
+            return Response(status_code=204)
+        if session_uid(cfg, request) is None:
+            raise HTTPException(status_code=401, detail="no session")
+        return Response(status_code=204)
+
+    @app.get("/api/version")
+    async def app_version(_: str = Depends(logged_in)) -> JSONResponse:
+        # Runtime version for the dashboard + the self-update flow (#65). Authed.
+        return JSONResponse({"version": get_version()})
+
+    @app.get("/api/engines")
+    async def list_engines(_: str = Depends(logged_in)) -> JSONResponse:
+        # Discovery for the Settings "Connected agents" section: every known provider
+        # with its presence + whether it can start a new session + the resolved binary
+        # path (or null). Authed; GET, so no CSRF.
+        return JSONResponse(
+            {
+                "engines": [
+                    {
+                        "id": p.engine_id,
+                        "present": p.is_present(),
+                        "supports_new": bool(getattr(p, "supports_new", False)),
+                        "bin": discover.resolve(p.engine_id),
+                    }
+                    for p in engines.all_providers()
+                ]
+            }
+        )
+
+    @app.get("/api/system")
+    async def system_info(_: str = Depends(logged_in)) -> JSONResponse:
+        # Host/system info for the Settings "System" section. Stdlib only, every field
+        # fail-soft (omitted on error / non-Linux). No network interfaces / IPs. Authed.
+        return JSONResponse(sysinfo.collect())
+
+    @app.get("/api/system/sessions")
+    async def system_sessions(_: str = Depends(logged_in)) -> JSONResponse:
+        # Per-session isolation view (#346 Phase C; feeds #279's operator surface).
+        # One /proc walk maps every live `dtach -c <sock>` master to its pid, then the
+        # scope unit + cgroup footprint are read back from the kernel — stateless, so
+        # it stays correct across broker restarts and reports pre-scopes masters as
+        # scope: null. Off the sidebar hot path on purpose (operator-priced, not
+        # poll-priced); the walk runs in the thread pool to keep the event loop clean.
+        def _collect() -> list[dict]:
+            masters: dict[str, int] = {}
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{name}/cmdline", "rb") as fh:
+                        parts = fh.read().split(b"\0")
+                except OSError:
+                    continue
+                sock_arg = _dtach_master_sock(parts)
+                if sock_arg is not None:
+                    with contextlib.suppress(ValueError):
+                        masters[sock_arg] = int(name)
+            rows = []
+            for sock in sorted(ptybridge.runtime_dir().glob("*.sock")):
+                pid = masters.get(str(sock))
+                row: dict = {"sock": sock.name, "pid": pid, "scope": None}
+                if pid is not None:
+                    row["scope"] = scopedspawn.scope_of(pid)
+                    stats = scopedspawn.scope_stats(pid)
+                    if stats:
+                        row.update(stats)
+                rows.append(row)
+            return rows
+
+        return JSONResponse({"sessions": await asyncio.to_thread(_collect)})
+
+    @app.get("/api/update/check")
+    async def update_check(_: str = Depends(logged_in)) -> JSONResponse:
+        # Compare the running version to the channel's latest on the remote (#65 Phase 5).
+        return JSONResponse(update.check())
+
+    @app.post("/api/update/apply")
+    async def update_apply(
+        _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Update to the channel's latest — no user-supplied ref/command. Re-runs the
+        # installer detached (atomic release + flip + restart + health-check + rollback).
+        if not update.apply():
+            raise HTTPException(status_code=503, detail="self-update unavailable (not an install)")
+        return JSONResponse({"status": "updating"}, status_code=202)
+
+    @app.get("/api/config")
+    async def app_config(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
+        # SPA bootstrap (#64): the CSRF token for mutations + which engines can start a
+        # new session (present + supports_new) + the terminal backend. Authed-only.
+        return JSONResponse(
+            {
+                "csrf": current_csrf(cfg, request) or "",
+                "new_session_engines": [
+                    p.engine_id
+                    for p in engines.present_providers()
+                    if getattr(p, "supports_new", False)
+                ],
+                "terminal_backend": "ws",
+                "must_change_password": must_change["v"],
+                # "single-user" | "none" — lets the SPA hide login/logout UI when there
+                # is no login (#13 / #32 Phase 3).
+                "auth_mode": cfg.auth_mode,
+                # Per-user UI theme (#109). The SPA applies this at load so a non-default
+                # choice carries across devices; localStorage is the device cache.
+                "theme": prefs.get_theme(),
+                # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
+                # Applied at load like the theme; localStorage is the device cache.
+                "accent": prefs.get_accent(),
+                # Compose box default state on load: auto (device heuristic) | open | collapsed.
+                # Per-user; the terminal applies it when mounting Compose.
+                "compose_default": prefs.get_compose_default(),
+                # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
+                # Per-user.
+                "overview_expanded": prefs.get_overview_expanded(),
+                # Project cwds hidden globally (#174): sidebar list + filter + map + picker.
+                # The legacy `overview_excluded` alias is retired (#357 Phase 2) — old on-disk
+                # values are union-merged into `projects_hidden` once at startup.
+                "projects_hidden": prefs.get_projects_hidden(),
+                # Project-visibility model (#335): mode (all|included) + the `included`-mode
+                # allowlist. `all` (default) keeps the legacy hide-list behavior unchanged; the
+                # client applies the same mode-exclusive rule as the server's `project_visible`.
+                "projects_mode": prefs.get_projects_mode(),
+                "projects_included": prefs.get_projects_included(),
+                # Preferred new-session start dir (#335 Phase 2); the picker pre-selects it when
+                # still pickable, else falls back silently.
+                "default_project": prefs.get_default_project(),
+                # Base dirs under which the UI may create a new project folder (#335 Phase 3).
+                # Empty ⇒ the "New folder" affordance is hidden + the mkdir endpoint is a no-op.
+                "project_roots": project_dirs.project_roots(),
+                # Per-cwd custom project display names (#148).
+                "project_names": prefs.get_project_names(),
+                # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
+                # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
+                "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
+                # VT scrollback (#329): faithful real-frame scroll-up via the VT sidecar. The
+                # effective on/off bit (pref override, else env default) for the Settings toggle.
+                "vt_scrollback": vtsidecar.enabled(),
+                # AI session review config (#356) — the PUBLIC view only: the API key is
+                # write-only and surfaces here solely as `api_key_set` (never the value).
+                "ai_review": prefs.public_ai_review(),
+            }
+        )
+
+    @app.post("/api/prefs")
+    async def set_prefs(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Persist UI preferences (#109 theme, #144 overview lists, #211 accent). Each
+        # provided key is validated server-side (unknown value → 422, never silently coerced
+        # on write); other persisted keys are preserved. At least one known key must be present.
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        out: dict[str, object] = {}
+        if "theme" in payload:
+            if payload["theme"] not in prefs.THEMES:
+                raise HTTPException(status_code=422, detail="unknown theme")
+            out["theme"] = prefs.set_theme(payload["theme"])
+        if "accent" in payload:
+            if not prefs.is_valid_accent(payload["accent"]):
+                raise HTTPException(status_code=422, detail="invalid accent")
+            out["accent"] = prefs.set_accent(payload["accent"])
+        if "compose_default" in payload:
+            if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
+                raise HTTPException(status_code=422, detail="unknown compose_default")
+            out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
+        if "vt_scrollback" in payload:
+            # VT scrollback (#329): flip it live + persist it. Turning it ON also
+            # (best-effort) starts the sidecar so it takes effect without an app restart.
+            v = payload["vt_scrollback"]
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail="vt_scrollback must be a boolean")
+            prefs.set_vt_scrollback(v)
+            vtsidecar.set_enabled(v)
+            if v:
+                with contextlib.suppress(Exception):
+                    await vtsidecar.ensure_started()
+            out["vt_scrollback"] = vtsidecar.enabled()
+        if "projects_mode" in payload:
+            # Project-visibility mode (#335): all|included.
+            if payload["projects_mode"] not in prefs.PROJECT_MODES:
+                raise HTTPException(status_code=422, detail="unknown projects_mode")
+            out["projects_mode"] = prefs.set_projects_mode(payload["projects_mode"])
+        if "default_project" in payload:
+            # Preferred new-session cwd (#335 Phase 2); "" clears it. Stored verbatim — the picker
+            # validates pickability on read, so a stale value just falls back, never errors.
+            v = payload["default_project"]
+            if not isinstance(v, str):
+                raise HTTPException(status_code=422, detail="default_project must be a string")
+            out["default_project"] = prefs.set_default_project(v)
+        for key, setter in (
+            ("overview_expanded", prefs.set_overview_expanded),
+            # `projects_hidden` is the only hide-list key (#174); the legacy
+            # `overview_excluded` write alias is retired (#357 Phase 2).
+            ("projects_hidden", prefs.set_projects_hidden),
+            # `included`-mode allowlist (#335).
+            ("projects_included", prefs.set_projects_included),
+        ):
+            if key in payload:
+                v = payload[key]
+                if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                    raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
+                out[key] = setter(v)
+        if "ai_review" in payload:
+            # AI review config (#356): a REAL nested validator (URL shape, length caps,
+            # interval floor, max_input_chars bounds, unknown-key rejection) — never a
+            # nested pass-through. The api_key is masked-sentinel: ""/mask → unchanged,
+            # null → cleared, anything else → replaced. The echo is the PUBLIC view.
+            err = prefs.validate_ai_review_patch(payload["ai_review"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_ai_review(payload["ai_review"])
+            out["ai_review"] = prefs.public_ai_review()
+        if "project_names" in payload:
+            v = payload["project_names"]
+            if not isinstance(v, dict) or not all(
+                isinstance(k, str) and isinstance(val, str) for k, val in v.items()
+            ):
+                raise HTTPException(
+                    status_code=422, detail="project_names must be an object of string→string"
+                )
+            out["project_names"] = prefs.set_project_names(v)
+        if not out:
+            raise HTTPException(status_code=422, detail="no known preference key")
+        return JSONResponse(out)
