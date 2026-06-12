@@ -14,8 +14,29 @@ const SESSIONS = [
 const A_END = "HIST claudeaaa END";
 const B_END = "HIST claudebbb END";
 
+/** Content-sized history (fixes #387): same markers as the harness default, but each
+ *  line padded so the per-session replay exceeds the #374 blank-attach backstop's 512-byte
+ *  threshold — the #300 contract is about CONTENT sessions, and a sub-512B bench history
+ *  made the deliberate blank-attach jiggle race this spec's "no repaint" assertion. */
+const contentHistory = (key: string) => {
+  const id = key.replace(/[^a-z0-9]/gi, "");
+  const pad = "·".repeat(70);
+  const lines = [`HIST ${id} BEGIN`];
+  for (let i = 1; i <= 6; i++) lines.push(`HIST ${id} line ${i} ${pad}`);
+  lines.push(`HIST ${id} END`, `LIVE ${id} $ `);
+  return lines;
+};
+
 test.beforeEach(async ({ page }) => {
-  await setupBench(page, { sessions: SESSIONS });
+  await setupBench(page, {
+    sessions: SESSIONS,
+    history: Object.fromEntries(
+      SESSIONS.map((s) => {
+        const k = `${s.engine}:${s.uuid}`;
+        return [k, contentHistory(k)];
+      }),
+    ),
+  });
 });
 
 test("live render: the session's scroll-up is shown on open", async ({ page }) => {
