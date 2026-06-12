@@ -1,0 +1,76 @@
+[project]
+name = "agent-sessions"
+# Version is derived from the git tag at build time (setuptools-scm) so an
+# installer-pinned release (e.g. `pip install …@v1.2.3`) reports `1.2.3` via
+# /api/version. Untagged/dev builds get a dev version (+ short SHA); a build with
+# no SCM info at all (e.g. .git-stripped tree) falls back to 0.0.0.
+dynamic = ["version"]
+description = "BattleLab — a mobile-first, self-hostable web organizer for your AI-coding CLI sessions (Claude Code, opencode, Codex, Gemini)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Framework :: FastAPI",
+    "Operating System :: POSIX",
+]
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "jinja2==3.1.4",
+    "itsdangerous==2.2.0",
+    "python-multipart==0.0.20",
+    "pyotp==2.9.0",  # TOTP 2FA (RFC 6238) — tiny, pure-Python (issue #116)
+    "httpx==0.28.1",  # AI-review proxy to the OpenAI-compatible endpoint (issue #356)
+]
+
+[project.scripts]
+agent-sessions = "agent_sessions.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "httpx==0.28.1",  # for FastAPI TestClient
+    "ruff==0.8.4",
+]
+
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+# No SCM info (e.g. a deploy tree rsync'd without .git) → 0.0.0 rather than a build
+# error. Tagged builds report the tag; untagged git builds get a dev version + SHA.
+fallback_version = "0.0.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship the Jinja templates inside the wheel/sdist. Without this, a non-editable
+# `pip install .` (the deploy shape) produces a package with only the .py
+# modules, and the app raises jinja2 TemplateNotFound at runtime. Editable
+# installs accidentally work because they read straight from the source tree.
+[tool.setuptools.package-data]
+agent_sessions = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101"]  # asserts are fine in tests
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's File(...) in an argument default is the framework idiom, not a B008 bug
+# (Depends/Form/Query are already allowlisted by ruff's defaults).
+extend-immutable-calls = ["fastapi.File"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]  # tests use subprocess + tmp paths freely

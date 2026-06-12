@@ -1,0 +1,861 @@
+.wrap {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px clamp(16px, 5vw, 40px) 48px;
+  background: var(--bg);
+  color: var(--text);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.head h1 {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 0;
+  color: var(--text-1, var(--brand-soft));
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 0;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.back:hover {
+  border-color: var(--accent);
+}
+
+/* Tab bar (#357 Phase 1): mono HUD pills, horizontally scrollable on narrow screens so the
+ * full tab set stays reachable at 390px without wrapping or overflowing the page. */
+.tabs {
+  display: flex;
+  gap: 6px;
+  max-width: 640px;
+  margin: 0 auto 22px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tab {
+  flex: none;
+  padding: 7px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.tab.active {
+  color: var(--on-accent, #14161a);
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 14px var(--accent-glow, rgba(255, 176, 0, 0.22));
+}
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The active panel — sections inside keep their own spacing. */
+.panel {
+  min-width: 0;
+}
+
+.section {
+  position: relative;
+  max-width: 640px;
+  margin: 0 auto 26px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px 18px;
+}
+/* HUD corner brackets (#211 4d): accent ticks at two opposing corners frame each settings
+ * panel like the floating shell panels, without per-section JSX. */
+.section::before,
+.section::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: var(--accent);
+  border-style: solid;
+  pointer-events: none;
+}
+.section::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+.section::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+/* Section title → mono HUD label with a leading accent tick. */
+.section h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+  color: var(--text-2, var(--text));
+}
+.section h2::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  height: 13px;
+  background: var(--accent);
+}
+.hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.blurb {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Theme picker */
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.themeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 12px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.themeCard:hover {
+  border-color: var(--accent);
+}
+.themeCard.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.swatch {
+  height: 30px;
+  border-radius: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+/* Fixed preview swatches — show each theme's identity regardless of the active theme.
+   BattleLab HUD palette: ground + phosphor-amber accent (#211). */
+.sw_dark {
+  background: linear-gradient(120deg, #0d0e10 50%, #ffb000 50%);
+}
+.sw_light {
+  background: linear-gradient(120deg, #e7e8ea 50%, #ffb000 50%);
+}
+.themeName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.themeDesc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* Accent picker (#211 Phase 2): preset dots + a native colour input + a free-text hex. */
+.subhead {
+  margin: 18px 0 2px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+}
+.accents {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.accentDot {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--dot);
+  cursor: pointer;
+  /* Selected ring uses the chosen accent itself so the active dot reads at a glance. */
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.accentDot.active {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 4px var(--accent);
+}
+.accentDot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.accentCustom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+  cursor: pointer;
+  overflow: hidden;
+}
+/* The native colour well fills the round label so it reads as one more preset dot. */
+.accentCustom input[type="color"] {
+  width: 150%;
+  height: 150%;
+  margin: -25%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.accentHex {
+  width: 9ch;
+  padding: 5px 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  text-transform: lowercase;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.accentHex:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* About */
+.brandLine {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--brand-soft);
+}
+.brandLine b {
+  color: var(--brand);
+}
+.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+.meta dt {
+  color: var(--text-muted);
+}
+.meta dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  /* #289 mobile breakage: long values (platform strings, paths) overflowed the System card
+   * at narrow widths — let the grid cell shrink and the value wrap instead. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.nameLink {
+  color: var(--brand-soft);
+  text-decoration: none;
+}
+.nameLink:hover {
+  text-decoration: underline;
+}
+.aboutLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+}
+.aboutLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.aboutLink:hover {
+  color: var(--brand-soft);
+  border-bottom-color: var(--brand);
+}
+
+/* Connected agents */
+.agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.dotOn {
+  background: #36d399;
+  box-shadow: 0 0 6px rgba(54, 211, 153, 0.7);
+}
+.dotOff {
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.agentName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.agentState {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.newBadge {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 0;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+.agentBin {
+  margin-left: auto;
+  font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* System definition list */
+.metaRow {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+
+/* Support */
+.coffee {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 0;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.coffee:hover {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.coffee:active {
+  background: var(--cta-bg-2);
+}
+
+/* Updates */
+.updateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.updateBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.updateBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+.updateBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.updateApply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.updateApply:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- Two-factor authentication (#116) --- */
+.twofaStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  margin: 2px 0 10px;
+}
+.twofaBadge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 0;
+}
+.twofaOn {
+  background: color-mix(in srgb, var(--ok, #36c) 28%, transparent);
+  color: var(--text, #fff);
+}
+.twofaOff {
+  background: var(--surface-2, #222);
+  color: var(--text-dim, #9a9a9a);
+}
+.twofaActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.secBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.secBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.secBtnGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+  background: var(--surface-2, #1c1c1c);
+  color: var(--text, #ddd);
+  border: 1px solid var(--border, #333);
+}
+.secBtnGhost:hover {
+  background: var(--surface-3, #262626);
+}
+.secBtnGhost:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Caution accent for the bulk-archive confirm step (#142). */
+.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: #ffd9d2;
+  background: #5a2018;
+  border: 1px solid #8a3324;
+}
+.danger:hover {
+  background: #6d271d;
+}
+.danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Maintenance / cleanup row (#142). */
+.cleanupRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.cleanupLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.hoursInput {
+  width: 84px;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 7px 9px;
+  font: inherit;
+}
+/* Default-project picker (#357 Phase 2) — same field language as the other inputs. */
+.defaultProject {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.defaultProject:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.defaultProject:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.confirmRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Excluded-projects checklist (#152). */
+.excludeList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.excludeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  cursor: pointer;
+}
+.excludeRow:hover {
+  background: var(--row-hover);
+}
+.excludeRow input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+}
+.excludeMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.excludeName {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Per-project custom-name input (#148). */
+.nameInput {
+  width: 100%;
+  background: var(--surface-3, #0b0617);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.nameInput::placeholder {
+  color: var(--text-muted);
+}
+/* Clickable project name (#174) — opens RenameProjectModal. Looks like text, behaves
+ * like a button: hover underline, focus ring. */
+.nameButton {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nameButton:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.nameButton:focus-visible {
+  outline: 2px solid var(--focus, #ffe28a);
+  outline-offset: 2px;
+}
+.excludePath {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.excludeStale {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 8px;
+}
+.enrollPanel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  background: var(--surface-2, #14102e);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qr {
+  width: 184px;
+  height: 184px;
+  align-self: center;
+  background: #fff;
+  padding: 8px;
+  border-radius: 0;
+  image-rendering: pixelated;
+}
+.manualKey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  background: var(--surface-3);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 7px 9px;
+}
+.codeInput {
+  width: 100%;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 9px 11px;
+  font: inherit;
+  letter-spacing: 0.12em;
+}
+.recoveryBox {
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 10px 12px;
+}
+.recoveryList {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.warn {
+  color: var(--warn, #ffb454);
+  font-size: 12px;
+}
+.err {
+  color: var(--danger, #ff9a9a);
+  font-size: 12px;
+}
+
+/* Project-visibility mode toggle (#335). */
+.modeRow {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+}
+.modeOpt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* AI session review (#356). */
+.aiField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  max-width: 560px;
+}
+.aiFieldLabel {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiInput {
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border, #2f2658);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+}
+.aiInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.aiKeyBadge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.aiModelRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.aiModelRow > select,
+.aiModelRow > input {
+  flex: 1;
+  min-width: 0;
+}
+.aiIntervalRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiIntervalInput {
+  width: 90px;
+}
+.aiPrompt {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.aiActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.aiToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.aiExcludedList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aiExcludedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+}
+.aiExcludedTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
