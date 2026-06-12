@@ -24,6 +24,7 @@ from .. import (
     reaper,
     scanner,
     scrollback,
+    sessionlock,
     webterm,
 )
 
@@ -637,8 +638,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             scrollback.clear_scrollback([phys_key])
         with contextlib.suppress(Exception):
             owner.clear_owner(prov.engine_id, phys_native)
-        with contextlib.suppress(OSError):
-            ptybridge.socket_path(prov.engine_id, phys_native).unlink()
+        # The sock unlink must NOT race a relaunch (2026-06-12 prod wedge): the client
+        # auto-reconnects within the kill's grace window and can LAUNCH a NEW master
+        # before this cleanup runs — unlinking then orphans the fresh master from its
+        # path while it still holds the launch lock, and every later connect 4409-loops
+        # forever. The single-writer lock is the truth: acquirable ⇒ no launcher/master
+        # generation exists ⇒ any sock file is a stale leftover, safe to remove; held ⇒
+        # a NEW generation owns the path — leave its socket alone.
+        with contextlib.suppress(Exception):
+            lk = sessionlock.acquire(phys_key)
+            if lk is not None:
+                try:
+                    with contextlib.suppress(OSError):
+                        ptybridge.socket_path(prov.engine_id, phys_native).unlink()
+                finally:
+                    lk.release()
 
         # Idempotent: "gone" (no live master) is a successful no-op — the next open launches it
         # fresh regardless. The client reconnects its ws to trigger the resume.

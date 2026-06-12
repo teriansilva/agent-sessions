@@ -243,3 +243,36 @@ def test_restart_spared_midflight_returns_409_and_skips_cleanup(auth_cfg, fake_j
     assert "terminate" in calls  # the kill was attempted…
     assert "clear_scrollback" not in calls  # …but vetoed → cleanup skipped
     assert "clear_owner" not in calls
+
+
+def test_restart_cleanup_never_unlinks_a_new_generations_socket(tmp_path, monkeypatch):
+    # 2026-06-12 prod wedge: the client relaunched a NEW master inside the kill's grace
+    # window; the endpoint's post-kill cleanup then unlinked the NEW master's socket,
+    # orphaning it (alive, lock held, path gone) → endless 4409 reconnect loop. The
+    # cleanup may remove the sock ONLY when the single-writer lock is acquirable.
+    from agent_sessions import ptybridge, sessionlock
+
+    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(tmp_path / "pty"))
+    key = "claude:11111111-1111-1111-1111-111111111111"
+    sock = ptybridge.socket_path("claude", "11111111-1111-1111-1111-111111111111")
+    sock.touch()
+    # A "new generation" holds the launch lock (as a freshly relaunched master would).
+    held = sessionlock.acquire(key)
+    assert held is not None
+    # The guarded cleanup (mirrors the endpoint): acquirable → unlink; held → leave it.
+    import contextlib
+
+    lk = sessionlock.acquire(key)
+    if lk is not None:
+        with contextlib.suppress(OSError):
+            sock.unlink()
+        lk.release()
+    assert sock.exists()  # held by the new generation → socket survived
+    held.release()
+    lk2 = sessionlock.acquire(key)
+    assert lk2 is not None
+    with contextlib.suppress(OSError):
+        sock.unlink()
+    lk2.release()
+    assert not sock.exists()  # no generation → stale sock removed
