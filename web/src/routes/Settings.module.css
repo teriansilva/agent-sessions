@@ -743,6 +743,11 @@
   color: var(--danger, #ff9a9a);
   font-size: 12px;
 }
+/* Confirmed endpoint-validation state (#394). */
+.ok {
+  color: var(--ok, #58c772);
+  font-size: 12px;
+}
 
 /* Project-visibility mode toggle (#335). */
 .modeRow {

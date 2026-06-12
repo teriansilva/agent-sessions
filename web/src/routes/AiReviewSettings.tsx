@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { AiReviewConfig, Session } from "../types/api";
@@ -30,11 +30,27 @@ type ModelsState =
   /** The endpoint can't list models (no /models, error, timeout) → free-text entry. */
   | { kind: "unsupported" };
 
+/** Endpoint save/validation lifecycle (#394). `ok` = the /models probe succeeded against
+ *  the PERSISTED config ("validated"); `error` carries the gateway's error text verbatim
+ *  (#382); `incomplete` = saved but base URL or key still missing. */
+type EndpointState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "validating" }
+  | { kind: "ok"; count: number }
+  | { kind: "incomplete" }
+  | { kind: "error"; message: string };
+
 /** AI Review settings (#356 Phase 1, replaces the #357 placeholder): OpenAI-compatible
  *  endpoint config (write-only API key), model dropdown loaded through the server-side
  *  /models proxy (free-text fallback + refresh), review interval, the fully-exposed
- *  prompt with reset-to-default, and the excluded-sessions list. Fields persist on
- *  commit (blur/change) via /api/prefs `ai_review` — matching the rest of Settings. */
+ *  prompt with reset-to-default, and the excluded-sessions list.
+ *
+ *  Save semantics (#394): the endpoint section (base URL + API key) persists ONLY via
+ *  the explicit "Save & validate" button — never on blur — and the save immediately
+ *  validates by probing the /models proxy: success shows a confirmed state + populates
+ *  the dropdown, failure shows the gateway's error verbatim (#382). The model choice
+ *  auto-saves on change; interval/timeout/prompt keep their commit-on-blur behavior. */
 export function AiReviewSettings() {
   const cfgBlock = useConfig()?.ai_review;
   const [block, setBlock] = useState<AiReviewConfig>(cfgBlock ?? FALLBACK);
@@ -55,8 +71,18 @@ export function AiReviewSettings() {
   const [promptDraft, setPromptDraft] = useState(block.prompt);
   const [seeded, setSeeded] = useState<AiReviewConfig | null>(null);
   if (seeded !== block) {
+    // Unrelated save echoes (model, interval, timeout, prompt, enable toggle) must not
+    // clobber an unsaved endpoint edit (Hermes on #396): a URL draft that is dirty
+    // against BOTH the outgoing and the incoming block keeps the user's text. The
+    // endpoint's own Save & validate echoes the draft back as `base_url`, so that path
+    // (like the initial config load, where the draft is clean) still reseeds. The key
+    // draft never reseeds — it's write-only and cleared explicitly by saveEndpoint.
+    const urlDirty =
+      seeded !== null &&
+      urlDraft.trim() !== seeded.base_url &&
+      urlDraft.trim() !== block.base_url;
     setSeeded(block);
-    setUrlDraft(block.base_url);
+    if (!urlDirty) setUrlDraft(block.base_url);
     setIntervalDraft(String(block.interval_minutes));
     setTimeoutDraft(block.request_timeout == null ? "" : String(block.request_timeout));
     setPromptDraft(block.prompt);
@@ -98,30 +124,42 @@ export function AiReviewSettings() {
   );
 
   // --- model listing through the server-side proxy (key never in the browser) ---
+  // The /models probe doubles as the endpoint VALIDATION (#394/#382): success = the
+  // saved base URL + key work (confirmed state, dropdown populated); failure shows the
+  // gateway's error verbatim. The model field still falls back to free-text entry —
+  // a listing failure never blocks configuration (#356).
   const [models, setModels] = useState<ModelsState>({ kind: "idle" });
-  const loadModels = useCallback(
-    async (refresh = false) => {
-      if (!block.configured) return;
-      setModels({ kind: "loading" });
-      try {
-        const d = await api.aiReviewModels(refresh ? { refresh: true } : undefined);
-        setModels(
-          d.models.length > 0 ? { kind: "ok", models: d.models } : { kind: "unsupported" },
-        );
-      } catch {
-        // 400 (not configured) / 502 (endpoint can't list) → free-text fallback; a
-        // listing failure never blocks configuration (#356).
+  const [endpoint, setEndpoint] = useState<EndpointState>({ kind: "idle" });
+  const probe = useCallback(async (refresh = false) => {
+    setModels({ kind: "loading" });
+    setEndpoint({ kind: "validating" });
+    try {
+      const d = await api.aiReviewModels(refresh ? { refresh: true } : undefined);
+      if (d.models.length > 0) {
+        setModels({ kind: "ok", models: d.models });
+        setEndpoint({ kind: "ok", count: d.models.length });
+      } else {
         setModels({ kind: "unsupported" });
+        setEndpoint({ kind: "ok", count: 0 });
       }
-    },
-    [block.configured],
-  );
+    } catch (e) {
+      setModels({ kind: "unsupported" });
+      setEndpoint({
+        kind: "error",
+        message:
+          e instanceof ApiError && e.message ? e.message : "Endpoint validation failed.",
+      });
+    }
+  }, []);
+  // Probe once when the panel opens with a stored, complete config (it can land after
+  // mount). Saves run their own explicit probe — `probedOnce` keeps the two paths from
+  // double-fetching when `configured` flips on a save echo.
+  const probedOnce = useRef(false);
   useEffect(() => {
-    // Load once the endpoint becomes configured (same pattern as useSessionsList's
-    // filter-change reload).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadModels();
-  }, [loadModels]);
+    if (!block.configured || probedOnce.current) return;
+    probedOnce.current = true;
+    void probe();
+  }, [block.configured, probe]);
 
   // --- excluded sessions (#356): row-menu opt-outs surface here for re-inclusion ---
   const [excluded, setExcluded] = useState<Session[] | null>(null);
@@ -144,22 +182,54 @@ export function AiReviewSettings() {
     }
   };
 
-  const commitUrl = () => {
-    const v = urlDraft.trim();
-    if (v !== block.base_url) void save({ base_url: v });
-  };
-  const commitKey = () => {
-    const v = keyDraft.trim();
-    if (!v || v === KEY_MASK) return; // blank/mask = unchanged — never sent
-    void save({ api_key: v }).then((ok) => {
-      if (ok) setKeyDraft("");
-    });
+  // --- explicit endpoint save (#394): blur NEVER persists the URL or the key ---
+  const keyEdit = keyDraft.trim();
+  const endpointDirty =
+    urlDraft.trim() !== block.base_url || (keyEdit !== "" && keyEdit !== KEY_MASK);
+  const busy = endpoint.kind === "saving" || endpoint.kind === "validating";
+  /** Persist base URL + key together, then validate immediately via the /models probe.
+   *  The mask/blank key is the "unchanged" sentinel and is never sent (#356). */
+  const saveEndpoint = async () => {
+    if (busy) return;
+    setError(null);
+    const patch: Record<string, unknown> = { base_url: urlDraft.trim() };
+    if (keyEdit && keyEdit !== KEY_MASK) patch.api_key = keyEdit;
+    setEndpoint({ kind: "saving" });
+    let next: AiReviewConfig | undefined;
+    try {
+      const r = (await api.setPrefs({ ai_review: patch })) as { ai_review?: AiReviewConfig };
+      next = r.ai_review;
+    } catch (e) {
+      setEndpoint({
+        kind: "error",
+        message:
+          e instanceof ApiError && e.status === 422 && e.message
+            ? e.message
+            : "Couldn’t save — please try again.",
+      });
+      return;
+    }
+    setKeyDraft(""); // write-only: the field clears once the key is stored
+    probedOnce.current = true; // this save owns the probe — don't double-fetch
+    if (next) {
+      setBlock(next);
+      if (next.configured !== ctxConfigured) refreshConfig();
+    }
+    if (!next?.configured) {
+      setEndpoint({ kind: "incomplete" });
+      setModels({ kind: "idle" });
+      return;
+    }
+    await probe(true);
   };
   /** Explicit clear (Hermes #367): `api_key: null` is the backend's "remove the stored
    *  secret" contract — the blank field means "unchanged", so removal needs its own
    *  action. The echo flips `api_key_set` (and `configured`) to false. */
   const removeKey = () => {
     setKeyDraft("");
+    setEndpoint({ kind: "idle" });
+    setModels({ kind: "idle" });
+    probedOnce.current = false;
     void save({ api_key: null });
   };
   const commitInterval = () => {
@@ -187,12 +257,17 @@ export function AiReviewSettings() {
     if (n !== block.request_timeout) void save({ request_timeout: n });
   };
 
+  // While unsaved endpoint edits exist and no VALIDATED config backs the list, the
+  // model control stays locked (#394) — the dropdown would be showing models from a
+  // config the user is about to replace.
+  const modelLocked = endpointDirty && endpoint.kind !== "ok";
   const modelSelect =
     models.kind === "ok" ? (
       <select
         className={styles.aiInput}
         aria-label="Model"
         value={block.model}
+        disabled={modelLocked}
         onChange={(e) => void save({ model: e.target.value })}
       >
         {!block.model && <option value="">— pick a model —</option>}
@@ -211,6 +286,7 @@ export function AiReviewSettings() {
         aria-label="Model"
         type="text"
         spellCheck={false}
+        disabled={modelLocked}
         placeholder={models.kind === "loading" ? "loading model list…" : "model id"}
         defaultValue={block.model}
         onBlur={(e) => {
@@ -219,6 +295,27 @@ export function AiReviewSettings() {
         }}
       />
     );
+
+  // One status line under the Save button: the in-flight save/validation wins, then
+  // dirty edits (any prior result describes values the user is replacing), then the
+  // last validation outcome.
+  const endpointNote = endpoint.kind === "saving" ? (
+    <p className={styles.hint}>Saving…</p>
+  ) : endpoint.kind === "validating" ? (
+    <p className={styles.hint}>Validating endpoint…</p>
+  ) : endpointDirty ? (
+    <p className={styles.warn}>● Unsaved changes — Save applies and validates them.</p>
+  ) : endpoint.kind === "ok" ? (
+    <p className={styles.ok}>
+      {endpoint.count > 0
+        ? `✓ Endpoint validated — ${endpoint.count} model${endpoint.count === 1 ? "" : "s"} available.`
+        : "✓ Endpoint saved — it doesn’t list models; enter the model id manually."}
+    </p>
+  ) : endpoint.kind === "error" ? (
+    <p className={styles.err}>✗ {endpoint.message}</p>
+  ) : endpoint.kind === "incomplete" ? (
+    <p className={styles.hint}>Saved. Set both the base URL and an API key to validate.</p>
+  ) : null;
 
   return (
     <>
@@ -256,11 +353,10 @@ export function AiReviewSettings() {
             placeholder="https://ai.example.io/v1"
             value={urlDraft}
             onChange={(e) => setUrlDraft(e.target.value)}
-            onBlur={commitUrl}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                commitUrl();
+                void saveEndpoint();
               }
             }}
           />
@@ -281,11 +377,10 @@ export function AiReviewSettings() {
               placeholder={block.api_key_set ? `${KEY_MASK} (write-only)` : "sk-…"}
               value={keyDraft}
               onChange={(e) => setKeyDraft(e.target.value)}
-              onBlur={commitKey}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  commitKey();
+                  void saveEndpoint();
                 }
               }}
             />
@@ -301,9 +396,21 @@ export function AiReviewSettings() {
             )}
           </div>
           <p className={styles.hint}>
-            Write-only: the stored key is never shown. Enter a new value to replace it, or
-            use “Remove key” to delete the stored secret.
+            Write-only: the stored key is never shown. It is saved only by “Save &amp;
+            validate” — never on blur. Use “Remove key” to delete the stored secret.
           </p>
+        </div>
+
+        <div className={styles.aiActions}>
+          <button
+            type="button"
+            className={`${styles.secBtn} shine`}
+            disabled={!endpointDirty || busy}
+            onClick={() => void saveEndpoint()}
+          >
+            Save &amp; validate
+          </button>
+          {endpointNote}
         </div>
 
         <div className={styles.aiField}>
@@ -317,8 +424,8 @@ export function AiReviewSettings() {
               className={styles.secBtnGhost}
               aria-label="Refresh model list"
               title="Refresh model list"
-              disabled={!block.configured || models.kind === "loading"}
-              onClick={() => void loadModels(true)}
+              disabled={!block.configured || models.kind === "loading" || modelLocked}
+              onClick={() => void probe(true)}
             >
               <RefreshCw size={14} />
             </button>
@@ -327,7 +434,7 @@ export function AiReviewSettings() {
             {block.configured
               ? models.kind === "unsupported"
                 ? "The endpoint doesn’t list models — enter the model id manually."
-                : "Loaded from the endpoint’s /models once the base URL + key validate."
+                : "Loaded from the endpoint’s /models — picking a model saves it immediately."
               : "Set the base URL and API key first to load the model list."}
           </p>
         </div>

@@ -210,6 +210,45 @@ def test_list_models_endpoint_without_models_route(ai_prefs, monkeypatch):
         asyncio.run(review.list_models())
 
 
+def test_list_models_error_carries_the_gateway_text(ai_prefs, monkeypatch):
+    """#382: a failed validation probe surfaces the gateway's own error message
+    (OpenAI/LiteLLM ``error.message`` shape) so Settings can show WHY, verbatim."""
+    gw = "Authentication Error - LiteLLM Virtual Key expected. Received=hx7Kp."
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        httpx.MockTransport(
+            lambda _r: httpx.Response(401, json={"error": {"message": gw, "code": "401"}})
+        ),
+    )
+    with pytest.raises(review.ReviewError) as exc:
+        asyncio.run(review.list_models())
+    assert str(exc.value) == f"model listing returned HTTP 401: {gw}"
+
+
+def test_list_models_error_text_is_bounded_and_key_redacted(ai_prefs, monkeypatch):
+    """The extract is whitespace-collapsed, capped, and never echoes the API key even
+    when a hostile/echoing gateway reflects the Authorization header back."""
+    noisy = ("x" * 1000) + f"  leak? {SECRET}  \n\n tail"
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        httpx.MockTransport(lambda _r: httpx.Response(500, text=noisy)),
+    )
+    with pytest.raises(review.ReviewError) as exc:
+        asyncio.run(review.list_models())
+    msg = str(exc.value)
+    assert SECRET not in msg
+    assert len(msg) <= len("model listing returned HTTP 500: ") + review.GATEWAY_ERROR_MAX
+
+
+def test_list_models_error_without_body_stays_status_only(ai_prefs, monkeypatch):
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(lambda _r: httpx.Response(503)))
+    with pytest.raises(review.ReviewError) as exc:
+        asyncio.run(review.list_models())
+    assert str(exc.value) == "model listing returned HTTP 503"
+
+
 # ---- routes ---------------------------------------------------------------------------
 
 

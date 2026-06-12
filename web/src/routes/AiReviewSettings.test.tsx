@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import type { AiReviewConfig, AppConfig, Session } from "../types/api";
 import { AiReviewSettings } from "./AiReviewSettings";
 
@@ -134,36 +134,160 @@ test("model list is not fetched while unconfigured (no endpoint/key yet)", async
   expect(screen.getByText(/Set the base URL and API key first/i)).toBeInTheDocument();
 });
 
-test("base URL commits on blur; a new API key is sent once and the field clears", async () => {
+test("Save & validate persists URL+key together, probes /models, and confirms", async () => {
+  // #394: the endpoint section saves ONLY via the explicit button — one setPrefs call
+  // carrying both fields — and validates immediately through the /models proxy.
   const user = userEvent.setup();
   renderPanel();
+  await screen.findByRole("combobox", { name: "Model" }); // mount probe done
+  expect(api.aiReviewModels).toHaveBeenCalledTimes(1);
+
   const url = screen.getByLabelText(/Endpoint base URL/i);
   await user.clear(url);
   await user.type(url, "https://other.example/v1");
-  await user.tab();
-  await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({
-      ai_review: { base_url: "https://other.example/v1" },
-    }),
-  );
-
   const key = screen.getByLabelText(/API key/i);
   await user.type(key, "sk-new-key");
-  await user.tab();
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { api_key: "sk-new-key" } }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { base_url: "https://other.example/v1", api_key: "sk-new-key" },
+    }),
   );
+  expect(api.setPrefs).toHaveBeenCalledTimes(1); // both fields in ONE save
+  // The save-time validation probe bypasses the server cache.
+  await waitFor(() => expect(api.aiReviewModels).toHaveBeenLastCalledWith({ refresh: true }));
   await waitFor(() => expect(key).toHaveValue("")); // write-only: cleared after save
+  expect(await screen.findByText(/Endpoint validated — 3 models available/i)).toBeInTheDocument();
 });
 
-test("blurring an empty key field sends nothing (blank = unchanged)", async () => {
+test("the URL and key fields never persist on blur", async () => {
   const user = userEvent.setup();
   renderPanel();
-  await user.click(screen.getByLabelText(/API key/i));
-  await user.tab();
-  expect(api.setPrefs).not.toHaveBeenCalledWith(
-    expect.objectContaining({ ai_review: expect.objectContaining({ api_key: "" }) }),
+  await screen.findByRole("combobox", { name: "Model" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.clear(url);
+  await user.type(url, "https://other.example/v1");
+  await user.tab(); // blur the URL — nothing saved
+  const key = screen.getByLabelText(/API key/i);
+  await user.type(key, "sk-typed-but-not-saved");
+  await user.tab(); // blur the key — NEVER persisted on blur (#394)
+  expect(api.setPrefs).not.toHaveBeenCalled();
+  expect(key).toHaveValue("sk-typed-but-not-saved"); // draft survives until Save
+});
+
+test("a failed validation shows the gateway's error verbatim (#382)", async () => {
+  const user = userEvent.setup();
+  const gw =
+    "model listing returned HTTP 401: Authentication Error - LiteLLM Virtual Key expected.";
+  vi.mocked(api.aiReviewModels)
+    .mockResolvedValueOnce({ models: ["m-a"] }) // mount probe: stored config still valid
+    .mockRejectedValueOnce(new ApiError(502, gw)); // save-time probe: new key rejected
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" });
+  await user.type(screen.getByLabelText(/API key/i), "not-a-virtual-key");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+  expect(await screen.findByText(`✗ ${gw}`)).toBeInTheDocument();
+  // The model field falls back to free-text entry; the config itself stayed saved.
+  expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe("model id");
+});
+
+test("dirty endpoint edits show the unsaved note and lock the model control", async () => {
+  const user = userEvent.setup();
+  // No validated config: the mount probe fails (e.g. stored key already broken).
+  vi.mocked(api.aiReviewModels).mockRejectedValue(new ApiError(502, "HTTP 401"));
+  renderPanel();
+  await waitFor(() =>
+    expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe("model id"),
   );
+  const saveBtn = screen.getByRole("button", { name: /save & validate/i });
+  expect(saveBtn).toBeDisabled(); // nothing edited yet
+  await user.type(screen.getByLabelText(/API key/i), "sk-fresh");
+  expect(screen.getByText(/Unsaved changes — Save applies and validates/i)).toBeInTheDocument();
+  expect(saveBtn).toBeEnabled();
+  expect(screen.getByLabelText("Model")).toBeDisabled(); // no validated config → locked
+  expect(screen.getByRole("button", { name: /refresh model list/i })).toBeDisabled();
+});
+
+test("dirty edits do NOT lock the model dropdown while a validated config exists", async () => {
+  const user = userEvent.setup();
+  renderPanel(); // mount probe succeeds → validated
+  const select = await screen.findByRole("combobox", { name: "Model" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.clear(url);
+  await user.type(url, "https://other.example/v1");
+  expect(screen.getByText(/Unsaved changes/i)).toBeInTheDocument();
+  expect(select).toBeEnabled(); // the saved config behind the list is still validated
+});
+
+test("dirty endpoint drafts survive a model auto-save while a validated config exists", async () => {
+  // Hermes on #396: the dropdown stays enabled next to dirty endpoint edits (#394), so
+  // the model save's echo must not reseed the drafts and silently discard the edits.
+  const user = userEvent.setup();
+  renderPanel(); // mount probe succeeds → validated
+  const select = await screen.findByRole("combobox", { name: "Model" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.clear(url);
+  await user.type(url, "https://other.example/v1");
+  await user.type(screen.getByLabelText(/API key/i), "sk-unsaved-edit");
+  await user.selectOptions(select, "m-b");
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { model: "m-b" } }),
+  );
+  expect(url).toHaveValue("https://other.example/v1"); // NOT reverted to the saved URL
+  expect(screen.getByLabelText(/API key/i)).toHaveValue("sk-unsaved-edit");
+  expect(screen.getByText(/Unsaved changes/i)).toBeInTheDocument();
+});
+
+test("a successful Save & validate still reseeds — the dirty state clears", async () => {
+  // The #396 guard must not overshoot: the endpoint's own save echoes the draft back
+  // as the persisted URL, so the reseed applies and the unsaved warning goes away.
+  const user = userEvent.setup();
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.clear(url);
+  await user.type(url, "https://other.example/v1");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+  await waitFor(() =>
+    expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument(),
+  );
+  expect(url).toHaveValue("https://other.example/v1"); // the new persisted value
+  expect(screen.getByRole("button", { name: /save & validate/i })).toBeDisabled();
+});
+
+test("the masked sentinel round-trips as 'unchanged' — never sent as the key", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.clear(url);
+  await user.type(url, "https://other.example/v1");
+  await user.type(screen.getByLabelText(/API key/i), "********");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { base_url: "https://other.example/v1" }, // no api_key field at all
+    }),
+  );
+});
+
+test("a save that leaves the config incomplete reports it instead of probing", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setPrefs).mockImplementation(async (p) => ({
+    ai_review: {
+      ...aiBlock({ api_key_set: false, configured: false }),
+      ...(p as { ai_review: object }).ai_review,
+    },
+  }));
+  renderPanel(aiBlock({ configured: false, api_key_set: false, base_url: "" }));
+  await screen.findByRole("heading", { name: "AI session review" });
+  const url = screen.getByLabelText(/Endpoint base URL/i);
+  await user.type(url, "https://other.example/v1");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+  expect(
+    await screen.findByText(/Set both the base URL and an API key to validate/i),
+  ).toBeInTheDocument();
+  expect(api.aiReviewModels).not.toHaveBeenCalled(); // nothing to validate yet
 });
 
 test("prompt Save persists the draft; Reset to default saves the server default", async () => {
@@ -232,7 +356,7 @@ test("completing the endpoint config refetches the shared /api/config context", 
   vi.mocked(api.setPrefs).mockResolvedValue({ ai_review: aiBlock() }); // configured: true
   renderPanel(aiBlock({ configured: false, api_key_set: false }), refresh);
   await user.type(screen.getByLabelText(/API key/i), "sk-new-key");
-  await user.tab();
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 });
 

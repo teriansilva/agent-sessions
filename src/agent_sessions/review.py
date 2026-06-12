@@ -80,7 +80,10 @@ _TRANSPORT: httpx.AsyncBaseTransport | None = None
 
 class ReviewError(Exception):
     """Fail-soft review failure. The message is operator-safe: it never embeds the API
-    key or raw endpoint response bodies."""
+    key. Review (chat-completion) failures never embed raw endpoint response bodies;
+    the /models validation probe is the one exception — it carries a BOUNDED,
+    key-redacted extract of the gateway's error text (#382) so Settings can show why
+    save-time validation failed."""
 
 
 class NotConfiguredError(ReviewError):
@@ -288,6 +291,42 @@ async def run_review(key: str) -> dict:
 
 # --- model discovery -----------------------------------------------------------------
 
+# Bound on the gateway-error extract surfaced to Settings (#382): enough for a full
+# LiteLLM/OpenAI auth message, short enough to stay a one-liner in the panel.
+GATEWAY_ERROR_MAX = 300
+
+
+def _gateway_error(r: httpx.Response, cfg: dict) -> str:
+    """A bounded extract of the gateway's OWN error text for a failed /models probe
+    (#382): Settings shows WHY save-time validation failed (e.g. LiteLLM's 401
+    "Virtual Key expected…") instead of a bare status code. Tries the OpenAI-style
+    JSON shapes (``error.message`` / ``error`` / ``message`` / ``detail``) before
+    falling back to a plain-text snippet. The configured API key is redacted
+    defensively in case a gateway echoes the Authorization header back."""
+    msg = ""
+    try:
+        payload = r.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            msg = err["message"]
+        elif isinstance(err, str):
+            msg = err
+        elif isinstance(payload.get("message"), str):
+            msg = payload["message"]
+        elif isinstance(payload.get("detail"), str):
+            msg = payload["detail"]
+    if not msg:
+        msg = r.text
+    key = str(cfg.get("api_key") or "")
+    if key:
+        msg = msg.replace(key, "[redacted]")
+    msg = " ".join(msg.split())[:GATEWAY_ERROR_MAX]
+    base = f"model listing returned HTTP {r.status_code}"
+    return f"{base}: {msg}" if msg else base
+
 
 def _cache_key(cfg: dict) -> str:
     # Key fingerprint, never the key itself, so the cache key is log-safe.
@@ -300,7 +339,9 @@ async def list_models(*, force: bool = False) -> list[str]:
     the key (and would hit CORS anyway). Small in-memory TTL cache; ``force`` (the UI
     refresh button) bypasses it. Raises NotConfiguredError when unset, ReviewError when
     the endpoint can't serve a list (404 / error / timeout) — the caller falls back to
-    free-text model entry."""
+    free-text model entry. This call doubles as the save-time validation probe (#394):
+    a non-200 carries a bounded extract of the gateway's own error text (#382) so the
+    Settings panel can show WHY the endpoint/key were rejected."""
     cfg = _require_config()
     ck = _cache_key(cfg)
     now = time.monotonic()
@@ -314,7 +355,7 @@ async def list_models(*, force: bool = False) -> list[str]:
     except httpx.HTTPError as e:
         raise ReviewError(f"model listing unreachable ({type(e).__name__})") from None
     if r.status_code != 200:
-        raise ReviewError(f"model listing returned HTTP {r.status_code}")
+        raise ReviewError(_gateway_error(r, cfg))
     try:
         payload = r.json()
     except ValueError:
