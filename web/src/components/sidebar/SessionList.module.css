@@ -95,7 +95,8 @@
   transition: opacity 0.1s;
 }
 .rowWrap:hover .actions,
-.rowWrap:focus-within .actions {
+.rowWrap:focus-within .actions,
+.actionsOpen {
   opacity: 1;
 }
 @media (hover: none) {

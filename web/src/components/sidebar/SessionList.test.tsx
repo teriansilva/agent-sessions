@@ -59,6 +59,12 @@ beforeEach(() => {
   mockArchive.mockReset();
 });
 
+/** #384: row actions live behind a single ⋯ trigger now — open it first. */
+async function openRowMenu(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  return screen.getByRole("menu", { name: "Session actions" });
+}
+
 test("renders session rows from the API", async () => {
   mockSessions.mockResolvedValue(
     pageOf([sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")], { total: 2 }),
@@ -175,7 +181,9 @@ test("renaming a row calls api.rename and updates the title in place", async () 
       <SessionList />
     </MemoryRouter>,
   );
-  await user.click(await screen.findByRole("button", { name: /rename session/i }));
+  await screen.findByText("Old name");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: /rename session/i }));
   const input = screen.getByRole("textbox", { name: /session title/i });
   await user.clear(input);
   await user.type(input, "New name");
@@ -193,7 +201,9 @@ test("archiving a row calls api.archive and removes it from the active list", as
       <SessionList />
     </MemoryRouter>,
   );
-  await user.click(await screen.findByRole("button", { name: /archive session/i }));
+  await screen.findByText("Doomed");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: /archive session/i }));
   expect(mockArchive).toHaveBeenCalledWith("claude:a");
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
 });
@@ -361,7 +371,8 @@ test("Review now calls the API and folds the result into the row (#356)", async 
     </MemoryRouter>,
   );
   await screen.findByText("untitled work");
-  await user.click(screen.getByRole("button", { name: "Review session now" }));
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
   expect(api.reviewNow).toHaveBeenCalledWith("claude:a");
   // Title precedence: the AI title becomes the display title for an untitled session.
   expect(await screen.findByText("Refit the pipeline")).toBeInTheDocument();
@@ -378,12 +389,14 @@ test("the exclude toggle flips review_excluded via the API (#356)", async () => 
     </MemoryRouter>,
   );
   await screen.findByText("First");
-  await user.click(screen.getByRole("button", { name: "Exclude from AI review" }));
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Exclude from AI review" }));
   expect(api.reviewExclude).toHaveBeenCalledWith("claude:a", true);
   expect(await screen.findByText("Excluded from AI review")).toBeInTheDocument();
 });
 
-test("AI review row actions stay hidden while the endpoint is unconfigured (#356)", async () => {
+test("AI review menu items stay hidden while the endpoint is unconfigured (#356/#384)", async () => {
+  const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
   render(
     <MemoryRouter>
@@ -391,6 +404,55 @@ test("AI review row actions stay hidden while the endpoint is unconfigured (#356
     </MemoryRouter>,
   );
   await screen.findByText("First");
-  expect(screen.queryByRole("button", { name: "Review session now" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Exclude from AI review" })).not.toBeInTheDocument();
+  await openRowMenu(user);
+  // Lean menu: rename + archive only — no AI-review items, no separator group.
+  expect(screen.queryByRole("menuitem", { name: "Review session now" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("menuitem", { name: "Exclude from AI review" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Rename session" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Archive session" })).toBeInTheDocument();
+});
+
+// #384: the ⋯ trigger sits beside the NavLink, so opening the menu must neither
+// navigate the row nor fire the drawer-close callback.
+test("opening the row menu does not navigate or close the drawer (#384)", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  render(
+    <MemoryRouter initialEntries={["/"]}>
+      <SessionList onNavigate={onNavigate} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  expect(screen.getByRole("menu", { name: "Session actions" })).toBeInTheDocument();
+  expect(onNavigate).not.toHaveBeenCalled();
+  // The row link is still not aria-current — no navigation happened.
+  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute("aria-current");
+});
+
+// #384: configured install — the full action set renders inside one menu, grouped
+// by a separator between AI-review actions and row management.
+test("the configured menu lists all four actions behind one trigger (#384)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  const menu = await openRowMenu(user);
+  const items = screen.getAllByRole("menuitem");
+  expect(items.map((el) => el.textContent)).toEqual([
+    "Review now",
+    "Exclude from AI review",
+    "Rename",
+    "Archive",
+  ]);
+  expect(menu.querySelector('[role="separator"]')).not.toBeNull();
+  // Exactly one trigger per row — the old four-button cluster is gone.
+  expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
 });

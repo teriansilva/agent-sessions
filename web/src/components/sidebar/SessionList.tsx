@@ -18,6 +18,7 @@ import { useSessionsList } from "../../hooks/useSessionsList";
 import { displayProjectName, engineBadge, relTime } from "../../lib/format";
 import type { Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
+import { RowMenu, type RowMenuEntry } from "./RowMenu";
 import styles from "./SessionList.module.css";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
@@ -58,6 +59,9 @@ function Row({
   const [draft, setDraft] = useState(s.title);
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  // Keeps the hover-revealed ⋯ cluster visible while its menu is open: the menu lives
+  // in a body portal, so :focus-within on the row no longer covers the open state.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const reviewNow = async () => {
     if (!onReviewNow) return;
@@ -149,6 +153,54 @@ function Row({
     );
   }
 
+  // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Same
+  // actions, same gating: Review-now / exclude items exist only when the AI-review
+  // handlers were passed down (ai_review.configured), the exclude item flips label
+  // for an excluded row, archive flips for an archived one. Busy items are disabled
+  // in place (aria-disabled) rather than removed, so the menu doesn't reflow.
+  const menuItems: RowMenuEntry[] = [];
+  if (onReviewNow && !s.review_excluded) {
+    menuItems.push({
+      key: "review",
+      label: "Review now",
+      ariaLabel: "Review session now",
+      icon: <Sparkles size={15} className={reviewing ? styles.spin : undefined} />,
+      disabled: busy || reviewing,
+      onSelect: () => void reviewNow(),
+    });
+  }
+  if (onToggleReviewExcluded) {
+    menuItems.push({
+      key: "exclude",
+      label: s.review_excluded ? "Include in AI review" : "Exclude from AI review",
+      icon: s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />,
+      disabled: busy || reviewing,
+      onSelect: () => void toggleExcluded(),
+    });
+  }
+  if (menuItems.length > 0) menuItems.push("separator");
+  menuItems.push(
+    {
+      key: "rename",
+      label: "Rename",
+      ariaLabel: "Rename session",
+      icon: <Pencil size={15} />,
+      disabled: busy,
+      onSelect: () => {
+        setDraft(s.title);
+        setEditing(true);
+      },
+    },
+    {
+      key: "archive",
+      label: s.archived ? "Unarchive" : "Archive",
+      ariaLabel: s.archived ? "Unarchive session" : "Archive session",
+      icon: s.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />,
+      disabled: busy,
+      onSelect: () => void toggleArchive(),
+    },
+  );
+
   return (
     <li className={styles.rowWrap}>
       <NavLink
@@ -231,54 +283,15 @@ function Row({
           </div>
         </div>
       </NavLink>
-      <div className={styles.actions}>
-        {onReviewNow && !s.review_excluded && (
-          <button
-            type="button"
-            className={styles.iconBtn}
-            aria-label="Review session now"
-            title="Review now"
-            disabled={busy || reviewing}
-            onClick={() => void reviewNow()}
-          >
-            <Sparkles size={15} className={reviewing ? styles.spin : undefined} />
-          </button>
-        )}
-        {onToggleReviewExcluded && (
-          <button
-            type="button"
-            className={styles.iconBtn}
-            aria-label={
-              s.review_excluded ? "Include in AI review" : "Exclude from AI review"
-            }
-            title={s.review_excluded ? "Include in AI review" : "Exclude from AI review"}
-            disabled={busy || reviewing}
-            onClick={() => void toggleExcluded()}
-          >
-            {s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />}
-          </button>
-        )}
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label="Rename session"
-          disabled={busy}
-          onClick={() => {
-            setDraft(s.title);
-            setEditing(true);
-          }}
-        >
-          <Pencil size={15} />
-        </button>
-        <button
-          type="button"
-          className={styles.iconBtn}
-          aria-label={s.archived ? "Unarchive session" : "Archive session"}
-          disabled={busy}
-          onClick={() => void toggleArchive()}
-        >
-          {s.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />}
-        </button>
+      <div className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}>
+        <RowMenu
+          items={menuItems}
+          title={s.title || "(untitled)"}
+          triggerIcon={
+            reviewing ? <Sparkles size={15} className={styles.spin} /> : undefined
+          }
+          onOpenChange={setMenuOpen}
+        />
       </div>
     </li>
   );
