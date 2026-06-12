@@ -29,6 +29,7 @@ function aiBlock(over: Partial<AiReviewConfig> = {}): AiReviewConfig {
     interval_minutes: 5,
     prompt: "custom prompt",
     max_input_chars: 24000,
+    request_timeout: null,
     api_key_set: true,
     configured: true,
     default_prompt: DEFAULT_PROMPT,
@@ -242,6 +243,50 @@ test("a save that doesn't flip `configured` leaves the config context alone", as
   await user.click(screen.getByRole("checkbox", { name: /enable periodic reviews/i }));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
   expect(refresh).not.toHaveBeenCalled();
+});
+
+test("review timeout renders the saved value; empty shows the 120s default hint", async () => {
+  renderPanel(aiBlock({ request_timeout: 90 }));
+  expect(await screen.findByLabelText("Review timeout")).toHaveValue(90);
+  expect(screen.getByText(/Slow local models often need 60–180s/i)).toBeInTheDocument();
+});
+
+test("review timeout commits on blur through the ai_review patch flow", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const field = screen.getByLabelText("Review timeout");
+  expect(field).toHaveValue(null); // unset → placeholder shows the 120 default
+  await user.type(field, "240");
+  await user.tab();
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { request_timeout: 240 } }),
+  );
+});
+
+test("an out-of-range review timeout is rejected client-side and the draft reverts", async () => {
+  const user = userEvent.setup();
+  renderPanel(aiBlock({ request_timeout: 90 }));
+  const field = screen.getByLabelText("Review timeout");
+  await user.clear(field);
+  await user.type(field, "5");
+  await user.tab();
+  expect(api.setPrefs).not.toHaveBeenCalledWith(
+    expect.objectContaining({
+      ai_review: expect.objectContaining({ request_timeout: expect.anything() }),
+    }),
+  );
+  expect(field).toHaveValue(90); // reverted to the saved value, like interval
+});
+
+test("clearing the review timeout sends null (unset → env/default applies)", async () => {
+  const user = userEvent.setup();
+  renderPanel(aiBlock({ request_timeout: 90 }));
+  const field = screen.getByLabelText("Review timeout");
+  await user.clear(field);
+  await user.tab();
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { request_timeout: null } }),
+  );
 });
 
 test("the enable toggle persists immediately", async () => {

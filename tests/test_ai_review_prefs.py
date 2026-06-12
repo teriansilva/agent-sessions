@@ -108,6 +108,11 @@ def test_validate_rejects_bad_blocks():
         ({"interval_minutes": 0}, "interval_minutes"),
         ({"interval_minutes": True}, "interval_minutes"),
         ({"max_input_chars": 10}, "max_input_chars"),
+        ({"request_timeout": 5}, "request_timeout"),
+        ({"request_timeout": 601}, "request_timeout"),
+        ({"request_timeout": "x"}, "request_timeout"),
+        ({"request_timeout": True}, "request_timeout"),
+        ({"request_timeout": float("nan")}, "request_timeout"),
     ]
     for patch, frag in cases:
         err = prefs.validate_ai_review_patch(patch)
@@ -117,6 +122,26 @@ def test_validate_rejects_bad_blocks():
         prefs.validate_ai_review_patch({"base_url": "https://ai.example/v1", "interval_minutes": 5})
         is None
     )
+    # request_timeout: the full [10, 600] band (int or float) plus null-to-unset.
+    for ok in (10, 600, 120, 90.5, None):
+        assert prefs.validate_ai_review_patch({"request_timeout": ok}) is None, ok
+
+
+def test_request_timeout_round_trip_and_unset(tmp_home, monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
+    assert prefs.get_ai_review()["request_timeout"] is None  # default = unset
+    prefs.set_ai_review({"request_timeout": 180})
+    assert prefs.get_ai_review()["request_timeout"] == 180
+    # Non-secret: the public view (what /api/config returns) carries it for the UI.
+    assert prefs.public_ai_review()["request_timeout"] == 180
+    prefs.set_ai_review({"request_timeout": None})  # null clears back to unset
+    assert prefs.get_ai_review()["request_timeout"] is None
+    # An out-of-range value smuggled into prefs.json on disk is dropped on read.
+    prefs.set_ai_review({"request_timeout": 180})
+    raw = json.loads((tmp_home / "prefs.json").read_text())
+    raw["ai_review"]["request_timeout"] = 2
+    (tmp_home / "prefs.json").write_text(json.dumps(raw))
+    assert prefs.get_ai_review()["request_timeout"] is None
 
 
 # ---- HTTP surface ----------------------------------------------------------------------
@@ -135,6 +160,13 @@ def test_api_prefs_validates_and_masks(auth_cfg, tmp_home, monkeypatch):
     assert r.status_code == 422
     r = _post_prefs(c, auth_cfg, csrf, "nope")
     assert r.status_code == 422
+    r = _post_prefs(c, auth_cfg, csrf, {"request_timeout": 5})
+    assert r.status_code == 422
+    assert prefs.get_ai_review()["request_timeout"] is None
+    # Valid timeout persists and is echoed in the public view.
+    r = _post_prefs(c, auth_cfg, csrf, {"request_timeout": 240})
+    assert r.status_code == 200
+    assert r.json()["ai_review"]["request_timeout"] == 240
 
     # Valid write → echo is the PUBLIC view (api_key_set, no key value).
     r = _post_prefs(

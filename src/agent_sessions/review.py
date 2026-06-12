@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -40,8 +41,31 @@ REASON_MAX = 280
 # separately from max_input_chars so a chatty terminal can't crowd out the transcript.
 LIVE_TAIL_CHARS = 4000
 
-# Hard request timeout: reviews run off the request path but must never wedge a worker.
-REQUEST_TIMEOUT_S = 30.0
+
+# Hard request timeout for the review completion call. Sized for SLOW LOCAL MODELS
+# (#391): ~13 tok/s generation plus prompt processing on multi-thousand-token
+# transcripts means real reviews take 40-90s — 30s aborted every one while the
+# gateway logged no error. Env-tunable; the floor keeps a typo from zeroing it.
+def _timeout_env(name: str, default: float) -> float:
+    try:
+        return max(10.0, float(os.environ.get(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def request_timeout(cfg: dict | None = None) -> float:
+    """Per-call timeout for the review completion request (#391 follow-up). Resolution:
+    the Settings value (prefs ``ai_review.request_timeout``) wins when set, else the
+    ``AGENT_SESSIONS_AI_REVIEW_TIMEOUT`` env var, else 120s — floored at 10s everywhere.
+    Resolved per call (prefs are read per call by design), so a Settings change applies
+    to the next review without a restart."""
+    block = cfg if cfg is not None else prefs.get_ai_review()
+    pref = block.get("request_timeout")
+    if isinstance(pref, int | float) and not isinstance(pref, bool):
+        return max(10.0, float(pref))
+    return _timeout_env("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", 120.0)
+
+
 MODELS_TIMEOUT_S = 10.0
 
 # /models proxy cache (#356): tiny TTL so the Settings refresh button stays honest while
@@ -223,7 +247,7 @@ async def run_review(key: str) -> dict:
         "stream": False,
     }
     try:
-        async with _client(REQUEST_TIMEOUT_S) as client:
+        async with _client(request_timeout(cfg)) as client:
             r = await client.post(
                 _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
             )

@@ -48,6 +48,9 @@ export interface AiReviewConfig {
   interval_minutes: number;
   prompt: string;
   max_input_chars: number;
+  /** Per-request review timeout in seconds (10–600); null = unset → server falls back
+   *  to the AGENT_SESSIONS_AI_REVIEW_TIMEOUT env var, then 120s (#391 follow-up). */
+  request_timeout: number | null;
   /** A key is stored server-side (its value is never echoed). */
   api_key_set: boolean;
   /** Base URL + key present — the /models proxy + Review now are usable. */

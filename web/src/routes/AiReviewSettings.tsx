@@ -17,6 +17,7 @@ const FALLBACK: AiReviewConfig = {
   interval_minutes: 5,
   prompt: "",
   max_input_chars: 24000,
+  request_timeout: null,
   api_key_set: false,
   configured: false,
   default_prompt: "",
@@ -48,12 +49,16 @@ export function AiReviewSettings() {
   const [urlDraft, setUrlDraft] = useState(block.base_url);
   const [keyDraft, setKeyDraft] = useState("");
   const [intervalDraft, setIntervalDraft] = useState(String(block.interval_minutes));
+  const [timeoutDraft, setTimeoutDraft] = useState(
+    block.request_timeout == null ? "" : String(block.request_timeout),
+  );
   const [promptDraft, setPromptDraft] = useState(block.prompt);
   const [seeded, setSeeded] = useState<AiReviewConfig | null>(null);
   if (seeded !== block) {
     setSeeded(block);
     setUrlDraft(block.base_url);
     setIntervalDraft(String(block.interval_minutes));
+    setTimeoutDraft(block.request_timeout == null ? "" : String(block.request_timeout));
     setPromptDraft(block.prompt);
   }
 
@@ -164,6 +169,22 @@ export function AiReviewSettings() {
       return;
     }
     if (n !== block.interval_minutes) void save({ interval_minutes: n });
+  };
+  /** Review timeout (#391 follow-up): empty = unset (server falls back to the env var /
+   *  120s default); otherwise 10–600 seconds — out-of-range reverts to the saved value,
+   *  mirroring commitInterval. */
+  const commitTimeout = () => {
+    const v = timeoutDraft.trim();
+    if (v === "") {
+      if (block.request_timeout !== null) void save({ request_timeout: null });
+      return;
+    }
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 10 || n > 600) {
+      setTimeoutDraft(block.request_timeout == null ? "" : String(block.request_timeout));
+      return;
+    }
+    if (n !== block.request_timeout) void save({ request_timeout: n });
   };
 
   const modelSelect =
@@ -330,6 +351,30 @@ export function AiReviewSettings() {
           <p className={styles.hint}>
             Only sessions with new activity since their last review are sent. One bounded
             request per session — no streaming.
+          </p>
+        </div>
+
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="ai-timeout">
+            Review timeout
+          </label>
+          <div className={styles.aiIntervalRow}>
+            <input
+              id="ai-timeout"
+              className={`${styles.aiInput} ${styles.aiIntervalInput}`}
+              type="number"
+              min={10}
+              max={600}
+              placeholder="120"
+              value={timeoutDraft}
+              onChange={(e) => setTimeoutDraft(e.target.value)}
+              onBlur={commitTimeout}
+            />
+            <span>seconds</span>
+          </div>
+          <p className={styles.hint}>
+            Hard timeout per review request (10–600). Slow local models often need
+            60–180s. Leave empty to use the server default.
           </p>
         </div>
         {savedNote && <p className={styles.hint}>Saved.</p>}

@@ -377,3 +377,52 @@ def test_review_writes_follow_reconciled_alias_sidecar(
     assert real not in idx
     assert idx[placeholder].review_excluded is True
     assert idx[placeholder].ai_summary == "Editing tests"
+
+
+def test_review_timeout_env_tunable(monkeypatch):
+    # #391: 30s aborted every real review on slow local models; the timeout is now
+    # env-tunable with a sane default and a floor against typos.
+    monkeypatch.setenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", "300")
+    assert review._timeout_env("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", 120.0) == 300.0
+    monkeypatch.setenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", "0")
+    assert review._timeout_env("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", 120.0) == 10.0
+    monkeypatch.setenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", "garbage")
+    assert review._timeout_env("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", 120.0) == 120.0
+
+
+def test_request_timeout_precedence_pref_env_default(ai_prefs, monkeypatch):
+    # #391 follow-up (Settings field): pref > env > 120 default, floored at 10 everywhere,
+    # resolved per call so a Settings change applies to the next review without restart.
+    monkeypatch.delenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", raising=False)
+    assert review.request_timeout() == 120.0  # nothing set → default
+
+    monkeypatch.setenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", "300")
+    assert review.request_timeout() == 300.0  # env beats default
+
+    prefs.set_ai_review({"request_timeout": 240})
+    assert review.request_timeout() == 240.0  # pref beats env
+
+    prefs.set_ai_review({"request_timeout": None})  # explicit unset → back to env
+    assert review.request_timeout() == 300.0
+
+    # The floor holds even against a raw cfg dict (defense in depth — prefs validation
+    # already rejects < 10 over the API).
+    assert review.request_timeout({"request_timeout": 3}) == 10.0
+    monkeypatch.setenv("AGENT_SESSIONS_AI_REVIEW_TIMEOUT", "2")
+    assert review.request_timeout({"request_timeout": None}) == 10.0
+
+
+def test_run_review_uses_pref_timeout_per_call(ai_prefs, fake_jsonl, monkeypatch):
+    # The completion call must pick up the Settings value at call time.
+    seen: list[float] = []
+    real_client = review._client
+
+    def spy(timeout: float):
+        seen.append(timeout)
+        return real_client(timeout)
+
+    monkeypatch.setattr(review, "_client", spy)
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(_ok_result()))
+    prefs.set_ai_review({"request_timeout": 333})
+    asyncio.run(review.run_review(SID))
+    assert seen == [333.0]

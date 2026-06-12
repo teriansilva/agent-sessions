@@ -391,6 +391,10 @@ AI_REVIEW_INTERVAL_MIN = 1
 AI_REVIEW_INTERVAL_MAX = 24 * 60
 AI_REVIEW_INPUT_CHARS_MIN = 1_000
 AI_REVIEW_INPUT_CHARS_MAX = 200_000
+# Per-request review timeout in seconds (#391 follow-up): operator-settable from the UI.
+# None = unset → review.py falls back to AGENT_SESSIONS_AI_REVIEW_TIMEOUT, then 120s.
+AI_REVIEW_TIMEOUT_MIN = 10
+AI_REVIEW_TIMEOUT_MAX = 600
 
 _AI_REVIEW_DEFAULTS: dict[str, object] = {
     "enabled": False,
@@ -400,6 +404,7 @@ _AI_REVIEW_DEFAULTS: dict[str, object] = {
     "interval_minutes": 5,
     "prompt": DEFAULT_AI_REVIEW_PROMPT,
     "max_input_chars": 24_000,
+    "request_timeout": None,
 }
 
 
@@ -439,6 +444,13 @@ def get_ai_review(path: Path | None = None) -> dict:
             v = raw.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
                 out[k] = v
+        t = raw.get("request_timeout")
+        if (
+            isinstance(t, int | float)
+            and not isinstance(t, bool)
+            and AI_REVIEW_TIMEOUT_MIN <= t <= AI_REVIEW_TIMEOUT_MAX
+        ):
+            out["request_timeout"] = t
     if not str(out["prompt"]).strip():
         out["prompt"] = DEFAULT_AI_REVIEW_PROMPT  # empty prompt can never strand reviews
     return out
@@ -492,6 +504,18 @@ def validate_ai_review_patch(patch: object) -> str | None:
             v = patch[k]
             if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
                 return f"ai_review.{k} must be an integer between {lo} and {hi}"
+    if "request_timeout" in patch:
+        v = patch["request_timeout"]
+        # None = explicit unset (fall back to env/default). NaN/inf fail the range check.
+        if v is not None and (
+            not isinstance(v, int | float)
+            or isinstance(v, bool)
+            or not (AI_REVIEW_TIMEOUT_MIN <= v <= AI_REVIEW_TIMEOUT_MAX)
+        ):
+            return (
+                "ai_review.request_timeout must be a number of seconds between "
+                f"{AI_REVIEW_TIMEOUT_MIN} and {AI_REVIEW_TIMEOUT_MAX}, or null to unset"
+            )
     return None
 
 
@@ -500,7 +524,15 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     and persist. Returns the new full block (server-side view, including the key)."""
     cur = get_ai_review(path)
     new = dict(cur)
-    for k in ("enabled", "base_url", "model", "prompt", "interval_minutes", "max_input_chars"):
+    for k in (
+        "enabled",
+        "base_url",
+        "model",
+        "prompt",
+        "interval_minutes",
+        "max_input_chars",
+        "request_timeout",  # None passes through = unset (env/default applies)
+    ):
         if k in patch:
             new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
     if not str(new["prompt"]).strip():
