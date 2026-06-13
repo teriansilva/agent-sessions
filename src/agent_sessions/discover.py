@@ -27,6 +27,8 @@ _DIRS: dict[str, list[str]] = {
     "gemini": ["~/.local/bin"],
 }
 
+_NPM_GLOBAL_ENGINES = frozenset({"codex", "gemini"})
+
 
 def envvar(name: str) -> str:
     return f"AGENT_SESSIONS_{name.upper()}_BIN"
@@ -67,7 +69,7 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
     if on_path:
         return on_path
     dirs = list(_DIRS[name])
-    if name == "gemini":
+    if name in _NPM_GLOBAL_ENGINES:
         npm = _npm_global_bin()
         if npm:
             dirs.append(npm)

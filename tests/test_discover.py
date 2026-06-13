@@ -37,6 +37,23 @@ def test_resolve_path_then_known_dir(tmp_path, monkeypatch):
     assert discover.resolve("opencode", {}) == found
 
 
+def test_resolve_codex_checks_npm_global_bin(tmp_path, monkeypatch):
+    """Codex commonly comes from npm, same as Gemini; doctor must pin its absolute path."""
+    npm_prefix = tmp_path / "npm"
+    (npm_prefix / "bin").mkdir(parents=True)
+    found = _make_exec(npm_prefix / "bin" / "codex")
+
+    monkeypatch.setattr(discover.shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
+    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "codex": ["/nonexistent"]})
+    monkeypatch.setattr(
+        discover.subprocess,
+        "run",
+        lambda *a, **kw: type("Result", (), {"returncode": 0, "stdout": str(npm_prefix)})(),
+    )
+
+    assert discover.resolve("codex", {}) == found
+
+
 def test_resolve_not_found_is_none(monkeypatch):
     monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
     monkeypatch.setattr(discover, "_DIRS", {"codex": ["/nonexistent"]})
