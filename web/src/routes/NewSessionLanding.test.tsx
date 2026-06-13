@@ -73,7 +73,7 @@ test("starts a session: mints an id and navigates with the fresh launch params",
 
 test.each([
   ["claude", /^[0-9a-f-]{36}$/],
-  ["codex", /^[0-9a-f-]{36}$/],
+  ["codex", /^new-[0-9a-f-]{36}$/], // #315: codex needs the new-<uuid> placeholder
   ["gemini", /^[0-9a-f-]{36}$/],
   ["opencode", /^new-[0-9a-f-]{36}$/], // #163: opencode needs the new-<uuid> placeholder
 ])("mintNewSessionId(%s) → %s", (engine, shape) => {
