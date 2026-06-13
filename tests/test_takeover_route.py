@@ -47,10 +47,10 @@ class FakeRegistry:
         self.attached: list[tuple[str, str]] = []
         self.detached: list[tuple[str, str]] = []
 
-    async def on_attach(self, engine: str, sid: str) -> None:
+    async def on_attach(self, engine: str, sid: str, viewer_id: object = None) -> None:
         self.attached.append((engine, sid))
 
-    async def on_detach(self, engine: str, sid: str) -> None:
+    async def on_detach(self, engine: str, sid: str, viewer_id: object = None) -> None:
         self.detached.append((engine, sid))
 
 
@@ -87,7 +87,8 @@ def test_passive_is_inert_sends_gate_and_never_attaches(monkeypatch):
     assert len(gate) == 1
     assert gate[0]["holder"]["label"] == "Mac · Chrome"  # who holds it, for the gate
     assert ran == []  # webterm.run NEVER called for a passive viewer
-    assert reg.attached == []  # and no PTY attach/stream
+    assert reg.attached == [(ENG, SID)]  # BUT it is registered as attached (ref-counted, #398)
+    assert reg.detached == [(ENG, SID)]
     assert owner.owns(ENG, SID, "held")  # holder unchanged
 
 

@@ -112,8 +112,12 @@ async def _serve_takeover(
         # connection must not start a PTY stream or resize path just to show the gate.)
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "gate", "holder": _holder_view(holder)}))
-        with contextlib.suppress(Exception):
+        try:
+            await registry.on_attach(engine, phys_native, viewer_id=ws)
             await _await_disconnect(ws)
+        finally:
+            with contextlib.suppress(Exception):
+                await registry.on_detach(engine, phys_native, viewer_id=ws)
         return
     # Owner: become the sole writer and stream, guarded by the heartbeat/demotion poll.
     attached = False
@@ -123,7 +127,7 @@ async def _serve_takeover(
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "role", "role": "owner"}))
         with contextlib.suppress(Exception):
-            await registry.on_attach(engine, phys_native)
+            await registry.on_attach(engine, phys_native, viewer_id=ws)
         attached = True
         await webterm.run(
             ws,
@@ -146,7 +150,7 @@ async def _serve_takeover(
             await owner.release(engine, phys_native, conn_id)
         if attached:
             with contextlib.suppress(Exception):
-                await registry.on_detach(engine, phys_native)
+                await registry.on_detach(engine, phys_native, viewer_id=ws)
     if stop.is_set():
         # Demoted while still connected (webterm.run left the socket open): show the gate.
         holder = owner.read_owner(engine, phys_native)
@@ -375,7 +379,7 @@ def register(
                 return
             # ---- #184 path (flag OFF): in-memory claim + read-only secondary stream ----
             with contextlib.suppress(Exception):
-                await registry.on_attach(prov.engine_id, phys_native)
+                await registry.on_attach(prov.engine_id, phys_native, viewer_id=ws)
             # Per-tab claim (#184 slice 3): empty fp/tab from an older client
             # falls through as "owner with no recorded claim" (backward-compat).
             # ``force=1`` lets a deliberate takeover demote a stale or recent owner.
@@ -427,7 +431,7 @@ def register(
                     if claim_obj is not None:
                         await registry.release(prov.engine_id, phys_native, fp, tab_id)
                 with contextlib.suppress(Exception):
-                    await registry.on_detach(prov.engine_id, phys_native)
+                    await registry.on_detach(prov.engine_id, phys_native, viewer_id=ws)
         finally:
             # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
             # not Exception) bypass the lock handoff below — nest it in its own try/finally

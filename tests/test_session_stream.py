@@ -394,6 +394,39 @@ def test_stale_owner_lets_next_claim_in(monkeypatch):
     asyncio.run(run())
 
 
+def test_registry_ref_counted_attachments(monkeypatch):
+    """Verify that multiple viewers are tracked and attached only drops to False
+    when the last one detaches (#398)."""
+    monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
+    monkeypatch.setattr(session_stream.ptybridge, "session_exists", lambda *_a, **_kw: True)
+    _patch_physical_key(monkeypatch)
+
+    async def run() -> None:
+        reg = session_stream.SessionRegistry()
+        key = "claude:abc"
+        v1, v2 = object(), object()
+
+        # First viewer attaches
+        await reg.on_attach("claude", "abc", viewer_id=v1)
+        assert reg.get(key)["attached"] is True
+
+        # Second viewer attaches
+        await reg.on_attach("claude", "abc", viewer_id=v2)
+        assert reg.get(key)["attached"] is True
+
+        # First viewer detaches -> still attached
+        await reg.on_detach("claude", "abc", viewer_id=v1)
+        assert reg.get(key)["attached"] is True
+
+        # Second viewer detaches -> now detached
+        await reg.on_detach("claude", "abc", viewer_id=v2)
+        assert reg.get(key)["attached"] is False
+
+        await reg.stop_all()
+
+    asyncio.run(run())
+
+
 def test_owner_heartbeat_resets_lease(monkeypatch):
     monkeypatch.setattr(session_stream.ptybridge, "list_sessions", lambda: [])
     _patch_physical_key(monkeypatch)

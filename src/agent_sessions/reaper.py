@@ -109,10 +109,16 @@ def _activity_mtimes() -> dict[tuple[str, str], float]:
 
 
 def _last_activity(row: dict, mtimes: dict[tuple[str, str], float]) -> float | None:
-    """The later of the live ``last_output_at`` and the transcript mtime; ``None`` if neither."""
+    """The later of the live ``last_output_at`` and the transcript mtime; ``None`` if neither.
+    Falls back to ``started_at`` (#398) so a session that never produced output can still be reaped.
+    """
     candidates = [
         t
-        for t in (row.get("last_output_at"), mtimes.get((row.get("engine"), row.get("sid"))))
+        for t in (
+            row.get("last_output_at"),
+            mtimes.get((row.get("engine"), row.get("sid"))),
+            row.get("started_at"),
+        )
         if t is not None
     ]
     return max(candidates) if candidates else None

@@ -218,8 +218,8 @@ class SessionRegistry:
     """
 
     def __init__(self) -> None:
-        # key → {"engine", "sid", "attached" (bool), "stream" (SessionStream|None),
-        #        "started_at" (float)}
+        # key → {"engine", "sid", "attached" (bool), "viewers" (set),
+        #        "stream" (SessionStream|None), "started_at" (float)}
         self._sessions: dict[str, dict] = {}
         self._state_subs: set[asyncio.Queue[dict]] = set()
         self._lock = asyncio.Lock()
@@ -262,41 +262,54 @@ class SessionRegistry:
                 "engine": phys_engine,
                 "sid": phys_sid,
                 "attached": False,
+                "viewers": set(),
                 "stream": stream,
                 "started_at": stream.started_at,
             }
             asyncio.create_task(self._watch_end(key, stream))
             await self._notify({"t": "added", "session": self._row(key)})
 
-    async def on_attach(self, engine: str, sid: str) -> None:
+    async def on_attach(self, engine: str, sid: str, viewer_id: object = None) -> None:
         """Tell the registry a browser is about to start reading this session's
-        bytes. Stops any server-owned stream so there's only one writer."""
+        bytes. Stops any server-owned stream so there's only one writer.
+
+        ``viewer_id`` (#398) is a unique token (e.g. the WS object) for this
+        connection, allowing ref-counted tracking so `attached` only drops to
+        False when the LAST viewer detaches.
+        """
         async with self._lock:
             if self._closed:
                 return
             phys_engine, phys_sid, key = self._resolve_phys(engine, sid)
             entry = self._sessions.get(key)
             if entry is None:
-                self._sessions[key] = {
+                entry = {
                     "engine": phys_engine,
                     "sid": phys_sid,
                     "attached": True,
+                    "viewers": {viewer_id} if viewer_id is not None else set(),
                     "stream": None,
                     "started_at": time.time(),
                 }
+                self._sessions[key] = entry
                 await self._notify({"t": "added", "session": self._row(key)})
                 return
-            stream = entry.get("stream")
+
+            if viewer_id is not None:
+                entry.setdefault("viewers", set()).add(viewer_id)
             entry["attached"] = True
+
+            stream = entry.get("stream")
             if stream is not None:
                 with contextlib.suppress(Exception):
                     await stream.stop()
                 entry["stream"] = None
                 await self._notify({"t": "updated", "session": self._row(key)})
 
-    async def on_detach(self, engine: str, sid: str) -> None:
-        """Browser disconnected. If the dtach master is still alive, hand byte
-        ownership back to a fresh server-owned SessionStream; else drop."""
+    async def on_detach(self, engine: str, sid: str, viewer_id: object = None) -> None:
+        """Browser disconnected. If no other viewers are left and the dtach
+        master is still alive, hand byte ownership back to a fresh
+        server-owned SessionStream; else drop the entry."""
         async with self._lock:
             if self._closed:
                 return
@@ -304,6 +317,14 @@ class SessionRegistry:
             entry = self._sessions.get(key)
             if entry is None:
                 return
+
+            viewers = entry.setdefault("viewers", set())
+            if viewer_id is not None:
+                viewers.discard(viewer_id)
+
+            if viewers:
+                return  # still attached via other tabs (#398)
+
             entry["attached"] = False
             try:
                 master_alive = ptybridge.session_exists(phys_engine, phys_sid)
@@ -313,6 +334,14 @@ class SessionRegistry:
                 self._sessions.pop(key, None)
                 await self._notify({"t": "removed", "session_id": key})
                 return
+
+            # Prevent SessionStream leaks (#398): only start a new stream if one isn't
+            # already running for this session.
+            existing_stream = entry.get("stream")
+            if existing_stream is not None and not existing_stream.ended.is_set():
+                await self._notify({"t": "updated", "session": self._row(key)})
+                return
+
             stream = SessionStream(phys_engine, phys_sid)
             await stream.start()
             if stream.ended.is_set():

@@ -107,6 +107,11 @@ _NUDGE_ROWS_DELTA = 2
 # making the nudge un-coalesceable instead of re-tuning timing constants.
 _RENUDGE_WINDOW_S = 2.0
 
+# WebSocket heartbeat interval (#398). Abruptly closed connections (laptop lid, network drop)
+# can stay "attached" on the server for 30+ minutes until TCP times out. Sending a periodic
+# ping makes the server's `send` fail faster, triggering disconnect cleanup.
+_HEARTBEAT_INTERVAL_S = 20.0
+
 # Upper bound on creating the dtach client/master subprocess (#346 Phase A). Spawning is
 # normally instant; under resource pressure (task-limit EAGAIN, memory stalls) it can fail
 # slowly or hang, and an unbounded spawn wedges this connection's coroutine. Timeout and
@@ -455,8 +460,19 @@ async def run(
         await asyncio.sleep(_NUDGE_SETTLE_S)
         await _force_repaint(master, proc, cur["rows"], cur["cols"])
 
+    async def heartbeat() -> None:
+        """Periodically send a ping frame to detect dead connections (#398)."""
+        while True:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            # Sending a small JSON frame. Unknown types are ignored by the client.
+            await ws.send_text(json.dumps({"t": "p"}))
+
     nudge_task = asyncio.create_task(_nudge_repaint())
-    tasks = [asyncio.create_task(pump_out()), asyncio.create_task(pump_in())]
+    tasks = [
+        asyncio.create_task(pump_out()),
+        asyncio.create_task(pump_in()),
+        asyncio.create_task(heartbeat()),
+    ]
     # A demotion (another viewer took over, #293) ends the stream alongside the pumps.
     stop_waiter = asyncio.create_task(stop_event.wait()) if stop_event is not None else None
     waiters = tasks + ([stop_waiter] if stop_waiter is not None else [])
@@ -470,14 +486,21 @@ async def run(
             renudge["task"].cancel()  # stale trailing repaint must not fire post-disconnect
         if stop_waiter is not None:
             stop_waiter.cancel()
+
+        # Re-ordered cleanup (#398): close the master BEFORE gathering tasks.
+        # pump_out is blocked on a read(master) in an executor; it won't check
+        # its cancellation until that read returns. Closing the master here
+        # makes the read return immediately (b''), letting the task finish
+        # and be gathered without hanging for 30+ minutes on a silent session.
+        with contextlib.suppress(OSError):
+            os.close(master)
+
         with contextlib.suppress(Exception):
             renudge_tasks = [renudge["task"]] if renudge["task"] is not None else []
             await asyncio.gather(*tasks, nudge_task, *renudge_tasks, return_exceptions=True)
         if stop_waiter is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter
-        with contextlib.suppress(OSError):
-            os.close(master)
         # Detach (don't kill the agent): terminate our dtach client; the master persists.
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
