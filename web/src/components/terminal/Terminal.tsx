@@ -394,8 +394,33 @@ export function Terminal({
     // user near the TOP of history instead of the live tail (the "opens scrolled up"
     // regression). Programmatic scrolls must never arm it.
     let userScrolled = false;
-    const armOnUserScroll = () => {
-      userScrolled = true;
+    let sawOutput = false;
+    const eventInTermArea = (target: EventTarget | null) => {
+      const area = host.parentElement;
+      return target instanceof Node && !!area?.contains(target);
+    };
+    const armHistory = () => {
+      if (sawOutput) userScrolled = true;
+    };
+    const armOnWheel = (e: WheelEvent) => {
+      if (eventInTermArea(e.target)) armHistory();
+    };
+    const armOnTouchMove = (e: TouchEvent) => {
+      if (eventInTermArea(e.target)) armHistory();
+    };
+    const armOnKeydown = (e: KeyboardEvent) => {
+      if (!eventInTermArea(e.target)) return;
+      if (
+        e.key === "PageUp" ||
+        e.key === "PageDown" ||
+        e.key === "Home" ||
+        e.key === "End" ||
+        e.key === "ArrowUp" ||
+        e.key === "ArrowDown" ||
+        (e.key === " " && e.shiftKey)
+      ) {
+        armHistory();
+      }
     };
     const onScrolled = () => {
       updateAtBottom();
@@ -407,9 +432,9 @@ export function Terminal({
     vpEl?.addEventListener("scroll", onScrolled, { passive: true });
     // Document-level (capture): the coarse-pointer touch layer overlays the terminal
     // OUTSIDE host's subtree, so host-scoped listeners never see mobile gestures.
-    document.addEventListener("wheel", armOnUserScroll, { passive: true, capture: true });
-    document.addEventListener("touchmove", armOnUserScroll, { passive: true, capture: true });
-    document.addEventListener("keydown", armOnUserScroll, true);
+    document.addEventListener("wheel", armOnWheel, { passive: true, capture: true });
+    document.addEventListener("touchmove", armOnTouchMove, { passive: true, capture: true });
+    document.addEventListener("keydown", armOnKeydown, true);
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -452,6 +477,7 @@ export function Terminal({
       {
         onOutput: (b) => {
           attachBytes += b.byteLength; // repaint-backstop signal: did this attach paint anything?
+          sawOutput = true;
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
           else term.write(b);
@@ -642,9 +668,9 @@ export function Terminal({
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
       clearJiggle();
-      document.removeEventListener("wheel", armOnUserScroll, true);
-      document.removeEventListener("touchmove", armOnUserScroll, true);
-      document.removeEventListener("keydown", armOnUserScroll, true);
+      document.removeEventListener("wheel", armOnWheel, true);
+      document.removeEventListener("touchmove", armOnTouchMove, true);
+      document.removeEventListener("keydown", armOnKeydown, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       touchLayer?.remove();

@@ -193,6 +193,33 @@ test("attach lands at the live tail with NO auto-fetch until a real scroll (#348
   expect(fetches).toBeGreaterThan(0);
 });
 
+test("typing in the terminal does not arm history lazy-load during layout scroll noise (#403)", async ({
+  page,
+}, testInfo) => {
+  let fetches = 0;
+  page.on("request", (req) => {
+    if (req.url().includes("/history")) fetches += 1;
+  });
+  await page.goto("/s/claude/aaa");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+
+  // A normal terminal keypress is not a scroll intent. The desktop bug armed the
+  // lazy-loader from any document keydown, so the next xterm layout scroll event
+  // at scrollTop=0 fetched history and rewrote the viewport into the spacer.
+  if (testInfo.project.name === "mobile") {
+    await page.locator("[data-touch-surface]").click();
+  } else {
+    await page.locator(".xterm").click();
+  }
+  await page.keyboard.press("A");
+  await page.locator(".xterm-viewport").evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await page.waitForTimeout(500);
+  expect(fetches).toBe(0);
+});
+
 test("a seam divider marks where transcript pages end and the live region begins", async ({
   page,
 }, testInfo) => {
