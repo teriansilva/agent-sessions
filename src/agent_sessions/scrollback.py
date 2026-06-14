@@ -152,6 +152,123 @@ def ring_cols(key: str) -> int | None:
     return None if key in _RING_MIXED else _LAST_COLS.get(key)
 
 
+# --- Private-mode replay on attach (#397) -------------------------------------------
+# Alt-screen TUIs (opencode) and inline agents (claude) enable xterm mouse reporting,
+# alternate-scroll, and bracketed paste via DECSET private modes ONCE at startup. Those
+# bytes are long gone from the stream by the time a fresh client attaches: the ring is
+# capped/head-trimmed (the startup bytes scroll out), and an alt-screen attach replays
+# nothing at all (it repaints via SIGWINCH, which redraws CONTENT but never re-emits the
+# mode-set sequences). So the freshly attached xterm.js never learns the app wants mouse
+# events → a wheel gesture falls back to the alt buffer's (nonexistent) scrollback and
+# nothing happens. We scan the output stream for the private modes below, track the
+# CURRENT on/off set (DECRST clears, so we never replay a mode the app has turned off),
+# persist it beside the ring (#206 durability), and re-emit the active `CSI ? <m> h`
+# sequences on every attach so the client re-learns them. The client needs no changes —
+# xterm.js handles SGR mouse + alternate scroll natively once the modes are set.
+_MODE_TRACK = frozenset({1000, 1002, 1003, 1005, 1006, 1015, 1007, 2004})
+# Per-key CURRENT active private-mode set — in-memory mirror of the `.modes` sidecar.
+_MODES: dict[str, set[int]] = {}
+# Per-key trailing partial private-mode sequence carried across chunk boundaries, so a
+# DECSET/DECRST split between two reads is still recognized. The scan must be incremental
+# (not derived from the retained ring like `_in_alt_screen`'s whole-ring rfind): the
+# startup mode bytes may be head-trimmed out of the ring entirely, yet the modes are still
+# active, so only a live scan that saw them can replay them.
+_MODE_CARRY: dict[str, bytes] = {}
+# A complete DECSET (`h`) / DECRST (`l`) private-mode sequence: ESC [ ? <params> h|l.
+_DECSET_RE = re.compile(rb"\x1b\[\?([0-9;]+)([hl])")
+# A trailing fragment that could still BECOME a private-mode sequence: a bare ESC, ESC [,
+# or ESC [ ? <digits/;> with no final byte yet. Anything else can't complete into one, so
+# it is dropped rather than carried.
+_MODE_PREFIX_RE = re.compile(rb"\x1b(?:\[(?:\?[0-9;]*)?)?\Z")
+# Bound the carried fragment so a never-completing ESC can't grow without limit. A real
+# private-mode param list is a handful of bytes — well under this.
+_MODE_CARRY_MAX = 64
+
+
+def _modes_path(key: str) -> Path:
+    # Companion sidecar to the byte mirror (#397): the agent's CURRENT private-mode set, so
+    # mouse reporting / alternate-scroll / bracketed paste survive a broker restart (#206).
+    return _SCROLLBACK_DIR / (key.replace(":", "__") + ".modes")
+
+
+def _persist_modes(key: str) -> None:
+    """Mirror the current private-mode set to the `.modes` sidecar (best-effort). An empty
+    set removes the file, so a session that turned every tracked mode back off leaves no
+    stale claim for the next attach to replay."""
+    try:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        path = _modes_path(key)
+        active = _MODES.get(key) or set()
+        if active:
+            path.write_text(",".join(str(m) for m in sorted(active)))
+        else:
+            with contextlib.suppress(OSError):
+                path.unlink()
+    except OSError:
+        pass  # best-effort, like the mirror itself
+
+
+def _scan_modes(key: str, data: bytes) -> None:
+    """Update the key's current private-mode set from a streamed output chunk (#397).
+
+    Byte-oriented and resumable: a DECSET/DECRST split across chunk boundaries is carried in
+    ``_MODE_CARRY`` and completed on the next call. DECRST (``l``) clears a mode, so we only
+    ever retain — and later replay — modes the app currently WANTS. A single multi-mode
+    sequence (``CSI ? 1000;1006 h``) sets every listed mode. Persists to the sidecar only
+    when the set actually changes."""
+    carry = _MODE_CARRY.get(key, b"")
+    buf = carry + data
+    active = _MODES.get(key)
+    if active is None:
+        active = set()
+        _MODES[key] = active
+    changed = False
+    last_end = 0
+    for m in _DECSET_RE.finditer(buf):
+        last_end = m.end()
+        on = m.group(2) == b"h"
+        for raw in m.group(1).split(b";"):
+            if not raw.isdigit():
+                continue  # empty/garbage param (e.g. a stray ';') — skip, don't crash
+            mode = int(raw)
+            if mode not in _MODE_TRACK:
+                continue
+            if on and mode not in active:
+                active.add(mode)
+                changed = True
+            elif not on and mode in active:
+                active.discard(mode)
+                changed = True
+    # Carry only a trailing fragment that could still complete into a private-mode sequence,
+    # searched AFTER the last complete match (earlier ESCs are consumed or VT-aborted).
+    tail = buf[last_end:]
+    esc = tail.rfind(b"\x1b")
+    new_carry = b""
+    if esc != -1:
+        frag = tail[esc:]
+        if len(frag) <= _MODE_CARRY_MAX and _MODE_PREFIX_RE.match(frag):
+            new_carry = frag
+    if new_carry:
+        _MODE_CARRY[key] = new_carry
+    else:
+        _MODE_CARRY.pop(key, None)
+    if changed:
+        _persist_modes(key)
+
+
+def attach_modes_payload(key: str) -> bytes:
+    r"""The active private-mode DECSET sequences to replay on attach (#397), e.g.
+    ``b"\x1b[?1000h\x1b[?1006h"``. Empty when no tracked mode is active. Prepended to the
+    attach stream by ``webterm.run`` so a freshly attached client re-learns the modes the
+    agent set ONCE at startup — independent of the scroll-up content decision, since it must
+    survive the alt-screen empty payload AND the transcript/clean-load branches alike."""
+    _ensure_loaded(key)
+    active = _MODES.get(key)
+    if not active:
+        return b""
+    return b"".join(b"\x1b[?" + str(m).encode() + b"h" for m in sorted(active))
+
+
 def note_cols(key: str, cols: int, *, persist: bool = True) -> None:
     """Track the agent-pty width for ``key``; optionally persist it beside the mirror.
 
@@ -235,6 +352,17 @@ def _ensure_loaded(key: str) -> None:
     if key not in _LAST_COLS:
         with contextlib.suppress(OSError, ValueError):
             _LAST_COLS[key] = int(_cols_path(key).read_text().strip())
+    # Restore the active private-mode set (#397) so a post-restart attach replays the
+    # mouse/alternate-scroll/bracketed-paste modes the agent set at startup. Corrupt or
+    # partial sidecar entries are skipped per-token rather than poisoning the whole set.
+    if key not in _MODES:
+        with contextlib.suppress(OSError):
+            raw = _modes_path(key).read_text().strip()
+            _MODES[key] = {
+                int(tok)
+                for tok in raw.split(",")
+                if tok.strip().isdigit() and int(tok) in _MODE_TRACK
+            }
     try:
         data = _scrollback_path(key).read_bytes()[-_MAX_BUF:]
     except OSError:
@@ -262,35 +390,57 @@ def scrollback_cache_stats() -> dict[str, int]:
     return {"bytes": total, "files": files}
 
 
+# Every per-key on-disk artifact: the byte mirror plus its sidecars. The global
+# `clear_scrollback()` enumerates ALL of these so a key that has shed its `.scrollback`
+# file but kept a sidecar (e.g. `_reset_ring` unlinks the mirror yet preserves `.modes`,
+# #397) is still fully cleared — keying off `.scrollback` alone left orphan sidecars that
+# replayed stale modes/width after a supposed clear (Hermes #409).
+_SIDECAR_SUFFIXES = (_SCROLLBACK_SUFFIX, ".cols", ".modes")
+
+
+def _all_cached_keys() -> set[str]:
+    """Every engine-qualified key with ANY on-disk artifact (mirror or sidecar)."""
+    keys: set[str] = set()
+    for suffix in _SIDECAR_SUFFIXES:
+        try:
+            for p in _SCROLLBACK_DIR.glob("*" + suffix):
+                stem = p.name[: -len(suffix)]
+                engine, _, native = stem.partition("__")
+                keys.add(f"{engine}:{native}" if native else engine)
+        except OSError:
+            pass
+    return keys
+
+
 def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
-    """Delete persisted scrollback files and drop the matching in-memory rings (so a
-    cleared session isn't re-served from memory). ``keys=None`` clears the whole cache;
-    otherwise only the given engine-qualified keys. Returns ``{removed, bytes_freed}``."""
-    try:
-        if keys is None:
-            paths = list(_SCROLLBACK_DIR.glob("*" + _SCROLLBACK_SUFFIX))
-        else:
-            paths = [_scrollback_path(k) for k in keys]
-    except OSError:
-        return {"removed": 0, "bytes_freed": 0}
+    """Delete persisted scrollback files (mirror + every sidecar) and drop the matching
+    in-memory rings/state (so a cleared session isn't re-served from memory or replayed).
+    ``keys=None`` clears the whole cache; otherwise only the given engine-qualified keys.
+    Returns ``{removed, bytes_freed}`` (``removed`` counts keys with at least one artifact
+    deleted)."""
+    key_list = sorted(_all_cached_keys()) if keys is None else list(keys)
     removed = 0
     freed = 0
-    for p in paths:
+    for key in key_list:
+        cleared = False
+        # The byte mirror first (it carries the freed-bytes count); then the width + private-
+        # mode sidecars travel with it (#348/#397): a stale `.cols` would fake a continuation,
+        # a stale `.modes` would replay mouse/paste state for an intentionally-cleared session.
         try:
-            sz = p.stat().st_size
+            freed += _scrollback_path(key).stat().st_size
+            _scrollback_path(key).unlink()
+            cleared = True
         except OSError:
-            continue  # not present → nothing to clear
-        try:
-            p.unlink()
-        except OSError:
-            continue
-        # The width sidecar travels with the mirror (#348): stale cols without bytes
-        # would make the next attach claim a continuation it can't actually serve.
-        with contextlib.suppress(OSError):
-            _cols_path(_key_from_path(p)).unlink()
-        removed += 1
-        freed += sz
-        _drop_buffer(_key_from_path(p))
+            pass  # mirror absent (e.g. already reset by `_reset_ring`) — sidecars may remain
+        for sidecar in (_cols_path(key), _modes_path(key)):
+            try:
+                sidecar.unlink()
+                cleared = True
+            except OSError:
+                pass
+        if cleared:
+            removed += 1
+        _drop_buffer(key)  # in-memory ring + `_MODES`/`_MODE_CARRY` + VT mirror
     return {"removed": removed, "bytes_freed": freed}
 
 
@@ -302,6 +452,11 @@ def _drop_buffer(key: str) -> None:
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
+    # Private-mode state (#397) is in-memory only here; the `.modes` sidecar is durable
+    # (removed solely by `clear_scrollback`), so a later touch re-hydrates it via
+    # `_ensure_loaded` — exactly like the ring itself.
+    _MODES.pop(key, None)
+    _MODE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
     # Tear down the session's VT-sidecar emulator too (#273). No-op unless the flag is on.
     vtsidecar.note_session_end(key)
@@ -319,6 +474,11 @@ def _reset_ring(key: str) -> None:
         _scrollback_path(key).unlink()
     _LOADED_FROM_DISK.add(key)  # don't re-hydrate the now-removed file
     _RING_MIXED.discard(key)  # empty ring is single-width by construction
+    # NB: the private-mode set (#397) is deliberately NOT cleared here. A width reset drops
+    # the width-fragile CONTENT but keeps session-level state (like `_TOTALS` above); the
+    # agent does NOT re-emit its mode-set sequences on the SIGWINCH repaint, so wiping them
+    # would re-break mouse scrolling after every resize. They are cleared only on an
+    # intentional `clear_scrollback` (the sidecar + in-memory set both go).
 
 
 def _session_alive(buf_key: str) -> bool:
@@ -366,6 +526,10 @@ def _buffer_append(key: str, data: bytes) -> None:
     # This is the single chokepoint for ALL agent output — both the attached WS pump and the
     # server-owned SessionStream drain land here — so the mirror stays current either way.
     vtsidecar.note_feed(key, data)
+    # Track DECSET/DECRST private modes off the SAME single chokepoint (#397) — both the
+    # attached WS pump and the detached SessionStream land here, so mouse-reporting /
+    # alternate-scroll / bracketed-paste state stays current with or without a viewer.
+    _scan_modes(key, data)
     _persist_append(key, data)  # mirror to disk so scrollback survives a restart (#206)
     _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
     _TOTALS.move_to_end(key)

@@ -58,6 +58,7 @@ from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stay
     _scrollback_path,
     _session_alive,
     _transcript_payload,
+    attach_modes_payload,
     clear_scrollback,
     get_last_output_at,
     live_tail_text,
@@ -307,6 +308,18 @@ async def run(
         # connect) — attach-aware so the persisted sidecar only ever claims a width the
         # retained ring was actually authored at (Hermes #360 round 3).
         scrollback.note_attach_width(buf_key, cols)
+        # Re-emit the agent's active private modes (#397) BEFORE the scroll-up payload, so this
+        # fresh xterm re-learns the mouse-reporting / alternate-scroll / bracketed-paste modes
+        # the agent set ONCE at startup — long gone from the stream, and absent from an
+        # alt-screen session's empty payload (it repaints CONTENT via SIGWINCH but never
+        # re-emits its mode setup). Independent of the scroll-up content decision so it survives
+        # every branch (empty/continuation/transcript/clean-load); idempotent for a same-width
+        # continuation whose xterm already holds them. `total`/`seq` are untouched — these bytes
+        # are synthetic, like the transcript scroll-up, so delta-resume offsets stay correct.
+        mode_prefix = scrollback.attach_modes_payload(buf_key)
+        if mode_prefix:
+            with contextlib.suppress(Exception):
+                await ws.send_bytes(mode_prefix)
         if payload and not payload_is_clear and locals().get("synthetic"):
             # Mark the boundary between the synthetic scroll-up above and the live dtach
             # replay below (same idiom as the client-side seams): both representations

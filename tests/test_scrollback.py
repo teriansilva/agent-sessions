@@ -141,3 +141,170 @@ def test_vt_on_mixed_ring_blocks_same_process_continuation(monkeypatch):
     scrollback._reset_ring(key)
     scrollback.note_cols(key, 40, persist=True)
     assert scrollback.ring_cols(key) == 40
+
+
+# --- Private-mode replay on attach (#397) ------------------------------------------------
+# Alt-screen TUIs (opencode) / inline agents set xterm mouse-reporting, alternate-scroll, and
+# bracketed-paste modes ONCE at startup. Those bytes are gone by the time a fresh client
+# attaches, so the client never learns the app wants mouse events → the wheel does nothing.
+# `_scan_modes` tracks the CURRENT private-mode set off the output stream and
+# `attach_modes_payload` re-emits it on every attach.
+
+
+def _restart():
+    """Simulate a broker restart for the mode state too (disk sidecar intact)."""
+    _wipe_memory()
+    scrollback._MODES.clear()
+    scrollback._MODE_CARRY.clear()
+
+
+def test_decset_modes_are_tracked_and_replayed():
+    key = "claude:modes-1"
+    # opencode-style startup: enter alt-screen, enable SGR mouse + bracketed paste.
+    scrollback._buffer_append(key, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004h")
+    assert scrollback._MODES[key] == {1000, 1006, 2004}  # 1049 is NOT a tracked mode
+    # Sorted, one DECSET each — what webterm prepends to the attach stream.
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1000h\x1b[?1006h\x1b[?2004h"
+
+
+def test_decrst_clears_a_mode_so_it_is_not_replayed():
+    key = "claude:modes-2"
+    scrollback._buffer_append(key, b"\x1b[?1000h\x1b[?1006h")
+    assert scrollback._MODES[key] == {1000, 1006}
+    # The app turns mouse reporting back off — we must not replay a mode it no longer wants.
+    scrollback._buffer_append(key, b"\x1b[?1000l")
+    assert scrollback._MODES[key] == {1006}
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1006h"
+
+
+def test_multi_mode_single_sequence():
+    key = "claude:modes-3"
+    scrollback._buffer_append(key, b"\x1b[?1000;1002;1006;2004h")
+    assert scrollback._MODES[key] == {1000, 1002, 1006, 2004}
+
+
+def test_split_sequence_across_chunk_boundary():
+    key = "claude:modes-4"
+    # A DECSET split mid-sequence between two PTY reads must still be recognized.
+    scrollback._buffer_append(key, b"\x1b[?100")
+    assert scrollback._MODES.get(key, set()) == set()  # nothing complete yet
+    scrollback._buffer_append(key, b"0;1006h")
+    assert scrollback._MODES[key] == {1000, 1006}
+    # And a split on the final byte alone.
+    scrollback._buffer_append(key, b"\x1b[?1002")
+    scrollback._buffer_append(key, b"h")
+    assert scrollback._MODES[key] == {1000, 1002, 1006}
+
+
+def test_split_with_decrst_across_boundary():
+    key = "claude:modes-5"
+    scrollback._buffer_append(key, b"\x1b[?1006h")
+    scrollback._buffer_append(key, b"\x1b[?10")
+    scrollback._buffer_append(key, b"06l")  # DECRST 1006, split
+    assert scrollback._MODES[key] == set()
+    assert scrollback.attach_modes_payload(key) == b""
+
+
+def test_untracked_modes_and_junk_ignored():
+    key = "claude:modes-6"
+    # 1049 (alt-screen), 25 (cursor visibility), 12 (blink) are not in _MODE_TRACK; a
+    # malformed empty param must not crash the scanner.
+    scrollback._buffer_append(key, b"\x1b[?1049h\x1b[?25l\x1b[?12;h\x1b[?1006h")
+    assert scrollback._MODES[key] == {1006}
+
+
+def test_no_modes_means_empty_attach_payload():
+    key = "claude:modes-7"
+    scrollback._buffer_append(key, b"just plain text, no escapes")
+    assert scrollback.attach_modes_payload(key) == b""
+
+
+def test_carry_does_not_grow_unbounded_on_lone_esc():
+    key = "claude:modes-8"
+    # A bare ESC with a long run of bytes that can't complete a private mode must not be
+    # carried (the fragment isn't a valid private-mode prefix → dropped).
+    scrollback._buffer_append(key, b"\x1b[1;1H" + b"x" * 200)
+    assert scrollback._MODE_CARRY.get(key, b"") == b""
+
+
+def test_modes_persist_and_survive_restart():
+    key = "claude:modes-9"
+    scrollback._buffer_append(key, b"\x1b[?1000h\x1b[?1006h")
+    assert scrollback._modes_path(key).exists()
+    _restart()
+    # After a restart the in-memory set is gone but the attach re-hydrates it from disk.
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1000h\x1b[?1006h"
+
+
+def test_clear_scrollback_removes_modes_sidecar_and_memory():
+    key = "claude:modes-10"
+    scrollback._buffer_append(key, b"\x1b[?1006h")
+    assert scrollback._modes_path(key).exists()
+    scrollback.clear_scrollback([key])
+    assert not scrollback._modes_path(key).exists()  # sidecar gone
+    assert key not in scrollback._MODES  # in-memory state gone
+    _restart()
+    assert scrollback.attach_modes_payload(key) == b""  # no stale replay after a clear
+
+
+def test_reset_ring_keeps_modes():
+    # A width reset drops width-fragile CONTENT but the agent does NOT re-emit its mode setup
+    # on the repaint, so the modes must survive (else scrolling re-breaks after every resize).
+    key = "claude:modes-11"
+    scrollback._buffer_append(key, b"\x1b[?1000h\x1b[?1006h some content")
+    scrollback._reset_ring(key)
+    assert bytes(scrollback._BUFFERS[key]) == b""  # content dropped
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1000h\x1b[?1006h"  # modes kept
+
+
+def test_corrupt_modes_sidecar_is_skipped_per_token():
+    key = "claude:modes-12"
+    scrollback._SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+    # A partly-garbage sidecar: keep the valid tracked ints, drop the rest (incl. untracked).
+    scrollback._modes_path(key).write_text("1006,garbage,,1049,1000")
+    _restart()
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1000h\x1b[?1006h"
+
+
+def test_alt_screen_attach_replays_modes_but_not_raw_frames():
+    # The #397 regression: an alt-screen opencode session that enabled mouse + bracketed
+    # paste. The raw frame replay stays SUPPRESSED (`_resume_payload` returns empty for
+    # alt-screen), but the active modes are still recoverable for the attach prefix.
+    key = "opencode:ses_altmodes"
+    scrollback._buffer_append(
+        key, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004hTUI FRAME CONTENT HERE"
+    )
+    payload, total = scrollback._resume_payload(key, have=0)
+    assert payload == b""  # alt-screen raw frames are NOT replayed (would corrupt the redraw)
+    assert b"TUI FRAME CONTENT" not in payload
+    # ...but the modes the client needs to re-learn ARE available, before the SIGWINCH nudge.
+    assert scrollback.attach_modes_payload(key) == b"\x1b[?1000h\x1b[?1006h\x1b[?2004h"
+
+
+def test_clear_all_removes_modes_orphaned_by_reset_ring():
+    # Hermes #409: `_reset_ring` unlinks the `.scrollback` mirror but deliberately KEEPS
+    # `.modes` (width-independent). A later global `clear_scrollback()` (keys=None) used to
+    # glob only `*.scrollback` and miss that orphan, so stale mouse/paste modes survived a
+    # supposed clear. The global clear must enumerate `.modes` sidecars too.
+    key = "claude:modes-orphan"
+    scrollback._buffer_append(key, b"\x1b[?1006h some content")
+    scrollback._reset_ring(key)  # drops the .scrollback mirror, keeps .modes
+    assert not scrollback._scrollback_path(key).exists()
+    assert scrollback._modes_path(key).exists()  # the orphan the old glob missed
+    stats = scrollback.clear_scrollback()  # global clear, no explicit keys
+    assert stats["removed"] >= 1  # the orphaned key is counted as cleared
+    assert not scrollback._modes_path(key).exists()  # orphan gone
+    assert key not in scrollback._MODES  # in-memory state dropped too
+    _restart()
+    assert scrollback.attach_modes_payload(key) == b""  # no stale replay after clear
+
+
+def test_clear_specific_key_removes_modes_after_reset_ring():
+    # The explicit-keys path must clear an orphaned `.modes` too, even when the mirror is gone.
+    key = "claude:modes-orphan-2"
+    scrollback._buffer_append(key, b"\x1b[?1000h\x1b[?2004h x")
+    scrollback._reset_ring(key)
+    assert scrollback._modes_path(key).exists()
+    scrollback.clear_scrollback([key])
+    assert not scrollback._modes_path(key).exists()
+    assert key not in scrollback._MODES
