@@ -84,8 +84,9 @@
   background: var(--row-hover);
   border-left-color: var(--accent);
 }
-/* Action cluster: hidden until row hover on pointer devices; always shown on touch
- * (no hover) so phone users can reach rename/archive. */
+/* Action cluster: hidden until row hover on pointer devices; always shown on
+ * narrow viewports (<= 800px) so phone/tablet users can reach rename/archive
+ * regardless of reported hover support. */
 .actions {
   display: flex;
   align-items: center;
@@ -99,7 +100,7 @@
 .actionsOpen {
   opacity: 1;
 }
-@media (hover: none) {
+@media (hover: none), (max-width: 800px) {
   .actions {
     opacity: 1;
   }
@@ -115,6 +116,12 @@
   border-radius: 0;
   color: var(--text-muted);
   cursor: pointer;
+}
+@media (max-width: 800px) {
+  .iconBtn {
+    width: 32px;
+    height: 32px;
+  }
 }
 .iconBtn:hover:not(:disabled) {
   background: var(--row-hover);

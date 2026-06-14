@@ -124,7 +124,11 @@
   display: none;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 800px) {
+  .trigger {
+    width: 32px;
+    height: 32px;
+  }
   .scrim {
     display: block;
     position: fixed;
