@@ -237,35 +237,45 @@ export function Terminal({
     // Blank-attach repaint backstop (#349 follow-up, operator report): some idle
     // sessions paint fragments or nothing on selection — the server-side nudge can be
     // coalesced/missed, and only a REAL geometry change reliably makes winch-repaint
-    // agents redraw. When an attach delivers (almost) no bytes, the CLIENT jiggles
-    // rows−1 → rows. Rows-only on purpose: a width change would reset the scrollback
+    // agents redraw. When an attach delivers (almost) no bytes OR the visible xterm
+    // rows are still blank after a large replay (#407), the CLIENT jiggles rows−1 →
+    // rows. Rows-only on purpose: a width change would reset the scrollback
     // ring / dirty the VT mirror. The client owns the resize channel, so nothing can
     // interleave inside its pair (unlike the server nudge racing the connect resize),
     // and the spacing exceeds the agents' resize debounce → two distinct repaints.
     let attachBytes = 0;
+    let initialTailLock = false;
     let jiggleTimers: ReturnType<typeof setTimeout>[] = [];
     const clearJiggle = () => {
       for (const t of jiggleTimers) clearTimeout(t);
       jiggleTimers = [];
     };
+    const visibleRowsBlank = () => {
+      const rows = host.querySelector<HTMLElement>(".xterm-rows");
+      return (rows?.textContent ?? "").trim().length === 0;
+    };
+    const jiggleRows = () => {
+      if (term.rows <= 4) return;
+      sock.send({ t: "r", cols: term.cols, rows: term.rows - 1 });
+      jiggleTimers.push(
+        setTimeout(() => {
+          if (sock !== sockRef.current) return;
+          sock.send({ t: "r", cols: term.cols, rows: term.rows });
+        }, 320),
+      );
+    };
     const armRepaintBackstop = () => {
       attachBytes = 0;
+      initialTailLock = true;
       clearJiggle();
       jiggleTimers.push(
         setTimeout(() => {
           if (sock !== sockRef.current) return;
-          // "Blank" means essentially nothing: the broken case is fragments (a status
-          // line, a stray word) — well under half a KB. Anything beyond that is real
-          // content a jiggle would pointlessly flicker (and, in the bench, wipe).
-          if (attachBytes >= 512) return;
-          if (term.rows <= 4) return;
-          sock.send({ t: "r", cols: term.cols, rows: term.rows - 1 });
-          jiggleTimers.push(
-            setTimeout(() => {
-              if (sock !== sockRef.current) return;
-              sock.send({ t: "r", cols: term.cols, rows: term.rows });
-            }, 320),
-          );
+          // "Blank" used to mean "essentially no replay bytes". #407 shows the
+          // byte count is not enough: a large raw replay can process successfully
+          // while xterm's visible row layer remains empty. In that case, repaint too.
+          if (attachBytes >= 512 && !visibleRowsBlank()) return;
+          jiggleRows();
         }, 800),
       );
     };
@@ -400,7 +410,9 @@ export function Terminal({
       return target instanceof Node && !!area?.contains(target);
     };
     const armHistory = () => {
-      if (sawOutput) userScrolled = true;
+      if (!sawOutput) return;
+      userScrolled = true;
+      initialTailLock = false;
     };
     const armOnWheel = (e: WheelEvent) => {
       if (eventInTermArea(e.target)) armHistory();
@@ -480,7 +492,16 @@ export function Terminal({
           sawOutput = true;
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
-          else term.write(b);
+          else
+            term.write(b, () => {
+              // During the first attach replay, keep the viewport on the live tail unless the user
+              // has made an explicit scroll gesture. Large raw replays can otherwise leave xterm's
+              // DOM viewport parked above the final frame, presenting as an empty console (#407).
+              if (initialTailLock && !userScrolled) {
+                term.scrollToBottom();
+                updateAtBottom();
+              }
+            });
         },
         onStatus: (s) => {
           setStatus(s);

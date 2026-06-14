@@ -27,6 +27,21 @@ test("a (nearly) blank attach repaints by itself — no input, no manual resize"
   });
 });
 
+test("a large replay that leaves visible rows blank still repaints (#407)", async ({ page }) => {
+  await setupBench(page, {
+    sessions: SESSIONS,
+    // Models the production report: content can briefly paint during replay, then a
+    // later clear leaves the final visible rows blank. Byte-count-only logic would
+    // consider this a rich attach and never recover.
+    history: { [KEY]: ["brief content\r\n\x1b[2J\x1b[H" + " ".repeat(900)] },
+    wipeOnResizeChange: true,
+  });
+  await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", {
+    timeout: 15000,
+  });
+});
+
 test("an attach that painted real content is NOT flicker-jiggled", async ({ page }) => {
   await setupBench(page, {
     sessions: SESSIONS,
