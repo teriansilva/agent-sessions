@@ -70,6 +70,15 @@
   background: transparent;
   touch-action: none;
 }
+/* Selection mode (#415): applied to the xterm root on a press-and-hold so the OS can select
+ * the DOM-rendered rows (xterm sets user-select:none by default). The overlay's pointer-events
+ * are dropped in JS for the duration so touches reach the text. */
+.selecting,
+.selecting :global(.xterm-rows),
+.selecting :global(.xterm-rows *) {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
 .status {
   position: absolute;
   top: 6px;

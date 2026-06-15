@@ -678,7 +678,81 @@ export function Terminal({
       touchLayer.dataset.touchSurface = ""; // e2e hook
       host.parentElement.appendChild(touchLayer); // host.parentElement = .termArea
     }
-    const detachTouch = attachTouchScroll(touchLayer ?? host, term);
+    const surfaceEl = touchLayer ?? host;
+    // Tap → open a link under the finger, else (re)open the keyboard (#415). The overlay
+    // sits above xterm, so xterm's own WebLinksAddon click never fires on touch; hit-test the
+    // tapped cell against the buffer line ourselves and open the same way the addon would.
+    const URL_RE = /\bhttps?:\/\/[^\s"'`<>]+/g;
+    const focusKeyboardOnTap = () => {
+      const ta = term.textarea;
+      if (ta) {
+        ta.blur();
+        ta.focus();
+      } else {
+        term.focus();
+      }
+    };
+    const onTap = (cx: number, cy: number) => {
+      const buf = term.buffer.active;
+      const rect = surfaceEl.getBoundingClientRect();
+      const cols = term.cols || 80;
+      const rows = term.rows || 24;
+      if (rect.width > 0 && rect.height > 0) {
+        const col = Math.floor(((cx - rect.left) / rect.width) * cols);
+        const vrow = Math.floor(((cy - rect.top) / rect.height) * rows);
+        const line = buf.getLine(buf.viewportY + vrow);
+        const text = line?.translateToString(true) ?? "";
+        for (const m of text.matchAll(URL_RE)) {
+          const start = m.index ?? 0;
+          if (col >= start && col < start + m[0].length) {
+            window.open(m[0], "_blank", "noopener,noreferrer");
+            return;
+          }
+        }
+      }
+      focusKeyboardOnTap(); // not on a link → behave as before
+    };
+    // Press-and-hold → selection mode (#415): drop the overlay so touches reach the rows, let
+    // the OS select the DOM-rendered text (override xterm's user-select:none), and seed a word
+    // selection at the finger so the native handles + Copy bubble appear at once. A later tap
+    // with no selection restores scroll mode.
+    let selecting = false;
+    const exitSelectMode = () => {
+      if (!selecting) return;
+      selecting = false;
+      term.element?.classList.remove(styles.selecting);
+      if (touchLayer) touchLayer.style.pointerEvents = "";
+      window.getSelection()?.removeAllRanges();
+    };
+    const onLongPress = (cx: number, cy: number) => {
+      const el = term.element;
+      if (!el) return;
+      selecting = true;
+      el.classList.add(styles.selecting);
+      if (touchLayer) touchLayer.style.pointerEvents = "none"; // before hit-test, so caret resolves to the rows
+      try {
+        const range = document.caretRangeFromPoint?.(cx, cy);
+        const sel = window.getSelection();
+        if (range && sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+          // Expand the caret to the word under the finger (native handles can refine).
+          const s = sel as Selection & {
+            modify?: (alter: string, dir: string, granularity: string) => void;
+          };
+          s.modify?.("move", "backward", "word");
+          s.modify?.("extend", "forward", "word");
+        }
+      } catch {
+        /* caretRangeFromPoint unsupported → overlay is still off; user can select manually */
+      }
+    };
+    // While selecting, a lift that leaves no selection means "done" → back to scroll mode.
+    const onDocTouchEnd = () => {
+      if (selecting && !window.getSelection()?.toString()) exitSelectMode();
+    };
+    document.addEventListener("touchend", onDocTouchEnd, true);
+    const detachTouch = attachTouchScroll(surfaceEl, term, { onTap, onLongPress });
 
     // Attach once the grid is stable (see connectWhenStable) — NOT synchronously, or a still-
     // settling panel makes the post-connect resize wipe the transcript scroll-up (the race).
@@ -694,6 +768,8 @@ export function Terminal({
       document.removeEventListener("keydown", armOnKeydown, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
+      document.removeEventListener("touchend", onDocTouchEnd, true);
+      exitSelectMode();
       touchLayer?.remove();
       ro.disconnect();
       sock.close();
