@@ -53,6 +53,28 @@ CALL_SPACING_S = 2.0
 # Backoff multiplier ceiling for consecutive all-failure sweeps (interval × up-to-8).
 _BACKOFF_MAX_MULT = 8
 
+# Grace between an early wake (a freshly created session) and the sweep it triggers: lets the
+# session's first output land so gather_input has something to hash (an empty session is a no-op
+# skip anyway), and coalesces a burst of new sessions into ONE sweep.
+KICK_GRACE_S = 3.0
+
+# Set by ``run`` once the loop is live; ``request_review_soon`` wakes the sweep through it. None
+# until the loop starts — a kick is then a safe no-op (env kill-switch off, or tests that drive
+# ``sweep`` directly).
+_wake: asyncio.Event | None = None
+
+
+def request_review_soon() -> None:
+    """Wake the review loop to sweep ahead of its interval (#413).
+
+    Called when a new session is created so its summary / ⚠ badge populate promptly instead of
+    waiting up to ``interval_minutes``. Keyless on purpose: it just advances the existing gated
+    sweep, which already skips disabled / unconfigured / unchanged / empty sessions — so a kick
+    can never force an endpoint call the periodic loop wouldn't have made. No-op until the loop
+    is armed and on the kill-switch path."""
+    if _wake is not None:
+        _wake.set()
+
 
 def loop_enabled() -> bool:
     """Env kill-switch — overrides everything. ``AGENT_SESSIONS_AI_REVIEW_LOOP=0`` keeps
@@ -132,14 +154,25 @@ async def run(registry) -> None:
     """Background review loop (started from the app lifespan, reaper pattern). Exits
     immediately under the env kill-switch; otherwise sleeps ``interval_minutes`` (prefs,
     re-read every iteration) × the failure-backoff multiplier between sweeps."""
+    global _wake
     if not loop_enabled():
         log.info("ai-review loop disabled (AGENT_SESSIONS_AI_REVIEW_LOOP=0)")
         return
+    _wake = asyncio.Event()
     log.info("ai-review loop armed (gated on the ai_review prefs per sweep)")
     consecutive_failures = 0
     while True:
         interval_s = max(60, int(prefs.get_ai_review()["interval_minutes"]) * 60)
-        await asyncio.sleep(interval_s * min(2**consecutive_failures, _BACKOFF_MAX_MULT))
+        delay = interval_s * min(2**consecutive_failures, _BACKOFF_MAX_MULT)
+        # Sleep until the interval elapses OR a new session kicks us (request_review_soon).
+        # On an early wake, wait a short grace so the session's first output lands and a burst
+        # of new sessions coalesces into one sweep.
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=delay)
+            await asyncio.sleep(KICK_GRACE_S)
+        except TimeoutError:
+            pass  # normal interval — no kick
+        _wake.clear()
         try:
             reviewed, failures = await sweep(registry)
         except Exception:

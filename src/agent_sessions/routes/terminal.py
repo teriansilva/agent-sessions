@@ -29,6 +29,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket
 
 from .. import (
+    ai_review_loop,
     engines,
     owner,
     prefs,
@@ -286,6 +287,11 @@ def register(
                     reconcile_task = asyncio.create_task(
                         reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)
                     )
+                if not getattr(prov, "new_session_reconciles", False):
+                    # Pinned-id new session (e.g. claude): the key is final at launch, so wake
+                    # the AI-review loop to summarize it promptly (#413). Mint-its-own-id engines
+                    # are kicked from the reconcile coroutine once their real id is durable.
+                    ai_review_loop.request_review_soon()
             else:
                 # Resume an EXISTING scanned session.
                 sessions_all = engines.scan_all()

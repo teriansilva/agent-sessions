@@ -729,9 +729,11 @@ def test_reconcile_single_id_persists_alias_and_converges(tmp_home, monkeypatch)
     import asyncio
     import json
 
-    from agent_sessions import engines, main, metadata
+    from agent_sessions import ai_review_loop, engines, main, metadata
 
     monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
+    kicks = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: kicks.append(1))
     prov = engines.get("opencode")
     placeholder = "new-11111111-1111-1111-1111-111111111111"
     real = "ses_reconciled000000000000000"
@@ -742,15 +744,19 @@ def test_reconcile_single_id_persists_alias_and_converges(tmp_home, monkeypatch)
 
     assert metadata.load_aliases() == {f"opencode:{placeholder}": f"opencode:{real}"}
     assert ws.sent and json.loads(ws.sent[-1]) == {"t": "id", "sid": f"opencode:{real}"}
+    # The reconciled real session is woken for prompt AI review (#413).
+    assert kicks == [1]
 
 
 def test_reconcile_ambiguous_no_alias_no_converge(tmp_home, monkeypatch):
     # Two new same-cwd ids → ambiguous: never guess. No alias, no converge frame.
     import asyncio
 
-    from agent_sessions import engines, main, metadata
+    from agent_sessions import ai_review_loop, engines, main, metadata
 
     monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
+    kicks = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: kicks.append(1))
     prov = engines.get("opencode")
     monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: ["ses_a000", "ses_b000"])
 
@@ -759,6 +765,7 @@ def test_reconcile_ambiguous_no_alias_no_converge(tmp_home, monkeypatch):
 
     assert metadata.load_aliases() == {}  # no alias recorded
     assert ws.sent == []  # no converge frame
+    assert kicks == []  # ambiguous → no real session → no review kick
 
 
 def test_reconcile_timeout_when_row_never_written(tmp_home, monkeypatch):

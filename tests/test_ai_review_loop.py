@@ -12,6 +12,7 @@ consecutive all-failure sweeps.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import httpx
@@ -235,14 +236,19 @@ class _StopLoop(Exception):
 
 def test_run_honors_interval_and_backs_off_on_failures(ai_prefs, monkeypatch):
     prefs.set_ai_review({"interval_minutes": 2})
-    sleeps = []
+    timeouts = []
 
-    async def fake_sleep(delay):
-        sleeps.append(delay)
-        if len(sleeps) >= 4:
+    # The interval is now the timeout on the wake-wait (so a kick can cut it short). With no
+    # kick, the wait always times out → a sweep runs; we record the timeout to assert backoff.
+    async def fake_wait_for(awaitable, timeout):
+        timeouts.append(timeout)
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()  # we never actually await the event in this test
+        if len(timeouts) >= 4:
             raise _StopLoop
+        raise TimeoutError  # interval elapsed, no kick → proceed to sweep
 
-    monkeypatch.setattr(ai_review_loop.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ai_review_loop.asyncio, "wait_for", fake_wait_for)
     outcomes = iter([([], 1), ([], 1), ([SID], 0)])
 
     async def fake_sweep(reg):
@@ -253,4 +259,40 @@ def test_run_honors_interval_and_backs_off_on_failures(ai_prefs, monkeypatch):
         asyncio.run(ai_review_loop.run(_FakeRegistry([])))
     # 120s prefs interval; ×2 then ×4 after consecutive all-failure sweeps; a successful
     # sweep resets the cadence.
-    assert sleeps == [120, 240, 480, 120]
+    assert timeouts == [120, 240, 480, 120]
+
+
+# ---- run loop: early wake on new-session kick (#413) ---------------------------------
+
+
+def test_request_review_soon_is_noop_before_loop_armed(monkeypatch):
+    # Before run() arms the loop (or under the kill-switch), a kick must be a harmless no-op.
+    monkeypatch.setattr(ai_review_loop, "_wake", None)
+    ai_review_loop.request_review_soon()  # must not raise
+
+
+def test_kick_wakes_loop_before_the_interval(ai_prefs, monkeypatch):
+    # A real (minutes-long) interval means a sweep this quickly can ONLY come from the kick.
+    monkeypatch.setattr(ai_review_loop, "KICK_GRACE_S", 0.0)
+
+    async def scenario():
+        swept = []
+        done = asyncio.Event()
+
+        async def fake_sweep(reg):
+            swept.append(reg)
+            done.set()
+            return [], 0
+
+        monkeypatch.setattr(ai_review_loop, "sweep", fake_sweep)
+        task = asyncio.create_task(ai_review_loop.run(_FakeRegistry([_row(SID)])))
+        await asyncio.sleep(0.05)  # let run() arm the wake event and start waiting
+        assert swept == []  # interval is minutes away — nothing yet
+        ai_review_loop.request_review_soon()  # the new-session kick
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert len(swept) == 1
+
+    asyncio.run(scenario())

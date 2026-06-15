@@ -118,6 +118,9 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
         # (history replace, no reload, keep the socket) and the sidebar shows one row.
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "id", "sid": real_key}))
+        # The real session now exists + is durable — wake the AI-review loop to summarize it
+        # promptly instead of waiting out the interval (#413). Gated/deduped inside the sweep.
+        ai_review_loop.request_review_soon()
         return
 
 
