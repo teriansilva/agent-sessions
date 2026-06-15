@@ -1,0 +1,295 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.newBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  margin: 8px;
+  padding: 9px 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border-radius: 0;
+  font-weight: 600;
+  text-decoration: none;
+}
+.newBtn:hover {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.newBtn:active {
+  background: var(--cta-bg-2);
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.more {
+  padding: 10px 12px;
+}
+.more button {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 0;
+  cursor: pointer;
+  font: inherit;
+}
+.more button:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+.more button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.more button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rowWrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rowWrap:hover {
+  background: var(--row-hover);
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  flex: 1;
+  min-width: 0;
+  border-left: 2px solid transparent;
+}
+/* The currently-open session (the row whose URL matches the route). A tinted ground +
+ * an accent rail so you can see which session you're in at a glance (#18). */
+.active {
+  background: var(--row-hover);
+  border-left-color: var(--accent);
+}
+/* Action cluster: hidden until row hover on pointer devices; always shown on
+ * narrow viewports (<= 800px) so phone/tablet users can reach rename/archive
+ * regardless of reported hover support. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.rowWrap:hover .actions,
+.rowWrap:focus-within .actions,
+.actionsOpen {
+  opacity: 1;
+}
+@media (hover: none), (max-width: 800px) {
+  .actions {
+    opacity: 1;
+  }
+}
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+@media (max-width: 800px) {
+  .iconBtn {
+    width: 32px;
+    height: 32px;
+  }
+}
+.iconBtn:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--accent);
+}
+.iconBtn:focus-visible {
+  outline: none;
+  color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.editRow {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 8px 6px 12px;
+  flex: 1;
+  min-width: 0;
+}
+.editInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+}
+.editInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.body {
+  min-width: 0;
+  flex: 1;
+}
+.title {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Leading per-row status LED (#211 4b, was the working-only dot of #156). Layout only —
+ * the dot's appearance (green glow + blink when .up, dim + steady when .idle) comes from
+ * the global .hud-led primitive so it matches the topbar/classbar indicators. margin-top
+ * nudges the 6px dot onto the title's first baseline. */
+.led {
+  flex: none;
+  margin-top: 6px;
+}
+/* Mono meta line: a demoted engine tag + project · relative-time, in the HUD mono voice. */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.metaText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Engine, demoted from a prominent colored badge to a faint mono tag (#211 4b): the live
+ * LED is now the primary row signal, so the engine just needs to be legible, not loud. */
+.engineTag {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+/* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
+ * engine tag · time — an entity name leads with its color dot, an unassigned folder
+ * group gets a muted-italic folder marker. Inline (not flex) so the metaText ellipsis
+ * keeps truncating the whole line. */
+.projectChip {
+  color: var(--text-muted);
+}
+.projectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+}
+.folderChip {
+  color: var(--text-muted);
+}
+.folderMark {
+  color: var(--text-3, var(--text-muted));
+  font-style: italic;
+}
+.empty {
+  color: var(--text-muted);
+  padding: 14px 12px;
+  font-size: 12px;
+}
+
+/* AI review (#356): one-line summary under the title, the amber "needs a human" badge,
+ * and the reviewing-spinner on the row's Review-now action. */
+.summary {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-2, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.summaryExcluded {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+.summaryStale {
+  color: var(--text-3, var(--text-muted));
+  font-style: italic;
+}
+.alertBadge {
+  flex: none;
+  margin-top: 2px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg, #000);
+  background: var(--accent, #ffb000);
+  animation: alertPulse 1.6s ease-in-out infinite;
+}
+@keyframes alertPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .alertBadge {
+    animation: none;
+  }
+}
+.spin {
+  animation: reviewSpin 1.2s linear infinite;
+}
+@keyframes reviewSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
