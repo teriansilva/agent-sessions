@@ -44,7 +44,8 @@ const EDGE = 8; // min distance from viewport edges
  *  (#384). The menu is portaled to <body> so the sidebar's overflow-y:auto scroll
  *  container can't clip it; on narrow viewports CSS turns it into a bottom sheet
  *  (see RowMenu.module.css). Keyboard: trigger opens & focuses the first item,
- *  Arrow keys cycle, Home/End jump, Esc/Tab/outside-click/scroll/resize close,
+ *  Arrow keys cycle, Home/End jump, Esc/Tab/outside-click close (scroll/resize close the
+ *  desktop popover only — the mobile sheet is viewport-pinned, see the close effect),
  *  Esc returns focus to the trigger. */
 export function RowMenu({
   items,
@@ -96,27 +97,40 @@ export function RowMenu({
     if (open) itemRefs.current[0]?.focus();
   }, [open]);
 
-  // Close on outside pointerdown, scroll (the anchor moves under us), or resize.
+  // Close on an outside pointerdown (both modes). On DESKTOP the menu is a popover anchored to
+  // the trigger, so a scroll or viewport resize that slides the trigger out from under it must
+  // dismiss it too. The MOBILE bottom sheet is pinned to the viewport (scrim-locked behind), so
+  // it must NOT bind scroll/resize: a mobile browser shows/hides its URL bar on the very tap
+  // that opens the sheet, firing resize (and scroll) — which would flicker the sheet shut the
+  // instant you press ⋯. Gate those two on desktop only.
   useEffect(() => {
     if (!open) return;
+    const isSheet =
+      typeof window.matchMedia === "function" && window.matchMedia("(max-width: 800px)").matches;
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (menuRef.current?.contains(t) || triggerRef.current?.contains(t)) return;
       close(false);
     };
-    const onScroll = (e: Event) => {
-      if (menuRef.current?.contains(e.target as Node)) return;
-      close(false);
-    };
-    const onResize = () => close(false);
     document.addEventListener("pointerdown", onPointerDown);
-    // capture: the sidebar list scrolls its own box, not the window
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+    let detachViewport = () => {};
+    if (!isSheet) {
+      const onScroll = (e: Event) => {
+        if (menuRef.current?.contains(e.target as Node)) return;
+        close(false);
+      };
+      const onResize = () => close(false);
+      // capture: the sidebar list scrolls its own box, not the window
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onResize);
+      detachViewport = () => {
+        window.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("resize", onResize);
+      };
+    }
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
+      detachViewport();
     };
   }, [open, close]);
 

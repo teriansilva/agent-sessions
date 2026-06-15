@@ -226,4 +226,26 @@ test.describe("Mobile Context Menu", () => {
     await page.touchscreen.tap(page.viewportSize()!.width / 2, 20);
     await expect(menu).toBeHidden();
   });
+
+  // Regression: on a real phone, Chrome/Safari show/hide the URL bar on the very tap that
+  // opens the sheet, firing `resize` (and `scroll`) events. The sheet used to bind those as
+  // close triggers (they only make sense for the trigger-anchored desktop popover), so it
+  // flickered shut the instant you pressed ⋯. The mobile sheet must survive a viewport
+  // resize/scroll — it's pinned to the viewport, not the trigger.
+  test("sheet survives a viewport resize/scroll (no URL-bar flicker)", async ({ page }) => {
+    await page.locator("header .navToggle").click();
+    const firstRow = page.locator("ul[aria-label] li").first();
+    await firstRow.getByRole("button", { name: "Session actions" }).click();
+
+    const menu = page.getByRole("menu", { name: "Session actions" });
+    await expect(menu).toBeVisible();
+
+    // Android URL-bar collapse ⇒ a window resize / scroll while the sheet is open.
+    await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+    await page.evaluate(() => window.dispatchEvent(new Event("scroll")));
+    await page.waitForTimeout(150);
+
+    // Still open — the sheet does not dismiss itself on viewport chrome changes.
+    await expect(menu).toBeVisible();
+  });
 });
