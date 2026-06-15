@@ -47,9 +47,10 @@ test("menu is closed until the trigger is clicked; trigger reflects expanded sta
 
   await user.click(trigger);
   expect(trigger).toHaveAttribute("aria-expanded", "true");
-  // Portaled to <body> so the sidebar scroll container can't clip it.
+  // Portaled to <body> (via the bottom-sheet wrapper) so the sidebar scroll container
+  // can't clip it — menu → sheet wrapper → body.
   const menu = screen.getByRole("menu", { name: "Session actions" });
-  expect(menu.parentElement).toBe(document.body);
+  expect(menu.parentElement?.parentElement).toBe(document.body);
   // Menu-button pattern: the first item takes focus on open.
   expect(screen.getByRole("menuitem", { name: "Review session now" })).toHaveFocus();
 });

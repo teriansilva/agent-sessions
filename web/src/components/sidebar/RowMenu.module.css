@@ -35,6 +35,12 @@
   display: none;
 }
 
+/* Desktop: a transparent passthrough — the menu inside keeps behaving as the fixed
+ * popover. The mobile query turns this into the dynamic-viewport sheet container. */
+.sheetWrap {
+  display: contents;
+}
+
 .menu {
   position: fixed;
   top: var(--rm-top, 0);
@@ -136,15 +142,37 @@
     z-index: 50;
     background: rgba(0, 0, 0, 0.55);
   }
+  /* Click-through flex box sized to the DYNAMIC viewport (100dvh excludes the mobile
+   * browser's collapsing toolbar), pinning the sheet to the *visible* bottom. Taps in the
+   * empty area above the sheet fall through (pointer-events:none) to the scrim, which closes. */
+  .sheetWrap {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    position: fixed;
+    inset: 0;
+    height: 100vh; /* fallback for browsers without dvh */
+    height: 100dvh;
+    z-index: 51;
+    pointer-events: none;
+  }
   .menu {
-    top: auto;
-    right: 0;
-    left: 0;
-    bottom: 0;
+    /* relative + inset:auto: stay a normal flex item (neutralising the desktop --rm-top/right
+     * offsets) while still being the containing block for the ::after corner bracket. */
+    position: relative;
+    inset: auto;
     min-width: 0;
     border-left: none;
     border-right: none;
     border-bottom: none;
+    /* Never taller than the visible viewport; scroll the sheet internally so every action
+     * (and Cancel) stays reachable even when the AI-review items make it tall on a short or
+     * landscape phone — instead of overflowing off the top of the screen with no way back. */
+    max-height: 100vh;
+    max-height: 100dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    pointer-events: auto;
     padding-bottom: max(14px, env(safe-area-inset-bottom));
   }
   .menu::after {

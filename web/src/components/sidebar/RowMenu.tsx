@@ -180,52 +180,58 @@ export function RowMenu({
           <>
             {/* Mobile-only scrim behind the bottom sheet (display:none on desktop). */}
             <div className={styles.scrim} aria-hidden="true" onClick={() => close(false)} />
-            <div
-              ref={menuRef}
-              className={styles.menu}
-              role="menu"
-              aria-label={triggerLabel}
-              onKeyDown={onMenuKeyDown}
-            >
-              {title && (
-                <div className={styles.sheetHead} aria-hidden="true">
-                  <div className={styles.sheetTitle}>Session actions</div>
-                  <div className={styles.sheetSession}>{title}</div>
-                </div>
-              )}
-              {items.map((entry, i) => {
-                if (entry === "separator") {
-                  return <div key={`sep-${i}`} className={styles.sep} role="separator" />;
-                }
-                // Roving-focus slot: position among action items only (separators skipped).
-                const idx = items.slice(0, i).filter((it) => it !== "separator").length;
-                return (
-                  <button
-                    key={entry.key}
-                    ref={(el) => {
-                      itemRefs.current[idx] = el;
-                    }}
-                    type="button"
-                    role="menuitem"
-                    tabIndex={-1}
-                    className={styles.item}
-                    aria-label={entry.ariaLabel}
-                    aria-disabled={entry.disabled || undefined}
-                    onClick={() => select(entry)}
-                  >
-                    <span className={styles.itemIcon}>{entry.icon}</span>
-                    {entry.label}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                className={styles.cancel}
-                tabIndex={-1}
-                onClick={() => close(true)}
+            {/* Sheet wrapper: `display:contents` on desktop (the menu stays a fixed popover),
+                but on mobile a click-through, dynamic-viewport-height flex box that pins the
+                sheet to the *visible* bottom — above the browser's collapsing toolbar — so the
+                lower actions + Cancel can't hide behind it (the sheet itself scrolls when tall). */}
+            <div className={styles.sheetWrap}>
+              <div
+                ref={menuRef}
+                className={styles.menu}
+                role="menu"
+                aria-label={triggerLabel}
+                onKeyDown={onMenuKeyDown}
               >
-                Cancel
-              </button>
+                {title && (
+                  <div className={styles.sheetHead} aria-hidden="true">
+                    <div className={styles.sheetTitle}>Session actions</div>
+                    <div className={styles.sheetSession}>{title}</div>
+                  </div>
+                )}
+                {items.map((entry, i) => {
+                  if (entry === "separator") {
+                    return <div key={`sep-${i}`} className={styles.sep} role="separator" />;
+                  }
+                  // Roving-focus slot: position among action items only (separators skipped).
+                  const idx = items.slice(0, i).filter((it) => it !== "separator").length;
+                  return (
+                    <button
+                      key={entry.key}
+                      ref={(el) => {
+                        itemRefs.current[idx] = el;
+                      }}
+                      type="button"
+                      role="menuitem"
+                      tabIndex={-1}
+                      className={styles.item}
+                      aria-label={entry.ariaLabel}
+                      aria-disabled={entry.disabled || undefined}
+                      onClick={() => select(entry)}
+                    >
+                      <span className={styles.itemIcon}>{entry.icon}</span>
+                      {entry.label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className={styles.cancel}
+                  tabIndex={-1}
+                  onClick={() => close(true)}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </>,
           document.body,
