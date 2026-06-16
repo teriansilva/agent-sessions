@@ -7,7 +7,7 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
-import { engineColor, engineName } from "./format";
+import { displayProjectName, engineColor, engineName } from "./format";
 
 /** A session counts as "active" if its last activity is within this window. */
 export const ACTIVE_WINDOW_S = 15 * 60;
@@ -17,9 +17,10 @@ export const ACTIVE_WINDOW_S = 15 * 60;
  *  `agent` = one cluster per engine. Device-local selection (see OverviewPrefs). */
 export type GroupBy = "folder" | "project" | "agent";
 
-// Layout geometry (px). Deterministic so snapshots/tests are stable.
-const CHIP_W = 176;
-const CHIP_H = 46;
+// Layout geometry (px). Deterministic so snapshots/tests are stable. Chips grew at #424
+// Phase 4 to reach list-row parity (title + AI summary + project/folder/time meta line).
+const CHIP_W = 240;
+const CHIP_H = 80;
 const GAP = 8;
 const PAD = 12;
 const HEADER_H = 44; // fits a custom name + a path subtitle line (#148)
@@ -61,6 +62,9 @@ export interface SessionNodeData extends Record<string, unknown> {
   /** This chip is the currently-open session (route = identity) — highlighted in sync with
    *  the sidebar list's active row (#149). */
   selected: boolean;
+  /** Launch-folder display label (#424 Phase 4): the per-cwd custom name (#148) or shortened
+   *  path — precomputed here so the chip stays presentational, matching the list row. */
+  folderLabel: string;
 }
 
 export interface OverviewGraph {
@@ -311,6 +315,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
             active: nowS - (s.last_mtime || 0) < ACTIVE_WINDOW_S,
             working: !!s.working,
             selected: s.id === opts.activeId,
+            folderLabel: displayProjectName(s.cwd, names),
           } satisfies SessionNodeData,
           draggable: false,
         });

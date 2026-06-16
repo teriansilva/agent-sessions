@@ -176,14 +176,17 @@
   height: 1px;
 }
 
-/* Session chip. */
+/* Session chip — at information parity with the sidebar list row (#424 Phase 4): a head line
+ * (LED + title + intervention badge + engine), the AI summary, and a project/folder/time foot.
+ * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent. */
 .tr-ov-chip {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 176px;
-  height: 46px;
-  padding: 0 10px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 240px;
+  height: 80px;
+  padding: 8px 11px;
   background: var(--row-hover);
   border: 1px solid var(--border);
   border-left: 3px solid var(--eng, var(--accent));
@@ -191,6 +194,7 @@
   cursor: pointer;
   text-align: left;
   color: var(--text);
+  overflow: hidden;
   transition:
     border-color 0.12s,
     transform 0.12s;
@@ -211,6 +215,64 @@
   border-color: var(--accent);
   background: var(--row-hover);
   box-shadow: 0 0 0 1px var(--accent);
+}
+/* Head line: LED + title (grows + ellipsises) + intervention badge + engine badge. */
+.tr-ov-chip-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+/* Intervention "!" badge — mirrors the list row's amber alertBadge (#356). */
+.tr-ov-alert {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg, #000);
+  background: var(--accent, #ffb000);
+}
+/* AI summary (or the exclusion marker) — one ellipsised line, like the list row. */
+.tr-ov-summary {
+  font-size: 10.5px;
+  color: var(--text-2, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-summary.excluded {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+/* Foot line: project chip + folder chip + relative time, as one ellipsised mono line. */
+.tr-ov-chip-foot {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-chip-proj .tr-ov-proj-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+.tr-ov-foot-sep {
+  margin: 0 4px;
+  opacity: 0.6;
+}
+.tr-ov-folder-mark {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
 }
 .tr-ov-dot {
   width: 8px;
@@ -254,18 +316,15 @@
   flex-direction: column;
 }
 .tr-ov-ttl {
+  flex: 1;
+  min-width: 0;
   font-size: 12.5px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
-}
-.tr-ov-sub {
-  font-size: 10.5px;
-  color: var(--text-muted);
 }
 .tr-ov-eng {
-  margin-left: auto;
   flex: none;
   font-size: 9.5px;
   font-weight: 800;
