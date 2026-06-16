@@ -933,6 +933,76 @@ def test_force_repaint_floors_small_terminals(monkeypatch):
     assert calls[0] == (2, 2)  # floored, not 1 or 0
 
 
+def test_force_repaint_holds_shrink_until_agent_repaints(monkeypatch):
+    """#443: the restore must be a resize the agent can't coalesce with the shrink. When given the
+    live byte counter, _force_repaint holds the shrunk geometry until the agent has actually
+    repainted it (out_bytes advances) BEFORE restoring — so a busy agent's SIGWINCH debounce can't
+    merge shrink+restore into a net-zero geometry change (which left the live region blank). Pin
+    that the restore does NOT happen while the agent is still silent on the shrink."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)  # isolate the output-gate from the settle
+    monkeypatch.setattr(webterm, "_NUDGE_POLL_S", 0.001)
+    # High timeout: the output gate (not the bounded fallback) must be what releases the restore.
+    monkeypatch.setattr(webterm, "_NUDGE_MAX_WAIT_S", 5.0)
+    out_bytes = {"n": 0}
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    restore = ("size", 24, 80)
+
+    async def drive():
+        task = asyncio.create_task(webterm._force_repaint(7, _Proc(), 24, 80, out_bytes=out_bytes))
+        await asyncio.sleep(0.05)  # let the shrink land; the agent is still "silent"
+        assert restore not in calls, "restored before the agent repainted the shrink (coalescable)"
+        out_bytes["n"] += 7  # the agent's shrink-repaint arrives → gate releases
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(drive())
+    assert calls == [
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),  # 2-D shrink
+        ("sig", _signal.SIGWINCH),
+        restore,  # only AFTER the agent rendered the shrink
+        ("sig", _signal.SIGWINCH),
+    ]
+
+
+def test_force_repaint_restores_after_timeout_when_agent_silent(monkeypatch):
+    """#443: a wedged/exited agent never repaints — the output gate must be BOUNDED so the restore
+    still fires and the nudge can't hang the connection."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)
+    monkeypatch.setattr(webterm, "_NUDGE_POLL_S", 0.005)
+    monkeypatch.setattr(webterm, "_NUDGE_MAX_WAIT_S", 0.05)
+    out_bytes = {"n": 0}  # never advances → agent is silent
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    asyncio.run(webterm._force_repaint(7, _Proc(), 24, 80, out_bytes=out_bytes))
+    # Restored despite the silence (bounded wait), full shrink→restore sequence intact.
+    assert calls == [
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),
+        ("sig", _signal.SIGWINCH),
+        ("size", 24, 80),
+        ("sig", _signal.SIGWINCH),
+    ]
+
+
 # ---- #349: resize-vs-nudge coalescing + blank-attach nudge ------------------------
 
 
@@ -1013,7 +1083,7 @@ def _run_349(monkeypatch, *, key, have, script, settle=0.05):
 
     calls = []
 
-    async def record_repaint(master, proc, rows, cols):
+    async def record_repaint(master, proc, rows, cols, *, out_bytes=None):
         calls.append((rows, cols))
 
     monkeypatch.setattr(webterm, "_force_repaint", record_repaint)

@@ -100,6 +100,17 @@ _NUDGE_GAP_S = 0.25
 _NUDGE_COLS_DELTA = 8
 _NUDGE_ROWS_DELTA = 2
 
+# #443 — hold the shrunk geometry until the agent has DEMONSTRABLY rendered it (its first output
+# bytes after the shrink) before restoring, so the restore is a SECOND, distinct resize the agent
+# can't coalesce with the shrink inside its own SIGWINCH debounce. A fixed _NUDGE_GAP_S alone
+# raced a busy agent's debounce (under load the shrink+restore merged → net-zero geometry → the
+# agent rendered nothing → a blank live region while the transcript replayed). Waiting on real
+# output is timing-INDEPENDENT: it works whatever the agent's debounce window is. _NUDGE_MAX_WAIT_S
+# bounds the wait so a silent/wedged/exited agent (one that never repaints) still restores and the
+# connection never hangs; _NUDGE_POLL_S is how often we re-check the output counter.
+_NUDGE_MAX_WAIT_S = 1.0
+_NUDGE_POLL_S = 0.02
+
 # Re-nudge window (#349): a client resize landing within this many seconds of attach can
 # coalesce with the fresh-attach nudge inside the agent's own resize debounce — shrink +
 # client-resize + restore net out to zero geometry change and the agent never repaints
@@ -122,20 +133,40 @@ SPAWN_TIMEOUT_S = 15.0
 
 
 async def _force_repaint(
-    master: int, proc: asyncio.subprocess.Process, rows: int, cols: int
+    master: int,
+    proc: asyncio.subprocess.Process,
+    rows: int,
+    cols: int,
+    *,
+    out_bytes: dict | None = None,
 ) -> None:
     """Force one full repaint from a winch-only-repaint agent: shrink the pty, then restore (#329).
 
     Mirrors the resize path: TIOCSWINSZ alone doesn't reliably reach the agent through the dtach
     client, so we also SIGWINCH it. The shrink is 2-D and held past the agent's resize-debounce so
     the pair is seen as two distinct resizes whose intermediate frame can't match the agent's
-    internal model (a 1-col nudge could, leaving width-stable idle frames blank — #329). Best-effort
+    internal model (a 1-col nudge could, leaving width-stable idle frames blank — #329).
+
+    #443 — make the pair un-coalesceable WITHOUT guessing a timing constant. When ``out_bytes`` (the
+    live agent→client byte counter, advanced by ``pump_out``) is supplied, hold the shrunk geometry
+    until the agent has actually rendered it — i.e. its first bytes after the shrink arrive — before
+    restoring. A fixed gap alone raced a busy agent's SIGWINCH debounce: shrink+restore merged into
+    a net-zero geometry change the agent never repainted, leaving the live region blank while the
+    transcript replayed. The wait is bounded by ``_NUDGE_MAX_WAIT_S`` so a silent/wedged agent still
+    restores. With no ``out_bytes`` the historical fixed-gap behaviour is preserved. Best-effort
     (closed master / exited agent suppressed)."""
     nudge_rows = max(2, rows - _NUDGE_ROWS_DELTA)
     nudge_cols = max(2, cols - _NUDGE_COLS_DELTA)
     with contextlib.suppress(ProcessLookupError, OSError):
+        before = out_bytes["n"] if out_bytes is not None else None
         _set_winsize(master, nudge_rows, nudge_cols)
         proc.send_signal(signal.SIGWINCH)
+        # Wait for proof the agent processed the shrink (it repainted → bytes flowed), so the
+        # restore below is a genuinely distinct resize event. Bounded; a silent agent falls through.
+        if before is not None:
+            deadline = time.monotonic() + _NUDGE_MAX_WAIT_S
+            while out_bytes["n"] == before and time.monotonic() < deadline:
+                await asyncio.sleep(_NUDGE_POLL_S)
         await asyncio.sleep(_NUDGE_GAP_S)
         _set_winsize(master, rows, cols)
         proc.send_signal(signal.SIGWINCH)
@@ -355,6 +386,11 @@ async def run(
     cur = {"rows": rows, "cols": cols}
     attach_at = time.monotonic()
     renudge: dict = {"task": None}
+    # #443: live agent→client bytes since attach. _force_repaint watches this to hold its shrink
+    # until the agent has rendered it, making the shrink→restore pair un-coalesceable (no timing
+    # guess). Only pump_out (genuine agent output) advances it — the replay payload below is sent
+    # directly, so an idle agent's counter stays put until the shrink actually forces a repaint.
+    out_bytes = {"n": 0}
 
     def _schedule_trailing_nudge() -> None:
         # Debounce: a mobile resize burst (keyboard + address-bar animation) collapses
@@ -366,7 +402,7 @@ async def run(
 
         async def _trail() -> None:
             await asyncio.sleep(_NUDGE_SETTLE_S)
-            await _force_repaint(master, proc, cur["rows"], cur["cols"])
+            await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
 
         renudge["task"] = asyncio.create_task(_trail())
 
@@ -375,6 +411,7 @@ async def run(
             data = await loop.run_in_executor(None, _read, master)
             if not data:
                 break
+            out_bytes["n"] += len(data)  # #443: proof-of-repaint signal for _force_repaint
             if buf_key is not None:
                 scrollback._buffer_append(buf_key, data)
             await ws.send_bytes(data)  # awaited → natural backpressure
@@ -471,7 +508,7 @@ async def run(
         if have > 0 and not blank_attach:
             return
         await asyncio.sleep(_NUDGE_SETTLE_S)
-        await _force_repaint(master, proc, cur["rows"], cur["cols"])
+        await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
 
     async def heartbeat() -> None:
         """Periodically send a ping frame to detect dead connections (#398)."""
