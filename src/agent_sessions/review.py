@@ -289,6 +289,34 @@ async def run_review(key: str) -> dict:
     }
 
 
+async def complete_json(messages: list[dict], *, model: str | None = None) -> dict:
+    """One bounded, non-streaming chat completion against the configured AI-review endpoint,
+    returning the parsed JSON object (#424 Phase 6 — reused by the auto-sorter). Reuses the
+    same client / auth / tolerant JSON extraction as ``run_review``; raises NotConfiguredError
+    / ReviewError, never partial state. Shape validation is the caller's concern."""
+    cfg = _require_config()
+    body = {
+        "model": model or cfg["model"],
+        "messages": messages,
+        "temperature": 0,
+        "stream": False,
+    }
+    try:
+        async with _client(request_timeout(cfg)) as client:
+            r = await client.post(
+                _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
+            )
+    except httpx.HTTPError as e:
+        raise ReviewError(f"endpoint unreachable ({type(e).__name__})") from None
+    if r.status_code != 200:
+        raise ReviewError(f"endpoint returned HTTP {r.status_code}")
+    try:
+        content = r.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise ReviewError("endpoint returned an unexpected response shape") from None
+    return _extract_json(str(content))
+
+
 # --- model discovery -----------------------------------------------------------------
 
 # Bound on the gateway-error extract surfaced to Settings (#382): enough for a full

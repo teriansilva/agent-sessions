@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .. import (
     archive,
+    autosort,
     engines,
     metadata,
     owner,
@@ -251,6 +252,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse(p.as_dict())
+
+    @app.post("/api/projects/auto-sort")
+    async def auto_sort_now(
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # On-demand AI auto-sort (#424 Phase 6): run one bounded pass NOW, assigning unassigned
+        # sessions to existing projects. Gated on the opt-in + a configured (reused) ai_review
+        # endpoint, so the button can't run an unconfigured / opted-out sweep.
+        if not prefs.get_auto_sort()["enabled"]:
+            raise HTTPException(status_code=409, detail="auto-sort is disabled")
+        if not prefs.public_ai_review()["configured"]:
+            raise HTTPException(status_code=409, detail="the AI review endpoint is not configured")
+        report = await autosort.run_sort()
+        return JSONResponse(report)
 
     @app.patch("/api/projects/{pid}")
     async def patch_project(

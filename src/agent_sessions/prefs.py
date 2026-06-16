@@ -545,3 +545,75 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
             new["api_key"] = v.strip()  # only a real new value replaces the stored key
     _set("ai_review", new, path)
     return new
+
+
+# --- Auto-sort (#424 Phase 6) ----------------------------------------------------------
+# Opt-in AI auto-sorter: assigns UNASSIGNED sessions to existing project entities, reusing
+# the `ai_review` gateway (so it holds no endpoint config / secret of its own). Off by
+# default; bounds mirror the ai_review interval validation.
+AUTO_SORT_INTERVAL_MIN = 5
+AUTO_SORT_INTERVAL_MAX = 24 * 60
+
+_AUTO_SORT_DEFAULTS: dict[str, object] = {
+    "enabled": False,
+    "interval_minutes": 30,
+}
+
+
+def get_auto_sort(path: Path | None = None) -> dict:
+    """The stored `auto_sort` block with defaults applied + types coerced (#424 Phase 6)."""
+    raw = _load(path or _default_path()).get("auto_sort")
+    out = dict(_AUTO_SORT_DEFAULTS)
+    if isinstance(raw, dict):
+        if isinstance(raw.get("enabled"), bool):
+            out["enabled"] = raw["enabled"]
+        v = raw.get("interval_minutes")
+        if (
+            isinstance(v, int)
+            and not isinstance(v, bool)
+            and AUTO_SORT_INTERVAL_MIN <= v <= AUTO_SORT_INTERVAL_MAX
+        ):
+            out["interval_minutes"] = v
+    return out
+
+
+def public_auto_sort(path: Path | None = None) -> dict:
+    """Client-safe view (#424 Phase 6). `auto_sort` holds no secret of its own; `configured`
+    mirrors the reused ai_review endpoint readiness so the UI can explain a can't-run state."""
+    out = dict(get_auto_sort(path))
+    out["configured"] = bool(public_ai_review(path)["configured"])
+    return out
+
+
+def validate_auto_sort_patch(patch: object) -> str | None:
+    """Server-side schema validation for a partial `auto_sort` write (#424 Phase 6): returns a
+    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op."""
+    if not isinstance(patch, dict):
+        return "auto_sort must be an object"
+    unknown = set(patch) - set(_AUTO_SORT_DEFAULTS)
+    if unknown:
+        return f"unknown auto_sort fields: {sorted(unknown)}"
+    if "enabled" in patch and not isinstance(patch["enabled"], bool):
+        return "auto_sort.enabled must be a boolean"
+    if "interval_minutes" in patch:
+        v = patch["interval_minutes"]
+        if (
+            not isinstance(v, int)
+            or isinstance(v, bool)
+            or not (AUTO_SORT_INTERVAL_MIN <= v <= AUTO_SORT_INTERVAL_MAX)
+        ):
+            return (
+                f"auto_sort.interval_minutes must be an integer between "
+                f"{AUTO_SORT_INTERVAL_MIN} and {AUTO_SORT_INTERVAL_MAX}"
+            )
+    return None
+
+
+def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block into the stored one and persist (#424 Phase 6)."""
+    new = dict(get_auto_sort(path))
+    for k in ("enabled", "interval_minutes"):
+        if k in patch:
+            new[k] = patch[k]
+    _set("auto_sort", new, path)
+    return new

@@ -212,6 +212,9 @@ def register(
                 # AI session review config (#356) — the PUBLIC view only: the API key is
                 # write-only and surfaces here solely as `api_key_set` (never the value).
                 "ai_review": prefs.public_ai_review(),
+                # AI auto-sort config (#424 Phase 6) — opt-in; holds no secret of its own,
+                # `configured` mirrors the reused ai_review endpoint readiness.
+                "auto_sort": prefs.public_auto_sort(),
             }
         )
 
@@ -290,6 +293,15 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_ai_review(payload["ai_review"])
             out["ai_review"] = prefs.public_ai_review()
+        if "auto_sort" in payload:
+            # AI auto-sort opt-in (#424 Phase 6): enable + interval, server-validated
+            # (unknown-key rejection, interval bounds). Holds no secret — it reuses the
+            # ai_review endpoint. The echo is the PUBLIC view (adds `configured`).
+            err = prefs.validate_auto_sort_patch(payload["auto_sort"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_auto_sort(payload["auto_sort"])
+            out["auto_sort"] = prefs.public_auto_sort()
         if "project_names" in payload:
             v = payload["project_names"]
             if not isinstance(v, dict) or not all(

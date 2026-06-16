@@ -27,7 +27,16 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import ai_review_loop, metadata, owner, prefs, reaper, session_stream, vtsidecar
+from . import (
+    ai_review_loop,
+    autosort_loop,
+    metadata,
+    owner,
+    prefs,
+    reaper,
+    session_stream,
+    vtsidecar,
+)
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -188,10 +197,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # re-reads the ai_review prefs every sweep, so the Settings enable toggle governs
         # it live without a restart.
         review_task = asyncio.create_task(ai_review_loop.run(registry))
+        # Periodic AI auto-sort (#424 Phase 6): same reaper pattern, gated on the
+        # `auto_sort` opt-in + the env kill-switch, re-read per sweep.
+        autosort_task = asyncio.create_task(autosort_loop.run())
         try:
             yield
         finally:
-            for task in (reaper_task, review_task):
+            for task in (reaper_task, review_task, autosort_task):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
