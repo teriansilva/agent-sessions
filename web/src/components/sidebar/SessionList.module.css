@@ -145,6 +145,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Center vertically within the (align-items:stretch) row so the star lines up with
+   * the ⋯ menu — a fixed-height flex item otherwise pins to the top on tall rows (#426). */
+  align-self: center;
   flex: none;
   width: 28px;
   height: 28px;
