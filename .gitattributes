@@ -1,0 +1,36 @@
+# Raw PTY traces for the snapshot serializer tests (#242). They intentionally
+# contain CR and trailing-whitespace bytes, so mark them binary: Git then skips
+# text normalization and `git diff --check` whitespace warnings for them.
+tests/fixtures/term/*.bin binary
+
+# --- Public-mirror filter — issue #322 (pre-publish security gate) -----------------------
+# Paths marked `export-ignore` are stripped by `git archive`, so they are EXCLUDED from the
+# filtered flat-snapshot the publish workflow pushes to the PUBLIC GitHub mirror
+# (github.com/teriansilva/agent-sessions). The private Forgejo repo keeps EVERYTHING; only
+# the public surface is filtered. This is the single list to maintain — add one line per new
+# org-internal path. `scripts/check-public-snapshot` hard-fails if any of these ever appears
+# in the produced snapshot, so a typo here cannot silently leak.
+
+# Org-internal CI / deploy automation (bot identities, Hermes webhook, runner hosts + IPs).
+.forgejo/                          export-ignore
+deploy/agent-sessions.service      export-ignore
+
+# Org-internal agent-workflow + process docs (internal hosts, Hermes, infra cross-refs).
+CLAUDE.md                          export-ignore
+AGENTS.md                          export-ignore
+docs/agent-workflow.md             export-ignore
+docs/implementation-workflow.md    export-ignore
+docs/visual-review.md              export-ignore
+docs/PROGRESS.md                   export-ignore
+docs/releasing.md                  export-ignore
+
+# Internal landing/marketing page for the hosted instance (battlelab + edge/proxy refs).
+landing/                           export-ignore
+
+# Forgejo-specific visual-review CI tooling (FORGEJO_API; useless without .forgejo/).
+scripts/post-visual-comment.mjs    export-ignore
+scripts/resolve-visual-scope.mjs   export-ignore
+
+# The publish gate itself — internal tooling (it names the internal-token denylist) and runs
+# from the source checkout during publish, never needs to be in the public snapshot.
+scripts/check-public-snapshot      export-ignore
