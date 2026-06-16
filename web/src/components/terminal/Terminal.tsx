@@ -254,6 +254,23 @@ export function Terminal({
       const rows = host.querySelector<HTMLElement>(".xterm-rows");
       return (rows?.textContent ?? "").trim().length === 0;
     };
+    // #416: the fragment case — a SUBSTANTIAL replay was processed but only the top handful of
+    // rows rendered, leaving most of a tall grid blank (operator screenshot: a few lines of a
+    // Claude frame, the rest empty, self-healing on the agent's next repaint). visibleRowsBlank
+    // is false (there IS text) so the #407 guard alone never repaints it. "Sparse" = only a small
+    // fraction of the grid's rows carry content — distinct from a legitimately short prompt, which
+    // pairs few rows with a SMALL replay (gated by FRAGMENT_MIN_BYTES below), and from a full TUI
+    // frame, which fills the grid.
+    const visibleRowsSparse = () => {
+      const rows = host.querySelector<HTMLElement>(".xterm-rows");
+      if (!rows) return false;
+      const total = term.rows || rows.children.length || 24;
+      let nonEmpty = 0;
+      for (const r of Array.from(rows.children)) {
+        if ((r.textContent ?? "").trim().length) nonEmpty++;
+      }
+      return nonEmpty > 0 && nonEmpty < Math.max(6, Math.floor(total * 0.2));
+    };
     const jiggleRows = () => {
       if (term.rows <= 4) return;
       sock.send({ t: "r", cols: term.cols, rows: term.rows - 1 });
@@ -274,7 +291,12 @@ export function Terminal({
           // "Blank" used to mean "essentially no replay bytes". #407 shows the
           // byte count is not enough: a large raw replay can process successfully
           // while xterm's visible row layer remains empty. In that case, repaint too.
-          if (attachBytes >= 512 && !visibleRowsBlank()) return;
+          // #416 extends this: a large replay can also leave only a SPARSE fragment
+          // painted (top rows filled, the rest blank) — repaint that too. The big-bytes
+          // gate keeps a legitimately short prompt (few rows, small replay) from jiggling.
+          const FRAGMENT_MIN_BYTES = 4096;
+          const fragment = attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
+          if (attachBytes >= 512 && !visibleRowsBlank() && !fragment) return;
           jiggleRows();
         }, 800),
       );

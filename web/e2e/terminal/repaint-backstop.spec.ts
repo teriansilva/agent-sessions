@@ -42,6 +42,20 @@ test("a large replay that leaves visible rows blank still repaints (#407)", asyn
   });
 });
 
+test("a large replay that painted only a sparse fragment repaints (#416)", async ({ page }) => {
+  // Operator screenshot: a substantial Claude frame was delivered but only the top few rows
+  // rendered, the rest of the (tall) grid left blank — self-healing on the agent's next repaint.
+  // visibleRowsBlank is FALSE (there IS text), so the #407 guard alone never recovers it. Model
+  // it: 3 visible lines + ~6KB of no-op SGR bytes — a big replay that painted only a sparse grid.
+  await setupBench(page, {
+    sessions: SESSIONS,
+    history: { [KEY]: ["line A\r\nline B\r\nline C\r\n" + "\x1b[m".repeat(2000)] },
+    wipeOnResizeChange: true,
+  });
+  await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", { timeout: 15000 });
+});
+
 test("an attach that painted real content is NOT flicker-jiggled", async ({ page }) => {
   await setupBench(page, {
     sessions: SESSIONS,
