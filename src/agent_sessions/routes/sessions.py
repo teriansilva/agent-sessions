@@ -1,6 +1,6 @@
 """Session-data routes (agent-sessions#265): list/search sessions + facets, project
-entities (#361), the launch-folder list, rename, archive/unarchive, and bulk
-archive-older. Moved verbatim from ``main.create_app``.
+entities (#361), the launch-folder list, rename, favorite/unfavorite (#122),
+archive/unarchive, and bulk archive-older. Moved verbatim from ``main.create_app``.
 """
 
 from __future__ import annotations
@@ -480,6 +480,33 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=422, detail="title required")
         m = metadata.patch(key, title=title[:120])
         return JSONResponse({"id": key, "title": m.title})
+
+    def _set_favorite(sid: str, value: bool) -> JSONResponse:
+        # Favorite (#122) = the existing sidecar `sticky` flag surfaced as a star; a
+        # favorited session floats to the top of the first window via the sticky-first
+        # sort in list_sessions. Engine-agnostic, exactly like rename and the project
+        # assignment: a pure sidecar metadata write (opencode/codex/gemini included),
+        # never the provider's native store. resolve_key mirrors the list read
+        # precedence (logical → physical), so a reconciled opencode session's favorite
+        # follows its real row instead of shadowing it under a sparse logical key.
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        m = metadata.patch(metadata.resolve_key(key), sticky=value)
+        return JSONResponse({"id": key, "sticky": m.sticky})
+
+    @app.post("/api/sessions/{sid}/favorite")
+    async def favorite_session(
+        sid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return _set_favorite(sid, True)
+
+    @app.post("/api/sessions/{sid}/unfavorite")
+    async def unfavorite_session(
+        sid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return _set_favorite(sid, False)
 
     @app.post("/api/sessions/{sid}/archive")
     async def archive_session(

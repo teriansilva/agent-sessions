@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   Sparkles,
+  Star,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -37,6 +38,8 @@ interface RowProps {
   s: Session;
   onRename: (id: string, title: string) => Promise<void>;
   onToggleArchive: (id: string, currentlyArchived: boolean) => Promise<void>;
+  /** Favorite toggle (#122): flips the row's `sticky` flag; favorited rows pin to the top. */
+  onToggleFavorite: (id: string, value: boolean) => Promise<void>;
   /** AI review (#356): manual "Review now" + per-session exclude toggle. Undefined when
    *  the feature is unconfigured (the controls are hidden). */
   onReviewNow?: (id: string) => Promise<void>;
@@ -50,6 +53,7 @@ function Row({
   s,
   onRename,
   onToggleArchive,
+  onToggleFavorite,
   onReviewNow,
   onToggleReviewExcluded,
   onNavigate,
@@ -104,6 +108,15 @@ function Row({
     setBusy(true);
     try {
       await onToggleArchive(s.id, s.archived);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleFavorite = async () => {
+    setBusy(true);
+    try {
+      await onToggleFavorite(s.id, !s.sticky);
     } finally {
       setBusy(false);
     }
@@ -283,6 +296,22 @@ function Row({
           </div>
         </div>
       </NavLink>
+      {/* Favorite star (#122): a sibling of the NavLink (never nested inside it — clicking
+          must not navigate, and a <button> in an <a> is invalid). aria-pressed carries the
+          on/off state; a favorited row shows a filled amber star AT REST (its own opacity
+          rule, not the hover-revealed .actions cluster), unfavorited rows reveal an outline
+          star on hover/focus. */}
+      <button
+        type="button"
+        className={`${styles.favBtn} ${s.sticky ? styles.favorited : ""}`}
+        aria-pressed={s.sticky}
+        aria-label={s.sticky ? "Unfavorite" : "Favorite"}
+        title={s.sticky ? "Unfavorite" : "Favorite"}
+        disabled={busy}
+        onClick={() => void toggleFavorite()}
+      >
+        <Star size={15} fill={s.sticky ? "currentColor" : "none"} />
+      </button>
       <div className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}>
         <RowMenu
           items={menuItems}
@@ -319,6 +348,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     clear,
     renameRow,
     setArchived,
+    setSticky,
     reviewRow,
     setReviewExcluded,
   } = useSessionsList();
@@ -381,6 +411,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               s={s}
               onRename={renameRow}
               onToggleArchive={setArchived}
+              onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewRow : undefined}
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
               onNavigate={onNavigate}

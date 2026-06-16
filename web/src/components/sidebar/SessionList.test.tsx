@@ -16,6 +16,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
       rename: vi.fn(),
       archive: vi.fn(),
       unarchive: vi.fn(),
+      favorite: vi.fn(),
+      unfavorite: vi.fn(),
       reviewNow: vi.fn(),
       reviewExclude: vi.fn(),
     },
@@ -57,6 +59,8 @@ beforeEach(() => {
   mockSessions.mockReset();
   mockRename.mockReset();
   mockArchive.mockReset();
+  vi.mocked(api.favorite).mockReset();
+  vi.mocked(api.unfavorite).mockReset();
 });
 
 /** #384: row actions live behind a single ⋯ trigger now — open it first. */
@@ -206,6 +210,50 @@ test("archiving a row calls api.archive and removes it from the active list", as
   await user.click(screen.getByRole("menuitem", { name: /archive session/i }));
   expect(mockArchive).toHaveBeenCalledWith("claude:a");
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
+});
+
+// ---- favorite star (#122) ----
+
+test("the favorite star toggles sticky via the API and flips its pressed state (#122)", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.favorite).mockResolvedValue({ id: "claude:a", sticky: true });
+  render(
+    <MemoryRouter initialEntries={["/"]}>
+      <SessionList onNavigate={onNavigate} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  const star = screen.getByRole("button", { name: "Favorite" });
+  expect(star).toHaveAttribute("aria-pressed", "false");
+
+  await user.click(star);
+  expect(api.favorite).toHaveBeenCalledWith("claude:a");
+  // Flips to the pressed "Unfavorite" affordance once the row's sticky is set.
+  const pressed = await screen.findByRole("button", { name: "Unfavorite" });
+  expect(pressed).toHaveAttribute("aria-pressed", "true");
+  // The star is a sibling of the row link — toggling must not navigate the row.
+  expect(onNavigate).not.toHaveBeenCalled();
+  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute("aria-current");
+});
+
+test("an already-favorited row shows a pressed star at rest and unfavorites (#122)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([{ ...sess("claude:a", "Pinned"), sticky: true }]));
+  vi.mocked(api.unfavorite).mockResolvedValue({ id: "claude:a", sticky: false });
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Pinned");
+  const star = screen.getByRole("button", { name: "Unfavorite" });
+  expect(star).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(star);
+  expect(api.unfavorite).toHaveBeenCalledWith("claude:a");
+  expect(await screen.findByRole("button", { name: "Favorite" })).toBeInTheDocument();
 });
 
 // #156 / #211 4b: every row has a status LED, but only a working row carries the meaningful

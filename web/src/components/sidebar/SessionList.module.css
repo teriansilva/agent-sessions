@@ -136,6 +136,56 @@
   opacity: 0.4;
   cursor: default;
 }
+/* Favorite star (#122): a per-row toggle that lives OUTSIDE the hover-revealed
+ * .actions cluster, so a favorited row can keep its filled star visible AT REST (a
+ * child can't out-opacity the opacity:0 .actions parent). Unfavorited stars stay
+ * hidden until row hover/focus — and always on narrow viewports — mirroring the
+ * .actions reveal; the .favorited modifier overrides that to stay visible + amber. */
+.favBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.rowWrap:hover .favBtn,
+.rowWrap:focus-within .favBtn,
+.favBtn.favorited {
+  opacity: 1;
+}
+.favBtn.favorited {
+  color: var(--accent, #ffb000);
+}
+.favBtn:hover:not(:disabled),
+.favBtn:focus-visible {
+  color: var(--accent);
+}
+.favBtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.favBtn:disabled {
+  cursor: default;
+}
+@media (max-width: 800px) {
+  .favBtn {
+    width: 32px;
+    height: 32px;
+  }
+}
+@media (hover: none), (max-width: 800px) {
+  .favBtn {
+    opacity: 1;
+  }
+}
 .editRow {
   display: flex;
   gap: 4px;

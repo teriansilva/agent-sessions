@@ -35,6 +35,7 @@ All state-changing routes require the CSRF token **and** an `Origin`/`Referer` e
 | `GET/POST/PATCH/DELETE /api/projects` | Project entities (#361): `{id,name,color,folders,archived,session_count}`; `?include_archived=1` opts archived in. |
 | `PATCH /api/sessions/{sid}/metadata` `{project_id}` | Assign/clear a session's project (sidecar-only write). |
 | `POST /api/sessions/{sid}/rename` `{title}` | Persist a title to the metadata sidecar. |
+| `POST /api/sessions/{sid}/favorite` · `/unfavorite` | Toggle the sidecar `sticky` flag (#122) → `{id, sticky}`; favorited sessions pin to the top of the list (sidecar-only, engine-agnostic). |
 | `POST /api/sessions/{sid}/archive` · `/unarchive` | Move the Claude JSONL between `projects/` and `projects-archive/` (engine-agnostic sidecar flag for non-file engines). |
 | `POST /api/sessions/archive-older` | Bulk-archive sessions older than a cutoff. |
 | `GET /api/scrollback` · `POST /api/scrollback/clear` | Fetch / clear a session's on-disk scrollback. |

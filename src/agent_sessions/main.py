@@ -3,7 +3,7 @@
 Surface: the React SPA shell, login/auth-check, a flat paginated session list
 (with title search + project/agent-engine filters and server-computed facets),
 the self-owned ws terminal (``/ws/term/{sid}``: attach / resume / new-session),
-rename, archive/unarchive, the project list, and upload. See agent-sessions#4
+rename, favorite/unfavorite, archive/unarchive, the project list, and upload. See agent-sessions#4
 (sidebar UX), #8 (findable list), #49 (ws terminal), #64 (React SPA cutover).
 
 ``create_app`` is a thin assembler (agent-sessions#265): it builds cfg/registry/app +
@@ -306,8 +306,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         must_change=_must_change,
     )
 
-    # Session-data routes (list/search + facets, projects, rename, archive/unarchive,
-    # archive-older) live in routes/sessions.py; scrollback stats/clear in
+    # Session-data routes (list/search + facets, projects, rename, favorite/unfavorite,
+    # archive/unarchive, archive-older) live in routes/sessions.py; scrollback stats/clear in
     # routes/scrollback.py. Both register here, before the ws handler + SPA catch-all.
     sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)

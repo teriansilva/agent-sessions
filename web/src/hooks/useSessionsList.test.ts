@@ -6,7 +6,16 @@ import { useSessionsList } from "./useSessionsList";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
-  return { ...actual, api: { sessions: vi.fn(), archive: vi.fn(), unarchive: vi.fn() } };
+  return {
+    ...actual,
+    api: {
+      sessions: vi.fn(),
+      archive: vi.fn(),
+      unarchive: vi.fn(),
+      favorite: vi.fn(),
+      unfavorite: vi.fn(),
+    },
+  };
 });
 
 const mockSessions = vi.mocked(api.sessions);
@@ -114,6 +123,32 @@ test("archiving a row in a partially loaded list keeps the next unloaded row rea
   });
   await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["B", "C"]));
   expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 }));
+});
+
+test("favoriting a row flips sticky and floats it to the top; unfavoriting clears it (#122)", async () => {
+  mockSessions.mockResolvedValueOnce(pageOf([sess("A"), sess("B"), sess("C")]));
+  vi.mocked(api.favorite).mockResolvedValue({ id: "claude:C", sticky: true });
+  vi.mocked(api.unfavorite).mockResolvedValue({ id: "claude:C", sticky: false });
+
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B", "C"]));
+
+  // Favorite C → calls api.favorite, C gets sticky=true and re-sorts to the very top
+  // (sticky-first), with the non-sticky rows keeping their relative order (stable sort).
+  await act(async () => {
+    await result.current.setSticky("claude:C", true);
+  });
+  expect(api.favorite).toHaveBeenCalledWith("claude:C");
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["C", "A", "B"]);
+  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(true);
+
+  // Unfavorite C → calls api.unfavorite, flag clears (server reorders by recency on the
+  // next poll; the local re-sort just drops the pin).
+  await act(async () => {
+    await result.current.setSticky("claude:C", false);
+  });
+  expect(api.unfavorite).toHaveBeenCalledWith("claude:C");
+  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(false);
 });
 
 // ---- #159: live polling + visibility-aware pause + silent failures ----

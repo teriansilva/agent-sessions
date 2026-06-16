@@ -185,6 +185,24 @@ export function useSessionsList() {
     setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
   }, []);
 
+  // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the
+  // loaded rows sticky-first to MIRROR the server sort (sticky desc, sort_key desc,
+  // last_mtime desc) so a just-favorited row floats to the top immediately — no waiting
+  // for the next poll/refetch. The row stays in the current view either way.
+  const setSticky = useCallback(async (id: string, value: boolean) => {
+    const r = await (value ? api.favorite(id) : api.unfavorite(id));
+    setSessions((prev) =>
+      prev
+        .map((s) => (s.id === id ? { ...s, sticky: r.sticky } : s))
+        .sort(
+          (a, b) =>
+            Number(b.sticky) - Number(a.sticky) ||
+            b.sort_key - a.sort_key ||
+            b.last_mtime - a.last_mtime,
+        ),
+    );
+  }, []);
+
   // Manual "Review now" (#356): run one AI review and fold the result into the row in
   // place (summary, badge, and the possibly-new display title) — no refetch flicker.
   const reviewRow = useCallback(async (id: string) => {
@@ -228,6 +246,7 @@ export function useSessionsList() {
     clear,
     renameRow,
     setArchived,
+    setSticky,
     reviewRow,
     setReviewExcluded,
   };

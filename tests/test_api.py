@@ -333,6 +333,54 @@ def test_rename_empty_title_422(auth_cfg, fake_jsonl):
     assert r.status_code == 422
 
 
+# ---- favorite / unfavorite (#122) ---------------------------------------------
+
+
+def test_favorite_persists_and_pins_to_top(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "22222222-2222-2222-2222-222222222222"
+
+    r = c.post(f"/api/sessions/claude:{uuid}/favorite", headers=hdr)
+    assert r.status_code == 200
+    assert r.json() == {"id": f"claude:{uuid}", "sticky": True}
+
+    # The single favorited row floats to the very top (sticky-first sort) and carries
+    # sticky=True; every other row is non-sticky.
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert rows[0]["uuid"] == uuid and rows[0]["sticky"] is True
+    assert all(not s["sticky"] for s in rows[1:])
+
+    # Unfavorite clears the flag; it no longer pins.
+    r = c.post(f"/api/sessions/claude:{uuid}/unfavorite", headers=hdr)
+    assert r.status_code == 200 and r.json()["sticky"] is False
+    rows2 = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert all(not s["sticky"] for s in rows2)
+
+
+def test_favorite_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post(
+        "/api/sessions/claude:22222222-2222-2222-2222-222222222222/favorite",
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_favorite_unknown_engine_404(auth_cfg, fake_jsonl):
+    # parse_key is the validation gate (like the other session routes): an unknown
+    # engine id never reaches the sidecar.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/sessions/nosuchengine:whatever/favorite",
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 404
+
+
 # ---- archive / unarchive ------------------------------------------------------
 
 
@@ -395,6 +443,24 @@ def test_archive_opencode_via_sidecar(auth_cfg, fake_jsonl, opencode_db):
 
     r = c.post(f"/api/sessions/opencode:{_OC_TOP}/unarchive", headers=hdr)
     assert r.status_code == 200 and r.json()["archived"] is False
+    assert opencode_db.read_bytes() == before  # opencode.db untouched throughout
+
+
+def test_favorite_opencode_via_sidecar(auth_cfg, fake_jsonl, opencode_db):
+    # Favorite is engine-agnostic sidecar metadata (#122): it flips `sticky` for an
+    # opencode session and pins it, never writing opencode.db.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    before = opencode_db.read_bytes()
+
+    r = c.post(f"/api/sessions/opencode:{_OC_TOP}/favorite", headers=hdr)
+    assert r.status_code == 200 and r.json() == {"id": f"opencode:{_OC_TOP}", "sticky": True}
+    rows = c.get("/api/sessions?engine=opencode&limit=200").json()["sessions"]
+    assert rows[0]["id"] == f"opencode:{_OC_TOP}" and rows[0]["sticky"] is True
+
+    r = c.post(f"/api/sessions/opencode:{_OC_TOP}/unfavorite", headers=hdr)
+    assert r.status_code == 200 and r.json()["sticky"] is False
     assert opencode_db.read_bytes() == before  # opencode.db untouched throughout
 
 
