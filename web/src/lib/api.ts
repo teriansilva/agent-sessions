@@ -2,6 +2,7 @@
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type {
   AppConfig,
+  AutoSortReport,
   EnginesResponse,
   Folder,
   HistoryPage,
@@ -216,6 +217,10 @@ export const api = {
    *  string names the conflict. CSRF-guarded. */
   createProject: (body: { name: string; color?: string; folders?: string[] }) =>
     mutateJson<Omit<ProjectEntity, "session_count">>("POST", "/api/projects", body),
+  /** On-demand AI auto-sort (#424 Phase 6): one bounded pass assigning unassigned sessions to
+   *  existing projects. 409 unless auto_sort is enabled AND the reused ai_review endpoint is
+   *  configured. CSRF-guarded. */
+  autoSortNow: () => mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
   /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
    *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
   patchProject: (id: string, body: { name?: string; color?: string; folders?: string[] }) =>

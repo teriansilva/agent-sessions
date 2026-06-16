@@ -27,6 +27,7 @@ import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { buildProjectTree, flattenTree } from "../lib/projectTree";
 import { AiReviewSettings } from "./AiReviewSettings";
+import { AutoSortSettings } from "./AutoSortSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
@@ -1373,7 +1374,12 @@ export function Settings() {
           </>
         )}
 
-        {tab === "ai-review" && <AiReviewSettings />}
+        {tab === "ai-review" && (
+          <>
+            <AiReviewSettings />
+            <AutoSortSettings />
+          </>
+        )}
 
         {tab === "security" && (
           <>

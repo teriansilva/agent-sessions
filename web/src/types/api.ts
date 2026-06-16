@@ -59,6 +59,27 @@ export interface AiReviewConfig {
   default_prompt: string;
 }
 
+/** AI auto-sort config (#424 Phase 6) — the PUBLIC view from /api/config. Opt-in; reuses the
+ *  ai_review endpoint, so it holds no secret of its own. */
+export interface AutoSortConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  /** The reused ai_review endpoint is usable (base URL + key present). Mirrors
+   *  `ai_review.configured` — auto-sort can't run without it. */
+  configured: boolean;
+}
+
+/** Report from POST /api/projects/auto-sort (#424 Phase 6): one bounded on-demand pass. */
+export interface AutoSortReport {
+  candidates: number;
+  scanned: number;
+  assigned: { id: string; project_id: string; confidence: number }[];
+  low_confidence: number;
+  errors: number;
+  /** Present when the pass did nothing (e.g. "no projects" / "not configured"). */
+  skipped?: string;
+}
+
 export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
@@ -158,6 +179,8 @@ export interface AppConfig {
   vt_scrollback?: boolean;
   /** AI session review (#356): public config block (write-only key → `api_key_set`). */
   ai_review?: AiReviewConfig;
+  /** AI auto-sort (#424 Phase 6): opt-in; reuses the ai_review endpoint (no secret). */
+  auto_sort?: AutoSortConfig;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never
