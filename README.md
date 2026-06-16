@@ -5,7 +5,7 @@
 <p align="center"><a href="https://battlelab.superstatus.io">battlelab.superstatus.io</a></p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="BattleLab — drive every AI-coding agent from one command deck" width="900">
+  <img src="docs/banner.png" alt="BattleLab — Command &amp; Code: a self-hosted command deck for your AI-coding agents" width="900">
 </p>
 
 **One web app that organizes every session from Claude Code, Codex, opencode, and Gemini**, with a
