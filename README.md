@@ -1,10 +1,15 @@
-# agent-sessions (BattleLab)
+<h1 align="center">⚔️ BattleLab</h1>
 
-**A mobile-first, self-hosted command deck for your AI-coding agents.** One web app that organizes
-every session from **Claude Code, Codex, opencode, and Gemini**, with a real terminal that survives
-reboots and deploys — drive your whole fleet from a laptop or a phone.
+<p align="center"><strong>Command &amp; Code.</strong> A mobile-first, self-hosted command deck for your AI-coding agents.</p>
 
-> _"Command & Code"_ · [battlelab.superstatus.io](https://battlelab.superstatus.io)
+<p align="center"><a href="https://battlelab.superstatus.io">battlelab.superstatus.io</a></p>
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="BattleLab — drive every AI-coding agent from one command deck" width="900">
+</p>
+
+**One web app that organizes every session from Claude Code, Codex, opencode, and Gemini**, with a
+real terminal that survives reboots and deploys — drive your whole fleet from a laptop or a phone.
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini-ffb000)
 
@@ -37,6 +42,8 @@ Engines live behind a small provider interface (`engines.py`); identity is engin
 ## Install & operate
 
 Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx).
+
+> The CLI, service unit, and `AGENT_SESSIONS_*` environment variables keep the project's package name, **`agent-sessions`** — that's the same tool as BattleLab.
 
 ```sh
 # Read the script first if you like — it's plain POSIX sh.
@@ -118,7 +125,7 @@ journalctl --user -u agent-sessions.service -f           # logs
 
 ## Security / trust model
 
-agent-sessions is a **single-admin** tool. Understand this before exposing it:
+BattleLab is a **single-admin** tool. Understand this before exposing it:
 
 - It launches AI-coding agents with permission bypass **by design** — `--dangerously-skip-permissions` (Claude Code) / `--yolo`-equivalent toggles. A logged-in user can run arbitrary commands in any project on the host. Treat the whole surface as **equivalent to a shell as the user the service runs as** — the same trust boundary as SSH.
 - It is **not multi-tenant**. There is one admin account; there is no per-user isolation. Do not share a login.
@@ -200,7 +207,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev setup (web build, test
 
 The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate: it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
 
-This is acceptable **only** because agent-sessions is a single-admin tool, on the operator's own host, behind a reverse proxy (TLS + auth) and the app's own cookie auth. The toggle lets you turn bypass off per new session. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. See the **Security / trust model** section above.
+This is acceptable **only** because BattleLab is a single-admin tool, on the operator's own host, behind a reverse proxy (TLS + auth) and the app's own cookie auth. The toggle lets you turn bypass off per new session. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. See the **Security / trust model** section above.
 
 ## API surface
 
