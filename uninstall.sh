@@ -1,6 +1,6 @@
 #!/bin/sh
 # agent-sessions / BattleLab uninstaller — rootless, user-level. Removes everything the
-# installer created and leaves your AGENTS' own data (Claude/Codex/opencode/Gemini session
+# installer created and leaves your AGENTS' own data (Claude/Codex/opencode/Gemini/Antigravity session
 # history) completely untouched.
 #
 #   curl -fsSL <url>/uninstall.sh | sh

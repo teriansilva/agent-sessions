@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Seed a deterministic, throwaway fake HOME for the visual-review capture (#96, Phase 2).
 
-Populates one project per engine so the sidebar renders all four engine badges
-(claude/opencode/codex/gemini) + the new-session project picker has entries — without
-ever touching the operator's real ~/.claude. Every state store the app reads lives under
+Populates one project per engine so the sidebar renders every engine badge
+(claude/opencode/codex/gemini/antigravity) + the new-session project picker has entries —
+without ever touching the operator's real ~/.claude. Every state store the app reads lives under
 the target HOME (so running `agent-sessions serve` with HOME=<this dir> is fully isolated):
 
   <home>/.claude/projects/<enc>/<uuid>.jsonl          (claude — scanner.py)
   <home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl    (codex  — engines.CodexProvider)
   <home>/.gemini/tmp/<slug>/chats/session-*.jsonl      (gemini — engines.GeminiProvider)
   <home>/.gemini/tmp/project-map.json
+  <home>/.gemini/antigravity-cli/conversations/<uuid>.db   (antigravity — AntigravityProvider)
+  <home>/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl
   <home>/.local/share/opencode/opencode.db             (opencode — engines.OpenCodeProvider)
 
 Usage:  python web/visual/seed.py <home-dir>
@@ -33,6 +35,7 @@ _CLAUDE = [
 _CODEX = ("019e2ba1-1590-7003-8e4a-51ab62cec902", "/seed/alpha", "Wire up the deploy step")
 _GEMINI = ("96fb77fc-9c1a-4453-b27b-d78d8012dd2c", "/seed/beta", "Tag the open issues")
 _OPENCODE = ("ses_seed00000001", "/seed/alpha", "Port the scanner")
+_ANTIGRAVITY = ("019e2ba1-1590-7003-8e4a-51ab62cec903", "/seed/gamma", "Port the deploy script")
 
 
 def _refuse_real_home(home: Path) -> None:
@@ -110,6 +113,60 @@ def seed_gemini(home: Path) -> None:
     )
 
 
+def _varint(n: int) -> bytes:
+    """protobuf little-endian base-128 varint — how agy length-prefixes the file:// workspace."""
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | 0x80 if n else b)
+        if not n:
+            return bytes(out)
+
+
+def seed_antigravity(home: Path) -> None:
+    uuid, cwd, msg = _ANTIGRAVITY
+    cwd = _real_cwd(home, cwd)
+    base = home / ".gemini" / "antigravity-cli"
+    (base / "conversations").mkdir(parents=True, exist_ok=True)
+    (base / "cache").mkdir(parents=True, exist_ok=True)
+    # The conversation db: AntigravityProvider reads cwd from the trajectory_metadata_blob 'main'
+    # row, where agy stores the workspace as a varint-length-delimited file:// URI.
+    uri = f"file://{cwd}".encode()
+    blob = b"\n\x26\n" + _varint(len(uri)) + uri + b"z\xe8\x07"
+    con = sqlite3.connect(base / "conversations" / f"{uuid}.db")
+    try:
+        con.execute(
+            "CREATE TABLE trajectory_metadata_blob "
+            "(id TEXT DEFAULT 'main', data BLOB, PRIMARY KEY(id))"
+        )
+        con.execute("INSERT INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)", (blob,))
+        con.commit()
+    finally:
+        con.close()
+    # cache/last_conversations.json (cwd→uuid) is the provider's robust cwd fast-path.
+    (base / "cache" / "last_conversations.json").write_text(json.dumps({cwd: uuid}))
+    logs = base / "brain" / uuid / ".system_generated" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {
+            "step_index": 0,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": f"<USER_REQUEST>\n{msg}\n</USER_REQUEST>",
+        },
+        {
+            "step_index": 1,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "content": "On it.",
+        },
+    ]
+    (logs / "transcript.jsonl").write_text("\n".join(json.dumps(x) for x in recs) + "\n")
+
+
 def seed_opencode(home: Path) -> None:
     sid, directory, title = _OPENCODE
     directory = _real_cwd(home, directory)
@@ -138,6 +195,7 @@ def seed(home: Path) -> None:
     seed_claude(home)
     seed_codex(home)
     seed_gemini(home)
+    seed_antigravity(home)
     seed_opencode(home)
 
 
@@ -146,4 +204,4 @@ if __name__ == "__main__":
         raise SystemExit("usage: seed.py <home-dir>")
     target = Path(sys.argv[1])
     seed(target)
-    print(f"seeded {target}: claude(2) + codex(1) + gemini(1) + opencode(1)")
+    print(f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) + opencode(1)")

@@ -1427,8 +1427,8 @@ export function Settings() {
               </p>
               <p className={styles.hint}>Command &amp; Code</p>
               <p className={styles.blurb}>
-                The mobile-first organizer for your AI-coding sessions — claude, opencode, codex
-                and gemini, all in one place.
+                The mobile-first organizer for your AI-coding sessions — claude, opencode, codex,
+                gemini and antigravity, all in one place.
               </p>
               <dl className={styles.meta}>
                 <dt>Version</dt>

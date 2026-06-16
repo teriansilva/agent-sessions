@@ -17,7 +17,12 @@ from pathlib import Path
 
 from . import envfile
 
-ENGINES = ("claude", "opencode", "codex", "gemini")
+ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity")
+
+# Engines whose CLI binary name differs from the engine id. antigravity's binary is ``agy``; every
+# other engine's binary matches its id. The PATH/dir probe AND the env var key derive from the
+# *binary* name, so antigravity's knob is ``AGENT_SESSIONS_AGY_BIN`` (matches ``base.AGY_BIN``).
+_BIN_NAME: dict[str, str] = {"antigravity": "agy"}
 
 # Command name on PATH + known install dirs to probe as a last resort.
 _DIRS: dict[str, list[str]] = {
@@ -25,13 +30,19 @@ _DIRS: dict[str, list[str]] = {
     "opencode": ["~/.opencode/bin", "~/.local/bin"],
     "codex": ["~/.codex/bin", "~/.local/bin"],
     "gemini": ["~/.local/bin"],
+    # agy is a single Go binary from the curl installer (not npm); it lands in ~/.local/bin.
+    "antigravity": ["~/.local/bin"],
 }
 
 _NPM_GLOBAL_ENGINES = frozenset({"codex", "gemini"})
 
 
+def _bin_name(name: str) -> str:
+    return _BIN_NAME.get(name, name)
+
+
 def envvar(name: str) -> str:
-    return f"AGENT_SESSIONS_{name.upper()}_BIN"
+    return f"AGENT_SESSIONS_{_bin_name(name).upper()}_BIN"
 
 
 def default_env_path() -> Path:
@@ -62,10 +73,11 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
     """Resolve one engine's binary, or None if not present. Precedence: explicit env
     (if it executes) > PATH > known dirs."""
     env = os.environ if env is None else env
+    binary = _bin_name(name)
     explicit = env.get(envvar(name))
     if explicit and _is_exec(explicit):
         return explicit
-    on_path = shutil.which(name)
+    on_path = shutil.which(binary)
     if on_path:
         return on_path
     dirs = list(_DIRS[name])
@@ -74,7 +86,7 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
         if npm:
             dirs.append(npm)
     for d in dirs:
-        cand = Path(d).expanduser() / name
+        cand = Path(d).expanduser() / binary
         if _is_exec(cand):
             return str(cand)
     return None

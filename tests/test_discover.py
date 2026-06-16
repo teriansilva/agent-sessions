@@ -60,6 +60,31 @@ def test_resolve_not_found_is_none(monkeypatch):
     assert discover.resolve("codex", {}) is None
 
 
+def test_antigravity_env_knob_keys_on_agy_binary(tmp_path, monkeypatch):
+    # antigravity's binary is `agy`, not `antigravity`: the env knob is AGENT_SESSIONS_AGY_BIN,
+    # and the PATH probe looks up `agy`. Keeps base.AGY_BIN and doctor's written line in sync.
+    assert discover.envvar("antigravity") == "AGENT_SESSIONS_AGY_BIN"
+    explicit = _make_exec(tmp_path / "agy")
+    assert discover.resolve("antigravity", {"AGENT_SESSIONS_AGY_BIN": explicit}) == explicit
+    monkeypatch.setattr(discover.shutil, "which", lambda n: "/usr/bin/agy" if n == "agy" else None)
+    assert discover.resolve("antigravity", {}) == "/usr/bin/agy"
+
+
+def test_antigravity_known_dir_and_not_npm_global(tmp_path, monkeypatch):
+    # nothing on PATH -> the ~/.local/bin probe finds `agy`; antigravity is NOT npm-global, so the
+    # npm prefix is never consulted (the curl installer drops a single binary in ~/.local/bin).
+    monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "antigravity": [str(tmp_path)]})
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("npm prefix must not be consulted for antigravity")
+
+    monkeypatch.setattr(discover, "_npm_global_bin", _boom)
+    found = _make_exec(tmp_path / "agy")
+    assert discover.resolve("antigravity", {}) == found
+    assert "antigravity" not in discover._NPM_GLOBAL_ENGINES
+
+
 def test_write_env_bins_preserves_others_and_is_0600(tmp_path):
     env = tmp_path / "env"
     env.write_text("AGENT_SESSIONS_USERNAME=admin\nAGENT_SESSIONS_CLAUDE_BIN=/old/claude\n")
@@ -86,6 +111,7 @@ def test_doctor_cli_writes_bins(tmp_path, monkeypatch):
             "opencode": None,
             "codex": None,
             "gemini": None,
+            "antigravity": None,
         },
     )
     rc = cli.main(["doctor", "--env", str(env)])
@@ -108,6 +134,7 @@ def test_doctor_cli_dry_run_does_not_write(tmp_path, monkeypatch):
             "opencode": None,
             "codex": None,
             "gemini": None,
+            "antigravity": None,
         },
     )
     cli.main(["doctor", "--env", str(env), "--dry-run"])

@@ -5,7 +5,7 @@ name = "agent-sessions"
 # /api/version. Untagged/dev builds get a dev version (+ short SHA); a build with
 # no SCM info at all (e.g. .git-stripped tree) falls back to 0.0.0.
 dynamic = ["version"]
-description = "BattleLab — a mobile-first, self-hostable web organizer for your AI-coding CLI sessions (Claude Code, opencode, Codex, Gemini)."
+description = "BattleLab — a mobile-first, self-hostable web organizer for your AI-coding CLI sessions (Claude Code, opencode, Codex, Gemini, Antigravity)."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"

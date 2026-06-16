@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..scanner import Session
 from . import base
+from .antigravity import AntigravityProvider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .gemini import GeminiProvider
@@ -21,6 +22,7 @@ _PROVIDERS: list[base.EngineProvider] = [
     OpenCodeProvider(),
     CodexProvider(),
     GeminiProvider(),
+    AntigravityProvider(),
 ]
 _BY_ID: dict[str, base.EngineProvider] = {p.engine_id: p for p in _PROVIDERS}
 

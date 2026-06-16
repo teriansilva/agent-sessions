@@ -632,3 +632,44 @@ def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
 
 
 register_adapter("gemini", _gemini_adapter)
+
+
+# --- antigravity (agy) --------------------------------------------------------------------
+# agy's transcript is NOT gemini's format, so it gets its own parser (the conversation itself
+# lives in a SQLite db of protobuf steps; this plaintext JSONL is agy's own rendered log). The
+# id→path resolution and the ``<USER_REQUEST>`` unwrap are reused from the provider so the two
+# never drift.
+
+
+def _antigravity_turns_from_jsonl(
+    path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES
+) -> list[Turn]:
+    """Parse an agy transcript JSONL into Turns. ``USER_INPUT`` steps → user messages (the
+    ``<USER_REQUEST>`` body, dropping the metadata wrappers agy adds for the model); the model's
+    ``PLANNER_RESPONSE`` steps → assistant messages. System bookkeeping (``CONVERSATION_HISTORY``)
+    and tool steps render nothing — parity with the gemini adapter (user + assistant text only)."""
+    from .engines import antigravity
+
+    recs = _jsonl_dicts(_read_tail(path))
+    turns: list[Turn] = []
+    for o in recs[-max_messages:]:
+        t = o.get("type")
+        if t == "USER_INPUT":
+            text = antigravity._user_request_text(o.get("content"))
+            if text:
+                turns.append(Turn("user", text, "text"))
+        elif t == "PLANNER_RESPONSE":
+            content = o.get("content")
+            if isinstance(content, str) and content.strip():
+                turns.append(Turn("assistant", content.strip(), "text"))
+    return turns
+
+
+def _antigravity_adapter(native_id: str, home: Path) -> list[Turn]:
+    from .engines import antigravity, base
+
+    path = antigravity._transcript_path(base._antigravity_dir(home), native_id)
+    return _antigravity_turns_from_jsonl(path) if path is not None else []
+
+
+register_adapter("antigravity", _antigravity_adapter)

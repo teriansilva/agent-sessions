@@ -349,7 +349,7 @@ OOMPolicy=continue
 # exhausted by session workloads (test runners), and at the ceiling fork fails → PTY spawns
 # die with EAGAIN. Generous explicit ceiling until #346 Phase B isolates sessions in scopes.
 TasksMax=8192
-# Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini,
+# Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini/agy,
 # which commonly live there) are on PATH — otherwise the claude CLI nags
 # "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile
 # so an explicit PATH in the env file still wins. %h = the service user's home dir.

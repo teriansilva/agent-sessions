@@ -29,9 +29,10 @@ _SES_RE = re.compile(r"^ses_[A-Za-z0-9]+$")
 _NEW_PLACEHOLDER_RE = re.compile(
     r"^new-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-# codex + gemini session ids are UUIDs (UUIDv7), same shape as Claude's.
+# codex + gemini + antigravity (agy) session ids are UUIDs (UUIDv7), same shape as Claude's.
 _CODEX_UUID_RE = _CLAUDE_UUID_RE
 _GEMINI_UUID_RE = _CLAUDE_UUID_RE
+_ANTIGRAVITY_UUID_RE = _CLAUDE_UUID_RE
 
 # --- engine binaries ------------------------------------------------------------------------
 # Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
@@ -43,6 +44,9 @@ OPENCODE_BIN = (
 )
 CODEX_BIN = os.environ.get("AGENT_SESSIONS_CODEX_BIN") or shutil.which("codex") or "codex"
 GEMINI_BIN = os.environ.get("AGENT_SESSIONS_GEMINI_BIN") or shutil.which("gemini") or "gemini"
+# Antigravity's binary is ``agy`` (not ``antigravity``), so the env knob is keyed on the binary
+# name — ``AGENT_SESSIONS_AGY_BIN`` — to match what operators type and what ``doctor`` writes.
+AGY_BIN = os.environ.get("AGENT_SESSIONS_AGY_BIN") or shutil.which("agy") or "agy"
 
 
 # --- per-engine store locations (env-overridable) -------------------------------------------
@@ -55,6 +59,17 @@ def _gemini_tmp_dir(home: Path | None = None) -> Path:
     return Path(
         os.environ.get("AGENT_SESSIONS_GEMINI_TMP_DIR")
         or ((home or Path.home()) / ".gemini" / "tmp")
+    )
+
+
+# agy (Antigravity CLI) state lives under ``~/.gemini/antigravity-cli/`` — NOT ``~/.antigravity/``
+# (verified against agy 1.0.8; the issue's guessed path was wrong). Conversations live in
+# ``conversations/<uuid>.db`` (SQLite) and transcripts in ``brain/<uuid>/**/transcript.jsonl``;
+# the provider + transcript adapter derive those subpaths from this single root.
+def _antigravity_dir(home: Path | None = None) -> Path:
+    return Path(
+        os.environ.get("AGENT_SESSIONS_ANTIGRAVITY_DIR")
+        or ((home or Path.home()) / ".gemini" / "antigravity-cli")
     )
 
 

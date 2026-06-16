@@ -8,10 +8,10 @@
   <img src="docs/banner.png" alt="BattleLab — Command &amp; Code: a self-hosted command deck for your AI-coding agents" width="900">
 </p>
 
-**One web app that organizes every session from Claude Code, Codex, opencode, and Gemini**, with a
+**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, and Antigravity**, with a
 real terminal that survives reboots and deploys — drive your whole fleet from a laptop or a phone.
 
-![license: MIT](https://img.shields.io/badge/license-MIT-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini-ffb000)
+![license: MIT](https://img.shields.io/badge/license-MIT-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity-ffb000)
 
 ### Why
 
@@ -35,7 +35,7 @@ curl -fsSL https://battlelab.superstatus.io/install.sh | sh
 
 ---
 
-A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, and gemini — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / …). No ttyd, no Zellij.
+A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, gemini, and antigravity (`agy`, SQLite + JSONL under `~/.gemini/antigravity-cli/`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / `agy --conversation <uuid>` / …). No ttyd, no Zellij.
 
 Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive is refused for opencode ids (our archive physically moves the Claude JSONL, which opencode has no equivalent for); the title/sticky **sidecar** overlay still works for any engine, since that's our `metadata.json`, not opencode's data. Adding an engine = one new provider in the registry.
 
@@ -87,7 +87,7 @@ agent-sessions 0.3.1 installed.
 ~/.config/systemd/user/agent-sessions.service
 ```
 
-Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/codex/opencode/gemini) and record their paths in `env`.
+Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/codex/opencode/gemini/agy) and record their paths in `env`.
 
 Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
 
@@ -159,7 +159,7 @@ agent-sessions/
 │   ├── scanner.py     read ~/.claude/projects/ (live + archive)
 │   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/sort_key/project_alias
 │   ├── engines/       per-engine providers (scan + launch_argv): base.py (contract +
-│   │                  patterns + binaries), claude/opencode/codex/gemini.py, registry.py
+│   │                  patterns + binaries), claude/opencode/codex/gemini/antigravity.py, registry.py
 │   │                  (parse_key/scan_all/…); __init__ re-exports the public surface
 │   ├── webterm.py     the ws↔PTY bridge run loop (xterm.js over /ws/term, dtach-backed)
 │   ├── scrollback.py  per-session scrollback ring + on-disk mirror + resume/scroll-up

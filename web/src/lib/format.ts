@@ -25,7 +25,15 @@ export function displayProjectName(cwd: string, names?: Record<string, string>):
 }
 
 export function engineBadge(engine: string): string {
-  return engine === "opencode" ? "oc" : engine === "codex" ? "cx" : engine === "gemini" ? "gm" : "cc";
+  return engine === "opencode"
+    ? "oc"
+    : engine === "codex"
+      ? "cx"
+      : engine === "gemini"
+        ? "gm"
+        : engine === "antigravity"
+          ? "ag" // agy
+          : "cc";
 }
 
 /** Per-engine accent for the overview chips (tuned for the dark HUD canvas). */
@@ -36,7 +44,9 @@ export function engineColor(engine: string): string {
       ? "#7ee787" // green
       : engine === "gemini"
         ? "#7aa2ff" // blue
-        : "#d98a5c"; // claude — amber
+        : engine === "antigravity"
+          ? "#a78bfa" // violet — agy
+          : "#d98a5c"; // claude — amber
 }
 
 /** Human display name for an engine id (sidebar uses short badges; cards want the name). */
@@ -47,9 +57,11 @@ export function engineName(engine: string): string {
       ? "codex"
       : engine === "gemini"
         ? "gemini"
-        : engine === "claude"
-          ? "claude"
-          : engine;
+        : engine === "antigravity"
+          ? "antigravity"
+          : engine === "claude"
+            ? "claude"
+            : engine;
 }
 
 /** Humanize a byte count to a compact GB/MB string (binary units). */

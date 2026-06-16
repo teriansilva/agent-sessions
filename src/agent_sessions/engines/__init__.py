@@ -30,7 +30,9 @@ import shutil  # noqa: F401 — re-exported so `engines.shutil` stays patchable
 
 from .. import metadata as _metadata  # noqa: F401 — exposed for `engines._metadata` in tests
 from . import base as base  # noqa: F401 — exposed for `engines.base` (patch target)
+from .antigravity import AntigravityProvider
 from .base import (  # noqa: F401 — public re-exports
+    AGY_BIN,
     CLAUDE_BIN,
     CODEX_BIN,
     GEMINI_BIN,
@@ -62,6 +64,7 @@ __all__ = [
     "OpenCodeProvider",
     "CodexProvider",
     "GeminiProvider",
+    "AntigravityProvider",
     "all_providers",
     "present_providers",
     "get",
@@ -76,5 +79,6 @@ __all__ = [
     "OPENCODE_BIN",
     "CODEX_BIN",
     "GEMINI_BIN",
+    "AGY_BIN",
     "OPENCODE_SCHEMA",
 ]

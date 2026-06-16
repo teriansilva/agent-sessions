@@ -15,7 +15,7 @@ install the `venv` module). Everything lives under `~/.local/share/agent-session
 - `git` and `python3 ≥ 3.11`. If the `venv` module is missing, the installer offers to
   `apt-get`/`dnf` install it — the **only** sudo step, and it's prompted.
 - A reverse proxy (e.g. nginx) terminating TLS in front of the app.
-- The agent CLIs you want to manage (Claude Code, opencode, codex, gemini) installed on the host;
+- The agent CLIs you want to manage (Claude Code, opencode, codex, gemini, antigravity/`agy`) installed on the host;
   the installer's `doctor` step discovers their paths automatically.
 
 ## Install
