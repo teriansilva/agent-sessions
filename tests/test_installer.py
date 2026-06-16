@@ -50,6 +50,13 @@ def test_install_sh_builds_and_serves_react_ui():
     assert "AGENT_SESSIONS_RUNTIME_DIR" in s
 
 
+def test_install_sh_never_seeds_takeover_flag():
+    # #434: AGENT_SESSIONS_TAKEOVER is an EXPERIMENTAL, staging-only flag. The installer must
+    # never write it (so a fresh OR migrated customer install defaults to OFF) — an accidental
+    # prod re-enable can then only ever happen out-of-band, never via `curl | sh`.
+    assert "AGENT_SESSIONS_TAKEOVER" not in INSTALL_SH.read_text()
+
+
 def test_install_sh_self_contained_toolchain():
     s = INSTALL_SH.read_text()
     # Missing prereqs are auto-installed (distro) or vendored (Node/Python), not just rejected.
@@ -120,6 +127,7 @@ def test_installer_end_to_end(tmp_path):
     assert "AGENT_SESSIONS_TERMINAL=" not in text
     assert f"AGENT_SESSIONS_WEB_DIST={home}/current/src/web/dist" in text
     assert f"AGENT_SESSIONS_RUNTIME_DIR={home}/pty" in text
+    assert "AGENT_SESSIONS_TAKEOVER" not in text  # #434: experimental flag never seeded
 
     # Credentials printed once → the generated password logs in against the stored hash.
     m = re.search(r"password:\s*(\S+)", r.stdout)
@@ -218,6 +226,7 @@ def test_installer_migrates_existing_env_to_react(tmp_path):
     # …existing secrets/credentials preserved, exactly once each (no clobber, no dup).
     assert "AGENT_SESSIONS_PASSWORD_HASH=pbkdf2_sha256$keepme\n" in text
     assert "AGENT_SESSIONS_SECRET_KEY=keepmesecret\n" in text
+    assert "AGENT_SESSIONS_TAKEOVER" not in text  # #434: migrate never adds the experimental flag
     assert text.count("AGENT_SESSIONS_WEB_DIST=") == 1
     assert text.count("AGENT_SESSIONS_SECRET_KEY=") == 1
     assert oct(envf.stat().st_mode & 0o777) == "0o600"  # still locked down

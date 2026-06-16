@@ -68,6 +68,23 @@ def test_different_live_device_is_passive():
     assert not owner.owns(ENG, SID, "c2")
 
 
+def test_same_fingerprint_second_tab_is_passive_without_churn():
+    # #434 Phase 3: one session open in TWO tabs of the SAME browser (same fp, different
+    # tab) must settle, not storm. The second tab lands passive (so the client streams it
+    # read-only via the take-over banner — never blank) and, crucially, does NOT displace
+    # the first: a passive claim never writes the record, so the owner's lease keeps
+    # beating and there is no claim/demote war.
+    role_a, _ = _claim("tabA", "fpX", "tA", label="Windows · Chrome")
+    assert role_a == "owner"
+    role_b, holder = _claim("tabB", "fpX", "tB", label="Windows · Chrome")
+    assert role_b == "passive"
+    assert holder["conn_id"] == "tabA"  # tab A still owns; tab B did not steal it
+    # No churn: tab A was never displaced, so its heartbeat still succeeds.
+    assert owner._heartbeat_sync(ENG, SID, "tabA") is True
+    assert owner.owns(ENG, SID, "tabA")
+    assert not owner.owns(ENG, SID, "tabB")
+
+
 def test_force_takes_over_a_live_holder_and_returns_displaced():
     _claim("c1", "fpA", "t1")
     role, displaced = _claim("c2", "fpB", "t2", force=True)
@@ -127,3 +144,30 @@ def test_async_wrappers_roundtrip():
         assert owner.read_owner(ENG, SID) is None
 
     asyncio.run(go())
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("  yes ", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+    ],
+)
+def test_takeover_enabled_truthiness(monkeypatch, value, expected):
+    # #434: the flag is OFF for anything but an explicit truthy value, so an unset/empty/
+    # false env (the default everywhere, including every script install) never enables it.
+    monkeypatch.setenv("AGENT_SESSIONS_TAKEOVER", value)
+    assert owner.takeover_enabled() is expected
+
+
+def test_takeover_enabled_defaults_off_when_unset(monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_TAKEOVER", raising=False)
+    assert owner.takeover_enabled() is False

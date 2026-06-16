@@ -9,8 +9,12 @@ default OFF):
   non-owner streams read-only with input gated.
 - **flag ON** — single-active-viewer (``_serve_takeover``): ownership is anchored
   in a runtime-dir file (so prod + staging, which share the dtach masters,
-  arbitrate correctly) and a non-owner is INERT — it gets a ``gate`` frame, no
-  PTY stream, and must reconnect with ``force=1`` to take over.
+  arbitrate correctly). A non-owner is NOT inert (#434): it streams the session
+  **read-only** behind the take-over banner — input + resize are gated server-side
+  so only the owner drives the pty geometry (#293's single-writer model holds) —
+  and reconnects with ``force=1`` to take over. A second tab / device therefore
+  sees live output instead of a blank screen, and an owner taken over mid-session
+  is flipped to read-only IN PLACE rather than having its stream cut.
 
 The new-session reconcile coroutine (``_reconcile_new_session``) and its ``_RECONCILE_*``
 tunables stay in ``main`` and are passed in as ``reconcile_new_session``: tests monkeypatch
@@ -47,7 +51,8 @@ log = logging.getLogger("agent_sessions.terminal")
 # How often the active viewer re-asserts its lease (#293). Must be < owner.LEASE_S so a
 # live holder never reads as stale; the same call doubles as the demotion check — it
 # returns False the moment another viewer (this process OR the other instance sharing the
-# runtime dir) has taken the owner file, at which point we stop streaming and show the gate.
+# runtime dir) has taken the owner file, at which point we flip this viewer to read-only
+# in place (gate input/resize + a fresh role frame) without dropping its stream (#434).
 _HEARTBEAT_S = 2.0
 
 
@@ -59,24 +64,28 @@ def _holder_view(holder: dict | None) -> dict | None:
     return {"label": str(holder.get("label", ""))[:80], "since": holder.get("since")}
 
 
-async def _await_disconnect(ws: WebSocket) -> None:
-    """Hold a gated (passive / demoted) socket open until the client goes away. The
-    client's 'Take over' reconnects with ``force=1`` (a fresh WS), mirroring #184 — so
-    there is no in-band take-over message to police on the inert socket."""
-    while True:
-        msg = await ws.receive()
-        if msg.get("type") == "websocket.disconnect":
-            return
-
-
-async def _heartbeat_guard(engine: str, sid: str, conn_id: str, stop: asyncio.Event) -> None:
-    """Keep the owner lease warm and detect demotion. Fires ``stop`` when the on-disk
-    owner record stops naming us (taken over from this or the other instance)."""
+async def _demotion_guard(
+    engine: str, sid: str, conn_id: str, ws: WebSocket, read_only_gate: asyncio.Event
+) -> None:
+    """Owner-only lease keeper + demotion handler (#293/#434). Re-asserts the owner lease
+    every ``_HEARTBEAT_S``; the instant the on-disk record stops naming us (another viewer,
+    here or on the other instance sharing the runtime dir, took over) it flips this viewer
+    to read-only IN PLACE — sets ``read_only_gate`` (so ``webterm.run`` drops any further
+    input/resize) and sends a ``secondary`` role frame so the client shows the take-over
+    banner — then returns. The stream itself keeps running: the displaced viewer watches
+    the new owner's session read-only instead of going blank."""
     try:
         while True:
             await asyncio.sleep(_HEARTBEAT_S)
             if not await owner.heartbeat(engine, sid, conn_id):
-                stop.set()
+                read_only_gate.set()
+                holder = owner.read_owner(engine, sid)
+                with contextlib.suppress(Exception):
+                    await ws.send_text(
+                        json.dumps(
+                            {"t": "role", "role": "secondary", "holder": _holder_view(holder)}
+                        )
+                    )
                 return
     except asyncio.CancelledError:
         raise
@@ -100,33 +109,41 @@ async def _serve_takeover(
     force: bool,
     label: str,
 ) -> None:
-    """Single-active-viewer attach (#293). Claims the runtime-dir owner file; a non-owner
-    is INERT (gate frame, no PTY stream, no resize) until it reconnects with ``force=1``.
-    The owner streams as usual with a heartbeat/demotion guard; if another viewer takes
-    over mid-session it stops streaming and shows the gate on the still-open socket."""
+    """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
+    runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
+    (input + resize gated server-side) behind the take-over banner, so a second tab / device
+    sees live output instead of a blank screen. Only the owner drives the pty geometry, so
+    #293's single-writer model is preserved. If another viewer takes over mid-session the
+    owner is flipped to read-only IN PLACE (gate + a fresh ``secondary`` role frame) without
+    dropping its stream; a take-over is an explicit ``force=1`` reconnect from the banner."""
     conn_id = owner.new_conn_id()
     role, holder = await owner.claim(
         engine, phys_native, conn_id=conn_id, fp=fp, tab_id=tab_id, label=label, force=force
     )
-    if role != "owner":
-        # Passive: inert gate, no attach / no stream / no resize. (Hermes: a gated
-        # connection must not start a PTY stream or resize path just to show the gate.)
-        with contextlib.suppress(Exception):
-            await ws.send_text(json.dumps({"t": "gate", "holder": _holder_view(holder)}))
-        try:
-            await registry.on_attach(engine, phys_native, viewer_id=ws)
-            await _await_disconnect(ws)
-        finally:
-            with contextlib.suppress(Exception):
-                await registry.on_detach(engine, phys_native, viewer_id=ws)
-        return
-    # Owner: become the sole writer and stream, guarded by the heartbeat/demotion poll.
-    attached = False
-    stop = asyncio.Event()
-    guard = asyncio.create_task(_heartbeat_guard(engine, phys_native, conn_id, stop))
-    try:
+    # The read-only gate is the single server-side source of truth for input/resize
+    # suppression. A non-owner starts gated; the owner starts open and is gated live only
+    # if it is demoted mid-session. The PTY stream runs either way — a non-owner is
+    # read-only, never blank (#434).
+    read_only_gate = asyncio.Event()
+    if role == "owner":
         with contextlib.suppress(Exception):
             await ws.send_text(json.dumps({"t": "role", "role": "owner"}))
+    else:
+        read_only_gate.set()
+        with contextlib.suppress(Exception):
+            await ws.send_text(
+                json.dumps({"t": "role", "role": "secondary", "holder": _holder_view(holder)})
+            )
+    # Owner only: keep the lease warm and flip to read-only in place on take-over. A
+    # non-owner holds no lease (it never owns the record), so it needs no guard — it stays
+    # read-only until the user hits "Take over" (a force=1 reconnect).
+    guard = (
+        asyncio.create_task(_demotion_guard(engine, phys_native, conn_id, ws, read_only_gate))
+        if role == "owner"
+        else None
+    )
+    attached = False
+    try:
         with contextlib.suppress(Exception):
             await registry.on_attach(engine, phys_native, viewer_id=ws)
         attached = True
@@ -139,12 +156,13 @@ async def _serve_takeover(
             rows=init_rows,
             lock=lock,
             have=have,
-            stop_event=stop,
+            read_only_gate=read_only_gate,
         )
     finally:
-        guard.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await guard
+        if guard is not None:
+            guard.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await guard
         # release() is conn_id-guarded: if we were taken over it names someone else and
         # this is a no-op (we never clobber the new owner).
         with contextlib.suppress(Exception):
@@ -152,13 +170,6 @@ async def _serve_takeover(
         if attached:
             with contextlib.suppress(Exception):
                 await registry.on_detach(engine, phys_native, viewer_id=ws)
-    if stop.is_set():
-        # Demoted while still connected (webterm.run left the socket open): show the gate.
-        holder = owner.read_owner(engine, phys_native)
-        with contextlib.suppress(Exception):
-            await ws.send_text(json.dumps({"t": "gate", "holder": _holder_view(holder)}))
-        with contextlib.suppress(Exception):
-            await _await_disconnect(ws)
 
 
 def register(

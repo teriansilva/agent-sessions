@@ -1,10 +1,11 @@
-"""Single-active-viewer take-over route (#293) — the flag-on attach behaviour.
+"""Single-active-viewer take-over route (#293) with the read-only fallback (#434).
 
 Exercises ``routes.terminal._serve_takeover`` directly with a fake websocket +
 registry and a stubbed ``webterm.run``, against a real (tmp) owner file. Covers:
-passive is inert (gate frame, no attach/stream), owner streams, explicit force
-take-over, and demotion-mid-stream → gate. The cross-process CAS itself is
-covered by ``test_owner.py``.
+a passive viewer streams READ-ONLY (gated, not inert), the owner streams ungated,
+explicit force take-over, and demotion-mid-stream → flip to read-only in place
+(no blank, no dropped stream). The cross-process CAS itself is covered by
+``test_owner.py``.
 """
 
 from __future__ import annotations
@@ -74,39 +75,53 @@ def _serve(ws, registry, *, fp, tab_id, force=False, label=""):
     )
 
 
-def test_passive_is_inert_sends_gate_and_never_attaches(monkeypatch):
-    ran = []
-    monkeypatch.setattr(terminal.webterm, "run", lambda *a, **k: ran.append(True))
+async def _noop_run(ws, argv, **kw):
+    return
+
+
+def test_passive_streams_read_only_not_inert(monkeypatch):
+    seen = {}
+
+    async def fake_run(ws, argv, *, read_only_gate=None, **kw):
+        seen["gate_set"] = read_only_gate is not None and read_only_gate.is_set()
+        seen["buf_key"] = kw.get("buf_key")
+
+    monkeypatch.setattr(terminal.webterm, "run", fake_run)
     # Someone else already holds it (a live holder).
     owner._claim_sync(
         ENG, SID, conn_id="held", fp="fpB", tab_id="t2", label="Mac · Chrome", force=False
     )
     ws, reg = FakeWS(), FakeRegistry()
     asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="iPhone · Safari"))
-    gate = [m for m in ws.sent if m.get("t") == "gate"]
-    assert len(gate) == 1
-    assert gate[0]["holder"]["label"] == "Mac · Chrome"  # who holds it, for the gate
-    assert ran == []  # webterm.run NEVER called for a passive viewer
-    assert reg.attached == [(ENG, SID)]  # BUT it is registered as attached (ref-counted, #398)
+    # A read-only `secondary` role frame (with the holder), NOT an inert `gate`.
+    assert not any(m.get("t") == "gate" for m in ws.sent)
+    role = [m for m in ws.sent if m.get("t") == "role"]
+    assert role and role[0]["role"] == "secondary"
+    assert role[0]["holder"]["label"] == "Mac · Chrome"  # who's active, for the banner
+    # It STREAMS — webterm.run ran — but gated read-only so it can never write the master.
+    assert seen.get("gate_set") is True
+    assert seen.get("buf_key") == KEY
+    assert reg.attached == [(ENG, SID)]
     assert reg.detached == [(ENG, SID)]
-    assert owner.owns(ENG, SID, "held")  # holder unchanged
+    assert owner.owns(ENG, SID, "held")  # holder unchanged — passive never steals
 
 
-def test_owner_streams_then_releases(monkeypatch):
+def test_owner_streams_ungated_then_releases(monkeypatch):
     seen = {}
 
-    async def fake_run(ws, argv, **kw):
-        seen["stop_event"] = kw.get("stop_event")
+    async def fake_run(ws, argv, *, read_only_gate=None, **kw):
+        seen["gate_set"] = read_only_gate is not None and read_only_gate.is_set()
         seen["buf_key"] = kw.get("buf_key")
 
     monkeypatch.setattr(terminal.webterm, "run", fake_run)
     ws, reg = FakeWS(), FakeRegistry()
     asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="Mac"))
     assert {"t": "role", "role": "owner"} in ws.sent
-    assert not any(m.get("t") == "gate" for m in ws.sent)  # owner, not gated
+    assert not any(m.get("t") == "gate" for m in ws.sent)
+    assert seen.get("gate_set") is False  # owner is NOT gated — full read/write
+    assert seen.get("buf_key") == KEY
     assert reg.attached == [(ENG, SID)]
     assert reg.detached == [(ENG, SID)]  # on_detach in the finally
-    assert seen["buf_key"] == KEY
     assert owner.read_owner(ENG, SID) is None  # released on clean exit
 
 
@@ -120,20 +135,32 @@ def test_force_takes_over_a_live_holder_and_streams(monkeypatch):
     assert not owner.owns(ENG, SID, "held")  # displaced
 
 
-def test_demotion_midstream_shows_gate(monkeypatch):
-    async def fake_run(ws, argv, *, stop_event=None, **kw):
-        # Another viewer (this or the other instance) force-takes the owner file.
+def test_demotion_midstream_flips_to_read_only_without_dropping_stream(monkeypatch):
+    # Tighten the lease/heartbeat poll so the demotion guard fires within the test.
+    monkeypatch.setattr(terminal, "_HEARTBEAT_S", 0.01)
+
+    async def fake_run(ws, argv, *, read_only_gate=None, **kw):
+        # Another viewer (this or the other instance) force-takes the owner file mid-stream.
         owner._claim_sync(
             ENG, SID, conn_id="other", fp="fpB", tab_id="t2", label="Phone", force=True
         )
-        stop_event.set()
+        # The guard should notice and flip THIS viewer to read-only without us stopping.
+        for _ in range(500):
+            if read_only_gate is not None and read_only_gate.is_set():
+                break
+            await asyncio.sleep(0.005)
+        seen["gate_set"] = read_only_gate is not None and read_only_gate.is_set()
 
+    seen = {}
     monkeypatch.setattr(terminal.webterm, "run", fake_run)
     ws, reg = FakeWS(), FakeRegistry()
     asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="Desktop"))
-    gate = [m for m in ws.sent if m.get("t") == "gate"]
-    assert len(gate) == 1
-    assert gate[0]["holder"]["label"] == "Phone"  # who took it
+    # We started as owner, then got demoted: gate flipped + a `secondary` frame naming the
+    # new holder was sent — and NO inert `gate` frame.
+    assert seen.get("gate_set") is True
+    assert not any(m.get("t") == "gate" for m in ws.sent)
+    secondary = [m for m in ws.sent if m.get("t") == "role" and m.get("role") == "secondary"]
+    assert secondary and secondary[-1]["holder"]["label"] == "Phone"
     # We were demoted, so our release was a no-op — the new owner stands.
     assert owner.owns(ENG, SID, "other")
     assert reg.detached == [(ENG, SID)]
@@ -147,7 +174,3 @@ def test_same_device_reconnect_reclaims_as_owner(monkeypatch):
     asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="Mac"))
     assert {"t": "role", "role": "owner"} in ws.sent  # reclaimed, not gated
     assert reg.attached == [(ENG, SID)]
-
-
-async def _noop_run(ws, argv, **kw):
-    return

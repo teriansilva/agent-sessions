@@ -243,20 +243,26 @@ test("send() only writes when the socket is open", () => {
   expect(ws.sent).toEqual([JSON.stringify({ t: "i", d: "x" })]);
 });
 
-test("a gate control frame fires onGate with the holder, null when absent (#293)", () => {
-  const gates: (unknown | null)[] = [];
+test("a role control frame fires onRole with role + holder, null holder when absent (#434)", () => {
+  const roles: Array<[unknown, unknown]> = [];
   const ts = new TermSocket(
     () => "/ws/term/claude:abc?have=0",
-    { onOutput: () => {}, onStatus: () => {}, onGate: (h) => gates.push(h) },
+    { onOutput: () => {}, onStatus: () => {}, onRole: (r, h) => roles.push([r, h ?? null]) },
     (u) => new FakeWS(u) as unknown as WebSocket,
   );
   created.push(ts);
   ts.connect();
   const ws = FakeWS.instances[0];
   ws.open();
-  ws.message(JSON.stringify({ t: "gate", holder: { label: "Mac · Chrome", since: 1700 } }));
-  ws.message(JSON.stringify({ t: "gate" })); // no holder → null
-  expect(gates).toEqual([{ label: "Mac · Chrome", since: 1700 }, null]);
+  // Flag-on take-over: a read-only secondary carries the active viewer for the banner.
+  ws.message(
+    JSON.stringify({ t: "role", role: "secondary", holder: { label: "Mac · Chrome", since: 1700 } }),
+  );
+  ws.message(JSON.stringify({ t: "role", role: "owner" })); // #184 path → no holder → null
+  expect(roles).toEqual([
+    ["secondary", { label: "Mac · Chrome", since: 1700 }],
+    ["owner", null],
+  ]);
 });
 
 test("a hist control frame fires onHist with the exact attach cursor (#348)", () => {

@@ -18,8 +18,8 @@ export type TermStatus =
 
 export type TermRole = "owner" | "secondary";
 
-/** The current holder shown on the take-over gate (#293). `label` is the holder's
- *  display-only device name; `since` is a unix timestamp (seconds) of when they took it. */
+/** The active viewer shown on the read-only take-over banner (#293/#434). `label` is the
+ *  holder's display-only device name; `since` is a unix timestamp (seconds) of when they took it. */
 export interface TermGateHolder {
   label: string;
   since?: number;
@@ -32,15 +32,13 @@ export interface TermSocketHandlers {
    *  new-session). The client converges the URL/sidebar to `sid` (e.g.
    *  `opencode:ses_…`). Optional — only the new-session path emits it. */
   onId?: (sid: string) => void;
-  /** Per-tab ownership protocol (#184 slice 3): the server's verdict on whether this
-   *  WS holds the owner role or is a read-only secondary. Sent on connect, and again
-   *  when a force takeover demotes the previous owner mid-session. */
-  onRole?: (role: TermRole) => void;
-  /** Single-active-viewer take-over (#293, flag on): this WS is NOT the active viewer
-   *  (someone else holds the session) — render the gate with `holder` and offer Take over
-   *  (a reconnect with force=1) / Cancel. Sent instead of any PTY stream for a passive
-   *  attach, and again if this owner is demoted mid-session. */
-  onGate?: (holder: TermGateHolder | null) => void;
+  /** Per-tab ownership protocol (#184 slice 3 / #293 / #434): the server's verdict on
+   *  whether this WS holds the owner role or is a read-only secondary. Sent on connect, and
+   *  again when a force takeover demotes the previous owner mid-session. `holder` (set by the
+   *  flag-on take-over path) names the active viewer for the read-only banner; absent on the
+   *  in-memory #184 path. A `secondary` viewer streams read-only — never blank — and offers
+   *  "Take over" (a reconnect with force=1). */
+  onRole?: (role: TermRole, holder?: TermGateHolder | null) => void;
   /** Scroll-up lazy-load first-page cursor (#348, Hermes #365 r2): sent right after `seq`
    *  when the attach payload came from the transcript renderer, carrying the EXACT turn
    *  index the payload starts at. The terminal seeds its HistoryLoader from it so the
@@ -219,11 +217,11 @@ export class TermSocket {
         if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
         else if (msg.t === "id" && typeof msg.sid === "string") this.handlers.onId?.(msg.sid);
-        // {"t":"role","role":"owner"|"secondary"} — per-tab claim verdict (#184).
+        // {"t":"role","role":"owner"|"secondary","holder"?} — per-tab claim verdict
+        // (#184/#293/#434). A `secondary` carries the active viewer's `holder` (flag-on
+        // take-over) for the read-only banner; the stream keeps flowing either way.
         else if (msg.t === "role" && (msg.role === "owner" || msg.role === "secondary"))
-          this.handlers.onRole?.(msg.role);
-        // {"t":"gate","holder":{label,since}} — single-active-viewer: not the active viewer (#293).
-        else if (msg.t === "gate") this.handlers.onGate?.(msg.holder ?? null);
+          this.handlers.onRole?.(msg.role, msg.holder ?? null);
         // {"t":"hist","cursor":N} — exact first-page history cursor of a transcript attach (#348).
         else if (msg.t === "hist" && typeof msg.cursor === "number")
           this.handlers.onHist?.(msg.cursor);

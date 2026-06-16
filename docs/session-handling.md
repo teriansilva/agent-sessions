@@ -252,6 +252,35 @@ A client sending neither `fp` nor `tab` (e.g. an older `web/dist`) goes straight
 to the legacy owner path — no claim recorded, no role frame; the server doesn't
 gate input. New clients always send the pair.
 
+### Cross-instance take-over + read-only fallback (#293 / #434)
+
+`AGENT_SESSIONS_TAKEOVER` (default **OFF**, experimental / staging-only — never
+seeded by the installer) swaps the in-memory `SessionRegistry` claim above for an
+on-disk **owner file** next to the dtach socket (`owner.py`), so two app processes
+that share `AGENT_SESSIONS_RUNTIME_DIR` (prod + staging) arbitrate one writer
+correctly — an in-process table can't.
+
+**The read-only pivot.** #293 originally made a non-owner **inert**: it received a
+`gate` frame and *no* PTY stream, and had to `force=1` to see anything. In practice
+that meant every second tab / device showed a blank live screen (the flag leaked
+into prod and produced exactly that — #434). It now mirrors the #184 path instead:
+
+- A non-owner **streams read-only** behind the same `secondary` banner — input
+  **and** resize gated server-side via `webterm.run`'s `read_only_gate`, so only the
+  owner ever drives the pty geometry (the single-writer / no-cross-width-garble
+  guarantee `#293` was built for is preserved). It is read-only, never blank.
+- The `secondary` role frame carries a `holder` (`{label, since}`) naming the active
+  viewer for the banner.
+- A demoted owner is flipped to read-only **in place**: the per-owner demotion guard
+  (`_demotion_guard`, polling `owner.heartbeat` every `_HEARTBEAT_S`) sets the gate
+  and sends a fresh `secondary` frame **without** dropping the stream.
+- Same-fingerprint multi-tab no longer storms: a second tab of the same browser
+  lands `passive` and a passive claim never writes the owner record, so the owner's
+  lease keeps beating — no claim/demote war.
+
+The old `gate` control frame and its client `GateOverlay` are retired; both the
+in-memory and on-disk paths now speak only `role`.
+
 ### Tests that lock this surface
 
 - Unit on `browserFp.ts` (mint + persist + idempotent + localStorage-failure

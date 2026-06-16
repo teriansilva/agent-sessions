@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import ai_review_loop, metadata, prefs, reaper, session_stream, vtsidecar
+from . import ai_review_loop, metadata, owner, prefs, reaper, session_stream, vtsidecar
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -53,6 +54,8 @@ from .routes.auth import _safe_next as _safe_next
 # name here, so callers (and tests) that read agent_sessions.main._WORKING_WINDOW_S keep
 # resolving the same value (#265).
 from .routes.sessions import _WORKING_WINDOW_S as _WORKING_WINDOW_S
+
+log = logging.getLogger("agent_sessions.main")
 
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
@@ -150,6 +153,18 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             from concurrent.futures import ThreadPoolExecutor
 
             asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=512))
+        # Deploy-hygiene guard (#434): the single-active-viewer take-over model is EXPERIMENTAL
+        # and staging-only. It once leaked into the prod env file and made every non-active tab /
+        # device blank, so surface it loudly at startup — an operator scanning the journal sees it
+        # immediately instead of debugging a "blank terminal" report. No-op (and silent) when the
+        # flag is absent/false, which is the default everywhere including all script installs.
+        if owner.takeover_enabled():
+            log.warning(
+                "AGENT_SESSIONS_TAKEOVER is ON (instance=%s) — single-active-viewer take-over is "
+                "EXPERIMENTAL / staging-only (#293/#434). Non-active viewers stream read-only. "
+                "Unset AGENT_SESSIONS_TAKEOVER in the env file to restore the default behaviour.",
+                owner.INSTANCE,
+            )
         # Best-effort: a discovery error must not block the app from serving
         # (the existing /api/sessions HTTP path keeps working as fallback).
         with contextlib.suppress(Exception):
