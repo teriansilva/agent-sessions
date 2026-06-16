@@ -16,7 +16,7 @@ import json
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from .. import engines, metadata, review
+from .. import aitasks, engines, metadata, review
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
@@ -45,7 +45,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
         try:
-            fields = await review.run_review(key)
+            # Visible in the shared AI-activity surface (#441) for its (brief) duration.
+            async with aitasks.track("ai-review", "manual"):
+                fields = await review.run_review(key)
         except review.NotConfiguredError as e:
             raise HTTPException(status_code=409, detail=str(e)) from None
         except review.ReviewError as e:

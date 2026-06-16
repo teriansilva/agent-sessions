@@ -48,6 +48,7 @@ from .auth import (
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
 from .routes import history as history_routes
+from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import spa as spa_routes
@@ -344,6 +345,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     history_routes.register(app, logged_in=_logged_in)
     # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Pulse — recent-work overview (#441 Phase 2): cached overview + manual scan. Needs the
+    # registry for the live "in flight" overlay; the shared /api/ai/activity is in system.py.
+    pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).

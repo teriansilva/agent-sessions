@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from .. import (
+    aitasks,
     archive,
     autosort,
     engines,
@@ -265,7 +266,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=409, detail="auto-sort is disabled")
         if not prefs.public_ai_review()["configured"]:
             raise HTTPException(status_code=409, detail="the AI review endpoint is not configured")
-        report = await autosort.run_sort()
+        async with aitasks.track("auto-sort", "manual"):
+            report = await autosort.run_sort()
         return JSONResponse(report)
 
     @app.patch("/api/projects/{pid}")

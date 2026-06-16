@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .. import (
+    aitasks,
     discover,
     engines,
     prefs,
@@ -99,6 +100,14 @@ def register(
                 ]
             }
         )
+
+    @app.get("/api/ai/activity")
+    async def ai_activity(_: str = Depends(logged_in)) -> JSONResponse:
+        # Shared AI-task surface (#441 Phase 1): what AI work is running right now (Pulse
+        # scans, AI-review/auto-sort sweeps + their on-demand runs) plus the last run per
+        # kind. Read-only; the Settings "AI activity" panel polls it. Cheap (in-process
+        # registry, no I/O), GET so no CSRF.
+        return JSONResponse(aitasks.snapshot())
 
     @app.get("/api/system")
     async def system_info(_: str = Depends(logged_in)) -> JSONResponse:

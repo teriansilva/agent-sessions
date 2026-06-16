@@ -38,7 +38,7 @@ import asyncio
 import logging
 import os
 
-from . import metadata, prefs, review
+from . import aitasks, metadata, prefs, review
 
 log = logging.getLogger("agent_sessions.ai_review_loop")
 
@@ -100,6 +100,14 @@ async def sweep(registry) -> tuple[list[str], int]:
     cfg = prefs.get_ai_review()
     if not cfg["enabled"] or not _configured(cfg):
         return [], 0
+    # Track the real work in the shared AI-activity registry (#441) — only PAST the gate, so a
+    # disabled/unconfigured sweep stays a silent no-op, not a phantom "review ran" entry.
+    async with aitasks.track("ai-review", "sweep"):
+        return await _sweep(registry, cfg)
+
+
+async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
+    """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
     max_chars = int(cfg["max_input_chars"])
     reviewed: list[str] = []
     failures = 0

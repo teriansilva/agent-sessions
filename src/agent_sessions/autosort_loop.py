@@ -21,7 +21,7 @@ import asyncio
 import logging
 import os
 
-from . import autosort, prefs
+from . import aitasks, autosort, prefs
 
 log = logging.getLogger("agent_sessions.autosort_loop")
 
@@ -50,7 +50,10 @@ async def sweep() -> dict:
     cfg = prefs.get_auto_sort()
     if not _ready(cfg):
         return {"candidates": 0, "scanned": 0, "assigned": [], "skipped": "disabled"}
-    return await autosort.run_sort(cap=SWEEP_CAP)
+    # Track the real work in the shared AI-activity registry (#441) — only PAST the gate, so a
+    # disabled/unconfigured sweep stays a silent no-op, not a phantom "auto-sort ran" entry.
+    async with aitasks.track("auto-sort", "sweep"):
+        return await autosort.run_sort(cap=SWEEP_CAP)
 
 
 async def run() -> None:
