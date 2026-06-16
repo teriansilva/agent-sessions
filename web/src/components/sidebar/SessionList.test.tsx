@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -82,9 +82,10 @@ test("renders session rows from the API", async () => {
   expect(screen.getByText("Second")).toBeInTheDocument();
 });
 
-test("a project-assigned row shows the entity name, not the folder path (#361)", async () => {
+test("a project-assigned row shows BOTH the entity name and its launch folder (#424 Phase 3)", async () => {
   const inProject = {
     ...sess("claude:p", "Assigned"),
+    cwd: "/home/m/work/api",
     project: { kind: "project" as const, id: "p-1234", name: "SampleProject", color: "" },
   };
   mockSessions.mockResolvedValue(pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }));
@@ -94,9 +95,14 @@ test("a project-assigned row shows the entity name, not the folder path (#361)",
     </MemoryRouter>,
   );
   await screen.findByText("Assigned");
-  // entity name on the assigned row; the unassigned row keeps the shortened cwd
-  expect(screen.getByText(/SampleProject/)).toBeInTheDocument();
-  expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
+  // The assigned row carries the entity chip AND its own folder chip (project + folder, #424).
+  const assignedRow = screen.getByRole("link", { name: /Assigned/ });
+  expect(within(assignedRow).getByText(/SampleProject/)).toBeInTheDocument();
+  expect(within(assignedRow).getByText(/~\/work\/api/)).toBeInTheDocument();
+  // The unassigned row has no entity → folder chip only, no SampleProject.
+  const unassignedRow = screen.getByRole("link", { name: /Unassigned/ });
+  expect(within(unassignedRow).queryByText(/SampleProject/)).not.toBeInTheDocument();
+  expect(within(unassignedRow).getByText(/~\/claude/)).toBeInTheDocument();
 });
 
 test("the project chip shows a color dot for a colored entity; folder rows get a decorative marker (#361)", async () => {
@@ -120,7 +126,8 @@ test("the project chip shows a color dot for a colored entity; folder rows get a
   // tests (and screen readers' name computation) rely on stays the project name/path.
   const mark = container.querySelector('[class*="folderMark"]') as HTMLElement;
   expect(mark).toHaveAttribute("aria-hidden", "true");
-  expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
+  // Both rows launch from the same cwd, so the folder chip now appears on each (#424 Phase 3).
+  expect(screen.getAllByText(/~\/claude/)).toHaveLength(2);
 });
 
 test("marks the row matching the current URL as the active session (#18)", async () => {

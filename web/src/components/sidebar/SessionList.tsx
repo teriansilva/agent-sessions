@@ -269,28 +269,32 @@ function Row({
           <div className={styles.meta}>
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
             <span className={styles.metaText}>
-              {/* #361: an assigned/adopted project shows its entity name as a chip (with
-                  its color dot when set); unassigned rows keep the per-cwd custom-name
-                  (#148) / shortened-path display behind a decorative folder marker. */}
-              {s.project.kind === "project" ? (
-                <span className={styles.projectChip}>
-                  {s.project.color && (
-                    <span
-                      className={styles.projectDot}
-                      style={{ background: s.project.color }}
-                      aria-hidden="true"
-                    />
-                  )}
-                  {s.project.name}
-                </span>
-              ) : (
-                <span className={styles.folderChip}>
-                  <span className={styles.folderMark} aria-hidden="true">
-                    {"▸ "}
+              {/* #424 Phase 3: an entity-assigned row shows BOTH its project chip (entity
+                  name + color dot when set) AND its launch-folder chip, so the row tells you
+                  what it belongs to *and* where it runs. An unassigned row has no entity, so
+                  it shows the folder chip alone — the per-cwd custom name (#148) / shortened
+                  path behind a decorative ▸ marker. */}
+              {s.project.kind === "project" && (
+                <>
+                  <span className={styles.projectChip}>
+                    {s.project.color && (
+                      <span
+                        className={styles.projectDot}
+                        style={{ background: s.project.color }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {s.project.name}
                   </span>
-                  {displayProjectName(s.cwd, projectNames)}
+                  {" · "}
+                </>
+              )}
+              <span className={styles.folderChip}>
+                <span className={styles.folderMark} aria-hidden="true">
+                  {"▸ "}
                 </span>
-              )}{" "}
+                {displayProjectName(s.cwd, projectNames)}
+              </span>{" "}
               · {relTime(s.last_mtime)}
             </span>
           </div>
