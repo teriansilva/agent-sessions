@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { GroupBy } from "../lib/overviewGraph";
 
 /** Shared Session Overview view-state (#144): expanded clusters + excluded projects. Lives
  *  at the app level (see OverviewPrefsContext) so a Settings save and the canvas read/write
@@ -35,6 +36,11 @@ export interface OverviewPrefs {
   setProjectsMode: (mode: "all" | "included") => void;
   /** Show/hide a project, routed to the denylist (`all`) or allowlist (`included`) per mode (#335). */
   setProjectVisible: (cwd: string, visible: boolean) => void;
+  /** Map clustering mode (#424 Phase 2): folders / projects / agents. Device-local (localStorage),
+   *  like the sidebar-collapse flag — NOT cross-device synced. */
+  groupBy: GroupBy;
+  /** Switch the clustering mode and persist it device-locally (#424 Phase 2). */
+  setGroupBy: (groupBy: GroupBy) => void;
 }
 
 export const OverviewPrefsCtx = createContext<OverviewPrefs | null>(null);
@@ -59,6 +65,8 @@ export function useOverviewPrefs(): OverviewPrefs {
       isVisible: () => true,
       setProjectsMode: () => {},
       setProjectVisible: () => {},
+      groupBy: "project",
+      setGroupBy: () => {},
     }
   );
 }

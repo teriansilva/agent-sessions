@@ -82,3 +82,37 @@ test("desktop: a cluster expands on click, then a chip opens the session (#149)"
   await ov.getByText("First session").click();
   await expect(page).toHaveURL(/\/s\/claude\/aaa$/);
 });
+
+test("desktop: the layout selector regroups the map and persists device-locally (#424)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "mobile", "selector covered on desktop");
+  await page.goto("/overview");
+  const ov = page.locator(".tr-overview");
+
+  // Default = Projects: both sessions share a launch folder → one cluster, keyed by cwd.
+  await expect(ov.getByRole("radio", { name: /group by projects/i })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(ov.getByTitle(/expand \/home\/u\/proj/i)).toBeVisible();
+
+  // Switch to Agents → one cluster per engine (claude + opencode), no folder cluster.
+  await ov.getByRole("radio", { name: /group by agents/i }).click();
+  await expect(ov.getByRole("radio", { name: /group by agents/i })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(ov.getByTitle(/expand claude/i)).toBeVisible();
+  await expect(ov.getByTitle(/expand opencode/i)).toBeVisible();
+  await expect(ov.getByTitle(/expand \/home\/u\/proj/i)).toHaveCount(0);
+
+  // The choice is device-local (localStorage) and survives a reload.
+  expect(await page.evaluate(() => localStorage.getItem("tr-overview-groupby"))).toBe("agent");
+  await page.reload();
+  await expect(ov.getByRole("radio", { name: /group by agents/i })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await expect(ov.getByTitle(/expand claude/i)).toBeVisible();
+});

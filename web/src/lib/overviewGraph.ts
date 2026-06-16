@@ -7,9 +7,15 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
+import { engineColor, engineName } from "./format";
 
 /** A session counts as "active" if its last activity is within this window. */
 export const ACTIVE_WINDOW_S = 15 * 60;
+
+/** How the map clusters sessions (#424 Phase 2). `project` (default) = resolved entity, else
+ *  folder fallback (the pre-#424 behaviour); `folder` = pure cwd tree, ignoring entities;
+ *  `agent` = one cluster per engine. Device-local selection (see OverviewPrefs). */
+export type GroupBy = "folder" | "project" | "agent";
 
 // Layout geometry (px). Deterministic so snapshots/tests are stable.
 const CHIP_W = 176;
@@ -26,10 +32,12 @@ const ROW_GAP = 64;
 
 export interface ProjectGroupData extends Record<string, unknown> {
   project: string;
-  /** Resolved ref kind (#361): "project" groups label by entity name, never the path. */
-  kind: "project" | "folder";
+  /** Resolved cluster kind: "project" groups label by entity name; "folder" by cwd/path;
+   *  "agent" by engine name (#424 Phase 2). Never the path for project/agent groups. */
+  kind: "project" | "folder" | "agent";
   /** Expand/collapse toggle key (#361 Phase 4): the cwd for folder groups (so pre-Phase-4
-   *  prefs survive) or `project:<id>` for entity groups. The node id is `group:<groupKey>`. */
+   *  prefs survive), `project:<id>` for entity groups, or `agent:<engine>` for engine groups
+   *  (#424 Phase 2). The node id is `group:<groupKey>`. */
   groupKey: string;
   /** Representative cwd: the only one for a folder group; the lexicographically first member
    *  cwd for an entity group (display falls back to a folder count when cwdCount > 1). */
@@ -82,6 +90,8 @@ import { buildProjectTree } from "./projectTree";
 export interface BuildOptions {
   /** Epoch seconds used to classify active/idle. Defaults to now (injectable for tests). */
   nowS?: number;
+  /** Clustering mode (#424 Phase 2). Defaults to `project` (the pre-#424 behaviour). */
+  groupBy?: GroupBy;
   /** Include archived sessions (default: hidden). */
   includeArchived?: boolean;
   /** Toggle keys (`groupKey`) of expanded clusters: cwds for folder groups, `project:<id>`
@@ -96,20 +106,49 @@ export interface BuildOptions {
   names?: Record<string, string>;
 }
 
-/** A session's cluster key (#361 Phase 4): the entity ref for project members (merging their
- *  sessions across cwds), the launch cwd for the folder fallback. */
-const groupKeyOf = (s: Session): string =>
-  s.project.kind === "project" ? `project:${s.project.id}` : s.cwd;
+/** A session's cluster for the active mode (#424 Phase 2):
+ *  - `project` (default): the entity ref for project members (merging their sessions across
+ *    cwds), the launch cwd for the folder fallback (#361 Phase 4);
+ *  - `folder`: always the launch cwd — entities are ignored, so a project's sessions split
+ *    back out by folder;
+ *  - `agent`: one cluster per engine. */
+interface Cluster {
+  key: string;
+  kind: "project" | "folder" | "agent";
+  label: string;
+  color?: string;
+}
+const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
+  if (groupBy === "agent") {
+    return { key: `agent:${s.engine}`, kind: "agent", label: engineName(s.engine), color: engineColor(s.engine) };
+  }
+  if (groupBy === "folder") {
+    // Pure cwd tree — the path is the label fallback; entity name/color are intentionally dropped.
+    return { key: s.cwd, kind: "folder", label: s.cwd };
+  }
+  return s.project.kind === "project"
+    ? { key: `project:${s.project.id}`, kind: "project", label: s.project.name, color: s.project.color }
+    : { key: s.cwd, kind: "folder", label: s.project.name };
+};
 
-/** Toggle keys offered to "Expand all" — the same visibility predicate as `buildOverview`
- *  (#361): project-resolved rows stay on the map when their cwd is hidden, so their
- *  clusters must be expandable too. */
-export function expandableKeys(sessions: Session[], dropped: Set<string>): string[] {
+/** A cwd hidden by prefs still keeps its sessions on the map ONLY in `project` mode when they
+ *  resolve to an entity (mirrors the server's sidebar/facet rule, #361). In `folder`/`agent`
+ *  mode every cluster is cwd- or engine-keyed, so a hidden cwd hides its sessions outright. */
+const keepsHiddenCwd = (s: Session, groupBy: GroupBy): boolean =>
+  groupBy === "project" && s.project.kind === "project";
+
+/** Toggle keys offered to "Expand all" — the same visibility predicate + clustering as
+ *  `buildOverview` for the active mode (#424 Phase 2). */
+export function expandableKeys(
+  sessions: Session[],
+  dropped: Set<string>,
+  groupBy: GroupBy = "project",
+): string[] {
   return [
     ...new Set(
       sessions
-        .filter((s) => s.project.kind === "project" || !dropped.has(s.cwd))
-        .map(groupKeyOf),
+        .filter((s) => keepsHiddenCwd(s, groupBy) || !dropped.has(s.cwd))
+        .map((s) => clusterOf(s, groupBy).key),
     ),
   ];
 }
@@ -122,21 +161,22 @@ export function expandableKeys(sessions: Session[], dropped: Set<string>): strin
  *  Flow requirement). */
 export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
+  const groupBy = opts.groupBy ?? "project";
   const expanded = opts.expanded ?? new Set<string>();
   const excluded = opts.excluded ?? new Set<string>();
   const names = opts.names ?? {};
-  // cwd visibility prefs apply to FOLDER-grouped sessions only (#361): a session
-  // resolved to a project entity stays on the map even when its launch folder is
-  // hidden / not allowlisted — mirroring the server's sidebar/facet rule.
+  // cwd visibility prefs apply per `keepsHiddenCwd`: an entity-resolved session in `project`
+  // mode survives a hidden cwd (server sidebar/facet parity, #361); in `folder`/`agent` mode
+  // a hidden cwd hides its sessions outright (#424 Phase 2).
   const visible = (opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)).filter(
-    (s) => s.project.kind === "project" || !excluded.has(s.cwd),
+    (s) => keepsHiddenCwd(s, groupBy) || !excluded.has(s.cwd),
   );
 
   const groups = new Map<
     string,
     {
       project: string;
-      kind: "project" | "folder";
+      kind: "project" | "folder" | "agent";
       items: Session[];
       maxMtime: number;
       cwds: Set<string>;
@@ -144,13 +184,13 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     }
   >();
   for (const s of visible) {
-    // #361 Phase 4: cluster by the resolved ref — an entity group merges its sessions
-    // across every member cwd (adopted folders AND folderless explicit assignments);
-    // the folder fallback stays keyed by cwd, byte-compatible with pre-Phase-4 ids.
-    const key = groupKeyOf(s);
-    const g = groups.get(key) ?? {
-      project: s.project.name,
-      kind: s.project.kind,
+    // Cluster by the active mode (#424 Phase 2): resolved ref (project), cwd (folder), or
+    // engine (agent). In `project` mode an entity group merges its sessions across every
+    // member cwd; the folder fallback stays keyed by cwd, byte-compatible with #361 ids.
+    const c = clusterOf(s, groupBy);
+    const g = groups.get(c.key) ?? {
+      project: c.label,
+      kind: c.kind,
       items: [],
       maxMtime: 0,
       cwds: new Set<string>(),
@@ -159,8 +199,8 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     g.items.push(s);
     g.cwds.add(s.cwd);
     g.maxMtime = Math.max(g.maxMtime, s.last_mtime || 0);
-    if (s.project.color) g.color = s.project.color;
-    groups.set(key, g);
+    if (c.color) g.color = c.color;
+    groups.set(c.key, g);
   }
 
   // Hierarchy (parent/children/depth) — extracted to `./projectTree` so the Settings card

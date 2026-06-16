@@ -10,7 +10,10 @@ vi.mock("../lib/api", async () => {
   return { ...actual, api: { ...actual.api, setPrefs: vi.fn().mockResolvedValue({}) } };
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear(); // groupBy (#424) is device-local — keep tests order-independent
+});
 
 // A stand-in for the canvas: reads the shared excluded set + (like Settings) saves one.
 function Harness() {
@@ -95,4 +98,40 @@ test("included mode: only allowlisted projects are visible + writes the allowlis
   expect(screen.getByTestId("vis-b").textContent).toBe("true"); // now allowlisted
   expect(screen.getByTestId("vis-a").textContent).toBe("false"); // still not
   expect(api.setPrefs).toHaveBeenCalledWith({ projects_included: ["/p/b"] });
+});
+
+// Map clustering mode (#424 Phase 2) is DEVICE-LOCAL: persisted to localStorage, never to the
+// server-synced prefs (unlike the lists above).
+function GroupByHarness() {
+  const { groupBy, setGroupBy } = useOverviewPrefs();
+  return (
+    <>
+      <div data-testid="groupby">{groupBy}</div>
+      <button onClick={() => setGroupBy("agent")}>to-agent</button>
+    </>
+  );
+}
+
+test("groupBy defaults to project and persists device-locally (#424)", async () => {
+  render(
+    <OverviewPrefsProvider>
+      <GroupByHarness />
+    </OverviewPrefsProvider>,
+  );
+  expect(screen.getByTestId("groupby").textContent).toBe("project");
+  await userEvent.click(screen.getByRole("button", { name: "to-agent" }));
+  expect(screen.getByTestId("groupby").textContent).toBe("agent");
+  // localStorage only — NOT a /api/prefs write (it's not cross-device synced).
+  expect(localStorage.getItem("tr-overview-groupby")).toBe("agent");
+  expect(api.setPrefs).not.toHaveBeenCalledWith(expect.objectContaining({ groupBy: "agent" }));
+});
+
+test("groupBy seeds from a stored device-local value (#424)", () => {
+  localStorage.setItem("tr-overview-groupby", "folder");
+  render(
+    <OverviewPrefsProvider>
+      <GroupByHarness />
+    </OverviewPrefsProvider>,
+  );
+  expect(screen.getByTestId("groupby").textContent).toBe("folder");
 });

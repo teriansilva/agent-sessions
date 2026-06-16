@@ -1,7 +1,16 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import type { GroupBy } from "../lib/overviewGraph";
 import { useConfig } from "./config";
 import { type OverviewPrefs, OverviewPrefsCtx } from "./overviewPrefs";
+
+// Map clustering mode is device-local (#424 Phase 2), like the sidebar-collapse flag — it is
+// NOT part of the server-synced per-user prefs, so it lives in localStorage only.
+const GROUPBY_KEY = "tr-overview-groupby";
+const readGroupBy = (): GroupBy => {
+  const v = localStorage.getItem(GROUPBY_KEY);
+  return v === "folder" || v === "agent" || v === "project" ? v : "project";
+};
 
 /** Provides the shared overview view-state (#144). Seeded from /api/config once, persisted
  *  per-user on every change (best-effort; local state always applies). */
@@ -12,6 +21,7 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
   const [projectNames, setProjectNamesState] = useState<Record<string, string>>({});
   const [mode, setModeState] = useState<"all" | "included">("all");
   const [included, setIncludedState] = useState<Set<string>>(new Set());
+  const [groupBy, setGroupByState] = useState<GroupBy>(readGroupBy);
   const [synced, setSynced] = useState(false);
 
   useEffect(() => {
@@ -76,6 +86,11 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
     setProjectsMode: (m) => {
       setModeState(m);
       api.setPrefs({ projects_mode: m }).catch(() => {});
+    },
+    groupBy,
+    setGroupBy: (g) => {
+      setGroupByState(g);
+      localStorage.setItem(GROUPBY_KEY, g);
     },
     // Route a show/hide toggle to the list the CURRENT mode consults (#335): the allowlist in
     // `included` mode, the denylist in `all` mode — never both, so they can't drift.

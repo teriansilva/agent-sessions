@@ -1,6 +1,11 @@
 import { expect, test } from "vitest";
 import type { Session } from "../types/api";
-import { ACTIVE_WINDOW_S, buildOverview, expandableKeys } from "./overviewGraph";
+import {
+  ACTIVE_WINDOW_S,
+  buildOverview,
+  expandableKeys,
+  type ProjectGroupData,
+} from "./overviewGraph";
 
 const NOW = 1_700_000_000;
 
@@ -327,4 +332,102 @@ test("entity color passes through to the group node data", () => {
   const input = [s({ id: "claude:a", cwd: "/p/app", project: ref({ color: "#5fd7ff" }) })];
   const { nodes } = buildOverview(input, { nowS: NOW });
   expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ color: "#5fd7ff" });
+});
+
+// ---- groupBy modes (#424 Phase 2) ---------------------------------------------
+
+const kindOf = (data: unknown) => (data as ProjectGroupData).kind;
+const colorOf = (data: unknown) => (data as ProjectGroupData).color;
+
+// One fixture exercising all three modes: two engines, one entity spanning two cwds, plus a
+// plain folder-fallback session.
+const mixed = (): Session[] => [
+  s({ id: "claude:a", engine: "claude", cwd: "/p/app", project: ref() }),
+  s({ id: "opencode:b", engine: "opencode", cwd: "/p/lib", project: ref() }),
+  s({
+    id: "claude:c",
+    engine: "claude",
+    cwd: "/p/two",
+    project: { kind: "folder" as const, id: "/p/two", name: "two" },
+  }),
+];
+
+test("project mode (default): clusters by entity, folder fallback for the rest", () => {
+  const { nodes } = buildOverview(mixed(), { nowS: NOW, groupBy: "project" });
+  const groups = nodes.filter((n) => n.type === "projectGroup").map((n) => n.id).sort();
+  expect(groups).toEqual(["group:/p/two", "group:project:p-1"]);
+  expect(nodes.find((n) => n.id === "group:project:p-1")?.data).toMatchObject({
+    kind: "project",
+    count: 2,
+    cwdCount: 2,
+  });
+});
+
+test("folder mode: pure cwd tree — an entity splits back out by launch folder", () => {
+  const { nodes } = buildOverview(mixed(), { nowS: NOW, groupBy: "folder" });
+  const groups = nodes.filter((n) => n.type === "projectGroup");
+  expect(groups.map((n) => n.id).sort()).toEqual(["group:/p/app", "group:/p/lib", "group:/p/two"]);
+  expect(groups.map((n) => kindOf(n.data))).toEqual(["folder", "folder", "folder"]);
+  expect(nodes.some((n) => n.id === "group:project:p-1")).toBe(false);
+});
+
+test("agent mode: one cluster per engine, labelled + colored by engine", () => {
+  const { nodes } = buildOverview(mixed(), { nowS: NOW, groupBy: "agent" });
+  const groups = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.data]),
+  );
+  expect(Object.keys(groups).sort()).toEqual(["group:agent:claude", "group:agent:opencode"]);
+  expect(groups["group:agent:claude"]).toMatchObject({ kind: "agent", project: "claude", count: 2 });
+  expect(groups["group:agent:opencode"]).toMatchObject({ kind: "agent", project: "opencode", count: 1 });
+  expect(colorOf(groups["group:agent:opencode"])).toBe("#4fd1c5"); // engine accent flows to the cue
+});
+
+test("agent mode has no hierarchy edges — every engine group is a root (#424)", () => {
+  const input = [
+    s({ id: "claude:a", engine: "claude", cwd: "/a" }),
+    s({ id: "claude:b", engine: "claude", cwd: "/a/b" }), // nested cwd, but agent mode ignores folders
+  ];
+  const { edges, nodes } = buildOverview(input, { nowS: NOW, groupBy: "agent" });
+  expect(edges).toHaveLength(0);
+  expect(nodes.filter((n) => n.type === "projectGroup")).toHaveLength(1); // both → one claude group
+});
+
+test("agent clusters expand by their agent:<engine> toggle key", () => {
+  const open = buildOverview(mixed(), {
+    nowS: NOW,
+    groupBy: "agent",
+    expanded: new Set(["agent:claude"]),
+  });
+  const chips = open.nodes.filter((n) => n.type === "session");
+  expect(chips.map((n) => n.id).sort()).toEqual(["claude:a", "claude:c"]);
+  expect(chips.every((n) => n.parentId === "group:agent:claude")).toBe(true);
+});
+
+test("folder/agent mode drops a hidden cwd's sessions even when entity-resolved (#424)", () => {
+  const input = [s({ id: "claude:p", cwd: "/p/hidden", project: ref() })];
+  const excluded = new Set(["/p/hidden"]);
+  // project mode keeps the entity member (server parity); folder + agent drop it (cwd hidden)
+  expect(
+    buildOverview(input, { nowS: NOW, groupBy: "project", excluded }).nodes.some(
+      (n) => n.id === "group:project:p-1",
+    ),
+  ).toBe(true);
+  for (const groupBy of ["folder", "agent"] as const) {
+    const { nodes } = buildOverview(input, { nowS: NOW, groupBy, excluded });
+    expect(nodes.filter((n) => n.type === "projectGroup")).toHaveLength(0);
+  }
+});
+
+test("expandableKeys returns mode-appropriate toggle keys (#424)", () => {
+  const input = mixed();
+  expect(expandableKeys(input, new Set(), "project").sort()).toEqual(["/p/two", "project:p-1"]);
+  expect(expandableKeys(input, new Set(), "folder").sort()).toEqual([
+    "/p/app",
+    "/p/lib",
+    "/p/two",
+  ]);
+  expect(expandableKeys(input, new Set(), "agent").sort()).toEqual([
+    "agent:claude",
+    "agent:opencode",
+  ]);
 });

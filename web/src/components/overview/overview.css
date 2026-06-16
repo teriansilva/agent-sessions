@@ -294,7 +294,33 @@
   right: 10px;
   z-index: 6;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100% - 20px);
   gap: 6px;
+}
+/* Map layout selector (#424 Phase 2) — a segmented Folders / Projects / Agents control. The
+ * member buttons inherit the toolbar button look; here we collapse them into one strip and
+ * mark the active segment. */
+.tr-ov-groupby {
+  display: inline-flex;
+}
+.tr-ov-groupby button + button {
+  margin-left: -1px;
+}
+.tr-ov-toolbar .tr-ov-groupby button.on {
+  position: relative;
+  z-index: 1;
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+/* Narrow canvases (mobile / squeezed): drop the labels to icons so the selector + actions
+ * still fit the top-right toolbar. The aria-label keeps each control named for a11y/tests. */
+@media (max-width: 640px) {
+  .tr-ov-gb-label {
+    display: none;
+  }
 }
 .tr-ov-toolbar button {
   display: inline-flex;

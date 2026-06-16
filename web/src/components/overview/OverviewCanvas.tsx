@@ -7,7 +7,7 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { ChevronsDownUp, ChevronsUpDown, Plus } from "lucide-react";
+import { Bot, Boxes, ChevronsDownUp, ChevronsUpDown, FolderTree, Plus } from "lucide-react";
 import { type FormEvent, type MouseEvent, useCallback, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
@@ -16,6 +16,7 @@ import { engineColor } from "../../lib/format";
 import {
   buildOverview,
   expandableKeys,
+  type GroupBy,
   type ProjectGroupData,
   type SessionNodeData,
 } from "../../lib/overviewGraph";
@@ -27,6 +28,13 @@ import "./overview.css";
 
 // Stable identity (module scope) so React Flow doesn't re-register node types each render.
 const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
+
+// The map layout selector (#424 Phase 2) — one explicit grouping at a time.
+const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] = [
+  { key: "folder", label: "Folders", Icon: FolderTree },
+  { key: "project", label: "Projects", Icon: Boxes },
+  { key: "agent", label: "Agents", Icon: Bot },
+];
 
 const miniMapColor = (n: Node): string =>
   n.type === "session" ? engineColor((n.data as SessionNodeData).session.engine) : "var(--border)";
@@ -48,7 +56,7 @@ export function OverviewCanvas({
   compact?: boolean;
   onRefetch?: () => void;
 }) {
-  const { expanded, excluded, projectsMode, includedProjects, projectNames, toggle, expandAll, collapseAll } =
+  const { expanded, excluded, projectsMode, includedProjects, projectNames, groupBy, setGroupBy, toggle, expandAll, collapseAll } =
     useOverviewPrefs();
   const navigate = useNavigate();
   // The set of session cwds the map must DROP, resolved for the active mode (#335). `all` mode
@@ -89,18 +97,19 @@ export function OverviewCanvas({
   const { nodes, edges } = useMemo(
     () =>
       buildOverview(sessions, {
+        groupBy,
         includeArchived,
         expanded,
         excluded: dropped,
         activeId,
         names: projectNames,
       }),
-    [sessions, includeArchived, expanded, dropped, activeId, projectNames],
+    [sessions, groupBy, includeArchived, expanded, dropped, activeId, projectNames],
   );
   // Toggle keys available to expand (still visible) — drives "Expand all".
   const allKeys = useMemo(
-    () => expandableKeys(sessions, dropped),
-    [sessions, dropped],
+    () => expandableKeys(sessions, dropped, groupBy),
+    [sessions, dropped, groupBy],
   );
 
   // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions.
@@ -142,6 +151,23 @@ export function OverviewCanvas({
       <div className="tr-overview" style={{ position: "relative" }}>
         {partial && <div className="tr-ov-partial">Showing the most recent sessions</div>}
         <div className="tr-ov-toolbar">
+          <div className="tr-ov-groupby" role="radiogroup" aria-label="Group sessions by">
+            {GROUP_MODES.map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={groupBy === key}
+                aria-label={`Group by ${label.toLowerCase()}`}
+                className={groupBy === key ? "on" : ""}
+                onClick={() => setGroupBy(key)}
+                title={`Group by ${label.toLowerCase()}`}
+              >
+                <Icon size={14} aria-hidden="true" />
+                <span className="tr-ov-gb-label">{label}</span>
+              </button>
+            ))}
+          </div>
           {naming ? (
             <form className="tr-ov-newproj" onSubmit={submitNewProject}>
               <input

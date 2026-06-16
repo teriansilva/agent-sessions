@@ -20,12 +20,13 @@ export function ProjectGroupNode({ data }: NodeProps) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const Chevron = collapsed ? ChevronRight : ChevronDown;
-  // #361: a project-entity group is labelled by the resolved entity name; folder groups
-  // keep the custom-name/path display. An entity spanning several folders (#361 Phase 4)
-  // shows the folder count instead of a single (arbitrary) path.
-  const label = kind === "project" ? project : name || shortCwd(cwd) || project;
-  const subtitle =
-    kind === "project" && (cwdCount ?? 1) > 1 ? `${cwdCount} folders` : shortCwd(cwd);
+  // #361/#424: a folder group keeps the custom-name/path display; a project-entity group is
+  // labelled by its entity name and an agent group by its engine name (`project` carries the
+  // label for both). A project/agent group spanning several folders (#361 Phase 4) shows the
+  // folder count instead of a single (arbitrary) path.
+  const label = kind === "folder" ? name || shortCwd(cwd) || project : project;
+  const spansFolders = (kind === "project" || kind === "agent") && (cwdCount ?? 1) > 1;
+  const subtitle = spansFolders ? `${cwdCount} folders` : shortCwd(cwd);
 
   // "Make this a project" (#361 Phase 4): promote a folder-fallback cluster into an
   // entity adopting this cwd. A 409 (folder already owned) carries the server's detail
@@ -53,7 +54,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
       <div
         className="tr-ov-group-head nodrag nopan"
         aria-expanded={!collapsed}
-        title={`${collapsed ? "Expand" : "Collapse"} ${kind === "project" ? project : cwd}`}
+        title={`${collapsed ? "Expand" : "Collapse"} ${kind === "folder" ? cwd : project}`}
       >
         <Chevron size={14} className="tr-ov-chev" aria-hidden="true" />
         {color && <span className="tr-ov-proj-dot" style={{ background: color }} aria-hidden="true" />}
@@ -64,7 +65,9 @@ export function ProjectGroupNode({ data }: NodeProps) {
               {err}
             </span>
           ) : (
-            (name || kind === "project") && <span className="tr-ov-cwd">{subtitle}</span>
+            (name || kind === "project" || kind === "agent") && (
+              <span className="tr-ov-cwd">{subtitle}</span>
+            )
           )}
         </span>
         <span className="tr-ov-count">
