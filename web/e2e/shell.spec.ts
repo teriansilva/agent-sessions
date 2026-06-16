@@ -82,18 +82,6 @@ test("opens the fullscreen session overview (topbar on desktop, drawer on mobile
   await expect(page.locator(".tr-overview")).toBeVisible();
 });
 
-test("desktop: List ⇄ Map toggle swaps the sidebar body to the overview (#139)", async ({
-  page,
-}, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "toggle lives in the sidebar drawer; covered on desktop");
-  await page.goto("/");
-  await page.getByRole("tab", { name: /^map$/i }).click();
-  // The squeezed overview canvas now renders inside the sidebar.
-  await expect(page.locator(".sidebar .tr-overview")).toBeVisible();
-  await page.getByRole("tab", { name: /^list$/i }).click();
-  await expect(page.locator(".sidebar .tr-overview")).toHaveCount(0);
-});
-
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({ page }, testInfo) => {
   await page.goto("/");
   // Screenshot named per project → mobile vs desktop layout regressions are visible/diffable.

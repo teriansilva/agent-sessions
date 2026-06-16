@@ -1,4 +1,4 @@
-import { LayoutGrid, List as ListIcon, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
+import { Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -23,18 +23,11 @@ import { useSessionsStore } from "./sessionsStore";
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
 const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
-const SidebarOverview = lazyWithReload(
-  () => import("../components/overview/SidebarOverview"),
-  "sidebar-overview",
-);
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
-// Sidebar List ⇄ Map choice, device-local. The server-side `sidebar_view` pref is retired
-// (#357 Phase 2) — this is layout state like the collapse flag, not a cross-device setting.
-const VIEW_KEY = "tr-sidebar-view";
-
-type SidebarView = "list" | "overview";
-
+// Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
+// `/overview` is the canonical map (#424 Phase 1); we clear any stale value once on mount.
+const LEGACY_VIEW_KEY = "tr-sidebar-view";
 
 /** App shell — tactical-HUD framework (#211 redux). Three grid rows: a full-width command
  *  TOPBAR (brand + SYS/MISSION telemetry + overview/settings actions, carrying the single
@@ -84,16 +77,11 @@ function Layout() {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
-  // Sidebar body: session list or the squeezed Session Overview map (#139). Device-local
-  // layout state persisted in localStorage (like the collapse flag) — the server-side
-  // `sidebar_view` pref is retired (#357 Phase 2).
-  const [sidebarView, setSidebarView] = useState<SidebarView>(() =>
-    localStorage.getItem(VIEW_KEY) === "overview" ? "overview" : "list",
-  );
-  const chooseView = (v: SidebarView) => {
-    setSidebarView(v);
-    localStorage.setItem(VIEW_KEY, v);
-  };
+  // One-time cleanup of the retired sidebar List ⇄ Map toggle pref (#424 Phase 1). The sidebar
+  // is list-only now; `/overview` is the canonical map.
+  useEffect(() => {
+    localStorage.removeItem(LEGACY_VIEW_KEY);
+  }, []);
 
   // The header toggle drives ONLY the current surface: the mobile drawer (≤800px) or the
   // desktop collapse (>800px). This stops the mobile hamburger from mutating/persisting
@@ -194,36 +182,8 @@ function Layout() {
             <span>Settings</span>
           </Link>
         </div>
-        <div className="viewToggle" role="tablist" aria-label="Sidebar view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={sidebarView === "list"}
-            className={sidebarView === "list" ? "on" : ""}
-            onClick={() => chooseView("list")}
-          >
-            <ListIcon size={14} /> List
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={sidebarView === "overview"}
-            className={sidebarView === "overview" ? "on" : ""}
-            onClick={() => chooseView("overview")}
-          >
-            <LayoutGrid size={14} /> Map
-          </button>
-        </div>
         <div className="sidebarBody">
-          {sidebarView === "overview" ? (
-            <ChunkErrorBoundary>
-              <Suspense fallback={<div className="tr-overview tr-ov-state">Loading map…</div>}>
-                <SidebarOverview />
-              </Suspense>
-            </ChunkErrorBoundary>
-          ) : (
-            <SessionList onNavigate={closeMobileDrawer} />
-          )}
+          <SessionList onNavigate={closeMobileDrawer} />
         </div>
         <footer className="sidebar-foot">
           <span className="hud-tag">

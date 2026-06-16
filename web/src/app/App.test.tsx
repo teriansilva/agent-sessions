@@ -20,11 +20,6 @@ vi.mock("../lib/api", () => ({
   gotoLogin: vi.fn(),
 }));
 
-// Stub the lazy sidebar overview so the toggle test doesn't mount React Flow in jsdom.
-vi.mock("../components/overview/SidebarOverview", () => ({
-  default: () => <div data-testid="sidebar-overview">map</div>,
-}));
-
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -102,26 +97,24 @@ test("the command topbar carries the overview entrypoint (#139/#211)", async () 
   expect(link).toHaveAttribute("href", "/overview");
 });
 
-test("sidebar List ⇄ Map toggle swaps the body and persists device-locally (#139/#357)", async () => {
+// #424 Phase 1: the sidebar is list-only — the old List ⇄ Map tablist is gone and `/overview`
+// is the canonical map. The session list always renders; there is no Map tab to switch to.
+test("the sidebar is list-only — no List/Map view toggle (#424)", async () => {
   render(<App />);
-  // Defaults to List → the session list shows, the overview is not mounted.
-  expect(screen.queryByTestId("sidebar-overview")).not.toBeInTheDocument();
-
-  // The server `sidebar_view` pref is retired (#357 Phase 2): the choice persists in
-  // localStorage only — no /api/prefs write.
-  await userEvent.click(await screen.findByRole("tab", { name: /map/i }));
-  expect(localStorage.getItem("tr-sidebar-view")).toBe("overview");
-  expect(await screen.findByTestId("sidebar-overview")).toBeInTheDocument();
-
-  await userEvent.click(screen.getByRole("tab", { name: /list/i }));
-  expect(localStorage.getItem("tr-sidebar-view")).toBe("list");
-  await waitFor(() => expect(screen.queryByTestId("sidebar-overview")).not.toBeInTheDocument());
+  // The session list shell (its "New session" entrypoint) is present unconditionally.
+  expect(await screen.findByRole("link", { name: /new session/i })).toBeInTheDocument();
+  // The retired tablist and its Map tab no longer exist.
+  expect(screen.queryByRole("tablist", { name: /sidebar view/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("tab", { name: /map/i })).not.toBeInTheDocument();
 });
 
-test("the Map choice survives a remount via localStorage (#357)", async () => {
+// The retired `tr-sidebar-view` pref is cleared once on mount so stale "overview" values from a
+// previous build don't linger in localStorage (#424 Phase 1).
+test("a stale tr-sidebar-view pref is cleared on mount (#424)", async () => {
   localStorage.setItem("tr-sidebar-view", "overview");
   render(<App />);
-  expect(await screen.findByTestId("sidebar-overview")).toBeInTheDocument();
+  await screen.findByRole("link", { name: /new session/i });
+  await waitFor(() => expect(localStorage.getItem("tr-sidebar-view")).toBeNull());
 });
 
 // #283: on mobile, same-route nav targets (New session / Overview / Settings while already on
