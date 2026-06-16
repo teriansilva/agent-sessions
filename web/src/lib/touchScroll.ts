@@ -27,10 +27,12 @@ interface Scrollable {
   focus?: () => void;
   /** xterm's hidden input — blur+focus to (re)open the mobile keyboard on tap. */
   textarea?: HTMLTextAreaElement | null;
-  /** xterm's root element — for forwarding wheel to alt-screen apps (see scrollByPx). */
+  /** xterm's root element — for forwarding wheel to mouse-tracking / alt-screen apps. */
   element?: HTMLElement | null;
   /** Live xterm buffer; we read `active.type` to detect the alternate screen. */
   buffer?: { active?: { type?: string } };
+  /** Live xterm modes; `mouseTrackingMode !== 'none'` ⇒ the app consumes scroll itself. */
+  modes?: { mouseTrackingMode?: string };
 }
 
 // A touch that moves less than this (px) is treated as a tap, not a scroll.
@@ -87,30 +89,41 @@ export function attachTouchScroll(
     if (fling) cancelAnimationFrame(fling);
     fling = 0;
   };
-  // Alt-screen apps (e.g. opencode) draw a full-screen TUI and own their history: xterm
-  // keeps NO scrollback there, so term.scrollLines() is a no-op (#414). A desktop wheel still
-  // scrolls because xterm translates it into the app's mouse-wheel reports / cursor keys. We
-  // forward the touch drag the same way — synthesize a wheel on xterm's screen element and let
-  // xterm do its own translation (honoring whatever mouse mode the app set), so touch matches
-  // desktop exactly without us re-encoding mouse protocols. Normal buffer keeps scrollLines().
-  const inAltScreen = () => term.buffer?.active?.type === "alternate";
+  // Apps that consume scroll themselves — a mouse-tracking TUI (opencode) and/or one drawing in
+  // the alternate screen — keep NO xterm scrollback, so term.scrollLines() is a no-op (#414). A
+  // desktop wheel still scrolls them because xterm routes the wheel to the app (mouse-wheel
+  // reports / alternate-scroll) whenever mouse tracking is on, regardless of buffer. We mirror
+  // that exactly: when the app wants the wheel, synthesize one on xterm's screen element and let
+  // xterm do its own translation (honoring the app's mouse mode) — no re-encoding of protocols.
+  // Otherwise (e.g. claude in the normal buffer with no mouse tracking) scroll xterm's scrollback.
+  // Gating on mouseTrackingMode (not just the alt buffer) is the fix: opencode runs in the NORMAL
+  // buffer with mouse tracking, so an alt-buffer-only check never engaged for it.
+  const appConsumesWheel = () =>
+    (term.modes?.mouseTrackingMode ?? "none") !== "none" ||
+    term.buffer?.active?.type === "alternate";
   const wheelTarget = () =>
     term.element?.querySelector<HTMLElement>(".xterm-screen") ?? term.element ?? null;
   const scrollByPx = (dyPx: number) => {
     const lines = dragToLines(dyPx, pxPerRow(), acc);
     if (lines === 0) return;
-    if (inAltScreen()) {
+    if (appConsumesWheel()) {
       const target = wheelTarget();
-      // deltaY>0 = scroll toward newer output (down), matching positive scrollLines().
-      if (target)
+      // deltaY>0 = scroll toward newer output (down), matching positive scrollLines(). Give the
+      // synthetic wheel real pointer coords at the screen centre so xterm encodes a valid cell
+      // (a bare 0,0 can land outside the screen on a laid-out page).
+      if (target) {
+        const r = target.getBoundingClientRect();
         target.dispatchEvent(
           new WheelEvent("wheel", {
             deltaY: lines * pxPerRow(),
             deltaMode: 0, // DOM_DELTA_PIXEL — xterm divides by cell height into wheel notches
+            clientX: Math.round(r.left + r.width / 2),
+            clientY: Math.round(r.top + r.height / 2),
             bubbles: true,
             cancelable: true,
           }),
         );
+      }
       return;
     }
     term.scrollLines(lines);
