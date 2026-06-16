@@ -233,6 +233,26 @@ export function useSessionsList() {
     );
   }, []);
 
+  // Reassign a session to a project entity — the keyboard-accessible equivalent of the map's
+  // drag-to-reassign (#424 Phase 5). `ref` is the target entity, or `null` to unassign (back to
+  // the folder fallback). Writes the explicit project_id via the metadata seam, then folds the
+  // new resolution into the row in place. A project filter reconciles on the next poll.
+  const setProject = useCallback(async (id: string, ref: ProjectRef | null) => {
+    const pid = ref && ref.kind === "project" ? ref.id : null;
+    await api.setSessionProject(id, pid);
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              project:
+                ref && ref.kind === "project" ? ref : { kind: "folder", id: s.cwd, name: s.cwd },
+            }
+          : s,
+      ),
+    );
+  }, []);
+
   return {
     sessions,
     total,
@@ -249,5 +269,6 @@ export function useSessionsList() {
     setSticky,
     reviewRow,
     setReviewExcluded,
+    setProject,
   };
 }

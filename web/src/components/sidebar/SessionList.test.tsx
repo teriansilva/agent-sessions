@@ -20,6 +20,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
       unfavorite: vi.fn(),
       reviewNow: vi.fn(),
       reviewExclude: vi.fn(),
+      projectEntities: vi.fn(),
+      setSessionProject: vi.fn(),
     },
   };
 });
@@ -61,6 +63,8 @@ beforeEach(() => {
   mockArchive.mockReset();
   vi.mocked(api.favorite).mockReset();
   vi.mocked(api.unfavorite).mockReset();
+  vi.mocked(api.projectEntities).mockReset();
+  vi.mocked(api.setSessionProject).mockReset();
 });
 
 /** #384: row actions live behind a single ⋯ trigger now — open it first. */
@@ -490,7 +494,7 @@ test("opening the row menu does not navigate or close the drawer (#384)", async 
 
 // #384: configured install — the full action set renders inside one menu, grouped
 // by a separator between AI-review actions and row management.
-test("the configured menu lists all four actions behind one trigger (#384)", async () => {
+test("the configured menu lists all actions behind one trigger (#384/#424)", async () => {
   const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
   renderWithAi(
@@ -505,9 +509,61 @@ test("the configured menu lists all four actions behind one trigger (#384)", asy
     "Review now",
     "Exclude from AI review",
     "Rename",
+    "Move to project…",
     "Archive",
   ]);
   expect(menu.querySelector('[role="separator"]')).not.toBeNull();
   // Exactly one trigger per row — the old four-button cluster is gone.
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
+});
+
+// #424 Phase 5b: the keyboard path for reassignment — "Move to project…" opens a picker that
+// PATCHes the metadata seam and folds the entity into the row, mirroring the map's drag.
+test("Move to project: picking an entity assigns it and updates the row (#424 Phase 5b)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.projectEntities).mockResolvedValue({
+    projects: [
+      { id: "p-1", name: "SampleProject", color: "#5fd7ff", folders: [], archived: false, created_at: 0, session_count: 3 },
+    ],
+  });
+  vi.mocked(api.setSessionProject).mockResolvedValue({ id: "claude:a", project_id: "p-1" });
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Move session to a project" }));
+
+  const dialog = await screen.findByRole("dialog", { name: /move to project/i });
+  await user.click(within(dialog).getByRole("button", { name: /SampleProject/ }));
+
+  expect(api.setSessionProject).toHaveBeenCalledWith("claude:a", "p-1");
+  // The row now carries the entity chip; the picker has closed.
+  expect(await screen.findByText("SampleProject")).toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /move to project/i })).not.toBeInTheDocument(),
+  );
+});
+
+test("Move to project: Escape closes the picker without assigning (#424 Phase 5b)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] });
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Move session to a project" }));
+  await screen.findByRole("dialog", { name: /move to project/i });
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: /move to project/i })).not.toBeInTheDocument(),
+  );
+  expect(api.setSessionProject).not.toHaveBeenCalled();
 });

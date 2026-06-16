@@ -4,6 +4,7 @@ import {
   Check,
   Eye,
   EyeOff,
+  FolderInput,
   Pencil,
   Plus,
   Sparkles,
@@ -17,8 +18,9 @@ import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { displayProjectName, engineBadge, relTime } from "../../lib/format";
-import type { Session } from "../../types/api";
+import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
+import { MoveToProjectModal } from "./MoveToProjectModal";
 import { RowMenu, type RowMenuEntry } from "./RowMenu";
 import styles from "./SessionList.module.css";
 
@@ -44,6 +46,9 @@ interface RowProps {
    *  the feature is unconfigured (the controls are hidden). */
   onReviewNow?: (id: string) => Promise<void>;
   onToggleReviewExcluded?: (id: string, excluded: boolean) => Promise<void>;
+  /** Reassign the session to a project entity (or `null` to unassign) — the keyboard path
+   *  for the map's drag-to-reassign (#424 Phase 5). */
+  onSetProject: (id: string, ref: ProjectRef | null) => Promise<void>;
   /** Close the mobile drawer on tap — tapping the already-active row is a same-route no-op,
    *  so the route-change effect in App won't fire (#283). */
   onNavigate?: () => void;
@@ -56,6 +61,7 @@ function Row({
   onToggleFavorite,
   onReviewNow,
   onToggleReviewExcluded,
+  onSetProject,
   onNavigate,
 }: RowProps) {
   const { projectNames } = useOverviewPrefs();
@@ -66,6 +72,22 @@ function Row({
   // Keeps the hover-revealed ⋯ cluster visible while its menu is open: the menu lives
   // in a body portal, so :focus-within on the row no longer covers the open state.
   const [menuOpen, setMenuOpen] = useState(false);
+  // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
+  const [moving, setMoving] = useState(false);
+  const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(null);
+
+  const handleMove = async (ref: ProjectRef | null) => {
+    setMoving(false);
+    const current = s.project.kind === "project" ? s.project.id : null;
+    const next = ref && ref.kind === "project" ? ref.id : null;
+    if (next === current) return; // chose the current assignment → no-op
+    setBusy(true);
+    try {
+      await onSetProject(s.id, ref);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const reviewNow = async () => {
     if (!onReviewNow) return;
@@ -205,6 +227,18 @@ function Row({
       },
     },
     {
+      key: "move",
+      label: "Move to project…",
+      ariaLabel: "Move session to a project",
+      icon: <FolderInput size={15} />,
+      disabled: busy,
+      onSelect: () => {
+        // The trigger had focus when the menu item fired; restore to it when the modal closes.
+        setMoveReturnFocus(document.activeElement as HTMLElement | null);
+        setMoving(true);
+      },
+    },
+    {
       key: "archive",
       label: s.archived ? "Unarchive" : "Archive",
       ariaLabel: s.archived ? "Unarchive session" : "Archive session",
@@ -216,6 +250,14 @@ function Row({
 
   return (
     <li className={styles.rowWrap}>
+      {moving && (
+        <MoveToProjectModal
+          session={s}
+          onCancel={() => setMoving(false)}
+          onMove={(ref) => void handleMove(ref)}
+          returnFocusTo={moveReturnFocus}
+        />
+      )}
       <NavLink
         to={`/s/${s.engine}/${s.uuid}`}
         className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
@@ -355,6 +397,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     setSticky,
     reviewRow,
     setReviewExcluded,
+    setProject,
   } = useSessionsList();
 
   // AI review controls (#356) only appear once the endpoint is configured — an
@@ -418,6 +461,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewRow : undefined}
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
+              onSetProject={setProject}
               onNavigate={onNavigate}
             />
           ))}

@@ -14,6 +14,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       unarchive: vi.fn(),
       favorite: vi.fn(),
       unfavorite: vi.fn(),
+      setSessionProject: vi.fn(),
     },
   };
 });
@@ -343,4 +344,30 @@ test("polling is suppressed while loadMore is in flight (#168 race round 2)", as
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("setProject writes the assignment and folds the new resolution into the row (#424 Phase 5b)", async () => {
+  mockSessions.mockResolvedValue(pageOf([{ ...sess("S"), cwd: "/x" }]));
+  vi.mocked(api.setSessionProject).mockResolvedValue({ id: "claude:S", project_id: "p-1" });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+  // Assign to an entity → PATCH the id, fold the entity ref into the row.
+  await act(async () => {
+    await result.current.setProject("claude:S", {
+      kind: "project",
+      id: "p-1",
+      name: "SampleProject",
+      color: "",
+    });
+  });
+  expect(api.setSessionProject).toHaveBeenCalledWith("claude:S", "p-1");
+  expect(result.current.sessions[0].project).toMatchObject({ kind: "project", id: "p-1", name: "SampleProject" });
+
+  // Unassign → PATCH null, row falls back to the folder keyed by its cwd.
+  await act(async () => {
+    await result.current.setProject("claude:S", null);
+  });
+  expect(api.setSessionProject).toHaveBeenLastCalledWith("claude:S", null);
+  expect(result.current.sessions[0].project).toMatchObject({ kind: "folder", id: "/x" });
 });
