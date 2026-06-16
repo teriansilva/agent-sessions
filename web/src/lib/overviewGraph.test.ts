@@ -431,3 +431,19 @@ test("expandableKeys returns mode-appropriate toggle keys (#424)", () => {
     "agent:opencode",
   ]);
 });
+
+test("draggableSessions makes chips draggable and drops the parent clamp (#424 Phase 5)", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/one" })];
+  const expanded = new Set(["/p/one"]);
+  const off = buildOverview(input, { nowS: NOW, expanded }).nodes.find((n) => n.type === "session");
+  expect(off?.draggable).toBe(false);
+  expect(off?.extent).toBe("parent");
+  const on = buildOverview(input, { nowS: NOW, expanded, draggableSessions: true }).nodes.find(
+    (n) => n.type === "session",
+  );
+  expect(on?.draggable).toBe(true);
+  // The parent clamp is gone so the chip can be dragged out onto another cluster…
+  expect(on?.extent).toBeUndefined();
+  // …but it stays parented for layout/containment.
+  expect(on?.parentId).toBe("group:/p/one");
+});

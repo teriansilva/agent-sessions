@@ -27,11 +27,13 @@ const renderNode = (data: object) =>
 // The chip is presentational — the click that opens the session is handled by the canvas's
 // React Flow onNodeClick (#149). Here we verify the chip carries nodrag/nopan (so a press
 // doesn't pan) and renders the title/engine.
-test("chip carries nodrag/nopan + renders title and engine badge", () => {
+test("chip carries nopan (not nodrag, so it can be dragged) + renders title and engine", () => {
   renderNode({ session: sess(), active: true, selected: false });
   const chip = screen.getByLabelText(/open my session/i);
-  expect(chip.className).toMatch(/\bnodrag\b/);
+  // nopan stops a press from panning the canvas; nodrag is intentionally absent so React Flow
+  // can drag the chip to reassign it (#424 Phase 5).
   expect(chip.className).toMatch(/\bnopan\b/);
+  expect(chip.className).not.toMatch(/\bnodrag\b/);
   expect(screen.getByText("My session")).toBeInTheDocument();
   expect(screen.getByText("cc")).toBeInTheDocument();
 });

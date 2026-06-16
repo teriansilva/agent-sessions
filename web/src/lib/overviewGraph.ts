@@ -108,6 +108,10 @@ export interface BuildOptions {
   activeId?: string;
   /** Per-cwd custom display names (#148). */
   names?: Record<string, string>;
+  /** Make session chips draggable and drop their parent-clamp so one can be dragged onto
+   *  another cluster to reassign it (#424 Phase 5). Enabled in Projects layout only — the
+   *  canvas wires the drop → `api.setSessionProject`. Default off. */
+  draggableSessions?: boolean;
 }
 
 /** A session's cluster for the active mode (#424 Phase 2):
@@ -169,6 +173,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   const expanded = opts.expanded ?? new Set<string>();
   const excluded = opts.excluded ?? new Set<string>();
   const names = opts.names ?? {};
+  const draggableSessions = opts.draggableSessions ?? false;
   // cwd visibility prefs apply per `keepsHiddenCwd`: an entity-resolved session in `project`
   // mode survives a hidden cwd (server sidebar/facet parity, #361); in `folder`/`agent` mode
   // a hidden cwd hides its sessions outright (#424 Phase 2).
@@ -305,7 +310,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
           id: s.id,
           type: "session",
           parentId: groupId,
-          extent: "parent",
+          // Parent-clamped when static; the clamp is dropped when chips are draggable so one
+          // can be dragged out onto another cluster to reassign it (#424 Phase 5).
+          ...(draggableSessions ? {} : { extent: "parent" as const }),
           position: {
             x: PAD + (i % cols) * (CHIP_W + GAP),
             y: HEADER_H + PAD + Math.floor(i / cols) * (CHIP_H + GAP),
@@ -317,7 +324,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
             selected: s.id === opts.activeId,
             folderLabel: displayProjectName(s.cwd, names),
           } satisfies SessionNodeData,
-          draggable: false,
+          draggable: draggableSessions,
         });
       });
     }

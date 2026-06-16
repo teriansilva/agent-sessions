@@ -441,3 +441,27 @@
   border-radius: 0;
   padding: 4px 12px;
 }
+/* Drag-to-reassign (#424 Phase 5). A hint in Projects layout, a "grabbing" cursor while a chip
+ * is in flight, and a dashed accent outline marking the project clusters that are valid drop
+ * targets (folder/agent groups aren't user-assignable, so they're never highlighted). */
+.tr-ov-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 3px 10px;
+  pointer-events: none;
+}
+.tr-overview--dragging .tr-ov-chip {
+  cursor: grabbing;
+}
+.tr-overview--dragging .tr-ov-group--project {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+}

@@ -7,8 +7,9 @@ import type { SessionNodeData } from "../../lib/overviewGraph";
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
  *  the engine badge, the project + folder, and the relative time. Engine-coloured left border;
  *  archived dimmed; `selected` highlights the open session. Presentational — the click is
- *  handled by the canvas's React Flow `onNodeClick` (opens the session). `nodrag nopan` stops
- *  a press from initiating a pan/drag. */
+ *  handled by the canvas's React Flow `onNodeClick` (opens the session); in Projects layout the
+ *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
+ *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold. */
 export function SessionNode({ data }: NodeProps) {
   const { session, active, working, selected, folderLabel } = data as SessionNodeData;
   const color = engineColor(session.engine);
@@ -19,7 +20,7 @@ export function SessionNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`tr-ov-chip nodrag nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}`}
+      className={`tr-ov-chip nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}`}
       style={{ "--eng": color } as CSSProperties}
       title={`${title}\n${session.cwd}`}
       aria-label={`Open ${title}`}

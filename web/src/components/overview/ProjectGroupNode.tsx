@@ -47,7 +47,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`tr-ov-group${collapsed ? " collapsed" : ""}`}
+      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}`}
       style={color ? { borderTop: `2px solid ${color}` } : undefined}
     >
       <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />
