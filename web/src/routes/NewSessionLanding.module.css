@@ -1,0 +1,169 @@
+.landing {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  overflow-y: auto; /* short screens scroll instead of the card overflowing the pane */
+}
+.card {
+  /* Plain centered content — NOT a second framed box. The frosted-glass window is the pane
+   * itself (.terminal-pane); the card is just the centered new-session content inside it
+   * (#211 review: no box-in-a-box). margin:auto keeps the top reachable when it's tall. */
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 380px;
+}
+.brandHero {
+  margin-bottom: 6px;
+}
+.wordmark {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--brand-soft);
+}
+.wordmark b {
+  color: var(--brand);
+}
+.tagline {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+.card h1 {
+  font-size: 18px;
+  margin: 0 0 2px;
+  color: var(--text);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.field select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  /* Inherit the theme's color-scheme so the native option popup is dark in
+   * royal/dark and light in light. */
+  color-scheme: inherit;
+  cursor: pointer;
+}
+.field select:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.field select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+/* Tint the native checkbox to the theme accent so it isn't a stock blue/white box. */
+.checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.checkbox input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.start {
+  margin-top: 4px;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: none;
+  border-radius: 0;
+  padding: 10px 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.start:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.start:active:not(:disabled) {
+  background: var(--cta-bg-2);
+}
+.start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.8;
+  margin: 0;
+  text-align: center;
+}
+.error {
+  color: #f3b0b0;
+  font-size: 12px;
+  margin: 0;
+}
+
+/* "Set as default project" affordance (#335 Phase 2). */
+.setDefault {
+  align-self: flex-start;
+  margin: -2px 0 4px;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.setDefault:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.setDefault:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* Scoped create-folder form (#335 Phase 3). */
+.newFolder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: -2px 0 4px;
+}
+.newFolder input,
+.newFolder select {
+  flex: 1 1 auto;
+  min-width: 100px;
+}
+.newFolderBtn {
+  flex: none;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.newFolderBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

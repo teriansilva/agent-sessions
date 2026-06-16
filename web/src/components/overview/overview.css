@@ -1,0 +1,467 @@
+/* Session Overview canvas (#139). React Flow base CSS is imported by OverviewCanvas; these
+ * rules theme it to our tokens and style the custom nodes. Everything is scoped under
+ * .tr-overview so it can't leak into the rest of the app. */
+
+.tr-overview {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* React Flow chrome → our tokens. */
+.tr-overview .react-flow__background {
+  background: var(--bg);
+}
+/* No rounded corners on the node wrappers — the HUD square-corner language (#211 4d). React
+ * Flow's base style.css rounds default node types; our custom nodes carry their own square
+ * frames, so flatten the wrapper defensively. */
+.tr-overview .react-flow__node {
+  border-radius: 0;
+}
+.tr-overview .react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+.tr-overview .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  fill: currentColor;
+}
+.tr-overview .react-flow__controls-button:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.tr-overview .react-flow__minimap {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.tr-overview .react-flow__attribution {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+.tr-overview .react-flow__attribution a {
+  color: var(--text-muted);
+}
+
+/* Project cluster container. The node wrapper keeps pointer events ENABLED (default) so the
+ * header toggle <button> is hit-testable; chips are separate React Flow nodes on top and stay
+ * clickable. (We deliberately don't disable the wrapper — that would also disable the header
+ * button. The minor cost: dragging on a cluster's empty body doesn't pan the canvas; users
+ * pan over the background / between clusters instead.) (#144) */
+.tr-ov-group {
+  width: 100%;
+  height: 100%;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
+}
+/* The cluster header is a collapse/expand toggle (button reset). */
+.tr-ov-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.tr-ov-group-head:hover .tr-ov-path {
+  color: var(--accent);
+}
+.tr-ov-group.collapsed .tr-ov-group-head {
+  border-bottom: 0; /* header-only box */
+}
+.tr-ov-chev {
+  flex: none;
+  color: var(--text-muted);
+}
+.tr-ov-group-head .tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.tr-ov-path {
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Real path shown under a custom name, to disambiguate duplicate friendly names (#148). */
+.tr-ov-cwd {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-count {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+  flex: none;
+}
+/* Entity color marker (#361 Phase 4) — pairs with the tinted top border on .tr-ov-group. */
+.tr-ov-proj-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+/* Inline create-project failure (409 detail) in the header's subtitle slot (#361 Phase 4). */
+.tr-ov-err {
+  font-size: 10px;
+  color: var(--status-down);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* "Make this a project" on a folder-fallback cluster (#361 Phase 4). Owns its click
+ * (stopPropagation) so it never doubles as the header's collapse toggle. */
+.tr-ov-mkproj {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3, var(--text-muted));
+  cursor: pointer;
+}
+.tr-ov-mkproj:hover {
+  color: var(--accent);
+  border-color: var(--border);
+  background: var(--row-hover);
+}
+.tr-ov-mkproj:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Folder-hierarchy edges + their (hidden, non-interactive) handles (#148). */
+.tr-overview .react-flow__edge-path {
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.tr-ov-handle {
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  min-width: 0;
+  min-height: 0;
+  width: 1px;
+  height: 1px;
+}
+
+/* Session chip — at information parity with the sidebar list row (#424 Phase 4): a head line
+ * (LED + title + intervention badge + engine), the AI summary, and a project/folder/time foot.
+ * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent. */
+.tr-ov-chip {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 240px;
+  height: 80px;
+  padding: 8px 11px;
+  background: var(--row-hover);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--eng, var(--accent));
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  overflow: hidden;
+  transition:
+    border-color 0.12s,
+    transform 0.12s;
+}
+.tr-ov-chip:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.tr-ov-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tr-ov-chip.archived {
+  opacity: 0.45;
+}
+/* The currently-open session — highlighted in sync with the sidebar's active row (#149). */
+.tr-ov-chip.selected {
+  border-color: var(--accent);
+  background: var(--row-hover);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* Head line: LED + title (grows + ellipsises) + intervention badge + engine badge. */
+.tr-ov-chip-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+/* Intervention "!" badge — mirrors the list row's amber alertBadge (#356). */
+.tr-ov-alert {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg, #000);
+  background: var(--accent, #ffb000);
+}
+/* AI summary (or the exclusion marker) — one ellipsised line, like the list row. */
+.tr-ov-summary {
+  font-size: 10.5px;
+  color: var(--text-2, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-summary.excluded {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+/* Foot line: project chip + folder chip + relative time, as one ellipsised mono line. */
+.tr-ov-chip-foot {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-chip-proj .tr-ov-proj-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+.tr-ov-foot-sep {
+  margin: 0 4px;
+  opacity: 0.6;
+}
+.tr-ov-folder-mark {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+.tr-ov-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--eng, var(--accent));
+}
+.tr-ov-dot.active {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 25%, transparent);
+}
+.tr-ov-dot.idle {
+  background: transparent;
+}
+/* Agent currently emitting output (#156). Stronger signal than `active` — pulses to
+ * draw the eye. Reduced-motion users get a steady ring instead of the animation. */
+.tr-ov-dot.working {
+  background: var(--eng, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  animation: tr-ov-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tr-ov-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--eng, var(--accent)) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--eng, var(--accent)) 12%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-ov-dot.working {
+    animation: none;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--eng, var(--accent)) 45%, transparent);
+  }
+}
+.tr-ov-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tr-ov-ttl {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-eng {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--eng, var(--accent));
+}
+
+/* Empty / loading / error states. */
+.tr-ov-state {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--bg);
+}
+/* Expand-all / Collapse-all toolbar (#144), top-right over the canvas. */
+.tr-ov-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100% - 20px);
+  gap: 6px;
+}
+/* Map layout selector (#424 Phase 2) — a segmented Folders / Projects / Agents control. The
+ * member buttons inherit the toolbar button look; here we collapse them into one strip and
+ * mark the active segment. */
+.tr-ov-groupby {
+  display: inline-flex;
+}
+.tr-ov-groupby button + button {
+  margin-left: -1px;
+}
+.tr-ov-toolbar .tr-ov-groupby button.on {
+  position: relative;
+  z-index: 1;
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+/* Narrow canvases (mobile / squeezed): drop the labels to icons so the selector + actions
+ * still fit the top-right toolbar. The aria-label keeps each control named for a11y/tests. */
+@media (max-width: 640px) {
+  .tr-ov-gb-label {
+    display: none;
+  }
+}
+.tr-ov-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.tr-ov-toolbar button:hover {
+  color: var(--text);
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+/* Inline "+ New project" name input (#361 Phase 4) — same chrome as the toolbar buttons. */
+.tr-ov-newproj {
+  display: inline-flex;
+  gap: 6px;
+}
+.tr-ov-newproj input {
+  width: 140px;
+  font-size: 11px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 8px;
+}
+.tr-ov-newproj input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.tr-ov-toolbar-err {
+  position: absolute;
+  top: 42px;
+  right: 10px;
+  z-index: 6;
+  max-width: 320px;
+  font-size: 11px;
+  color: var(--status-down);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+}
+.tr-ov-partial {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 12px;
+}
+/* Drag-to-reassign (#424 Phase 5). A hint in Projects layout, a "grabbing" cursor while a chip
+ * is in flight, and a dashed accent outline marking the project clusters that are valid drop
+ * targets (folder/agent groups aren't user-assignable, so they're never highlighted). */
+.tr-ov-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 3px 10px;
+  pointer-events: none;
+}
+.tr-overview--dragging .tr-ov-chip {
+  cursor: grabbing;
+}
+.tr-overview--dragging .tr-ov-group--project {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+}
