@@ -80,6 +80,87 @@ export interface AutoSortReport {
   skipped?: string;
 }
 
+/** Pulse recent-work overview config (#441 Phase 3) — the PUBLIC view from /api/config. Opt-in
+ *  background scan + the window/depth scans use; reuses the ai_review endpoint for synthesis
+ *  (depth ≥ medium), so it holds no secret of its own. */
+export interface PulseConfig {
+  auto_enabled: boolean;
+  interval_minutes: number;
+  window_days: number;
+  scan_depth: PulseDepth;
+  /** The reused ai_review endpoint is usable (base URL + key). Depth ≥ medium synthesis
+   *  degrades to fast when this is false; fast scans never need it. */
+  configured: boolean;
+}
+
+export type PulseDepth = "fast" | "medium" | "slow";
+
+/** A session state bucket on the Pulse overview, ranked needs-you → in-flight → recent → idle. */
+export type PulseState = "needs_you" | "in_flight" | "recently_active" | "idle";
+
+/** One curated card on the Pulse overview (#441). All AI-derived text (`ai_summary`,
+ *  `synthesis`, and the overview `banner`) is DATA — render it as plain text, never markup. */
+export interface PulseCard {
+  /** Engine-qualified session key ("engine:uuid") — also the jump target. */
+  id: string;
+  engine: EngineId | string;
+  title: string;
+  cwd: string;
+  project: ProjectRef;
+  /** Wall-clock (s) of the session's last activity. */
+  last_activity: number;
+  /** One-line summary from the last AI review (#356), or null. */
+  ai_summary: string | null;
+  intervention_required: boolean;
+  intervention_reason: string;
+  reviewed_at: number | null;
+  /** Live overlay from the registry at scan time (working/attached) → state "in_flight". */
+  live: boolean;
+  state: PulseState;
+  /** Per-session "state + next step" line from a `slow` scan (#441 Phase 4); null otherwise.
+   *  When set the card shows it instead of `ai_summary`. */
+  synthesis: string | null;
+}
+
+/** The cached Pulse overview artifact from GET /api/pulse / POST /api/pulse/scan (#441).
+ *  `generated_at` is null before the first scan (the "never scanned" empty overview). */
+export interface PulseOverview {
+  cache_version: number;
+  generated_at: number | null;
+  window_days: number;
+  scan_depth: PulseDepth;
+  input_fingerprint: string | null;
+  /** True when a depth ≥ medium scan ran against an unconfigured endpoint and degraded to
+   *  fast curation (banner null, no per-session synthesis). */
+  synthesis_skipped: boolean;
+  banner: string | null;
+  cards: PulseCard[];
+}
+
+/** One running AI task in the shared activity surface (#441 Phase 1). */
+export interface AiActivityTask {
+  kind: string;
+  detail: string;
+  started_at: number;
+}
+
+/** The last run of an AI task kind (#441 Phase 1). */
+export interface AiActivityLast {
+  finished_at: number;
+  ok: boolean;
+  detail: string;
+  duration_s: number;
+}
+
+/** GET /api/ai/activity (#441 Phase 1): what AI work is running now + the last run per kind.
+ *  Also the body of POST /api/pulse/scan's 409 (a Pulse scan already running), with `detail`. */
+export interface AiActivity {
+  running: AiActivityTask[];
+  last: Record<string, AiActivityLast>;
+  /** Only present on the 409 scan-already-running body. */
+  detail?: string;
+}
+
 export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
@@ -190,6 +271,9 @@ export interface AppConfig {
   ai_review?: AiReviewConfig;
   /** AI auto-sort (#424 Phase 6): opt-in; reuses the ai_review endpoint (no secret). */
   auto_sort?: AutoSortConfig;
+  /** Pulse recent-work overview (#441 Phase 3): opt-in background scan + window/depth;
+   *  reuses the ai_review endpoint for synthesis (no secret). */
+  pulse?: PulseConfig;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never

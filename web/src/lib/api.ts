@@ -1,6 +1,7 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type {
+  AiActivity,
   AppConfig,
   AutoSortReport,
   EnginesResponse,
@@ -9,6 +10,8 @@ import type {
   HistoryPage,
   ProjectArchiveReport,
   ProjectEntity,
+  PulseDepth,
+  PulseOverview,
   SessionsPage,
   SessionsQuery,
   SystemInfo,
@@ -320,6 +323,19 @@ export const api = {
       `/api/sessions/${enc(id)}/review-exclude`,
       excluded === undefined ? undefined : { excluded },
     ),
+  /** Pulse recent-work overview (#441): the cached artifact, served instantly (never scans).
+   *  `generated_at` null = never scanned (the empty overview). */
+  pulse: () => getJson<PulseOverview>("/api/pulse"),
+  /** Pulse "Scan now" (#441): run one scan and return the fresh artifact. Uses the configured
+   *  window/depth; `depth`/`window_days` override per-request (the page's depth control). The
+   *  only 409 is "a Pulse scan is already running" — its body carries the AI-activity snapshot
+   *  (`mutateJson` surfaces the `detail`). An unconfigured endpoint never 409s: depth ≥ medium
+   *  returns 200 with `synthesis_skipped`. CSRF-guarded. */
+  pulseScan: (opts?: { depth?: PulseDepth; window_days?: number }) =>
+    mutateJson<PulseOverview>("POST", "/api/pulse/scan", opts ?? {}),
+  /** Shared AI-activity surface (#441): AI tasks running now + the last run per kind. The
+   *  Settings panel polls it; read-only, no CSRF. */
+  aiActivity: () => getJson<AiActivity>("/api/ai/activity"),
   /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
   scrollbackInfo: () => getJson<{ bytes: number; files: number }>("/api/scrollback"),
   /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */

@@ -44,6 +44,9 @@ vi.mock("../lib/api", async () => {
       deleteProject: vi.fn(),
       archiveProject: vi.fn(),
       unarchiveProject: vi.fn(),
+      // #441: the AI Review tab now also mounts the AI-activity panel + Pulse section.
+      aiActivity: vi.fn().mockResolvedValue({ running: [], last: {} }),
+      pulseScan: vi.fn(),
     },
   };
 });

@@ -26,8 +26,10 @@ import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { buildProjectTree, flattenTree } from "../lib/projectTree";
+import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
+import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
@@ -1376,8 +1378,10 @@ export function Settings() {
 
         {tab === "ai-review" && (
           <>
+            <AiActivityPanel />
             <AiReviewSettings />
             <AutoSortSettings />
+            <PulseSettings />
           </>
         )}
 

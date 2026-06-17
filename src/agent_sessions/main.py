@@ -33,6 +33,7 @@ from . import (
     metadata,
     owner,
     prefs,
+    pulse_loop,
     reaper,
     session_stream,
     vtsidecar,
@@ -201,10 +202,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Periodic AI auto-sort (#424 Phase 6): same reaper pattern, gated on the
         # `auto_sort` opt-in + the env kill-switch, re-read per sweep.
         autosort_task = asyncio.create_task(autosort_loop.run())
+        # Periodic Pulse overview scan (#441 Phase 3): same reaper pattern, gated on the
+        # `pulse.auto_enabled` opt-in + the env kill-switch + change-detection, re-read per
+        # sweep. Skips when a manual scan holds the single-flight; an unchanged set is a no-op.
+        pulse_task = asyncio.create_task(pulse_loop.run(registry))
         try:
             yield
         finally:
-            for task in (reaper_task, review_task, autosort_task):
+            for task in (reaper_task, review_task, autosort_task, pulse_task):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task

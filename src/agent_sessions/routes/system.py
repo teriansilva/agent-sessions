@@ -224,6 +224,10 @@ def register(
                 # AI auto-sort config (#424 Phase 6) — opt-in; holds no secret of its own,
                 # `configured` mirrors the reused ai_review endpoint readiness.
                 "auto_sort": prefs.public_auto_sort(),
+                # Pulse recent-work overview config (#441 Phase 3) — opt-in background scan +
+                # window/depth; holds no secret of its own, `configured` mirrors the reused
+                # ai_review endpoint readiness (depth ≥ medium synthesis needs it).
+                "pulse": prefs.public_pulse(),
             }
         )
 
@@ -311,6 +315,15 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_auto_sort(payload["auto_sort"])
             out["auto_sort"] = prefs.public_auto_sort()
+        if "pulse" in payload:
+            # Pulse overview config (#441 Phase 3): auto_enabled + interval + window + depth,
+            # server-validated (unknown-key rejection, bounds, known depth). Holds no secret —
+            # it reuses the ai_review endpoint. The echo is the PUBLIC view (adds `configured`).
+            err = prefs.validate_pulse_patch(payload["pulse"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_pulse(payload["pulse"])
+            out["pulse"] = prefs.public_pulse()
         if "project_names" in payload:
             v = payload["project_names"]
             if not isinstance(v, dict) or not all(

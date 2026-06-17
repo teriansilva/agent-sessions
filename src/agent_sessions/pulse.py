@@ -1,11 +1,15 @@
-"""Pulse — AI-curated recent-work overview scan engine + cache (#441 Phase 2).
+"""Pulse — AI-curated recent-work overview scan engine + cache (#441 Phases 2 + 4).
 
 Reads the recent sessions (a rolling window, default 3 days), curates them into a ranked,
 grouped overview the user can jump straight back into, and caches the result so the page
-loads instantly. This ``fast`` slice does **no** LLM work — it ranks/flags purely from the
-per-session AI-review summaries already on the sidecar (#356). Synthesis depths
-(``medium`` / ``slow``) layer on in #441 Phase 4; the artifact already carries
-``scan_depth`` / ``banner`` / ``synthesis_skipped`` so the shape is stable.
+loads instantly. The ``fast`` depth does **no** LLM work — it ranks/flags purely from the
+per-session AI-review summaries already on the sidecar (#356). The ``medium`` / ``slow``
+depths (#441 Phase 4) layer synthesis on top, reusing the AI-review gateway
+(``review.complete_json``): ``medium`` makes **one** call for the top "state of your work"
+banner; ``slow`` adds a **bounded, serialized** per-session "state + next step" pass before
+the banner. Model output is treated strictly as DATA — length-capped here and rendered as
+plain text in the UI (never markup). An **unconfigured endpoint never errors a scan**: any
+depth ≥ medium degrades to ``fast`` curation with ``banner=None`` and ``synthesis_skipped=True``.
 
 Curation rides the exact same per-session resolution the sidebar uses (``engines.scan_all``
 → metadata sidecar via the alias layer → ``projects.resolve``), so a Pulse card and its
@@ -31,7 +35,7 @@ import os
 import time
 from pathlib import Path
 
-from . import engines, metadata, projects
+from . import engines, metadata, projects, review
 
 # Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
@@ -50,6 +54,42 @@ RECENT_ACTIVE_S = 24 * 3600
 
 # Sort priority per state (lower = nearer the top); within a state, newest activity first.
 _STATE_ORDER = {"needs_you": 0, "in_flight": 1, "recently_active": 2, "idle": 3}
+
+# --- synthesis (depth >= medium, #441 Phase 4) ---------------------------------------
+# Bounded, serialized endpoint use mirroring autosort: a per-scan cap on the `slow`
+# per-session pass, spacing between consecutive calls, and server-owned length caps so the
+# model output is treated strictly as DATA (rendered as plain text in the UI).
+SLOW_SESSION_CAP = 12
+SYNTH_CALL_SPACING_S = 1.0
+# How many curated cards are fed to the banner call (bounds the prompt size); the cap is
+# generous enough to cover a typical window without an unbounded payload.
+BANNER_DIGEST_CAP = 40
+BANNER_MAX = 280
+SESSION_LINE_MAX = 160
+
+_BANNER_SYSTEM_PROMPT = (
+    "You write a single-line status banner summarizing the state of a developer's recent "
+    "coding-agent work across several sessions. You are given the curated session list "
+    "(state, title, summary, age). Lead with what needs the user's attention, then what is "
+    "in flight, then briefly what is idle. Be specific and concise — no preamble, no markdown. "
+    'Reply with ONLY a JSON object: {"banner": "<one line, max 200 chars>"}.'
+)
+
+_SESSION_SYSTEM_PROMPT = (
+    "You summarize ONE coding-agent session in a single line: its current state and the most "
+    "useful next step for the user. You are given the session's title, summary, state, and "
+    "last-activity age. Be specific and concise — no preamble, no markdown. "
+    'Reply with ONLY a JSON object: {"line": "<one line, max 140 chars>"}.'
+)
+
+
+def _one_line(value: object, cap: int) -> str | None:
+    """Narrow model output to a single bounded line, or ``None`` when unusable. The model's
+    output is data: collapse whitespace, cap the length, drop empties."""
+    if not isinstance(value, str):
+        return None
+    line = " ".join(value.split())[:cap]
+    return line or None
 
 
 def _cache_path() -> Path:
@@ -128,6 +168,10 @@ def build_cards(
                 "reviewed_at": m.reviewed_at,
                 "live": live,
                 "state": _classify(m, s.last_mtime, live, now),
+                # Per-session synthesis line (depth `slow` only, #441 Phase 4); None at
+                # fast/medium. Always present so the artifact shape is stable across depths;
+                # the UI falls back to `ai_summary` when it is null.
+                "synthesis": None,
                 # Internal: feeds the input fingerprint; stripped from the public artifact.
                 "_review_fingerprint": m.review_fingerprint,
             }
@@ -151,6 +195,82 @@ def _fingerprint(cards: list[dict], window_days: int, depth: str) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def fingerprint_for(*, window_days: int, depth: str, now: float | None = None) -> str:
+    """The input fingerprint for the current in-window session set at ``(window_days, depth)``,
+    without scanning/writing anything. The #441 Phase 3 background loop compares this to the
+    cached ``input_fingerprint`` to skip a no-op sweep (no curation written, no LLM call). The
+    live "in flight" overlay is deliberately NOT part of the fingerprint — it is volatile
+    display state, so a session merely going live/idle never forces a synthesis re-run."""
+    cards = await asyncio.to_thread(build_cards, window_days=window_days, now=now)
+    return _fingerprint(cards, window_days, depth)
+
+
+def _banner_digest(cards: list[dict], *, window_days: int, now: float) -> dict:
+    """The curated card digest fed to the banner synthesis call: just the fields the model
+    needs to summarize the state of work (no cwd / ids / internal fields)."""
+    return {
+        "window_days": window_days,
+        "sessions": [
+            {
+                "state": c["state"],
+                "title": c["title"],
+                "summary": c["synthesis"] or c["ai_summary"] or "",
+                "age_hours": round((now - c["last_activity"]) / 3600, 1),
+            }
+            for c in cards[:BANNER_DIGEST_CAP]
+        ],
+    }
+
+
+async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
+    """Depth ``slow``: a bounded, serialized per-session pass adding a one-line "state + next
+    step" ``synthesis`` to each in-window card (capped at ``SLOW_SESSION_CAP``; overflow keeps
+    its ``ai_summary`` line). Mutates ``cards`` in place. A per-session ``ReviewError`` is
+    skipped (the card keeps its summary); ``NotConfiguredError`` propagates so the caller can
+    degrade the whole scan to ``fast``."""
+    for i, card in enumerate(cards[:SLOW_SESSION_CAP]):
+        if i:
+            await asyncio.sleep(SYNTH_CALL_SPACING_S)
+        user = {
+            "title": card["title"],
+            "summary": card["ai_summary"] or "",
+            "state": card["state"],
+            "age_hours": round((now - card["last_activity"]) / 3600, 1),
+        }
+        try:
+            obj = await review.complete_json(
+                [
+                    {"role": "system", "content": _SESSION_SYSTEM_PROMPT},
+                    {"role": "user", "content": json.dumps(user)},
+                ]
+            )
+        except review.NotConfiguredError:
+            raise  # caller degrades the whole scan to fast curation
+        except review.ReviewError:
+            continue  # transient — this card keeps its ai_summary line
+        card["synthesis"] = _one_line(obj.get("line"), SESSION_LINE_MAX)
+
+
+async def _synthesize_banner(cards: list[dict], *, window_days: int, now: float) -> str | None:
+    """Depths ``medium`` / ``slow``: ONE call producing the top "state of your work" banner from
+    the curated digest. Returns the bounded banner text, or ``None`` when the model gives nothing
+    usable. ``NotConfiguredError`` propagates (caller degrades to ``fast``); a transient
+    ``ReviewError`` returns ``None`` (no banner this scan, retried next time)."""
+    digest = _banner_digest(cards, window_days=window_days, now=now)
+    try:
+        obj = await review.complete_json(
+            [
+                {"role": "system", "content": _BANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(digest)},
+            ]
+        )
+    except review.NotConfiguredError:
+        raise
+    except review.ReviewError:
+        return None
+    return _one_line(obj.get("banner"), BANNER_MAX)
 
 
 def _artifact(
@@ -228,11 +348,12 @@ async def run_scan(
 ) -> dict:
     """Run one Pulse scan and write the cache, returning the fresh artifact.
 
-    The ``fast`` slice (this phase) is curation only — no endpoint call, so an unconfigured
-    AI gateway is irrelevant here. ``medium`` / ``slow`` synthesis lands in #441 Phase 4; for
-    now any depth produces the ``fast`` curation with ``banner=None`` and
-    ``synthesis_skipped=False`` (nothing was requested to skip). The caller owns the
-    single-flight guard (so two scans never overlap) and supplies ``working_keys``.
+    ``fast`` is curation only — no endpoint call. ``medium`` adds ONE banner call; ``slow``
+    adds a bounded per-session pass before the banner (#441 Phase 4). An unconfigured AI
+    gateway never errors the scan: depth ≥ medium degrades to ``fast`` curation with
+    ``banner=None`` and ``synthesis_skipped=True`` (this is the single source of truth for the
+    unconfigured contract — the manual route returns 200 degraded, never 409). The caller owns
+    the single-flight guard (so two scans never overlap) and supplies ``working_keys``.
     """
     window_days = coerce_window_days(window_days)
     depth = coerce_depth(depth)
@@ -240,12 +361,27 @@ async def run_scan(
     cards = await asyncio.to_thread(
         build_cards, window_days=window_days, now=now, working_keys=working_keys
     )
+    banner: str | None = None
+    synthesis_skipped = False
+    if depth in ("medium", "slow"):
+        try:
+            if depth == "slow":
+                await _synthesize_sessions(cards, now=now)
+            banner = await _synthesize_banner(cards, window_days=window_days, now=now)
+        except review.NotConfiguredError:
+            # Unconfigured endpoint → degrade to fast curation, flagged so the UI can say so.
+            # Drop any per-session synthesis (none can have landed: config is checked on the
+            # first call) for a cleanly "fast"-shaped artifact.
+            banner = None
+            synthesis_skipped = True
+            for c in cards:
+                c["synthesis"] = None
     artifact = _artifact(
         cards,
         window_days=window_days,
         depth=depth,
-        banner=None,
-        synthesis_skipped=False,
+        banner=banner,
+        synthesis_skipped=synthesis_skipped,
         now=now,
     )
     _write_cache(artifact)

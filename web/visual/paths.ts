@@ -88,6 +88,17 @@ export const VISUAL_PATHS: VisualPath[] = [
   },
   {
     group: "authed",
+    path: "/pulse",
+    name: "pulse",
+    description:
+      "Pulse — AI-curated recent-work overview: banner + sessions grouped by state with Jump in (#441 HUD)",
+    requireAuth: "admin",
+    // The seeded pulse-cache.json (web/visual/seed.py) makes this populated; wait for the
+    // first card's Jump-in link (a stable, non-hashed aria-label selector) to paint.
+    waitFor: { selector: 'a[aria-label^="Jump into"]', timeoutMs: 8000 },
+  },
+  {
+    group: "authed",
     // The deterministic seeded Claude session (web/visual/seed.py _CLAUDE[0]); resumed
     // against the fake-agent transcript so the terminal pane renders representative output.
     path: "/s/claude/019e2ba1-1590-7003-8e4a-51ab62cec900",

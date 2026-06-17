@@ -1,4 +1,4 @@
-import { Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
+import { Activity, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -23,6 +23,9 @@ import { useSessionsStore } from "./sessionsStore";
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
 const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
+// Pulse — the AI-curated recent-work overview (#441 Phase 5). Lazy like Overview so its
+// page code stays out of the main bundle until opened.
+const Pulse = lazyWithReload(() => import("../routes/Pulse"), "pulse");
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 // Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
@@ -133,6 +136,14 @@ function Layout() {
         </span>
         <span className="hud-topbar-actions">
           <Link
+            to="/pulse"
+            className="gear"
+            aria-label="Open Pulse — recent-work overview"
+            onClick={closeMobileDrawer}
+          >
+            <Activity size={18} />
+          </Link>
+          <Link
             to="/overview"
             className="gear"
             aria-label="Open session overview"
@@ -162,6 +173,15 @@ function Layout() {
         </header>
         {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
         <div className="sidebar-actions">
+          <Link
+            to="/pulse"
+            className="gear"
+            aria-label="Open Pulse — recent-work overview"
+            onClick={closeMobileDrawer}
+          >
+            <Activity size={18} />
+            <span>Pulse</span>
+          </Link>
           <Link
             to="/overview"
             className="gear"
@@ -212,6 +232,7 @@ function Layout() {
               <Route path="/settings" element={<Settings />} />
               <Route path="/settings/:tab" element={<Settings />} />
               <Route path="/overview" element={<Overview />} />
+              <Route path="/pulse" element={<Pulse />} />
               <Route path="/s/:engine/:id" element={<SessionView />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

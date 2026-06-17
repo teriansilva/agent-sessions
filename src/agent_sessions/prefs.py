@@ -617,3 +617,86 @@ def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
             new[k] = patch[k]
     _set("auto_sort", new, path)
     return new
+
+
+# --- Pulse recent-work overview (#441 Phase 3) -----------------------------------------
+# Opt-in background scan loop + the window/depth the manual + background scans use. Reuses the
+# `ai_review` gateway for synthesis (depth >= medium), so it holds no endpoint config / secret
+# of its own — `configured` mirrors the ai_review readiness. The window/depth bounds mirror the
+# constants in pulse.py; tests/test_pulse.py asserts they stay in sync (no import → no cycle:
+# pulse.py imports review.py which imports prefs.py).
+PULSE_INTERVAL_MIN = 5
+PULSE_INTERVAL_MAX = 24 * 60
+PULSE_WINDOW_MIN = 1
+PULSE_WINDOW_MAX = 30
+PULSE_DEPTHS: tuple[str, ...] = ("fast", "medium", "slow")
+PULSE_DEFAULT_DEPTH = "fast"
+
+_PULSE_DEFAULTS: dict[str, object] = {
+    "auto_enabled": False,  # background scan loop on/off
+    "interval_minutes": 30,
+    "window_days": 3,  # rolling recency window
+    "scan_depth": PULSE_DEFAULT_DEPTH,  # fast | medium | slow
+}
+
+
+def get_pulse(path: Path | None = None) -> dict:
+    """The stored `pulse` block with defaults applied + types coerced (#441 Phase 3)."""
+    raw = _load(path or _default_path()).get("pulse")
+    out = dict(_PULSE_DEFAULTS)
+    if isinstance(raw, dict):
+        if isinstance(raw.get("auto_enabled"), bool):
+            out["auto_enabled"] = raw["auto_enabled"]
+        for k, lo, hi in (
+            ("interval_minutes", PULSE_INTERVAL_MIN, PULSE_INTERVAL_MAX),
+            ("window_days", PULSE_WINDOW_MIN, PULSE_WINDOW_MAX),
+        ):
+            v = raw.get(k)
+            if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
+                out[k] = v
+        d = raw.get("scan_depth")
+        if isinstance(d, str) and d in PULSE_DEPTHS:
+            out["scan_depth"] = d
+    return out
+
+
+def public_pulse(path: Path | None = None) -> dict:
+    """Client-safe view (#441 Phase 3). `pulse` holds no secret of its own; `configured`
+    mirrors the reused ai_review endpoint readiness so the UI can explain when depth ≥ medium
+    synthesis would degrade to fast."""
+    out = dict(get_pulse(path))
+    out["configured"] = bool(public_ai_review(path)["configured"])
+    return out
+
+
+def validate_pulse_patch(patch: object) -> str | None:
+    """Server-side schema validation for a partial `pulse` write (#441 Phase 3): returns a
+    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op."""
+    if not isinstance(patch, dict):
+        return "pulse must be an object"
+    unknown = set(patch) - set(_PULSE_DEFAULTS)
+    if unknown:
+        return f"unknown pulse fields: {sorted(unknown)}"
+    if "auto_enabled" in patch and not isinstance(patch["auto_enabled"], bool):
+        return "pulse.auto_enabled must be a boolean"
+    for k, lo, hi in (
+        ("interval_minutes", PULSE_INTERVAL_MIN, PULSE_INTERVAL_MAX),
+        ("window_days", PULSE_WINDOW_MIN, PULSE_WINDOW_MAX),
+    ):
+        if k in patch:
+            v = patch[k]
+            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
+                return f"pulse.{k} must be an integer between {lo} and {hi}"
+    if "scan_depth" in patch and patch["scan_depth"] not in PULSE_DEPTHS:
+        return f"pulse.scan_depth must be one of {list(PULSE_DEPTHS)}"
+    return None
+
+
+def set_pulse(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block into the stored one and persist (#441 Phase 3)."""
+    new = dict(get_pulse(path))
+    for k in ("auto_enabled", "interval_minutes", "window_days", "scan_depth"):
+        if k in patch:
+            new[k] = patch[k]
+    _set("pulse", new, path)
+    return new

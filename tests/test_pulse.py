@@ -13,11 +13,15 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_sessions import aitasks, metadata, pulse
+from agent_sessions import aitasks, metadata, prefs, pulse, review
 from agent_sessions.main import create_app
+
+SECRET = "sk-pulse-test"  # noqa: S105 — test fixture value
+BASE = "https://ai.test/v1"
 
 
 @dataclass
@@ -170,6 +174,122 @@ def test_empty_overview_shape():
     assert empty["window_days"] == pulse.WINDOW_DAYS_DEFAULT
 
 
+# ---- synthesis depths (medium / slow, #441 Phase 4) ----------------------------
+
+
+@pytest.fixture
+def configured_ai(tmp_path, monkeypatch):
+    """Point prefs at tmp with a configured + enabled ai_review block (the reused gateway), and
+    zero the synthesis call-spacing so the per-session pass doesn't sleep in tests."""
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
+    monkeypatch.setattr(review, "_TRANSPORT", None)
+    monkeypatch.setattr(pulse, "SYNTH_CALL_SPACING_S", 0)
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    return tmp_path
+
+
+def _json_transport(payload: dict, calls: list | None = None):
+    """A MockTransport returning the SAME JSON object for every completion. A payload carrying
+    both ``banner`` and ``line`` keys serves the banner call and the per-session calls alike."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def test_medium_makes_one_banner_call(pulse_cache, configured_ai, monkeypatch):
+    now = 1_000_000.0
+    _setup(
+        monkeypatch,
+        [FakeSession("claude", "u", "/a", now - 100)],
+        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
+    )
+    calls: list = []
+    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"banner": "Pick up tests"}, calls))
+    art = asyncio.run(pulse.run_scan(depth="medium", now=now))
+    assert len(calls) == 1  # exactly one synthesis call — the banner
+    assert art["scan_depth"] == "medium"
+    assert art["banner"] == "Pick up tests"
+    assert art["synthesis_skipped"] is False
+    assert art["cards"][0]["synthesis"] is None  # medium = banner only, no per-session pass
+
+
+def test_slow_synthesizes_each_session_then_banner(pulse_cache, configured_ai, monkeypatch):
+    now = 1_000_000.0
+    sessions = [FakeSession("claude", f"u{i}", "/a", now - 100 * (i + 1)) for i in range(3)]
+    meta = {
+        f"claude:u{i}": metadata.SessionMeta(ai_summary=f"s{i}", review_fingerprint=f"fp{i}")
+        for i in range(3)
+    }
+    _setup(monkeypatch, sessions, meta)
+    calls: list = []
+    payload = {"line": "continue here", "banner": "3 in flight"}
+    monkeypatch.setattr(review, "_TRANSPORT", _json_transport(payload, calls))
+    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
+    assert len(calls) == 3 + 1  # one per in-window session + the banner
+    assert art["banner"] == "3 in flight"
+    assert all(c["synthesis"] == "continue here" for c in art["cards"])
+    assert art["synthesis_skipped"] is False
+
+
+def test_slow_caps_per_session_calls(pulse_cache, configured_ai, monkeypatch):
+    now = 1_000_000.0
+    n = pulse.SLOW_SESSION_CAP + 3
+    sessions = [FakeSession("claude", f"u{i:02d}", "/a", now - 100 * (i + 1)) for i in range(n)]
+    meta = {
+        f"claude:u{i:02d}": metadata.SessionMeta(ai_summary=f"s{i}", review_fingerprint=f"fp{i}")
+        for i in range(n)
+    }
+    _setup(monkeypatch, sessions, meta)
+    calls: list = []
+    monkeypatch.setattr(review, "_TRANSPORT", _json_transport({"line": "go", "banner": "b"}, calls))
+    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
+    # Bounded: SLOW_SESSION_CAP per-session calls + 1 banner — the rest keep their ai_summary.
+    assert len(calls) == pulse.SLOW_SESSION_CAP + 1
+    synthesized = [c for c in art["cards"] if c["synthesis"] is not None]
+    assert len(synthesized) == pulse.SLOW_SESSION_CAP
+
+
+def test_unconfigured_endpoint_degrades_to_fast(pulse_cache, tmp_path, monkeypatch):
+    # The single unconfigured contract: depth >= medium degrades to fast curation, flagged
+    # `synthesis_skipped`, NEVER raising — the cards keep their existing ai_summary lines.
+    now = 1_000_000.0
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))  # ai_review unset
+    monkeypatch.setattr(review, "_TRANSPORT", None)
+    _setup(
+        monkeypatch,
+        [FakeSession("claude", "u", "/a", now - 100)],
+        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
+    )
+    art = asyncio.run(pulse.run_scan(depth="medium", now=now))
+    assert art["banner"] is None
+    assert art["synthesis_skipped"] is True
+    assert art["scan_depth"] == "medium"  # records what was requested
+    assert art["cards"][0]["synthesis"] is None
+    assert art["cards"][0]["ai_summary"] == "did x"
+
+
+def test_synthesis_output_is_bounded_plain_data(pulse_cache, configured_ai, monkeypatch):
+    # Model output is DATA: whitespace collapsed, length-capped (rendered as plain text in UI).
+    now = 1_000_000.0
+    _setup(
+        monkeypatch,
+        [FakeSession("claude", "u", "/a", now - 100)],
+        {"claude:u": metadata.SessionMeta(review_fingerprint="fp")},
+    )
+    payload = {"banner": "  a\n\nb  " + "x" * 5000, "line": "  multi   space  "}
+    monkeypatch.setattr(review, "_TRANSPORT", _json_transport(payload))
+    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
+    assert len(art["banner"]) <= pulse.BANNER_MAX
+    assert "\n" not in art["banner"]
+    assert art["cards"][0]["synthesis"] == "multi space"
+
+
 # ---- routes -------------------------------------------------------------------
 
 
@@ -240,3 +360,38 @@ def test_ai_activity_endpoint(auth_cfg, fake_jsonl):
     r = c.get("/api/ai/activity")
     assert r.status_code == 200
     assert set(r.json()) == {"running", "last"}
+
+
+def test_config_exposes_pulse_and_prefs_roundtrip(auth_cfg, fake_jsonl):
+    # /api/config carries the public pulse block (#441 Phase 3); POST /api/prefs validates +
+    # persists a partial patch, and a bad depth is a 422 (never silently coerced on write).
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    cfg = c.get("/api/config").json()
+    assert cfg["pulse"]["scan_depth"] == "fast"
+    assert cfg["pulse"]["auto_enabled"] is False
+    assert cfg["pulse"]["configured"] is False  # no ai_review endpoint → synthesis would degrade
+    r = c.post(
+        "/api/prefs",
+        json={"pulse": {"auto_enabled": True, "scan_depth": "medium", "window_days": 7}},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    assert r.json()["pulse"]["auto_enabled"] is True
+    after = c.get("/api/config").json()["pulse"]
+    assert after["scan_depth"] == "medium" and after["window_days"] == 7
+    bad = c.post("/api/prefs", json={"pulse": {"scan_depth": "turbo"}}, headers=hdr)
+    assert bad.status_code == 422
+
+
+def test_scan_honors_body_depth_override(auth_cfg, fake_jsonl):
+    # The page's depth control can request a one-off depth via the POST body; with no ai_review
+    # endpoint a medium scan degrades to fast (200 + synthesis_skipped), never 409.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    art = c.post("/api/pulse/scan", json={"depth": "medium"}, headers=hdr).json()
+    assert art["scan_depth"] == "medium"
+    assert art["synthesis_skipped"] is True
+    assert art["banner"] is None
