@@ -1,0 +1,140 @@
+/* BattleLab tactical-HUD design tokens (#211) — near-black ground, phosphor-amber accent,
+ * semantic-colour LEDs. The bare :root is the DARK default; data-theme="light" overrides.
+ * (Rebranded from the TermRoyale royal/indigo+gold theme; royal is retired → migrates to dark.) */
+:root {
+  color-scheme: dark;
+  /* Canonical HUD tokens. */
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --accent: #ffb000; /* phosphor-amber brand — user-customizable (#211 Phase 2: a custom
+                        accent overrides --accent + --on-accent inline on <html>; everything
+                        below derives from them via color-mix, so the override cascades). */
+  --on-accent: #120c00; /* ink ON the (light) amber accent — AA, locked by contrast.test */
+  --accent-soft: color-mix(in srgb, var(--accent) 55%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 22%, transparent);
+  /* Semantic status — INDEPENDENT of the brand accent; never substitute the accent for these. */
+  --status-up: #3fbf6f;
+  --status-degraded: #f59e0b;
+  --status-down: #c02020;
+  --status-unknown: #6f747d;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+    "Roboto Mono", Menlo, Consolas, monospace;
+  /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
+  /* CTA — follows the brand accent (#211 Phase 2): bg from --accent, the darker gradient
+     stop via color-mix, ink from --on-accent. Default amber: --cta-text on --cta-bg-1 ≈ 11:1. */
+  --cta-bg-1: var(--accent);
+  --cta-bg-2: color-mix(in srgb, var(--accent) 85%, #000);
+  --cta-text: var(--on-accent);
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+/* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the
+ * data-theme override below swaps the token set for light. The `:root[data-theme=…]` form
+ * (specificity 0,2,0) deterministically beats the bare :root. Interactive-text contrast is
+ * held to WCAG AA (text/bg and --on-accent on --accent ≥4.5:1), locked by contrast.test.ts.
+ * The accent is light (amber), so text that sits ON it uses dark --on-accent, never white. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-0: #e7e8ea;
+  --bg-1: #f2f3f5;
+  --bg-2: #ffffff;
+  --text-1: #14161a;
+  --text-2: #41454d;
+  --text-3: #6f747d;
+  --glass: rgba(10, 12, 16, 0.025);
+  --glass-strong: rgba(10, 12, 16, 0.05);
+  --line: rgba(10, 12, 16, 0.12);
+  --line-strong: rgba(10, 12, 16, 0.2);
+  --bg: #e7e8ea;
+  --panel: #f2f3f5;
+  --text: #14161a;
+  --text-muted: #41454d;
+  --border: #c9ccd2;
+  --border-subtle: #d9dbe0;
+  --row-hover: #e3e5e8;
+  --surface-2: #ffffff;
+  --surface-3: #dfe1e4;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
+  --brand-soft: #5e3d00;
+  --badge-bg: #efe3c8;
+  --badge-fg: #6b4e00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Shiny CTAs (#91 polish): a gold reflection sweeps across the button now and then.
+ * Global helper so it composes with any module's button class. ~7s cycle = a ~1.3s sweep
+ * then a long pause. Disabled buttons + reduced-motion users get no sweep. */
+.shine {
+  position: relative;
+  overflow: hidden;
+}
+/* The old gold reflection SWEEP (a gradient ::after) is gone (#211) — the HUD has no
+   gradients; .shine now only carries the button glitch (keyframes in App.css). The base rule
+   above keeps position/overflow so the glitch clip-path is contained. */
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+/* 100dvh so the mobile URL bar / bottom nav don't crop the app (the classic 100vh bug). */
+body {
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
