@@ -170,9 +170,26 @@ def register(
     async def app_config(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
         # SPA bootstrap (#64): the CSRF token for mutations + which engines can start a
         # new session (present + supports_new) + the terminal backend. Authed-only.
+        # First-run onboarding flag (#463): an explicit pref wins; otherwise infer — a fresh
+        # install (no prefs, no scanned sessions) shows the wizard, while an existing install
+        # (any pref already set, or ≥1 scanned session) is treated as already onboarded so an
+        # upgrade never regresses into onboarding. Fail-safe to onboarded on a scan error so a
+        # transient fault can't trap a returning user in the wizard.
+        onboarded_explicit = prefs.get_onboarded()
+        if onboarded_explicit is not None:
+            onboarded_val = onboarded_explicit
+        elif prefs.has_any_prefs():
+            onboarded_val = True
+        else:
+            try:
+                onboarded_val = any(True for _ in engines.scan_all())
+            except Exception:
+                onboarded_val = True
         return JSONResponse(
             {
                 "csrf": current_csrf(cfg, request) or "",
+                # First-run onboarding wizard gate (#463) — see the inference above.
+                "onboarded": onboarded_val,
                 "new_session_engines": [
                     p.engine_id
                     for p in engines.present_providers()
@@ -333,6 +350,13 @@ def register(
                     status_code=422, detail="project_names must be an object of string→string"
                 )
             out["project_names"] = prefs.set_project_names(v)
+        if "onboarded" in payload:
+            # First-run onboarding flag (#463): the wizard POSTs {onboarded: true} on
+            # completion (or skip). Boolean only; preserves other keys.
+            v = payload["onboarded"]
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail="onboarded must be a boolean")
+            out["onboarded"] = prefs.set_onboarded(v)
         if not out:
             raise HTTPException(status_code=422, detail="no known preference key")
         return JSONResponse(out)

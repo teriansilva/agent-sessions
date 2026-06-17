@@ -1,8 +1,16 @@
-import { Activity, Menu, Network, PanelLeftClose, Settings as SettingsIcon } from "lucide-react";
+import {
+  Activity,
+  HelpCircle,
+  Menu,
+  Network,
+  PanelLeftClose,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
+import { Onboarding } from "../routes/Onboarding";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
@@ -12,6 +20,7 @@ import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import "./App.css";
+import { useConfig } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
@@ -63,6 +72,14 @@ function Layout() {
     return () => mq.removeEventListener("change", on);
   }, []);
   const location = useLocation();
+  const config = useConfig();
+  // First-run onboarding (#463): show the setup wizard once the password gate has cleared and
+  // the install isn't already onboarded. `setupDismissed` hides it immediately on finish/skip
+  // (no config refetch needed); the topbar Help entry re-opens the slideshow tour (`tourOpen`).
+  const [tourOpen, setTourOpen] = useState(false);
+  const [setupDismissed, setSetupDismissed] = useState(false);
+  const showSetup =
+    config?.onboarded === false && !config?.must_change_password && !setupDismissed;
   // Close the mobile drawer whenever the route changes (e.g. a row was tapped).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -135,6 +152,14 @@ function Layout() {
           <MissionTimer />
         </span>
         <span className="hud-topbar-actions">
+          <button
+            type="button"
+            className="gear"
+            aria-label="Help — replay the tour"
+            onClick={() => setTourOpen(true)}
+          >
+            <HelpCircle size={18} />
+          </button>
           <Link
             to="/pulse"
             className="gear"
@@ -173,6 +198,18 @@ function Layout() {
         </header>
         {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
         <div className="sidebar-actions">
+          <button
+            type="button"
+            className="gear"
+            aria-label="Help — replay the tour"
+            onClick={() => {
+              setTourOpen(true);
+              closeMobileDrawer();
+            }}
+          >
+            <HelpCircle size={18} />
+            <span>Help</span>
+          </button>
           <Link
             to="/pulse"
             className="gear"
@@ -247,6 +284,8 @@ function Layout() {
         </span>
       </footer>
       </div>
+      {showSetup && <Onboarding mode="wizard" onClose={() => setSetupDismissed(true)} />}
+      {tourOpen && <Onboarding mode="tour" onClose={() => setTourOpen(false)} />}
     </>
   );
 }

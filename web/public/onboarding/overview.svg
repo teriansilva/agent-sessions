@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Overview flowchart">
+  <rect width="640" height="360" fill="#131418"/>
+  <rect x="246" y="36" width="148" height="40" fill="#0d0e10" stroke="#e8e9ec"/>
+  <rect x="96" y="148" width="148" height="56" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="396" y="148" width="148" height="56" fill="#0d0e10" stroke="#25282e"/>
+  <path d="M320 76 V120 M320 120 H170 V148 M320 120 H470 V148" stroke="#25282e" stroke-width="1.5" fill="none"/>
+  <circle cx="110" cy="176" r="4" fill="#3fbf6f"/><circle cx="410" cy="176" r="4" fill="#6f747d"/>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="320" y="280" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">OVERVIEW // project map</text>
+</svg>

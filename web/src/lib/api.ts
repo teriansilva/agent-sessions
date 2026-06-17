@@ -189,6 +189,10 @@ export const api = {
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   setPrefs: (partial: Record<string, unknown>) =>
     postJson<Record<string, unknown>>("/api/prefs", partial),
+  /** First-run onboarding (#463): mark the wizard complete (or skipped) so it never shows
+   *  again. Persists `onboarded: true` via the prefs store. CSRF-guarded. */
+  completeOnboarding: () =>
+    postJson<Record<string, unknown>>("/api/prefs", { onboarded: true }),
   /** Optional TOTP 2FA (#116). All CSRF-guarded. */
   enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
   confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),

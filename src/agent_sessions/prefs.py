@@ -202,6 +202,26 @@ def set_vt_scrollback(value: bool, path: Path | None = None) -> bool:
     return _set("vt_scrollback", bool(value), path)
 
 
+def get_onboarded(path: Path | None = None) -> bool | None:
+    """First-run onboarding flag (#463): ``True`` once the wizard completes (or is skipped),
+    ``False`` if explicitly reset, or ``None`` when never set — so the caller can infer a sane
+    default for fresh vs. existing installs (see ``routes/system.py`` ``/api/config``)."""
+    v = _load(path or _default_path()).get("onboarded")
+    return v if isinstance(v, bool) else None
+
+
+def set_onboarded(value: bool, path: Path | None = None) -> bool:
+    """Persist the onboarding flag. Preserves other keys."""
+    return _set("onboarded", bool(value), path)
+
+
+def has_any_prefs(path: Path | None = None) -> bool:
+    """Whether the prefs file already holds any keys — a cheap "this install has been used"
+    signal for the onboarding default inference (#463): an existing install has set at least
+    one pref (theme/accent/AI/…), a truly fresh install has no prefs file at all."""
+    return bool(_load(path or _default_path()))
+
+
 def get_accent(path: Path | None = None) -> str:
     """The persisted brand accent (#rrggbb), or the default when unset/unreadable/invalid."""
     return coerce_accent(_load(path or _default_path()).get("accent"))

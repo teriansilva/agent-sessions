@@ -244,6 +244,10 @@ export interface AppConfig {
   terminal_backend: "ttyd" | "ws" | string;
   /** First-run forced password change pending — the SPA routes to /change-password. */
   must_change_password?: boolean;
+  /** First-run onboarding (#463): false ⇒ show the setup wizard (after the password gate);
+   *  true once completed/skipped, or inferred true for an existing install. Absent on older
+   *  servers (the SPA treats absent as onboarded so it never shows for them). */
+  onboarded?: boolean;
   /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
