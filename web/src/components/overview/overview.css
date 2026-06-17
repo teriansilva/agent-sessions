@@ -54,6 +54,7 @@
  * button. The minor cost: dragging on a cluster's empty body doesn't pan the canvas; users
  * pan over the background / between clusters instead.) (#144) */
 .tr-ov-group {
+  position: relative;
   width: 100%;
   height: 100%;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
@@ -216,6 +217,7 @@
  * (LED + title + intervention badge + engine), the AI summary, and a project/folder/time foot.
  * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent. */
 .tr-ov-chip {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: center;

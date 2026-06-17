@@ -2,6 +2,7 @@ import { type NodeProps } from "@xyflow/react";
 import { type CSSProperties } from "react";
 import { engineBadge, engineColor, relTime, shortCwd } from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
+import { HudFrame } from "../hud/HudFrame";
 
 /** A session chip inside a project cluster — at information parity with the sidebar list row
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
@@ -26,6 +27,7 @@ export function SessionNode({ data }: NodeProps) {
       aria-label={`Open ${title}`}
       aria-current={selected ? "true" : undefined}
     >
+      <HudFrame />
       <span className="tr-ov-chip-head">
         <span
           className={`tr-ov-dot ${working ? "working" : active ? "active" : "idle"}`}

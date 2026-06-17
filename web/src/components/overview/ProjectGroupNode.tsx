@@ -4,6 +4,7 @@ import { type MouseEvent, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import { pathBase, shortCwd } from "../../lib/format";
 import type { ProjectGroupData } from "../../lib/overviewGraph";
+import { HudFrame } from "../hud/HudFrame";
 import { useOverviewActions } from "./overviewActions";
 
 /** A project cluster container. React Flow sizes it from the node `style`; the header shows
@@ -57,6 +58,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
       className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}`}
       style={color ? { borderTop: `2px solid ${color}` } : undefined}
     >
+      <HudFrame />
       <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />
       <div
         className="tr-ov-group-head nodrag nopan"

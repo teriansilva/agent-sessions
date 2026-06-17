@@ -2,6 +2,7 @@ import { ArrowRight, RefreshCw, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useConfig } from "../app/config";
+import { HudFrame } from "../components/hud/HudFrame";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, engineColor, relTime, shortCwd } from "../lib/format";
 import type { PulseCard, PulseDepth, PulseOverview, PulseState } from "../types/api";
@@ -39,6 +40,7 @@ function Card({ card }: { card: PulseCard }) {
       className={`${styles.card} ${styles[card.state]}`}
       style={{ ["--eng" as string]: engineColor(card.engine) }}
     >
+      <HudFrame />
       <div className={styles.cardHead}>
         <span
           className={`${styles.led} ${styles[`led_${card.state}`]}`}
@@ -157,8 +159,14 @@ export default function Pulse() {
       <header className={styles.head}>
         <div className={styles.headLeft}>
           <h1 className={styles.h1}>Pulse</h1>
+          <span className={styles.sl} aria-hidden="true">
+            //
+          </span>
           <span className={styles.window} title={`Recent window: ${windowDays} days`}>
             {windowDays}d
+          </span>
+          <span className={styles.sl} aria-hidden="true">
+            //
           </span>
           <span className={styles.asOf}>
             {overview?.generated_at
@@ -197,6 +205,7 @@ export default function Pulse() {
 
       {overview?.banner && (
         <section className={styles.banner} aria-label="State of your work">
+          <HudFrame />
           <Sparkles size={15} className={styles.bannerIcon} aria-hidden="true" />
           <p className={styles.bannerText}>{overview.banner}</p>
         </section>

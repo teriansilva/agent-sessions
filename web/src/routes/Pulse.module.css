@@ -36,10 +36,15 @@
   font-size: 0.7rem;
   padding: 2px 6px;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
   color: var(--text-2);
 }
 .asOf {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+/* `//` callsign separator (PULSE // 3D // AS OF …). */
+.sl {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--text-3);
@@ -54,7 +59,6 @@
 .depth {
   display: inline-flex;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
   overflow: hidden;
 }
 .depthBtn {
@@ -86,7 +90,6 @@
   gap: 6px;
   font-size: 0.78rem;
   padding: 6px 12px;
-  border-radius: 4px;
   border: 1px solid var(--line-strong);
   background: var(--cta-bg-1);
   color: var(--cta-text);
@@ -123,6 +126,7 @@
 
 /* --- banner ------------------------------------------------------------------ */
 .banner {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 9px;
@@ -130,7 +134,6 @@
   margin-bottom: 18px;
   border: 1px solid var(--accent-soft);
   border-left: 3px solid var(--accent);
-  border-radius: 4px;
   background: var(--accent-glow);
 }
 .bannerIcon {
@@ -168,10 +171,11 @@
   color: var(--text-2);
 }
 .count {
-  font-size: 0.66rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
   padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--glass-strong);
+  border: 1px solid var(--line-strong);
   color: var(--text-3);
 }
 
@@ -192,7 +196,6 @@
   padding: 11px 13px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--eng, var(--line-strong));
-  border-radius: 4px;
   background: var(--bg-1);
 }
 /* needs-you: amber left rail (the issue's "amber left-border" cue). */
@@ -257,7 +260,6 @@
   font-size: 0.62rem;
   text-transform: uppercase;
   padding: 1px 5px;
-  border-radius: 3px;
   background: var(--badge-bg);
   color: var(--badge-fg);
 }
@@ -325,7 +327,6 @@
   text-align: center;
   padding: 48px 16px;
   border: 1px dashed var(--line-strong);
-  border-radius: 6px;
   color: var(--text-2);
 }
 .emptyTitle {
