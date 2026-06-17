@@ -166,11 +166,77 @@ def test_launch_argv_resume_and_bypass():
     ]
 
 
-def test_new_session_unsupported():
+def _write_cache(root, cwd_to_uuid):
+    """agy's cache/last_conversations.json is a cwd → latest-uuid map (the scan fast-path)."""
+    (root / "cache" / "last_conversations.json").write_text(json.dumps(cwd_to_uuid))
+
+
+def test_new_session_launch_then_reconcile_supported():
+    # agy now supports new sessions via launch-then-reconcile (#449), like codex.
     prov = engines.AntigravityProvider()
-    assert prov.supports_new is False  # agy can't pin a new conversation id
-    with pytest.raises(NotImplementedError):
-        prov.new_launch_argv(_UUID, cwd="/x", bypass=False)
+    assert prov.supports_new is True
+    assert prov.new_session_reconciles is True
+    # Fresh launch: no `--conversation` (agy mints the id); bypass → --dangerously-skip-permissions.
+    assert prov.new_launch_argv("new-x", cwd="/x", bypass=False) == [engines.AGY_BIN]
+    assert prov.new_launch_argv("new-x", cwd="/x", bypass=True) == [
+        engines.AGY_BIN,
+        "--dangerously-skip-permissions",
+    ]
+
+
+def test_present_and_supports_new_gates_new_session_picker(agy):
+    # The new-session dropdown lists providers that are present + supports_new (#449).
+    prov = engines.AntigravityProvider()
+    assert prov.is_present() is True  # the agy fixture dir exists
+    assert prov.supports_new is True
+
+
+def test_reconcile_finds_new_conversation_via_db_blob(agy):
+    prov = engines.AntigravityProvider()
+    _make_conversation(agy, _UUID, "/home/u/proj")  # cwd resolved from the SQLite blob
+    before = prov.snapshot_session_ids("/home/u/proj")
+    assert before == {_UUID}
+    _make_conversation(agy, _UUID2, "/home/u/proj")  # agy mints a new one in the same cwd
+    assert prov.reconcile_new_session("/home/u/proj", before) == _UUID2
+
+
+def test_reconcile_resolves_cwd_via_cache_fast_path(agy):
+    prov = engines.AntigravityProvider()
+    (agy / "conversations" / f"{_UUID2}.db").touch()  # db present; cwd comes from the cache map
+    _write_cache(agy, {"/home/u/work": _UUID2})
+    assert prov.reconcile_new_session("/home/u/work", set()) == _UUID2
+
+
+def test_reconcile_none_when_nothing_new(agy):
+    prov = engines.AntigravityProvider()
+    _make_conversation(agy, _UUID, "/home/u/proj")
+    snap = prov.snapshot_session_ids("/home/u/proj")
+    assert prov.reconcile_new_session("/home/u/proj", snap) is None  # nothing minted yet → poll
+
+
+def test_reconcile_ambiguous_two_new_same_cwd_fails_safe(agy):
+    prov = engines.AntigravityProvider()
+    _make_conversation(agy, _UUID, "/home/u/proj")
+    _make_conversation(agy, _UUID2, "/home/u/proj")
+    # both new since an empty snapshot, same cwd → ambiguous: return the list, never guess.
+    assert prov.reconcile_new_session("/home/u/proj", set()) == sorted([_UUID, _UUID2])
+
+
+def test_reconcile_ignores_other_cwd(agy):
+    prov = engines.AntigravityProvider()
+    _make_conversation(agy, _UUID2, "/elsewhere")  # a new conversation in a DIFFERENT cwd
+    assert prov.reconcile_new_session("/home/u/proj", set()) is None
+
+
+def test_snapshot_none_on_walk_failure(agy, monkeypatch):
+    import agent_sessions.engines.antigravity as A
+
+    def boom(self, pattern):
+        raise OSError("walk failed")
+
+    monkeypatch.setattr(A.Path, "glob", boom)
+    # A transient listing failure → None so the caller skips reconciliation (never misattributes).
+    assert engines.AntigravityProvider().snapshot_session_ids("/home/u/proj") is None
 
 
 def test_parse_key_routes_antigravity():

@@ -16,9 +16,11 @@ conversation with no resolvable cwd skips that row, never the whole list. The co
 (launch dir + open-path allowlist key) comes from agy's ``cache/last_conversations.json`` when the
 conversation is the most-recent in its workspace, else from the ``file://`` workspace URI embedded
 in the SQLite ``trajectory_metadata_blob``. Resume is ``agy --conversation <uuid>`` (a global id, no
-cwd scoping). ``agy`` exposes no flag to pin a new conversation id, so ``supports_new`` is False —
-this provider is read / attach / resume only. Archive is not an agy concept, so it rides the
-engine-agnostic sidecar (like codex/gemini/opencode).
+cwd scoping). ``agy`` mints its own conversation id and exposes no flag to pin one (verified against
+``agy --help``, 1.0.8), so NEW sessions use the same **launch-then-reconcile** path as codex (#315 /
+#449): launch a fresh ``agy`` in the cwd, then discover the minted id afterwards by diffing the
+conversations that resolve to that cwd (``supports_new = True``, ``new_session_reconciles = True``).
+Archive is not an agy concept, so it rides the engine-agnostic sidecar (like codex/gemini/opencode).
 """
 
 from __future__ import annotations
@@ -153,7 +155,11 @@ class AntigravityProvider:
 
     engine_id = "antigravity"
     id_pattern = base._ANTIGRAVITY_UUID_RE
-    supports_new = False  # agy mints its own conversation id; no flag to pin one (verified 1.0.8)
+    # agy mints its OWN conversation id at launch — no caller-chosen flag — so new sessions launch
+    # fresh under a ``new-<uuid>`` placeholder and reconcile to the real id afterwards, exactly like
+    # codex/opencode (#315 / #449). Resume still pins the existing id via ``--conversation``.
+    supports_new = True
+    new_session_reconciles = True
 
     def is_present(self) -> bool:
         return base._antigravity_dir().is_dir() or shutil.which("agy") is not None
@@ -201,12 +207,66 @@ class AntigravityProvider:
         return argv
 
     def new_launch_argv(self, native_id, *, cwd, bypass):
-        # agy mints its own conversation id and exposes no flag to pin one (verified against
-        # `agy --help`, 1.0.8), so a new session can't be keyed before agy writes it. Read/attach/
-        # resume only (`supports_new = False`); the ws new-session path never calls this.
-        raise NotImplementedError(
-            "antigravity (agy) cannot start a session with a caller-chosen id"
-        )
+        # Start a *fresh* agy conversation in `cwd` (the launcher sets the process cwd, which agy
+        # records as the workspace — same as resume). agy mints its own conversation uuid (no flag
+        # to pin one), discovered afterwards by `reconcile_new_session` diffing the cwd's
+        # conversations (#449, codex #315). `native_id` is the client-minted `new-<uuid>`
+        # placeholder the bridge keys the socket/lock by; agy never sees it. `bypass` maps to
+        # `--dangerously-skip-permissions` (auto-approve tool calls), as in `launch_argv`.
+        argv = [base.AGY_BIN]
+        if bypass:
+            argv.append("--dangerously-skip-permissions")
+        return argv
+
+    def _conversation_uuids_in_cwd(self, cwd: str) -> set[str] | None:
+        """The set of agy conversation uuids whose resolved cwd == ``cwd`` (#449), or ``None`` if
+        listing the conversations dir FAILED.
+
+        A missing dir is a valid empty baseline (fresh agy) → ``set()``, NOT a failure. cwd-scoped
+        so an unrelated new conversation elsewhere can't be mistaken for ours. Resolution reuses
+        scan's two sources: the ``cache/last_conversations.json`` fast-path + the SQLite blob
+        fallback. A conversation whose cwd isn't resolvable yet is excluded (stays *pending*),
+        never misattributed. A transient walk failure returns ``None`` so the caller skips
+        reconciliation (never adopts on a bad read)."""
+        root = base._antigravity_dir()
+        conv_dir = root / "conversations"
+        if not conv_dir.is_dir():
+            return set()
+        try:
+            dbs = list(conv_dir.glob("*.db"))
+        except OSError:
+            return None
+        cache_cwd = _cwd_by_id(root)
+        out: set[str] = set()
+        for db in dbs:
+            native_id = db.stem
+            if not self.id_pattern.match(native_id):
+                continue
+            if (cache_cwd.get(native_id) or _db_cwd(db)) == cwd:
+                out.add(native_id)
+        return out
+
+    def snapshot_session_ids(self, cwd: str) -> set[str] | None:
+        """agy conversation uuids already resolving to ``cwd`` BEFORE launch (#449), or ``None`` on
+        a walk failure (the caller then skips reconciliation rather than risk misattributing a
+        pre-existing conversation). See :meth:`_conversation_uuids_in_cwd`."""
+        return self._conversation_uuids_in_cwd(cwd)
+
+    def reconcile_new_session(self, cwd: str, snapshot: set[str]) -> str | list[str] | None:
+        """The agy conversation uuid created in ``cwd`` since ``snapshot`` (#449). Returns the
+        single new uuid (unambiguous), a ``list`` of ≥2 new uuids (AMBIGUOUS — two new same-cwd
+        conversations in the poll window; the caller must NOT guess, fail-safe), or ``None`` when
+        agy hasn't written a resolvable conversation yet (it may not until the first turn) — the
+        caller keeps serving the placeholder and polls again. Read-only to agy's store."""
+        current = self._conversation_uuids_in_cwd(cwd)
+        if current is None:
+            return None  # transient walk failure → stay on the placeholder
+        new_ids = sorted(current - snapshot)
+        if not new_ids:
+            return None
+        if len(new_ids) > 1:
+            return new_ids  # ambiguous → caller fails safe
+        return new_ids[0]
 
     def archive(self, native_id):
         # agy conversations stay read-only; the archive flag rides the engine-agnostic sidecar.
