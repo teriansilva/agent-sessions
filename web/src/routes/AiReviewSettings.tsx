@@ -319,27 +319,15 @@ export function AiReviewSettings() {
 
   return (
     <>
-      <section className={styles.section} aria-labelledby="ai-review-h">
-        <h2 id="ai-review-h">AI session review</h2>
+      {/* Section 1 — the shared OpenAI-compatible connection (#459: lifted out of the review
+          feature so auto-sort's reuse of it reads clearly). */}
+      <section className={styles.section} aria-labelledby="ai-endpoint-h">
+        <h2 id="ai-endpoint-h">AI endpoint</h2>
         <p className={styles.hint}>
-          An OpenAI-compatible endpoint reviews your sessions and produces a one-line
-          summary, a title, and an intervention flag per session. The API key is stored
-          server-side and never sent to the browser.
+          One OpenAI-compatible endpoint powers both session review and auto-sort. The API
+          key is stored server-side and never sent to the browser.
         </p>
         {error && <p className={styles.err}>{error}</p>}
-
-        <label className={styles.aiToggle}>
-          <input
-            type="checkbox"
-            checked={block.enabled}
-            onChange={(e) => void save({ enabled: e.currentTarget.checked })}
-          />
-          <span>Enable periodic reviews</span>
-        </label>
-        <p className={styles.hint}>
-          The background loop ships in the next phase — manual “Review now” works as soon
-          as the endpoint below is configured.
-        </p>
 
         <div className={styles.aiField}>
           <label className={styles.aiFieldLabel} htmlFor="ai-base-url">
@@ -440,6 +428,54 @@ export function AiReviewSettings() {
         </div>
 
         <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="ai-timeout">
+            Request timeout
+          </label>
+          <div className={styles.aiIntervalRow}>
+            <input
+              id="ai-timeout"
+              className={`${styles.aiInput} ${styles.aiIntervalInput}`}
+              type="number"
+              min={10}
+              max={600}
+              placeholder="120"
+              value={timeoutDraft}
+              onChange={(e) => setTimeoutDraft(e.target.value)}
+              onBlur={commitTimeout}
+            />
+            <span>seconds</span>
+          </div>
+          <p className={styles.hint}>
+            Hard timeout per request (10–600), shared by review and auto-sort. Slow local
+            models often need 60–180s. Leave empty to use the server default.
+          </p>
+        </div>
+        {savedNote && <p className={styles.hint}>Saved.</p>}
+      </section>
+
+      {/* Section 2 — the session-review feature (no endpoint config; #459). The prompt and
+          excluded list fold in here as labelled fields rather than separate sections. */}
+      <section className={styles.section} aria-labelledby="ai-review-h">
+        <h2 id="ai-review-h">Session review</h2>
+        <p className={styles.hint}>
+          Periodically reviews sessions with new activity and produces a one-line summary, a
+          title, and an intervention flag per session — using the endpoint above.
+        </p>
+
+        <label className={styles.aiToggle}>
+          <input
+            type="checkbox"
+            checked={block.enabled}
+            onChange={(e) => void save({ enabled: e.currentTarget.checked })}
+          />
+          <span>Enable periodic reviews</span>
+        </label>
+        <p className={styles.hint}>
+          The background loop ships in the next phase — manual “Review now” works as soon
+          as the endpoint above is configured.
+        </p>
+
+        <div className={styles.aiField}>
           <label className={styles.aiFieldLabel} htmlFor="ai-interval">
             Review every
           </label>
@@ -462,87 +498,65 @@ export function AiReviewSettings() {
         </div>
 
         <div className={styles.aiField}>
-          <label className={styles.aiFieldLabel} htmlFor="ai-timeout">
-            Review timeout
+          <label className={styles.aiFieldLabel} htmlFor="ai-review-prompt">
+            Review prompt
           </label>
-          <div className={styles.aiIntervalRow}>
-            <input
-              id="ai-timeout"
-              className={`${styles.aiInput} ${styles.aiIntervalInput}`}
-              type="number"
-              min={10}
-              max={600}
-              placeholder="120"
-              value={timeoutDraft}
-              onChange={(e) => setTimeoutDraft(e.target.value)}
-              onBlur={commitTimeout}
-            />
-            <span>seconds</span>
+          <textarea
+            id="ai-review-prompt"
+            className={`${styles.aiInput} ${styles.aiPrompt}`}
+            aria-label="Review prompt"
+            value={promptDraft}
+            onChange={(e) => setPromptDraft(e.target.value)}
+          />
+          <div className={styles.aiActions}>
+            <button
+              type="button"
+              className={`${styles.secBtn} shine`}
+              disabled={promptDraft === block.prompt}
+              onClick={() => void save({ prompt: promptDraft })}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={() => {
+                setPromptDraft(block.default_prompt);
+                void save({ prompt: block.default_prompt });
+              }}
+            >
+              Reset to default
+            </button>
           </div>
+        </div>
+
+        <div className={styles.aiField}>
+          <span className={styles.aiFieldLabel}>Excluded sessions</span>
           <p className={styles.hint}>
-            Hard timeout per review request (10–600). Slow local models often need
-            60–180s. Leave empty to use the server default.
+            Exclude a session from review via its row actions in the sidebar. Currently
+            excluded:
           </p>
+          {excluded === null ? (
+            <p className={styles.hint}>…</p>
+          ) : excluded.length === 0 ? (
+            <p className={styles.hint}>No sessions are excluded.</p>
+          ) : (
+            <ul className={styles.aiExcludedList} aria-label="Excluded sessions">
+              {excluded.map((s) => (
+                <li key={s.id} className={styles.aiExcludedRow}>
+                  <span className={styles.aiExcludedTitle}>{s.title || "(untitled)"}</span>
+                  <button
+                    type="button"
+                    className={styles.secBtnGhost}
+                    onClick={() => void include(s.id)}
+                  >
+                    Include
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        {savedNote && <p className={styles.hint}>Saved.</p>}
-      </section>
-
-      <section className={styles.section} aria-labelledby="ai-prompt-h">
-        <h2 id="ai-prompt-h">Review prompt</h2>
-        <textarea
-          className={`${styles.aiInput} ${styles.aiPrompt}`}
-          aria-label="Review prompt"
-          value={promptDraft}
-          onChange={(e) => setPromptDraft(e.target.value)}
-        />
-        <div className={styles.aiActions}>
-          <button
-            type="button"
-            className={`${styles.secBtn} shine`}
-            disabled={promptDraft === block.prompt}
-            onClick={() => void save({ prompt: promptDraft })}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            className={styles.secBtnGhost}
-            onClick={() => {
-              setPromptDraft(block.default_prompt);
-              void save({ prompt: block.default_prompt });
-            }}
-          >
-            Reset to default
-          </button>
-        </div>
-      </section>
-
-      <section className={styles.section} aria-labelledby="ai-excluded-h">
-        <h2 id="ai-excluded-h">Excluded sessions</h2>
-        <p className={styles.hint}>
-          Exclude a session from review via its row actions in the sidebar. Currently
-          excluded:
-        </p>
-        {excluded === null ? (
-          <p className={styles.hint}>…</p>
-        ) : excluded.length === 0 ? (
-          <p className={styles.hint}>No sessions are excluded.</p>
-        ) : (
-          <ul className={styles.aiExcludedList} aria-label="Excluded sessions">
-            {excluded.map((s) => (
-              <li key={s.id} className={styles.aiExcludedRow}>
-                <span className={styles.aiExcludedTitle}>{s.title || "(untitled)"}</span>
-                <button
-                  type="button"
-                  className={styles.secBtnGhost}
-                  onClick={() => void include(s.id)}
-                >
-                  Include
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </>
   );

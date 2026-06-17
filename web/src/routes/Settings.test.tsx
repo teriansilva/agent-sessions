@@ -165,7 +165,7 @@ test("the tablist exposes all tabs with roving tabindex", async () => {
   expect(tabs.map((t) => t.textContent)).toEqual([
     "Appearance",
     "Projects",
-    "AI Review",
+    "AI",
     "Security",
     "System",
     "Maintenance",
@@ -235,7 +235,7 @@ test("the active panel is a labelled tabpanel wired to its tab", async () => {
 test.each([
   ["appearance", ["Appearance"]],
   ["projects", ["Projects", "Session overview", "Default project"]],
-  ["ai-review", ["AI session review", "Review prompt", "Excluded sessions"]],
+  ["ai-review", ["AI endpoint", "Session review", "Auto-sort projects"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["system", ["Connected agents", "System", "Updates"]],
   ["maintenance", ["Maintenance", "Scrollback cache"]],
@@ -248,11 +248,9 @@ test.each([
   await flushFetches();
 });
 
-test("the AI Review tab renders the #356 panel (write-only key, prompt, exclusions)", async () => {
+test("the AI tab renders the restructured panel (endpoint key, review prompt, auto-sort)", async () => {
   renderSettings("dark", "#ffb000", "/settings/ai-review");
-  expect(
-    await screen.findByRole("heading", { name: "AI session review" }),
-  ).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "AI endpoint" })).toBeInTheDocument();
   expect(screen.getByLabelText(/API key/i)).toBeInTheDocument();
   await flushFetches();
 });

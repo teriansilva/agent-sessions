@@ -211,16 +211,121 @@ def test_loop_disabled_by_env_kill_switch(monkeypatch):
 
 def test_auto_sort_defaults_and_validation(prefs_at_tmp):
     d = prefs.get_auto_sort()
-    assert d == {"enabled": False, "interval_minutes": 30}
+    assert d == {
+        "enabled": False,
+        "interval_minutes": 30,
+        "confidence_min": 0.7,
+        "max_per_pass": 8,
+        "prompt": prefs.DEFAULT_AUTO_SORT_PROMPT,
+    }
     assert prefs.validate_auto_sort_patch({"enabled": True, "interval_minutes": 15}) is None
     assert prefs.validate_auto_sort_patch({"enabled": "yes"}) is not None
     assert prefs.validate_auto_sort_patch({"interval_minutes": 1}) is not None  # below floor
     assert prefs.validate_auto_sort_patch({"bogus": 1}) is not None  # unknown key
-    prefs.set_auto_sort({"enabled": True, "interval_minutes": 20})
-    assert prefs.get_auto_sort() == {"enabled": True, "interval_minutes": 20}
+    # New tunables (#459): bounds enforced.
+    assert prefs.validate_auto_sort_patch({"confidence_min": 0.7}) is None
+    assert prefs.validate_auto_sort_patch({"confidence_min": 0.4}) is not None  # below 0.5 floor
+    assert prefs.validate_auto_sort_patch({"confidence_min": 1.0}) is not None  # above 0.95
+    assert prefs.validate_auto_sort_patch({"confidence_min": True}) is not None  # bool rejected
+    assert prefs.validate_auto_sort_patch({"max_per_pass": 8}) is None
+    assert prefs.validate_auto_sort_patch({"max_per_pass": 0}) is not None
+    assert prefs.validate_auto_sort_patch({"max_per_pass": 51}) is not None
+    assert prefs.validate_auto_sort_patch({"prompt": "x" * 8001}) is not None
+    prefs.set_auto_sort(
+        {"enabled": True, "interval_minutes": 20, "confidence_min": 0.55, "max_per_pass": 3}
+    )
+    got = prefs.get_auto_sort()
+    assert got["enabled"] is True
+    assert got["interval_minutes"] == 20
+    assert got["confidence_min"] == 0.55
+    assert got["max_per_pass"] == 3
+
+
+def test_auto_sort_empty_prompt_coerces_to_default(prefs_at_tmp):
+    prefs.set_auto_sort({"prompt": "   "})  # whitespace can never strand the classifier
+    assert prefs.get_auto_sort()["prompt"] == prefs.DEFAULT_AUTO_SORT_PROMPT
+    prefs.set_auto_sort({"prompt": "Custom classifier prompt."})
+    assert prefs.get_auto_sort()["prompt"] == "Custom classifier prompt."
 
 
 def test_public_auto_sort_reports_endpoint_readiness(configured):
     pub = prefs.public_auto_sort()
     assert pub["configured"] is True  # mirrors the configured ai_review endpoint
+    assert pub["default_prompt"] == prefs.DEFAULT_AUTO_SORT_PROMPT  # backs reset-to-default
+    assert pub["confidence_min"] == 0.7
+    assert pub["max_per_pass"] == 8
     assert "api_key" not in pub
+
+
+# ---- run_sort tunables (#459) --------------------------------------------------------
+
+
+def test_run_sort_threshold_from_prefs(monkeypatch, configured):
+    # A 0.65-confidence known pick is skipped at the default 0.7 floor, but assigned once the
+    # operator lowers the floor to 0.6 — the lever for the "no confident matches" case.
+    prefs.set_auto_sort({"confidence_min": 0.6})
+    monkeypatch.setattr(autosort, "_candidate_payload", lambda idx: [_cand("claude:a")])
+    monkeypatch.setattr(autosort.projects, "load", lambda: {"p-1": _proj("p-1", "Alpha")})
+    monkeypatch.setattr(autosort.metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(autosort.metadata, "patch", lambda key, **kw: None)
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"project_id": "p-1", "confidence": 0.65}])
+    )
+    report = asyncio.run(autosort.run_sort())
+    assert [a["id"] for a in report["assigned"]] == ["claude:a"]
+    assert report["near_misses"] == []
+
+
+def test_run_sort_reports_near_misses(monkeypatch, configured):
+    # Known pick below the floor → not assigned, surfaced as a near-miss; an unknown-id pick is
+    # counted in low_confidence but is NOT a near-miss (nothing to act on).
+    cands = [_cand("claude:a"), _cand("claude:b")]
+    monkeypatch.setattr(autosort, "_candidate_payload", lambda idx: cands)
+    monkeypatch.setattr(autosort.projects, "load", lambda: {"p-1": _proj("p-1", "Alpha")})
+    monkeypatch.setattr(autosort.metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(autosort.metadata, "patch", lambda key, **kw: None)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {"project_id": "p-1", "confidence": 0.62},  # known, below floor → near-miss
+                {"project_id": "p-nope", "confidence": 0.99},  # unknown id → not a near-miss
+            ]
+        ),
+    )
+    report = asyncio.run(autosort.run_sort())
+    assert report["assigned"] == []
+    assert report["low_confidence"] == 2
+    assert report["near_misses"] == [{"id": "claude:a", "project_id": "p-1", "confidence": 0.62}]
+
+
+def test_run_sort_cap_from_prefs(monkeypatch, configured):
+    prefs.set_auto_sort({"max_per_pass": 2})
+    cands = [_cand(f"claude:{i}") for i in range(10)]
+    monkeypatch.setattr(autosort, "_candidate_payload", lambda idx: cands)
+    monkeypatch.setattr(autosort.projects, "load", lambda: {"p-1": _proj("p-1", "Alpha")})
+    monkeypatch.setattr(autosort.metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(autosort.metadata, "patch", lambda key, **kw: None)
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"project_id": "p-1", "confidence": 0.9}], calls)
+    )
+    report = asyncio.run(autosort.run_sort())
+    assert len(calls) == 2  # the configured per-run cap
+    assert report["scanned"] == 2
+    assert report["candidates"] == 10
+
+
+def test_run_sort_uses_configured_prompt(monkeypatch, configured):
+    prefs.set_auto_sort({"prompt": "CUSTOM-SORT-PROMPT"})
+    monkeypatch.setattr(autosort, "_candidate_payload", lambda idx: [_cand("claude:a")])
+    monkeypatch.setattr(autosort.projects, "load", lambda: {"p-1": _proj("p-1", "Alpha")})
+    monkeypatch.setattr(autosort.metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(autosort.metadata, "patch", lambda key, **kw: None)
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"project_id": "p-1", "confidence": 0.9}], calls)
+    )
+    asyncio.run(autosort.run_sort())
+    assert calls[0]["messages"][0]["content"] == "CUSTOM-SORT-PROMPT"

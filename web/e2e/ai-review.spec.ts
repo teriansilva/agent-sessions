@@ -17,6 +17,16 @@ const AI_REVIEW = {
   default_prompt: "default prompt from server",
 };
 
+const AUTO_SORT = {
+  enabled: false,
+  interval_minutes: 30,
+  confidence_min: 0.7,
+  max_per_pass: 8,
+  prompt: "default sort prompt",
+  configured: true,
+  default_prompt: "default sort prompt",
+};
+
 const NOW = Math.floor(Date.now() / 1000);
 
 const SESSIONS = {
@@ -56,6 +66,7 @@ test.beforeEach(async ({ page }) => {
         terminal_backend: "ws",
         auth_mode: "none",
         ai_review: AI_REVIEW,
+        auto_sort: AUTO_SORT,
       },
     }),
   );
@@ -63,6 +74,8 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
   await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  // The auto-sort section resolves near-miss project names via /api/projects on mount.
+  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
   await page.route("**/api/sessions**", (r) => r.fulfill({ json: SESSIONS }));
   await page.route("**/api/ai-review/models**", (r) =>
     r.fulfill({ json: { models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"] } }),
@@ -79,7 +92,7 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   });
 
   await page.goto("/settings/ai-review");
-  await expect(page.getByRole("heading", { name: "AI session review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI endpoint" })).toBeVisible();
 
   // Endpoint config renders from /api/config; the key is write-only (empty field + SET badge).
   await expect(page.getByLabel(/Endpoint base URL/i)).toHaveValue("https://ai.example.io/v1");
@@ -93,11 +106,13 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   await model.selectOption("qwen3-vl");
   await expect.poll(() => prefsBody).toEqual({ ai_review: { model: "qwen3-vl" } });
 
-  // Prompt editor: save a draft.
-  const prompt = page.getByRole("textbox", { name: "Review prompt" });
+  // Prompt editor: save a draft. Scope to the Session review section — the Auto-sort section
+  // below it has its own Save/Reset for the classifier prompt (#459).
+  const review = page.getByRole("region", { name: "Session review" });
+  const prompt = review.getByRole("textbox", { name: "Review prompt" });
   await expect(prompt).toHaveValue("custom prompt");
   await prompt.fill("watch my fleet");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await review.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => prefsBody).toEqual({ ai_review: { prompt: "watch my fleet" } });
 });
 
@@ -154,7 +169,7 @@ test("mobile: AI Review settings panel renders at phone width", async ({ page },
   test.skip(testInfo.project.name !== "mobile", "phone-width layout check");
   await page.route("**/api/prefs", (r) => r.fulfill({ json: { ai_review: AI_REVIEW } }));
   await page.goto("/settings/ai-review");
-  await expect(page.getByRole("heading", { name: "AI session review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI endpoint" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Model" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Review prompt" })).toBeVisible();
 });

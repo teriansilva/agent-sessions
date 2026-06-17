@@ -9,7 +9,8 @@ Gating — all must hold before a single endpoint call happens:
   never sweeps, regardless of prefs (operator override).
 * **Prefs**: ``auto_sort.enabled`` AND a configured (reused) ai_review endpoint, re-read on
   EVERY sweep, so the Settings toggle takes effect at the next wake without a restart.
-* **Per-run cap** inside ``autosort.run_sort`` bounds endpoint calls; calls are serialized.
+* **Per-run cap** (``auto_sort.max_per_pass``, #459) inside ``autosort.run_sort`` bounds
+  endpoint calls; calls are serialized and spaced.
 
 Failures are swallowed (logged) with an interval backoff so a flaky endpoint never crashes
 the loop and is probed ever more gently.
@@ -25,9 +26,6 @@ from . import aitasks, autosort, prefs
 
 log = logging.getLogger("agent_sessions.autosort_loop")
 
-# Hard per-sweep cap on endpoint calls for the BACKGROUND loop — smaller than the on-demand
-# default so an unattended sweep stays gentle; overflow is picked up next sweep.
-SWEEP_CAP = 4
 # Failure-backoff multiplier ceiling (interval × up-to-8) for consecutive crashed sweeps.
 _BACKOFF_MAX_MULT = 8
 
@@ -53,7 +51,7 @@ async def sweep() -> dict:
     # Track the real work in the shared AI-activity registry (#441) — only PAST the gate, so a
     # disabled/unconfigured sweep stays a silent no-op, not a phantom "auto-sort ran" entry.
     async with aitasks.track("auto-sort", "sweep"):
-        return await autosort.run_sort(cap=SWEEP_CAP)
+        return await autosort.run_sort()
 
 
 async def run() -> None:

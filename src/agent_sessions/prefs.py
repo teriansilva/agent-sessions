@@ -547,21 +547,47 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     return new
 
 
-# --- Auto-sort (#424 Phase 6) ----------------------------------------------------------
+# --- Auto-sort (#424 Phase 6; tunables #459) -------------------------------------------
 # Opt-in AI auto-sorter: assigns UNASSIGNED sessions to existing project entities, reusing
 # the `ai_review` gateway (so it holds no endpoint config / secret of its own). Off by
-# default; bounds mirror the ai_review interval validation.
+# default. The confidence floor, classifier prompt, and per-run cap are operator-settable
+# (#459) so a run that finds only lower-confidence matches can be tuned from the UI — the
+# defaults reproduce the original hardcoded behaviour (0.7 / 8 / the prompt below).
 AUTO_SORT_INTERVAL_MIN = 5
 AUTO_SORT_INTERVAL_MAX = 24 * 60
+AUTO_SORT_CONFIDENCE_MIN_LO = 0.5
+AUTO_SORT_CONFIDENCE_MIN_HI = 0.95
+AUTO_SORT_MAX_PER_PASS_MIN = 1
+AUTO_SORT_MAX_PER_PASS_MAX = 50
+AUTO_SORT_PROMPT_MAX = 8000
+
+# The classifier system prompt (relocated from autosort.py so the UI can offer a
+# reset-to-default, exactly like DEFAULT_AI_REVIEW_PROMPT). Empty/whitespace coerces back
+# to this so a blank field can never strand the classifier.
+DEFAULT_AUTO_SORT_PROMPT = (
+    "You assign a coding session to ONE of the user's existing projects, or to none.\n"
+    "You are given the session's working directory, title, and summary, plus a list of "
+    "projects (id, name, and the folders each project has adopted).\n"
+    "Choose the single best-matching project, weighing the working directory's relationship "
+    "to the projects' adopted folders first, then the title/summary. If none clearly fits, "
+    "return null — do NOT invent an id.\n"
+    'Reply with ONLY a JSON object: {"project_id": "<one of the given ids, or null>", '
+    '"confidence": <number 0..1>}. Be conservative: prefer null over a wrong guess.'
+)
 
 _AUTO_SORT_DEFAULTS: dict[str, object] = {
     "enabled": False,
     "interval_minutes": 30,
+    "confidence_min": 0.7,
+    "max_per_pass": 8,
+    "prompt": DEFAULT_AUTO_SORT_PROMPT,
 }
 
 
 def get_auto_sort(path: Path | None = None) -> dict:
-    """The stored `auto_sort` block with defaults applied + types coerced (#424 Phase 6)."""
+    """The stored `auto_sort` block with defaults applied + types coerced (#424 Phase 6,
+    tunables #459). An empty/whitespace prompt coerces back to the default so a blank field
+    can never strand the classifier."""
     raw = _load(path or _default_path()).get("auto_sort")
     out = dict(_AUTO_SORT_DEFAULTS)
     if isinstance(raw, dict):
@@ -574,20 +600,41 @@ def get_auto_sort(path: Path | None = None) -> dict:
             and AUTO_SORT_INTERVAL_MIN <= v <= AUTO_SORT_INTERVAL_MAX
         ):
             out["interval_minutes"] = v
+        c = raw.get("confidence_min")
+        if (
+            isinstance(c, int | float)
+            and not isinstance(c, bool)
+            and AUTO_SORT_CONFIDENCE_MIN_LO <= c <= AUTO_SORT_CONFIDENCE_MIN_HI
+        ):
+            out["confidence_min"] = float(c)
+        m = raw.get("max_per_pass")
+        if (
+            isinstance(m, int)
+            and not isinstance(m, bool)
+            and AUTO_SORT_MAX_PER_PASS_MIN <= m <= AUTO_SORT_MAX_PER_PASS_MAX
+        ):
+            out["max_per_pass"] = m
+        if isinstance(raw.get("prompt"), str):
+            out["prompt"] = raw["prompt"]
+    if not str(out["prompt"]).strip():
+        out["prompt"] = DEFAULT_AUTO_SORT_PROMPT
     return out
 
 
 def public_auto_sort(path: Path | None = None) -> dict:
     """Client-safe view (#424 Phase 6). `auto_sort` holds no secret of its own; `configured`
-    mirrors the reused ai_review endpoint readiness so the UI can explain a can't-run state."""
+    mirrors the reused ai_review endpoint readiness so the UI can explain a can't-run state.
+    `default_prompt` backs the reset-to-default control (#459)."""
     out = dict(get_auto_sort(path))
     out["configured"] = bool(public_ai_review(path)["configured"])
+    out["default_prompt"] = DEFAULT_AUTO_SORT_PROMPT
     return out
 
 
 def validate_auto_sort_patch(patch: object) -> str | None:
-    """Server-side schema validation for a partial `auto_sort` write (#424 Phase 6): returns a
-    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op."""
+    """Server-side schema validation for a partial `auto_sort` write (#424 Phase 6, tunables
+    #459): returns a human-readable error (→ 422) or None. Unknown keys are rejected so a typo
+    can't no-op."""
     if not isinstance(patch, dict):
         return "auto_sort must be an object"
     unknown = set(patch) - set(_AUTO_SORT_DEFAULTS)
@@ -606,15 +653,44 @@ def validate_auto_sort_patch(patch: object) -> str | None:
                 f"auto_sort.interval_minutes must be an integer between "
                 f"{AUTO_SORT_INTERVAL_MIN} and {AUTO_SORT_INTERVAL_MAX}"
             )
+    if "confidence_min" in patch:
+        v = patch["confidence_min"]
+        if (
+            not isinstance(v, int | float)
+            or isinstance(v, bool)
+            or not (AUTO_SORT_CONFIDENCE_MIN_LO <= v <= AUTO_SORT_CONFIDENCE_MIN_HI)
+        ):
+            return (
+                f"auto_sort.confidence_min must be a number between "
+                f"{AUTO_SORT_CONFIDENCE_MIN_LO} and {AUTO_SORT_CONFIDENCE_MIN_HI}"
+            )
+    if "max_per_pass" in patch:
+        v = patch["max_per_pass"]
+        if (
+            not isinstance(v, int)
+            or isinstance(v, bool)
+            or not (AUTO_SORT_MAX_PER_PASS_MIN <= v <= AUTO_SORT_MAX_PER_PASS_MAX)
+        ):
+            return (
+                f"auto_sort.max_per_pass must be an integer between "
+                f"{AUTO_SORT_MAX_PER_PASS_MIN} and {AUTO_SORT_MAX_PER_PASS_MAX}"
+            )
+    if "prompt" in patch and not (
+        isinstance(patch["prompt"], str) and len(patch["prompt"]) <= AUTO_SORT_PROMPT_MAX
+    ):
+        return "auto_sort.prompt must be a string of bounded length"
     return None
 
 
 def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
-    """Merge a VALIDATED partial block into the stored one and persist (#424 Phase 6)."""
+    """Merge a VALIDATED partial block into the stored one and persist (#424 Phase 6, tunables
+    #459). An emptied prompt falls back to the default so it's never stranded."""
     new = dict(get_auto_sort(path))
-    for k in ("enabled", "interval_minutes"):
+    for k in ("enabled", "interval_minutes", "confidence_min", "max_per_pass", "prompt"):
         if k in patch:
-            new[k] = patch[k]
+            new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
+    if not str(new["prompt"]).strip():
+        new["prompt"] = DEFAULT_AUTO_SORT_PROMPT
     _set("auto_sort", new, path)
     return new
 

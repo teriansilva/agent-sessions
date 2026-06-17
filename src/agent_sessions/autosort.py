@@ -10,10 +10,12 @@ Safety contract:
   NEVER overrides a manual assignment (drag #436 / menu #438 / a prior auto-sort), which is
   the issue's hard rule.
 * **Confidence-gated** — a session is assigned only when the model returns a *known* project
-  id with confidence ≥ ``CONFIDENCE_MIN``; ambiguous sessions are left unassigned.
-* **Bounded + fail-soft** — at most ``cap`` endpoint calls per run, one at a time with a small
-  spacing. A per-session endpoint/parse failure is skipped (logged), not fatal; an
-  unconfigured endpoint is a no-op. The model output is treated strictly as data.
+  id with confidence ≥ the operator-set floor (``auto_sort.confidence_min``, #459); ambiguous
+  sessions are left unassigned and surfaced as ``near_misses`` so the floor can be tuned.
+* **Bounded + fail-soft** — at most ``max_per_pass`` endpoint calls per run (``auto_sort``
+  prefs, #459), one at a time with a small spacing. A per-session endpoint/parse failure is
+  skipped (logged), not fatal; an unconfigured endpoint is a no-op. The model output is
+  treated strictly as data.
 """
 
 from __future__ import annotations
@@ -22,27 +24,18 @@ import asyncio
 import json
 import logging
 
-from . import engines, metadata, projects, review
+from . import engines, metadata, prefs, projects, review
 
 log = logging.getLogger("agent_sessions.autosort")
 
-# Below this the model's pick is treated as "not sure" → the session stays unassigned.
-CONFIDENCE_MIN = 0.7
-# Default per-run cap on endpoint calls (the background loop uses a smaller one).
-DEFAULT_CAP = 8
 # Spacing between consecutive endpoint calls so even a capped run can't burst the gateway.
 CALL_SPACING_S = 1.0
+# Cap on how many near-misses (a known pick below the confidence floor) the report returns,
+# so a large unconfident batch can't bloat the response — the highest-confidence ones win.
+NEAR_MISS_CAP = 8
 
-_SYSTEM_PROMPT = (
-    "You assign a coding session to ONE of the user's existing projects, or to none.\n"
-    "You are given the session's working directory, title, and summary, plus a list of "
-    "projects (id, name, and the folders each project has adopted).\n"
-    "Choose the single best-matching project, weighing the working directory's relationship "
-    "to the projects' adopted folders first, then the title/summary. If none clearly fits, "
-    "return null — do NOT invent an id.\n"
-    'Reply with ONLY a JSON object: {"project_id": "<one of the given ids, or null>", '
-    '"confidence": <number 0..1>}. Be conservative: prefer null over a wrong guess.'
-)
+# The confidence floor, per-run cap, and classifier prompt now live in the `auto_sort` prefs
+# block and are read per run (`prefs.DEFAULT_AUTO_SORT_PROMPT` is the default prompt, #459).
 
 
 def _candidate_payload(project_index: dict[str, projects.Project]) -> list[dict]:
@@ -82,16 +75,19 @@ def _projects_for_prompt(project_index: dict[str, projects.Project]) -> list[dic
     ]
 
 
-async def _classify(cand: dict, projects_payload: list[dict]) -> tuple[str | None, float]:
-    """Ask the gateway which project the session belongs to. Returns ``(project_id|None,
-    confidence)``; a malformed reply degrades to ``(None, 0.0)``."""
+async def _classify(
+    cand: dict, projects_payload: list[dict], prompt: str
+) -> tuple[str | None, float]:
+    """Ask the gateway which project the session belongs to, using the operator-set classifier
+    ``prompt`` (#459). Returns ``(project_id|None, confidence)``; a malformed reply degrades to
+    ``(None, 0.0)``."""
     user = {
         "session": {"cwd": cand["cwd"], "title": cand["title"], "summary": cand["summary"]},
         "projects": projects_payload,
     }
     obj = await review.complete_json(
         [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": json.dumps(user)},
         ]
     )
@@ -105,26 +101,35 @@ async def _classify(cand: dict, projects_payload: list[dict]) -> tuple[str | Non
     return pid, conf
 
 
-async def run_sort(*, cap: int = DEFAULT_CAP) -> dict:
-    """One auto-sort pass. Returns a report dict ``{candidates, scanned, assigned[], …}``.
+async def run_sort(*, cap: int | None = None) -> dict:
+    """One auto-sort pass. Returns a report dict ``{candidates, scanned, assigned[],
+    near_misses[], …}``.
 
-    The caller owns the *enabled* gate; this is a no-op when there are no projects or the
-    reused AI-review endpoint isn't configured (``skipped`` says which). Only ever ASSIGNS
-    (sets an empty ``project_id``); it never clears or changes an existing one."""
+    The confidence floor, classifier prompt, and per-run cap are read from the ``auto_sort``
+    prefs each call (#459), so a Settings change applies to the next run; ``cap`` overrides the
+    pref (used by tests). The caller owns the *enabled* gate; this is a no-op when there are no
+    projects or the reused AI-review endpoint isn't configured (``skipped`` says which). Only
+    ever ASSIGNS; it never clears or changes an existing ``project_id``."""
+    cfg = prefs.get_auto_sort()
+    conf_min = float(cfg["confidence_min"])
+    prompt = str(cfg["prompt"])
+    limit = int(cfg["max_per_pass"]) if cap is None else cap
+
     project_index = projects.load()
     active = {pid: p for pid, p in project_index.items() if not p.archived}
     if not active:
-        return _report([], 0, 0, 0, candidates=0, skipped="no projects")
+        return _report([], 0, 0, 0, candidates=0, near_misses=[], skipped="no projects")
 
     cands = await asyncio.to_thread(_candidate_payload, project_index)
-    window = cands[:cap]
+    window = cands[:limit]
     projects_payload = _projects_for_prompt(project_index)
     assigned: list[dict] = []
+    near_misses: list[dict] = []
     low_conf = errors = scanned = 0
     for i, cand in enumerate(window):
         scanned += 1
         try:
-            pid, conf = await _classify(cand, projects_payload)
+            pid, conf = await _classify(cand, projects_payload, prompt)
         except review.NotConfiguredError:
             return _report(
                 assigned,
@@ -132,13 +137,14 @@ async def run_sort(*, cap: int = DEFAULT_CAP) -> dict:
                 errors,
                 scanned - 1,
                 candidates=len(cands),
+                near_misses=near_misses,
                 skipped="not configured",
             )
         except review.ReviewError:
             errors += 1
             log.debug("autosort: classify failed for %s — skipping", cand["key"], exc_info=True)
             continue
-        if pid and pid in active and conf >= CONFIDENCE_MIN:
+        if pid and pid in active and conf >= conf_min:
             try:
                 await asyncio.to_thread(
                     metadata.patch, metadata.resolve_key(cand["key"]), project_id=pid
@@ -149,20 +155,33 @@ async def run_sort(*, cap: int = DEFAULT_CAP) -> dict:
                 log.warning("autosort: failed to assign %s → %s", cand["key"], pid, exc_info=True)
         else:
             low_conf += 1
+            # A KNOWN pick below the floor is an actionable near-miss (lower the threshold to
+            # assign it); a null / unknown-id pick is counted but isn't a near-miss.
+            if pid and pid in active:
+                near_misses.append({"id": cand["key"], "project_id": pid, "confidence": conf})
         if i + 1 < len(window):
             await asyncio.sleep(CALL_SPACING_S)
     if assigned:
         log.info("autosort: assigned %d session(s) to projects", len(assigned))
-    return _report(assigned, low_conf, errors, scanned, candidates=len(cands))
+    near_misses.sort(key=lambda n: n["confidence"], reverse=True)
+    return _report(
+        assigned,
+        low_conf,
+        errors,
+        scanned,
+        candidates=len(cands),
+        near_misses=near_misses[:NEAR_MISS_CAP],
+    )
 
 
-def _report(assigned, low_conf, errors, scanned, *, candidates, skipped=None):
+def _report(assigned, low_conf, errors, scanned, *, candidates, near_misses=None, skipped=None):
     out = {
         "candidates": candidates,
         "scanned": scanned,
         "assigned": assigned,
         "low_confidence": low_conf,
         "errors": errors,
+        "near_misses": near_misses or [],
     }
     if skipped:
         out["skipped"] = skipped

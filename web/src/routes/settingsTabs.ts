@@ -5,7 +5,7 @@
 export const SETTINGS_TABS = [
   { id: "appearance", label: "Appearance" },
   { id: "projects", label: "Projects" },
-  { id: "ai-review", label: "AI Review" },
+  { id: "ai-review", label: "AI" },
   { id: "security", label: "Security" },
   { id: "system", label: "System" },
   { id: "maintenance", label: "Maintenance" },

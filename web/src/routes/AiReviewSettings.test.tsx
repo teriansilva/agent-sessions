@@ -86,7 +86,7 @@ beforeEach(() => {
 
 test("renders the config from /api/config and never echoes a key (write-only)", async () => {
   renderPanel();
-  expect(await screen.findByRole("heading", { name: "AI session review" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "AI endpoint" })).toBeInTheDocument();
   expect(screen.getByLabelText(/Endpoint base URL/i)).toHaveValue("https://ai.example.io/v1");
   // The key field is empty (value never round-trips); a SET badge marks a stored key.
   const key = screen.getByLabelText(/API key/i);
@@ -129,7 +129,7 @@ test("falls back to free-text model entry when the endpoint can't list models", 
 
 test("model list is not fetched while unconfigured (no endpoint/key yet)", async () => {
   renderPanel(aiBlock({ configured: false, api_key_set: false, base_url: "" }));
-  await screen.findByRole("heading", { name: "AI session review" });
+  await screen.findByRole("heading", { name: "AI endpoint" });
   expect(api.aiReviewModels).not.toHaveBeenCalled();
   expect(screen.getByText(/Set the base URL and API key first/i)).toBeInTheDocument();
 });
@@ -280,7 +280,7 @@ test("a save that leaves the config incomplete reports it instead of probing", a
     },
   }));
   renderPanel(aiBlock({ configured: false, api_key_set: false, base_url: "" }));
-  await screen.findByRole("heading", { name: "AI session review" });
+  await screen.findByRole("heading", { name: "AI endpoint" });
   const url = screen.getByLabelText(/Endpoint base URL/i);
   await user.type(url, "https://other.example/v1");
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
@@ -344,7 +344,7 @@ test("Remove key sends api_key: null, clears the badge, and the action disappear
 
 test("Remove key is not offered while no key is stored", async () => {
   renderPanel(aiBlock({ api_key_set: false, configured: false }));
-  await screen.findByRole("heading", { name: "AI session review" });
+  await screen.findByRole("heading", { name: "AI endpoint" });
   expect(screen.queryByRole("button", { name: "Remove key" })).not.toBeInTheDocument();
 });
 
@@ -371,14 +371,14 @@ test("a save that doesn't flip `configured` leaves the config context alone", as
 
 test("review timeout renders the saved value; empty shows the 120s default hint", async () => {
   renderPanel(aiBlock({ request_timeout: 90 }));
-  expect(await screen.findByLabelText("Review timeout")).toHaveValue(90);
+  expect(await screen.findByLabelText("Request timeout")).toHaveValue(90);
   expect(screen.getByText(/Slow local models often need 60–180s/i)).toBeInTheDocument();
 });
 
 test("review timeout commits on blur through the ai_review patch flow", async () => {
   const user = userEvent.setup();
   renderPanel();
-  const field = screen.getByLabelText("Review timeout");
+  const field = screen.getByLabelText("Request timeout");
   expect(field).toHaveValue(null); // unset → placeholder shows the 120 default
   await user.type(field, "240");
   await user.tab();
@@ -390,7 +390,7 @@ test("review timeout commits on blur through the ai_review patch flow", async ()
 test("an out-of-range review timeout is rejected client-side and the draft reverts", async () => {
   const user = userEvent.setup();
   renderPanel(aiBlock({ request_timeout: 90 }));
-  const field = screen.getByLabelText("Review timeout");
+  const field = screen.getByLabelText("Request timeout");
   await user.clear(field);
   await user.type(field, "5");
   await user.tab();
@@ -405,7 +405,7 @@ test("an out-of-range review timeout is rejected client-side and the draft rever
 test("clearing the review timeout sends null (unset → env/default applies)", async () => {
   const user = userEvent.setup();
   renderPanel(aiBlock({ request_timeout: 90 }));
-  const field = screen.getByLabelText("Review timeout");
+  const field = screen.getByLabelText("Request timeout");
   await user.clear(field);
   await user.tab();
   await waitFor(() =>

@@ -60,13 +60,23 @@ export interface AiReviewConfig {
 }
 
 /** AI auto-sort config (#424 Phase 6) — the PUBLIC view from /api/config. Opt-in; reuses the
- *  ai_review endpoint, so it holds no secret of its own. */
+ *  ai_review endpoint, so it holds no secret of its own. Tuning knobs added in #459. */
 export interface AutoSortConfig {
   enabled: boolean;
   interval_minutes: number;
+  /** Assignment confidence floor (0.5–0.95, default 0.7); below it a session stays
+   *  unassigned. Lower it when confident matches are too rare (#459). */
+  confidence_min: number;
+  /** Max sessions classified per run — the on-demand button AND the background loop
+   *  (1–50, default 8) (#459). */
+  max_per_pass: number;
+  /** The classifier system prompt (editable; empty resets to `default_prompt`) (#459). */
+  prompt: string;
   /** The reused ai_review endpoint is usable (base URL + key present). Mirrors
    *  `ai_review.configured` — auto-sort can't run without it. */
   configured: boolean;
+  /** Server's default classifier prompt, for the reset-to-default control (#459). */
+  default_prompt: string;
 }
 
 /** Report from POST /api/projects/auto-sort (#424 Phase 6): one bounded on-demand pass. */
@@ -76,6 +86,10 @@ export interface AutoSortReport {
   assigned: { id: string; project_id: string; confidence: number }[];
   low_confidence: number;
   errors: number;
+  /** Unassigned sessions whose best-guess project fell below `confidence_min` — the
+   *  actionable near-misses, so the operator can lower the threshold with eyes open.
+   *  Bounded + sorted by confidence desc; only known-project picks (#459). */
+  near_misses?: { id: string; project_id: string; confidence: number }[];
   /** Present when the pass did nothing (e.g. "no projects" / "not configured"). */
   skipped?: string;
 }
