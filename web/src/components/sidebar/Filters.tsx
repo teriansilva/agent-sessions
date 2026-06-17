@@ -1,6 +1,4 @@
-import { useOverviewPrefs } from "../../app/overviewPrefs";
 import type { Filters } from "../../hooks/useSessionsList";
-import { displayProjectName } from "../../lib/format";
 import type { ProjectRef } from "../../types/api";
 import styles from "./Filters.module.css";
 
@@ -13,7 +11,6 @@ interface Props {
 
 /** Search + project/agent dropdowns (server facets) + active/archived tabs. */
 export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
-  const { projectNames } = useOverviewPrefs();
   const hasFilter = !!(filters.q || filters.project || filters.engine);
   return (
     <div className={styles.bar}>
@@ -33,12 +30,11 @@ export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
         >
           <option value="">All projects</option>
           {facets.projects.map((p) => (
-            // Entities show their own name; folder groups keep the per-cwd custom-name
-            // (#148) / shortened-path display exactly as before #361. A server-side
+            // The dropdown lists PROJECT ENTITIES (#445): the user's projects (incl. empty
+            // ones) plus the synthetic "Default" catch-all — never folder paths. A server-side
             // member count (#361 Phase 3) renders as "Name (N)"; older servers omit it.
-            <option key={`${p.kind}:${p.id}`} value={p.id}>
-              {(p.kind === "project" ? p.name : displayProjectName(p.id, projectNames)) +
-                (p.count != null ? ` (${p.count})` : "")}
+            <option key={p.id} value={p.id}>
+              {p.name + (p.count != null ? ` (${p.count})` : "")}
             </option>
           ))}
         </select>

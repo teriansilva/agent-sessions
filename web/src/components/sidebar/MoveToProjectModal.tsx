@@ -108,7 +108,7 @@ export function MoveToProjectModal({
                 onClick={() => onMove(null)}
               >
                 <FolderTree size={14} aria-hidden="true" />
-                <span className={styles.optName}>Unassigned (folder)</span>
+                <span className={styles.optName}>Default project</span>
                 {currentId === null && <Check size={14} aria-label="current" />}
               </button>
             </li>

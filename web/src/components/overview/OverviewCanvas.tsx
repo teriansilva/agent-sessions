@@ -25,6 +25,7 @@ import { api, ApiError } from "../../lib/api";
 import { engineColor } from "../../lib/format";
 import {
   buildOverview,
+  DEFAULT_PROJECT_ID,
   expandableKeys,
   type GroupBy,
   type ProjectGroupData,
@@ -153,16 +154,21 @@ function OverviewCanvasInner({
   const [dragging, setDragging] = useState(false);
 
   // A chip dropped onto a project cluster writes an explicit project_id via the metadata seam
-  // (#424). Optimistic first, rolled back on failure.
+  // (#424). Dropping onto the synthetic Default cluster (#445) CLEARS the assignment instead —
+  // the server rejects `project_id="__default__"` (only ""/null mean "unassign/default"), so the
+  // session reverts to its folder/owning resolution. Optimistic first, rolled back on failure.
   const reassign = useCallback(
-    async (sid: string, target: Node) => {
+    async (sid: string, cwd: string, target: Node) => {
       const data = target.data as ProjectGroupData;
       const pid = data.groupKey.replace(/^project:/, "");
-      const ref: ProjectRef = { kind: "project", id: pid, name: data.project, color: data.color };
+      const toDefault = pid === DEFAULT_PROJECT_ID;
+      const ref: ProjectRef = toDefault
+        ? { kind: "folder", id: cwd, name: cwd } // cleared → folder fallback until the refetch lands
+        : { kind: "project", id: pid, name: data.project, color: data.color };
       setOverrides((prev) => new Map(prev).set(sid, ref));
       setDragErr(null);
       try {
-        await api.setSessionProject(sid, pid);
+        await api.setSessionProject(sid, toDefault ? "" : pid);
         onRefetch?.(); // authoritative re-pull; the [sessions] effect clears the overlay
       } catch (ex) {
         setOverrides((prev) => {
@@ -186,9 +192,14 @@ function OverviewCanvasInner({
           .find((n) => n.type === "projectGroup" && (n.data as ProjectGroupData).kind === "project");
         if (target) {
           const pid = (target.data as ProjectGroupData).groupKey.replace(/^project:/, "");
-          const cur = (node.data as SessionNodeData).session.project;
-          if (!(cur.kind === "project" && cur.id === pid)) {
-            void reassign(node.id, target);
+          const session = (node.data as SessionNodeData).session;
+          const cur = session.project;
+          // Dropping onto Default = clear assignment; a folder-fallback session is already in
+          // Default, so that's a no-op. Onto a user project = assign, unless already there.
+          const alreadyThere =
+            pid === DEFAULT_PROJECT_ID ? cur.kind === "folder" : cur.kind === "project" && cur.id === pid;
+          if (!alreadyThere) {
+            void reassign(node.id, session.cwd, target);
             return; // the optimistic overlay re-lays the chip into its new cluster
           }
         }

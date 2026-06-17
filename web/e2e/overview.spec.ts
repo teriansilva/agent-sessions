@@ -69,7 +69,8 @@ test("desktop: a cluster expands on click, then a chip opens the session (#149)"
 
   // Scope to the overview canvas — the sidebar list also renders the session titles.
   const ov = page.locator(".tr-overview");
-  const header = ov.getByTitle(/expand \/home\/u\/proj/i);
+  // Unadopted sessions fold into the synthetic Default project in the Projects layout (#445).
+  const header = ov.getByTitle(/expand Default/i);
   await expect(header).toBeVisible();
   // Collapsed by default → no chips in the canvas yet.
   await expect(ov.getByText("First session")).toHaveCount(0);
@@ -90,12 +91,12 @@ test("desktop: the layout selector regroups the map and persists device-locally 
   await page.goto("/overview");
   const ov = page.locator(".tr-overview");
 
-  // Default = Projects: both sessions share a launch folder → one cluster, keyed by cwd.
+  // Default = Projects: both sessions are unadopted → they fold into the Default project (#445).
   await expect(ov.getByRole("radio", { name: /group by projects/i })).toHaveAttribute(
     "aria-checked",
     "true",
   );
-  await expect(ov.getByTitle(/expand \/home\/u\/proj/i)).toBeVisible();
+  await expect(ov.getByTitle(/expand Default/i)).toBeVisible();
 
   // Switch to Agents → one cluster per engine (claude + opencode), no folder cluster.
   await ov.getByRole("radio", { name: /group by agents/i }).click();

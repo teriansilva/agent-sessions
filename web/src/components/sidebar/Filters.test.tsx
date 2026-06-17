@@ -2,32 +2,43 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { FiltersBar } from "./Filters";
 
-const folderRef = (cwd: string) => ({ kind: "folder" as const, id: cwd, name: cwd.split("/").pop() ?? cwd });
+// The project facet lists project ENTITIES now (#445): the user's projects plus the synthetic
+// Default catch-all — never folder paths.
+const projectRef = (id: string, name: string, count: number) => ({
+  kind: "project" as const,
+  id,
+  name,
+  color: "",
+  count,
+});
 const facets = {
-  projects: [folderRef("/home/m/claude"), folderRef("/tmp/x")],
+  projects: [projectRef("p-1", "SampleProject", 3), projectRef("__default__", "Default", 2)],
   engines: ["claude", "opencode"],
 };
 const base = { q: "", project: "", engine: "", archived: false };
 const noop = () => {};
 
-test("renders project + agent options from facets", () => {
+test("lists project entities (incl. Default) from facets, not folder paths (#445)", () => {
   render(<FiltersBar filters={base} facets={facets} onChange={noop} onClear={noop} />);
   expect(screen.getByLabelText("Filter by project")).toBeInTheDocument();
-  expect(screen.getByRole("option", { name: "~/claude" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "SampleProject (3)" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Default (2)" })).toBeInTheDocument();
   expect(screen.getByLabelText("Filter by agent")).toBeInTheDocument(); // shown: >1 engine
 });
 
-test("a facet ref with a count renders as Name (N) (#361)", () => {
+test("lists empty (0-count) projects too, rendered as Name (N) (#445)", () => {
   const counted = {
     projects: [
-      { kind: "project" as const, id: "p-1", name: "SampleProject", color: "", count: 3 },
-      { ...folderRef("/home/m/claude"), count: 2 },
+      projectRef("p-1", "SampleProject", 3),
+      projectRef("p-2", "Empty", 0),
+      projectRef("__default__", "Default", 2),
     ],
     engines: ["claude"],
   };
   render(<FiltersBar filters={base} facets={counted} onChange={noop} onClear={noop} />);
   expect(screen.getByRole("option", { name: "SampleProject (3)" })).toBeInTheDocument();
-  expect(screen.getByRole("option", { name: "~/claude (2)" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Empty (0)" })).toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Default (2)" })).toBeInTheDocument();
 });
 
 test("agent select is hidden when only one engine exists", () => {

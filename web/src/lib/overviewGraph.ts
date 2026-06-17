@@ -52,6 +52,10 @@ export interface ProjectGroupData extends Record<string, unknown> {
   name?: string;
   /** Entity color (#361) — rendered as a tinted top border + dot on the group node. */
   color?: string;
+  /** Folders-layout only (#445): the project this folder belongs to — the user project all
+   *  its sessions resolve to (adopted folder), else the synthetic "Default" catch-all. Drawn
+   *  as a small owning-project badge so folders read as a sub-property of a project. */
+  owner?: { name: string; color?: string };
 }
 export interface SessionNodeData extends Record<string, unknown> {
   session: Session;
@@ -114,11 +118,19 @@ export interface BuildOptions {
   draggableSessions?: boolean;
 }
 
-/** A session's cluster for the active mode (#424 Phase 2):
+/** The synthetic "Default" project (#445) — folders are a sub-property of projects, so an
+ *  unadopted session (resolved `kind:"folder"`) clusters under Default in `project` mode rather
+ *  than as a standalone folder node. Mirrors the server's `projects.DEFAULT_PROJECT_ID`. */
+export const DEFAULT_PROJECT_ID = "__default__";
+export const DEFAULT_PROJECT_NAME = "Default";
+const DEFAULT_GROUP_KEY = `project:${DEFAULT_PROJECT_ID}`;
+
+/** A session's cluster for the active mode (#424 Phase 2 / #445):
  *  - `project` (default): the entity ref for project members (merging their sessions across
- *    cwds), the launch cwd for the folder fallback (#361 Phase 4);
+ *    cwds), the synthetic **Default** project for the unadopted folder fallback (#445) — so the
+ *    Projects layout is projects→sessions only, never standalone folder nodes;
  *  - `folder`: always the launch cwd — entities are ignored, so a project's sessions split
- *    back out by folder;
+ *    back out by folder (each folder node carries its owning-project badge, #445);
  *  - `agent`: one cluster per engine. */
 interface Cluster {
   key: string;
@@ -136,7 +148,7 @@ const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
   }
   return s.project.kind === "project"
     ? { key: `project:${s.project.id}`, kind: "project", label: s.project.name, color: s.project.color }
-    : { key: s.cwd, kind: "folder", label: s.project.name };
+    : { key: DEFAULT_GROUP_KEY, kind: "project", label: DEFAULT_PROJECT_NAME };
 };
 
 /** A cwd hidden by prefs still keeps its sessions on the map ONLY in `project` mode when they
@@ -144,6 +156,34 @@ const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
  *  mode every cluster is cwd- or engine-keyed, so a hidden cwd hides its sessions outright. */
 const keepsHiddenCwd = (s: Session, groupBy: GroupBy): boolean =>
   groupBy === "project" && s.project.kind === "project";
+
+/** The owning project for a folder node (#445, Folders layout): the single user project all the
+ *  folder's sessions resolve to (an adopted folder), else the synthetic Default. A folder with
+ *  any unadopted (`kind:"folder"`) session, or sessions split across >1 project, reads as
+ *  Default — the folder itself belongs to Default; a hand-reassigned session doesn't relabel it. */
+const ownerOf = (items: Session[]): { name: string; color?: string } => {
+  let id: string | undefined;
+  let name = "";
+  let color: string | undefined;
+  let conflict = false;
+  let hasFolder = false;
+  for (const s of items) {
+    if (s.project.kind === "project") {
+      if (id === undefined) {
+        id = s.project.id;
+        name = s.project.name;
+        color = s.project.color;
+      } else if (id !== s.project.id) {
+        conflict = true;
+      }
+    } else {
+      hasFolder = true;
+    }
+  }
+  return !hasFolder && !conflict && id !== undefined
+    ? { name, ...(color ? { color } : {}) }
+    : { name: DEFAULT_PROJECT_NAME };
+};
 
 /** Toggle keys offered to "Expand all" — the same visibility predicate + clustering as
  *  `buildOverview` for the active mode (#424 Phase 2). */
@@ -293,6 +333,10 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
         collapsed: !isExpanded,
         name: g.kind === "folder" ? names[key] : undefined,
         color: g.color,
+        // Folders layout (#445): tag each folder node with its owning project (the user project
+        // all its sessions resolve to, else Default) so folders read as a sub-property of a
+        // project. Only meaningful for folder-kind groups in `folder` mode.
+        owner: groupBy === "folder" && g.kind === "folder" ? ownerOf(g.items) : undefined,
       } satisfies ProjectGroupData,
       style: { width: w, height: h },
       draggable: false,

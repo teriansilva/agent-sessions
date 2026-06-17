@@ -153,9 +153,12 @@ def test_no_match_is_empty_but_facets_remain(auth_cfg, fake_jsonl):
     assert d["total"] == 0
     assert d["sessions"] == []
     assert d["next_offset"] is None
-    # facets are computed over the full archived-scoped set, so they survive a
-    # zero-match filter (the dropdowns must still offer every project).
-    assert {p["id"] for p in d["facets"]["projects"]} == {_REPO_A, _TMP_OTHER, _DEMOAPP}
+    # Facets are computed over the full archived-scoped set, so they survive a zero-match
+    # filter (the dropdown must still offer every project). With no project entities, the four
+    # live unadopted sessions fold into the synthetic Default project (#445).
+    assert d["facets"]["projects"] == [
+        {"kind": "project", "id": "__default__", "name": "Default", "color": "", "count": 4}
+    ]
 
 
 # ---- filtered pagination ------------------------------------------------------
@@ -183,10 +186,13 @@ def test_filtered_pagination_stays_within_results(auth_cfg, fake_jsonl):
 def test_facets_cover_full_set_beyond_first_page(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    # Only one row loaded, but every live project must still be an option.
+    # One row loaded, but the Default count covers every live unadopted session (full-set
+    # facet computation, #445): the dropdown's count isn't limited to the loaded page.
     d = c.get("/api/sessions?limit=1&offset=0").json()
     assert len(d["sessions"]) == 1
-    assert {p["id"] for p in d["facets"]["projects"]} == {_REPO_A, _TMP_OTHER, _DEMOAPP}
+    assert d["facets"]["projects"] == [
+        {"kind": "project", "id": "__default__", "name": "Default", "color": "", "count": 4}
+    ]
     assert d["facets"]["engines"] == ["claude"]
 
 
@@ -194,8 +200,65 @@ def test_facets_scoped_by_archived(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/sessions?archived=1&limit=50").json()
-    assert [p["id"] for p in d["facets"]["projects"]] == [_OLD]
+    # The single archived session is unadopted → the Default aggregate, scoped to the archived view.
+    assert d["facets"]["projects"] == [
+        {"kind": "project", "id": "__default__", "name": "Default", "color": "", "count": 1}
+    ]
     assert d["facets"]["engines"] == ["claude"]
+
+
+# ---- #445: project facets list ENTITIES + a synthetic Default catch-all ------------
+
+
+def test_facets_list_project_entities_plus_default(auth_cfg, fake_jsonl):
+    """The project dropdown lists project ENTITIES (including empty ones), with unadopted
+    sessions aggregated under the synthetic Default — never per-folder cwd entries. User
+    projects sort first (by name), Default last."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Adopt repo/a (its 2 sessions resolve to the entity); add a folderless empty project too.
+    a = c.post("/api/projects", json={"name": "Repo A", "folders": [_REPO_A]}, headers=hdr).json()[
+        "id"
+    ]
+    empty = c.post("/api/projects", json={"name": "Empty"}, headers=hdr).json()["id"]
+    facets = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
+    # user entities first (alpha), Default last; the 0-count empty project is still listed.
+    assert facets == [
+        {"kind": "project", "id": empty, "name": "Empty", "color": "", "count": 0},
+        {"kind": "project", "id": a, "name": "Repo A", "color": "", "count": 2},
+        {"kind": "project", "id": "__default__", "name": "Default", "color": "", "count": 2},
+    ]
+
+
+def test_filter_by_default_project(auth_cfg, fake_jsonl):
+    """project=__default__ matches exactly the unadopted (folder-fallback) rows; adopted
+    sessions are excluded. Bare-cwd filtering still works for back-compat (#445)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/projects", json={"name": "Repo A", "folders": [_REPO_A]}, headers=hdr)
+    d = c.get("/api/sessions?project=__default__&limit=200").json()
+    # the 2 unadopted live cwds (tmp/other + demoapp), not the 2 adopted repo/a rows
+    assert {s["cwd"] for s in d["sessions"]} == {_TMP_OTHER, _DEMOAPP}
+    assert all(s["project"]["kind"] == "folder" for s in d["sessions"])
+    # bare-cwd back-compat still selects a launch folder directly
+    assert c.get(f"/api/sessions?project={_TMP_OTHER}&limit=200").json()["total"] == 1
+
+
+def test_default_filter_respects_included_mode(auth_cfg, fake_jsonl):
+    """Default obeys folder visibility — project=__default__ under an included-mode allowlist
+    returns only the visible unadopted rows, never bypassing curation (#445)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": [_TMP_OTHER]},
+        headers=hdr,
+    )
+    d = c.get("/api/sessions?project=__default__&limit=200").json()
+    assert {s["cwd"] for s in d["sessions"]} == {_TMP_OTHER}  # demoapp + repo/a curated out
 
 
 # ---- projects picker ----------------------------------------------------------
@@ -230,11 +293,12 @@ def test_projects_endpoint_includes_all_engines(auth_cfg, fake_jsonl, tmp_home, 
 
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    # The opencode-only cwd appears in the filter facets …
+    # The opencode-only session folds into the synthetic Default project (it's unadopted), so
+    # it still reaches the all-engine facet aggregate (#196/#445) …
     facets = c.get("/api/sessions?limit=100").json()["facets"]
-    facet_projects = {p["id"] for p in facets["projects"]}
-    assert "/tmp/oc-only" in facet_projects
-    # … and is therefore manageable via /api/projects (previously Claude-only → it drifted).
+    default = next(p for p in facets["projects"] if p["id"] == "__default__")
+    assert default["count"] == 1
+    # … and is therefore manageable via /api/folders (previously Claude-only → it drifted).
     picker = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
     assert "/tmp/oc-only" in picker
 
@@ -250,18 +314,21 @@ def test_hidden_projects_filtered_from_sessions_and_facets(auth_cfg, fake_jsonl,
 
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    # Sanity: before hiding, /tmp/other is present.
+    # Sanity: before hiding, /tmp/other is present and folds into Default (#445).
     before = c.get("/api/sessions?limit=100").json()
     assert "/tmp/other" in {row["cwd"] for row in before["sessions"]}
-    assert "/tmp/other" in {p["id"] for p in before["facets"]["projects"]}
+    before_default = next(p for p in before["facets"]["projects"] if p["id"] == "__default__")
     pre_total = before["total"]
 
-    # Hide it via the new key and confirm it's absent server-side.
+    # Hide it. An unadopted row keeps kind=="folder" and still obeys folder visibility, so the
+    # hidden cwd leaves the rows, the total, AND the Default aggregate count — Default never
+    # bypasses the curation (#445).
     prefs.set_projects_hidden(["/tmp/other"])
     after = c.get("/api/sessions?limit=100").json()
     assert "/tmp/other" not in {row["cwd"] for row in after["sessions"]}
-    assert "/tmp/other" not in {p["id"] for p in after["facets"]["projects"]}
-    assert after["total"] <= pre_total  # the hidden rows are gone from the total too
+    after_default = next(p for p in after["facets"]["projects"] if p["id"] == "__default__")
+    assert after_default["count"] == before_default["count"] - 1
+    assert after["total"] == pre_total - 1
 
 
 def test_hidden_projects_filtered_from_projects_endpoint(auth_cfg, fake_jsonl, tmp_home):
@@ -898,9 +965,10 @@ def test_included_mode_filters_sessions_to_allowlist(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
-    assert len(projects) >= 2  # the fixture has several distinct project cwds
-    keep = projects[0]["id"]
+    rows = c.get("/api/sessions?limit=200").json()["sessions"]
+    cwds = sorted({s["cwd"] for s in rows})
+    assert len(cwds) >= 2  # the fixture has several distinct launch cwds
+    keep = cwds[0]
     r = c.post(
         "/api/prefs",
         json={"projects_mode": "included", "projects_included": [keep]},
@@ -908,9 +976,10 @@ def test_included_mode_filters_sessions_to_allowlist(auth_cfg, fake_jsonl):
     )
     assert r.status_code == 200
     d = c.get("/api/sessions?limit=200").json()
-    # only the allowlisted project survives — list + facets agree
-    assert [p["id"] for p in d["facets"]["projects"]] == [keep]
-    assert all(s["project"]["id"] == keep for s in d["sessions"])
+    # Only sessions launched in the allowlisted cwd survive; they're unadopted, so the facet is
+    # just the Default aggregate (#445) — list + facets agree on the visible set.
+    assert all(s["cwd"] == keep for s in d["sessions"])
+    assert [p["id"] for p in d["facets"]["projects"]] == ["__default__"]
 
 
 def test_all_mode_hide_still_excludes(auth_cfg, fake_jsonl):
@@ -918,11 +987,11 @@ def test_all_mode_hide_still_excludes(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
-    projects = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
-    drop = projects[0]["id"]
+    rows = c.get("/api/sessions?limit=200").json()["sessions"]
+    drop = sorted({s["cwd"] for s in rows})[0]
     c.post("/api/prefs", json={"projects_hidden": [drop]}, headers=hdr)
-    after = c.get("/api/sessions?limit=200").json()["facets"]["projects"]
-    assert drop not in {p["id"] for p in after}
+    after = c.get("/api/sessions?limit=200").json()["sessions"]
+    assert drop not in {s["cwd"] for s in after}  # the denylisted cwd's sessions are gone
 
 
 def test_projects_picker_unfiltered_in_included_mode(auth_cfg, fake_jsonl):

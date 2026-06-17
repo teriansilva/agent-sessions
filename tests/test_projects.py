@@ -374,7 +374,7 @@ def test_assignment_writes_sidecar_only(auth_cfg, fake_jsonl, tmp_home):
 # ---- API: facets + filter back-compat ----------------------------------------------
 
 
-def test_facets_list_entities_before_folder_groups(auth_cfg, fake_jsonl):
+def test_facets_list_entities_before_default(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     h = _hdr(csrf, auth_cfg)
@@ -382,9 +382,17 @@ def test_facets_list_entities_before_folder_groups(auth_cfg, fake_jsonl):
         "id"
     ]
     facets = c.get("/api/sessions?limit=50").json()["facets"]["projects"]
-    # entity first despite the "Z" name; folder groups follow, alphabetical
+    # the entity comes first despite the "Z" name; the synthetic Default catch-all is last (#445);
+    # the other two unadopted live cwds (repo/a x2 + demoapp) fold into Default.
     assert facets[0] == {"kind": "project", "id": pid, "name": "Zeta", "color": "", "count": 1}
-    assert [f["kind"] for f in facets[1:]] == ["folder", "folder"]
+    assert facets[-1] == {
+        "kind": "project",
+        "id": "__default__",
+        "name": "Default",
+        "color": "",
+        "count": 3,
+    }
+    assert [f["kind"] for f in facets] == ["project", "project"]
 
 
 def test_facet_refs_carry_counts(auth_cfg, fake_jsonl):
@@ -398,8 +406,8 @@ def test_facet_refs_carry_counts(auth_cfg, fake_jsonl):
     d = c.get("/api/sessions?limit=50").json()
     counts = {(f["kind"], f["id"]): f["count"] for f in d["facets"]["projects"]}
     assert counts[("project", pid)] == 2  # both repo/a fixture sessions
-    assert counts[("folder", _TMP_OTHER)] == 1
-    assert counts[("folder", _DEMOAPP)] == 1
+    # the two unadopted live cwds (tmp/other + demoapp) aggregate under Default (#445)
+    assert counts[("project", "__default__")] == 2
     assert all("count" not in r["project"] for r in d["sessions"])
 
 
@@ -464,7 +472,11 @@ def test_zero_entities_rows_are_plain_folder_refs(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/sessions?limit=50").json()
+    # The per-row resolved ref is unchanged: an unadopted session is still a plain folder ref
+    # (resolve()/visibility untouched, #445). Only the project facet now presents those rows as
+    # the synthetic Default project so the dropdown lists projects, not folder paths.
     for r in d["sessions"]:
         assert r["project"] == {"kind": "folder", "id": r["cwd"], "name": r["cwd"]}
-    assert all(f["kind"] == "folder" for f in d["facets"]["projects"])
+    assert [f["id"] for f in d["facets"]["projects"]] == ["__default__"]
+    assert all(f["kind"] == "project" for f in d["facets"]["projects"])
     assert c.get("/api/projects").json()["projects"] == []

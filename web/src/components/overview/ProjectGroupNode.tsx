@@ -14,7 +14,7 @@ import { useOverviewActions } from "./overviewActions";
  *  folder-hierarchy edges attach top/bottom (#148). When a custom name is set, the real
  *  path is shown as a subtitle to disambiguate. */
 export function ProjectGroupNode({ data }: NodeProps) {
-  const { project, kind, cwd, cwdCount, count, collapsed, name, color } =
+  const { project, kind, cwd, cwdCount, count, collapsed, name, color, owner } =
     data as ProjectGroupData;
   const { refetchSessions } = useOverviewActions();
   const [busy, setBusy] = useState(false);
@@ -59,6 +59,16 @@ export function ProjectGroupNode({ data }: NodeProps) {
         <Chevron size={14} className="tr-ov-chev" aria-hidden="true" />
         {color && <span className="tr-ov-proj-dot" style={{ background: color }} aria-hidden="true" />}
         <span className="tr-ov-meta">
+          {kind === "folder" && owner && (
+            <span className="tr-ov-owner" title={`In project ${owner.name}`}>
+              <span
+                className="tr-ov-owner-dot"
+                style={owner.color ? { background: owner.color } : undefined}
+                aria-hidden="true"
+              />
+              {owner.name}
+            </span>
+          )}
           <span className="tr-ov-path">{label}</span>
           {err ? (
             <span className="tr-ov-err" title={err}>

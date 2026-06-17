@@ -121,6 +121,33 @@
   color: var(--text-3, var(--text-muted));
   flex: none;
 }
+/* Owning-project badge on a folder node (#445, Folders layout) — folders read as a
+   sub-property of their project. A small pill above the folder path. */
+.tr-ov-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  margin-bottom: 2px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tr-ov-owner-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
 /* Entity color marker (#361 Phase 4) — pairs with the tinted top border on .tr-ov-group. */
 .tr-ov-proj-dot {
   width: 8px;

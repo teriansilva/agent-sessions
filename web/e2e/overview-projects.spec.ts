@@ -116,8 +116,10 @@ test("an entity spanning two cwds renders ONE cluster labelled by the entity nam
   await expect(ov.getByTitle("Expand /home/u/app", { exact: true })).toHaveCount(0);
   await expect(ov.getByTitle("Expand /home/u/lib", { exact: true })).toHaveCount(0);
 
-  // The folder fallback keeps its path-keyed cluster next to it.
-  await expect(ov.getByTitle("Expand /home/u/plain", { exact: true })).toBeVisible();
+  // The unadopted (folder-fallback) session folds into the Default project, not a path-keyed
+  // folder node (#445).
+  await expect(ov.getByTitle("Expand /home/u/plain", { exact: true })).toHaveCount(0);
+  await expect(ov.getByTitle("Expand Default", { exact: true })).toBeVisible();
 
   // Expanding the entity cluster shows BOTH cwds' chips merged together.
   await ov.getByTitle("Expand Side", { exact: true }).click();
@@ -125,12 +127,16 @@ test("an entity spanning two cwds renders ONE cluster labelled by the entity nam
   await expect(ov.locator(".tr-ov-chip", { hasText: "Lib session" })).toBeVisible();
 });
 
-test("'Make this a project' POSTs {name, folders:[cwd]} from the cluster header", async ({
+test("'Make this a project' POSTs {name, folders:[cwd]} from a folder node (Folders layout)", async ({
   page,
 }) => {
   await page.goto("/overview");
   const ov = page.locator(".tr-overview");
   await expect(ov).toBeVisible();
+
+  // Promote-to-project now lives on folder nodes in the Folders layout (#445): the Projects
+  // layout has no folder nodes (unadopted sessions fold into Default).
+  await ov.getByRole("radio", { name: /group by folders/i }).click();
 
   const posted = page.waitForRequest(
     (r) => r.url().includes("/api/projects") && r.method() === "POST",

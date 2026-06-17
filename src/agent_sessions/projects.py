@@ -39,6 +39,16 @@ log = logging.getLogger(__name__)
 # Reserved top-level flag: the one-shot project_alias → entity migration ran (#361).
 _MIGRATED_KEY = "alias_migration_done"
 
+# The synthetic "Default" project (#445): a SURFACE-ONLY catch-all for sessions whose cwd no
+# project has adopted (the ``kind=="folder"`` fallback rows). It is NOT a stored entity and is
+# never returned by :func:`resolve` — `resolve` still yields a folder ref for unadopted cwds so
+# the visibility/curation rules (`_visible`, `prefs.project_visible`) are unchanged. Default is
+# materialized only in the project-facing surfaces (`/api/sessions` facets + filter, the overview
+# graph, the sidebar dropdown), where folders are presented as a sub-property of projects. The
+# ``__``-prefix keeps it disjoint from generated ids (``p-<hex>``) and from folder-conflict checks.
+DEFAULT_PROJECT_ID = "__default__"
+DEFAULT_PROJECT_NAME = "Default"
+
 _COLOR_RE_HELP = "color must be #rgb or #rrggbb"
 
 
@@ -445,6 +455,8 @@ def _strip_aliases(keys: list[str], metadata_path: Path | None) -> None:
 
 
 __all__ = [
+    "DEFAULT_PROJECT_ID",
+    "DEFAULT_PROJECT_NAME",
     "Project",
     "ProjectError",
     "Ref",

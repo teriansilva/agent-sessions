@@ -150,25 +150,52 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             for row in [_row(s, _meta_for(s), project_index)]
             if row["archived"] == archived and _visible(row)
         ]
-        # Facets for the project/agent dropdowns: distinct resolved refs over the visible
-        # (already hide-filtered) archived-scoped set, computed BEFORE q/project/engine
-        # filtering — so the dropdowns list every project/engine present, including ones
-        # past the first page, regardless of what's currently filtered or loaded.
-        # Entities sort first (alphabetical), then unassigned folder groups. Each facet
-        # ref carries a `count` of scoped rows resolving to it (#361 Phase 3) — copied,
-        # not mutated in place, because the same ref dict is embedded in the rows.
-        distinct: dict[tuple[str, str], dict] = {}
-        ref_counts: dict[tuple[str, str], int] = {}
+        # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
+        # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
+        # archived-scoped set, BEFORE q/project/engine filtering — so the dropdown lists every
+        # project present (and every empty one the user made), regardless of what's currently
+        # filtered or loaded. Each facet is:
+        #   * every non-archived project entity, with its scoped count — INCLUDING 0-count ones
+        #     (an empty project must be filterable the moment it's created); plus
+        #   * a synthetic "Default" catch-all aggregating the unadopted (`kind=="folder"`)
+        #     fallback rows — folders are presented as a sub-property of projects.
+        # Sorted user-entities-first (by name), Default last. `resolve()`/`_visible()` are
+        # unchanged: unadopted rows still resolve to `kind=="folder"` internally and keep obeying
+        # folder visibility, so Default never bypasses the `projects_hidden`/`included` curation.
+        entity_counts: dict[str, int] = {}
+        default_count = 0
         for r in scoped:
             ref = r["project"]
-            key = (ref["kind"], ref["id"])
-            distinct.setdefault(key, ref)
-            ref_counts[key] = ref_counts.get(key, 0) + 1
-        facets = {
-            "projects": sorted(
-                ({**ref, "count": ref_counts[key]} for key, ref in distinct.items()),
-                key=lambda ref: (ref["kind"] != "project", ref["name"].casefold(), ref["id"]),
+            if ref["kind"] == "project":
+                entity_counts[ref["id"]] = entity_counts.get(ref["id"], 0) + 1
+            else:  # unadopted folder fallback → the synthetic Default project
+                default_count += 1
+        project_facets = sorted(
+            (
+                {
+                    "kind": "project",
+                    "id": pid,
+                    "name": p.name,
+                    "color": p.color,
+                    "count": entity_counts.get(pid, 0),
+                }
+                for pid, p in project_index.items()
+                if not p.archived
             ),
+            key=lambda ref: (ref["name"].casefold(), ref["id"]),
+        )
+        if default_count:
+            project_facets.append(
+                {
+                    "kind": "project",
+                    "id": projects.DEFAULT_PROJECT_ID,
+                    "name": projects.DEFAULT_PROJECT_NAME,
+                    "color": "",
+                    "count": default_count,
+                }
+            )
+        facets = {
+            "projects": project_facets,
             "engines": sorted({r["engine"] for r in scoped}),
         }
         # Normalize filters; empty / whitespace-only means "no filter".
@@ -180,11 +207,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if q_norm and q_norm not in (r["title"] or "").casefold():
                 return False
             if project_f is not None:
-                # Project filter (#361): matches the resolved ref id (entity id, or the
-                # cwd for an unassigned folder group). The bare-cwd form is kept for
-                # back-compat — a row whose cwd equals the filter matches even when it
-                # now resolves into a project, which is exactly the pre-#361 result set.
-                if r["project"]["id"] != project_f and r["cwd"] != project_f:
+                # Project filter (#361/#445): matches the resolved entity id, the synthetic
+                # Default id (= every unadopted `kind=="folder"` row), or — for back-compat —
+                # the bare cwd (old links/state still filter by a launch folder even though
+                # it now resolves into a project or Default).
+                if project_f == projects.DEFAULT_PROJECT_ID:
+                    if r["project"]["kind"] != "folder":
+                        return False
+                elif r["project"]["id"] != project_f and r["cwd"] != project_f:
                     return False
             if engine_f is not None and r["engine"] != engine_f:
                 return False

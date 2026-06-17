@@ -68,6 +68,10 @@ test("desktop: nested projects form a tree with a custom name + working toggle (
   const ov = page.locator(".tr-overview");
   await expect(ov).toBeVisible();
 
+  // The cwd tree (nesting + custom names) lives in the Folders layout now (#445): the Projects
+  // layout folds unadopted sessions into the Default project and draws no folder nodes.
+  await ov.getByRole("radio", { name: /group by folders/i }).click();
+
   // Custom name shown on the root cluster + its path subtitle.
   await expect(ov.getByText("Claude WS")).toBeVisible();
   await expect(ov.getByText("~/claude", { exact: true })).toBeVisible();

@@ -3,6 +3,7 @@ import type { Session } from "../types/api";
 import {
   ACTIVE_WINDOW_S,
   buildOverview,
+  DEFAULT_PROJECT_NAME,
   expandableKeys,
   type ProjectGroupData,
 } from "./overviewGraph";
@@ -26,22 +27,27 @@ function s(over: Partial<Session> & { id: string }): Session {
   } as Session;
 }
 
-/** Expand every cwd in the given sessions (chips only render for expanded clusters). */
+/** Expand every cwd in the given sessions (chips only render for expanded clusters). In folder
+ *  mode the cluster key IS the cwd, so this expands every folder cluster. */
 const allExpanded = (sessions: Session[]) => new Set(sessions.map((x) => x.cwd));
 
-test("groups sessions by cwd and emits one group node per project", () => {
+// Folders layout is the "pure cwd tree" mode (#445): per-folder grouping, nesting, and the
+// custom-name display all live here now that the Projects layout folds unadopted sessions into
+// the synthetic Default project. The cwd-grouping/nesting/chip mechanics below exercise it there.
+const FOLDER = { groupBy: "folder" as const };
+
+test("folder mode groups sessions by cwd and emits one group node per folder", () => {
   const { nodes } = buildOverview(
     [
       s({ id: "claude:a", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
       s({ id: "claude:b", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
       s({ id: "opencode:c", cwd: "/p/two", project: { kind: "folder" as const, id: "/p/two", name: "two" } }),
     ],
-    { nowS: NOW },
+    { nowS: NOW, ...FOLDER },
   );
   const groups = nodes.filter((n) => n.type === "projectGroup");
   expect(groups).toHaveLength(2);
   expect(groups.find((g) => g.id === "group:/p/one")?.data).toMatchObject({
-    project: "one",
     cwd: "/p/one",
     count: 2,
   });
@@ -49,14 +55,14 @@ test("groups sessions by cwd and emits one group node per project", () => {
 
 test("clusters are collapsed by default — header only, no child chips", () => {
   const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/one" })];
-  const { nodes } = buildOverview(input, { nowS: NOW });
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER });
   expect(nodes.filter((n) => n.type === "session")).toHaveLength(0);
   expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ collapsed: true });
 });
 
 test("an expanded cluster renders its chips; a collapsed one does not", () => {
   const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/two" })];
-  const { nodes } = buildOverview(input, { nowS: NOW, expanded: new Set(["/p/one"]) });
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER, expanded: new Set(["/p/one"]) });
   const chips = nodes.filter((n) => n.type === "session").map((n) => n.id);
   expect(chips).toEqual(["claude:a"]); // only the expanded cluster's chip
   const groups = Object.fromEntries(
@@ -70,6 +76,7 @@ test("excluded cwds are dropped entirely (no group, no chips)", () => {
   const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/secret" })];
   const { nodes } = buildOverview(input, {
     nowS: NOW,
+    ...FOLDER,
     expanded: allExpanded(input),
     excluded: new Set(["/p/secret"]),
   });
@@ -80,7 +87,7 @@ test("excluded cwds are dropped entirely (no group, no chips)", () => {
 
 test("hides archived by default, includes them when asked", () => {
   const input = [s({ id: "claude:a" }), s({ id: "claude:b", archived: true })];
-  const exp = { expanded: allExpanded(input), nowS: NOW };
+  const exp = { ...FOLDER, expanded: allExpanded(input), nowS: NOW };
   const def = buildOverview(input, exp).nodes.filter((n) => n.type === "session");
   expect(def.map((n) => n.id)).toEqual(["claude:a"]);
   const all = buildOverview(input, { ...exp, includeArchived: true }).nodes.filter(
@@ -94,7 +101,7 @@ test("active = last activity within the 15-min window; older is idle", () => {
     s({ id: "claude:fresh", last_mtime: NOW - 60 }),
     s({ id: "claude:stale", last_mtime: NOW - ACTIVE_WINDOW_S - 1 }),
   ];
-  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER, expanded: allExpanded(input) });
   const byId = Object.fromEntries(
     nodes.filter((n) => n.type === "session").map((n) => [n.id, n.data]),
   );
@@ -104,7 +111,8 @@ test("active = last activity within the 15-min window; older is idle", () => {
 
 test("each group node precedes its children (React Flow parent ordering)", () => {
   const input = [s({ id: "claude:a", cwd: "/p/one" }), s({ id: "claude:b", cwd: "/p/two" })];
-  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER, expanded: allExpanded(input) });
+  expect(nodes.some((n) => n.parentId)).toBe(true);
   for (const child of nodes.filter((n) => n.parentId)) {
     const gi = nodes.findIndex((n) => n.id === child.parentId);
     const ci = nodes.findIndex((n) => n.id === child.id);
@@ -120,19 +128,19 @@ test("chip order is deterministic: sticky first, then most-recent, then id", () 
     s({ id: "claude:new", last_mtime: NOW - 10 }),
     s({ id: "claude:pin", last_mtime: NOW - 5000, sticky: true }),
   ];
-  const { nodes } = buildOverview(input, { nowS: NOW, expanded: allExpanded(input) });
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER, expanded: allExpanded(input) });
   const order = nodes.filter((n) => n.type === "session").map((n) => n.id);
   expect(order).toEqual(["claude:pin", "claude:new", "claude:old"]);
 });
 
-// ---- hierarchy / edges (#148) -------------------------------------------------
+// ---- hierarchy / edges (#148) — folder layout's cwd tree ----------------------
 
-test("links a nested project to its parent with an edge, child placed below", () => {
+test("links a nested folder to its parent with an edge, child placed below", () => {
   const input = [
     s({ id: "claude:root", cwd: "/home/u/claude" }),
     s({ id: "claude:child", cwd: "/home/u/claude/demoapp.io" }),
   ];
-  const { nodes, edges } = buildOverview(input, { nowS: NOW });
+  const { nodes, edges } = buildOverview(input, { nowS: NOW, ...FOLDER });
   expect(edges).toHaveLength(1);
   expect(edges[0]).toMatchObject({
     source: "group:/home/u/claude",
@@ -149,7 +157,7 @@ test("path matching is boundary-aware: /claude is NOT a parent of /claude-foo", 
     s({ id: "claude:a", cwd: "/home/u/claude" }),
     s({ id: "claude:b", cwd: "/home/u/claude-foo" }),
   ];
-  const { edges } = buildOverview(input, { nowS: NOW });
+  const { edges } = buildOverview(input, { nowS: NOW, ...FOLDER });
   expect(edges).toHaveLength(0); // siblings, not parent/child
 });
 
@@ -159,7 +167,7 @@ test("links to the NEAREST present ancestor, skipping absent intermediates", () 
     s({ id: "claude:a", cwd: "/a" }),
     s({ id: "claude:c", cwd: "/a/b/c" }),
   ];
-  const { nodes, edges } = buildOverview(input, { nowS: NOW });
+  const { nodes, edges } = buildOverview(input, { nowS: NOW, ...FOLDER });
   expect(nodes.some((n) => n.id === "group:/a/b")).toBe(false);
   expect(edges).toEqual([
     expect.objectContaining({ source: "group:/a", target: "group:/a/b/c" }),
@@ -172,13 +180,17 @@ test("multiple roots, no edges between unrelated trees", () => {
     s({ id: "claude:b", cwd: "/b" }),
     s({ id: "claude:ax", cwd: "/a/x" }),
   ];
-  const { edges } = buildOverview(input, { nowS: NOW });
+  const { edges } = buildOverview(input, { nowS: NOW, ...FOLDER });
   expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["group:/a->group:/a/x"]);
 });
 
-test("custom name is carried on the group node data (#148)", () => {
+test("custom name is carried on the folder group node data (#148)", () => {
   const input = [s({ id: "claude:a", cwd: "/home/u/proj" })];
-  const { nodes } = buildOverview(input, { nowS: NOW, names: { "/home/u/proj": "My Project" } });
+  const { nodes } = buildOverview(input, {
+    nowS: NOW,
+    ...FOLDER,
+    names: { "/home/u/proj": "My Project" },
+  });
   expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ name: "My Project" });
 });
 
@@ -187,7 +199,7 @@ test("output is stable across calls (deterministic)", () => {
     s({ id: "claude:a", cwd: "/p/one", last_mtime: NOW - 5 }),
     s({ id: "opencode:b", cwd: "/p/two", last_mtime: NOW - 50 }),
   ];
-  const opts = { nowS: NOW, expanded: allExpanded(input) };
+  const opts = { nowS: NOW, ...FOLDER, expanded: allExpanded(input) };
   expect(buildOverview(input, opts)).toEqual(buildOverview(input, opts));
 });
 
@@ -198,6 +210,7 @@ test("activeId marks the matching chip selected (#149 sidebar sync)", () => {
   ];
   const { nodes } = buildOverview(input, {
     nowS: NOW,
+    ...FOLDER,
     expanded: new Set(["/p/one"]),
     activeId: "claude:a",
   });
@@ -224,7 +237,7 @@ test("cwd visibility prefs never drop project-resolved sessions (#361)", () => {
     excluded: new Set(["/p/hidden"]),
   });
   const group = nodes.find((n) => n.id === "group:project:p-1");
-  // the folder-grouped session is dropped by the pref; the project member survives
+  // the folder-grouped (Default) session is dropped by the pref; the project member survives
   expect(group?.data).toMatchObject({ project: "Side", kind: "project", count: 1 });
   expect(nodes.some((n) => n.id === "group:/p/hidden")).toBe(false);
 });
@@ -283,35 +296,54 @@ test("a folderless explicit assignment lands in its entity group (#361)", () => 
   expect(nodes.some((n) => n.id === "group:/elsewhere/scratch")).toBe(false);
 });
 
-test("folder fallback grouping/ids are unchanged next to entity groups", () => {
+// ---- #445: folders are a sub-property of projects -----------------------------
+
+test("project mode folds unadopted (folder-fallback) sessions into the Default project (#445)", () => {
   const input = [
     s({ id: "claude:a", cwd: "/p/one", project: { kind: "folder" as const, id: "/p/one", name: "one" } }),
-    s({ id: "claude:b", cwd: "/p/two", project: ref() }),
+    s({ id: "claude:b", cwd: "/p/two", project: { kind: "folder" as const, id: "/p/two", name: "two" } }),
+    s({ id: "claude:c", cwd: "/p/app", project: ref() }),
   ];
   const { nodes } = buildOverview(input, { nowS: NOW });
-  expect(nodes.find((n) => n.id === "group:/p/one")?.data).toMatchObject({
-    kind: "folder",
-    groupKey: "/p/one",
-    cwd: "/p/one",
-    cwdCount: 1,
+  // No per-cwd folder nodes in the Projects layout — only the entity + the Default catch-all.
+  expect(nodes.some((n) => n.id === "group:/p/one")).toBe(false);
+  expect(nodes.some((n) => n.id === "group:/p/two")).toBe(false);
+  const def = nodes.find((n) => n.id === "group:project:__default__");
+  expect(def?.data).toMatchObject({
+    kind: "project",
+    project: DEFAULT_PROJECT_NAME,
+    groupKey: "project:__default__",
+    count: 2, // both unadopted sessions merge into Default
   });
   expect(nodes.some((n) => n.id === "group:project:p-1")).toBe(true);
 });
 
-test("nesting edges link FOLDER groups only — entity groups are roots (#361 Phase 4)", () => {
+test("project mode has no folder-nesting edges — Default + entities are roots (#445)", () => {
   const input = [
     s({ id: "claude:r", cwd: "/a", project: { kind: "folder" as const, id: "/a", name: "a" } }),
     s({ id: "claude:c", cwd: "/a/b", project: { kind: "folder" as const, id: "/a/b", name: "b" } }),
-    // an entity member nested under /a must NOT get a hierarchy edge
     s({ id: "claude:p", cwd: "/a/proj", project: ref() }),
   ];
   const { nodes, edges } = buildOverview(input, { nowS: NOW });
-  expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["group:/a->group:/a/b"]);
-  // the entity group sits in the root row, alongside /a
+  // /a and /a/b both fall into Default (one cluster); no parent→child folder edges in this layout.
+  expect(edges).toHaveLength(0);
   const y = Object.fromEntries(
     nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.position.y]),
   );
-  expect(y["group:project:p-1"]).toBe(y["group:/a"]);
+  expect(y["group:project:p-1"]).toBe(y["group:project:__default__"]); // siblings in the root row
+});
+
+test("folder mode tags each folder node with its owning project (#445)", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/app", project: ref({ color: "#5fd7ff" }) }), // adopted → owner Side
+    s({ id: "claude:b", cwd: "/p/two", project: { kind: "folder" as const, id: "/p/two", name: "two" } }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER });
+  const byId = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.data as ProjectGroupData]),
+  );
+  expect(byId["group:/p/app"].owner).toEqual({ name: "Side", color: "#5fd7ff" });
+  expect(byId["group:/p/two"].owner).toEqual({ name: DEFAULT_PROJECT_NAME });
 });
 
 test("entity clusters expand by their project:<id> toggle key", () => {
@@ -334,7 +366,7 @@ test("entity color passes through to the group node data", () => {
   expect(nodes.find((n) => n.type === "projectGroup")?.data).toMatchObject({ color: "#5fd7ff" });
 });
 
-// ---- groupBy modes (#424 Phase 2) ---------------------------------------------
+// ---- groupBy modes (#424 Phase 2 / #445) --------------------------------------
 
 const kindOf = (data: unknown) => (data as ProjectGroupData).kind;
 const colorOf = (data: unknown) => (data as ProjectGroupData).color;
@@ -352,10 +384,13 @@ const mixed = (): Session[] => [
   }),
 ];
 
-test("project mode (default): clusters by entity, folder fallback for the rest", () => {
+test("project mode (default): clusters by entity, Default for the unadopted rest (#445)", () => {
   const { nodes } = buildOverview(mixed(), { nowS: NOW, groupBy: "project" });
-  const groups = nodes.filter((n) => n.type === "projectGroup").map((n) => n.id).sort();
-  expect(groups).toEqual(["group:/p/two", "group:project:p-1"]);
+  const groups = nodes
+    .filter((n) => n.type === "projectGroup")
+    .map((n) => n.id)
+    .sort();
+  expect(groups).toEqual(["group:project:__default__", "group:project:p-1"]);
   expect(nodes.find((n) => n.id === "group:project:p-1")?.data).toMatchObject({
     kind: "project",
     count: 2,
@@ -418,9 +453,24 @@ test("folder/agent mode drops a hidden cwd's sessions even when entity-resolved 
   }
 });
 
-test("expandableKeys returns mode-appropriate toggle keys (#424)", () => {
+test("project mode drops a hidden cwd's unadopted session from Default (#445)", () => {
+  // An unadopted session keeps kind:"folder", so a hidden cwd is dropped from Default too —
+  // Default obeys folder visibility, mirroring the server's `_visible` rule.
+  const input = [
+    s({ id: "claude:vis", cwd: "/p/vis", project: { kind: "folder" as const, id: "/p/vis", name: "vis" } }),
+    s({ id: "claude:hid", cwd: "/p/hidden", project: { kind: "folder" as const, id: "/p/hidden", name: "h" } }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW, excluded: new Set(["/p/hidden"]) });
+  const def = nodes.find((n) => n.id === "group:project:__default__");
+  expect(def?.data).toMatchObject({ count: 1 }); // only the visible cwd's session survives
+});
+
+test("expandableKeys returns mode-appropriate toggle keys (#424/#445)", () => {
   const input = mixed();
-  expect(expandableKeys(input, new Set(), "project").sort()).toEqual(["/p/two", "project:p-1"]);
+  expect(expandableKeys(input, new Set(), "project").sort()).toEqual([
+    "project:__default__",
+    "project:p-1",
+  ]);
   expect(expandableKeys(input, new Set(), "folder").sort()).toEqual([
     "/p/app",
     "/p/lib",
@@ -435,12 +485,17 @@ test("expandableKeys returns mode-appropriate toggle keys (#424)", () => {
 test("draggableSessions makes chips draggable and drops the parent clamp (#424 Phase 5)", () => {
   const input = [s({ id: "claude:a", cwd: "/p/one" })];
   const expanded = new Set(["/p/one"]);
-  const off = buildOverview(input, { nowS: NOW, expanded }).nodes.find((n) => n.type === "session");
-  expect(off?.draggable).toBe(false);
-  expect(off?.extent).toBe("parent");
-  const on = buildOverview(input, { nowS: NOW, expanded, draggableSessions: true }).nodes.find(
+  const off = buildOverview(input, { nowS: NOW, ...FOLDER, expanded }).nodes.find(
     (n) => n.type === "session",
   );
+  expect(off?.draggable).toBe(false);
+  expect(off?.extent).toBe("parent");
+  const on = buildOverview(input, {
+    nowS: NOW,
+    ...FOLDER,
+    expanded,
+    draggableSessions: true,
+  }).nodes.find((n) => n.type === "session");
   expect(on?.draggable).toBe(true);
   // The parent clamp is gone so the chip can be dragged out onto another cluster…
   expect(on?.extent).toBeUndefined();
