@@ -46,6 +46,24 @@
   font-size: 12px;
   color: var(--text-muted);
 }
+/* Folder row (#448): read-only path + a "Choose folder…" button opening the picker. */
+.folderRow {
+  display: flex;
+  gap: 6px;
+}
+.folderPath {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
 .field select {
   background: var(--panel);
   color: var(--text);

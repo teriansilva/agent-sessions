@@ -1,16 +1,17 @@
 import { expect, test } from "@playwright/test";
 
-// Real-browser check of the project-entity surfaces (#361 Phase 3): the Settings →
-// Projects manager (list / create / archive report) and the new-session project picker
-// (owning-entity default + the "none" option). Network is fully mocked — same approach
-// as settings-exclude.spec.ts — so both run on the static `vite preview` without a
-// backend, on the desktop AND mobile Playwright projects.
+// Real-browser check of the project-entity surfaces: the Settings → Projects manager (list /
+// create-with-default-folder / archive report) and the new-session Project→Folder flow (#448:
+// the project drives the default launch folder, overridable via the ~/ folder picker). Network is
+// fully mocked — same approach as settings-exclude.spec.ts — so both run on the static
+// `vite preview` without a backend, on the desktop AND mobile Playwright projects.
 
 type Entity = {
   id: string;
   name: string;
   color: string;
   folders: string[];
+  default_folder: string;
   archived: boolean;
   created_at: number;
   session_count: number;
@@ -21,6 +22,7 @@ const SAMPLEPROJECT: Entity = {
   name: "SampleProject",
   color: "#5fd7ff",
   folders: ["/home/u/sampleproject"],
+  default_folder: "/home/u/sampleproject",
   archived: false,
   created_at: 0,
   session_count: 2,
@@ -48,39 +50,47 @@ async function mockCommon(page: import("@playwright/test").Page) {
     }),
   );
   await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-    r.fulfill({
+    r.fulfill({ json: { folders: [{ cwd: "/home/u/sampleproject", label: "/home/u/sampleproject" }] } }),
+  );
+  // The ~/ folder picker (#448): home with two subdirs; navigating into one returns it as the path.
+  await page.route(/\/api\/fs\/dirs(\?.*)?$/, (r) => {
+    const path = new URL(r.request().url()).searchParams.get("path");
+    if (path === "/home/u/free")
+      return r.fulfill({ json: { path: "/home/u/free", home: "/home/u", dirs: [] } });
+    return r.fulfill({
       json: {
-        folders: [
-          { cwd: "/home/u/sampleproject", label: "/home/u/sampleproject" },
-          { cwd: "/home/u/free", label: "/home/u/free" },
+        path: "/home/u",
+        home: "/home/u",
+        dirs: [
+          { name: "sampleproject", path: "/home/u/sampleproject" },
+          { name: "free", path: "/home/u/free" },
         ],
       },
-    }),
-  );
+    });
+  });
 }
 
-test.describe("Settings → Projects manager (#361)", () => {
+test.describe("Settings → Projects manager (#361/#448)", () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
   });
 
-  test("lists a project with its count and folder chip", async ({ page }) => {
-    await page.route(/\/api\/projects(\?.*)?$/, (r) =>
-      r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
-    );
+  test("lists a project with its count, default folder, and folder chip", async ({ page }) => {
+    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [SAMPLEPROJECT] } }));
     await page.goto("/settings/projects");
     await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
-    // Scope to the manager region — the folder-visibility card and the Default
-    // project select also render this cwd, so page-wide text lookups are ambiguous.
     const manager = page.getByRole("region", { name: "Projects" });
     await expect(manager.getByText("SampleProject", { exact: true })).toBeVisible();
     await expect(manager.getByText("2 sessions")).toBeVisible();
-    await expect(manager.getByTitle("/home/u/sampleproject")).toBeVisible();
-    // The metadata invariant is part of the panel copy.
+    await expect(manager.getByText(/default folder:/i)).toBeVisible();
+    // ~/sampleproject shows as both the default-folder path and the adopted-folder chip (#448).
+    await expect(manager.getByTitle("/home/u/sampleproject").first()).toBeVisible();
     await expect(page.getByText(/never moves session files/i)).toBeVisible();
   });
 
-  test("create flow POSTs the new entity and refetches", async ({ page }) => {
+  test("create requires a default folder (picker), POSTs it, and refetches (#448)", async ({
+    page,
+  }) => {
     let created: unknown = null;
     const projects: Entity[] = [SAMPLEPROJECT];
     await page.route(/\/api\/projects(\?.*)?$/, async (r) => {
@@ -90,13 +100,22 @@ test.describe("Settings → Projects manager (#361)", () => {
           id: "p-2",
           name: "Fresh",
           color: "",
-          folders: [],
+          folders: ["/home/u/free"],
+          default_folder: "/home/u/free",
           archived: false,
           created_at: 0,
           session_count: 0,
         });
         await r.fulfill({
-          json: { id: "p-2", name: "Fresh", color: "", folders: [], archived: false, created_at: 0 },
+          json: {
+            id: "p-2",
+            name: "Fresh",
+            color: "",
+            folders: ["/home/u/free"],
+            default_folder: "/home/u/free",
+            archived: false,
+            created_at: 0,
+          },
         });
       } else {
         await r.fulfill({ json: { projects } });
@@ -104,17 +123,18 @@ test.describe("Settings → Projects manager (#361)", () => {
     });
     await page.goto("/settings/projects");
     await page.getByLabel("New project name").fill("Fresh");
-    // No folder picked → standalone entity (the "no folder" option).
+    // A default folder is required → Create stays disabled until one is picked.
+    await expect(page.getByRole("button", { name: "Create", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Choose the default folder" }).click();
+    await page.getByRole("button", { name: "free" }).click(); // navigate into ~/free
+    await page.getByRole("button", { name: /^Select/ }).click(); // pick ~/free
     await page.getByRole("button", { name: "Create", exact: true }).click();
-    await expect.poll(() => created).toEqual({ name: "Fresh", folders: [] });
-    // The post-mutation refetch surfaces the new entity.
+    await expect.poll(() => created).toEqual({ name: "Fresh", default_folder: "/home/u/free" });
     await expect(page.getByRole("region", { name: "Projects" }).getByText("Fresh")).toBeVisible();
   });
 
   test("archive shows the per-member counts from the bulk report", async ({ page }) => {
-    await page.route(/\/api\/projects(\?.*)?$/, (r) =>
-      r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
-    );
+    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [SAMPLEPROJECT] } }));
     await page.route("**/api/projects/p-1/archive", (r) =>
       r.fulfill({
         json: {
@@ -134,24 +154,21 @@ test.describe("Settings → Projects manager (#361)", () => {
   });
 });
 
-test.describe("New-session project picker (#361)", () => {
+test.describe("New-session Project → Folder (#448)", () => {
   test.beforeEach(async ({ page }) => {
     await mockCommon(page);
-    await page.route(/\/api\/projects(\?.*)?$/, (r) =>
-      r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
-    );
+    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [SAMPLEPROJECT] } }));
   });
 
-  test("defaults to the owning entity of the selected folder and offers none", async ({
-    page,
-  }) => {
+  test("the selected project prefills the folder; the picker overrides it", async ({ page }) => {
     await page.goto("/");
-    const projectSel = page.getByLabel("Assign to project");
-    // /home/u/sampleproject (first folder, selected) is adopted by SampleProject → it's the default.
-    await expect(projectSel).toHaveValue("p-1");
-    await expect(projectSel.locator("option").first()).toHaveText("none (group by folder)");
-    // Switching to the un-adopted folder follows: the untouched select falls back to none.
-    await page.getByRole("combobox", { name: "Folder" }).selectOption("/home/u/free");
-    await expect(projectSel).toHaveValue("");
+    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("p-1"); // SampleProject is default
+    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/sampleproject"); // its default folder
+
+    // Override the folder for this session via the ~/ picker.
+    await page.getByRole("button", { name: /choose folder/i }).click();
+    await page.getByRole("button", { name: "free" }).click();
+    await page.getByRole("button", { name: /^Select/ }).click();
+    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/free");
   });
 });

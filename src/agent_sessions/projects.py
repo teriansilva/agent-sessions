@@ -68,6 +68,10 @@ class Project:
     folders: tuple[str, ...] = ()
     archived: bool = False
     created_at: float = 0.0
+    # The project's DEFAULT launch folder (#448): where new sessions start unless overridden.
+    # Always one of ``folders`` (auto-adopted on create/update). Required for NEW projects at the
+    # API; legacy entities may have "" and fall back to ``folders[0]`` on read (see ``_from_raw``).
+    default_folder: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -75,6 +79,7 @@ class Project:
             "name": self.name,
             "color": self.color,
             "folders": list(self.folders),
+            "default_folder": self.default_folder,
             "archived": self.archived,
             "created_at": self.created_at,
         }
@@ -176,11 +181,20 @@ def _from_raw(pid: str, raw: dict) -> Project:
     folders = tuple(
         sorted({_safe_folder(f) for f in raw.get("folders") or [] if isinstance(f, str)} - {""})
     )
+    # Default launch folder (#448): the stored value if it's still one of the folders, else a
+    # deterministic read-time fallback to the first (sorted) folder so legacy projects with folders
+    # but no recorded default still launch sensibly. Folderless legacy projects stay "" (the
+    # Settings UI prompts to set one; new-session disables launching into them).
+    stored_default = _safe_folder(raw.get("default_folder") or "")
+    default_folder = (
+        stored_default if stored_default in folders else (folders[0] if folders else "")
+    )
     return Project(
         id=pid,
         name=str(raw.get("name", "") or ""),
         color=str(raw.get("color", "") or ""),
         folders=folders,
+        default_folder=default_folder,
         archived=bool(raw.get("archived", False)),
         created_at=(
             float(raw["created_at"])
@@ -245,14 +259,28 @@ def _new_id(existing: dict) -> str:
 
 
 def create(
-    name: str, *, color: object = None, folders: object = None, path: Path | None = None
+    name: str,
+    *,
+    color: object = None,
+    folders: object = None,
+    default_folder: object = None,
+    path: Path | None = None,
 ) -> Project:
-    """Create an entity. Creating "from a folder" is just ``folders=[cwd]``."""
+    """Create an entity. Creating "from a folder" is just ``folders=[cwd]``.
+
+    ``default_folder`` (#448) is the project's default launch folder; when given it is
+    auto-adopted into ``folders``. It's optional at this layer (legacy/back-compat), but the
+    UI requires one on create (the folder picker)."""
     name = _validate_name(name)
     color_v = _validate_color(color)
     folder_list = [_normalize_folder(f) for f in (folders or [])]
     if len(set(folder_list)) != len(folder_list):
         raise ProjectError("duplicate folder in request", status=422)
+    default_v = ""
+    if default_folder is not None and str(default_folder).strip():
+        default_v = _normalize_folder(default_folder)
+        if default_v not in folder_list:
+            folder_list.append(default_v)  # the default folder is always an adopted folder (#448)
     path = path or _default_path()
     with _exclusive(path) as fh:
         data = _read_locked(fh)
@@ -262,6 +290,7 @@ def create(
             "name": name,
             "color": color_v,
             "folders": sorted(folder_list),
+            "default_folder": default_v,
             "archived": False,
             "created_at": time.time(),
         }
@@ -276,12 +305,17 @@ def update(
     name: object = None,
     color: object = None,
     folders: object = None,
+    default_folder: object = None,
     archived: object = None,
     path: Path | None = None,
 ) -> Project:
-    """Patch an entity: rename / recolor / adopt+release folders / set the archive flag.
+    """Patch an entity: rename / recolor / adopt+release folders / set the default launch folder /
+    set the archive flag.
 
-    ``None`` means "leave unchanged" for every field (clear color with ``""``)."""
+    ``None`` means "leave unchanged" for every field (clear color with ``""``). The default folder
+    (#448) is reconciled with the (possibly patched) folder set: setting one auto-adopts it; a
+    ``folders`` patch that would drop the project's current explicit default folder is rejected
+    unless the same request sets a new default (the default must always be one of the folders)."""
     path = path or _default_path()
     with _exclusive(path) as fh:
         data = _read_locked(fh)
@@ -292,14 +326,41 @@ def update(
             raw["name"] = _validate_name(name)
         if color is not None:
             raw["color"] = _validate_color(color)
+
+        # Reconcile folders + default_folder together (#448) so "the default is always one of the
+        # folders" holds. new_default: None = leave, "" = clear, else the normalized path.
+        new_default: str | None = None
+        if default_folder is not None:
+            new_default = _normalize_folder(default_folder) if str(default_folder).strip() else ""
         if folders is not None:
             if not isinstance(folders, list):
                 raise ProjectError("folders must be a list", status=422)
             folder_list = [_normalize_folder(f) for f in folders]
+        else:
+            folder_list = [
+                f
+                for f in (_safe_folder(x) for x in raw.get("folders") or [] if isinstance(x, str))
+                if f
+            ]
+        cur_default = _safe_folder(raw.get("default_folder") or "")
+        eff_default = new_default if new_default is not None else cur_default
+        if eff_default and eff_default not in folder_list:
+            if new_default is not None:
+                folder_list.append(eff_default)  # setting a default adopts it
+            else:
+                raise ProjectError(
+                    f"cannot release {eff_default!r}: it is the project's default folder — "
+                    "set a different default_folder in the same request",
+                    status=409,
+                )
+        if folders is not None or new_default is not None:
             if len(set(folder_list)) != len(folder_list):
                 raise ProjectError("duplicate folder in request", status=422)
             _check_folder_conflicts(folder_list, data["projects"], pid)
             raw["folders"] = sorted(folder_list)
+        if new_default is not None:
+            raw["default_folder"] = eff_default
+
         if archived is not None:
             if not isinstance(archived, bool):
                 raise ProjectError("archived must be a boolean", status=422)

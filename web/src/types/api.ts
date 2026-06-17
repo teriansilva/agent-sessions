@@ -109,9 +109,18 @@ export interface ProjectEntity {
   name: string;
   color: string;
   folders: string[];
+  /** Default launch folder (#448): where new sessions in this project start unless overridden.
+   *  Always one of `folders` (auto-adopted); "" for legacy folderless projects with none set. */
+  default_folder: string;
   archived: boolean;
   created_at: number;
   session_count: number;
+}
+
+/** A directory from GET /api/fs/dirs — the folder picker's tree node (#448), bounded to ~/. */
+export interface FsDir {
+  name: string;
+  path: string;
 }
 
 /** Bulk archive/unarchive report from POST /api/projects/{id}/(un)archive (#361 Phase 2).

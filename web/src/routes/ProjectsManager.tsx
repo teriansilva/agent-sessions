@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { FolderPickerModal } from "../components/FolderPickerModal";
 import { api, ApiError } from "../lib/api";
 import { shortCwd } from "../lib/format";
 import type { Folder, ProjectArchiveReport, ProjectEntity } from "../types/api";
@@ -46,10 +47,17 @@ function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowPro
   const [draft, setDraft] = useState(entity.name);
   const [showColors, setShowColors] = useState(false);
   const [folderSel, setFolderSel] = useState("");
+  const [picking, setPicking] = useState(false);
+  const [pickReturn, setPickReturn] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
-  const patch = async (body: { name?: string; color?: string; folders?: string[] }) => {
+  const patch = async (body: {
+    name?: string;
+    color?: string;
+    folders?: string[];
+    default_folder?: string;
+  }) => {
     setBusy(true);
     setRowError(null);
     try {
@@ -206,6 +214,29 @@ function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowPro
         </div>
       )}
 
+      {/* Default launch folder (#448): where new sessions in this project start. */}
+      <div className={styles.defaultRow}>
+        {entity.default_folder ? (
+          <span className={styles.defaultLabel}>
+            default folder: <code title={entity.default_folder}>{shortCwd(entity.default_folder)}</code>
+          </span>
+        ) : (
+          <span className={settings.err}>⚠ no default folder — set one</span>
+        )}
+        <button
+          type="button"
+          className={styles.smallBtn}
+          disabled={busy}
+          onClick={(e) => {
+            setPickReturn(e.currentTarget);
+            setPicking(true);
+          }}
+          aria-label={`${entity.default_folder ? "Change" : "Set"} default folder for ${entity.name}`}
+        >
+          {entity.default_folder ? "Change…" : "Set folder…"}
+        </button>
+      </div>
+
       <div className={styles.folderRow}>
         {entity.folders.map((f) => (
           <span key={f} className={styles.chip} title={f}>
@@ -251,6 +282,18 @@ function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowPro
       </div>
 
       {rowError && <p className={settings.err}>{rowError}</p>}
+      {picking && (
+        <FolderPickerModal
+          initialPath={entity.default_folder || undefined}
+          title={`Default folder for “${entity.name}”`}
+          onPick={(path) => {
+            setPicking(false);
+            void patch({ default_folder: path });
+          }}
+          onCancel={() => setPicking(false)}
+          returnFocusTo={pickReturn}
+        />
+      )}
     </li>
   );
 }
@@ -265,8 +308,10 @@ export function ProjectsManagerCard() {
   const [report, setReport] = useState<ProjectArchiveReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
-  const [newFolder, setNewFolder] = useState("");
+  const [newFolder, setNewFolder] = useState(""); // the new project's REQUIRED default folder (#448)
   const [creating, setCreating] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [pickReturn, setPickReturn] = useState<HTMLElement | null>(null);
 
   const refresh = useCallback(
     // includeArchived: this manager is the one surface that must show archived
@@ -328,11 +373,11 @@ export function ProjectsManagerCard() {
 
   const create = async () => {
     const name = newName.trim();
-    if (!name || creating) return;
+    if (!name || !newFolder || creating) return; // a default folder is required (#448)
     setCreating(true);
     setError(null);
     try {
-      await api.createProject({ name, folders: newFolder ? [newFolder] : [] });
+      await api.createProject({ name, default_folder: newFolder });
       setNewName("");
       setNewFolder("");
       await refresh();
@@ -415,29 +460,39 @@ export function ProjectsManagerCard() {
           placeholder="project name"
           aria-label="New project name"
         />
-        {adoptable.length > 0 && (
-          <select
-            aria-label="Folder to adopt"
-            value={newFolder}
-            onChange={(e) => setNewFolder(e.target.value)}
-          >
-            <option value="">no folder</option>
-            {adoptable.map((c) => (
-              <option key={c} value={c}>
-                {shortCwd(c)}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* A default folder is required on create (#448) — pick existing or create on disk. */}
         <button
           type="button"
           className={styles.smallBtn}
-          disabled={!newName.trim() || creating}
+          onClick={(e) => {
+            setPickReturn(e.currentTarget);
+            setPicking(true);
+          }}
+          aria-label="Choose the default folder"
+        >
+          {newFolder ? `📁 ${shortCwd(newFolder)}` : "Default folder *…"}
+        </button>
+        <button
+          type="button"
+          className={styles.smallBtn}
+          disabled={!newName.trim() || !newFolder || creating}
           onClick={() => void create()}
         >
           {creating ? "Creating…" : "Create"}
         </button>
       </div>
+      {picking && (
+        <FolderPickerModal
+          initialPath={newFolder || undefined}
+          title="Choose the project's default folder"
+          onPick={(path) => {
+            setPicking(false);
+            setNewFolder(path);
+          }}
+          onCancel={() => setPicking(false)}
+          returnFocusTo={pickReturn}
+        />
+      )}
 
       {archived.length > 0 && (
         <details className={styles.archivedBox}>

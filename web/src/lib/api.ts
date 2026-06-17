@@ -5,6 +5,7 @@ import type {
   AutoSortReport,
   EnginesResponse,
   Folder,
+  FsDir,
   HistoryPage,
   ProjectArchiveReport,
   ProjectEntity,
@@ -215,16 +216,31 @@ export const api = {
   /** Create an entity (#361). "From a folder" is just `folders: [cwd]`; adopting a folder
    *  (or one nested under/above) already owned by another project is a 409 whose detail
    *  string names the conflict. CSRF-guarded. */
-  createProject: (body: { name: string; color?: string; folders?: string[] }) =>
-    mutateJson<Omit<ProjectEntity, "session_count">>("POST", "/api/projects", body),
+  createProject: (body: {
+    name: string;
+    color?: string;
+    folders?: string[];
+    default_folder?: string;
+  }) => mutateJson<Omit<ProjectEntity, "session_count">>("POST", "/api/projects", body),
   /** On-demand AI auto-sort (#424 Phase 6): one bounded pass assigning unassigned sessions to
    *  existing projects. 409 unless auto_sort is enabled AND the reused ai_review endpoint is
    *  configured. CSRF-guarded. */
   autoSortNow: () => mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
   /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
    *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
-  patchProject: (id: string, body: { name?: string; color?: string; folders?: string[] }) =>
-    patchJson<Omit<ProjectEntity, "session_count">>(`/api/projects/${enc(id)}`, body),
+  patchProject: (
+    id: string,
+    body: { name?: string; color?: string; folders?: string[]; default_folder?: string },
+  ) => patchJson<Omit<ProjectEntity, "session_count">>(`/api/projects/${enc(id)}`, body),
+  /** Folder picker (#448): immediate subdirectories of `path` (default ~), bounded to ~/.
+   *  Returns the resolved path, the home root, and the child dirs. */
+  fsDirs: (path?: string) =>
+    getJson<{ path: string; home: string; dirs: FsDir[] }>(
+      `/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
+  /** Create a folder under a browsed parent (#448), bounded to ~/. Idempotent; returns the path. */
+  fsMkdir: (parent: string, name: string) =>
+    postJson<{ path: string }>("/api/fs/mkdir", { parent, name }),
   /** Remove the ENTITY only (#361): members revert to folder grouping on the next
    *  resolve — session files are never touched. CSRF-guarded. */
   deleteProject: (id: string) =>

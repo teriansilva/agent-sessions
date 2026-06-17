@@ -20,6 +20,17 @@ vi.mock("../lib/api", async (orig) => {
     },
   };
 });
+// Stub the folder picker (#448) — a real tree needs a browser (e2e covers it). Resolves the pick
+// with a fixed path so the create/default-folder flows are exercisable here.
+vi.mock("../components/FolderPickerModal", () => ({
+  FolderPickerModal: ({ onPick }: { onPick: (p: string) => void }) => (
+    <div role="dialog" aria-label="folder picker">
+      <button type="button" onClick={() => onPick("/picked")}>
+        stub-pick
+      </button>
+    </div>
+  ),
+}));
 
 function ent(over: Partial<ProjectEntity> = {}): ProjectEntity {
   return {
@@ -27,6 +38,7 @@ function ent(over: Partial<ProjectEntity> = {}): ProjectEntity {
     name: "SampleProject",
     color: "#5fd7ff",
     folders: ["/home/u/sampleproject"],
+    default_folder: "/home/u/sampleproject",
     archived: false,
     created_at: 0,
     session_count: 3,
@@ -48,34 +60,61 @@ test("lists entities with name, member count, and adopted-folder chips", async (
   render(<ProjectsManagerCard />);
   expect(await screen.findByText("SampleProject")).toBeInTheDocument();
   expect(screen.getByText("3 sessions")).toBeInTheDocument();
-  expect(screen.getByText("~/sampleproject")).toBeInTheDocument();
+  // ~/sampleproject shows both as the default-folder path and the adopted-folder chip (#448).
+  expect(screen.getAllByText("~/sampleproject").length).toBeGreaterThan(0);
+  expect(screen.getByText(/default folder:/i)).toBeInTheDocument();
   // This manager is the unarchive surface — it must request archived entities too.
   expect(api.projectEntities).toHaveBeenCalledWith({ includeArchived: true });
   // The metadata invariant is part of the panel copy.
   expect(screen.getByText(/never moves session files/i)).toBeInTheDocument();
 });
 
-test("create calls the API and refetches the list", async () => {
+test("create requires a default folder, then calls the API and refetches (#448)", async () => {
   const user = userEvent.setup();
   vi.mocked(api.createProject).mockResolvedValue({
     id: "p-2",
     name: "Fresh",
     color: "",
-    folders: [],
+    folders: ["/picked"],
+    default_folder: "/picked",
     archived: false,
     created_at: 0,
   });
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
   vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [ent(), ent({ id: "p-2", name: "Fresh", folders: [], session_count: 0 })],
+    projects: [
+      ent(),
+      ent({ id: "p-2", name: "Fresh", folders: ["/picked"], default_folder: "/picked", session_count: 0 }),
+    ],
   });
   await user.type(screen.getByLabelText("New project name"), "Fresh");
+  // Create stays disabled until a default folder is chosen (#448).
+  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Choose the default folder" }));
+  await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await user.click(screen.getByRole("button", { name: "Create" }));
-  expect(api.createProject).toHaveBeenCalledWith({ name: "Fresh", folders: [] });
-  // refetch after the mutation — the new entity appears
+  expect(api.createProject).toHaveBeenCalledWith({ name: "Fresh", default_folder: "/picked" });
   expect(await screen.findByText("Fresh")).toBeInTheDocument();
   expect(api.projectEntities).toHaveBeenCalledTimes(2);
+});
+
+test("changing a project's default folder patches default_folder (#448)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.patchProject).mockResolvedValue({
+    id: "p-1",
+    name: "SampleProject",
+    color: "#5fd7ff",
+    folders: ["/home/u/sampleproject", "/picked"],
+    default_folder: "/picked",
+    archived: false,
+    created_at: 0,
+  });
+  render(<ProjectsManagerCard />);
+  await screen.findByText("SampleProject");
+  await user.click(screen.getByRole("button", { name: "Change default folder for SampleProject" }));
+  await user.click(screen.getByRole("button", { name: "stub-pick" }));
+  expect(api.patchProject).toHaveBeenCalledWith("p-1", { default_folder: "/picked" });
 });
 
 test("archive with a failed member shows the failed list and Retry re-calls the endpoint", async () => {

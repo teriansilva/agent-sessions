@@ -17,6 +17,7 @@ from .. import (
     archive,
     autosort,
     engines,
+    fsbrowse,
     metadata,
     owner,
     prefs,
@@ -279,7 +280,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not isinstance(folders, list):
             raise HTTPException(status_code=422, detail="folders must be a list")
         try:
-            p = projects.create(payload.get("name"), color=payload.get("color"), folders=folders)
+            p = projects.create(
+                payload.get("name"),
+                color=payload.get("color"),
+                folders=folders,
+                default_folder=payload.get("default_folder"),  # #448: auto-adopted launch default
+            )
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse(p.as_dict())
@@ -316,7 +322,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
-        unknown = set(payload) - {"name", "color", "folders"}
+        unknown = set(payload) - {"name", "color", "folders", "default_folder"}
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
         try:
@@ -325,6 +331,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 name=payload.get("name"),
                 color=payload.get("color"),
                 folders=payload.get("folders"),
+                default_folder=payload.get("default_folder"),  # #448
             )
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
@@ -510,6 +517,41 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except project_dirs.ProjectDirError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse({"cwd": cwd})
+
+    @app.get("/api/fs/dirs")
+    async def fs_dirs(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # Folder-picker browse (#448): immediate subdirectories of `path` (default ~), bounded to
+        # $HOME by fsbrowse (the security boundary — realpath containment, dotfiles skipped). Used
+        # by the new-session folder override + the Settings default-folder picker.
+        try:
+            resolved, dirs = fsbrowse.list_dirs(request.query_params.get("path"))
+        except fsbrowse.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse({"path": resolved, "home": fsbrowse.home_root(), "dirs": dirs})
+
+    @app.post("/api/fs/mkdir")
+    async def fs_mkdir(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Create a folder under a browsed parent (#448), bounded to $HOME by fsbrowse. Idempotent
+        # (mkdir -p). Returns the new absolute path for the picker to select.
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="expected a JSON object")
+        parent = payload.get("parent")
+        name = payload.get("name")
+        if not isinstance(parent, str) or not isinstance(name, str):
+            raise HTTPException(status_code=422, detail="parent and name must be strings")
+        try:
+            path = fsbrowse.make_dir(parent, name)
+        except fsbrowse.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from None
+        return JSONResponse({"path": path})
 
     @app.post("/api/sessions/{sid}/rename")
     async def rename_session(
