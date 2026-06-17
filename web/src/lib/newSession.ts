@@ -1,9 +1,13 @@
-/** Mint the new-session id for an engine (#163). opencode and codex can't pin their own
- *  ids (#127/#315): the ws `new=1` launch only accepts a `new-<uuid>` placeholder,
- *  which it reconciles to the engine's real id. Every other engine pins the
- *  client-minted UUID directly. Minting a bare UUID for a reconcile-engine makes the
- *  launch fail `parse_key` → reject(4404) "session not found". */
+/** Engines that mint their OWN session id and launch under a `new-<uuid>` placeholder the ws
+ *  `new=1` path reconciles to the real id (#127/#315/#449) — opencode, codex, and antigravity
+ *  (`agy`). Must stay in lockstep with the providers' server-side `new_session_reconciles` flag:
+ *  a reconcile-engine missing here mints a bare UUID and the launch fails `parse_key` →
+ *  reject(4404) "session not found" (the #454 regression). Every other engine pins the
+ *  client-minted UUID directly (claude, gemini). */
+const RECONCILE_ENGINES = new Set(["opencode", "codex", "antigravity"]);
+
+/** Mint the new-session id for an engine (#163). */
 export function mintNewSessionId(engine: string): string {
   const uuid = crypto.randomUUID();
-  return engine === "opencode" || engine === "codex" ? `new-${uuid}` : uuid;
+  return RECONCILE_ENGINES.has(engine) ? `new-${uuid}` : uuid;
 }

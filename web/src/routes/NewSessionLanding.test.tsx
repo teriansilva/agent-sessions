@@ -68,6 +68,9 @@ test.each([
   ["codex", /^new-[0-9a-f-]{36}$/],
   ["gemini", /^[0-9a-f-]{36}$/],
   ["opencode", /^new-[0-9a-f-]{36}$/],
+  // #454: antigravity reconciles (mints its own id) → MUST get the new-<uuid> placeholder, or
+  // the ws new=1 launch rejects 4404 "session not found".
+  ["antigravity", /^new-[0-9a-f-]{36}$/],
 ])("mintNewSessionId(%s) → %s", (engine, shape) => {
   expect(mintNewSessionId(engine)).toMatch(shape);
 });
