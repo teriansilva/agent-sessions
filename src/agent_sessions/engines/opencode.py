@@ -6,7 +6,7 @@ import os
 import sqlite3
 
 from .. import metadata as _metadata
-from ..scanner import Session
+from ..scanner import Session, is_ephemeral_cwd
 from . import base
 
 # Columns the opencode reader depends on, pinned so a schema rename fails the
@@ -86,6 +86,11 @@ class OpenCodeProvider:
         out: list[Session] = []
         for sid, _parent, directory, title, time_updated, time_archived in self._query():
             if not isinstance(sid, str) or not self.id_pattern.match(sid):
+                continue
+            # Drop ephemeral CI-runner sessions (#452): their cwd is a throwaway
+            # ``act`` workdir that's already deleted, so they can never be resumed
+            # and only clutter the list / resume allowlist / picker.
+            if is_ephemeral_cwd(directory or ""):
                 continue
             out.append(
                 Session(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sessions import engines
+from agent_sessions import engines, scanner
 
 _U1 = "11111111-1111-1111-1111-111111111111"
 
@@ -107,6 +107,7 @@ def test_claude_archive_moves_the_jsonl(fake_jsonl):
 _OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
 _OC_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
 _OC_FORK = "ses_ffffffffffffffffffffffff"
+_OC_ACT = "ses_cccccccccccccccccccccccc"
 
 
 def test_opencode_present_when_db_readable(opencode_db):
@@ -115,8 +116,22 @@ def test_opencode_present_when_db_readable(opencode_db):
 
 def test_opencode_scan_top_level_only(opencode_db):
     ids = {r.uuid for r in engines.scan_all() if r.engine == "opencode"}
-    assert ids == {_OC_TOP, _OC_ARCHIVED}  # fork (parent_id set) excluded
-    assert _OC_FORK not in ids
+    assert ids == {_OC_TOP, _OC_ARCHIVED}  # fork excluded; ephemeral CI row filtered
+    assert _OC_FORK not in ids  # parent_id set
+    assert _OC_ACT not in ids  # ~/.cache/act CI workdir (#452)
+
+
+def test_opencode_scan_drops_ephemeral_ci_sessions(opencode_db):
+    """#452: an opencode session whose cwd is an ephemeral ``~/.cache/act`` CI
+    workdir is dropped at scan time, so it never reaches the sidebar, the resume
+    allowlist (``scanned_cwds``), or the new-session picker."""
+    sessions = engines.scan_all()
+    assert _OC_ACT not in {r.uuid for r in sessions}
+    # No ``.cache/act`` cwd may leak into any scan-derived surface.
+    assert not any("/.cache/act/" in c for c in scanner.scanned_cwds(sessions))
+    assert not any("/.cache/act/" in c for c in scanner.pickable_projects(sessions=sessions))
+    # A real opencode session in the same DB still shows up.
+    assert _OC_TOP in {r.uuid for r in sessions}
 
 
 def test_opencode_time_normalized_to_seconds(opencode_db):

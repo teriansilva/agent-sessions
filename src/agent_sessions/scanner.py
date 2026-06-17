@@ -19,6 +19,7 @@ SQLite reader), not here. See agent-sessions#10/#11/#12.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -147,6 +148,53 @@ def scanned_cwds(sessions: Iterable[Session]) -> set[str]:
     Used by the ws resume path to refuse arbitrary attacker-chosen cwds.
     """
     return {s.cwd for s in sessions}
+
+
+# Ephemeral CI-runner working directories (#452). An opencode session spawned
+# inside a Forgejo Actions job (nektos/act) records a throwaway ``act`` workdir
+# (``<cache>/act/<hash>/hostexecutor``) as its ``directory``. That dir is deleted
+# when the job ends, so the session can never be resumed — it only clutters the
+# sidebar / resume allowlist / picker. Engines drop such rows at scan time.
+_EPHEMERAL_CACHE_DIRS = ("act",)  # cache subdirs that hold CI scratch, not projects
+
+
+def is_ephemeral_cwd(cwd: str | None, home: Path | None = None) -> bool:
+    """True if ``cwd`` is an ephemeral CI-runner working directory (#452).
+
+    Pure, **filesystem-free** path test: the rows we filter point at *already
+    deleted* dirs, so ``exists`` / ``resolve(strict=True)`` / ``stat`` would be
+    wrong. We normalize lexically (``os.path.normpath``) and compare whole path
+    **components** — never a substring, so a real project like ``~/x/react``
+    (contains the letters "act") is never hidden. ``None`` / empty → ``False``.
+
+    A cwd is ephemeral when it equals, or sits under, an ``act`` cache root.
+    Matched two ways so a path recorded by a CI process whose ``XDG_CACHE_HOME``
+    / home differed from the organizer's at scan time is still caught:
+
+    * the ``.cache``→``act`` component sequence anywhere in the path — catches a
+      literal ``<home>/.cache/act/…`` regardless of the runtime cache env, and
+    * the env-derived root ``$XDG_CACHE_HOME/act`` (honors a relocated cache,
+      which need not contain a literal ``.cache`` segment).
+    """
+    if not cwd:
+        return False
+    home = home or Path.home()
+    parts = Path(os.path.normpath(cwd)).parts
+
+    # (1) ``.cache``/<ci-dir> as adjacent components, anywhere in the path.
+    for first, second in zip(parts, parts[1:], strict=False):
+        if first == ".cache" and second in _EPHEMERAL_CACHE_DIRS:
+            return True
+
+    # (2) the env-derived cache root (a relocated $XDG_CACHE_HOME need not
+    #     contain a literal ``.cache`` segment, so (1) would miss it).
+    cache_root = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+    for ci_dir in _EPHEMERAL_CACHE_DIRS:
+        root = (cache_root / ci_dir).parts
+        if parts[: len(root)] == root:
+            return True
+
+    return False
 
 
 def pickable_projects(

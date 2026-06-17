@@ -98,10 +98,16 @@ def auth_cfg(tmp_path, monkeypatch) -> AuthConfig:
     return AuthConfig.from_env()
 
 
-# opencode session ids in the fixture (≥1 top-level, 1 archived, 1 fork to skip).
+# opencode session ids in the fixture (≥1 top-level, 1 archived, 1 fork to skip,
+# 1 ephemeral CI session to filter).
 OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"
 OC_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
 OC_FORK = "ses_ffffffffffffffffffffffff"
+OC_ACT = "ses_cccccccccccccccccccccccc"
+# An ephemeral CI workdir (nektos/act), recorded under a HOME that differs from
+# the test's tmp_home — proving the ``.cache``/``act`` component match catches it
+# regardless of the runtime cache env (#452).
+OC_ACT_DIR = "/home/ci-runner/.cache/act/deadbeef0001/hostexecutor"
 
 
 @pytest.fixture
@@ -109,7 +115,9 @@ def opencode_db(tmp_home, monkeypatch) -> Path:
     """A minimal opencode SQLite DB (only the columns OpenCodeProvider reads).
 
     Two top-level sessions (one archived) + one fork (``parent_id`` set, must be
-    skipped). ``time_updated`` is epoch **milliseconds**, like the real DB.
+    skipped) + one ephemeral CI session (``OC_ACT``, an ``~/.cache/act`` workdir
+    that must be filtered, #452). ``time_updated`` is epoch **milliseconds**, like
+    the real DB.
     """
     db = tmp_home / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)
@@ -125,6 +133,7 @@ def opencode_db(tmp_home, monkeypatch) -> Path:
             (OC_TOP, None, "/home/user/claude", "OC top one", 1777460564154, None),
             (OC_ARCHIVED, None, "/tmp/other", "OC archived", 1777300000000, 1777400000000),
             (OC_FORK, OC_TOP, "/home/user/claude", "OC fork skip", 1777460564999, None),
+            (OC_ACT, None, OC_ACT_DIR, "OC ephemeral CI", 1777460565000, None),
         ],
     )
     con.commit()

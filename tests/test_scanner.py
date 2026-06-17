@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agent_sessions import scanner
 
 
@@ -116,3 +118,58 @@ def test_ignores_non_uuid_files(fake_jsonl):
     junk.write_text("garbage")
     rows = scanner.scan(home=fake_jsonl)
     assert all(r.uuid != "not-a-uuid" for r in rows)
+
+
+# ---- is_ephemeral_cwd (#452) --------------------------------------------------
+
+_FAKE_HOME = Path("/home/user")
+
+
+def test_is_ephemeral_cwd_none_and_empty():
+    assert scanner.is_ephemeral_cwd(None, home=_FAKE_HOME) is False
+    assert scanner.is_ephemeral_cwd("", home=_FAKE_HOME) is False
+
+
+def test_is_ephemeral_cwd_act_root_and_descendant():
+    assert scanner.is_ephemeral_cwd("/home/user/.cache/act", home=_FAKE_HOME) is True
+    assert (
+        scanner.is_ephemeral_cwd("/home/user/.cache/act/deadbeef/hostexecutor", home=_FAKE_HOME)
+        is True
+    )
+
+
+def test_is_ephemeral_cwd_real_project_not_filtered(monkeypatch):
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    # Contains the letters "act" but never as a ``.cache``/``act`` component pair.
+    assert scanner.is_ephemeral_cwd("/home/user/projects/react", home=_FAKE_HOME) is False
+    assert scanner.is_ephemeral_cwd("/home/user/claude", home=_FAKE_HOME) is False
+    # A sibling cache dir named ``actually`` must not match the exact ``act`` component.
+    assert scanner.is_ephemeral_cwd("/home/user/.cache/actually/x", home=_FAKE_HOME) is False
+
+
+def test_is_ephemeral_cwd_honors_xdg_cache_home(monkeypatch):
+    # A relocated cache whose path has no literal ``.cache`` segment (so only the
+    # env-derived root match can catch it).
+    monkeypatch.setenv("XDG_CACHE_HOME", "/tmp/xdgcache")
+    assert scanner.is_ephemeral_cwd("/tmp/xdgcache/act/h/hostexecutor", home=_FAKE_HOME) is True
+    assert scanner.is_ephemeral_cwd("/tmp/xdgcache/something", home=_FAKE_HOME) is False
+
+
+def test_is_ephemeral_cwd_matches_foreign_home_basis(monkeypatch):
+    """#452 (Hermes): a cwd recorded by a CI process under a DIFFERENT home is still
+    caught via the ``.cache``/``act`` component match, even when XDG_CACHE_HOME points
+    somewhere else at scan time."""
+    monkeypatch.setenv("XDG_CACHE_HOME", "/tmp/xdgcache")
+    assert (
+        scanner.is_ephemeral_cwd("/home/ci-runner/.cache/act/h/hostexecutor", home=_FAKE_HOME)
+        is True
+    )
+
+
+def test_is_ephemeral_cwd_is_lexical_no_fs(monkeypatch):
+    # ``..`` that resolves OUT of the cache is not ephemeral — normalization is
+    # lexical (``normpath``), never a filesystem stat, so the path need not exist.
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    assert (
+        scanner.is_ephemeral_cwd("/home/user/.cache/act/../../realproj", home=_FAKE_HOME) is False
+    )
