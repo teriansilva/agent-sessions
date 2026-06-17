@@ -35,6 +35,7 @@ from fastapi import FastAPI, WebSocket
 from .. import (
     ai_review_loop,
     engines,
+    fsbrowse,
     owner,
     prefs,
     ptybridge,
@@ -256,10 +257,19 @@ def register(
                 launch = prov.launch_argv(native, cwd=cwd, bypass=True)
             elif is_new:
                 # Start a FRESH session with this client-generated id, in a picker cwd.
-                # Validate against the same all-engine superset the picker offers (#196),
-                # so a cwd the UI presented is never rejected on launch.
+                # The new-session picker offers two sources, so the launch must accept BOTH or a
+                # cwd the UI presented gets rejected: (1) pickable_projects — the all-engine
+                # scanned cwds ∪ ~/claude subdirs (#196), which may live outside $HOME; and (2)
+                # any directory the home-rooted folder picker can browse to (#448's
+                # /api/folders/browse offers every $HOME subdir, well beyond pickable_projects).
+                # Validating only against (1) 4404'd a browsed subfolder as "session not found"
+                # (#457). fsbrowse.is_browsable_dir is the security boundary: its realpath
+                # containment rejects any path whose target escapes $HOME.
                 new_cwd = ws.query_params.get("cwd") or ""
-                if new_cwd not in set(scanner.pickable_projects(sessions=engines.scan_all())):
+                if not (
+                    new_cwd in set(scanner.pickable_projects(sessions=engines.scan_all()))
+                    or fsbrowse.is_browsable_dir(new_cwd)
+                ):
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"

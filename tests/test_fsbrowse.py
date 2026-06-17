@@ -91,3 +91,30 @@ def test_make_dir_rejects_symlinked_parent_escape(home, tmp_path):
     with pytest.raises(fsbrowse.FsError) as e:
         fsbrowse.make_dir(str(home / "plink"), "x")  # parent realpath escapes home → 403
     assert e.value.status == 403
+
+
+# ---- is_browsable_dir (#457) --------------------------------------------------
+
+
+def test_is_browsable_dir_true_for_dir_under_home(home):
+    (home / "proj").mkdir()
+    assert fsbrowse.is_browsable_dir(str(home / "proj")) is True
+    assert fsbrowse.is_browsable_dir(str(home)) is True  # home itself is browsable
+
+
+def test_is_browsable_dir_false_for_escape(home, tmp_path):
+    assert fsbrowse.is_browsable_dir(str(_outside(tmp_path, "outside-br"))) is False
+    assert fsbrowse.is_browsable_dir(str(home / ".." / "..")) is False
+    (home / "blink").symlink_to(_outside(tmp_path, "outside-br2"))
+    assert fsbrowse.is_browsable_dir(str(home / "blink")) is False  # realpath escapes home
+
+
+def test_is_browsable_dir_false_for_nonexistent_and_file(home):
+    assert fsbrowse.is_browsable_dir(str(home / "nope")) is False  # under home but missing
+    (home / "f.txt").write_text("x")
+    assert fsbrowse.is_browsable_dir(str(home / "f.txt")) is False  # a file, not a directory
+
+
+@pytest.mark.parametrize("val", [None, "", "   "])
+def test_is_browsable_dir_false_for_empty(home, val):
+    assert fsbrowse.is_browsable_dir(val) is False

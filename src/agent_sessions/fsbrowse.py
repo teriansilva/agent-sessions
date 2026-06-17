@@ -67,6 +67,24 @@ def list_dirs(path: str | None = None) -> tuple[str, list[dict]]:
     return real, out
 
 
+def is_browsable_dir(path: str | None) -> bool:
+    """``True`` if ``path`` is an existing directory contained under ``$HOME`` — the set the
+    folder picker can browse to, and therefore the set the new-session launch must accept (#457).
+
+    Reuses the same realpath containment as :func:`list_dirs` / :func:`make_dir` (so a ``..`` or
+    symlink that escapes home is rejected), then requires the target to be a real directory. A
+    pure predicate: it never raises and never escapes home. ``None`` / empty / a path that escapes
+    home / a non-existent path / a non-directory all return ``False``.
+    """
+    if not path or not path.strip():
+        return False
+    try:
+        real = _contained(path)
+    except FsError:
+        return False
+    return os.path.isdir(real)
+
+
 def _valid_name(name: str) -> bool:
     # A SINGLE path component: no separators, not "."/"..", no control chars, bounded length.
     nm = name.strip()
@@ -97,4 +115,4 @@ def make_dir(parent: str, name: str) -> str:
     return target
 
 
-__all__ = ["FsError", "home_root", "list_dirs", "make_dir"]
+__all__ = ["FsError", "home_root", "is_browsable_dir", "list_dirs", "make_dir"]

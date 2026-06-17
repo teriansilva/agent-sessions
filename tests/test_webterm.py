@@ -665,10 +665,39 @@ def test_ws_opencode_placeholder_rejected_on_resume(fake_jsonl, opencode_db, aut
 
 
 def test_ws_opencode_placeholder_rejects_unpickable_cwd(fake_jsonl, opencode_db, auth_cfg):
-    # new=1 with a cwd that isn't a pickable project → 4404 (same guard as claude/gemini).
+    # new=1 with a cwd that isn't a pickable project AND escapes $HOME → 4404.
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd=/not/a/project"
+    assert _close_code(c, url, headers) == 4404
+
+
+# ---- new-session cwd validation: ~/ folder-picker subdirs (#457) ---------------
+
+_NEW_UUID = "12345678-1234-1234-1234-123456789abc"
+
+
+def test_ws_new_claude_accepts_browsable_home_dir(fake_jsonl, auth_cfg, monkeypatch):
+    # #457: a new-session cwd the ~/ folder picker can browse to (a real dir under $HOME) but
+    # that isn't yet a pickable project must PASS validation, not 4404. Force the launch to fail
+    # at argv-build (bare-name bin → 4500) to prove validation passed without a real claude/dtach.
+    from agent_sessions import engines, scanner
+
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare → PtyBridgeError → 4500
+    browsed = fake_jsonl / "fresh-proj"  # real $HOME subdir, no sessions → not pickable
+    browsed.mkdir()
+    assert str(browsed) not in set(scanner.pickable_projects(home=fake_jsonl))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:{_NEW_UUID}?new=1&cwd={browsed}"
+    assert _close_code(c, url, headers) == 4500  # past validation, into launch (not 4404)
+
+
+def test_ws_new_claude_rejects_cwd_outside_home(fake_jsonl, auth_cfg):
+    # #457: a cwd that escapes $HOME and isn't a pickable project is still rejected.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:{_NEW_UUID}?new=1&cwd=/etc"
     assert _close_code(c, url, headers) == 4404
 
 
