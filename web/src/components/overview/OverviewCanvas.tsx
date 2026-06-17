@@ -86,6 +86,26 @@ function OverviewCanvasInner({
   // Drag-to-reassign is live in Projects layout only — folder/agent clusters aren't user-assignable.
   const draggable = groupBy === "project";
 
+  // Non-archived project entities (#447) → empty ones still render as drag-target clusters in
+  // Projects mode. Fetched here (sessions alone can't surface a 0-session project) and refreshed
+  // after create/reassign so a just-made project appears immediately.
+  const [projects, setProjects] = useState<{ id: string; name: string; color?: string }[]>([]);
+  const fetchProjects = useCallback(() => {
+    api
+      .projectEntities()
+      .then((r) =>
+        setProjects(
+          r.projects
+            .filter((p) => !p.archived)
+            .map((p) => ({ id: p.id, name: p.name, color: p.color || undefined })),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
+
   // The set of session cwds the map must DROP, resolved for the active mode (#335). `all` mode
   // drops the denylist (unchanged); `included` mode drops everything NOT in the allowlist. The map
   // takes an exclusion set, so we compute the mode-appropriate one here — keeping it in lockstep
@@ -132,8 +152,9 @@ function OverviewCanvasInner({
         activeId,
         names: projectNames,
         draggableSessions: draggable,
+        projects,
       }),
-    [effectiveSessions, groupBy, includeArchived, expanded, dropped, activeId, projectNames, draggable],
+    [effectiveSessions, groupBy, includeArchived, expanded, dropped, activeId, projectNames, draggable, projects],
   );
 
   // React Flow needs to own node positions to drag them, so mirror the derived graph into RF
@@ -146,8 +167,8 @@ function OverviewCanvasInner({
 
   // Toggle keys available to expand (still visible) — drives "Expand all".
   const allKeys = useMemo(
-    () => expandableKeys(sessions, dropped, groupBy),
-    [sessions, dropped, groupBy],
+    () => expandableKeys(sessions, dropped, groupBy, projects),
+    [sessions, dropped, groupBy, projects],
   );
 
   const [dragErr, setDragErr] = useState<string | null>(null);
@@ -170,6 +191,7 @@ function OverviewCanvasInner({
       try {
         await api.setSessionProject(sid, toDefault ? "" : pid);
         onRefetch?.(); // authoritative re-pull; the [sessions] effect clears the overlay
+        fetchProjects(); // a project may have just emptied/filled (#447)
       } catch (ex) {
         setOverrides((prev) => {
           const next = new Map(prev);
@@ -179,7 +201,7 @@ function OverviewCanvasInner({
         setDragErr(ex instanceof ApiError && ex.message ? ex.message : "Couldn’t move the session.");
       }
     },
-    [onRefetch],
+    [onRefetch, fetchProjects],
   );
 
   const onNodeDragStart = useCallback(() => setDragging(true), []);
@@ -246,6 +268,7 @@ function OverviewCanvasInner({
       setNaming(false);
       setNewName("");
       onRefetch?.();
+      fetchProjects(); // the new (empty) project should appear as a cluster at once (#447)
     } catch (ex) {
       setCreateErr(ex instanceof ApiError && ex.message ? ex.message : "Couldn’t create the project.");
     } finally {

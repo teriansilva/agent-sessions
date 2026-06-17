@@ -116,6 +116,17 @@ export interface BuildOptions {
    *  another cluster to reassign it (#424 Phase 5). Enabled in Projects layout only — the
    *  canvas wires the drop → `api.setSessionProject`. Default off. */
   draggableSessions?: boolean;
+  /** Non-archived project entities (#447). In `project` mode, an entity with no visible session
+   *  still renders as an EMPTY cluster (count 0) so it's a drag-and-drop target — you can drag a
+   *  session into a freshly-created project. Ignored in `folder`/`agent` mode. */
+  projects?: ProjectEntityRef[];
+}
+
+/** Minimal project-entity shape the overview needs to draw an empty cluster (#447). */
+export interface ProjectEntityRef {
+  id: string;
+  name: string;
+  color?: string;
 }
 
 /** The synthetic "Default" project (#445) — folders are a sub-property of projects, so an
@@ -191,14 +202,16 @@ export function expandableKeys(
   sessions: Session[],
   dropped: Set<string>,
   groupBy: GroupBy = "project",
+  projects: ProjectEntityRef[] = [],
 ): string[] {
-  return [
-    ...new Set(
-      sessions
-        .filter((s) => keepsHiddenCwd(s, groupBy) || !dropped.has(s.cwd))
-        .map((s) => clusterOf(s, groupBy).key),
-    ),
-  ];
+  const keys = new Set(
+    sessions
+      .filter((s) => keepsHiddenCwd(s, groupBy) || !dropped.has(s.cwd))
+      .map((s) => clusterOf(s, groupBy).key),
+  );
+  // Empty project clusters are expandable too (#447) so "Expand all" covers them.
+  if (groupBy === "project") for (const p of projects) keys.add(`project:${p.id}`);
+  return [...keys];
 }
 
 /** Build the project hierarchy graph. Clusters (one per resolved ref: per entity for
@@ -250,6 +263,25 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     g.maxMtime = Math.max(g.maxMtime, s.last_mtime || 0);
     if (c.color) g.color = c.color;
     groups.set(c.key, g);
+  }
+
+  // Empty project clusters (#447): in `project` mode, every non-archived entity that produced no
+  // session group still renders as an EMPTY cluster (count 0, maxMtime 0 → sorts last) so it's a
+  // drag-and-drop target. `maxMtime: 0` keeps empties after active clusters in the recency order.
+  if (groupBy === "project") {
+    for (const p of opts.projects ?? []) {
+      const key = `project:${p.id}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          project: p.name,
+          kind: "project",
+          items: [],
+          maxMtime: 0,
+          cwds: new Set<string>(),
+          color: p.color || undefined,
+        });
+      }
+    }
   }
 
   // Hierarchy (parent/children/depth) — extracted to `./projectTree` so the Settings card
@@ -318,7 +350,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
     const groupId = `group:${key}`;
     // Representative cwd: a folder group's key IS its cwd; an entity group shows its
     // first (sorted) member cwd, or just the folder count when it spans several.
-    const cwd = g.kind === "folder" ? key : [...g.cwds].sort()[0];
+    const cwd = g.kind === "folder" ? key : ([...g.cwds].sort()[0] ?? "");
     nodes.push({
       id: groupId,
       type: "projectGroup",

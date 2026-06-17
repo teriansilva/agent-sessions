@@ -502,3 +502,47 @@ test("draggableSessions makes chips draggable and drops the parent clamp (#424 P
   // …but it stays parented for layout/containment.
   expect(on?.parentId).toBe("group:/p/one");
 });
+
+// ---- #447: empty project clusters (drag targets) ------------------------------
+
+test("an entity with no sessions renders as a 0-count cluster in project mode (#447)", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/app", project: ref() })]; // p-1 has a session
+  const { nodes } = buildOverview(input, {
+    nowS: NOW,
+    projects: [
+      { id: "p-1", name: "Side" },
+      { id: "p-2", name: "Empty", color: "#5fd7ff" },
+    ],
+  });
+  const empty = nodes.find((n) => n.id === "group:project:p-2");
+  expect(empty?.data).toMatchObject({
+    kind: "project",
+    project: "Empty",
+    groupKey: "project:p-2",
+    count: 0,
+    collapsed: true,
+    color: "#5fd7ff",
+  });
+  // the entity that DID have a session isn't duplicated by the empty-cluster pass
+  expect(nodes.filter((n) => n.id === "group:project:p-1")).toHaveLength(1);
+  // a 0-count cluster has no session chips
+  expect(nodes.some((n) => n.parentId === "group:project:p-2")).toBe(false);
+});
+
+test("empty projects are ignored in folder and agent modes (#447)", () => {
+  for (const groupBy of ["folder", "agent"] as const) {
+    const { nodes } = buildOverview([s({ id: "claude:a", cwd: "/p/app" })], {
+      nowS: NOW,
+      groupBy,
+      projects: [{ id: "p-2", name: "Empty" }],
+    });
+    expect(nodes.some((n) => n.id === "group:project:p-2")).toBe(false);
+  }
+});
+
+test("expandableKeys includes empty project keys in project mode only (#447)", () => {
+  const projects = [{ id: "p-2", name: "Empty" }];
+  expect(expandableKeys([], new Set(), "project", projects)).toEqual(["project:p-2"]);
+  expect(expandableKeys([], new Set(), "folder", projects)).toEqual([]);
+  expect(expandableKeys([], new Set(), "agent", projects)).toEqual([]);
+});

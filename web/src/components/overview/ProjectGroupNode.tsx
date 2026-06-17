@@ -26,7 +26,14 @@ export function ProjectGroupNode({ data }: NodeProps) {
   // folder count instead of a single (arbitrary) path.
   const label = kind === "folder" ? name || shortCwd(cwd) || project : project;
   const spansFolders = (kind === "project" || kind === "agent") && (cwdCount ?? 1) > 1;
-  const subtitle = spansFolders ? `${cwdCount} folders` : shortCwd(cwd);
+  // An empty project cluster (#447) is a drop target — show a discoverable hint instead of a
+  // (nonexistent) path subtitle, since clusters are collapsed (header-only) by default.
+  const isEmptyProject = kind === "project" && count === 0;
+  const subtitle = isEmptyProject
+    ? "drag sessions here"
+    : spansFolders
+      ? `${cwdCount} folders`
+      : shortCwd(cwd);
 
   // "Make this a project" (#361 Phase 4): promote a folder-fallback cluster into an
   // entity adopting this cwd. A 409 (folder already owned) carries the server's detail
@@ -47,7 +54,7 @@ export function ProjectGroupNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}`}
+      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}`}
       style={color ? { borderTop: `2px solid ${color}` } : undefined}
     >
       <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />

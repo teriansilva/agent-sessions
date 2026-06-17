@@ -61,6 +61,15 @@
   border-radius: 0;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.32);
 }
+/* An empty project cluster (#447): a dashed, muted drop target with no sessions yet. */
+.tr-ov-group.empty {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+.tr-ov-group.empty .tr-ov-cwd {
+  font-style: italic;
+  opacity: 0.85;
+}
 /* The cluster header is a collapse/expand toggle (button reset). */
 .tr-ov-group-head {
   display: flex;
