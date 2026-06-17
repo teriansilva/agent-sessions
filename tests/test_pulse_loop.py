@@ -210,9 +210,11 @@ def test_public_pulse_reports_endpoint_readiness(prefs_at_tmp):
     assert "api_key" not in pub
 
 
-def test_pulse_bounds_constants_in_sync():
+def test_pulse_bounds_constants_in_sync(prefs_at_tmp):
     # prefs.py keeps its own PULSE_* bounds (no import of pulse.py → no cycle); they MUST match
     # pulse.py's window/depth source of truth — this guard fails if one drifts.
+    # Runs under prefs_at_tmp so the default-window check reads an ISOLATED empty prefs, not the
+    # operator's real prefs.json (where a persisted pulse.window_days would make it host-dependent).
     assert prefs.PULSE_WINDOW_MIN == pulse.WINDOW_DAYS_MIN
     assert prefs.PULSE_WINDOW_MAX == pulse.WINDOW_DAYS_MAX
     assert prefs.PULSE_DEPTHS == pulse.SCAN_DEPTHS
