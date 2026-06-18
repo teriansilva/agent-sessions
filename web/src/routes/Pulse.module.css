@@ -1,0 +1,357 @@
+/* Pulse — AI-curated recent-work overview (#441 Phase 5). Tactical-HUD vocabulary (#211):
+ * near-black ground, phosphor-amber accent, mono tags, semantic-colour LEDs. Mobile reflows
+ * to a single column. All colours come from the shared tokens (index.css) so theme + custom
+ * accent cascade. */
+
+.pulse {
+  height: 100%;
+  overflow-y: auto;
+  padding: 18px 20px 32px;
+  color: var(--text-1);
+}
+
+/* --- header ------------------------------------------------------------------ */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.headLeft {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.window {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+}
+.asOf {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+/* `//` callsign separator (PULSE // 3D // AS OF …). */
+.sl {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.headRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* depth segmented control */
+.depth {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  overflow: hidden;
+}
+.depthBtn {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--text-2);
+  border: 0;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+}
+.depthBtn:last-child {
+  border-right: 0;
+}
+.depthBtn:hover {
+  background: var(--glass-strong);
+  color: var(--text-1);
+}
+.depthOn {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.scanBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  cursor: pointer;
+}
+.scanBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.spin {
+  animation: pulse-spin 0.9s linear infinite;
+}
+@keyframes pulse-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+.note {
+  font-size: 0.78rem;
+  color: var(--status-degraded);
+  margin: 0 0 12px;
+}
+.err {
+  font-size: 0.78rem;
+  color: var(--status-down);
+  margin: 0 0 12px;
+}
+
+/* --- banner ------------------------------------------------------------------ */
+.banner {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-glow);
+}
+.bannerIcon {
+  color: var(--accent);
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.bannerText {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+
+/* --- groups + cards ---------------------------------------------------------- */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.count {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* Corner-bracket frame only (#476): the HudFrame brackets ARE the card's frame — no left
+ * rail, so the bracketed left edge never doubles up with a border-left line. Needs-you urgency
+ * reads off the amber LED + ⚠ alert + the "NEEDS YOU" group header, not a coloured rail. */
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.led {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-unknown);
+}
+.led_needs_you {
+  background: var(--status-degraded);
+}
+.led_in_flight {
+  background: var(--status-up);
+  box-shadow: 0 0 6px var(--status-up);
+  animation: pulse-led 1.6s ease-in-out infinite;
+}
+.led_recently_active {
+  background: var(--text-3);
+}
+.led_idle {
+  background: var(--status-unknown);
+}
+@keyframes pulse-led {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .led_in_flight {
+    animation: none;
+  }
+}
+
+.cardTitle {
+  flex: 1 1 auto;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.alert {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--status-degraded);
+}
+.eng {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+
+.summary {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.reason {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--status-degraded);
+}
+
+.cardFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.proj {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
+.sep {
+  color: var(--line-strong);
+}
+.age {
+  font-family: var(--font-mono);
+}
+.jump {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.74rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+.jump:hover {
+  text-decoration: underline;
+}
+
+/* --- empty + loading --------------------------------------------------------- */
+.state {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 48px 16px;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+}
+.emptyTitle {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text-1);
+}
+.emptyHint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-3);
+  max-width: 42ch;
+}
+
+/* --- mobile reflow ----------------------------------------------------------- */
+@media (max-width: 800px) {
+  .pulse {
+    padding: 14px 12px 28px;
+  }
+  .head {
+    align-items: flex-start;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .headRight {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
