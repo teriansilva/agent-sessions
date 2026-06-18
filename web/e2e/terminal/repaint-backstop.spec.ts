@@ -90,3 +90,52 @@ test("a caught-up reconnect (no delta) is never jiggled (Hermes #374)", async ({
   await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)");
   await expect(page.locator(".xterm-rows")).toContainText("content line");
 });
+
+test("the REPAINT button recovers a mid-session blank — no reconnect, no restart (#485)", async ({
+  page,
+}) => {
+  // The first-attach backstop (#349/#407/#416) only arms once, on attach. When a winch-repaint
+  // agent (Claude/Ink) clears its viewport mid-think and goes quiet, nothing auto-heals it — the
+  // operator was left staring at a fragment. REPAINT is the manual, non-destructive recovery: it
+  // fires the same rows−1→rows nudge to force the agent to redraw, WITHOUT killing the process.
+  await setupBench(page, {
+    sessions: SESSIONS,
+    // Rich attach → the first-attach backstop stays silent (the "NOT flicker-jiggled" contract),
+    // so the only "LIVE (repainted)" marker can come from the REPAINT click below.
+    history: { [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`) },
+    wipeOnResizeChange: true, // grid change → the bench agent repaints (marker)
+  });
+  await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
+  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await page.waitForTimeout(2000); // past the first-attach backstop window
+  await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)"); // no auto-jiggle
+
+  // The agent clears its own viewport mid-think and stops emitting — a blank/fragment, NO reconnect.
+  await page.evaluate(() => {
+    const ws = (
+      window as unknown as { __BENCH_LAST_WS__: { onmessage: ((e: { data: ArrayBuffer }) => void) | null } }
+    ).__BENCH_LAST_WS__;
+    ws.onmessage?.({ data: new TextEncoder().encode("\x1b[2J\x1b[H").buffer });
+  });
+  await expect(page.locator(".xterm-rows")).not.toContainText("content line"); // screen went blank
+
+  // Owner taps REPAINT → the agent redraws its current frame. No RESTART, no reconnect.
+  await page.getByRole("button", { name: /repaint/i }).click();
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", { timeout: 5000 });
+});
+
+test("REPAINT is hidden for a read-only secondary viewer (#485)", async ({ page }) => {
+  // A geometry nudge would reach the shared PTY, so REPAINT is owner-only — the server already
+  // drops a secondary's resize frames, and a dead button is worse than no button. The stream still
+  // flows (a secondary is read-only, never blank) behind the take-over banner.
+  await setupBench(page, {
+    sessions: SESSIONS,
+    history: { [KEY]: Array.from({ length: 12 }, (_, i) => `content line ${i}`) },
+    role: "secondary",
+  });
+  await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
+  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await expect(page.getByText(/read-only|another tab/i)).toBeVisible(); // take-over banner
+  await expect(page.getByRole("button", { name: /repaint/i })).toHaveCount(0); // owner-only → absent
+  await expect(page.getByRole("button", { name: /restart/i })).toBeVisible(); // RESTART is not gated
+});

@@ -28,6 +28,10 @@ export interface BenchOptions {
    *  holds the response so a spec can observe the loading pill. `status` (e.g. 500)
    *  makes that call fail so a spec can exercise the error + retry pill. */
   lazyPages?: LazyHistoryPage[];
+  /** Per-tab ownership role the fake server reports on connect (#184/#485). Default "owner";
+   *  set "secondary" to model a read-only viewer (the take-over banner shows, the owner-only
+   *  REPAINT control is hidden). */
+  role?: "owner" | "secondary";
 }
 
 export interface LazyHistoryPage {
@@ -111,7 +115,7 @@ function fakeWsScript() {
         this.readyState = 1;
         this.onopen && this.onopen();
         // Active viewer (prod runs take-over on) → role frame, then the scroll-up history.
-        this.onmessage && this.onmessage({ data: JSON.stringify({ t: "role", role: "owner" }) });
+        this.onmessage && this.onmessage({ data: JSON.stringify({ t: "role", role: cfg.role || "owner" }) });
         const lines = (cfg.history && cfg.history[this.key]) || [];
         const s = lines.join("\\r\\n");
         if (this.have === 0 && s) {
@@ -182,10 +186,10 @@ export async function setupBench(page: Page, opts: BenchOptions) {
     opts.sessions.map((s) => [`${s.engine}:${s.uuid}`, defaultHistory(`${s.engine}:${s.uuid}`)]),
   );
   await page.addInitScript(
-    ({ history, wipeOnResizeChange }) => {
-      (window as unknown as { __BENCH__: unknown }).__BENCH__ = { history, wipeOnResizeChange };
+    ({ history, wipeOnResizeChange, role }) => {
+      (window as unknown as { __BENCH__: unknown }).__BENCH__ = { history, wipeOnResizeChange, role };
     },
-    { history, wipeOnResizeChange: opts.wipeOnResizeChange ?? true },
+    { history, wipeOnResizeChange: opts.wipeOnResizeChange ?? true, role: opts.role ?? "owner" },
   );
   await page.addInitScript(fakeWsScript());
 }

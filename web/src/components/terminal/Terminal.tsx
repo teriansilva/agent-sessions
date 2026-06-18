@@ -78,6 +78,11 @@ export function Terminal({
   const composeRef = useRef<ComposeHandle>(null);
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Manual repaint (#485): the live socket effect publishes its rows−1→rows nudge here so the
+  // owner-only REPAINT header button can force a winch-repaint agent to redraw its current frame
+  // WITHOUT killing the process (unlike RESTART). Reset to a no-op on teardown so a stale click
+  // can't resize a disposed socket.
+  const jiggleRef = useRef<() => void>(() => {});
   const { theme } = useTheme();
   const { accent } = useAccent();
   // Resolve the human session title for the panel header (#232) from the shared store the
@@ -276,6 +281,9 @@ export function Terminal({
         }, 320),
       );
     };
+    // Publish the nudge so the REPAINT button can invoke it from render (#485). jiggleRows already
+    // guards rows>4 and sock===sockRef.current, so a click on a superseded socket is a no-op.
+    jiggleRef.current = jiggleRows;
     const armRepaintBackstop = () => {
       attachBytes = 0;
       initialTailLock = true;
@@ -771,6 +779,7 @@ export function Terminal({
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
       clearJiggle();
+      jiggleRef.current = () => {}; // stale REPAINT click must not resize a disposed socket (#485)
       document.removeEventListener("wheel", armOnWheel, true);
       document.removeEventListener("touchmove", armOnTouchMove, true);
       document.removeEventListener("keydown", armOnKeydown, true);
@@ -820,6 +829,12 @@ export function Terminal({
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
+  }, []);
+  // Manual repaint (#485): force the agent to redraw its current frame via the published
+  // rows−1→rows nudge — recovers a mid-session blank/fragment (a winch-repaint TUI that cleared
+  // its viewport and went quiet) WITHOUT killing the process. Non-destructive, unlike RESTART.
+  const repaint = useCallback(() => {
+    jiggleRef.current();
   }, []);
   const takeover = useCallback(() => {
     // Arm the one-shot force flag, then bump the epoch: the effect reconnects and the fresh
@@ -881,6 +896,21 @@ export function Terminal({
           <span className={`hud-led ${head.led}`} aria-hidden="true" />
           STATUS // <b className="num">{head.label}</b>
         </span>
+        {/* Repaint (#485): owner-only, non-destructive recovery for a mid-session blank/fragment —
+            nudges the agent to redraw without killing it. Hidden for read-only secondaries (the
+            server drops their resize frames anyway); disabled until the socket is connected. */}
+        {role === "owner" && (
+          <button
+            type="button"
+            className={styles.restartBtn}
+            onClick={repaint}
+            disabled={status.kind !== "connected"}
+            title="Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent"
+            aria-label="Repaint screen"
+          >
+            REPAINT
+          </button>
+        )}
         <button
           type="button"
           className={styles.recapBtn}
