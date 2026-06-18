@@ -188,6 +188,9 @@
   gap: 12px;
 }
 
+/* Corner-bracket frame only (#476): the HudFrame brackets ARE the card's frame — no left
+ * rail, so the bracketed left edge never doubles up with a border-left line. Needs-you urgency
+ * reads off the amber LED + ⚠ alert + the "NEEDS YOU" group header, not a coloured rail. */
 .card {
   position: relative;
   display: flex;
@@ -195,12 +198,7 @@
   gap: 7px;
   padding: 11px 13px;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--eng, var(--line-strong));
   background: var(--bg-1);
-}
-/* needs-you: amber left rail (the issue's "amber left-border" cue). */
-.needs_you {
-  border-left-color: var(--status-degraded);
 }
 
 .cardHead {

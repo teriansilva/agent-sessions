@@ -215,7 +215,9 @@
 
 /* Session chip — at information parity with the sidebar list row (#424 Phase 4): a head line
  * (LED + title + intervention badge + engine), the AI summary, and a project/folder/time foot.
- * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent. */
+ * Fixed size so the tidy-tree layout stays deterministic; content centres when a line is absent.
+ * Framed by the HudFrame corner brackets only (#476) — no engine left rail, so the bracketed
+ * left edge never doubles up. Engine identity reads off the coloured node dot + handles below. */
 .tr-ov-chip {
   position: relative;
   display: flex;
@@ -227,7 +229,6 @@
   padding: 8px 11px;
   background: var(--row-hover);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--eng, var(--accent));
   border-radius: 0;
   cursor: pointer;
   text-align: left;

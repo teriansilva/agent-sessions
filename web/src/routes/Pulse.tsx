@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { HudFrame } from "../components/hud/HudFrame";
 import { api, ApiError } from "../lib/api";
-import { engineBadge, engineColor, relTime, shortCwd } from "../lib/format";
+import { engineBadge, relTime, shortCwd } from "../lib/format";
 import type { PulseCard, PulseDepth, PulseOverview, PulseState } from "../types/api";
 import styles from "./Pulse.module.css";
 
@@ -36,10 +36,7 @@ function Card({ card }: { card: PulseCard }) {
   const summary = card.synthesis || card.ai_summary || "";
   const intervention = card.intervention_required;
   return (
-    <li
-      className={`${styles.card} ${styles[card.state]}`}
-      style={{ ["--eng" as string]: engineColor(card.engine) }}
-    >
+    <li className={styles.card}>
       <HudFrame />
       <div className={styles.cardHead}>
         <span

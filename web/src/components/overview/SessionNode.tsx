@@ -6,8 +6,9 @@ import { HudFrame } from "../hud/HudFrame";
 
 /** A session chip inside a project cluster — at information parity with the sidebar list row
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
- *  the engine badge, the project + folder, and the relative time. Engine-coloured left border;
- *  archived dimmed; `selected` highlights the open session. Presentational — the click is
+ *  the engine badge, the project + folder, and the relative time. Framed by the HudFrame corner
+ *  brackets only (#476) — no engine left rail; engine identity reads off the coloured dot/handles
+ *  + badge. Archived dimmed; `selected` highlights the open session. Presentational — the click is
  *  handled by the canvas's React Flow `onNodeClick` (opens the session); in Projects layout the
  *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
  *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold. */
