@@ -219,6 +219,9 @@ export function useSessionsList() {
               intervention_reason: r.intervention_reason,
               reviewed_at: r.reviewed_at,
               review_excluded: r.review_excluded,
+              // #481: keep the recap fresh too, so opening the session-brief modal right after a
+              // sidebar Review-now shows the new recap rather than a stale/missing one.
+              ai_recap: r.ai_recap,
             }
           : s,
       ),

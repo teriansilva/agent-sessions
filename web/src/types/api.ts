@@ -37,6 +37,9 @@ export interface Session {
   reviewed_at?: number | null;
   /** Per-session opt-out from AI review. */
   review_excluded?: boolean;
+  /** #481: chronological "what happened in this session" recap over the whole transcript,
+   *  shown in the session-brief modal. "" / absent until the first review produces one. */
+  ai_recap?: string;
   /** #477: the session's compose box has an unsent draft (text and/or pasted images) →
    *  the blue status dot. The full draft body is fetched separately via api.getDraft. */
   has_draft?: boolean;

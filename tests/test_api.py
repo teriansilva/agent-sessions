@@ -1442,3 +1442,32 @@ def test_folders_root_subdir_surfaces(auth_cfg, fake_jsonl, tmp_home):
     assert os.path.realpath(code / "brand-new") in folders
     # The out-of-root fixture cwds are gone.
     assert _TMP_OTHER not in folders
+
+
+# ---- AI recap on rows + api_key boundary (#481) -------------------------------
+
+
+def test_ai_recap_on_rows_and_api_key_never_leaks(auth_cfg, fake_jsonl):
+    from agent_sessions import metadata, prefs
+
+    secret = "sk-must-not-leak-9999"  # noqa: S105 — test fixture value
+    sid = "claude:11111111-1111-1111-1111-111111111111"  # exists in fake_jsonl
+    prefs.set_ai_review({"base_url": "https://ai.test/v1", "api_key": secret, "model": "m"})
+    metadata.patch(sid, ai_recap="Cloned the repo, then fixed the bug.")
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    r = c.get("/api/sessions?limit=200")
+    assert r.status_code == 200
+    row = next(s for s in r.json()["sessions"] if s["id"] == sid)
+    # The model-derived recap rides on the row…
+    assert row["ai_recap"] == "Cloned the repo, then fixed the bug."
+    # …but the API key never crosses the boundary, on the rows or anywhere else.
+    assert secret not in r.text
+
+    cfg_resp = c.get("/api/config")
+    assert secret not in cfg_resp.text
+    ai = cfg_resp.json()["ai_review"]
+    assert "api_key" not in ai  # only the write-only marker is exposed
+    assert ai.get("api_key_set") is True

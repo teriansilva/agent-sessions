@@ -44,8 +44,8 @@ def ai_prefs(tmp_home, monkeypatch):
     return tmp_home
 
 
-def _chat_transport(calls: list, *, status=200):
-    result = {
+def _chat_transport(calls: list, *, status=200, recap_ok=True):
+    summary = {
         "summary": "Editing tests",
         "title": "Fix the tests",
         "intervention_required": False,
@@ -54,9 +54,19 @@ def _chat_transport(calls: list, *, status=200):
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        # Each review makes TWO calls (#481): the tail summary, then the whole-session recap —
+        # answered differently (keyed on the recap prompt) so the loop genuinely persists a recap.
+        # ``recap_ok=False`` makes ONLY the recap call return a shape-invalid body, so the summary
+        # persists but the recap fails (fail-soft) — exercising the recap retry/backfill path.
+        payload = json.loads(request.content)
+        is_recap = "returning to a coding-agent session" in payload["messages"][0]["content"]
+        if is_recap:
+            body = {"recap": "Cloned repo.\nFixed tests."} if recap_ok else {"no_recap_key": True}
+        else:
+            body = summary
         return httpx.Response(
             status,
-            json={"choices": [{"message": {"content": json.dumps(result)}}]},
+            json={"choices": [{"message": {"content": json.dumps(body)}}]},
         )
 
     return httpx.MockTransport(handler)
@@ -87,22 +97,25 @@ def test_sweep_reviews_changed_session(ai_prefs, fake_jsonl, monkeypatch):
     reviewed, failures = _sweep(_FakeRegistry([_row(SID)]))
     assert reviewed == [SID]
     assert failures == 0
-    assert len(calls) == 1
+    assert len(calls) == 2  # one summary call + one recap call (#481)
     m = metadata.get(SID)
     assert m.ai_summary == "Editing tests"
+    assert m.ai_recap == "Cloned repo.\nFixed tests."
     assert m.reviewed_at is not None
     assert m.review_fingerprint
+    assert m.recap_fingerprint
 
 
 def test_sweep_skips_unchanged_without_calling_endpoint(ai_prefs, fake_jsonl, monkeypatch):
-    # The issue's change-detection requirement: across two sweeps with unchanged content
-    # the endpoint is called EXACTLY once — the second pass is fingerprint-only, local.
+    # The issue's change-detection requirement: across two sweeps with unchanged content the
+    # session is reviewed EXACTLY once — the second pass is fingerprint-only, local. One review
+    # is two calls (#481): the summary + the recap.
     calls = []
     monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
     reg = _FakeRegistry([_row(SID)])
     assert _sweep(reg) == ([SID], 0)
     assert _sweep(reg) == ([], 0)  # unchanged → skipped before any network I/O
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_sweep_reviews_again_when_content_changes(ai_prefs, fake_jsonl, monkeypatch):
@@ -112,7 +125,25 @@ def test_sweep_reviews_again_when_content_changes(ai_prefs, fake_jsonl, monkeypa
     assert _sweep(reg) == ([SID], 0)
     webterm._buffer_append(SID, b"fresh terminal output moves the fingerprint\r\n")
     assert _sweep(reg) == ([SID], 0)
-    assert len(calls) == 2
+    assert len(calls) == 4  # two reviews × (summary + recap) (#481)
+
+
+def test_sweep_retries_recap_when_summary_fresh_but_recap_failed(ai_prefs, fake_jsonl, monkeypatch):
+    # #481 (Hermes #482): summary succeeds but the recap call fails → review_fingerprint advances
+    # while recap_fingerprint stays empty. The next sweep, with UNCHANGED content, must STILL
+    # re-review to retry the recap — it must NOT skip on the summary fingerprint alone (otherwise
+    # a failed/absent recap is stranded until the tail changes; same gap as legacy summary-only
+    # sessions needing recap backfill).
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls, recap_ok=False))
+    reg = _FakeRegistry([_row(SID)])
+    assert _sweep(reg) == ([SID], 0)
+    m = metadata.get(SID)
+    assert m.review_fingerprint  # summary persisted
+    assert m.ai_recap == ""  # recap failed → not persisted
+    assert not m.recap_fingerprint
+    # Unchanged content, but the recap is still stale → re-reviewed, not skipped.
+    assert _sweep(reg) == ([SID], 0)
 
 
 def test_sweep_skips_excluded(ai_prefs, fake_jsonl, monkeypatch):
@@ -152,7 +183,7 @@ def test_sweep_disabled_flag_makes_no_calls(ai_prefs, fake_jsonl, monkeypatch):
     # Re-enabling takes effect at the very next sweep — no restart, prefs re-read live.
     prefs.set_ai_review({"enabled": True})
     assert _sweep(_FakeRegistry([_row(SID)])) == ([SID], 0)
-    assert len(calls) == 1
+    assert len(calls) == 2  # summary + recap (#481)
 
 
 def test_sweep_unconfigured_makes_no_calls(tmp_home, fake_jsonl, monkeypatch):
@@ -203,8 +234,9 @@ def test_failed_review_persists_nothing_and_is_retried(ai_prefs, fake_jsonl, mon
 
 
 def test_sweep_caps_and_spaces_endpoint_calls(ai_prefs, fake_jsonl, monkeypatch):
-    # 5 changed sessions, cap 4: exactly SWEEP_CAP endpoint calls, strictly one at a time
-    # with CALL_SPACING_S between consecutive calls — a sweep can't stampede the endpoint.
+    # 5 changed sessions, cap 4: exactly SWEEP_CAP SESSIONS reviewed (each = 2 endpoint calls,
+    # summary + recap, #481), reviewed strictly one session at a time with CALL_SPACING_S between
+    # sessions — a sweep can't stampede the endpoint.
     keys = [f"claude:aaaaaaa{i}-0000-0000-0000-00000000000{i}" for i in range(5)]
     for k in keys:
         webterm._buffer_append(k, f"agent output for {k}\r\n".encode())
@@ -220,7 +252,7 @@ def test_sweep_caps_and_spaces_endpoint_calls(ai_prefs, fake_jsonl, monkeypatch)
     monkeypatch.setattr(ai_review_loop.asyncio, "sleep", recording_sleep)
     reviewed, failures = _sweep(_FakeRegistry([_row(k) for k in keys]))
     assert len(reviewed) == ai_review_loop.SWEEP_CAP
-    assert len(calls) == ai_review_loop.SWEEP_CAP
+    assert len(calls) == 2 * ai_review_loop.SWEEP_CAP  # each review = summary + recap (#481)
     assert failures == 0
     # Spacing between consecutive calls only (none before the first).
     spacing = [d for d in sleeps if d == ai_review_loop.CALL_SPACING_S]

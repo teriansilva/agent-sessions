@@ -9,14 +9,28 @@ import { defineConfig, devices } from "@playwright/test";
  *  reconnect) point at a running app instance and are tagged so they can be skipped
  *  where no backend is available. */
 // Preview port. NOT vite's default 4173: the self-hosted CI runner is shared, and another project
-// holds 4173 permanently → `--strictPort` collided and failed every e2e run. Use a distinct,
-// override-able port so agent-sessions' preview never clashes with a neighbour on the same host.
-const PORT = Number(process.env.E2E_PORT ?? 41873);
+// holds 4173 permanently → `--strictPort` collided and failed every e2e run. The shared runner
+// also runs MULTIPLE agent-sessions web-ci jobs concurrently (several open PRs), so a single fixed
+// 41873 collides too ("port already used"). Derive a per-run port from the CI run id (falling back
+// to the pid locally) so concurrent jobs never clash; still override-able via E2E_PORT.
+// A CI run id is stable across Playwright's main + worker processes (it's an inherited env var),
+// so it yields ONE port per run that every process agrees on — `process.pid` would differ per
+// worker and break the webServer/baseURL match. Local (no run id, single dev, no concurrency)
+// keeps the fixed 41873.
+const CI_RUN = process.env.GITHUB_RUN_ID ?? process.env.GITHUB_RUN_NUMBER;
+const PORT = Number(
+  process.env.E2E_PORT ?? (CI_RUN ? 41000 + ((Number(CI_RUN) % 4000) + 1) : 41873),
+);
 const PREVIEW_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
+  // Cap CI concurrency: every worker loads the SPA (xterm + WS) against the single shared
+  // `vite preview` server, so the default (~half the runner's cores) saturates page setup and
+  // specs flake with "Test timeout … setting up page". 2 keeps it parallel but reliable; local
+  // stays uncapped for speed.
+  workers: process.env.CI ? 2 : undefined,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",

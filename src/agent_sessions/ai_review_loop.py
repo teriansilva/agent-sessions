@@ -42,8 +42,10 @@ from . import aitasks, metadata, prefs, review
 
 log = logging.getLogger("agent_sessions.ai_review_loop")
 
-# Hard per-sweep bound on ENDPOINT CALLS (attempts, not successes — a failing endpoint
-# must not widen the sweep). Overflow is picked up by the next sweep.
+# Hard per-sweep bound on SESSIONS reviewed (attempts, not successes — a failing endpoint
+# must not widen the sweep). Each reviewed session now makes up to TWO endpoint calls (#481):
+# the tail summary, then the whole-session recap — so the worst-case call budget per sweep is
+# 2 × SWEEP_CAP. Overflow sessions are picked up by the next sweep.
 SWEEP_CAP = 4
 
 # Pause between consecutive endpoint calls inside one sweep: serialization alone prevents
@@ -136,7 +138,24 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
             # sessions; never worth an endpoint call, never worth log spam.
             log.debug("ai-review: no reviewable input for %s — skipping", key, exc_info=True)
             continue
-        if fingerprint == meta.review_fingerprint:
+        # The recap (#481) carries an INDEPENDENT fingerprint over the WHOLE-session transcript,
+        # so the summary fingerprint alone is not enough to decide freshness: a session whose
+        # tail summary is already current can still NEED a (re)view — the recap call failed last
+        # pass (its fingerprint never advanced), or a legacy session has a summary but no recap
+        # yet. Re-review when EITHER input no longer matches what was persisted, so a failed /
+        # absent recap is retried instead of being stranded until the tail changes. A recap-gather
+        # error (nothing to recap) never forces a review on the recap's account. The retry re-runs
+        # run_review wholesale (summary + recap); that's bounded by SWEEP_CAP and only happens
+        # while the recap is genuinely behind.
+        recap_stale = False
+        try:
+            _, recap_fp = await asyncio.to_thread(
+                review.gather_recap_input, key, review.RECAP_INPUT_CHARS
+            )
+            recap_stale = recap_fp != meta.recap_fingerprint
+        except Exception:
+            log.debug("ai-review: no recap input for %s", key, exc_info=True)
+        if fingerprint == meta.review_fingerprint and not recap_stale:
             continue
         if attempts:
             await asyncio.sleep(CALL_SPACING_S)

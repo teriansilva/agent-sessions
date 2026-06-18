@@ -330,6 +330,9 @@ export const api = {
       intervention_reason: string;
       reviewed_at: number | null;
       review_excluded: boolean;
+      /** #481: chronological whole-session recap, refreshed by this review. */
+      ai_recap: string;
+      recap_fingerprint: string;
     }>(`/api/sessions/${enc(id)}/review`),
   /** AI review (#356): set (or toggle, when `excluded` is omitted) the per-session
    *  exclude-from-review flag. CSRF-guarded. */

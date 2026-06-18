@@ -217,3 +217,34 @@ def test_is_meaningful_threshold():
     assert metadata._is_meaningful("..") is False
     assert metadata._is_meaningful("  x ") is False  # strips to one char
     assert metadata._is_meaningful("  ") is False
+
+
+# ---- chronological recap fields (#481) ----------------------------------------
+
+
+def test_recap_fields_round_trip(tmp_home):
+    m = metadata.patch("claude:x", ai_recap="Did A.\nThen B.", recap_fingerprint="fp123")
+    assert (m.ai_recap, m.recap_fingerprint) == ("Did A.\nThen B.", "fp123")
+    again = metadata.load()["claude:x"]
+    assert again.ai_recap == "Did A.\nThen B."
+    assert again.recap_fingerprint == "fp123"
+
+
+def test_legacy_sidecar_without_recap_fields_loads_safely(tmp_home):
+    # A pre-#481 row (no ai_recap / recap_fingerprint) loads with empty defaults, not an error.
+    p = _meta_path(tmp_home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"claude:x": {"title": "old", "ai_summary": "s"}}))
+    m = metadata.load()["claude:x"]
+    assert m.ai_recap == "" and m.recap_fingerprint == ""
+    # An unrelated later write neither invents nor drops them.
+    metadata.patch("claude:x", title="renamed")
+    again = metadata.load()["claude:x"]
+    assert again.ai_recap == "" and again.ai_summary == "s"
+
+
+def test_recap_survives_unrelated_patch(tmp_home):
+    metadata.patch("claude:x", ai_recap="R", recap_fingerprint="f")
+    metadata.patch("claude:x", ai_summary="new summary")  # a summary write must not drop recap
+    again = metadata.load()["claude:x"]
+    assert again.ai_recap == "R" and again.recap_fingerprint == "f"

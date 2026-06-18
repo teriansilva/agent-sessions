@@ -39,7 +39,9 @@ from . import engines, metadata, projects, review
 
 # Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
-CACHE_VERSION = 1
+# v2 (#481): the one-line `banner` became a short chronological recap paragraph — bump so a
+# cached v1 one-liner is treated as a miss instead of rendering in the new paragraph slot.
+CACHE_VERSION = 2
 
 WINDOW_DAYS_DEFAULT = 3
 WINDOW_DAYS_MIN = 1
@@ -64,15 +66,20 @@ SYNTH_CALL_SPACING_S = 1.0
 # How many curated cards are fed to the banner call (bounds the prompt size); the cap is
 # generous enough to cover a typical window without an unbounded payload.
 BANNER_DIGEST_CAP = 40
-BANNER_MAX = 280
+# The banner is a short chronological RECAP paragraph (#481, was a one-liner), so the cap is
+# roomier — still bounded so the prompt/render stay sane.
+BANNER_MAX = 700
 SESSION_LINE_MAX = 160
 
 _BANNER_SYSTEM_PROMPT = (
-    "You write a single-line status banner summarizing the state of a developer's recent "
-    "coding-agent work across several sessions. You are given the curated session list "
-    "(state, title, summary, age). Lead with what needs the user's attention, then what is "
-    "in flight, then briefly what is idle. Be specific and concise — no preamble, no markdown. "
-    'Reply with ONLY a JSON object: {"banner": "<one line, max 200 chars>"}.'
+    "You write a short chronological recap of a developer's recent coding-agent work across "
+    "several sessions, shown at the top of their work overview. You are given the curated "
+    "session list (state, title, summary, age). Write 2-4 sentences of plain prose in rough "
+    "chronological order: what was worked on earlier, then what is in flight now, ending with "
+    "what needs the user's attention or what is pending. Be specific and concise — no preamble, "
+    "no markdown, no bullet points. "
+    'Reply with ONLY a JSON object: {"banner": "<2-4 sentence chronological recap, max 600 '
+    'chars>"}.'
 )
 
 _SESSION_SYSTEM_PROMPT = (

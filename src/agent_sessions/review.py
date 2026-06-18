@@ -41,6 +41,23 @@ REASON_MAX = 280
 # separately from max_input_chars so a chatty terminal can't crowd out the transcript.
 LIVE_TAIL_CHARS = 4000
 
+# Recap (#481): a SECOND review pass over the WHOLE-session transcript producing a
+# chronological "what happened" brief for the session-brief modal. Output capped
+# server-side; input bounded to a wider budget than the tail review (head+tail sampled when
+# over) so the opening phases of a long session aren't lost.
+RECAP_MAX = 1500
+RECAP_INPUT_CHARS = 16000
+
+RECAP_SYSTEM_PROMPT = (
+    "You write a brief for a developer returning to a coding-agent session. From the session "
+    "transcript (you may see the beginning and the most recent part, with the middle elided) "
+    "plus any live terminal tail, write a SHORT CHRONOLOGICAL recap of what happened: 3 to 6 "
+    "terse past-tense steps in the order they occurred, each on its own line, ending with the "
+    "current state or what is pending. No preamble, no headings, no markdown bullets. Reply "
+    'with ONLY a JSON object: {"recap": "<chronological recap, max ~900 chars, one step per '
+    'line>"}.'
+)
+
 
 # Hard request timeout for the review completion call. Sized for SLOW LOCAL MODELS
 # (#391): ~13 tok/s generation plus prompt processing on multi-thousand-token
@@ -175,6 +192,50 @@ def gather_input(key: str, max_input_chars: int) -> tuple[str, str]:
     return text, fingerprint
 
 
+def _head_tail_sample(text: str, max_chars: int) -> str:
+    """Bound ``text`` to ``max_chars`` keeping the HEAD and the TAIL — the chronological
+    bookends a recap needs — and eliding the middle with a marker. Under the cap the text is
+    returned unchanged. Unlike ``gather_input``'s tail-truncation this preserves the opening
+    of a long session so the recap can describe how the work started."""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n\n…[middle elided]…\n\n"
+    budget = max_chars - len(marker)
+    if budget <= 0:
+        return text[:max_chars]
+    head = budget * 3 // 5
+    tail = budget - head
+    return text[:head] + marker + text[-tail:]
+
+
+def gather_recap_input(key: str, max_chars: int) -> tuple[str, str]:
+    """Build ``(recap_input, fingerprint)`` for a session from the WHOLE saved transcript
+    (#481) plus the live terminal tail — a wider view than ``gather_input``'s tail so the
+    recap can describe the whole session. Bounded by ``_head_tail_sample`` (head+tail when
+    over ``max_chars``). Raises :class:`ReviewError` when there is nothing to review. The
+    fingerprint hashes the assembled (post-sampling) text so the recap regenerates only when
+    the content it actually sees changes — its own change-detection, independent of the tail
+    review's fingerprint."""
+    try:
+        from . import engines
+
+        phys_key = engines.physical_key(key)
+    except Exception:
+        phys_key = key
+    transcript_text = _plain_transcript(key)
+    live_text = scrollback.live_tail_text(phys_key, LIVE_TAIL_CHARS)
+    if not transcript_text and not live_text:
+        raise ReviewError("nothing to recap: no transcript and no live terminal output")
+    parts: list[str] = []
+    if transcript_text:
+        parts.append("## Transcript (full)\n" + transcript_text)
+    if live_text:
+        parts.append("## Live terminal (tail)\n" + live_text)
+    text = _head_tail_sample("\n\n".join(parts), max_chars)
+    fingerprint = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    return text, fingerprint
+
+
 # --- response parsing ----------------------------------------------------------------
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.S)
@@ -231,6 +292,20 @@ def _shape_guard(obj: dict) -> dict:
     }
 
 
+def _recap_shape_guard(obj: dict) -> str:
+    """Server-owned guard for the recap response (#481): the model output is DATA. Requires a
+    non-empty ``recap`` string; collapses intra-line whitespace but KEEPS newlines (the recap
+    is a short newline-separated timeline), drops blank lines, and caps total length to
+    ``RECAP_MAX``. A missing / empty recap raises ``ReviewError`` (drop → keep the last good
+    value)."""
+    recap = obj.get("recap")
+    if not isinstance(recap, str) or not recap.strip():
+        raise ReviewError("recap response missing usable text")
+    lines = [" ".join(ln.split()) for ln in recap.splitlines()]
+    cleaned = "\n".join(ln for ln in lines if ln)
+    return cleaned[:RECAP_MAX]
+
+
 # --- the review ----------------------------------------------------------------------
 
 
@@ -269,8 +344,9 @@ async def run_review(key: str) -> dict:
     # opencode session the existing title/sticky/archive sidecar lives under the
     # placeholder physical key — patching the logical key would create a sparse
     # shadowing entry and hide that state from the list read path.
+    rk = metadata.resolve_key(key)
     meta = metadata.patch(
-        metadata.resolve_key(key),
+        rk,
         ai_summary=result["summary"],
         ai_title=result["title"],
         intervention_required=result["intervention_required"],
@@ -278,6 +354,23 @@ async def run_review(key: str) -> dict:
         reviewed_at=time.time(),
         review_fingerprint=fingerprint,
     )
+    # Chronological recap (#481): a SECOND, INDEPENDENT pass over the whole-session transcript.
+    # Best-effort by design — a recap failure leaves the last good ``ai_recap`` untouched and
+    # never rolls back the summary/intervention write just persisted (and a summary failure
+    # raises above, before we reach here, so the recap never blocks it). Its own fingerprint
+    # skips a redundant call when the whole-session content is unchanged.
+    try:
+        recap_text, recap_fp = await asyncio.to_thread(gather_recap_input, key, RECAP_INPUT_CHARS)
+        if recap_fp != meta.recap_fingerprint:
+            obj = await complete_json(
+                [
+                    {"role": "system", "content": RECAP_SYSTEM_PROMPT},
+                    {"role": "user", "content": recap_text},
+                ]
+            )
+            meta = metadata.patch(rk, ai_recap=_recap_shape_guard(obj), recap_fingerprint=recap_fp)
+    except ReviewError:
+        pass  # keep the last good recap; the summary/intervention write above stands
     return {
         "ai_summary": meta.ai_summary,
         "ai_title": meta.ai_title,
@@ -286,6 +379,8 @@ async def run_review(key: str) -> dict:
         "reviewed_at": meta.reviewed_at,
         "review_fingerprint": meta.review_fingerprint,
         "review_excluded": meta.review_excluded,
+        "ai_recap": meta.ai_recap,
+        "recap_fingerprint": meta.recap_fingerprint,
     }
 
 

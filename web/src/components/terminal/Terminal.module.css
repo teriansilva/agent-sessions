@@ -209,6 +209,28 @@
   opacity: 0.55;
   cursor: default;
 }
+/* Session-brief trigger (#481): an icon-only HUD button in the panel header, between the STATUS
+ * readout and RESTART. Opens the recap modal. Muted by default like RESTART; warms to the accent
+ * on hover/focus. Compact so the 26px header stays uncrowded on narrow/mobile widths. */
+.recapBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border-radius: 0;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.recapBtn:hover,
+.recapBtn:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .secondaryBanner {
     background: var(--bg);

@@ -61,6 +61,28 @@ def _chat_transport(content: object, *, status=200, calls: list | None = None):
     return httpx.MockTransport(handler)
 
 
+def _summary_recap_transport(*, summary=None, recap=None, recap_status=200, calls=None):
+    """A transport that answers the tail-summary call and the whole-session recap call (#481)
+    DIFFERENTLY — keyed on the recap system prompt. ``recap=None`` makes the recap call return
+    non-JSON so its shape guard fails (exercising the fail-soft drop)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(request)
+        assert request.headers["Authorization"] == f"Bearer {SECRET}"
+        payload = json.loads(request.content)
+        system = payload["messages"][0]["content"]
+        if "returning to a coding-agent session" in system:  # the recap prompt
+            content = json.dumps({"recap": recap}) if recap is not None else "not json at all"
+            return httpx.Response(
+                recap_status, json={"choices": [{"message": {"content": content}}]}
+            )
+        content = json.dumps(summary if summary is not None else _ok_result())
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    return httpx.MockTransport(handler)
+
+
 # ---- engine: input assembly ------------------------------------------------------------
 
 
@@ -464,4 +486,81 @@ def test_run_review_uses_pref_timeout_per_call(ai_prefs, fake_jsonl, monkeypatch
     monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(_ok_result()))
     prefs.set_ai_review({"request_timeout": 333})
     asyncio.run(review.run_review(SID))
-    assert seen == [333.0]
+    # run_review now makes TWO completion calls — the tail summary then the whole-session
+    # recap (#481) — and each must pick up the per-call Settings timeout.
+    assert seen == [333.0, 333.0]
+
+
+# ---- engine: chronological recap (#481) --------------------------------------------------
+
+
+def test_head_tail_sample_keeps_bookends_and_bounds():
+    text = "HEAD" + ("x" * 1000) + "TAIL"
+    out = review._head_tail_sample(text, 80)
+    assert out.startswith("HEAD") and out.endswith("TAIL")
+    assert "elided" in out
+    assert len(out) == 80
+    # Under the cap the text is returned verbatim.
+    assert review._head_tail_sample("short", 80) == "short"
+
+
+def test_gather_recap_input_uses_whole_transcript(ai_prefs, fake_jsonl):
+    text, fp = review.gather_recap_input(SID, 24000)
+    assert "## Transcript (full)" in text
+    assert "first message on repo-a" in text
+    assert len(fp) == 64
+
+
+def test_gather_recap_input_bounds_over_cap(ai_prefs, fake_jsonl):
+    webterm._buffer_append(SID, b"y" * 6000 + b"\r\n")
+    text, _ = review.gather_recap_input(SID, 300)
+    assert len(text) <= 300
+    assert "elided" in text
+
+
+def test_run_review_generates_recap(ai_prefs, fake_jsonl, monkeypatch):
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _summary_recap_transport(recap="Cloned repo.\nFixed the bug.")
+    )
+    out = asyncio.run(review.run_review(SID))
+    assert out["ai_recap"] == "Cloned repo.\nFixed the bug."
+    assert out["recap_fingerprint"]
+    m = metadata.get(SID)
+    assert m.ai_recap == "Cloned repo.\nFixed the bug."
+    assert m.recap_fingerprint
+
+
+def test_run_review_recap_failure_is_fail_soft(ai_prefs, fake_jsonl, monkeypatch):
+    # Seed a prior good recap, then make ONLY the recap call fail (the summary still succeeds).
+    rk = metadata.resolve_key(SID)
+    metadata.patch(rk, ai_recap="PRIOR RECAP", recap_fingerprint="prior-fp")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _summary_recap_transport(summary=_ok_result(summary="Fresh summary"), recap=None),
+    )
+    out = asyncio.run(review.run_review(SID))  # must NOT raise
+    # The summary/intervention write landed; the recap write is INDEPENDENT and left the last
+    # good recap untouched — no partial rollback couples the two.
+    assert out["ai_summary"] == "Fresh summary"
+    m = metadata.get(SID)
+    assert m.ai_summary == "Fresh summary"
+    assert m.ai_recap == "PRIOR RECAP"
+
+
+def test_run_review_recap_skips_when_unchanged(ai_prefs, fake_jsonl, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _summary_recap_transport(recap="One step.", calls=calls)
+    )
+    asyncio.run(review.run_review(SID))
+    calls.clear()
+    # Second pass over the SAME whole-session content → recap fingerprint unchanged → the recap
+    # call is skipped (only the tail summary call fires).
+    asyncio.run(review.run_review(SID))
+    recap_calls = [
+        c
+        for c in calls
+        if "returning to a coding-agent session" in json.loads(c.content)["messages"][0]["content"]
+    ]
+    assert recap_calls == []

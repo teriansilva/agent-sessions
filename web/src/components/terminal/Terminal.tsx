@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ScrollText } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
@@ -25,6 +25,7 @@ import { useAccent } from "../../theme/accentStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
+import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 
 function statusText(s: TermStatus): string {
@@ -812,6 +813,10 @@ export function Terminal({
   // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
   // leaks into the panel header — drop straight to the short id.
   const title = row?.title || `${id.slice(0, 8)}…`;
+  // Session-brief modal (#481): the recap icon in the header opens it; the trigger element is
+  // captured at click time so focus returns to it on close (no ref read during render).
+  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapTrigger, setRecapTrigger] = useState<HTMLElement | null>(null);
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
@@ -878,6 +883,19 @@ export function Terminal({
         </span>
         <button
           type="button"
+          className={styles.recapBtn}
+          onClick={(e) => {
+            setRecapTrigger(e.currentTarget);
+            setRecapOpen(true);
+          }}
+          title="Session brief: full title, summary, and a chronological recap of this session"
+          aria-label="Open session brief"
+          aria-haspopup="dialog"
+        >
+          <ScrollText size={13} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
           className={styles.restartBtn}
           onClick={restart}
           disabled={restarting}
@@ -887,6 +905,22 @@ export function Terminal({
           {restarting ? "RESTARTING…" : "RESTART"}
         </button>
       </div>
+      {recapOpen && (
+        <SessionRecapModal
+          sessionId={`${engine}:${id}`}
+          engine={engine}
+          title={title}
+          project={row?.project?.name}
+          summary={row?.ai_summary}
+          recap={row?.ai_recap}
+          interventionRequired={row?.intervention_required}
+          interventionReason={row?.intervention_reason}
+          reviewedAt={row?.reviewed_at}
+          reviewExcluded={row?.review_excluded}
+          onClose={() => setRecapOpen(false)}
+          returnFocusTo={recapTrigger}
+        />
+      )}
       <div className={styles.termArea}>
         {text && (
           <div
