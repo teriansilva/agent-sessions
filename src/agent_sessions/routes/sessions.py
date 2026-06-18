@@ -65,10 +65,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "last_mtime": s.last_mtime,
             "last_output_at": last_out,
             "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
+            # Raw first message stays on the row for search + diagnostics ONLY — never a
+            # display fallback (#284). `q` matches it directly (see `_keep`), so a session
+            # whose meaningless first line normalizes `title` to "" is still searchable by
+            # its original first message.
             "first_user_message": s.first_user_message,
-            # Display precedence (#356, mitigates #284): user title → ai_title → first
-            # message — via THE shared helper, so search (`q` matches the displayed
-            # title) and every row consumer agree.
+            # Display precedence (#356, fixes #284): user title → ai_title → MEANINGFUL
+            # first message (a stray "a" / "." normalizes to "") — via THE shared helper,
+            # so every row consumer agrees on one value.
             "title": metadata.display_title(m, s.first_user_message),
             "sticky": m.sticky,
             "sort_key": m.sort_key,
@@ -217,7 +221,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine_f = (engine or "").strip() or None
 
         def _keep(r: dict) -> bool:
-            if q_norm and q_norm not in (r["title"] or "").casefold():
+            # Match the displayed title OR the raw first message (#284): once a meaningless
+            # auto-derived title normalizes to "", search must still find the session by
+            # its original first message, so the normalization never narrows results.
+            if (
+                q_norm
+                and q_norm not in (r["title"] or "").casefold()
+                and q_norm not in (r["first_user_message"] or "").casefold()
+            ):
                 return False
             if project_f is not None:
                 # Project filter (#361/#445): matches the resolved entity id, the synthetic

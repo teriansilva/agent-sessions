@@ -137,3 +137,17 @@ test("an unassigned chip shows the launch folder only, no project chip (#424 par
   expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
   expect(container.querySelector(".tr-ov-chip-proj")).toBeNull();
 });
+
+// #284: the server resolves the meaningful display title (manual rename → AI title →
+// meaningful first message, else ""). When it's "" the chip must drop to the short id —
+// NEVER fall back to the raw first message, or a stray "a" / "." would leak as the name.
+test("a chip with an empty title falls back to the short id, never the raw first message (#284)", () => {
+  renderNode({
+    session: sess({ title: "", first_user_message: "a", short_uuid: "u1abc" }),
+    active: true,
+    selected: false,
+    folderLabel: "~/claude",
+  });
+  expect(screen.getByText("u1abc")).toBeInTheDocument();
+  expect(screen.queryByText("a")).not.toBeInTheDocument();
+});

@@ -14,7 +14,10 @@ import { HudFrame } from "../hud/HudFrame";
 export function SessionNode({ data }: NodeProps) {
   const { session, active, working, selected, folderLabel } = data as SessionNodeData;
   const color = engineColor(session.engine);
-  const title = session.title || session.first_user_message || session.short_uuid;
+  // #284: the server already resolves the meaningful display title (manual rename → AI
+  // title → meaningful first message, else ""). Never fall back to the RAW first message
+  // here, or a stray "a" / "." would leak as the chip name — drop straight to the short id.
+  const title = session.title || session.short_uuid;
   const intervention = !!session.intervention_required && !session.review_excluded;
   const summary = session.review_excluded ? "Excluded from AI review" : session.ai_summary;
   const folder = folderLabel ?? shortCwd(session.cwd);

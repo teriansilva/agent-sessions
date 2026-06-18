@@ -116,3 +116,54 @@ def test_non_uuid_keys_are_left_alone(tmp_home):
     metadata.patch("plain-key", title="x")
     assert "plain-key" in metadata.load()
     assert not _meta_path(tmp_home).with_name("metadata.json.bak").exists()
+
+
+# ---- display_title meaningfulness rule (#284) --------------------------------
+#
+# The single shared helper is engine-agnostic: every provider (Claude scanner,
+# opencode/codex/gemini/antigravity) feeds its first message through `display_title`,
+# so pinning the rule here covers all of them. The contract: a user-set sidecar title
+# is authoritative (kept verbatim, even one char); an auto-derived first message is
+# only used when meaningful (strip() length >= 2 AND >= 1 alphanumeric), else "".
+
+
+@pytest.mark.parametrize("bad", ["a", ".", "..", "--", "   ", "", "\t", " ! "])
+def test_display_title_drops_meaningless_auto_derived_first_message(bad):
+    # No manual title, no AI title: a stray keystroke / punctuation / whitespace first
+    # message must NOT become the display title — it normalizes to "".
+    assert metadata.display_title(metadata.SessionMeta(), bad) == ""
+
+
+@pytest.mark.parametrize("good", ["go", "ok", "hi", "  go  ", "a1", "fix bug"])
+def test_display_title_keeps_meaningful_auto_derived_first_message(good):
+    # A real short prompt is kept verbatim (NOT stripped — search/display use the raw value).
+    assert metadata.display_title(metadata.SessionMeta(), good) == good
+
+
+def test_display_title_keeps_one_char_manual_rename_verbatim():
+    # A user's manual rename is authoritative even at one char — the meaningfulness rule
+    # applies ONLY to auto-derived candidates, never to `meta.title`.
+    assert metadata.display_title(metadata.SessionMeta(title="x"), "a") == "x"
+    assert metadata.display_title(metadata.SessionMeta(title="."), "first message") == "."
+
+
+def test_display_title_manual_title_wins_over_ai_and_first_message():
+    m = metadata.SessionMeta(title="Manual", ai_title="AI chose this")
+    assert metadata.display_title(m, "first message") == "Manual"
+
+
+def test_display_title_ai_title_fills_gap_when_no_manual_rename():
+    # ai_title sits between the manual rename and the first message; it's used as-is
+    # (the reviewer is trusted to produce a real title).
+    m = metadata.SessionMeta(ai_title="Refactor the parser")
+    assert metadata.display_title(m, "a") == "Refactor the parser"
+
+
+def test_is_meaningful_threshold():
+    assert metadata._is_meaningful("go") is True
+    assert metadata._is_meaningful("a1") is True
+    assert metadata._is_meaningful("a") is False  # length < 2
+    assert metadata._is_meaningful("--") is False  # no alphanumeric
+    assert metadata._is_meaningful("..") is False
+    assert metadata._is_meaningful("  x ") is False  # strips to one char
+    assert metadata._is_meaningful("  ") is False

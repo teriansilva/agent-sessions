@@ -118,6 +118,49 @@ def test_search_trims_and_empty_is_no_filter(auth_cfg, fake_jsonl):
     assert c.get("/api/sessions?q=%20%20%20&limit=50").json()["total"] == 4
 
 
+# ---- meaningless first-message title normalization (#284) ---------------------
+
+
+def test_meaningless_first_message_normalizes_title_but_stays_searchable(auth_cfg, fake_jsonl):
+    """#284: a freshly-created session whose first user record is a stray "a" must not
+    surface "a" as its name — the API emits ``title == ""`` (the per-surface placeholder
+    fills in client-side) — while the raw first message is retained on the row and stays
+    searchable, so the normalization never narrows search results."""
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-fresh"
+    proj.mkdir(parents=True)
+    uuid = "66666666-6666-6666-6666-666666666666"
+    (proj / f"{uuid}.jsonl").write_text(
+        '{"type":"user","cwd":"/home/user/claude/fresh","message":{"content":"a"}}\n'
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    row = next(s for s in c.get("/api/sessions?limit=50").json()["sessions"] if s["uuid"] == uuid)
+    assert row["title"] == ""  # NOT the raw "a"
+    assert row["first_user_message"] == "a"  # raw value kept for search/diagnostics
+
+    # Still findable by the raw first message even though the display title is "" — the
+    # OLD predicate (title-only) would have dropped it, so this guards the search fix.
+    found = c.get("/api/sessions?q=a&limit=50").json()
+    assert uuid in {s["uuid"] for s in found["sessions"]}
+
+
+def test_one_char_manual_rename_survives_in_row(auth_cfg, fake_jsonl):
+    """#284: the meaningfulness rule applies ONLY to auto-derived titles — a user's
+    deliberate one-character rename is authoritative and renders verbatim."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    r = c.post(
+        f"/api/sessions/{uuid}/rename",
+        json={"title": "x"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200 and r.json()["title"] == "x"
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["uuid"] == uuid)["title"] == "x"
+
+
 def test_filter_by_project(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)

@@ -86,6 +86,22 @@ test("renders session rows from the API", async () => {
   expect(screen.getByText("Second")).toBeInTheDocument();
 });
 
+// #284: when the server normalizes a meaningless auto-derived title to "", the row shows
+// the (untitled) placeholder. The sidebar never consulted the raw first message — this
+// pins that, so a stray "a" can't leak even if a future edit re-adds the fallback.
+test("an empty (server-normalized) title shows the (untitled) placeholder, not the raw first message (#284)", async () => {
+  mockSessions.mockResolvedValue(
+    pageOf([{ ...sess("claude:u1abc", ""), first_user_message: "a" }], { total: 1 }),
+  );
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("(untitled)")).toBeInTheDocument();
+  expect(screen.queryByText("a")).not.toBeInTheDocument();
+});
+
 test("a project-assigned row shows BOTH the entity name and its launch folder (#424 Phase 3)", async () => {
   const inProject = {
     ...sess("claude:p", "Assigned"),

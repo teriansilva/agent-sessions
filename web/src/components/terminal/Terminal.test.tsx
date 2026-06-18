@@ -2,8 +2,10 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
+import { SessionsCtx } from "../../app/sessionsStore";
 import { api, ApiError } from "../../lib/api";
 import { ThemeCtx } from "../../theme/themeStore";
+import type { Session } from "../../types/api";
 import { Terminal } from "./Terminal";
 import styles from "./Terminal.module.css";
 
@@ -452,4 +454,39 @@ test("RESTART does nothing when the confirm is dismissed (#331)", async () => {
   });
   expect(api.restart).not.toHaveBeenCalled();
   confirmSpy.mockRestore();
+});
+
+// #284: the panel header resolves its title from the shared sessions store. When that
+// row's server-resolved `title` is "" (a meaningless first message normalized away), the
+// header must drop to the short id — NEVER fall back to the raw first message, or a stray
+// "a" / "." would leak into the header.
+test("the panel header uses the server display title only — a one-char first message never leaks (#284)", () => {
+  const sessions = [
+    {
+      id: "claude:abc",
+      engine: "claude",
+      uuid: "abc",
+      short_uuid: "abc",
+      cwd: "/p",
+      project: { kind: "folder", id: "/p", name: "p" },
+      last_mtime: 0,
+      first_user_message: "a",
+      title: "",
+      sticky: false,
+      sort_key: 0,
+      archived: false,
+    },
+  ] as unknown as Session[];
+  render(
+    <MemoryRouter>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
+        <SessionsCtx.Provider value={{ sessions, setSessions: () => {} }}>
+          <Terminal engine="claude" id="abc" />
+        </SessionsCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  // id.slice(0,8) + ellipsis — never the raw "a".
+  expect(screen.getByText("abc…")).toBeInTheDocument();
+  expect(screen.queryByText("a")).not.toBeInTheDocument();
 });

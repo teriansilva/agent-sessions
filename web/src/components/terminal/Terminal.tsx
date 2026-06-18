@@ -808,7 +808,10 @@ export function Terminal({
   const text = statusText(status);
   const head = headStatus(status);
   const row = sessions.find((s) => s.engine === engine && s.uuid === id);
-  const title = row?.title || row?.first_user_message || `${id.slice(0, 8)}…`;
+  // #284: use the server-resolved display title only (manual rename → AI title → meaningful
+  // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
+  // leaks into the panel header — drop straight to the short id.
+  const title = row?.title || `${id.slice(0, 8)}…`;
   const scrollToTail = useCallback(() => {
     termRef.current?.scrollToBottom();
     setAtBottom(true);
