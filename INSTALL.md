@@ -45,7 +45,7 @@ pin `AGENT_SESSIONS_HOST`, it lists this host's addresses and asks where to list
 Where should agent-sessions listen for connections?
   1) 127.0.0.1   localhost only — default, recommended (put a reverse proxy / TLS in front)
   2) 0.0.0.0     all interfaces — reachable from anywhere this host is
-  3) 127.0.0.1   this address only
+  3) 10.0.0.42   this address only
 Choose an option [1]:
 ```
 
