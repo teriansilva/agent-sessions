@@ -34,6 +34,12 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
+  // Even with the CI worker cap, the shared org runner is CPU-starved enough that a web-first /
+  // `expect.poll` assertion can briefly exceed the 5s default and flake a PASSING test — observed:
+  // compose-draft.spec.ts's debounced server-side draft-clear timing out at 5s in CI while it
+  // clears in ~2s locally (passes 9/9). Give assertions headroom so load — not correctness — never
+  // reds web-ci.
+  expect: { timeout: 15_000 },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? PREVIEW_URL,
     trace: "on-first-retry",
