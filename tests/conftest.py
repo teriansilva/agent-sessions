@@ -35,6 +35,25 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
     webterm._LOADED_FROM_DISK.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_prefs(tmp_path, monkeypatch) -> None:
+    """Point operator prefs (#465) at a per-test tmp file so a LIVE config on the machine running
+    the suite can't leak in. ``prefs.get_project_roots()`` — read FIRST by
+    ``project_dirs.effective_roots`` — otherwise returns the operator's real project roots (e.g. a
+    runner whose owner has set ``/home/<user>`` as a root), and ``test_project_dirs``'s
+    'no roots' / env-only cases fail against the live roots instead of the test's. ``_default_path``
+    reads ``AGENT_SESSIONS_PREFS`` per call, so the env override is enough — no file is created, so
+    ``_load`` sees an empty prefs and roots fall back to ``AGENT_SESSIONS_PROJECT_ROOTS``.
+
+    Points at the CANONICAL ``~/.config/agent-sessions/prefs.json`` sub-path under the tmp dir so it
+    coincides with what ``tmp_home`` already uses for METADATA/PROJECTS (and with the real default
+    when ``$HOME`` is the tmp dir) — so a test that writes a legacy prefs file via the default path
+    and reads it back through ``create_app`` (e.g. the migration test) still lines up."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_PREFS", str(tmp_path / ".config" / "agent-sessions" / "prefs.json")
+    )
+
+
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch) -> Path:
     """Pretend the user's ``$HOME`` is an empty tmp dir."""
