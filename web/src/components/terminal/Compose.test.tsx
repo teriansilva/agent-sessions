@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { Compose, type ComposeHandle } from "./Compose";
@@ -27,6 +27,131 @@ beforeEach(() => {
 function renderCompose(connEpoch: () => number = () => 1) {
   return render(<Compose sendInput={sendInput} connEpoch={connEpoch} onCopy={onCopy} />);
 }
+
+// --- Push-to-talk dictation (#483) -------------------------------------------------------------
+// A stub for the browser's SpeechRecognition: records start/stop/abort and lets a test drive
+// result events. The component reads `window.SpeechRecognition` lazily, so installing this before
+// render makes the mic appear (and not installing it models an unsupported browser like Firefox).
+type Seg = { transcript: string; isFinal: boolean };
+let lastRecog: FakeRecognition | null = null;
+
+class FakeRecognition {
+  continuous = false;
+  interimResults = false;
+  lang = "";
+  maxAlternatives = 1;
+  onresult: ((ev: SpeechRecognitionEvent) => void) | null = null;
+  onerror: ((ev: SpeechRecognitionErrorEvent) => void) | null = null;
+  onend: ((ev: Event) => void) | null = null;
+  onstart: ((ev: Event) => void) | null = null;
+  start = vi.fn();
+  stop = vi.fn(() => this.onend?.(new Event("end")));
+  abort = vi.fn();
+  constructor() {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- test double exposes its instance
+    lastRecog = this;
+  }
+  /** Drive a result event the way the engine would, from the current resultIndex. */
+  emit(segments: Seg[], resultIndex = 0) {
+    const results = segments.map((s) => ({
+      0: { transcript: s.transcript, confidence: 1 },
+      isFinal: s.isFinal,
+      length: 1,
+      item: () => ({ transcript: s.transcript, confidence: 1 }),
+    }));
+    this.onresult?.({ resultIndex, results } as unknown as SpeechRecognitionEvent);
+  }
+  /** Drive an error event (permission denied etc). */
+  fail(error: string) {
+    this.onerror?.({ error, message: error } as unknown as SpeechRecognitionErrorEvent);
+  }
+}
+
+const installSpeech = () => {
+  window.SpeechRecognition = FakeRecognition as unknown as typeof window.SpeechRecognition;
+};
+
+afterEach(() => {
+  lastRecog = null;
+  delete window.SpeechRecognition;
+  delete window.webkitSpeechRecognition;
+});
+
+test("the mic chip is hidden when the browser has no SpeechRecognition (#483)", () => {
+  renderCompose(); // no stub installed → unsupported engine, e.g. Firefox
+  expect(screen.queryByRole("button", { name: /voice input/i })).not.toBeInTheDocument();
+});
+
+test("the mic chip renders when SpeechRecognition is available and is icon-only (#483)", () => {
+  installSpeech();
+  renderCompose();
+  const mic = screen.getByRole("button", { name: /start voice input/i });
+  expect(mic.textContent ?? "").toBe(""); // icon-only invariant: aria-label + title are the affordance
+  expect(mic).toHaveAttribute("aria-label", expect.stringMatching(/voice input/i));
+  expect(mic).toHaveAttribute("title", expect.stringMatching(/dictate/i));
+  expect(mic).toHaveAttribute("aria-pressed", "false");
+});
+
+test("tapping the mic starts dictation, streams the transcript in, then tapping again stops (#483)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  expect(lastRecog).not.toBeNull();
+  expect(lastRecog!.start).toHaveBeenCalled();
+  expect(lastRecog!.continuous).toBe(true);
+  expect(lastRecog!.interimResults).toBe(true);
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+
+  act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("deploy the staging build");
+
+  await user.click(screen.getByRole("button", { name: /stop voice input/i }));
+  expect(lastRecog!.stop).toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("dictation appends to already-typed text and streams interim then final (#483)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.type(ta, "hello");
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  act(() => lastRecog!.emit([{ transcript: "world", isFinal: false }]));
+  expect(ta.value).toBe("hello world"); // interim shows live, appended after the typed text
+  act(() => lastRecog!.emit([{ transcript: "world wide", isFinal: true }]));
+  expect(ta.value).toBe("hello world wide"); // finalized result replaces the interim
+});
+
+test("a permission-denied error surfaces a note and leaves the mic idle (#483)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  act(() => lastRecog!.fail("not-allowed"));
+  expect(await screen.findByText(/microphone blocked/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("collapsing the compose box stops an active dictation (#483)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  expect(lastRecog!.start).toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: /collapse compose/i }));
+  expect(lastRecog!.stop).toHaveBeenCalled();
+});
+
+test("unmounting aborts an active dictation so no recognizer outlives the box (#483)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  const { unmount } = renderCompose();
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  unmount();
+  expect(lastRecog!.abort).toHaveBeenCalled();
+});
 
 test("nav keys send their control sequence to the PTY", async () => {
   const user = userEvent.setup();

@@ -86,7 +86,8 @@
 .moreKey,
 .toggle,
 .attach,
-.kebab {
+.kebab,
+.mic {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -106,7 +107,8 @@
 .moreKey:hover,
 .toggle:hover,
 .attach:hover,
-.kebab:hover {
+.kebab:hover,
+.mic:hover {
   color: var(--accent);
   border-color: var(--accent-soft);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -115,15 +117,17 @@
 .moreKey:active,
 .toggle:active,
 .attach:active,
-.kebab:active {
+.kebab:active,
+.mic:active {
   color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
 }
-/* Promoted file-upload + kebab sit in the right cluster (next to Send) and never shrink (#494).
-   The paperclip reads a touch stronger than a plain chip — it's a primary-adjacent affordance. */
+/* Promoted file-upload + kebab + mic sit in the right cluster (next to Send) and never shrink
+   (#494/#483). The paperclip reads a touch stronger than a plain chip — primary-adjacent. */
 .attach,
-.kebab {
+.kebab,
+.mic {
   flex: 0 0 auto;
 }
 .attach {
@@ -255,4 +259,42 @@
   justify-content: center;
   width: 20px;
   flex: none;
+}
+
+/* Push-to-talk mic (#483): a HUD chip on the shared system (above), fixed-width like .toggle so it
+   doesn't flex. Idle inherits the amber hover/active; recording (.micOn) switches to the recording-
+   red LED with a slow pulse ring. --rec is a local recording-red (NOT the brand accent or a status
+   LED), darkened on the light theme for contrast. */
+.mic {
+  width: 34px;
+}
+.micOn {
+  --rec: #ff5a5a;
+  color: var(--rec);
+  border-color: var(--rec);
+  background: color-mix(in srgb, var(--rec) 16%, transparent);
+  animation: micPulse 1.4s ease-in-out infinite;
+}
+.micOn:hover,
+.micOn:active {
+  color: var(--rec);
+  border-color: var(--rec);
+  background: color-mix(in srgb, var(--rec) 24%, transparent);
+}
+:global([data-theme="light"]) .micOn {
+  --rec: #d62f2f;
+}
+@keyframes micPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--rec) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--rec) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .micOn {
+    animation: none;
+  }
 }

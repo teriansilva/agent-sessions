@@ -1,4 +1,4 @@
-import { MoreVertical, Paperclip, Pencil, Send, Square, X } from "lucide-react";
+import { Mic, MoreVertical, Paperclip, Pencil, Send, Square, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import {
   type ClipboardEvent as ReactClipboardEvent,
@@ -39,6 +39,20 @@ const DRAFT_SAVE_DEBOUNCE_MS = 700;
 const draftSignature = (text: string, attachments: Attachment[]): string =>
   JSON.stringify({ t: text, a: attachments.map((x) => x.path) });
 
+/** Push-to-talk dictation (#483): the browser's own speech engine, vendor-prefixed on Chromium.
+ *  Read lazily (not a module constant) so tests can install a stub on `window` before render and
+ *  so an unsupported browser (e.g. Firefox) simply yields `undefined` → the mic chip isn't shown. */
+const getSpeechRecognition = (): SpeechRecognitionStatic | undefined =>
+  typeof window === "undefined" ? undefined : window.SpeechRecognition ?? window.webkitSpeechRecognition;
+
+/** Append freshly-spoken text to the draft that existed when dictation started (#483), inserting a
+ *  single separator only when needed so dictation reads like a continuation of what was typed. */
+const joinSpoken = (base: string, spoken: string): string => {
+  if (!spoken) return base;
+  if (!base) return spoken;
+  return /\s$/.test(base) ? base + spoken : `${base} ${spoken}`;
+};
+
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
  *  Terminal forwarding a captured image paste, #157). */
 export interface ComposeHandle {
@@ -74,6 +88,14 @@ export const Compose = forwardRef<
   const [note, setNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Push-to-talk dictation (#483). At most one active recognizer (`recogRef`); `dictBaseRef` is
+  // the draft text present when dictation began and `dictFinalRef` accumulates finalized segments,
+  // so each result event rebuilds `base + final + interim`. `listening` drives the recording chip.
+  const [listening, setListening] = useState(false);
+  const recogRef = useRef<SpeechRecognition | null>(null);
+  const dictBaseRef = useRef("");
+  const dictFinalRef = useRef("");
 
   // Compose action menu (#494): the relocated interrupt / "stop" lives in a kebab (⋮) menu that
   // opens DOWNWARD. It's rendered through a portal to <body> with position:fixed because the
@@ -177,6 +199,102 @@ export const Compose = forwardRef<
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
   };
+
+  // Stop the active recognizer (tap-to-stop, compose collapse, or teardown). Mark it superseded
+  // BEFORE stopping and drop its handlers, so any late callback from this instance is ignored (#483).
+  const stopDictation = useCallback(() => {
+    const r = recogRef.current;
+    recogRef.current = null;
+    setListening(false);
+    if (r) {
+      r.onresult = null;
+      r.onerror = null;
+      r.onend = null;
+      try {
+        r.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+  }, []);
+
+  // Tap-to-talk start (#483): spin up a fresh recognizer, anchor the current draft, and stream
+  // interim + final results into the textarea via the SAME setText + grow + dirty path as typing,
+  // so dictated text auto-saves as a draft (#477) and behaves identically to typed text.
+  const startDictation = () => {
+    const SR = getSpeechRecognition();
+    if (!SR) return;
+    if (recogRef.current) stopDictation();
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    dictBaseRef.current = text;
+    dictFinalRef.current = "";
+    r.onresult = (e) => {
+      if (recogRef.current !== r) return; // superseded recognizer — ignore late results
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const seg = e.results[i][0].transcript;
+        if (e.results[i].isFinal) dictFinalRef.current += seg;
+        else interim += seg;
+      }
+      dirtyRef.current = true; // dictation is draftable content, just like typing
+      setText(joinSpoken(dictBaseRef.current, (dictFinalRef.current + interim).trim()));
+      grow();
+    };
+    r.onerror = (e) => {
+      if (recogRef.current !== r) return;
+      recogRef.current = null;
+      setListening(false);
+      if (e.error && e.error !== "aborted" && e.error !== "no-speech") {
+        setNote(
+          e.error === "not-allowed" || e.error === "service-not-allowed"
+            ? "microphone blocked"
+            : "voice input unavailable",
+        );
+        setTimeout(() => setNote(""), 3000);
+      }
+    };
+    r.onend = () => {
+      if (recogRef.current !== r) return; // a fresh recognizer already took over
+      recogRef.current = null;
+      setListening(false);
+    };
+    recogRef.current = r;
+    setListening(true);
+    try {
+      r.start();
+    } catch {
+      // start() throws if it is somehow already running — treat as a failed start.
+      recogRef.current = null;
+      setListening(false);
+    }
+  };
+
+  const toggleDictation = () => (listening ? stopDictation() : startDictation());
+
+  // Stop dictation when the box collapses (the mic chip only lives in the open state) and abort it
+  // on unmount / session switch, so a recognizer never outlives the compose box it dictates into.
+  useEffect(() => {
+    if (!open) stopDictation();
+  }, [open, stopDictation]);
+  useEffect(() => {
+    return () => {
+      const r = recogRef.current;
+      recogRef.current = null;
+      if (r) {
+        r.onresult = null;
+        r.onerror = null;
+        r.onend = null;
+        try {
+          r.abort();
+        } catch {
+          /* noop */
+        }
+      }
+    };
+  }, []);
 
   // Place the (portalled) action menu just below the kebab, right-aligned to it.
   const positionMenu = useCallback(() => {
@@ -339,6 +457,10 @@ export const Compose = forwardRef<
     void uploadFiles(images);
   };
 
+  // Hide the mic entirely where the browser has no speech engine (e.g. Firefox) — a natural empty
+  // state, no feature flag (#483). Re-read each render so a test stub installed on `window` is seen.
+  const speechSupported = !!getSpeechRecognition();
+
   return (
     <div className={styles.compose}>
       {open && (
@@ -387,6 +509,18 @@ export const Compose = forwardRef<
       <div className={styles.row}>
         <KeyBar sendInput={sendInput} onCopy={onCopy} />
         <span className={styles.spacer}>{note}</span>
+        {open && speechSupported && (
+          <button
+            type="button"
+            className={listening ? `${styles.mic} ${styles.micOn}` : styles.mic}
+            aria-label={listening ? "Stop voice input" : "Start voice input"}
+            aria-pressed={listening}
+            title={listening ? "Stop dictation" : "Dictate (voice to text)"}
+            onClick={toggleDictation}
+          >
+            <Mic size={16} />
+          </button>
+        )}
         {open && (
           <button type="button" className={`${styles.send} shine`} title="Send + Enter" onClick={send}>
             <Send size={15} />
