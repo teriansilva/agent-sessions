@@ -160,11 +160,28 @@ test("Send with image attachment writes Enter as its own DEFERRED frame after th
   }
 });
 
-test("empty Send is a no-op", async () => {
+test("empty Send acts as a bare Return — submits console-typed input (#474)", async () => {
   const user = userEvent.setup();
   renderCompose();
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  expect(sendInput).not.toHaveBeenCalled();
+  // With nothing in the compose box, Send is a single \r so it submits whatever the user typed
+  // directly into the console — NOT a clear/paste/deferred-Enter (that would erase the line).
+  expect(sendInput).toHaveBeenCalledTimes(1);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
+  expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+  // Give any (incorrect) deferred Enter a chance to fire; there must be no second frame.
+  await new Promise((r) => setTimeout(r, 200));
+  expect(sendInput).toHaveBeenCalledTimes(1);
+});
+
+test("empty Send mid-reconnect surfaces the note and sends nothing else (#474)", async () => {
+  const user = userEvent.setup();
+  sendInput = vi.fn(() => false); // socket down → the bare Enter isn't delivered
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(sendInput).toHaveBeenCalledTimes(1);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
+  expect(await screen.findByText(/reconnecting — not sent/i)).toBeInTheDocument();
 });
 
 test("the compose toggle hides/shows the text field", async () => {

@@ -73,7 +73,19 @@ export const Compose = forwardRef<
     if (text.trim()) parts.push(text.trim());
     for (const a of attachments) parts.push(a.path);
     const msg = parts.join(" ");
-    if (!msg) return;
+    if (!msg) {
+      // Empty compose box (no trimmed text, no attachments): act as a bare Return so the Send
+      // button — and Enter in the empty field — submit whatever the user typed DIRECTLY into the
+      // console (#474). Just a single \r, like a real terminal keypress / the KeyBar return chip:
+      // NO Ctrl-A Ctrl-K clear, NO bracketed paste, NO deferred second Enter (those belong to the
+      // content path and would erase or double-submit the console-typed prompt line). If the socket
+      // is mid-reconnect (`sendInput` returns false) surface the same note instead of dropping it.
+      if (!sendInput(KEYSEQ.enter)) {
+        setNote("reconnecting — not sent, try again");
+        setTimeout(() => setNote(""), 3000);
+      }
+      return;
+    }
     // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
     // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
     const abortNotDelivered = () => {
