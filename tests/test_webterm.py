@@ -528,6 +528,84 @@ def test_ws_attach_sends_hist_frame_with_exact_boundary_after_seq(tmp_path, monk
     assert b"T09" in sent_bytes[0] and b"T06" not in sent_bytes[0]
 
 
+def _run_attach_collect_bytes(tmp_path, key, *, cols, have):
+    """Drive a single attach through ``webterm.run`` and return the binary frames it sent.
+
+    FakeWS disconnects immediately, so ``run`` sends the resume payload (mode prefix +
+    scroll-up) and tears down without entering the live pump — enough to observe whether the
+    attach decided on a clean-load clear or a raw continuation."""
+    import asyncio
+
+    from agent_sessions import webterm
+
+    sent_bytes: list[bytes] = []
+
+    class FakeWS:
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            sent_bytes.append(bytes(b))
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(
+        webterm.run(FakeWS(), ["sleep", "1"], cwd=str(tmp_path), buf_key=key, cols=cols, have=have)
+    )
+    return sent_bytes
+
+
+def test_ws_attach_clears_when_client_is_ahead_of_rehydrated_ring(tmp_path, monkeypatch):
+    """#484 caller-level: after an app restart the ring is rehydrated head-trimmed while the
+    authored width is restored, so a SAME-width reconnect can carry a pre-restart ``have`` that
+    now exceeds the smaller ``total``. The attach must NOT treat that as a continuation — it must
+    take the width-correct path whose payload begins with the clean-load clear, wiping the client's
+    stale scrollback. Without the fix the predicate said "continuation" → the full ring was replayed
+    UNDER the stale screen and the conversation rendered twice."""
+    from agent_sessions import scrollback, transcript, vtsidecar, webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    scrollback._LAST_COLS.clear()
+    scrollback._LOADED_FROM_DISK.clear()
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    monkeypatch.setattr(vtsidecar, "enabled", lambda: False)  # force the transcript path, not VT
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(6)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+
+    key = "claude:22222222-2222-2222-2222-222222222222"
+    scrollback.note_cols(key, 80)
+    scrollback._buffer_append(key, b"OLD-RING-BYTES")  # total == 14, authored at width 80
+    assert scrollback.ring_cols(key) == 80
+
+    # have (99) far exceeds total (14) at the SAME width → not a continuation → clean-load clear.
+    ahead = _run_attach_collect_bytes(tmp_path, key, cols=80, have=99)
+    assert ahead and ahead[0].startswith(webterm._CLEAN_LOAD_CLEAR)  # stale scrollback wiped first
+    assert any(b"T05" in b for b in ahead)  # ...then the width-correct transcript render
+    assert not any(
+        b"OLD-RING-BYTES" in b for b in ahead
+    )  # raw ring NOT stacked under the stale screen
+
+    # Contrast: an in-ring same-width offset is still a seamless continuation — raw delta, NO clear
+    # (the #304/#359/#374 no-flicker reconnect must not be demoted to a clear).
+    cont = _run_attach_collect_bytes(tmp_path, key, cols=80, have=4)
+    assert cont and not cont[0].startswith(webterm._CLEAN_LOAD_CLEAR)
+    assert cont[0] == b"RING-BYTES"  # exactly the bytes since have=4
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
 def test_transcript_payload_none_when_disabled(monkeypatch):
     from agent_sessions import webterm
 
@@ -579,10 +657,15 @@ def test_same_width_continuation_gates_raw_vs_transcript():
     from agent_sessions import webterm
 
     cont = webterm._is_same_width_continuation
-    assert cont(have=120, buffer_cols=80, cols=80) is True  # same-width blip → raw delta
-    assert cont(have=0, buffer_cols=80, cols=80) is False  # fresh load → transcript
-    assert cont(have=120, buffer_cols=120, cols=40) is False  # cross-width → transcript
-    assert cont(have=120, buffer_cols=None, cols=40) is False  # post-restart (wiped) → transcript
+    assert cont(have=120, total=200, buffer_cols=80, cols=80) is True  # same-width blip → raw delta
+    assert cont(have=0, total=200, buffer_cols=80, cols=80) is False  # fresh load → transcript
+    assert cont(have=120, total=200, buffer_cols=120, cols=40) is False  # cross-width → transcript
+    assert (
+        cont(have=120, total=200, buffer_cols=None, cols=40) is False
+    )  # post-restart → transcript
+    # #484: client ahead of the rehydrated (head-trimmed) ring → NOT a continuation, even at the
+    # same width — else the full ring replays under the stale scrollback (dup conversation).
+    assert cont(have=300, total=200, buffer_cols=80, cols=80) is False
 
 
 def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp_path):
@@ -1184,6 +1267,7 @@ def test_resize_burst_in_attach_window_yields_one_trailing_repaint(monkeypatch):
 
     key = "claude:renudge-1"
     webterm._BUFFERS[key] = bytearray(b"0123456789")  # have<total → real delta payload
+    webterm._TOTALS[key] = 10  # total≥have so this stays a same-width continuation (#484 guard)
     webterm.scrollback._LAST_COLS[key] = 80  # same-width continuation at cols=80
     try:
         calls = _run_349(
@@ -1208,6 +1292,7 @@ def test_have_resume_with_real_delta_does_not_nudge(monkeypatch):
 
     key = "claude:renudge-2"
     webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm._TOTALS[key] = 10  # total≥have so this stays a same-width continuation (#484 guard)
     webterm.scrollback._LAST_COLS[key] = 80
     try:
         calls = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
@@ -1235,6 +1320,7 @@ def test_up_to_date_same_width_reconnect_does_not_nudge(monkeypatch):
 
     key = "claude:renudge-4"
     webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm._TOTALS[key] = 10  # have==total: up-to-date same-width continuation (#484 guard)
     webterm.scrollback._LAST_COLS[key] = 80
     try:
         calls = _run_349(monkeypatch, key=key, have=10, script=[("sleep", 0.3)])

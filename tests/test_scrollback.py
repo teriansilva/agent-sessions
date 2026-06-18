@@ -37,9 +37,47 @@ def test_restart_reconnect_is_same_width_continuation():
     _wipe_memory()
     payload, total = scrollback._resume_payload(key, have=4)
     assert total == 10 and payload == b"456789"
-    assert scrollback._is_same_width_continuation(4, scrollback._LAST_COLS.get(key), 80) is True
+    assert (
+        scrollback._is_same_width_continuation(4, total, scrollback._LAST_COLS.get(key), 80) is True
+    )
     # ...but a DIFFERENT client width is still not a continuation (would garble).
-    assert scrollback._is_same_width_continuation(4, scrollback._LAST_COLS.get(key), 100) is False
+    assert (
+        scrollback._is_same_width_continuation(4, total, scrollback._LAST_COLS.get(key), 100)
+        is False
+    )
+
+
+def test_ahead_of_ring_after_restart_is_not_a_continuation():
+    # #484: an app restart rehydrates the ring head-trimmed to _MAX_BUF while restoring the
+    # authored width, so a SAME-width reconnect can carry a pre-restart `have` that now exceeds
+    # the smaller `total`. That is NOT a seamless continuation — the client holds MORE than the
+    # ring — so it must fall through to the clear/transcript path, or the rehydrated ring replays
+    # UNDER the client's stale scrollback and the conversation renders twice. `_resume_payload`
+    # already serves the full ring for have>total; the predicate must agree and refuse continuation.
+    key = "claude:ahead-1"
+    scrollback.note_cols(key, 80)
+    scrollback._buffer_append(key, b"0123456789")  # total == 10
+    _wipe_memory()
+    _, total = scrollback._resume_payload(key, have=99)
+    assert total == 10
+    # have > total at the SAME width → not a continuation (the bug: this was True → no clear).
+    assert (
+        scrollback._is_same_width_continuation(99, total, scrollback._LAST_COLS.get(key), 80)
+        is False
+    )
+    # In-ring same-width offsets are still genuine continuations (no flicker, #304/#359/#374).
+    assert (
+        scrollback._is_same_width_continuation(4, total, scrollback._LAST_COLS.get(key), 80) is True
+    )
+    assert (
+        scrollback._is_same_width_continuation(10, total, scrollback._LAST_COLS.get(key), 80)
+        is True
+    )
+    # have == 0 (fresh load) is never a continuation either.
+    assert (
+        scrollback._is_same_width_continuation(0, total, scrollback._LAST_COLS.get(key), 80)
+        is False
+    )
 
 
 def test_clear_scrollback_removes_cols_sidecar():
@@ -81,7 +119,7 @@ def test_cross_width_attach_does_not_poison_persisted_width(monkeypatch):
     _wipe_memory()
     payload, total = scrollback._resume_payload(key, have=1)
     assert payload == b""  # nothing retained to mis-replay
-    assert scrollback._is_same_width_continuation(1, scrollback._LAST_COLS.get(key), 40) in (
+    assert scrollback._is_same_width_continuation(1, total, scrollback._LAST_COLS.get(key), 40) in (
         False,
         True,
     )  # either way: no stale wide bytes can come back
@@ -104,7 +142,9 @@ def test_cross_width_attach_vt_on_drops_persisted_claim(monkeypatch):
     _wipe_memory()
     scrollback._buffer_append(key, b"")  # touch → _ensure_loaded
     assert scrollback._LAST_COLS.get(key) is None
-    assert scrollback._is_same_width_continuation(5, None, 40) is False
+    assert (
+        scrollback._is_same_width_continuation(5, scrollback._TOTALS.get(key, 0), None, 40) is False
+    )
 
 
 def test_same_width_attach_keeps_ring_and_claim(monkeypatch):
@@ -133,7 +173,12 @@ def test_vt_on_mixed_ring_blocks_same_process_continuation(monkeypatch):
     scrollback.note_attach_width(key, 40)
     assert scrollback._LAST_COLS[key] == 40  # reader sizing etc. still track the client
     assert scrollback.ring_cols(key) is None  # but the ring has no single authored width
-    assert scrollback._is_same_width_continuation(1, scrollback.ring_cols(key), 40) is False
+    assert (
+        scrollback._is_same_width_continuation(
+            1, scrollback._TOTALS.get(key, 0), scrollback.ring_cols(key), 40
+        )
+        is False
+    )
     # A SECOND 40-col attach doesn't launder the marker (ring is still mixed).
     scrollback.note_attach_width(key, 40)
     assert scrollback.ring_cols(key) is None

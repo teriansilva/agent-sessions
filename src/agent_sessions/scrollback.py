@@ -628,17 +628,25 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
 _CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
 
 
-def _is_same_width_continuation(have: int, buffer_cols: int | None, cols: int) -> bool:
+def _is_same_width_continuation(have: int, total: int, buffer_cols: int | None, cols: int) -> bool:
     """Whether a reconnect can be satisfied with the raw byte-delta instead of re-rendering the
     scroll-up (#262). True only when the client already holds matching-width scrollback — it sent a
-    real in-ring offset (``have>0``) AND its width equals the width we last served it
+    real in-ring offset (``0 < have <= total``) AND its width equals the width we last served it
     (``buffer_cols==cols``) — a brief WS blip on a live same-width session, or a SAME-width
     ``have>0`` reconnect after a broker restart: the width sidecar (#348) restores the ring's
     authored width on rehydrate, so restarts no longer demote these to the transcript. Everything
     else — a fresh load (``have<=0``), a cross-width client, or a pre-#348 mirror without a width
     sidecar (``buffer_cols`` is None) — is False, so the caller renders the width-correct
-    transcript rather than replaying the fixed-width raw ring at a wrong width."""
-    return have > 0 and buffer_cols == cols
+    transcript rather than replaying the fixed-width raw ring at a wrong width.
+
+    The ``have <= total`` guard (#484) mirrors the same invariant ``_resume_payload`` enforces:
+    after an app restart the ring is rehydrated head-trimmed to ``_MAX_BUF`` while the authored
+    width is restored, so a same-width reconnect can carry a pre-restart ``have`` that now exceeds
+    the smaller ``total``. That is NOT a seamless continuation — the client holds MORE than the ring
+    does — so it must fall through to the width-correct clear/transcript path (which begins with a
+    clean-load clear), or the rehydrated ring is replayed UNDER the client's stale scrollback and
+    the whole conversation renders twice."""
+    return 0 < have <= total and buffer_cols == cols
 
 
 def _clean_load_payload(total: int, client_cols: int, buffer_cols: int | None) -> bytes | None:

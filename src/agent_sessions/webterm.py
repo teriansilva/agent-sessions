@@ -289,23 +289,29 @@ async def run(
         # width-correct — and falls back to a clean-load clear when there's no adapter:
         #   • fresh page load (have<=0) — client xterm is empty;
         #   • cross-width client — the ring's width ≠ this client's;
-        #   • post-restart CROSS-width reconnect — the width sidecar (#348) restores the
-        #     ring's authored width on rehydrate, so a SAME-width have>0 reconnect after a
-        #     restart IS a continuation now and replays the ring delta; only a client at a
-        #     different width (or a missing sidecar from a pre-#348 mirror ⇒ buffer_cols
-        #     None) lands here and gets the width-correct transcript instead (#206).
+        #   • ahead-of-ring reconnect (have > total, #484) — an app restart rehydrates the ring
+        #     head-trimmed to _MAX_BUF while restoring the authored width, so a SAME-width reconnect
+        #     can carry a pre-restart `have` that now exceeds the smaller `total`. The client holds
+        #     MORE than the ring does, so this is NOT a continuation: it lands here for the width-
+        #     correct transcript / clean-load clear instead — replaying the ring UNDER the client's
+        #     stale scrollback would render the whole conversation twice;
+        #   • post-restart SAME-width reconnect with have <= total — the width sidecar (#348)
+        #     restores the ring's authored width on rehydrate, so THIS is a continuation and replays
+        #     the ring delta. Only a cross-width client, an ahead-of-ring have>total (above), or a
+        #     missing sidecar from a pre-#348 mirror (⇒ buffer_cols None) lands here for the width-
+        #     correct transcript instead (#206).
         # `total` is unchanged in every branch, so the `seq` frame below stays the real byte offset
         # and delta-resume is unaffected.
         # Authored width of the replayable ring (None when unknown/mixed) — the raw
         # continuation contract, NOT merely the last client width (Hermes #360 r4).
         buffer_cols = scrollback.ring_cols(buf_key)
-        if scrollback._is_same_width_continuation(have, buffer_cols, cols):
+        if scrollback._is_same_width_continuation(have, total, buffer_cols, cols):
             # Same-width continuation: the client already holds a valid screen and the
             # (possibly empty) payload is just the byte delta — an empty delta means
             # "up to date", NOT blank. Never nudge it (Hermes #359: the #304 no-flicker
             # reconnect must survive the blank-attach rule).
             blank_attach = False
-        if not scrollback._is_same_width_continuation(have, buffer_cols, cols):
+        if not scrollback._is_same_width_continuation(have, total, buffer_cols, cols):
             # Path B (#271/#273): the faithful real-console snapshot from the VT sidecar, rebuilt
             # from the ring at this client's width. Flag-gated + fail-safe (None when off/unhealthy)
             # — then we fall back to transcript scroll-up, then a clean-load clear. Synthetic:
