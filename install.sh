@@ -7,7 +7,8 @@
 # No sudo for the app itself: it installs under ~/.local/share/agent-sessions and runs
 # as a `systemctl --user` service. Sudo is used ONLY to install python3-venv if missing
 # (Debian/Ubuntu, Fedora), and that step is clearly prompted. Binds 127.0.0.1 by
-# default — put a reverse proxy / TLS in front (the installer does not configure nginx).
+# default; an interactive install offers to bind a chosen address / all interfaces (with a
+# warning) — put a reverse proxy / TLS in front (the installer does not configure nginx).
 #
 # Overridable via env: AGENT_SESSIONS_REPO, AGENT_SESSIONS_REF, AGENT_SESSIONS_CHANNEL
 # (stable|main), AGENT_SESSIONS_HOST, AGENT_SESSIONS_PORT, AGENT_SESSIONS_HOME,
@@ -18,9 +19,13 @@ APP=agent-sessions
 REPO_URL="${AGENT_SESSIONS_REPO:-https://github.com/teriansilva/agent-sessions.git}"
 REF="${AGENT_SESSIONS_REF:-}"
 CHANNEL="${AGENT_SESSIONS_CHANNEL:-stable}"
+# Track whether HOST/ORIGIN were set explicitly (env) vs defaulted: an explicit value
+# suppresses the interactive bind prompt and the derived-origin recompute (choose_host).
+HOST_EXPLICIT=0; [ -n "${AGENT_SESSIONS_HOST:-}" ] && HOST_EXPLICIT=1
 HOST="${AGENT_SESSIONS_HOST:-127.0.0.1}"
 PORT="${AGENT_SESSIONS_PORT:-8765}"
 PREFIX="${AGENT_SESSIONS_HOME:-$HOME/.local/share/$APP}"
+ORIGIN_EXPLICIT=0; [ -n "${AGENT_SESSIONS_ORIGIN:-}" ] && ORIGIN_EXPLICIT=1
 ORIGIN="${AGENT_SESSIONS_ORIGIN:-http://$HOST:$PORT}"
 KEEP_RELEASES=3
 # Pinned Node used to build the React UI when the host has no new-enough Node. Vendored
@@ -105,6 +110,134 @@ _confirm() {  # y/n on the controlling tty. Default Yes. Auto-yes via AGENT_SESS
     case "$_ans" in [Nn]*) return 1 ;; *) return 0 ;; esac
   fi
   return 0
+}
+
+# --- interactive bind-address selection (#487) ------------------------------------
+# By default the app binds 127.0.0.1 and sits behind a reverse proxy (the security model:
+# it launches agents with permission bypass, so access ≈ a shell on this host). But a plain
+# `curl|sh` install left operators unable to reach it from another machine and unaware of the
+# AGENT_SESSIONS_HOST override. choose_host offers an explicit, warned bind choice on a tty;
+# non-interactive installs keep the safe localhost default byte-for-byte.
+
+_env_file_get() {  # echo the value of KEY ($1) from the env file (empty when absent)
+  [ -f "$ENVF" ] || return 0
+  grep "^$1=" "$ENVF" 2>/dev/null | head -1 | cut -d= -f2-
+}
+
+_host_ips() {
+  # Print this host's routable (non-loopback) IPv4 addresses, one per line, no CIDR suffix,
+  # deduped. Rootless and layered: iproute2 `ip` → `hostname -I` → `ifconfig` (BSD/macOS, or an
+  # old net-tools `inet addr:` Linux). IPv4-only on purpose: a raw IPv6 literal needs bracketing
+  # in an origin (out of scope — set AGENT_SESSIONS_HOST/_ORIGIN by hand for v6), and `0.0.0.0`
+  # already covers "all interfaces". Empty output is fine — choose_host then only offers
+  # 127.0.0.1 / 0.0.0.0. The trailing awk is the last pipe stage so the function always exits 0
+  # (an empty grep mustn't trip `set -e`).
+  if have ip; then
+    ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+  elif have hostname && hostname -I >/dev/null 2>&1; then
+    hostname -I 2>/dev/null | tr ' ' '\n'
+  elif have ifconfig; then
+    ifconfig 2>/dev/null | awk '/inet /{print $2}' | sed 's/^addr://'
+  fi | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | awk '!seen[$0]++'
+}
+
+_recompute_origin() {  # re-derive ORIGIN from the address the browser will use ($1)…
+  [ "$ORIGIN_EXPLICIT" = 1 ] && return 0   # …unless the operator pinned AGENT_SESSIONS_ORIGIN
+  ORIGIN="http://$1:$PORT"
+}
+
+adopt_persisted_bind() {
+  # Re-run / upgrade / autoupdate: the systemd unit bakes `--host` from the install-time shell
+  # var, but `serve --host` only *defaults* to $AGENT_SESSIONS_HOST — so a re-run with no
+  # AGENT_SESSIONS_HOST in the environment would regenerate the unit with 127.0.0.1 and silently
+  # revert a prior 0.0.0.0 / LAN bind. Adopt the persisted choice from the env file (and treat it
+  # as explicit, so choose_host doesn't re-prompt). An env var passed on THIS run still wins.
+  [ "$HOST_EXPLICIT" = 1 ] && return 0
+  [ -f "$ENVF" ] || return 0
+  _ph="$(_env_file_get AGENT_SESSIONS_HOST)"
+  [ -n "$_ph" ] || return 0
+  HOST="$_ph"; HOST_EXPLICIT=1
+  _po="$(_env_file_get AGENT_SESSIONS_ORIGIN)"
+  if [ -n "$_po" ] && [ "$ORIGIN_EXPLICIT" = 0 ]; then ORIGIN="$_po"; ORIGIN_EXPLICIT=1; fi
+}
+
+choose_host() {
+  # First interactive install only: let the operator pick the bind address. The default stays
+  # 127.0.0.1 (the safe, reverse-proxy-fronted model). Skip entirely when the host was set
+  # explicitly (env, or adopted from a prior install), when AGENT_SESSIONS_ASSUME_YES=1, or when
+  # there's no tty to ask on (a piped `curl|sh`) — those keep today's localhost bind unchanged.
+  [ "$HOST_EXPLICIT" = 1 ] && return 0
+  [ "${AGENT_SESSIONS_ASSUME_YES:-0}" = 1 ] && return 0
+  # A readable mode bit on /dev/tty is NOT enough: with no controlling terminal (a detached
+  # `curl|sh`, a service, `setsid`) the node exists rw but open() fails with ENXIO, which would
+  # then kill the script on the first `> /dev/tty`. Probe a real open and bail to the default.
+  ( : < /dev/tty ) 2>/dev/null || return 0
+
+  _ips="$(_host_ips)"
+  {
+    printf '\nWhere should %s listen for connections?\n' "$APP"
+    printf '  1) 127.0.0.1   localhost only — default, recommended (put a reverse proxy / TLS in front)\n'
+    printf '  2) 0.0.0.0     all interfaces — reachable from anywhere this host is\n'
+  } > /dev/tty
+  _i=2
+  for _ip in $_ips; do
+    _i=$((_i + 1))
+    printf '  %d) %-13s this address only\n' "$_i" "$_ip" > /dev/tty
+  done
+  printf 'Choose an option [1]: ' > /dev/tty
+  read _sel < /dev/tty 2>/dev/null || _sel=""
+  [ -n "$_sel" ] || _sel=1
+
+  _chosen=""
+  case "$_sel" in
+    1) return 0 ;;                       # localhost — the safe default, no change, no warning
+    2) _chosen=0.0.0.0 ;;
+    *[!0-9]*) log "unrecognized choice '$_sel' — keeping 127.0.0.1"; return 0 ;;
+    *)
+      _n=$((_sel - 2))                   # map 3,4,5… back to the Nth detected address
+      # shellcheck disable=SC2086
+      set -- $_ips
+      if [ "$_n" -ge 1 ] && [ "$_n" -le "$#" ]; then
+        shift "$((_n - 1))"; _chosen="$1"
+      else
+        log "unrecognized choice '$_sel' — keeping 127.0.0.1"; return 0
+      fi
+      ;;
+  esac
+
+  # Any non-localhost bind exposes a shell-equivalent surface — warn + require an explicit yes
+  # (default No), mirroring the README trust model.
+  {
+    printf '\n  !  Binding to %s exposes %s on the network.\n' "$_chosen" "$APP"
+    printf '     It launches AI agents with permission bypass — treat access as a shell on this host.\n'
+    printf '     Only do this on a trusted network (LAN / VPN); put TLS + auth (a reverse proxy) in\n'
+    printf '     front for anything wider, and consider enabling 2FA.\n'
+    printf '  Bind to %s anyway? [y/N] ' "$_chosen"
+  } > /dev/tty
+  read _yn < /dev/tty 2>/dev/null || _yn=""
+  case "$_yn" in
+    [Yy]*) ;;
+    *) log "keeping 127.0.0.1"; return 0 ;;
+  esac
+
+  HOST="$_chosen"
+  if [ "$_chosen" = 0.0.0.0 ]; then
+    # The browser never sends `Origin: http://0.0.0.0` — derive the origin from a real address so
+    # the same-origin / CSRF checks pass. Use the first detected IP; note the override for others.
+    # shellcheck disable=SC2086
+    set -- $_ips
+    if [ "$#" -ge 1 ]; then
+      _recompute_origin "$1"
+      note "Bound to all interfaces. Origin set to $ORIGIN (your primary address)."
+      log  "If you reach it via another address/name, re-run with AGENT_SESSIONS_ORIGIN=http://<that-host>:$PORT."
+    else
+      note "Bound to all interfaces."
+      log  "Set AGENT_SESSIONS_ORIGIN=http://<the-address-you-use>:$PORT and re-run if login fails the same-origin check."
+    fi
+  else
+    _recompute_origin "$_chosen"
+    note "Bound to $HOST. Origin set to $ORIGIN."
+  fi
 }
 
 _ensure_venv_module() {  # Debian/Ubuntu split venv into python3-venv; a vendored standalone python
@@ -455,6 +588,8 @@ EOF
 
 main() {
   mkdir -p "$PREFIX"
+  adopt_persisted_bind   # re-run: a persisted bind in the env file wins (no silent revert to localhost)
+  choose_host            # fresh interactive install: offer to bind a chosen address / all interfaces
   ensure_prereqs
   ref="$(resolve_ref)"
   log "installing $APP (${ref:-default branch}) into $PREFIX …"

@@ -2,7 +2,9 @@
 
 A rootless, user-level install: no system daemon, no root (except an optional prompted step to
 install the `venv` module). Everything lives under `~/.local/share/agent-sessions/` and runs as a
-`systemctl --user` service bound to `127.0.0.1`.
+`systemctl --user` service bound to `127.0.0.1` by default. An **interactive** install offers to
+bind a different address (a detected LAN IP, or all interfaces) behind a security warning; a piped
+`curl | sh` install always keeps the safe localhost default — see [Bind address](#bind-address).
 
 > **Read the security model first.** agent-sessions launches AI-coding agents with permission
 > bypass by design and is a single-admin, non-multi-tenant tool. It **must** sit behind a reverse
@@ -33,6 +35,33 @@ before running the script.
 On a fresh install the credentials are printed **once** (only the PBKDF2 hash is stored). The
 first login forces a password change before anything else is reachable.
 
+## Bind address
+
+By default the app binds `127.0.0.1` and you reach it through a reverse proxy (TLS + auth). When
+the installer is run **interactively** (a real terminal — not a piped `curl | sh`) and you didn't
+pin `AGENT_SESSIONS_HOST`, it lists this host's addresses and asks where to listen:
+
+```
+Where should agent-sessions listen for connections?
+  1) 127.0.0.1   localhost only — default, recommended (put a reverse proxy / TLS in front)
+  2) 0.0.0.0     all interfaces — reachable from anywhere this host is
+  3) 127.0.0.1   this address only
+Choose an option [1]:
+```
+
+- **Anything other than `127.0.0.1` exposes a shell-equivalent surface** (the app launches agents
+  with permission bypass), so the installer warns and asks for an explicit `y` before binding. Only
+  expose it on a network you trust (LAN / VPN), and keep TLS + auth in front for anything wider —
+  enabling 2FA is recommended once it's reachable beyond localhost.
+- Picking an address also sets `AGENT_SESSIONS_ORIGIN` to match, so the same-origin / CSRF checks
+  pass when you reach the app over the network. For `0.0.0.0` it uses your primary address; if you
+  reach it via a different name, re-run with `AGENT_SESSIONS_ORIGIN=http://<that-host>:<port>`.
+- The choice is **persisted and kept across upgrades / autoupdate** — a re-run won't silently
+  revert it to localhost.
+- **Non-interactive installs are unchanged**: with no tty, with `AGENT_SESSIONS_ASSUME_YES=1`, or
+  with `AGENT_SESSIONS_HOST` set explicitly, the prompt is skipped and the default/explicit bind is
+  used. Set `AGENT_SESSIONS_HOST` (and usually `AGENT_SESSIONS_ORIGIN`) up front to script it.
+
 ## What the installer does
 
 - Clones/builds the selected ref into a self-contained, immutable release directory and flips an
@@ -59,7 +88,7 @@ Set at install time (persisted into `env`):
 
 | Var | Purpose |
 | --- | --- |
-| `AGENT_SESSIONS_HOST` / `_PORT` | Bind address/port (default `127.0.0.1:8765`). |
+| `AGENT_SESSIONS_HOST` / `_PORT` | Bind address/port (default `127.0.0.1:8765`). Setting `_HOST` skips the interactive [bind prompt](#bind-address). |
 | `AGENT_SESSIONS_ORIGIN` | Public origin for CSRF / `Origin` checks, e.g. `https://your-domain.example`. |
 | `AGENT_SESSIONS_AUTH_MODE` | `single-user` (default — username + password login) or `none` (no login; the admin session is auto-established). **`none` = trust the network: localhost / behind-VPN only.** CSRF + `Origin` checks stay on. |
 | `AGENT_SESSIONS_HOME` | Install root (default `~/.local/share/agent-sessions`). |

@@ -20,6 +20,21 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
 
+# A dev shell on the deploy host often exports AGENT_SESSIONS_HOST/ORIGIN/PORT (the running
+# instance's own settings). Those would leak through {**os.environ} into an install env and defeat
+# tests that assert the *default* bind, so strip them and let each test set the bind explicitly
+# (cf. the known "pytest env leak" gotcha).
+_BIND_ENV_KEYS = (
+    "AGENT_SESSIONS_HOST",
+    "AGENT_SESSIONS_ORIGIN",
+    "AGENT_SESSIONS_PORT",
+    "AGENT_SESSIONS_ASSUME_YES",
+)
+
+
+def _clean_env():
+    return {k: v for k, v in os.environ.items() if k not in _BIND_ENV_KEYS}
+
 
 def test_install_sh_syntax():
     assert subprocess.run(["sh", "-n", str(INSTALL_SH)]).returncode == 0
@@ -32,6 +47,109 @@ def test_install_sh_structural_invariants():
     assert "127.0.0.1" in s  # localhost bind default
     assert "hash_password" in s and "AGENT_SESSIONS_PASSWORD=" not in s  # hash only, no plaintext
     assert "AGENT_SESSIONS_NO_SERVICE" in s  # degrades without systemd
+
+
+def test_install_sh_interactive_bind_selection():
+    # #487: an interactive install offers a bind-address choice instead of silently leaving the
+    # operator on an unreachable 127.0.0.1.
+    s = INSTALL_SH.read_text()
+    assert "choose_host" in s and "_host_ips" in s
+    # The menu is driven over the controlling tty (the script body is stdin under `curl|sh`),
+    # mirroring _confirm. Offers localhost (default), all-interfaces, and detected addresses.
+    assert "/dev/tty" in s
+    assert "0.0.0.0" in s
+    # Addresses are enumerated WITHOUT root (iproute2 / hostname / ifconfig).
+    assert "scope global" in s or "hostname -I" in s
+    # A non-localhost bind requires an explicit, default-No confirm behind a security warning.
+    assert "exposes" in s and "[y/N]" in s
+    # The origin is re-derived from the chosen bind so same-origin/CSRF works over the LAN.
+    assert "_recompute_origin" in s
+    # Explicit overrides + non-interactive installs skip the prompt (safe default preserved)…
+    assert "HOST_EXPLICIT" in s and "AGENT_SESSIONS_ASSUME_YES" in s
+    # …and a re-run adopts the persisted bind (no silent revert to localhost on upgrade).
+    assert "adopt_persisted_bind" in s
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git required")
+def test_installer_no_tty_keeps_localhost(tmp_path):
+    # #487: with no AGENT_SESSIONS_HOST, no ASSUME_YES, and detached from any controlling
+    # terminal (start_new_session=True → setsid → /dev/tty is unopenable), the interactive bind
+    # prompt must skip and the bind must stay 127.0.0.1. This is the piped `curl|sh` contract:
+    # an unattended install never blocks waiting for input and never silently exposes the host.
+    home = tmp_path / "prefix"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    env = {
+        **_clean_env(),
+        "AGENT_SESSIONS_REPO": str(REPO),
+        "AGENT_SESSIONS_REF": head,
+        "AGENT_SESSIONS_HOME": str(home),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
+        "AGENT_SESSIONS_PORT": "8796",
+    }
+    # NB: deliberately NO host/ASSUME_YES here — the no-tty guard alone must prevent the hang.
+    r = subprocess.run(
+        ["sh", str(INSTALL_SH)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert r.returncode == 0, r.stderr
+    text = (home / "env").read_text()
+    assert "AGENT_SESSIONS_HOST=127.0.0.1" in text
+    assert "AGENT_SESSIONS_ORIGIN=http://127.0.0.1:8796" in text
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git required")
+def test_installer_explicit_host_persists_and_is_adopted_on_rerun(tmp_path):
+    # #487: an explicit AGENT_SESSIONS_HOST is persisted, and a re-run WITHOUT the env var still
+    # keeps it (adopt_persisted_bind reads it back from the env file) — so an upgrade / autoupdate
+    # never silently reverts a 0.0.0.0 / LAN bind to localhost.
+    home = tmp_path / "prefix"
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    base = {
+        **_clean_env(),
+        "AGENT_SESSIONS_REPO": str(REPO),
+        "AGENT_SESSIONS_REF": head,
+        "AGENT_SESSIONS_HOME": str(home),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
+        "AGENT_SESSIONS_PORT": "8795",
+    }
+    # First install with an explicit bind (an explicit host suppresses the prompt → no tty needed).
+    r1 = subprocess.run(
+        ["sh", str(INSTALL_SH)],
+        env={**base, "AGENT_SESSIONS_HOST": "0.0.0.0"},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert r1.returncode == 0, r1.stderr
+    envf = home / "env"
+    assert "AGENT_SESSIONS_HOST=0.0.0.0" in envf.read_text()
+
+    # Re-run with NO host in the environment + detached from any tty: the persisted 0.0.0.0 must
+    # survive (not revert to 127.0.0.1), and the prompt must not fire.
+    r2 = subprocess.run(
+        ["sh", str(INSTALL_SH)],
+        env=base,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert r2.returncode == 0, r2.stderr
+    assert "AGENT_SESSIONS_HOST=0.0.0.0" in envf.read_text()
+    # The rendered URL reflects the persisted bind (derived origin), not localhost.
+    assert "http://127.0.0.1:8795" not in r2.stdout
 
 
 def test_install_sh_builds_and_serves_react_ui():
@@ -92,6 +210,9 @@ def test_installer_end_to_end(tmp_path):
         "AGENT_SESSIONS_REF": head,
         "AGENT_SESSIONS_HOME": str(home),
         "AGENT_SESSIONS_NO_SERVICE": "1",
+        # #487: skip the interactive bind prompt so the test never blocks on /dev/tty when
+        # pytest runs from a real terminal (CI has no controlling tty, but a dev's shell does).
+        "AGENT_SESSIONS_ASSUME_YES": "1",
         "AGENT_SESSIONS_PORT": "8799",
         # Keep this test fast + Node-free; the real UI build is covered by the
         # Node-gated test below.
@@ -175,6 +296,7 @@ def test_installer_builds_the_react_ui(tmp_path):
         # NO_SERVICE is essential: the systemd unit path is per-user (not per-HOME), so
         # without this the test would render + restart the host's real agent-sessions unit.
         "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_ASSUME_YES": "1",  # #487: never block on the interactive bind prompt
         "AGENT_SESSIONS_PORT": "8798",
     }
     r = subprocess.run(
@@ -210,6 +332,7 @@ def test_installer_migrates_existing_env_to_react(tmp_path):
         "AGENT_SESSIONS_REF": head,
         "AGENT_SESSIONS_HOME": str(home),
         "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_ASSUME_YES": "1",  # #487: never block on the interactive bind prompt
         "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
         "AGENT_SESSIONS_PORT": "8797",
     }

@@ -41,7 +41,7 @@ Engines live behind a small provider interface (`engines.py`); identity is engin
 
 ## Install & operate
 
-Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx).
+Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx). An interactive install can instead bind a LAN address or all interfaces, behind a security warning — see [Bind address](INSTALL.md#bind-address).
 
 > The CLI, service unit, and `AGENT_SESSIONS_*` environment variables keep the project's package name, **`agent-sessions`** — that's the same tool as BattleLab.
 
