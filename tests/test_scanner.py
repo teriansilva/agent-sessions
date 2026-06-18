@@ -112,6 +112,74 @@ def test_pickable_projects_skips_hidden_dirs(fake_jsonl):
     assert str(claude / ".git") not in picks
 
 
+# ---- root-scoped + exclusion-filtered discovery (#465) ------------------------
+
+
+def _picks(home, sessions=None, roots=None, exclusions=None):
+    return scanner.pickable_projects(
+        home=home, sessions=sessions, roots=roots, exclusions=exclusions
+    )
+
+
+def test_pickable_projects_empty_roots_unchanged(fake_jsonl):
+    # roots=None and roots=[] must both behave like today (session cwds ∪ ~/claude subdirs).
+    (fake_jsonl / "claude" / "fresh").mkdir(parents=True)
+    base = _picks(fake_jsonl)
+    assert _picks(fake_jsonl, roots=[]) == base
+    assert "/tmp/other" in base  # out-of-claude session cwd kept when unscoped
+    assert str(fake_jsonl / "claude" / "fresh") in base
+
+
+def test_pickable_projects_root_scoped_drops_out_of_root_cwds(fake_jsonl):
+    # With a root configured, a session cwd OUTSIDE the root (/tmp/other) drops; ones under it stay.
+    # The fixture session cwds are the literal /home/user/claude/* (not under tmp_home); scope is a
+    # pure boundary test, so the root is that literal path (existing-dir filtering is
+    # project_dirs').
+    sessions = list(scanner.scan(home=fake_jsonl))
+    picks = _picks(fake_jsonl, sessions=sessions, roots=["/home/user/claude"])
+    assert "/home/user/claude/repo/a" in picks  # under the root → kept
+    assert "/tmp/other" not in picks  # outside the root → dropped
+
+
+def test_pickable_projects_root_subdirs_surface(fake_jsonl):
+    # A fresh (session-less) immediate sub-dir of a configured root must surface.
+    code = fake_jsonl / "code"
+    (code / "brand-new").mkdir(parents=True)
+    picks = _picks(fake_jsonl, sessions=[], roots=[str(code)])
+    assert str(code / "brand-new") in picks
+
+
+def test_pickable_projects_root_subdir_scan_rejects_hidden_and_symlink_out(fake_jsonl):
+    code = fake_jsonl / "code"
+    (code / "Real").mkdir(parents=True)
+    (code / ".hidden").mkdir()
+    outside = fake_jsonl / "outside-secret"
+    outside.mkdir()
+    (code / "evil").symlink_to(outside)  # symlink pointing OUT of the root
+    picks = _picks(fake_jsonl, sessions=[], roots=[str(code)])
+    assert str(code / "Real") in picks
+    assert str(code / ".hidden") not in picks
+    assert str(outside) not in picks
+    assert str(code / "evil") not in picks
+
+
+def test_pickable_projects_exclusion_drops_under_root(fake_jsonl):
+    code = fake_jsonl / "code"
+    (code / "keep").mkdir(parents=True)
+    (code / "scratch").mkdir()
+    picks = _picks(fake_jsonl, sessions=[], roots=[str(code)], exclusions=[str(code / "scratch")])
+    assert str(code / "keep") in picks
+    assert str(code / "scratch") not in picks
+
+
+def test_pickable_projects_exclusion_applies_when_unscoped(fake_jsonl):
+    # Exclusions drop a cwd even with NO roots configured (the empty-roots path).
+    sessions = list(scanner.scan(home=fake_jsonl))
+    picks = _picks(fake_jsonl, sessions=sessions, roots=[], exclusions=["/tmp"])
+    assert "/tmp/other" not in picks
+    assert "/home/user/claude/repo/a" in picks
+
+
 def test_ignores_non_uuid_files(fake_jsonl):
     # Drop a noise file alongside; scanner must skip it.
     junk = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / "not-a-uuid.jsonl"

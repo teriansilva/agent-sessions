@@ -224,9 +224,14 @@ def register(
                 # Preferred new-session start dir (#335 Phase 2); the picker pre-selects it when
                 # still pickable, else falls back silently.
                 "default_project": prefs.get_default_project(),
-                # Base dirs under which the UI may create a new project folder (#335 Phase 3).
-                # Empty ⇒ the "New folder" affordance is hidden + the mkdir endpoint is a no-op.
+                # Base dirs under which the UI may create a new project folder (#335 Phase 3) AND
+                # the root scope for discovery (#465) — the merged effective list (prefs roots, else
+                # the env fallback). Empty ⇒ the "New folder" affordance is hidden, the mkdir
+                # endpoint is a no-op, and discovery is unscoped (today's behaviour).
                 "project_roots": project_dirs.project_roots(),
+                # Manual exclusion list (#465): boundary-aware path prefixes dropped from discovery
+                # even when under a root (for ephemerals that slip past is_ephemeral_cwd).
+                "folder_exclusions": prefs.get_folder_exclusions(),
                 # Per-cwd custom project display names (#148).
                 "project_names": prefs.get_project_names(),
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
@@ -307,12 +312,19 @@ def register(
             ("projects_hidden", prefs.set_projects_hidden),
             # `included`-mode allowlist (#335).
             ("projects_included", prefs.set_projects_included),
+            # Discovery root scope + manual exclusion list (#465). Same list-of-strings shape.
+            ("project_roots", prefs.set_project_roots),
+            ("folder_exclusions", prefs.set_folder_exclusions),
         ):
             if key in payload:
                 v = payload[key]
                 if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                     raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
-                out[key] = setter(v)
+                stored = setter(v)
+                # For `project_roots` echo the EFFECTIVE (merged, normalized, existing-dir-only)
+                # list so the client sees what actually took effect (#465); others echo the raw
+                # stored value.
+                out[key] = project_dirs.project_roots() if key == "project_roots" else stored
         if "ai_review" in payload:
             # AI review config (#356): a REAL nested validator (URL shape, length caps,
             # interval floor, max_input_chars bounds, unknown-key rejection) — never a

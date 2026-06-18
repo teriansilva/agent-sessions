@@ -136,6 +136,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         hidden = set(prefs.get_projects_hidden())
         included = set(prefs.get_projects_included())
 
+        # Root scope (#465): a HARD scope applied BEFORE visibility, facets, and pagination, so the
+        # list + facets both describe the in-scope set. When project roots are configured, a session
+        # whose cwd is NOT under a root (or is under an exclusion) is dropped from the list.
+        # Empty roots ⇒ no filtering (today's behaviour).
+        roots = project_dirs.effective_roots()
+        exclusions = prefs.get_folder_exclusions()
+
+        def _in_scope(row: dict) -> bool:
+            return not roots or project_dirs.in_scope(
+                row["cwd"], roots=roots, exclusions=exclusions
+            )
+
         def _visible(row: dict) -> bool:
             # Project-resolved rows are always visible: hiding members happens through
             # the per-session archived flag (project archive, #361 Phase 2, archives
@@ -149,7 +161,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row
             for s in sessions
             for row in [_row(s, _meta_for(s), project_index)]
-            if row["archived"] == archived and _visible(row)
+            if row["archived"] == archived and _in_scope(row) and _visible(row)
         ]
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
@@ -474,7 +486,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # /api/sessions facets (over engines.scan_all()). A Claude-only scan here would let an
         # opencode/gemini cwd appear in the filter but be unmanageable — the two lists drift.
         # scan_all() unifies the superset so every filterable project is manageable.
-        all_pickable = scanner.pickable_projects(sessions=engines.scan_all())
+        #
+        # Root-scoped + exclusion-filtered discovery (#465): when project roots are configured,
+        # only folders under a root (+ each root's fresh sub-dirs) are discoverable, minus the
+        # manual exclusion list. Empty roots ⇒ today's unscoped behaviour. The `?visible=1` /
+        # mode filtering below still applies AFTER the scope.
+        roots = project_dirs.effective_roots()
+        exclusions = prefs.get_folder_exclusions()
+        all_pickable = scanner.pickable_projects(
+            sessions=engines.scan_all(), roots=roots, exclusions=exclusions
+        )
         mode = prefs.get_projects_mode()
         if request.query_params.get("visible") == "1":
             hidden = set(prefs.get_projects_hidden())

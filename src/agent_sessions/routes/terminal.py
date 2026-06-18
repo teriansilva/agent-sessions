@@ -38,6 +38,7 @@ from .. import (
     fsbrowse,
     owner,
     prefs,
+    project_dirs,
     ptybridge,
     scanner,
     scopedspawn,
@@ -266,10 +267,22 @@ def register(
                 # (#457). fsbrowse.is_browsable_dir is the security boundary: its realpath
                 # containment rejects any path whose target escapes $HOME.
                 new_cwd = ws.query_params.get("cwd") or ""
-                if not (
-                    new_cwd in set(scanner.pickable_projects(sessions=engines.scan_all()))
-                    or fsbrowse.is_browsable_dir(new_cwd)
-                ):
+                # Hard root scope (#465/#467): when project roots are configured a new session may
+                # launch ONLY in an in-scope cwd — the same scope the list/picker/facets enforce —
+                # so a direct ws request can't start outside it. pickable_projects is already
+                # root/exclusion-scoped; the home-browsable branch gets the explicit in_scope guard.
+                # Empty roots ⇒ unscoped (today's behaviour).
+                roots = project_dirs.effective_roots()
+                exclusions = prefs.get_folder_exclusions()
+                in_picker = new_cwd in set(
+                    scanner.pickable_projects(
+                        sessions=engines.scan_all(), roots=roots, exclusions=exclusions
+                    )
+                )
+                browsable_ok = fsbrowse.is_browsable_dir(new_cwd) and (
+                    not roots or project_dirs.in_scope(new_cwd, roots=roots, exclusions=exclusions)
+                )
+                if not (in_picker or browsable_ok):
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
@@ -320,7 +333,20 @@ def register(
                     (s for s in sessions_all if s.engine == prov.engine_id and s.uuid == native),
                     None,
                 )
-                if match is None or match.cwd not in scanner.scanned_cwds(sessions_all):
+                # Hard root scope (#465/#467): a session whose cwd is outside the configured roots
+                # (or under an exclusion) is hidden from the list/picker AND not resumable here —
+                # otherwise the ws would be a back door to the scoped-out sessions. Empty roots ⇒
+                # unscoped (every scanned session resumable, today's behaviour).
+                roots = project_dirs.effective_roots()
+                exclusions = prefs.get_folder_exclusions()
+                if (
+                    match is None
+                    or match.cwd not in scanner.scanned_cwds(sessions_all)
+                    or (
+                        roots
+                        and not project_dirs.in_scope(match.cwd, roots=roots, exclusions=exclusions)
+                    )
+                ):
                     return await reject(4404)
                 launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
                 cwd = match.cwd

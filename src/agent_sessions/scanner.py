@@ -25,6 +25,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import project_dirs
+
 # Session UUIDs that Claude Code writes are RFC4122-shaped.
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -197,38 +199,67 @@ def is_ephemeral_cwd(cwd: str | None, home: Path | None = None) -> bool:
     return False
 
 
-def pickable_projects(
-    home: Path | None = None, sessions: Iterable[Session] | None = None
-) -> list[str]:
-    """Folders offered by the new-session picker: scanned session cwds ∪ the
-    immediate subdirectories of ``~/claude``.
+def _scan_root_subdirs(root: Path, out: set[str]) -> None:
+    """Add ``root``'s immediate sub-dirs to ``out`` (#465), keeping only children whose
+    ``os.path.realpath`` resolves to a directory still under ``root`` — rejecting hidden dirs
+    (``.git``, ``.claude``), symlink-out, and traversal. Generalises the historical ``~/claude``
+    special-case so a fresh (session-less) folder under a configured root still surfaces."""
+    if not root.is_dir():
+        return
+    for child in root.iterdir():
+        # Skip hidden dirs (e.g. .claude, .git) — not real projects.
+        if child.name.startswith("."):
+            continue
+        try:
+            real = child.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not real.is_dir():
+            continue
+        # real path must remain under the root (reject symlink-out / traversal)
+        if real == root or root in real.parents:
+            out.add(str(real))
 
-    Each ``~/claude/*`` candidate is included only when ``os.path.realpath``
-    resolves to a directory whose **real path is still under ``~/claude``** —
-    this rejects symlinks that point outside the tree and any traversal. The
-    result is the allowlist for the ws new-session path (broader than the resume
-    allowlist, but never free-form).
+
+def pickable_projects(
+    home: Path | None = None,
+    sessions: Iterable[Session] | None = None,
+    *,
+    roots: list[str] | None = None,
+    exclusions: list[str] | None = None,
+) -> list[str]:
+    """Folders offered by the new-session picker / Settings folder manager.
+
+    Default (no ``roots``): scanned session cwds ∪ the immediate subdirectories of ``~/claude`` —
+    the pre-#465 behaviour, unchanged. Each ``~/claude/*`` candidate is included only when
+    ``os.path.realpath`` resolves to a directory whose **real path is still under ``~/claude``** —
+    this rejects symlinks that point outside the tree and any traversal.
+
+    Root-scoped (#465): when ``roots`` is a non-empty list, the ``~/claude`` special-case
+    generalises to *the immediate sub-dirs of EACH root* (same hidden-dir skip + realpath-under-root
+    guard), and the result is restricted to cwds that are **under a root** (boundary-aware, via
+    ``project_dirs.in_scope``) — so out-of-root session cwds drop out. This is a HARD scope.
+
+    In BOTH cases ``exclusions`` (boundary-aware path prefixes) are dropped, in addition to the
+    existing ephemeral ``~/.cache/act`` filter applied at scan time.
     """
     home = home or Path.home()
+    roots = roots or []
+    exclusions = exclusions or []
     out: set[str] = set()
     if sessions is not None:
         out |= {s.cwd for s in sessions}
     else:
         out |= {s.cwd for s in scan(home)}
 
-    claude_root = (home / "claude").resolve()
-    if claude_root.is_dir():
-        for child in claude_root.iterdir():
-            # Skip hidden dirs (e.g. ~/claude/.claude, .git) — not real projects.
-            if child.name.startswith("."):
-                continue
-            try:
-                real = child.resolve(strict=True)
-            except (OSError, RuntimeError):
-                continue
-            if not real.is_dir():
-                continue
-            # real path must remain under ~/claude (reject symlink-out / traversal)
-            if real == claude_root or claude_root in real.parents:
-                out.add(str(real))
+    if roots:
+        # Root-scoped: surface each root's immediate sub-dirs, then keep only in-scope cwds.
+        for r in roots:
+            _scan_root_subdirs(Path(r), out)
+        out = {c for c in out if project_dirs.in_scope(c, roots=roots, exclusions=exclusions)}
+    else:
+        # Unscoped (today): session cwds ∪ ~/claude subdirs, then drop the exclusions below.
+        _scan_root_subdirs((home / "claude").resolve(), out)
+        if exclusions:
+            out = {c for c in out if not any(project_dirs.path_within(c, e) for e in exclusions)}
     return sorted(out)

@@ -77,6 +77,49 @@ def test_ws_rejects_unknown_session(fake_jsonl, auth_cfg):
     assert code == 4404
 
 
+def test_ws_resume_rejected_outside_roots(fake_jsonl, auth_cfg, monkeypatch):
+    # Hard root scope (#465/#467): a scanned session whose cwd is OUTSIDE the configured roots is
+    # NOT resumable via the ws either — otherwise the ws is a back door to scoped-out sessions.
+    # _GOOD is scanned at /home/user/claude/demoapp.io; a root elsewhere → out of scope → 4404.
+    from agent_sessions import prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: ["/home/user/claude/other"])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_resume_allowed_when_no_roots(fake_jsonl, auth_cfg, monkeypatch):
+    # Empty roots ⇒ unscoped (today's behaviour): the scanned session clears the resume gate and
+    # only fails later on the unresolvable bare binary (4500) — proving it passed the scope check.
+    from agent_sessions import engines, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → 4500 past the gate
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4500
+
+
+def test_ws_new_session_rejected_outside_roots(auth_cfg, tmp_home, monkeypatch):
+    # A NEW session may launch only in an in-scope cwd when roots are set (#465/#467): a browsable
+    # $HOME dir OUTSIDE the root is rejected (it would be accepted unscoped, being browsable).
+    from agent_sessions import prefs, project_dirs
+
+    root = tmp_home / "code"
+    outside = tmp_home / "elsewhere"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [str(root)])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    fresh = "claude:22222222-2222-2222-2222-222222222222"
+    assert _close_code(c, f"/ws/term/{fresh}?new=1&cwd={outside}", headers) == 4404
+
+
 def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
     # A valid, authed, scanned session whose engine binary resolved to a bare name
     # (not an absolute path) must close deterministically (4500). Regression for #51.

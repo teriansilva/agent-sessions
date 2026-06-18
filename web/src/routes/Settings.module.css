@@ -896,3 +896,88 @@
   font-size: 0.74rem;
   color: var(--text-3);
 }
+
+/* --- Folder discovery card (#465) ------------------------------------------------ */
+/* A small uppercase sub-label above each discovery subsection (root dirs / exclusions),
+ * matching the .aiFieldLabel style used by the AI panel. */
+.discoverySub {
+  margin: 14px 0 6px;
+}
+.discoverySub:first-of-type {
+  margin-top: 4px;
+}
+/* One path row in a discovery list: the path text + a Remove button on the right.
+ * Reuses the .excludeRow box but is not a label/checkbox row. */
+.discoveryRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.discoveryPath {
+  min-width: 0;
+  flex: 1;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.discoveryRemove {
+  margin-left: auto;
+  flex: none;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.discoveryRemove:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* --- Entity-grouped Session overview (#465) -------------------------------------- */
+/* One group per owning project entity (+ the synthetic Unassigned group). */
+.overviewGroup {
+  margin-top: 12px;
+}
+.overviewGroupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.overviewGroupDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.overviewGroupDotEmpty {
+  border: 1px dashed var(--border);
+}
+.overviewGroupName {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overviewGroupCount {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 1px 6px;
+}

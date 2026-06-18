@@ -649,3 +649,85 @@ def test_default_project_roundtrip(tmp_home):
     assert prefs.get_default_project() == "/p/a"
     assert prefs.set_default_project("") == ""  # cleared
     assert prefs.get_default_project() == ""
+
+
+# ---- project_roots + folder_exclusions (#465) ---------------------------------
+
+
+def test_project_roots_default_empty(tmp_path):
+    assert prefs.get_project_roots(tmp_path / "prefs.json") == []
+
+
+def test_project_roots_round_trip_and_coerce(tmp_path):
+    p = tmp_path / "prefs.json"
+    # Stored RAW (no realpath/existing-dir filter here — that's project_dirs' job): a list of
+    # unique strings, dupes + non-strings dropped by coerce_str_list.
+    out = prefs.set_project_roots(["/home/u/code", "/home/u/code", "/work", 5], p)
+    assert out == ["/home/u/code", "/work"]
+    assert prefs.get_project_roots(p) == ["/home/u/code", "/work"]
+    assert prefs.set_project_roots("nope", p) == []  # non-list → []
+
+
+def test_folder_exclusions_round_trip_and_coerce(tmp_path):
+    p = tmp_path / "prefs.json"
+    out = prefs.set_folder_exclusions(["/tmp", "/tmp", "/x/scratch", None], p)
+    assert out == ["/tmp", "/x/scratch"]
+    assert prefs.get_folder_exclusions(p) == ["/tmp", "/x/scratch"]
+    assert prefs.set_folder_exclusions(42, p) == []  # non-list → []
+
+
+def test_discovery_prefs_coexist_with_other_keys(tmp_path):
+    p = tmp_path / "prefs.json"
+    prefs.set_theme("dark", p)
+    prefs.set_project_roots(["/r"], p)
+    prefs.set_folder_exclusions(["/e"], p)
+    assert prefs.get_theme(p) == "dark"
+    assert prefs.get_project_roots(p) == ["/r"]
+    assert prefs.get_folder_exclusions(p) == ["/e"]
+
+
+def test_config_exposes_folder_exclusions(auth_cfg, tmp_home):
+    prefs.set_folder_exclusions(["/home/u/scratch"])
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["folder_exclusions"] == ["/home/u/scratch"]
+
+
+def test_set_folder_exclusions_endpoint(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"folder_exclusions": ["/a", "/b"]}, headers=hdr)
+    assert r.status_code == 200 and r.json() == {"folder_exclusions": ["/a", "/b"]}
+    assert c.get("/api/config").json()["folder_exclusions"] == ["/a", "/b"]
+
+
+def test_set_project_roots_endpoint_echoes_effective_list(auth_cfg, tmp_home):
+    # The endpoint echoes the EFFECTIVE (normalized, existing-dir-only) list, not the raw input —
+    # so the client sees what actually took effect. A real dir survives; a missing one drops.
+    real = tmp_home / "code"
+    real.mkdir()
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/prefs",
+        json={"project_roots": [str(real), str(tmp_home / "missing")]},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    import os
+
+    assert r.json() == {"project_roots": [os.path.realpath(real)]}
+    # And /api/config now reports the same effective list.
+    assert c.get("/api/config").json()["project_roots"] == [os.path.realpath(real)]
+    # The RAW stored pref keeps both (the missing dir stays editable in the UI).
+    assert prefs.get_project_roots() == [str(real), str(tmp_home / "missing")]
+
+
+def test_set_discovery_prefs_reject_non_string_items(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"project_roots": ["/ok", 5]}, headers=hdr).status_code == 422
+    assert c.post("/api/prefs", json={"folder_exclusions": [1]}, headers=hdr).status_code == 422

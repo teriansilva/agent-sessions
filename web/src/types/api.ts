@@ -270,9 +270,14 @@ export interface AppConfig {
   /** Preferred new-session start directory (#335 Phase 2). The picker pre-selects it when it's
    *  still a pickable project, else falls back to the first option. "" / absent = no preference. */
   default_project?: string;
-  /** Base dirs under which the UI may create a new project folder (#335 Phase 3). Empty/absent ⇒
-   *  the "New folder" affordance is hidden and the mkdir endpoint is disabled. */
+  /** Base dirs under which the UI may create a new project folder (#335 Phase 3) AND the root
+   *  scope for discovery (#465) — the merged effective list (prefs roots, else env fallback).
+   *  Empty/absent ⇒ the "New folder" affordance is hidden, the mkdir endpoint is disabled, and
+   *  discovery is unscoped (today's behaviour). UI-settable via setPrefs (#465). */
   project_roots?: string[];
+  /** Manual exclusion list (#465): boundary-aware path prefixes dropped from discovery even when
+   *  under a root (for ephemerals that slip past the ~/.cache/act filter). UI-settable. */
+  folder_exclusions?: string[];
   /** Per-cwd custom project display names (#148). */
   project_names?: Record<string, string>;
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a

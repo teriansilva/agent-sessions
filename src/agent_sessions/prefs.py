@@ -358,6 +358,38 @@ def project_visible(cwd: str, *, mode: str, hidden: set[str], included: set[str]
     return cwd not in hidden
 
 
+# --- Root-scoped + exclusion-filtered discovery (#465) ---------------------------------
+# `project_roots` is now a settable pref (mirrors the existing list prefs): the operator picks
+# their root dir(s) in Settings, and discovery + the mkdir boundary scope to them. The env
+# `AGENT_SESSIONS_PROJECT_ROOTS` is the fallback when the pref is empty (effective_roots, in
+# project_dirs). `folder_exclusions` is a manual list of boundary-aware path prefixes dropped from
+# discovery even when under a root (for ephemerals that slip past is_ephemeral_cwd). Both stored
+# RAW (validated/normalized at use: project_dirs._normalize_roots for roots, path_within for both)
+# so a now-missing dir stays editable in the UI rather than vanishing on read.
+
+
+def get_project_roots(path: Path | None = None) -> list[str]:
+    """The operator-selected root dirs (#465). Raw strings, normalized on use by
+    `project_dirs.effective_roots`. Empty ⇒ discovery falls back to the env / today's behaviour."""
+    return coerce_str_list(_load(path or _default_path()).get("project_roots"))
+
+
+def set_project_roots(roots: object, path: Path | None = None) -> list[str]:
+    """Persist the project-root dirs (#465). Stored raw; preserves other keys."""
+    return _set("project_roots", coerce_str_list(roots), path)
+
+
+def get_folder_exclusions(path: Path | None = None) -> list[str]:
+    """The manual exclusion list of boundary-aware path prefixes dropped from discovery (#465).
+    Normalized on read."""
+    return coerce_str_list(_load(path or _default_path()).get("folder_exclusions"))
+
+
+def set_folder_exclusions(exclusions: object, path: Path | None = None) -> list[str]:
+    """Persist the folder-exclusion prefixes (#465). Preserves other keys."""
+    return _set("folder_exclusions", coerce_str_list(exclusions), path)
+
+
 def get_default_project(path: Path | None = None) -> str:
     """The preferred new-session start directory (#335 Phase 2), or "" when unset. The picker
     pre-selects it ONLY when it is still a pickable project (validated client-side on read); a

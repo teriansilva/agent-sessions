@@ -1170,3 +1170,102 @@ def test_mkdir_requires_csrf(auth_cfg, fake_jsonl, tmp_path, monkeypatch):
         headers={"Origin": auth_cfg.origin},
     )
     assert r.status_code == 403
+
+
+# ---- #465: root-scoped + exclusion-filtered discovery (HARD scope) ------------
+
+
+def test_sessions_unchanged_when_no_roots(auth_cfg, fake_jsonl, tmp_home):
+    """Empty roots ⇒ the session list + facets are exactly today's (back-compat default)."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/sessions?limit=100").json()
+    cwds = {row["cwd"] for row in d["sessions"]}
+    assert {_REPO_A, _TMP_OTHER, _DEMOAPP} <= cwds
+
+
+def test_sessions_root_scoped_drops_out_of_root_rows_and_facets(auth_cfg, fake_jsonl, tmp_home):
+    """A HARD scope (#465): with project roots set, sessions whose cwd is NOT under a root drop
+    from the /api/sessions list AND its facets (Default count shrinks), before pagination."""
+    from agent_sessions import project_dirs
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    before = c.get("/api/sessions?limit=100").json()
+    assert _TMP_OTHER in {row["cwd"] for row in before["sessions"]}
+    before_default = next(p for p in before["facets"]["projects"] if p["id"] == "__default__")
+
+    # Root that boundary-contains the /home/user/claude fixture cwds but NOT /tmp/other. The
+    # path need not exist on the host: scope is a pure boundary test, so we drive effective_roots
+    # directly (the existing-dir realpath filter is covered in test_project_dirs).
+    c.app.dependency_overrides = getattr(c.app, "dependency_overrides", {})
+    import agent_sessions.routes.sessions as sessions_mod
+
+    orig = project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        after = c.get("/api/sessions?limit=100").json()
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+
+    after_cwds = {row["cwd"] for row in after["sessions"]}
+    assert _TMP_OTHER not in after_cwds  # outside the root → dropped
+    assert _REPO_A in after_cwds  # under the root → kept
+    after_default = next(p for p in after["facets"]["projects"] if p["id"] == "__default__")
+    # /tmp/other was a Default (unadopted) row → the Default facet count drops by one.
+    assert after_default["count"] == before_default["count"] - 1
+    assert after["total"] == before["total"] - 1
+
+
+def test_sessions_root_scope_honors_exclusions(auth_cfg, fake_jsonl, tmp_home):
+    """An excluded prefix drops a row even when it's under a root (#465)."""
+    import agent_sessions.routes.sessions as sessions_mod
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    prefs.set_folder_exclusions([_REPO_A])
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        d = c.get("/api/sessions?limit=100").json()
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    cwds = {row["cwd"] for row in d["sessions"]}
+    assert _REPO_A not in cwds  # excluded → dropped
+    assert _DEMOAPP in cwds  # still under the root, not excluded
+
+
+def test_folders_root_scoped(auth_cfg, fake_jsonl, tmp_home):
+    """/api/folders drops out-of-scope cwds when roots are set; a root sub-dir surfaces."""
+    import agent_sessions.routes.sessions as sessions_mod
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert _TMP_OTHER in {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
+
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        folders = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    assert _TMP_OTHER not in folders  # out of root → dropped
+    assert _REPO_A in folders  # under root → kept
+
+
+def test_folders_root_subdir_surfaces(auth_cfg, fake_jsonl, tmp_home):
+    """A session-less immediate sub-dir of a configured (existing) root shows in /api/folders."""
+    import os
+
+    from agent_sessions import prefs
+
+    code = tmp_home / "code"
+    (code / "brand-new").mkdir(parents=True)
+    prefs.set_project_roots([str(code)])
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    folders = {p["cwd"] for p in c.get("/api/folders").json()["folders"]}
+    assert os.path.realpath(code / "brand-new") in folders
+    # The out-of-root fixture cwds are gone.
+    assert _TMP_OTHER not in folders

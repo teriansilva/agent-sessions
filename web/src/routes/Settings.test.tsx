@@ -44,6 +44,9 @@ vi.mock("../lib/api", async () => {
       deleteProject: vi.fn(),
       archiveProject: vi.fn(),
       unarchiveProject: vi.fn(),
+      // #465: the Folder discovery card opens the FolderPickerModal (api.fsDirs/fsMkdir).
+      fsDirs: vi.fn(),
+      fsMkdir: vi.fn(),
       // #441: the AI Review tab now also mounts the AI-activity panel + Pulse section.
       aiActivity: vi.fn().mockResolvedValue({ running: [], last: {} }),
       pulseScan: vi.fn(),
@@ -136,6 +139,13 @@ beforeEach(() => {
   vi.mocked(api.reviewExclude).mockResolvedValue({ id: "x", review_excluded: false });
   // Projects manager (#361 Phase 3): no entities by default.
   vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] });
+  // Folder picker (#465 / #448): a simple home listing so the discovery picker can open + select.
+  vi.mocked(api.fsDirs).mockResolvedValue({
+    path: "/home/u",
+    home: "/home/u",
+    dirs: [{ name: "code", path: "/home/u/code" }],
+  });
+  vi.mocked(api.fsMkdir).mockResolvedValue({ path: "/home/u/new" });
 });
 
 // ---- Tab shell: routing + deep links (#357 Phase 1) ----
@@ -517,6 +527,119 @@ test("Session overview: a name seeded after /api/config resolves is shown on the
       "Saved Alpha",
     ),
   );
+});
+
+// ---- Session overview: entity-grouped rendering (#465) ----
+
+test("Session overview: folders are grouped under their owning entity + Unassigned (#465)", async () => {
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
+      { cwd: "/home/u/alpha", label: "Alpha" },
+      { cwd: "/home/u/loose", label: "Loose" },
+    ],
+  });
+  // One entity owning /home/u/alpha; /home/u/loose is owned by nobody → Unassigned.
+  vi.mocked(api.projectEntities).mockResolvedValue({
+    projects: [
+      {
+        id: "p-1",
+        name: "Alpha Project",
+        color: "#c02020",
+        folders: ["/home/u/alpha"],
+        default_folder: "/home/u/alpha",
+        archived: false,
+        created_at: 0,
+        session_count: 1,
+      },
+    ],
+  });
+  renderSettings("dark", "#ffb000", "/settings/projects");
+  // The overview renders one per-entity group (its list is uniquely labelled "Folders in
+  // <name>") + an "Unassigned" group — distinct from the ProjectsManager's own entity list above.
+  const alphaList = await screen.findByRole("list", { name: /folders in alpha project/i });
+  const unassignedList = screen.getByRole("list", { name: /folders in unassigned/i });
+  // Each folder is still a ProjectRow with the inverse-checkbox + rename button.
+  expect(screen.getByRole("checkbox", { name: /~\/alpha/i })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /~\/loose/i })).toBeChecked();
+  // The owned folder is under its entity group; the loose folder under Unassigned — never crossed.
+  expect(alphaList).toContainElement(screen.getByRole("button", { name: /rename ~\/alpha/i }));
+  expect(unassignedList).toContainElement(screen.getByRole("button", { name: /rename ~\/loose/i }));
+  await flushFetches();
+});
+
+// ---- Folder discovery card (#465) ----
+
+test("Folder discovery: shows configured roots/exclusions and removing a root persists (#465)", async () => {
+  function renderDiscovery(config: Partial<AppConfig> = {}) {
+    const cfg: AppConfig = {
+      csrf: "t",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      auth_mode: "single-user",
+      two_factor_enabled: false,
+      ...config,
+    };
+    render(
+      <MemoryRouter initialEntries={["/settings/projects"]}>
+        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+          <ConfigCtx.Provider value={cfg}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigCtx.Provider>
+        </ThemeCtx.Provider>
+      </MemoryRouter>,
+    );
+  }
+  renderDiscovery({
+    project_roots: ["/home/u/code"],
+    folder_exclusions: ["/home/u/code/scratch"],
+  });
+  expect(await screen.findByRole("heading", { name: /folder discovery/i })).toBeInTheDocument();
+  // The configured root + exclusion render with Remove buttons.
+  const rootList = screen.getByRole("list", { name: /root directories/i });
+  expect(rootList).toBeInTheDocument();
+  expect(screen.getByRole("list", { name: /excluded folders/i })).toBeInTheDocument();
+  // Removing the root persists the empty list via setPrefs.
+  await userEvent.click(screen.getByRole("button", { name: /remove root ~\/code/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: [] });
+  await flushFetches();
+});
+
+test("Folder discovery: picking a root through the folder picker commits it (#465)", async () => {
+  function renderDiscovery() {
+    const cfg: AppConfig = {
+      csrf: "t",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      auth_mode: "single-user",
+      two_factor_enabled: false,
+    };
+    render(
+      <MemoryRouter initialEntries={["/settings/projects"]}>
+        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+          <ConfigCtx.Provider value={cfg}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigCtx.Provider>
+        </ThemeCtx.Provider>
+      </MemoryRouter>,
+    );
+  }
+  // The server echoes the effective list on commit.
+  vi.mocked(api.setPrefs).mockResolvedValue({ project_roots: ["/home/u"] });
+  renderDiscovery();
+  // Open the root picker, then "Select ~" (home) returns the home path → committed as a root.
+  await userEvent.click(await screen.findByRole("button", { name: /add root…/i }));
+  const select = await screen.findByRole("button", { name: /^select ~$/i });
+  await userEvent.click(select);
+  expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: ["/home/u"] });
+  await flushFetches();
 });
 
 // ---- Default project (#335 Phase 2, surfaced in #357 Phase 2) ----

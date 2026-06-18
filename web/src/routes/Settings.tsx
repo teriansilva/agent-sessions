@@ -25,7 +25,8 @@ import { useConfig } from "../app/config";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
-import { buildProjectTree, flattenTree } from "../lib/projectTree";
+import { buildProjectTree, flattenTree, owningProjectId } from "../lib/projectTree";
+import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
@@ -39,6 +40,7 @@ import { useTheme } from "../theme/themeStore";
 import type {
   EngineInfo,
   Folder,
+  ProjectEntity,
   SystemInfo,
   TwoFactorEnrollment,
   UpdateInfo,
@@ -722,6 +724,139 @@ function AccountCard() {
   );
 }
 
+/** Folder discovery (#465): the operator picks the root dir(s) discovery is scoped to (a HARD
+ *  scope — out-of-root folders are hidden from the sidebar too) plus a manual exclusion list for
+ *  ephemerals that slip through. Empty roots ⇒ today's unscoped behaviour. Each list commits via
+ *  `setPrefs`; roots/exclusions are added through the existing `~/`-rooted FolderPickerModal. */
+function FolderDiscoveryCard() {
+  const config = useConfig();
+  // Optimistic local state seeded from config; reflect external changes (another device / reload)
+  // via React's render-phase "adjust state on change" pattern, like the compose/default-project
+  // controls. `project_roots` echoes the EFFECTIVE (normalized) list the server returns.
+  const configRoots = config?.project_roots ?? [];
+  const configExclusions = config?.folder_exclusions ?? [];
+  const [roots, setRoots] = useState<string[]>(configRoots);
+  const [exclusions, setExclusions] = useState<string[]>(configExclusions);
+  const [syncedRoots, setSyncedRoots] = useState(configRoots);
+  const [syncedExclusions, setSyncedExclusions] = useState(configExclusions);
+  // Compare by content so a fresh array identity from config doesn't churn local edits.
+  if (configRoots.join("\n") !== syncedRoots.join("\n")) {
+    setSyncedRoots(configRoots);
+    setRoots(configRoots);
+  }
+  if (configExclusions.join("\n") !== syncedExclusions.join("\n")) {
+    setSyncedExclusions(configExclusions);
+    setExclusions(configExclusions);
+  }
+  // Which picker is open ("root" | "exclusion" | null) + the trigger to refocus on close.
+  const [picking, setPicking] = useState<{ kind: "root" | "exclusion"; trigger: HTMLElement | null } | null>(null);
+
+  const commitRoots = (next: string[]) => {
+    const prev = roots;
+    setRoots(next);
+    // The server echoes the effective (existing-dir-only) list — apply it so a non-existent pick
+    // silently drops, matching what discovery will actually use.
+    api
+      .setPrefs({ project_roots: next })
+      .then((r) => {
+        const eff = (r as { project_roots?: string[] }).project_roots;
+        if (Array.isArray(eff)) setRoots(eff);
+      })
+      .catch(() => setRoots(prev));
+  };
+  const commitExclusions = (next: string[]) => {
+    const prev = exclusions;
+    setExclusions(next);
+    api.setPrefs({ folder_exclusions: next }).catch(() => setExclusions(prev));
+  };
+
+  const onPick = (path: string) => {
+    if (picking?.kind === "root") {
+      if (!roots.includes(path)) commitRoots([...roots, path]);
+    } else if (picking?.kind === "exclusion") {
+      if (!exclusions.includes(path)) commitExclusions([...exclusions, path]);
+    }
+    setPicking(null);
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="discovery-h">
+      <h2 id="discovery-h">Folder discovery</h2>
+      <p className={styles.hint}>
+        Scope folder discovery to your project root(s). When a root is set this is a hard scope —
+        folders outside it are hidden from the sidebar, filter, and pickers too. With no roots,
+        discovery is unscoped (every session&rsquo;s folder plus ~/claude subdirs), as before. Add
+        exclusions for scratch folders that slip through.
+      </p>
+
+      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>Root directories</h3>
+      {roots.length === 0 ? (
+        <p className={styles.hint}>No roots — discovery is unscoped.</p>
+      ) : (
+        <ul className={styles.excludeList} aria-label="Root directories">
+          {roots.map((r) => (
+            <li key={r} className={styles.discoveryRow}>
+              <span className={styles.discoveryPath}>{shortCwd(r)}</span>
+              <button
+                type="button"
+                className={styles.discoveryRemove}
+                onClick={() => commitRoots(roots.filter((x) => x !== r))}
+                aria-label={`Remove root ${shortCwd(r)}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        className={styles.secBtnGhost}
+        onClick={(e) => setPicking({ kind: "root", trigger: e.currentTarget })}
+      >
+        Add root…
+      </button>
+
+      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>Excluded folders</h3>
+      {exclusions.length === 0 ? (
+        <p className={styles.hint}>No exclusions.</p>
+      ) : (
+        <ul className={styles.excludeList} aria-label="Excluded folders">
+          {exclusions.map((x) => (
+            <li key={x} className={styles.discoveryRow}>
+              <span className={styles.discoveryPath}>{shortCwd(x)}</span>
+              <button
+                type="button"
+                className={styles.discoveryRemove}
+                onClick={() => commitExclusions(exclusions.filter((e) => e !== x))}
+                aria-label={`Remove exclusion ${shortCwd(x)}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        className={styles.secBtnGhost}
+        onClick={(e) => setPicking({ kind: "exclusion", trigger: e.currentTarget })}
+      >
+        Add exclusion…
+      </button>
+
+      {picking && (
+        <FolderPickerModal
+          title={picking.kind === "root" ? "Choose a root directory" : "Choose a folder to exclude"}
+          onPick={onPick}
+          onCancel={() => setPicking(null)}
+          returnFocusTo={picking.trigger}
+        />
+      )}
+    </section>
+  );
+}
+
 /** One project row in the Settings → Session overview card (#174). Indented by tree depth,
  *  inverse checkbox semantics (checked = visible; unchecked = hidden everywhere), and the
  *  custom name opens a rename modal on click instead of an inline input. */
@@ -774,8 +909,64 @@ function ProjectRow({
   );
 }
 
-/** Session overview (#174): hierarchical project tree with inverse-checkbox + rename modal.
- *  Hide is GLOBAL — affects sidebar list, project filter, new-session picker, and the map. */
+/** One owning-entity group in the reworked Session overview (#465): an entity header (color dot +
+ *  name + folder count) over that entity's discovered folders, each still a `ProjectRow` (inverse-
+ *  checkbox visibility toggle + rename), rendered as a folder sub-tree. The synthetic "Unassigned"
+ *  group reuses this with a dashed dot and no entity. */
+function OverviewGroup({
+  name,
+  color,
+  rows,
+  isVisible,
+  projectNames,
+  onToggleHidden,
+  onOpenRename,
+}: {
+  name: string;
+  color?: string;
+  rows: { cwd: string; depth: number; stale: boolean }[];
+  isVisible: (cwd: string) => boolean;
+  projectNames: Record<string, string>;
+  onToggleHidden: (cwd: string, hidden: boolean) => void;
+  onOpenRename: (cwd: string, trigger: HTMLElement) => void;
+}) {
+  return (
+    <div className={styles.overviewGroup}>
+      <div className={styles.overviewGroupHead}>
+        <span
+          className={
+            color
+              ? styles.overviewGroupDot
+              : `${styles.overviewGroupDot} ${styles.overviewGroupDotEmpty}`
+          }
+          style={color ? { background: color } : undefined}
+          aria-hidden="true"
+        />
+        <span className={styles.overviewGroupName}>{name}</span>
+        <span className={styles.overviewGroupCount}>{rows.length}</span>
+      </div>
+      <ul className={styles.excludeList} aria-label={`Folders in ${name}`}>
+        {rows.map((r) => (
+          <ProjectRow
+            key={r.cwd}
+            cwd={r.cwd}
+            depth={r.depth}
+            stale={r.stale}
+            hidden={!isVisible(r.cwd)}
+            currentName={projectNames[r.cwd] ?? ""}
+            onToggleHidden={onToggleHidden}
+            onOpenRename={onOpenRename}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Session overview (#174, reworked #465): discovered launch folders grouped under their owning
+ *  project entity (#361), with an "Unassigned" group for folders no entity owns. Each folder keeps
+ *  its inverse-checkbox visibility toggle + rename; hide is GLOBAL (sidebar list, project filter,
+ *  new-session picker, and the map). The all/included mode radios are preserved. */
 function OverviewCard() {
   const {
     hiddenProjects,
@@ -788,6 +979,7 @@ function OverviewCard() {
     setProjectName,
   } = useOverviewPrefs();
   const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
+  const [entities, setEntities] = useState<ProjectEntity[]>([]);
   const [renaming, setRenaming] = useState<{ cwd: string; trigger: HTMLElement | null } | null>(
     null,
   );
@@ -798,15 +990,22 @@ function OverviewCard() {
       .folders()
       .then((d) => alive && setProjects(d.folders))
       .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
+    // Entities drive the grouping (#465). A failed fetch → no groups, everything Unassigned.
+    api
+      .projectEntities()
+      .then((d) => alive && setEntities(d.projects))
+      .catch(() => alive && setEntities([]));
     return () => {
       alive = false;
     };
   }, []);
 
-  // Union of: known (discovered) cwds ∪ hidden ∪ included ∪ named — so a curated-but-inactive
-  // project (hidden in `all` mode, or included-but-not-currently-discovered in `included` mode)
-  // and a rename for an inactive project all stay editable here.
-  const rows = useMemo(() => {
+  // Group the discovered (∪ curated-but-inactive ∪ named) folders by owning entity (#465). A
+  // curated-but-inactive project (hidden in `all` mode, or included-but-not-currently-discovered
+  // in `included` mode) and a rename for an inactive project all stay editable here. Within a
+  // group, folders are still rendered as a nesting tree (buildProjectTree/flattenTree), so an
+  // adopted parent/child pair indents the same way as before.
+  const groups = useMemo(() => {
     const known = new Set((projects ?? []).map((p) => p.cwd));
     const all = new Set<string>([
       ...known,
@@ -814,14 +1013,44 @@ function OverviewCard() {
       ...includedProjects,
       ...Object.keys(projectNames),
     ]);
-    const tree = buildProjectTree(all);
-    return flattenTree(tree).map((n) => ({
-      cwd: n.cwd,
-      depth: n.depth,
-      stale: !known.has(n.cwd),
-    }));
-  }, [projects, hiddenProjects, includedProjects, projectNames]);
+    // Owner id → its cwds. "" is the Unassigned bucket.
+    const byOwner = new Map<string, Set<string>>();
+    for (const cwd of all) {
+      const owner = owningProjectId(cwd, entities);
+      const bucket = byOwner.get(owner) ?? new Set<string>();
+      bucket.add(cwd);
+      byOwner.set(owner, bucket);
+    }
+    const toRows = (cwds: Set<string>) =>
+      flattenTree(buildProjectTree(cwds)).map((n) => ({
+        cwd: n.cwd,
+        depth: n.depth,
+        stale: !known.has(n.cwd),
+      }));
+    // One group per entity that owns ≥1 discovered folder, entities first (by name), then
+    // Unassigned last.
+    const entityGroups = entities
+      .filter((e) => (byOwner.get(e.id)?.size ?? 0) > 0)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((e) => ({
+        key: e.id,
+        name: e.name,
+        color: e.color || undefined,
+        rows: toRows(byOwner.get(e.id)!),
+      }));
+    const unassigned = byOwner.get("");
+    if (unassigned && unassigned.size > 0) {
+      entityGroups.push({
+        key: "__unassigned__",
+        name: "Unassigned",
+        color: undefined,
+        rows: toRows(unassigned),
+      });
+    }
+    return entityGroups;
+  }, [projects, entities, hiddenProjects, includedProjects, projectNames]);
 
+  const total = useMemo(() => groups.reduce((n, g) => n + g.rows.length, 0), [groups]);
   const curated = projectsMode === "included";
   return (
     <section className={styles.section} aria-labelledby="overview-h">
@@ -851,31 +1080,29 @@ function OverviewCard() {
       </div>
       <p className={styles.hint}>
         {curated
-          ? "Only ticked projects show — sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically). Click a name for a custom display name."
-          : "Untick a project to hide it everywhere — sidebar, filter, new-session picker, and the overview map. Click a name to give the project a custom display name. Filtering still uses the full path under the hood."}
+          ? "Folders are grouped under their owning project. Only ticked folders show — sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically). Click a name for a custom display name."
+          : "Folders are grouped under their owning project. Untick a folder to hide it everywhere — sidebar, filter, new-session picker, and the overview map. Click a name to give it a custom display name. Filtering still uses the full path under the hood."}
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>
-      ) : rows.length === 0 ? (
+      ) : total === 0 ? (
         <p className={styles.hint}>No projects discovered yet.</p>
       ) : (
-        <ul className={styles.excludeList} aria-label="Projects">
-          {rows.map((r) => (
-            <ProjectRow
-              key={r.cwd}
-              cwd={r.cwd}
-              depth={r.depth}
-              stale={r.stale}
-              // Reuse ProjectRow's inverse-checkbox: `hidden` = NOT visible under the current mode;
-              // a toggle routes through `setProjectVisible`, which writes the allowlist (included)
-              // or the denylist (all) — never both (#335).
-              hidden={!isVisible(r.cwd)}
-              currentName={projectNames[r.cwd] ?? ""}
-              onToggleHidden={(cwd, hidden) => setProjectVisible(cwd, !hidden)}
-              onOpenRename={(cwd, trigger) => setRenaming({ cwd, trigger })}
-            />
-          ))}
-        </ul>
+        // Reuse ProjectRow's inverse-checkbox: `hidden` = NOT visible under the current mode; a
+        // toggle routes through `setProjectVisible`, which writes the allowlist (included) or the
+        // denylist (all) — never both (#335).
+        groups.map((g) => (
+          <OverviewGroup
+            key={g.key}
+            name={g.name}
+            color={g.color}
+            rows={g.rows}
+            isVisible={isVisible}
+            projectNames={projectNames}
+            onToggleHidden={(cwd, hidden) => setProjectVisible(cwd, !hidden)}
+            onOpenRename={(cwd, trigger) => setRenaming({ cwd, trigger })}
+          />
+        ))
       )}
       {renaming && (
         <RenameProjectModal
@@ -1371,6 +1598,8 @@ export function Settings() {
             {/* Entities first (#361 Phase 3): what sessions BELONG to. The folder
                 visibility/rename cards below stay about where sessions LAUNCH. */}
             <ProjectsManagerCard />
+            {/* Folder discovery scope + exclusions (#465), above the (now entity-grouped) overview. */}
+            <FolderDiscoveryCard />
             <OverviewCard />
             <DefaultProjectCard />
           </>
