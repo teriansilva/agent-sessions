@@ -219,21 +219,19 @@
   }
   .sidebar-actions {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 8px 8px 4px;
+    flex-direction: row;
+    gap: 4px;
+    padding: 8px;
     border-bottom: 1px dashed var(--line);
   }
+  /* One icon-only row (#494): Help/Pulse/Overview/Settings share the drawer width equally,
+   * no text labels (the buttons keep their aria-label), recovering vertical space. */
   .sidebar-actions .gear {
-    width: 100%;
-    justify-content: flex-start;
-    gap: 10px;
+    flex: 1 1 0;
     height: 40px;
-    padding: 0 8px;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    border-color: var(--line);
+    background: color-mix(in srgb, var(--bg-2) 45%, transparent);
+    color: var(--text-2);
   }
 }
 /* Full-width classification footer (#211 redux): the bottom HUD bar. */

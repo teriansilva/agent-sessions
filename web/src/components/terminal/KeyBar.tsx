@@ -5,8 +5,6 @@ import {
   Copy,
   CornerDownLeft,
   MoreHorizontal,
-  Paperclip,
-  Square,
 } from "lucide-react";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { KEYSEQ, type KeyName } from "../../lib/termKeys";
@@ -32,11 +30,9 @@ const GAP = 4; // matches .keys gap
 export function KeyBar({
   sendInput,
   onCopy,
-  onAttach,
 }: {
   sendInput: (d: string) => void;
   onCopy: () => void;
-  onAttach: () => void;
 }) {
   const key = (name: KeyName) => sendInput(KEYSEQ[name]);
   const actions: KeyAction[] = [
@@ -56,20 +52,6 @@ export function KeyBar({
       title: "Tab",
       icon: <ArrowRightToLine size={16} />,
       run: () => key("tab"),
-    },
-    {
-      id: "interrupt",
-      aria: "Interrupt (send Ctrl-C)",
-      title: "Send Ctrl-C (interrupt)",
-      icon: <Square size={14} fill="currentColor" />,
-      run: () => key("ctrlc"),
-    },
-    {
-      id: "attach",
-      aria: "Attach file",
-      title: "Attach an image or file",
-      icon: <Paperclip size={16} />,
-      run: onAttach,
     },
     { id: "copy", aria: "Copy", title: "Copy selection", icon: <Copy size={16} />, run: onCopy },
   ];

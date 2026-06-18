@@ -32,18 +32,36 @@ test("nav keys send their control sequence to the PTY", async () => {
   const user = userEvent.setup();
   renderCompose();
   await user.click(screen.getByRole("button", { name: "Up" }));
-  await user.click(screen.getByRole("button", { name: /ctrl-c/i }));
+  // Interrupt moved into the compose action (⋮) menu (#494): open it, then fire the item.
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /ctrl-c/i }));
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.up);
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.ctrlc);
 });
 
-test("interrupt button is icon-only — no visible 'Interrupt' label (#186)", () => {
+test("interrupt lives in the ⋮ action menu, not inline — opening it reveals the item (#494)", async () => {
+  const user = userEvent.setup();
   renderCompose();
-  const btn = screen.getByRole("button", { name: /ctrl-c/i });
-  // The icon-only invariant: aria-label + title are the affordance, no visible text.
-  expect(btn.textContent ?? "").toBe("");
-  expect(btn).toHaveAttribute("aria-label", expect.stringMatching(/interrupt/i));
-  expect(btn).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
+  // Not an inline chip anymore: nothing matches "interrupt" until the kebab menu is opened.
+  expect(screen.queryByRole("button", { name: /interrupt/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: /interrupt/i })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  const item = screen.getByRole("menuitem", { name: /interrupt/i });
+  expect(item).toHaveAttribute("aria-label", expect.stringMatching(/interrupt/i));
+  expect(item).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
+});
+
+test("the attach (file-upload) button is promoted to the row and triggers the file input (#494)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  const attach = screen.getByRole("button", { name: /attach file/i });
+  // Icon-only affordance in the row (no visible text), distinct from the kebab + Send.
+  expect(attach.textContent ?? "").toBe("");
+  // Clicking it opens the (hidden) native file picker — assert it forwards the click.
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const clicked = vi.spyOn(input, "click").mockImplementation(() => {});
+  await user.click(attach);
+  expect(clicked).toHaveBeenCalledOnce();
 });
 
 test("Send clears the line, bracketed-pastes the message, then submits a DEFERRED Enter (#180)", async () => {

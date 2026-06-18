@@ -1,4 +1,5 @@
-import { Pencil, Send, X } from "lucide-react";
+import { MoreVertical, Paperclip, Pencil, Send, Square, X } from "lucide-react";
+import { createPortal } from "react-dom";
 import {
   type ClipboardEvent as ReactClipboardEvent,
   forwardRef,
@@ -73,6 +74,15 @@ export const Compose = forwardRef<
   const [note, setNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Compose action menu (#494): the relocated interrupt / "stop" lives in a kebab (⋮) menu that
+  // opens DOWNWARD. It's rendered through a portal to <body> with position:fixed because the
+  // ancestor .terminal-pane has backdrop-filter + overflow:hidden — a containing block that would
+  // clip an in-tree fixed/absolute popover. Position is measured from the kebab on open + reflow.
+  const kebabRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   // Server-side draft (#477) bookkeeping. `dirty` flips true on the first user edit, so a
   // late GET /draft can't clobber text the user already typed; `loadToken` discards a load
@@ -167,6 +177,39 @@ export const Compose = forwardRef<
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
   };
+
+  // Place the (portalled) action menu just below the kebab, right-aligned to it.
+  const positionMenu = useCallback(() => {
+    const el = kebabRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMenuPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+  }, []);
+
+  // While the menu is open: position it, then wire outside-click / Escape / reflow dismissal —
+  // mirrors KeyBar's overflow popover (#234).
+  useEffect(() => {
+    if (!menuOpen) return;
+    positionMenu();
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (kebabRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [menuOpen, positionMenu]);
 
   const send = () => {
     const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
@@ -342,7 +385,7 @@ export const Compose = forwardRef<
       )}
 
       <div className={styles.row}>
-        <KeyBar sendInput={sendInput} onCopy={onCopy} onAttach={() => fileRef.current?.click()} />
+        <KeyBar sendInput={sendInput} onCopy={onCopy} />
         <span className={styles.spacer}>{note}</span>
         {open && (
           <button type="button" className={`${styles.send} shine`} title="Send + Enter" onClick={send}>
@@ -350,6 +393,31 @@ export const Compose = forwardRef<
             Send
           </button>
         )}
+        {/* File upload promoted to the right cluster, next to Send (#494). Renders whether the
+            box is open or collapsed so attach-on-collapsed (paste path into the PTY) still works. */}
+        <button
+          type="button"
+          className={styles.attach}
+          aria-label="Attach file"
+          title="Attach an image or file"
+          onClick={() => fileRef.current?.click()}
+        >
+          <Paperclip size={16} />
+        </button>
+        {/* Kebab (⋮) opens a downward menu holding the relocated interrupt / "stop" (#494).
+            Vertical dots distinguish it from KeyBar's horizontal "…" overflow popover. */}
+        <button
+          ref={kebabRef}
+          type="button"
+          className={styles.kebab}
+          aria-label="More actions"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title="More actions"
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          <MoreVertical size={16} />
+        </button>
         <button
           type="button"
           className={styles.toggle}
@@ -360,6 +428,34 @@ export const Compose = forwardRef<
           {open ? <X size={16} /> : <Pencil size={16} />}
         </button>
       </div>
+
+      {menuOpen &&
+        menuPos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className={styles.actionMenu}
+            role="menu"
+            style={{ top: menuPos.top, right: menuPos.right }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              aria-label="Interrupt (send Ctrl-C)"
+              title="Send Ctrl-C (interrupt)"
+              onClick={() => {
+                sendInput(KEYSEQ.ctrlc);
+                setMenuOpen(false);
+              }}
+            >
+              <span className={styles.actionMenuIcon}>
+                <Square size={14} fill="currentColor" />
+              </span>
+              <span>Interrupt · Ctrl-C</span>
+            </button>
+          </div>,
+          document.body,
+        )}
 
       <input
         ref={fileRef}

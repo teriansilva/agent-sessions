@@ -208,7 +208,6 @@ function Layout() {
             }}
           >
             <HelpCircle size={18} />
-            <span>Help</span>
           </button>
           <Link
             to="/pulse"
@@ -217,7 +216,6 @@ function Layout() {
             onClick={closeMobileDrawer}
           >
             <Activity size={18} />
-            <span>Pulse</span>
           </Link>
           <Link
             to="/overview"
@@ -226,7 +224,6 @@ function Layout() {
             onClick={closeMobileDrawer}
           >
             <Network size={18} />
-            <span>Overview</span>
           </Link>
           <Link
             to="/settings"
@@ -236,7 +233,6 @@ function Layout() {
             onClick={closeMobileDrawer}
           >
             <SettingsIcon size={18} />
-            <span>Settings</span>
           </Link>
         </div>
         <div className="sidebarBody">
