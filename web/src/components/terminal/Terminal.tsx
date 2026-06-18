@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ScrollText } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
@@ -913,7 +913,7 @@ export function Terminal({
         )}
         <button
           type="button"
-          className={styles.recapBtn}
+          className={styles.restartBtn}
           onClick={(e) => {
             setRecapTrigger(e.currentTarget);
             setRecapOpen(true);
@@ -922,7 +922,7 @@ export function Terminal({
           aria-label="Open session brief"
           aria-haspopup="dialog"
         >
-          <ScrollText size={13} aria-hidden="true" />
+          Recap
         </button>
         <button
           type="button"
