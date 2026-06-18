@@ -8,7 +8,9 @@ import { expect, test } from "@playwright/test";
 // Red-before/green-after: before this feature there is no "voice input" control, so the
 // getByRole(...).click() below has nothing to act on and the test fails on the prior code.
 
-// A SpeechRecognition stub that records start/stop and emits a two-step transcript on start.
+// A SpeechRecognition stub that records start/stop and emits an interim then a final transcript —
+// and then RE-FIRES the final several times, the way Chrome's continuous mode re-delivers a
+// finalized utterance (#487). The handler must be idempotent: the transcript lands once, not N×.
 const SPEECH_STUB = `
 window.__recog = { started: 0, stopped: 0 };
 window.SpeechRecognition = class {
@@ -19,10 +21,14 @@ window.SpeechRecognition = class {
   }
   start() {
     window.__recog.started++;
-    setTimeout(() => { if (this.onresult) this.onresult({ resultIndex: 0,
-      results: [{ 0: { transcript: "deploy the staging build" }, isFinal: false, length: 1 }] }); }, 30);
-    setTimeout(() => { if (this.onresult) this.onresult({ resultIndex: 0,
-      results: [{ 0: { transcript: "deploy the staging build and watch the rollout" }, isFinal: true, length: 1 }] }); }, 80);
+    const interim = { resultIndex: 0,
+      results: [{ 0: { transcript: "deploy the staging build" }, isFinal: false, length: 1 }] };
+    const finalEv = { resultIndex: 0,
+      results: [{ 0: { transcript: "deploy the staging build and watch the rollout" }, isFinal: true, length: 1 }] };
+    setTimeout(() => { if (this.onresult) this.onresult(interim); }, 30);
+    // Re-fire the SAME finalized result 5× — the duplication trigger (#487).
+    [80, 110, 140, 170, 200].forEach((t) =>
+      setTimeout(() => { if (this.onresult) this.onresult(finalEv); }, t));
   }
   stop() { window.__recog.stopped++; if (this.onend) this.onend(); }
   abort() { if (this.onend) this.onend(); }
@@ -61,6 +67,10 @@ test("push-to-talk streams the transcript into the compose box; tapping again st
   await mic.click();
   await expect(textarea).toHaveValue(/deploy the staging build/); // interim arrives first
   await expect(textarea).toHaveValue("deploy the staging build and watch the rollout"); // final
+  // The final result re-fires 5× (Chrome behaviour, #487). After they all land the transcript must
+  // appear exactly ONCE — never duplicated. Wait out the re-fires, then assert the exact value.
+  await page.waitForTimeout(250);
+  await expect(textarea).toHaveValue("deploy the staging build and watch the rollout");
   // While recording the control is the "stop" affordance and reports its pressed state.
   const stopMic = page.getByRole("button", { name: /stop voice input/i });
   await expect(stopMic).toHaveAttribute("aria-pressed", "true");

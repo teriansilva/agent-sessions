@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-// #494: the file-upload (paperclip) is promoted to the compose row next to Send; the interrupt /
-// "stop" (Ctrl-C) leaves the inline key row and lives in a ⋮ kebab menu that opens DOWNWARD; the
-// × collapse toggle stays. Real-browser test — box geometry, a portalled menu, and the PTY frame.
+// #487: the compose action bar is consolidated. Only the mic + Send stay inline; every other
+// action (nav keys, copy, attach, interrupt, and collapse) lives in a single "…" menu that opens
+// UPWARD from the bottom-anchored bar. Real-browser test: inline set, a portalled upward menu, and
+// the interrupt PTY frame.
 
 // WebSocket stub recording every frame the app sends (mirrors compose-empty-send.spec.ts).
 const RECORDING_WS = `
@@ -18,47 +19,43 @@ window.WebSocket = class {
 
 const CTRLC_FRAME = '"d":"\\u0003"'; // {"t":"i","d":"\x03"} — Ctrl-C, JSON-escaped
 
-test("paperclip is promoted next to Send; interrupt only in the ⋮ menu, opening downward (#494)", async ({
+test("only mic + Send stay inline; attach/interrupt/collapse live in the … menu, opening upward (#487)", async ({
   page,
 }) => {
   await page.addInitScript(RECORDING_WS);
-  await page.goto("/s/claude/compose-actions-494");
+  await page.goto("/s/claude/compose-actions-487");
   await expect(page.locator(".xterm")).toBeVisible();
   await page.waitForFunction(
     () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
 
-  // The box is collapsed by default on desktop; open it so Send renders.
+  // Open the box if collapsed (desktop default) so Send renders.
   const send = page.getByRole("button", { name: /^send/i });
   if (!(await send.isVisible())) {
     await page.getByRole("button", { name: /open compose box/i }).click();
   }
   await expect(send).toBeVisible();
 
-  // Attach (file upload) sits in the right cluster, to the RIGHT of Send.
-  const attach = page.getByRole("button", { name: /attach file/i });
-  await expect(attach).toBeVisible();
-  expect((await attach.boundingBox())!.x).toBeGreaterThan((await send.boundingBox())!.x);
-
-  // Interrupt is NOT an inline chip: nothing exposes "interrupt" until the kebab is opened.
+  // Attach + interrupt are NOT inline buttons anymore — only reachable from the menu.
+  await expect(page.getByRole("button", { name: /attach file/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /interrupt/i })).toHaveCount(0);
-  await expect(page.getByRole("menuitem", { name: /interrupt/i })).toHaveCount(0);
 
-  // Open the kebab → the menu opens BELOW it (downward), holding the interrupt item.
-  const kebab = page.getByRole("button", { name: /more actions/i });
-  const kebabBox = (await kebab.boundingBox())!;
-  await kebab.click();
-  const item = page.getByRole("menuitem", { name: /interrupt/i });
-  await expect(item).toBeVisible();
-  expect((await item.boundingBox())!.y).toBeGreaterThan(kebabBox.y + kebabBox.height - 2);
+  // Open the "…" menu → it opens ABOVE the trigger and holds the consolidated actions.
+  const more = page.getByRole("button", { name: /more actions/i });
+  const moreBox = (await more.boundingBox())!;
+  await more.click();
+  const attachItem = page.getByRole("menuitem", { name: /attach file/i });
+  await expect(attachItem).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /interrupt/i })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /collapse compose/i })).toBeVisible();
+  // Upward: every menu item sits above the trigger's top edge.
+  expect((await attachItem.boundingBox())!.y).toBeLessThan(moreBox.y);
 
-  // Activating it sends a Ctrl-C frame to the PTY.
-  await item.click();
+  // Interrupt still sends a Ctrl-C frame to the PTY, then the menu closes.
+  await page.getByRole("menuitem", { name: /interrupt/i }).click();
   await page.waitForFunction(
     (m) => ((window as unknown as { __sent?: string[] }).__sent ?? []).some((f) => f.includes(m)),
     CTRLC_FRAME,
   );
-
-  // …and the menu closes after the action.
-  await expect(item).toBeHidden();
+  await expect(page.getByRole("menuitem", { name: /interrupt/i })).toBeHidden();
 });

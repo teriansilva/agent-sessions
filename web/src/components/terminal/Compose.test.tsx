@@ -140,7 +140,9 @@ test("collapsing the compose box stops an active dictation (#483)", async () => 
   renderCompose();
   await user.click(screen.getByRole("button", { name: /start voice input/i }));
   expect(lastRecog!.start).toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: /collapse compose/i }));
+  // Collapse now lives in the "…" menu (#487): open it, then collapse.
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /collapse compose/i }));
   expect(lastRecog!.stop).toHaveBeenCalled();
 });
 
@@ -153,11 +155,46 @@ test("unmounting aborts an active dictation so no recognizer outlives the box (#
   expect(lastRecog!.abort).toHaveBeenCalled();
 });
 
-test("nav keys send their control sequence to the PTY", async () => {
+test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicated (#487)", async () => {
+  // The shipped bug: Chrome re-fires onresult repeatedly for the SAME finalized utterance, and the
+  // old handler did `finalRef += segment` each time → "said it once, typed 10×". The handler must
+  // be idempotent — rebuild from the engine's cumulative results list. Fire the same final 6×.
+  installSpeech();
   const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: "Up" }));
-  // Interrupt moved into the compose action (⋮) menu (#494): open it, then fire the item.
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  for (let i = 0; i < 6; i++) {
+    act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  }
+  expect(ta.value).toBe("deploy the staging build"); // once — never repeated
+});
+
+test("continuous dictation across multiple finalized results concatenates, not duplicates (#487)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  // Chrome's results list grows as utterances finalize; later events carry the full list. Each new
+  // result's transcript starts with its own spacing, so the rebuilt string reads naturally.
+  act(() => lastRecog!.emit([{ transcript: "first part", isFinal: true }]));
+  act(() => lastRecog!.emit([{ transcript: "first part", isFinal: true }])); // re-fire — no dup
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "first part", isFinal: true },
+      { transcript: " second part", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("first part second part");
+});
+
+test("nav keys + interrupt fire from the … menu (#487)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  // All nav/control actions now live in the single "…" menu; it closes after each pick.
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Up" }));
   await user.click(screen.getByRole("button", { name: /more actions/i }));
   await user.click(screen.getByRole("menuitem", { name: /ctrl-c/i }));
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.up);
@@ -176,16 +213,15 @@ test("interrupt lives in the ⋮ action menu, not inline — opening it reveals 
   expect(item).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
 });
 
-test("the attach (file-upload) button is promoted to the row and triggers the file input (#494)", async () => {
+test("attach (file-upload) lives in the … menu and triggers the file input (#487)", async () => {
   const user = userEvent.setup();
   renderCompose();
-  const attach = screen.getByRole("button", { name: /attach file/i });
-  // Icon-only affordance in the row (no visible text), distinct from the kebab + Send.
-  expect(attach.textContent ?? "").toBe("");
-  // Clicking it opens the (hidden) native file picker — assert it forwards the click.
+  // Not an inline row button anymore — only reachable via the "…" menu.
+  expect(screen.queryByRole("button", { name: /attach file/i })).not.toBeInTheDocument();
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const clicked = vi.spyOn(input, "click").mockImplementation(() => {});
-  await user.click(attach);
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /attach file/i }));
   expect(clicked).toHaveBeenCalledOnce();
 });
 
@@ -354,12 +390,16 @@ test("empty Send mid-reconnect surfaces the note and sends nothing else (#474)",
   expect(await screen.findByText(/reconnecting — not sent/i)).toBeInTheDocument();
 });
 
-test("the compose toggle hides/shows the text field", async () => {
+test("collapse (from the … menu) hides the field; the compose button shows it again (#487)", async () => {
   const user = userEvent.setup();
   renderCompose();
   expect(screen.getByRole("textbox")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: /collapse compose/i }));
+  // Collapse lives in the "…" menu now; the inline control becomes the "compose" (open) button.
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /collapse compose/i }));
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /open compose box/i }));
+  expect(screen.getByRole("textbox")).toBeInTheDocument();
 });
 
 test("pasting an image uploads it and adds an attachment, not text (#135)", async () => {
@@ -388,10 +428,11 @@ test("pasting plain text is left to the textarea (no upload)", async () => {
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("just text");
 });
 
-test("the copy button invokes onCopy", async () => {
+test("the copy item (in the … menu) invokes onCopy (#487)", async () => {
   const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: /copy/i }));
+  await user.click(screen.getByRole("button", { name: /more actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: /copy/i }));
   expect(onCopy).toHaveBeenCalledOnce();
 });
 
