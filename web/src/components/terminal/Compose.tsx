@@ -2,6 +2,8 @@ import { Pencil, Send, X } from "lucide-react";
 import {
   type ClipboardEvent as ReactClipboardEvent,
   forwardRef,
+  useCallback,
+  useEffect,
   useImperativeHandle,
   useRef,
   useState,
@@ -27,6 +29,15 @@ interface Attachment {
 const ENTER_DELAY_MS = 60;
 const ENTER_DELAY_AFTER_ATTACHMENT_MS = 120;
 
+/** Debounce for the server-side compose draft (#477): long enough that a burst of typing is
+ *  one PUT, short enough that a draft is safe within a beat of pausing. */
+const DRAFT_SAVE_DEBOUNCE_MS = 700;
+
+/** Stable signature of a draft's saved content (#477) — compared to skip redundant PUTs.
+ *  Only the durable upload path identifies an attachment (name is cosmetic). */
+const draftSignature = (text: string, attachments: Attachment[]): string =>
+  JSON.stringify({ t: text, a: attachments.map((x) => x.path) });
+
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
  *  Terminal forwarding a captured image paste, #157). */
 export interface ComposeHandle {
@@ -50,14 +61,105 @@ export const Compose = forwardRef<
     onCopy: () => void;
     /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
     defaultOpen?: boolean;
+    /** Engine-qualified session key (`<engine>:<id>`) this box composes for, used to
+     *  persist the draft server-side (#477). `null`/absent ⇒ drafts disabled (a not-yet-real
+     *  `new-…` placeholder session has no metadata key — out of scope). */
+    sessionId?: string | null;
   }
->(function Compose({ sendInput, connEpoch, onCopy, defaultOpen = true }, ref) {
+>(function Compose({ sendInput, connEpoch, onCopy, defaultOpen = true, sessionId = null }, ref) {
   const [open, setOpen] = useState(defaultOpen);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [note, setNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Server-side draft (#477) bookkeeping. `dirty` flips true on the first user edit, so a
+  // late GET /draft can't clobber text the user already typed; `loadToken` discards a load
+  // whose session changed under it; `lastSaved` skips redundant PUTs; `saveTimer` is the
+  // debounce; `latest`/`sid` feed the unmount flush without re-running it on every keystroke.
+  const dirtyRef = useRef(false);
+  const loadTokenRef = useRef(0);
+  const lastSavedRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<number | undefined>(undefined);
+  const latestRef = useRef({ text: "", attachments: [] as Attachment[] });
+  const sidRef = useRef<string | null>(sessionId);
+  latestRef.current = { text, attachments };
+  sidRef.current = sessionId;
+
+  // Persist the current draft now (cancelling any pending debounce). Empty text + no
+  // attachments clears it server-side. Skips a no-op when nothing changed since the last save.
+  const flushDraft = useCallback(
+    (t: string, a: Attachment[]) => {
+      if (!sessionId) return;
+      const sig = draftSignature(t, a);
+      if (sig === lastSavedRef.current) return;
+      lastSavedRef.current = sig;
+      window.clearTimeout(saveTimerRef.current);
+      void api.saveDraft(sessionId, { text: t, attachments: a }).catch(() => {
+        // fail-soft: a dropped save just means the draft isn't persisted this beat; the next
+        // edit (or the unmount flush) retries. Re-arm so a transient failure isn't sticky.
+        lastSavedRef.current = null;
+      });
+    },
+    [sessionId],
+  );
+
+  // Clear the draft after a successful send: cancel any pending debounce and PUT an empty
+  // draft so a trailing flush can't resurrect what the user just sent (Hermes).
+  const clearDraft = () => {
+    window.clearTimeout(saveTimerRef.current);
+    dirtyRef.current = false;
+    flushDraft("", []);
+  };
+
+  // Load the saved draft when the session this box composes for changes. The stale-load
+  // guard (token + dirty) ensures a slow GET never overwrites newer local input.
+  useEffect(() => {
+    if (!sessionId) return;
+    const token = ++loadTokenRef.current;
+    dirtyRef.current = false;
+    lastSavedRef.current = null;
+    api
+      .getDraft(sessionId)
+      .then((d) => {
+        if (loadTokenRef.current !== token || dirtyRef.current) return; // superseded / user typed
+        const atts = d.attachments ?? [];
+        lastSavedRef.current = draftSignature(d.text, atts);
+        if (d.text || atts.length) {
+          setText(d.text);
+          setAttachments(atts);
+          setOpen(true); // surface the restored draft even if collapsed by default (desktop)
+        }
+      })
+      .catch(() => {
+        /* fail-soft: no draft restore (offline / older server) */
+      });
+  }, [sessionId]);
+
+  // Debounced auto-save on user edits. Gated on `dirty` so the mount-load's setText doesn't
+  // echo straight back as a PUT; the signature check skips saves that change nothing.
+  useEffect(() => {
+    if (!sessionId || !dirtyRef.current) return;
+    const sig = draftSignature(text, attachments);
+    if (sig === lastSavedRef.current) return;
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => flushDraft(text, attachments), DRAFT_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(saveTimerRef.current);
+  }, [text, attachments, sessionId, flushDraft]);
+
+  // Flush a pending draft on unmount (Terminal remounts on session switch) so the last edits
+  // aren't lost. `[]` deps → cleanup runs only on real unmount, reading the latest via refs.
+  useEffect(() => {
+    return () => {
+      if (dirtyRef.current && sidRef.current) {
+        const { text: t, attachments: a } = latestRef.current;
+        if (draftSignature(t, a) !== lastSavedRef.current && sidRef.current) {
+          void api.saveDraft(sidRef.current, { text: t, attachments: a }).catch(() => {});
+        }
+      }
+    };
+  }, []);
 
   const grow = () => {
     const ta = taRef.current;
@@ -91,6 +193,11 @@ export const Compose = forwardRef<
     const abortNotDelivered = () => {
       setText(savedText);
       setAttachments(savedAttachments);
+      // #477: the turn wasn't submitted — guarantee the restored content is persisted (it may not
+      // have been debounce-saved yet, and a later clear must not win), so a reload / session switch
+      // keeps the draft. flushDraft is a no-op when the server already holds this exact content.
+      dirtyRef.current = true;
+      flushDraft(savedText, savedAttachments);
       setNote("reconnecting — not sent, try again");
       setTimeout(() => setNote(""), 3000);
     };
@@ -128,11 +235,21 @@ export const Compose = forwardRef<
           return;
         }
       }
-      sendInput(KEYSEQ.enter);
+      // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
+      // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
+      // than clearing it. Previously the composer + server draft were cleared synchronously before
+      // this point, so a dropped final Enter lost both the message and the draft (Hermes #480).
+      if (!sendInput(KEYSEQ.enter)) {
+        abortNotDelivered();
+        return;
+      }
+      // Delivered: clear the composer AND the server draft (a just-sent turn must not linger as a
+      // draft). clearDraft cancels any pending debounce so a trailing flush can't resurrect it.
+      setText("");
+      setAttachments([]);
+      clearDraft();
+      if (taRef.current) taRef.current.style.height = "auto";
     }, enterDelay);
-    setText("");
-    setAttachments([]);
-    if (taRef.current) taRef.current.style.height = "auto";
   };
 
   const uploadFiles = async (files: File[], forceAttachment = false) => {
@@ -142,6 +259,7 @@ export const Compose = forwardRef<
       for (const file of files) {
         const up = await api.upload(file);
         if (open || forceAttachment) {
+          dirtyRef.current = true; // #477: an attached image is draftable content
           setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
         } else {
           sendInput(bracketedPaste(up.path) + " ");
@@ -190,7 +308,10 @@ export const Compose = forwardRef<
                   <button
                     type="button"
                     aria-label="Remove attachment"
-                    onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                    onClick={() => {
+                      dirtyRef.current = true; // #477: removing a pill edits the draft
+                      setAttachments((prev) => prev.filter((_, j) => j !== i));
+                    }}
                   >
                     ×
                   </button>
@@ -205,6 +326,7 @@ export const Compose = forwardRef<
             value={text}
             placeholder="Type here — Enter sends, Shift+Enter = newline."
             onChange={(e) => {
+              dirtyRef.current = true; // #477: user edit → eligible for draft auto-save
               setText(e.target.value);
               grow();
             }}

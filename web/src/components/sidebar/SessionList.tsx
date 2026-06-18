@@ -248,6 +248,24 @@ function Row({
     },
   );
 
+  // #477: one leading status dot carries the whole row state — colour is the only signal,
+  // no extra glyph or row width. Precedence (highest first): intervention (orange, never
+  // masked by a draft) > working (green) > unsent draft (blue) > idle (grey). Every non-idle
+  // state keeps a role + accessible name, so meaning is never colour-only (design §8).
+  const dot =
+    s.intervention_required && !s.review_excluded
+      ? {
+          variant: "attention",
+          role: "img" as const,
+          label: `intervention required: ${s.intervention_reason || "see session"}`,
+          title: s.intervention_reason || "Intervention required",
+        }
+      : s.working
+        ? { variant: "up", role: "status" as const, label: "agent working", title: "agent working" }
+        : s.has_draft
+          ? { variant: "draft", role: "img" as const, label: "unsent draft", title: "Unsent draft" }
+          : { variant: "idle", role: undefined, label: undefined, title: "idle" };
+
   return (
     <li className={styles.rowWrap}>
       {moving && (
@@ -263,30 +281,17 @@ function Row({
         className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
         onClick={onNavigate}
       >
-        {/* Leading status LED (#211 4b): a live row pulses green and carries the meaningful
-            "agent working" status for screen readers; an idle row shows a dim, decorative dot.
-            Reuses the global .hud-led primitive so the indicator matches the topbar/classbar. */}
-        {s.working ? (
-          <span
-            className={`${styles.led} hud-led up`}
-            role="status"
-            aria-label="agent working"
-            title="agent working"
-          />
-        ) : (
-          <span className={`${styles.led} hud-led idle`} aria-hidden="true" title="idle" />
-        )}
-        {/* Amber ⚠/“!” badge (#356): advisory “needs a human”, reason as tooltip. */}
-        {s.intervention_required && !s.review_excluded && (
-          <span
-            className={styles.alertBadge}
-            role="img"
-            aria-label={`intervention required: ${s.intervention_reason || "see session"}`}
-            title={s.intervention_reason || "Intervention required"}
-          >
-            !
-          </span>
-        )}
+        {/* Single leading status dot (#477): colour-coded by precedence (intervention >
+            working > draft > idle), reusing the global .hud-led primitive so it matches the
+            topbar/classbar. This replaces the old separate green/idle LED + amber "!" badge
+            (#211 4b / #356) — intervention now wins the dot's colour, never hidden by a draft. */}
+        <span
+          className={`${styles.led} hud-led ${dot.variant}`}
+          role={dot.role}
+          aria-label={dot.label}
+          aria-hidden={dot.variant === "idle" ? true : undefined}
+          title={dot.title}
+        />
         <div className={styles.body}>
           <div className={styles.title}>{s.title || "(untitled)"}</div>
           {/* One-line AI summary (#356) — or the exclusion marker; stale-age hint when

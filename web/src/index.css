@@ -25,6 +25,9 @@
   --status-degraded: #f59e0b;
   --status-down: #c02020;
   --status-unknown: #6f747d;
+  /* Unsent compose draft (#477) — a HUD blue, kept distinct from the green/amber/red status
+     hues and the amber brand accent. Theme-shared like the other status tokens. */
+  --status-draft: #3b9eff;
   --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
     "Roboto Mono", Menlo, Consolas, monospace;
   /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */

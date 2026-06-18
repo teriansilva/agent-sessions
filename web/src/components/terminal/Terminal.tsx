@@ -979,12 +979,15 @@ export function Terminal({
       </div>
       {/* Action/compose bar everywhere; default state per the compose pref (#254), falling back
           to the device heuristic — expanded on touch, collapsed-to-the-bar on desktop. */}
+      {/* #477: persist the compose draft server-side per session. A not-yet-real
+          `new-…` placeholder has no metadata key (out of scope) → drafts disabled. */}
       <Compose
         ref={composeRef}
         sendInput={sendInput}
         connEpoch={connEpoch}
         onCopy={handleCopy}
         defaultOpen={composeDefaultOpen}
+        sessionId={id.startsWith("new-") ? null : `${engine}:${id}`}
       />
     </div>
   );

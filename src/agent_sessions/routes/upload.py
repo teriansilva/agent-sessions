@@ -13,6 +13,15 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 
+def uploads_dir() -> Path:
+    """The shared dir every upload lands in (``~/.agent-sessions/uploads/``).
+
+    Exposed so other routes (e.g. compose-draft persistence, #477) can validate that a
+    stored attachment path lives inside this namespace rather than re-deriving the path.
+    """
+    return Path.home() / ".agent-sessions" / "uploads"
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.post("/api/upload")
     async def upload_context(
@@ -39,7 +48,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # Sanitise to a bare, safe basename — no path separators, no traversal.
         raw_name = Path(file.filename or "upload").name
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:80] or "upload"
-        dest_dir = Path.home() / ".agent-sessions" / "uploads"
+        dest_dir = uploads_dir()
         dest_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         dest = dest_dir / f"{stamp}-{safe}"

@@ -491,6 +491,136 @@ def test_favorite_unknown_engine_404(auth_cfg, fake_jsonl):
     assert r.status_code == 404
 
 
+# ---- compose drafts (#477) ----------------------------------------------------
+
+_DRAFT_SID = "claude:11111111-1111-1111-1111-111111111111"
+
+
+def _upload_one(c, hdr) -> dict:
+    """Upload a tiny file through the real route → a valid in-namespace attachment path."""
+    r = c.post(
+        "/api/upload",
+        files={"file": ("shot.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_draft_save_get_clear_and_has_draft(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+
+    # No draft initially.
+    r = c.get(f"/api/sessions/{_DRAFT_SID}/draft")
+    assert r.status_code == 200
+    assert r.json()["text"] == "" and r.json()["attachments"] == []
+
+    up = _upload_one(c, hdr)
+    body = {"text": "work in progress", "attachments": [{"name": up["name"], "path": up["path"]}]}
+    r = c.put(f"/api/sessions/{_DRAFT_SID}/draft", json=body, headers=hdr)
+    assert r.status_code == 200
+    assert r.json() == {"id": _DRAFT_SID, "has_draft": True}
+
+    got = c.get(f"/api/sessions/{_DRAFT_SID}/draft").json()
+    assert got["text"] == "work in progress"
+    assert len(got["attachments"]) == 1
+    assert got["attachments"][0]["name"] == up["name"]
+    assert got["attachments"][0]["path"].endswith("shot.png")
+    assert got["updated_at"] is not None
+
+    # The cheap has_draft flag surfaces on the session row.
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["id"] == _DRAFT_SID)["has_draft"] is True
+
+    # Empty text + no attachments clears it.
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft", json={"text": "", "attachments": []}, headers=hdr
+    )
+    assert r.status_code == 200 and r.json() == {"id": _DRAFT_SID, "has_draft": False}
+    assert c.get(f"/api/sessions/{_DRAFT_SID}/draft").json()["text"] == ""
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["id"] == _DRAFT_SID)["has_draft"] is False
+
+
+def test_draft_put_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft",
+        json={"text": "x", "attachments": []},
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_draft_get_requires_login(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)  # no login
+    r = c.get(f"/api/sessions/{_DRAFT_SID}/draft")
+    assert r.status_code in (401, 403)
+
+
+def test_draft_unknown_engine_404(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.put(
+        "/api/sessions/nosuchengine:whatever/draft",
+        json={"text": "x", "attachments": []},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 404
+
+
+def test_draft_rejects_out_of_namespace_attachments(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+
+    # Absolute path outside the upload namespace.
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft",
+        json={"text": "x", "attachments": [{"name": "p", "path": "/etc/passwd"}]},
+        headers=hdr,
+    )
+    assert r.status_code == 422
+
+    # Parent-traversal that escapes the namespace.
+    trav = str(Path(fake_jsonl) / ".agent-sessions" / "uploads" / ".." / ".." / "secret")
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft",
+        json={"text": "x", "attachments": [{"name": "p", "path": trav}]},
+        headers=hdr,
+    )
+    assert r.status_code == 422
+
+    # Nothing persisted by the rejected writes.
+    assert c.get(f"/api/sessions/{_DRAFT_SID}/draft").json()["text"] == ""
+
+
+def test_draft_rejects_too_many_attachments(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    atts = [{"name": "a", "path": "/x/a"} for _ in range(51)]
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft", json={"text": "x", "attachments": atts}, headers=hdr
+    )
+    assert r.status_code == 422
+
+
+def test_draft_rejects_oversized_text(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.put(
+        f"/api/sessions/{_DRAFT_SID}/draft",
+        json={"text": "x" * 100_001, "attachments": []},
+        headers=hdr,
+    )
+    assert r.status_code == 422
+
+
 # ---- archive / unarchive ------------------------------------------------------
 
 

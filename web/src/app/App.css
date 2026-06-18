@@ -440,6 +440,11 @@ body.hud-static-grid {
 .hud-led.up { background: var(--status-up); box-shadow: 0 0 7px var(--status-up); }
 .hud-led.down { background: var(--status-down); box-shadow: 0 0 7px var(--status-down); }
 .hud-led.idle { background: var(--text-3); box-shadow: none; animation: none; }
+/* Unsent compose draft (#477): a calm, STEADY blue dot (passive state — it doesn't pulse). */
+.hud-led.draft { background: var(--status-draft); box-shadow: 0 0 7px var(--status-draft); animation: none; }
+/* Needs intervention (#477): an orange dot that keeps the base blink — a glowing "look here"
+   that replaces the old amber "!" badge. Honors prefers-reduced-motion via the base rule below. */
+.hud-led.attention { background: var(--status-degraded); box-shadow: 0 0 9px var(--status-degraded); }
 @keyframes hud-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.32; } }
 
 /* Button glitch (#211) — replaces the old shine sweep (per the user's request). Cosmetic

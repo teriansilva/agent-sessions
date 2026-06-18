@@ -84,6 +84,20 @@ class SessionMeta:
     # only when the current fingerprint differs.
     review_fingerprint: str = ""
     review_excluded: bool = False
+    # Server-side compose draft (#477): the unsent text + pasted-image attachment pills
+    # for this session's compose box, so a draft survives refresh / session switch and is
+    # available cross-device (one server, one sidecar). None = no draft. Shape when set:
+    # ``{"text": str, "attachments": [{"name","path"}], "updated_at": float}``. Only the
+    # server-issued upload PATHS are stored — never image blobs (the route validates that
+    # each path lives inside the upload namespace).
+    draft: dict | None = None
+
+
+def has_draft(meta: SessionMeta) -> bool:
+    """True when this session carries a non-empty compose draft (#477) — drives the blue
+    status-dot in the sidebar. Empty text AND no attachments ⇒ no draft."""
+    d = meta.draft
+    return bool(isinstance(d, dict) and (str(d.get("text", "")).strip() or d.get("attachments")))
 
 
 def _is_meaningful(candidate: str) -> bool:
@@ -191,6 +205,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             ),
             review_fingerprint=str(val.get("review_fingerprint", "") or ""),
             review_excluded=bool(val.get("review_excluded", False)),
+            draft=(val["draft"] if isinstance(val.get("draft"), dict) else None),
         )
     return out
 
@@ -222,6 +237,8 @@ def patch(
         "reviewed_at",
         "review_fingerprint",
         "review_excluded",
+        # Compose draft (#477) — written by the draft route; a dict or None.
+        "draft",
     }
     bad = set(fields) - allowed
     if bad:
@@ -261,6 +278,7 @@ def patch(
             "reviewed_at": existing.get("reviewed_at"),
             "review_fingerprint": existing.get("review_fingerprint", ""),
             "review_excluded": existing.get("review_excluded", False),
+            "draft": existing.get("draft"),
         }
         meta_dict.update(fields)
         data[key] = meta_dict
@@ -354,6 +372,7 @@ def set_alias(placeholder_key: str, real_key: str) -> None:
 
 __all__ = [
     "SessionMeta",
+    "has_draft",
     "display_title",
     "load",
     "patch",

@@ -37,6 +37,25 @@ export interface Session {
   reviewed_at?: number | null;
   /** Per-session opt-out from AI review. */
   review_excluded?: boolean;
+  /** #477: the session's compose box has an unsent draft (text and/or pasted images) →
+   *  the blue status dot. The full draft body is fetched separately via api.getDraft. */
+  has_draft?: boolean;
+}
+
+/** One pasted/uploaded attachment carried by a compose draft (#477) — the server-issued
+ *  upload path + display name. No image blob ever crosses the wire here. */
+export interface DraftAttachment {
+  name: string;
+  path: string;
+}
+
+/** GET /api/sessions/{id}/draft (#477): the saved compose draft for a session, or an empty
+ *  draft (`text: ""`, `attachments: []`, `updated_at: null`) when there is none. */
+export interface SessionDraft {
+  id: string;
+  text: string;
+  attachments: DraftAttachment[];
+  updated_at: number | null;
 }
 
 /** AI session review config (#356) — the PUBLIC view from /api/config. The API key is

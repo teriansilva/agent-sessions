@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -30,10 +31,57 @@ from .. import (
     sessionlock,
     webterm,
 )
+from . import upload
 
 # How long after the last byte from the agent we still call the session "working" (#156).
 # Picked to feel responsive without flapping between every keystroke of a streaming reply.
 _WORKING_WINDOW_S = 10.0
+
+# Compose-draft (#477) bounds: keep a server-side draft sane and the sidecar small. A draft
+# is unsent prompt text + already-uploaded image attachment paths — never image blobs.
+_DRAFT_TEXT_MAX = 100_000
+_DRAFT_ATTACH_MAX = 50
+
+
+def _clean_draft_payload(payload: object) -> dict | None:
+    """Validate + normalize a PUT /draft body into the stored shape, or None to clear (#477).
+
+    Stricter than shape-only (Hermes): each attachment ``path`` must resolve INSIDE the
+    upload namespace (``~/.agent-sessions/uploads/``) — absolute-outside paths and ``..``
+    traversal are rejected, so a persisted draft can never become a path-confusion surface.
+    Returns None when the draft is empty (no non-whitespace text and no attachments), which
+    the caller stores to clear any existing draft.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="expected a JSON object")
+    text = payload.get("text", "")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=422, detail="text must be a string")
+    if len(text) > _DRAFT_TEXT_MAX:
+        raise HTTPException(status_code=422, detail="draft text too large")
+    raw = payload.get("attachments", []) or []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="attachments must be a list")
+    if len(raw) > _DRAFT_ATTACH_MAX:
+        raise HTTPException(status_code=422, detail="too many attachments")
+    updir = upload.uploads_dir().resolve()
+    attachments: list[dict] = []
+    for a in raw:
+        if not isinstance(a, dict):
+            raise HTTPException(status_code=422, detail="attachment must be an object")
+        name, path = a.get("name", ""), a.get("path", "")
+        if not isinstance(name, str) or not isinstance(path, str) or not path:
+            raise HTTPException(status_code=422, detail="attachment name/path must be strings")
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, ValueError, RuntimeError):
+            raise HTTPException(status_code=422, detail="invalid attachment path") from None
+        if updir not in resolved.parents:
+            raise HTTPException(status_code=422, detail="attachment outside upload namespace")
+        attachments.append({"name": name[:200], "path": str(resolved)})
+    if not text.strip() and not attachments:
+        return None
+    return {"text": text, "attachments": attachments, "updated_at": time.time()}
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -84,6 +132,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "intervention_reason": m.intervention_reason,
             "reviewed_at": m.reviewed_at,
             "review_excluded": m.review_excluded,
+            # Cheap "has an unsent compose draft" flag (#477) → the blue status-dot. The
+            # full draft body is fetched per-session via GET /api/sessions/{id}/draft so
+            # the list payload stays lean.
+            "has_draft": metadata.has_draft(m),
             # Effective archive state: the sidecar override wins when set (lets a
             # natively-archived opencode/codex row be unarchived), else the engine's
             # native state (claude's JSONL tree / opencode.db time_archived).
@@ -629,6 +681,50 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         sid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
         return _set_favorite(sid, False)
+
+    @app.get("/api/sessions/{sid}/draft")
+    async def get_session_draft(sid: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        # The full compose draft (#477) for restoring the box when a session is reopened —
+        # text + already-uploaded attachment pills. Sidecar-only, engine-agnostic; resolve_key
+        # mirrors the list read precedence (logical → physical) so a reconciled opencode
+        # session reads the same draft its row shows. A bare UUID resolves via canonical_key.
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        m = metadata.get(metadata.resolve_key(key))
+        d = m.draft if isinstance(m.draft, dict) else {}
+        return JSONResponse(
+            {
+                "id": key,
+                "text": str(d.get("text", "")),
+                "attachments": d.get("attachments") or [],
+                "updated_at": d.get("updated_at"),
+            }
+        )
+
+    @app.put("/api/sessions/{sid}/draft")
+    async def put_session_draft(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Save (or clear) the compose draft (#477). Same write discipline as favorite/project:
+        # a pure sidecar metadata write through resolve_key — opencode.db / codex stores stay
+        # read-only. Empty text + no attachments ⇒ draft=None (cleared). Attachment paths are
+        # validated to live inside the upload namespace by _clean_draft_payload.
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        draft = _clean_draft_payload(payload)
+        m = metadata.patch(metadata.resolve_key(key), draft=draft)
+        return JSONResponse({"id": key, "has_draft": metadata.has_draft(m)})
 
     @app.post("/api/sessions/{sid}/archive")
     async def archive_session(

@@ -8,10 +8,12 @@ import type {
   Folder,
   FsDir,
   HistoryPage,
+  DraftAttachment,
   ProjectArchiveReport,
   ProjectEntity,
   PulseDepth,
   PulseOverview,
+  SessionDraft,
   SessionsPage,
   SessionsQuery,
   SystemInfo,
@@ -102,7 +104,7 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
  *  ApiError (#361): folder-adoption conflicts (409) carry an explanation the Projects
  *  manager shows inline — the generic "PATCH … → 409" would tell the user nothing. */
 async function mutateJson<T>(
-  method: "POST" | "PATCH" | "DELETE",
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -127,6 +129,8 @@ async function mutateJson<T>(
 
 const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
   mutateJson<T>("PATCH", path, body);
+
+const putJson = <T>(path: string, body?: unknown): Promise<T> => mutateJson<T>("PUT", path, body);
 
 const deleteJson = <T>(path: string): Promise<T> => mutateJson<T>("DELETE", path);
 
@@ -273,6 +277,13 @@ export const api = {
     postJson<{ id: string; sticky: boolean }>(`/api/sessions/${enc(id)}/favorite`),
   unfavorite: (id: string) =>
     postJson<{ id: string; sticky: boolean }>(`/api/sessions/${enc(id)}/unfavorite`),
+  /** Compose draft (#477): fetch the saved draft (text + attachment pills) to restore the
+   *  box when a session is reopened. Returns an empty draft when there is none. */
+  getDraft: (id: string) => getJson<SessionDraft>(`/api/sessions/${enc(id)}/draft`),
+  /** Save (or clear) the compose draft for a session (#477). Empty text + no attachments
+   *  clears it. CSRF-guarded sidecar write; returns whether a draft now exists (the dot). */
+  saveDraft: (id: string, draft: { text: string; attachments: DraftAttachment[] }) =>
+    putJson<{ id: string; has_draft: boolean }>(`/api/sessions/${enc(id)}/draft`, draft),
   archive: (id: string) =>
     postJson<{ id: string; archived: boolean }>(`/api/sessions/${enc(id)}/archive`),
   unarchive: (id: string) =>

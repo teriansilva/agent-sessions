@@ -6,7 +6,15 @@ import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { Compose, type ComposeHandle } from "./Compose";
 
-vi.mock("../../lib/api", () => ({ api: { upload: vi.fn() } }));
+vi.mock("../../lib/api", () => ({
+  api: {
+    upload: vi.fn(),
+    // #477: Compose loads/saves its draft when given a sessionId. Default to an empty draft so the
+    // non-draft tests (rendered without a sessionId) are unaffected; the draft test asserts on these.
+    getDraft: vi.fn(() => Promise.resolve({ id: "", text: "", attachments: [], updated_at: null })),
+    saveDraft: vi.fn(() => Promise.resolve({ id: "", has_draft: false })),
+  },
+}));
 
 let sendInput: ReturnType<typeof vi.fn>;
 let onCopy: ReturnType<typeof vi.fn>;
@@ -110,6 +118,25 @@ test("a SECOND reconnect during the deferred retry still never submits an empty 
   epoch = 2; // reconnect before the deferred Enter → re-paste path, which then fails to deliver
   await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("hello world")); // text restored
   expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
+});
+
+test("a content send whose deferred Enter never delivers preserves + re-saves the draft (#477)", async () => {
+  // Hermes #480: the composer + server draft must NOT be cleared until the deferred Enter is
+  // confirmed delivered. If that final frame drops, the turn was never submitted — keep the text
+  // AND re-persist the draft so a reload / session switch doesn't silently lose it.
+  const user = userEvent.setup();
+  sendInput = vi.fn((d) => d !== KEYSEQ.enter); // clear + paste deliver; the bare Enter does NOT
+  render(
+    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} onCopy={onCopy} />,
+  );
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "keep me");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter)); // deferred Enter attempted
+  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("keep me")); // composer kept
+  const saved = vi.mocked(api.saveDraft).mock.calls.map((c) => c[1]);
+  expect(saved.some((d) => d.text === "keep me")).toBe(true); // restored content persisted
+  expect(saved.some((d) => d.text === "" && d.attachments.length === 0)).toBe(false); // never cleared
 });
 
 test("Enter sends, Shift+Enter inserts a newline", async () => {

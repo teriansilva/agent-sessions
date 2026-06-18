@@ -118,6 +118,56 @@ def test_non_uuid_keys_are_left_alone(tmp_home):
     assert not _meta_path(tmp_home).with_name("metadata.json.bak").exists()
 
 
+# ---- compose drafts (#477) ----------------------------------------------------
+
+
+def test_draft_round_trips(tmp_home):
+    d = {"text": "hello", "attachments": [{"name": "a.png", "path": "/x/a.png"}], "updated_at": 1.0}
+    m = metadata.patch("claude:x", draft=d)
+    assert m.draft == d
+    again = metadata.load()["claude:x"]
+    assert again.draft == d
+    assert metadata.has_draft(again) is True
+
+
+def test_draft_none_clears(tmp_home):
+    metadata.patch("claude:x", draft={"text": "hi", "attachments": [], "updated_at": 1.0})
+    metadata.patch("claude:x", draft=None)
+    again = metadata.load()["claude:x"]
+    assert again.draft is None
+    assert metadata.has_draft(again) is False
+
+
+def test_has_draft_false_for_whitespace_only(tmp_home):
+    m = metadata.patch("claude:x", draft={"text": "   ", "attachments": [], "updated_at": 1.0})
+    assert metadata.has_draft(m) is False
+
+
+def test_has_draft_true_for_attachments_only(tmp_home):
+    m = metadata.patch(
+        "claude:x",
+        draft={"text": "", "attachments": [{"name": "a", "path": "/p"}], "updated_at": 1.0},
+    )
+    assert metadata.has_draft(m) is True
+
+
+def test_draft_survives_other_field_patch(tmp_home):
+    d = {"text": "keep", "attachments": [], "updated_at": 1.0}
+    metadata.patch("claude:x", draft=d)
+    metadata.patch("claude:x", title="renamed")  # an unrelated write must not drop the draft
+    again = metadata.load()["claude:x"]
+    assert again.title == "renamed"
+    assert again.draft == d
+
+
+def test_load_ignores_non_dict_draft(tmp_home):
+    p = _meta_path(tmp_home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"claude:x": {"draft": "oops"}}))
+    assert metadata.load()["claude:x"].draft is None
+    assert metadata.has_draft(metadata.load()["claude:x"]) is False
+
+
 # ---- display_title meaningfulness rule (#284) --------------------------------
 #
 # The single shared helper is engine-agnostic: every provider (Claude scanner,

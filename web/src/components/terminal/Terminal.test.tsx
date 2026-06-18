@@ -10,7 +10,14 @@ import { Terminal } from "./Terminal";
 import styles from "./Terminal.module.css";
 
 vi.mock("../../lib/api", () => ({
-  api: { upload: vi.fn(), restart: vi.fn() },
+  // getDraft/saveDraft (#477): Compose loads its draft on mount now. Resolve to an empty
+  // draft so the load is a no-op and these Terminal tests stay about the socket/terminal.
+  api: {
+    upload: vi.fn(),
+    restart: vi.fn(),
+    getDraft: vi.fn().mockResolvedValue({ id: "", text: "", attachments: [], updated_at: null }),
+    saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
+  },
   ApiError: class ApiError extends Error {
     status: number;
     constructor(status: number, message: string) {
