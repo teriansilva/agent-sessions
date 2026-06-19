@@ -2,9 +2,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, ScrollText } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../../lib/api";
+import { api } from "../../lib/api";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
@@ -115,13 +115,10 @@ export function Terminal({
   // taken over mid-session. null = we're the owner / not gated. The PTY stream keeps flowing
   // either way (#434): a secondary is read-only, never blank.
   const [holder, setHolder] = useState<TermGateHolder | null>(null);
-  // Bumped to tear down + reopen the socket. `takeoverEpoch` is the Take-over path (#184) and
-  // `reconnectEpoch` is a plain reattach (e.g. after a #331 restart). Whether the fresh connect
+  // Bumped to tear down + reopen the socket via the Take-over path (#184). Whether the fresh connect
   // demands ?force=1 is decided ONLY by `forceNextConnectRef` (set by takeover, consumed by the
-  // effect) — NOT by which epoch moved — so a restart reattach never silently force-takes-over a
-  // session another tab may have claimed during the restart window (Hermes #332).
+  // effect) — NOT by which epoch moved.
   const [takeoverEpoch, setTakeoverEpoch] = useState(0);
-  const [reconnectEpoch, setReconnectEpoch] = useState(0);
   const forceNextConnectRef = useRef(false);
   // Keep the latest reconcile callback in a ref so the {t:"id"} handler always calls the
   // current one WITHOUT the socket effect depending on it (a changing callback identity
@@ -787,7 +784,7 @@ export function Terminal({
     // `fresh` is intentionally excluded — it's read once via freshRef so self-convergence
     // (which clears route state) can't tear down + relaunch the live terminal. See freshRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, id, takeoverEpoch, reconnectEpoch]);
+  }, [engine, id, takeoverEpoch]);
 
   // Re-theme the live terminal on theme/accent change WITHOUT tearing it down. Colours apply
   // immediately; if the font/size changed, fit() recomputes the grid and xterm's
@@ -824,51 +821,25 @@ export function Terminal({
   const repaint = useCallback(() => {
     jiggleRef.current();
   }, []);
+  // Auto-repaint when the tab returns to the foreground (#503): a backgrounded/minimized tab can
+  // come back to a stale or blank frame (mobile browsers freeze the canvas, and a winch-repaint TUI
+  // that cleared its viewport stays quiet). On becoming visible again — owner only — fire the same
+  // non-destructive repaint nudge as the button. It is a safe no-op while disconnected (the stale
+  // jiggleRef is a no-op until a fresh socket republishes it), so a reconnect-on-return still works.
+  useEffect(() => {
+    if (role !== "owner") return;
+    const onVis = () => {
+      if (document.visibilityState === "visible") repaint();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [role, repaint]);
   const takeover = useCallback(() => {
     // Arm the one-shot force flag, then bump the epoch: the effect reconnects and the fresh
     // connect carries ?force=1, demoting the prior owner on the server (#184).
     forceNextConnectRef.current = true;
     setTakeoverEpoch((n) => n + 1);
   }, []);
-  // Manual session restart (#331): recover a WEDGED session (agent alive but no longer painting).
-  // POST kills the live master; the next attach finds no master and resumes from disk — so once it
-  // returns we bump the reconnect epoch to reattach (which relaunches via the engine's resume argv).
-  // The conversation is preserved on disk. A different active viewer 409s; offer a forced retry.
-  const [restarting, setRestarting] = useState(false);
-  const restart = useCallback(async () => {
-    if (restarting) return;
-    if (
-      !window.confirm(
-        "Restart this session? The agent process is killed and the conversation is resumed " +
-          "from disk. Use this when the terminal is stuck/blank and won't respond.",
-      )
-    )
-      return;
-    const sid = `${engine}:${id}`;
-    const opts = { fp: getBrowserFp(), tabId: getTabId() };
-    setRestarting(true);
-    try {
-      try {
-        await api.restart(sid, opts);
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 409) {
-          if (!window.confirm("Another viewer is active on this session. Restart anyway?")) return;
-          await api.restart(sid, { ...opts, force: true });
-        } else {
-          throw e;
-        }
-      }
-      // Reattach (NOT a takeover): the master is gone, so a plain fresh connect relaunches +
-      // resumes. forceNextConnectRef stays false → no ?force=1, so if another tab claimed the
-      // session during the restart window we don't silently demote it (Hermes #332).
-      setReconnectEpoch((n) => n + 1);
-    } catch {
-      // Best-effort: leave the terminal as-is so the user can retry (a transient failure shows no
-      // change rather than a broken state).
-    } finally {
-      setRestarting(false);
-    }
-  }, [engine, id, restarting]);
   return (
     <div className={styles.wrap}>
       {/* Panel header (#211 4c): mono channel id + a persistent STATUS // LIVE readout with a
@@ -910,17 +881,8 @@ export function Terminal({
           aria-label="Open session brief"
           aria-haspopup="dialog"
         >
+          <ScrollText size={13} aria-hidden="true" />
           Recap
-        </button>
-        <button
-          type="button"
-          className={styles.restartBtn}
-          onClick={restart}
-          disabled={restarting}
-          title="Restart this session: kill the agent process and resume from disk (recovers a stuck/blank terminal)"
-          aria-label="Restart session"
-        >
-          {restarting ? "RESTARTING…" : "RESTART"}
         </button>
       </div>
       {recapOpen && (

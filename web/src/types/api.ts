@@ -261,6 +261,8 @@ export interface Folder {
 export interface AppConfig {
   /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
   csrf: string;
+  /** Server hostname (#503), shown in the footer classbar. Absent on older servers. */
+  hostname?: string;
   /** Engines that are installed AND can start a new session (drives the picker). */
   new_session_engines: string[];
   terminal_backend: "ttyd" | "ws" | string;

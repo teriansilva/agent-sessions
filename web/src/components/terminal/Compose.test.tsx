@@ -178,16 +178,23 @@ test("the nav-key chips send their control sequence to the PTY (#487/#500)", asy
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.tab);
 });
 
-test("the single-row bar has no second (kebab) menu and no esc / copy / interrupt chips (#500)", () => {
+test("the single-row bar has no second (kebab) menu and no copy / interrupt chips (#500/#503)", () => {
   renderCompose();
   expect(screen.queryByRole("button", { name: /more actions/i })).not.toBeInTheDocument(); // no kebab
   expect(screen.queryByRole("button", { name: /interrupt|ctrl-c/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /escape/i })).not.toBeInTheDocument();
-  // The only chips are the nav group + attach + close, then the inline Send (and mic when supported).
+  // The chips are the nav group (up/down/return/esc/tab) + attach + close, then the inline Send.
   expect(screen.getByRole("button", { name: "Up" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Escape" })).toBeInTheDocument(); // esc re-added (#503)
   expect(screen.getByRole("button", { name: /attach file/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /collapse compose/i })).toBeInTheDocument();
+});
+
+test("the esc chip sends the escape sequence to the PTY (#503)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: "Escape" }));
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.esc);
 });
 
 test("the attach chip lives in the key group and triggers the file input (#487/#500)", async () => {

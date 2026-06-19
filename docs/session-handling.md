@@ -314,8 +314,8 @@ systemd-run --user --scope --collect --quiet \
 - Only LAUNCH is scoped. Viewer attaches (`dtach -a`) and headless
   `SessionStream` readers stay in the broker cgroup — they die with their
   websocket and would add a systemd round-trip per reconnect.
-- The reaper and manual Restart (#331) are unaffected: they find masters by
-  `/proc` cmdline scan and signal by process group, both cgroup-agnostic.
+- The reaper (#279) is unaffected: it finds masters by `/proc` cmdline scan and
+  signals by process group, both cgroup-agnostic.
 
 ### Configuration
 

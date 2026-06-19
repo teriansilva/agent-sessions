@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -200,6 +201,9 @@ def register(
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there
                 # is no login (#13 / #32 Phase 3).
                 "auth_mode": cfg.auth_mode,
+                # Server hostname (#503): shown in the SPA's footer classbar so an operator can see
+                # which machine a tab is pointed at. Cosmetic; the OS hostname, not a secret.
+                "hostname": socket.gethostname(),
                 # Per-user UI theme (#109). The SPA applies this at load so a non-default
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),

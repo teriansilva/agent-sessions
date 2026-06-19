@@ -273,7 +273,7 @@ function Layout() {
         </ChunkErrorBoundary>
       </main>
       <footer className="hud-classbar">
-        <span className="hud-tag">UNCLASSIFIED // INTERNAL USE // OP: NIGHTJAR</span>
+        <span className="hud-tag">{config?.hostname ? `HOST // ${config.hostname.toUpperCase()}` : ""}</span>
         <span className="hud-tag">
           <span className={`hud-led ${live > 0 ? "up" : "idle"}`} aria-hidden="true" />
           <b className="num">{live}</b> AGENTS LIVE

@@ -291,15 +291,6 @@ export const api = {
   /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
   archiveOlder: (hours: number) =>
     postJson<{ archived: number; skipped: number }>("/api/sessions/archive-older", { hours }),
-  /** Restart a WEDGED session (#331): kill the live agent process so the next attach resumes it
-   *  from disk (conversation preserved). `fp`/`tabId` identify this tab against the owner lease;
-   *  `force` overrides the owner guard when a *different* active viewer holds the session (else the
-   *  call 409s with the holder). CSRF-guarded. */
-  restart: (id: string, opts: { fp?: string; tabId?: string; force?: boolean } = {}) =>
-    postJson<{ id: string; restarted: boolean; master: string }>(
-      `/api/sessions/${enc(id)}/restart`,
-      { fp: opts.fp, tab_id: opts.tabId, force: opts.force ?? false },
-    ),
   /** One page of older transcript history for scroll-up lazy-load (#348 Phase 3). GET —
    *  no CSRF. `before` is the exact turn boundary: seeded from the attach's {"t":"hist"}
    *  frame for the first page, then the returned `cursor` for each next-older page.

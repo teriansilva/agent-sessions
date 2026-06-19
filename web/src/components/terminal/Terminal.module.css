@@ -189,6 +189,9 @@
  * recovery affordance, not a primary action; warms toward the accent on hover/focus. */
 .restartBtn {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 1px 8px;
   border-radius: 0;
   font: inherit;

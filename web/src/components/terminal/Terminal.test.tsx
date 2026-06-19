@@ -3,7 +3,7 @@ import { type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { SessionsCtx } from "../../app/sessionsStore";
-import { api, ApiError } from "../../lib/api";
+import { api } from "../../lib/api";
 import { ThemeCtx } from "../../theme/themeStore";
 import type { Session } from "../../types/api";
 import { Terminal } from "./Terminal";
@@ -14,16 +14,8 @@ vi.mock("../../lib/api", () => ({
   // draft so the load is a no-op and these Terminal tests stay about the socket/terminal.
   api: {
     upload: vi.fn(),
-    restart: vi.fn(),
     getDraft: vi.fn().mockResolvedValue({ id: "", text: "", attachments: [], updated_at: null }),
     saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
-  },
-  ApiError: class ApiError extends Error {
-    status: number;
-    constructor(status: number, message: string) {
-      super(message);
-      this.status = status;
-    }
   },
 }));
 
@@ -162,7 +154,6 @@ beforeEach(() => {
   xterms.length = 0;
   gridScript = [];
   gridIdx = 0;
-  vi.mocked(api.restart).mockReset(); // call history must not leak across the #331 restart tests
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   // Invoke the callback synchronously: the connect-when-stable settle loop (#299) re-measures
   // across frames until the grid holds steady, and the mocked xterm reports a constant 80×24, so
@@ -419,48 +410,6 @@ test("#181 text paste over the terminal forwards to term.paste + prevents defaul
     stopPropagation,
   });
   expect(xterms[0].paste).toHaveBeenCalledWith("hello agent");
-});
-
-test("RESTART button kills + resumes the session, sending this tab's fp/tab id (#331)", async () => {
-  vi.mocked(api.restart).mockResolvedValue({ id: "claude:abc", restarted: true, master: "term" });
-  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-  render(wrap(<Terminal engine="claude" id="abc" />));
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("Restart session"));
-  });
-  expect(confirmSpy).toHaveBeenCalledTimes(1);
-  expect(api.restart).toHaveBeenCalledTimes(1);
-  const [sid, opts] = vi.mocked(api.restart).mock.calls[0];
-  expect(sid).toBe("claude:abc");
-  expect(typeof opts?.fp).toBe("string");
-  expect(typeof opts?.tabId).toBe("string");
-  confirmSpy.mockRestore();
-});
-
-test("RESTART offers a forced retry when another viewer holds the session (409) (#331)", async () => {
-  vi.mocked(api.restart)
-    .mockRejectedValueOnce(new ApiError(409, "another viewer is active"))
-    .mockResolvedValueOnce({ id: "claude:abc", restarted: true, master: "term" });
-  // First confirm = "restart?", second = "another viewer active, restart anyway?".
-  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-  render(wrap(<Terminal engine="claude" id="abc" />));
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("Restart session"));
-  });
-  expect(confirmSpy).toHaveBeenCalledTimes(2);
-  expect(api.restart).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(api.restart).mock.calls[1][1]).toMatchObject({ force: true });
-  confirmSpy.mockRestore();
-});
-
-test("RESTART does nothing when the confirm is dismissed (#331)", async () => {
-  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-  render(wrap(<Terminal engine="claude" id="abc" />));
-  await act(async () => {
-    fireEvent.click(screen.getByLabelText("Restart session"));
-  });
-  expect(api.restart).not.toHaveBeenCalled();
-  confirmSpy.mockRestore();
 });
 
 // #284: the panel header resolves its title from the shared sessions store. When that

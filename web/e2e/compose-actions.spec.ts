@@ -37,21 +37,27 @@ test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Se
   await expect(page.getByRole("button", { name: /more actions/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /interrupt|ctrl-c/i })).toHaveCount(0);
 
-  // The key group's return / attach / close chips are inline (not in a menu).
-  const ret = page.getByRole("button", { name: "Return" });
-  const attach = page.getByRole("button", { name: /attach file/i });
-  const close = page.getByRole("button", { name: /collapse compose box/i });
-  await expect(ret).toBeVisible();
-  await expect(attach).toBeVisible();
-  await expect(close).toBeVisible();
-
-  // Send is the LAST control — to the right of the key group (attach) and the close chip.
+  // Send is the LAST control — everything (the key group + its overflow "…" + the mic) is to its
+  // left. Up is always the first inline chip.
   const sendX = (await send.boundingBox())!.x;
-  expect((await attach.boundingBox())!.x).toBeLessThan(sendX);
-  expect((await close.boundingBox())!.x).toBeLessThan(sendX);
+  expect((await page.getByRole("button", { name: "Up" }).boundingBox())!.x).toBeLessThan(sendX);
 
-  // The close chip collapses the box; the inline control becomes the compose/open affordance.
-  await close.click();
+  // The group either fits inline, or its trailing chips collapse into the SINGLE "…" overflow when
+  // narrow (the dynamic behavior). Either way attach + close are reachable, and Send stays last.
+  const more = page.getByRole("button", { name: /more keys/i });
+  if (await more.isVisible()) {
+    expect((await more.boundingBox())!.x).toBeLessThan(sendX); // the "…" is left of Send too
+    await more.click();
+    await expect(page.getByRole("menuitem", { name: /attach file/i })).toBeVisible();
+    await page.getByRole("menuitem", { name: /collapse compose box/i }).click();
+  } else {
+    const attach = page.getByRole("button", { name: /attach file/i });
+    const close = page.getByRole("button", { name: /collapse compose box/i });
+    expect((await attach.boundingBox())!.x).toBeLessThan(sendX);
+    expect((await close.boundingBox())!.x).toBeLessThan(sendX);
+    await close.click();
+  }
+  // Collapsing (inline chip or menu item) returns the compose/open affordance.
   await expect(page.getByRole("button", { name: /open compose box/i })).toBeVisible();
 });
 

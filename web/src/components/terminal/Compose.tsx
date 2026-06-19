@@ -416,12 +416,13 @@ export const Compose = forwardRef<
   // state, no feature flag (#483). Re-read each render so a test stub installed on `window` is seen.
   const speechSupported = !!getSpeechRecognition();
 
-  // The single collapsible group (#487), in order: up, down, return, tab, attach, and — when open —
-  // collapse. Everything else (mic, Send) sits inline to the right; nothing lives in a second menu.
+  // The single collapsible group (#487), in order: up, down, return, esc, tab, attach, and — when
+  // open — collapse. Everything else (mic, Send) sits inline to the right; no second menu.
   const keyActions: KeyAction[] = [
     { id: "up", aria: "Up", title: "Up", icon: <ArrowUp size={16} />, run: () => sendInput(KEYSEQ.up) },
     { id: "down", aria: "Down", title: "Down", icon: <ArrowDown size={16} />, run: () => sendInput(KEYSEQ.down) },
     { id: "enter", aria: "Return", title: "Return", icon: <CornerDownLeft size={16} />, run: () => sendInput(KEYSEQ.enter) },
+    { id: "esc", aria: "Escape", title: "Escape", text: "esc", run: () => sendInput(KEYSEQ.esc) },
     { id: "tab", aria: "Tab", title: "Tab", icon: <ArrowRightToLine size={16} />, run: () => sendInput(KEYSEQ.tab) },
     {
       id: "attach",

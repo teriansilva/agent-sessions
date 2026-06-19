@@ -4,6 +4,7 @@ archive/unarchive, new-session — including CSRF/origin gating."""
 from __future__ import annotations
 
 import re
+import socket
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -1471,3 +1472,11 @@ def test_ai_recap_on_rows_and_api_key_never_leaks(auth_cfg, fake_jsonl):
     ai = cfg_resp.json()["ai_review"]
     assert "api_key" not in ai  # only the write-only marker is exposed
     assert ai.get("api_key_set") is True
+
+
+def test_config_exposes_server_hostname(auth_cfg):
+    # #503: the SPA footer shows which machine a tab is pointed at, sourced from /api/config.
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    conf = c.get("/api/config").json()
+    assert conf["hostname"] == socket.gethostname()

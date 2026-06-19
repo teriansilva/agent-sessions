@@ -137,5 +137,5 @@ test("REPAINT is hidden for a read-only secondary viewer (#485)", async ({ page 
   await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
   await expect(page.getByText(/read-only|another tab/i)).toBeVisible(); // take-over banner
   await expect(page.getByRole("button", { name: /repaint/i })).toHaveCount(0); // owner-only → absent
-  await expect(page.getByRole("button", { name: /restart/i })).toBeVisible(); // RESTART is not gated
+  await expect(page.getByRole("button", { name: /restart/i })).toHaveCount(0); // RESTART removed (#503)
 });
