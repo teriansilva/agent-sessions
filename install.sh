@@ -5,10 +5,12 @@
 #   curl -fsSL <url>/install.sh | sh
 #
 # No sudo for the app itself: it installs under ~/.local/share/agent-sessions and runs
-# as a `systemctl --user` service. Sudo is used ONLY to install python3-venv if missing
-# (Debian/Ubuntu, Fedora), and that step is clearly prompted. Binds 127.0.0.1 by
+# as a `systemctl --user` service. Sudo is used only for optional, clearly-prompted steps:
+# installing python3-venv if missing (Debian/Ubuntu, Fedora), and — if you accept the firewall
+# offer for a non-localhost bind — adding the ufw/firewalld rule. Binds 127.0.0.1 by
 # default; an interactive install offers to bind a chosen address / all interfaces (with a
-# warning) — put a reverse proxy / TLS in front (the installer does not configure nginx).
+# warning), derives the reachable origin, and offers to open the port in ufw/firewalld — put a
+# reverse proxy / TLS in front (the installer does not configure nginx).
 #
 # Overridable via env: AGENT_SESSIONS_REPO, AGENT_SESSIONS_REF, AGENT_SESSIONS_CHANNEL
 # (stable|main), AGENT_SESSIONS_HOST, AGENT_SESSIONS_PORT, AGENT_SESSIONS_HOME,
@@ -141,9 +143,66 @@ _host_ips() {
   fi | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | awk '!seen[$0]++'
 }
 
+_primary_ip() {
+  # The default-route source address — the IP the OS uses to reach the outside world, i.e. the
+  # operator's primary reachable IPv4 on a multi-homed host (docker bridges / VPNs enumerate
+  # alongside it in _host_ips, but only one is the default-route source). Empty when iproute2 is
+  # absent or there's no default route. `head` is the last pipe stage so the exit status stays 0
+  # on empty output (mustn't trip `set -e`).
+  have ip || return 0
+  ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1
+}
+
 _recompute_origin() {  # re-derive ORIGIN from the address the browser will use ($1)…
   [ "$ORIGIN_EXPLICIT" = 1 ] && return 0   # …unless the operator pinned AGENT_SESSIONS_ORIGIN
   ORIGIN="http://$1:$PORT"
+}
+
+_offer_firewall() {
+  # Binding beyond localhost is pointless if a host firewall drops the port. Offer (default-No,
+  # mirroring the bind confirm) to open $1/tcp in whatever firewall is active — ufw (Debian/Ubuntu)
+  # or firewalld (Fedora/RHEL); an nftables/iptables-only host (or macOS) just gets the manual rule
+  # printed. Firewall changes run as explicit argv (no inline shell interpreter), matching the
+  # installer's no-shell-layer model. Best-effort: a declined sudo or a tool error only prints the
+  # command — it never fails the install. Reached only from interactive choose_host, so /dev/tty
+  # is open.
+  _fwport="$1"
+  _fwtool=""; _fwcmd=""
+  if have ufw; then
+    _fwtool=ufw; _fwcmd="sudo ufw allow ${_fwport}/tcp"
+  elif have firewall-cmd; then
+    _fwtool=firewalld
+    _fwcmd="sudo firewall-cmd --permanent --add-port=${_fwport}/tcp && sudo firewall-cmd --reload"
+  fi
+  if [ -z "$_fwtool" ]; then
+    {
+      printf '\n  No ufw / firewalld found. If a host firewall is active, allow the port, e.g.:\n'
+      printf '     sudo iptables -A INPUT -p tcp --dport %s -j ACCEPT\n' "$_fwport"
+    } > /dev/tty
+    return 0
+  fi
+  {
+    printf '\n  Other machines also need the host firewall to allow the port:\n'
+    printf '     %s\n' "$_fwcmd"
+    printf '  Add this rule now (needs sudo)? [y/N] '
+  } > /dev/tty
+  read _fwyn < /dev/tty 2>/dev/null || _fwyn=""
+  case "$_fwyn" in
+    [Yy]*) ;;
+    *) log "firewall left unchanged — open it later with: $_fwcmd"; return 0 ;;
+  esac
+  _fwok=1
+  if [ "$_fwtool" = ufw ]; then
+    sudo ufw allow "${_fwport}/tcp" > /dev/tty 2>&1 || _fwok=0
+  else
+    { sudo firewall-cmd --permanent --add-port="${_fwport}/tcp" \
+        && sudo firewall-cmd --reload; } > /dev/tty 2>&1 || _fwok=0
+  fi
+  if [ "$_fwok" = 1 ]; then
+    log "firewall: opened ${_fwport}/tcp"
+  else
+    log "firewall: could not add the rule automatically — run it by hand: $_fwcmd"
+  fi
 }
 
 adopt_persisted_bind() {
@@ -223,11 +282,17 @@ choose_host() {
   HOST="$_chosen"
   if [ "$_chosen" = 0.0.0.0 ]; then
     # The browser never sends `Origin: http://0.0.0.0` — derive the origin from a real address so
-    # the same-origin / CSRF checks pass. Use the first detected IP; note the override for others.
-    # shellcheck disable=SC2086
-    set -- $_ips
-    if [ "$#" -ge 1 ]; then
-      _recompute_origin "$1"
+    # the same-origin / CSRF checks pass. Prefer the default-route source (the operator's primary
+    # reachable IP) over the first enumerated address, so a multi-homed host (docker bridges, a VPN)
+    # doesn't hand back an unreachable internal address. Fall back to the first detected address.
+    _addr="$(_primary_ip)"
+    if [ -z "$_addr" ]; then
+      # shellcheck disable=SC2086
+      set -- $_ips
+      [ "$#" -ge 1 ] && _addr="$1"
+    fi
+    if [ -n "$_addr" ]; then
+      _recompute_origin "$_addr"
       note "Bound to all interfaces. Origin set to $ORIGIN (your primary address)."
       log  "If you reach it via another address/name, re-run with AGENT_SESSIONS_ORIGIN=http://<that-host>:$PORT."
     else
@@ -238,6 +303,10 @@ choose_host() {
     _recompute_origin "$_chosen"
     note "Bound to $HOST. Origin set to $ORIGIN."
   fi
+
+  # A LAN/all-interfaces bind only works if the host firewall lets the port through — offer to open
+  # it (or print the manual command). Best-effort; never fails the install.
+  _offer_firewall "$PORT"
 }
 
 _ensure_venv_module() {  # Debian/Ubuntu split venv into python3-venv; a vendored standalone python

@@ -41,7 +41,7 @@ Engines live behind a small provider interface (`engines.py`); identity is engin
 
 ## Install & operate
 
-Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx). An interactive install can instead bind a LAN address or all interfaces, behind a security warning — see [Bind address](INSTALL.md#bind-address).
+Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx). An interactive install can instead bind a LAN address or all interfaces, behind a security warning — deriving the reachable origin and offering to open the port in the host firewall — see [Bind address](INSTALL.md#bind-address).
 
 > The CLI, service unit, and `AGENT_SESSIONS_*` environment variables keep the project's package name, **`agent-sessions`** — that's the same tool as BattleLab.
 
@@ -54,7 +54,7 @@ curl -fsSL https://battlelab.superstatus.io/install.sh | sh
 > a full self-host walkthrough is in [`INSTALL.md`](INSTALL.md). To install from a fork/mirror,
 > set `AGENT_SESSIONS_REPO=https://github.com/<you>/agent-sessions.git` before running the script.
 
-Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (the **only** sudo step, and it's prompted). On a fresh install it prints the generated admin credentials **once**:
+Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (one of only two optional, prompted sudo steps — the other is opening the firewall port for a non-localhost bind). On a fresh install it prints the generated admin credentials **once**:
 
 ```
 agent-sessions 0.3.1 installed.

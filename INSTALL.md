@@ -1,7 +1,8 @@
 # Self-hosting agent-sessions (BattleLab)
 
-A rootless, user-level install: no system daemon, no root (except an optional prompted step to
-install the `venv` module). Everything lives under `~/.local/share/agent-sessions/` and runs as a
+A rootless, user-level install: no system daemon, no root (only optional, clearly-prompted sudo:
+installing the `venv` module if missing, and — if you accept it — adding a firewall rule for a
+non-localhost bind). Everything lives under `~/.local/share/agent-sessions/` and runs as a
 `systemctl --user` service bound to `127.0.0.1` by default. An **interactive** install offers to
 bind a different address (a detected LAN IP, or all interfaces) behind a security warning; a piped
 `curl | sh` install always keeps the safe localhost default — see [Bind address](#bind-address).
@@ -15,7 +16,8 @@ bind a different address (a detected LAN IP, or all interfaces) behind a securit
 
 - Linux with `systemd` (user services) — the install is rootless and uses `systemctl --user`.
 - `git` and `python3 ≥ 3.11`. If the `venv` module is missing, the installer offers to
-  `apt-get`/`dnf` install it — the **only** sudo step, and it's prompted.
+  `apt-get`/`dnf` install it — one of only two optional, prompted sudo steps (the other is opening
+  the firewall port for a non-localhost [bind](#bind-address)).
 - A reverse proxy (e.g. nginx) terminating TLS in front of the app.
 - The agent CLIs you want to manage (Claude Code, opencode, codex, gemini, antigravity/`agy`) installed on the host;
   the installer's `doctor` step discovers their paths automatically.
@@ -54,8 +56,14 @@ Choose an option [1]:
   expose it on a network you trust (LAN / VPN), and keep TLS + auth in front for anything wider —
   enabling 2FA is recommended once it's reachable beyond localhost.
 - Picking an address also sets `AGENT_SESSIONS_ORIGIN` to match, so the same-origin / CSRF checks
-  pass when you reach the app over the network. For `0.0.0.0` it uses your primary address; if you
-  reach it via a different name, re-run with `AGENT_SESSIONS_ORIGIN=http://<that-host>:<port>`.
+  pass when you reach the app over the network. For `0.0.0.0` it uses your **primary (default-route)
+  address** — the one another machine actually reaches this host on, so a host with docker bridges
+  or a VPN doesn't get handed an unreachable internal IP. If you reach it via a different name,
+  re-run with `AGENT_SESSIONS_ORIGIN=http://<that-host>:<port>`.
+- After a non-localhost bind the installer **offers to open the port in the host firewall** (`ufw`
+  on Debian/Ubuntu, `firewalld` on Fedora/RHEL) — it prints the exact `sudo` command and only runs
+  it if you accept (default No); on other firewalls it prints a manual `iptables` rule. Otherwise
+  the app binds the address but a firewall can still silently drop connections from other machines.
 - The choice is **persisted and kept across upgrades / autoupdate** — a re-run won't silently
   revert it to localhost.
 - **Non-interactive installs are unchanged**: with no tty, with `AGENT_SESSIONS_ASSUME_YES=1`, or

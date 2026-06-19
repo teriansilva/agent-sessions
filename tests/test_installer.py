@@ -70,6 +70,165 @@ def test_install_sh_interactive_bind_selection():
     assert "adopt_persisted_bind" in s
 
 
+def test_install_sh_firewall_offer_and_primary_route_origin():
+    # #504: a non-localhost interactive bind derives the origin from the default-route source IP
+    # and offers to open the port in the host firewall.
+    s = INSTALL_SH.read_text()
+    # Origin derivation prefers the primary (default-route) address over the first enumerated one,
+    # so a multi-homed host (docker bridges / VPN) doesn't hand back an unreachable internal IP.
+    assert "_primary_ip" in s and "ip route get" in s
+    # Firewall offer: ufw (Debian/Ubuntu) or firewalld (Fedora/RHEL), with a manual iptables hint.
+    assert "_offer_firewall" in s
+    assert "ufw allow" in s
+    assert "firewall-cmd" in s and "--add-port" in s
+    assert "iptables" in s  # manual fallback when neither tool is present
+    # Default-No, gated behind sudo (mirrors the bind confirm).
+    assert "needs sudo" in s and "[y/N]" in s
+    # Firewall changes go through explicit argv — no inline shell interpreter in the installer.
+    assert "sh -c" not in s and "bash -c" not in s
+
+
+def _drive_choose_host(tmp_path, fakebin, feed, *, port="8765", timeout=25):
+    """Source install.sh's functions (minus `main`) and call choose_host() under a real pty, with
+    `fakebin` prepended to PATH so the stubbed ip/ufw/sudo never touch the host. `feed` is a list
+    of (prompt-substring, reply-bytes) fired in order as prompts appear. Returns the pty output."""
+    import pty
+    import select
+    import time
+
+    if not hasattr(os, "fork"):  # pragma: no cover - non-POSIX
+        pytest.skip("pty/fork unavailable")
+    body = INSTALL_SH.read_text().replace('\nmain "$@"\n', "\n")
+    harness = body + (
+        f'\nPORT={port}\nHOST=127.0.0.1\nORIGIN="http://$HOST:$PORT"\n'
+        "HOST_EXPLICIT=0\nORIGIN_EXPLICIT=0\nAPP=agent-sessions\n"
+        "choose_host\n"
+        'printf "RESULT HOST=%s\\n" "$HOST"\n'
+        'printf "RESULT URL=%s\\n" "$ORIGIN"\n'
+    )
+    hp = tmp_path / "harness.sh"
+    hp.write_text(harness)
+    pid, fd = pty.fork()
+    if pid == 0:  # child
+        for k in _BIND_ENV_KEYS:  # a dev shell's leaked HOST/ASSUME_YES would skip the prompt
+            os.environ.pop(k, None)
+        os.environ["PATH"] = f"{fakebin}:" + os.environ.get("PATH", "")
+        os.execvp("sh", ["sh", str(hp)])
+    buf = b""
+    pending = list(feed)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r, _, _ = select.select([fd], [], [], 0.3)
+        if not r:
+            continue
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        buf += data
+        if pending and pending[0][0] in buf.decode(errors="replace"):
+            _, reply = pending.pop(0)
+            os.write(fd, reply)
+    os.close(fd)
+    return buf.decode(errors="replace")
+
+
+def _write_fake_ip(fakebin):
+    # A multi-homed host whose FIRST enumerated global address is an internal docker bridge, but
+    # whose default route leaves via the real LAN IP. _primary_ip must win → origin = 10.0.0.5.
+    (fakebin / "ip").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *"route get"*) echo "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 1000" ;;\n'
+        '  *"addr show scope global"*)\n'
+        '    echo "2: eth1    inet 172.18.0.1/16 brd 172.18.255.255 scope global eth1"\n'
+        '    echo "3: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0" ;;\n'
+        "esac\n"
+    )
+    (fakebin / "ip").chmod(0o755)
+
+
+def test_installer_firewall_offer_accept_opens_port_and_uses_primary_origin(tmp_path):
+    # #504 red→green: pick 0.0.0.0, confirm the bind, accept the firewall offer. The origin must be
+    # the default-route source (10.0.0.5), NOT the first-enumerated docker bridge (172.18.0.1), and
+    # the (stubbed) ufw rule must be applied. Hermetic: stub ip/ufw/sudo so the host is untouched.
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    _write_fake_ip(fakebin)
+    (fakebin / "ufw").write_text('#!/bin/sh\necho "FAKE-UFW $*"\n')
+    (fakebin / "sudo").write_text('#!/bin/sh\nexec "$@"\n')  # run argv directly — never real sudo
+    (fakebin / "ufw").chmod(0o755)
+    (fakebin / "sudo").chmod(0o755)
+
+    out = _drive_choose_host(
+        tmp_path,
+        fakebin,
+        [("Choose an option", b"2\n"), ("anyway?", b"y\n"), ("Add this rule now", b"y\n")],
+    )
+    assert "RESULT HOST=0.0.0.0" in out
+    # Primary-route source wins over the first enumerated address.
+    assert "RESULT URL=http://10.0.0.5:8765" in out
+    assert "RESULT URL=http://172.18.0.1" not in out
+    # The rule was offered with the exact command and applied through the stub.
+    assert "sudo ufw allow 8765/tcp" in out
+    assert "FAKE-UFW allow 8765/tcp" in out
+    assert "firewall: opened 8765/tcp" in out
+
+
+def test_installer_firewall_offer_declined_is_noop(tmp_path):
+    # Declining the firewall offer must NOT invoke sudo and must leave the install green, printing
+    # the manual command instead (default-No, best-effort).
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    _write_fake_ip(fakebin)
+    (fakebin / "ufw").write_text('#!/bin/sh\necho "FAKE-UFW $*"\n')
+    sentinel = tmp_path / "sudo_was_called"
+    (fakebin / "sudo").write_text(f'#!/bin/sh\n: > "{sentinel}"\nexec "$@"\n')
+    (fakebin / "ufw").chmod(0o755)
+    (fakebin / "sudo").chmod(0o755)
+
+    out = _drive_choose_host(
+        tmp_path,
+        fakebin,
+        [("Choose an option", b"2\n"), ("anyway?", b"y\n"), ("Add this rule now", b"n\n")],
+    )
+    assert "RESULT HOST=0.0.0.0" in out
+    assert "firewall left unchanged" in out
+    assert "sudo ufw allow 8765/tcp" in out  # the manual command is still shown
+    assert not sentinel.exists(), "declining the offer must not invoke sudo"
+
+
+def test_installer_origin_falls_back_to_first_addr_without_default_route(tmp_path):
+    # When `ip route get` yields nothing (no default route), _primary_ip is empty and the 0.0.0.0
+    # origin falls back to the first enumerated address rather than an unusable http://0.0.0.0.
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    # No default route → `route get` prints nothing; only addr enumeration succeeds.
+    (fakebin / "ip").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *"route get"*) : ;;\n'
+        '  *"addr show scope global"*)\n'
+        '    echo "2: eth1    inet 172.18.0.1/16 brd 172.18.255.255 scope global eth1"\n'
+        '    echo "3: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0" ;;\n'
+        "esac\n"
+    )
+    (fakebin / "ufw").write_text('#!/bin/sh\necho "FAKE-UFW $*"\n')
+    (fakebin / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+    for f in ("ip", "ufw", "sudo"):
+        (fakebin / f).chmod(0o755)
+
+    out = _drive_choose_host(
+        tmp_path,
+        fakebin,
+        [("Choose an option", b"2\n"), ("anyway?", b"y\n"), ("Add this rule now", b"y\n")],
+    )
+    assert "RESULT URL=http://172.18.0.1:8765" in out  # first enumerated address (fallback)
+    assert "RESULT URL=http://0.0.0.0" not in out
+
+
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_no_tty_keeps_localhost(tmp_path):
     # #487: with no AGENT_SESSIONS_HOST, no ASSUME_YES, and detached from any controlling
