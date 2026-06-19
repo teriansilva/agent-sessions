@@ -6,7 +6,7 @@ import {
   PanelLeftClose,
   Settings as SettingsIcon,
 } from "lucide-react";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SessionList } from "../components/sidebar/SessionList";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
@@ -28,6 +28,15 @@ import { NewVersionBanner } from "./NewVersionBanner";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
+import {
+  clampW,
+  DEFAULT_W,
+  maxSidebarW,
+  MIN_W,
+  readStoredW,
+  WIDTH_KEY,
+  WIDTH_STEP,
+} from "./sidebarWidth";
 
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
@@ -97,6 +106,58 @@ function Layout() {
     localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
+  // Desktop sidebar width (#507), persisted device-local. Seeded from storage (clamped).
+  const [sidebarW, setSidebarW] = useState(readStoredW);
+  useEffect(() => {
+    localStorage.setItem(WIDTH_KEY, String(sidebarW));
+  }, [sidebarW]);
+  // Re-clamp against the viewport on resize so a width saved on a wide monitor can't crowd the
+  // pane after moving to a narrow window.
+  useEffect(() => {
+    const onResize = () => setSidebarW((w) => clampW(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Drag-to-resize: pointer-capture so the gesture owns the cursor and a fast drag can't slip
+  // off the thin handle. `resizing` flips a class that suppresses text selection + stray
+  // pointer events on the panels while dragging.
+  const [resizing, setResizing] = useState(false);
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const onResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: sidebarW };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setResizing(true);
+  };
+  const onResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    setSidebarW(clampW(d.startW + (e.clientX - d.startX)));
+  };
+  const onResizeUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    setResizing(false);
+  };
+  // Keyboard a11y for the separator: arrows nudge, Home/End jump to the clamp ends.
+  const onResizeKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setSidebarW((w) => clampW(w - WIDTH_STEP));
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setSidebarW((w) => clampW(w + WIDTH_STEP));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setSidebarW(MIN_W);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setSidebarW(maxSidebarW());
+    }
+  };
+
   // One-time cleanup of the retired sidebar List ⇄ Map toggle pref (#424 Phase 1). The sidebar
   // is list-only now; `/overview` is the canonical map.
   useEffect(() => {
@@ -119,14 +180,14 @@ function Layout() {
   const engaged = sessions.length;
   const live = sessions.filter((s) => s.working).length;
 
-  const cls = ["app", navOpen ? "navOpen" : "", collapsed ? "collapsed" : ""]
+  const cls = ["app", navOpen ? "navOpen" : "", collapsed ? "collapsed" : "", resizing ? "resizing" : ""]
     .filter(Boolean)
     .join(" ");
 
   return (
     <>
       <ButtonGlitch />
-      <div className={cls}>
+      <div className={cls} style={{ "--sidebar-w": `${sidebarW}px` } as React.CSSProperties}>
       {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
           backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
           blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
@@ -244,6 +305,28 @@ function Layout() {
           </span>
         </footer>
       </aside>
+      {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the
+          sidebar and pane panels. Not rendered on mobile (the drawer is fixed-width) or while
+          collapsed (no sidebar to size). */}
+      {!isMobile && !collapsed && (
+        <div
+          className="sidebar-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize session list"
+          aria-valuenow={sidebarW}
+          aria-valuemin={MIN_W}
+          aria-valuemax={maxSidebarW()}
+          tabIndex={0}
+          onPointerDown={onResizeDown}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeUp}
+          onDoubleClick={() => setSidebarW(DEFAULT_W)}
+          onKeyDown={onResizeKey}
+        >
+          <span className="sidebar-resize-grip" aria-hidden="true" />
+        </div>
+      )}
       <button
         type="button"
         className="backdrop"

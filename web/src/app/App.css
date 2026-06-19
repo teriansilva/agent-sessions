@@ -8,7 +8,9 @@
  *   corner treatment (only LEDs/dots stay circular). */
 .app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  /* Desktop sidebar column width is the resizable `--sidebar-w` (#507), defaulting to 320px.
+   * Collapsed + mobile rules below override this track entirely. */
+  grid-template-columns: var(--sidebar-w, 320px) 1fr;
   /* HUD framework (#211 redux): three full-width-flanked rows — a fixed 52px command TOPBAR,
    * a bounded DECK row, and a fixed 28px CLASSIFICATION footer. The topbar and footer are
    * pinned (fixed track sizes, not `auto`) so the deck row gets all the remaining height. The
@@ -67,6 +69,52 @@
   background: color-mix(in srgb, var(--panel) 55%, transparent);
   backdrop-filter: blur(7px) saturate(110%);
   border: 1px solid var(--line);
+}
+/* Desktop sidebar resize handle (#507): sits in the 12px gutter between the floating sidebar
+ * and pane panels (each has a 6px facing margin), centered on the grid column boundary at
+ * var(--sidebar-w). Spans the deck row (between the 52px topbar and 28px classbar). The
+ * component renders it only on desktop, expanded; CSS just paints + positions it. */
+.sidebar-resize {
+  position: absolute;
+  top: 52px;
+  bottom: 28px;
+  left: var(--sidebar-w, 320px);
+  width: 12px;
+  transform: translateX(-50%);
+  z-index: 3;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  touch-action: none; /* the pointer drag owns the gesture */
+}
+.sidebar-resize-grip {
+  width: 2px;
+  height: 40px;
+  background: var(--line-strong);
+  transition: background 0.12s ease, height 0.12s ease;
+}
+.sidebar-resize:hover .sidebar-resize-grip,
+.sidebar-resize:focus-visible .sidebar-resize-grip,
+.app.resizing .sidebar-resize-grip {
+  background: var(--accent);
+  height: 64px;
+}
+.sidebar-resize:focus-visible {
+  outline: none;
+}
+/* While dragging: col-resize cursor everywhere + no text selection or stray pointer events
+ * from the canvas / terminal stealing the drag. The handle keeps pointer capture, so it stays
+ * live even though its sibling panels are inert. */
+.app.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.app.resizing .sidebar,
+.app.resizing .terminal-pane {
+  pointer-events: none;
 }
 .topbarActions {
   display: inline-flex;
