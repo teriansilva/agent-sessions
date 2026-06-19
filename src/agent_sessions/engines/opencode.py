@@ -12,7 +12,15 @@ from . import base
 # Columns the opencode reader depends on, pinned so a schema rename fails the
 # fixture test (loud) rather than silently dropping rows in prod (it would just
 # fail-soft to no opencode rows).
-OPENCODE_SCHEMA = ("id", "parent_id", "directory", "title", "time_updated", "time_archived")
+OPENCODE_SCHEMA = (
+    "id",
+    "parent_id",
+    "directory",
+    "title",
+    "time_created",
+    "time_updated",
+    "time_archived",
+)
 
 
 class OpenCodeProvider:
@@ -84,7 +92,15 @@ class OpenCodeProvider:
 
     def scan(self) -> list[Session]:
         out: list[Session] = []
-        for sid, _parent, directory, title, time_updated, time_archived in self._query():
+        for (
+            sid,
+            _parent,
+            directory,
+            title,
+            time_created,
+            time_updated,
+            time_archived,
+        ) in self._query():
             if not isinstance(sid, str) or not self.id_pattern.match(sid):
                 continue
             # Drop ephemeral CI-runner sessions (#452): their cwd is a throwaway
@@ -101,6 +117,9 @@ class OpenCodeProvider:
                     last_mtime=(time_updated or 0) / 1000.0,
                     first_user_message=title or "",  # opencode maintains a real title
                     archived=time_archived is not None,
+                    # Real creation time from the DB (#506), ms → s; fall back to the update
+                    # time if a row somehow lacks time_created.
+                    created_at=(time_created or time_updated or 0) / 1000.0,
                 )
             )
         return out
@@ -137,7 +156,7 @@ class OpenCodeProvider:
             return None
         return {
             sid
-            for sid, _parent, directory, _title, _tu, _ta in rows
+            for sid, _parent, directory, _title, _tc, _tu, _ta in rows
             if isinstance(sid, str) and self.id_pattern.match(sid) and (directory or "") == cwd
         }
 
@@ -156,7 +175,7 @@ class OpenCodeProvider:
         """
         new_ids = [
             sid
-            for sid, _parent, directory, _title, _tu, _ta in self._query()
+            for sid, _parent, directory, _title, _tc, _tu, _ta in self._query()
             if isinstance(sid, str)
             and self.id_pattern.match(sid)
             and (directory or "") == cwd

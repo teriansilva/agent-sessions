@@ -189,6 +189,34 @@ def set_compose_default(mode: str, path: Path | None = None) -> str:
     return _set("compose_default", coerce_compose_default(mode), path)
 
 
+# Session-list sort order (#506). "recent_activity" = today's behavior (newest update first);
+# "created_at" = a stable order by when the session was created (newest-created first). Favorites
+# (sticky) still pin to the top in BOTH modes. Named to avoid the unrelated `auto_sort` block
+# above, which is AI auto-assignment of sessions to project entities — not list order.
+SESSION_LIST_ORDERS: tuple[str, ...] = ("recent_activity", "created_at")
+DEFAULT_SESSION_LIST_ORDER = "recent_activity"
+
+
+def coerce_session_list_order(value: object) -> str:
+    """Narrow any input to a known sort-order id, falling back to the default. Applied on read
+    so an unknown/legacy persisted value normalizes back to recent-activity behavior."""
+    return (
+        value
+        if isinstance(value, str) and value in SESSION_LIST_ORDERS
+        else DEFAULT_SESSION_LIST_ORDER
+    )
+
+
+def get_session_list_order(path: Path | None = None) -> str:
+    """The persisted session-list sort order, or the default when unset/unknown."""
+    return coerce_session_list_order(_load(path or _default_path()).get("session_list_order"))
+
+
+def set_session_list_order(value: str, path: Path | None = None) -> str:
+    """Persist the session-list sort order (invalid input → default). Preserves other keys."""
+    return _set("session_list_order", coerce_session_list_order(value), path)
+
+
 def get_vt_scrollback(path: Path | None = None) -> bool | None:
     """The VT-scrollback toggle (#329): ``True``/``False`` when the user has set it,
     or ``None`` when unset — so the caller falls back to the ``AGENT_SESSIONS_VT_SCROLLBACK`` env

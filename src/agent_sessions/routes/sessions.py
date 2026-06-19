@@ -105,6 +105,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 s.cwd, m.project_id, project_index, alias=m.project_alias
             ).as_dict(),
             "last_mtime": s.last_mtime,
+            # Derived per-engine creation time (#506) — the sort key when the user picks the
+            # "Creation date" list order. Update mtime stays `last_mtime` above.
+            "created_at": s.created_at,
             "last_output_at": last_out,
             "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
             # Raw first message stays on the row for search + diagnostics ONLY — never a
@@ -297,7 +300,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
         # set and "load more" stays within results.
         rows = [r for r in scoped if _keep(r)]
-        rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
+        # Sort order (#506): favorites (sticky) + manual sort_key always lead; the timestamp
+        # tier is the user's choice — update mtime (default) or creation date (stable). The
+        # created_at mode tie-breaks on last_mtime so equal/zero creation times stay stable.
+        if prefs.get_session_list_order() == "created_at":
+            rows.sort(
+                key=lambda r: (not r["sticky"], -r["sort_key"], -r["created_at"], -r["last_mtime"])
+            )
+        else:
+            rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
         window = rows[offset : offset + limit]
         next_offset = offset + limit if offset + limit < len(rows) else None
         return JSONResponse(

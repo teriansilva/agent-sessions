@@ -1392,6 +1392,20 @@ export function Settings() {
     setComposeMode(mode);
     api.setPrefs({ compose_default: mode }).catch(() => setComposeMode(prev));
   };
+  // Session list order (#506): persisted via /api/prefs; the server sorts the list, so the
+  // sidebar picks up the new order on its next poll. Optimistic with rollback, like the others.
+  const configOrder = useConfig()?.session_list_order ?? "recent_activity";
+  const [listOrder, setListOrder] = useState<string>(configOrder);
+  const [syncedOrder, setSyncedOrder] = useState(configOrder);
+  if (configOrder !== syncedOrder) {
+    setSyncedOrder(configOrder);
+    setListOrder(configOrder);
+  }
+  const chooseOrder = (mode: string) => {
+    const prev = listOrder;
+    setListOrder(mode);
+    api.setPrefs({ session_list_order: mode }).catch(() => setListOrder(prev));
+  };
   // VT scrollback (#329; in Appearance since #357 Phase 2) — faithful real-frame scroll-up. Persisted via
   // /api/prefs; the server flips it live (best-effort starts the sidecar). Optimistic with rollback.
   const configVt = useConfig()?.vt_scrollback ?? false;
@@ -1563,6 +1577,43 @@ export function Settings() {
                         : styles.themeCard
                     }
                     onClick={() => chooseCompose(o.id)}
+                  >
+                    <span className={styles.themeName}>{o.label}</span>
+                    <span className={styles.themeDesc}>{o.description}</span>
+                  </button>
+                ))}
+              </div>
+
+              <h3 className={styles.subhead} id="listorder-h">
+                Session list order
+              </h3>
+              <p className={styles.hint}>
+                How sessions are sorted in the sidebar. Favorites always pin to the top.
+              </p>
+              <div className={styles.themes} role="radiogroup" aria-labelledby="listorder-h">
+                {[
+                  {
+                    id: "recent_activity",
+                    label: "Recent activity",
+                    description: "Newest update first (default)",
+                  },
+                  {
+                    id: "created_at",
+                    label: "Creation date",
+                    description: "Newest-created first; order stays put as sessions update",
+                  },
+                ].map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={listOrder === o.id}
+                    className={
+                      listOrder === o.id
+                        ? `${styles.themeCard} ${styles.active}`
+                        : styles.themeCard
+                    }
+                    onClick={() => chooseOrder(o.id)}
                   >
                     <span className={styles.themeName}>{o.label}</span>
                     <span className={styles.themeDesc}>{o.description}</span>

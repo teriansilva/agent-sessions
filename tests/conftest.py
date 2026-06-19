@@ -143,16 +143,34 @@ def opencode_db(tmp_home, monkeypatch) -> Path:
     con = sqlite3.connect(str(db))
     con.execute(
         "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT, title TEXT, "
-        "time_updated INTEGER, time_archived INTEGER)"
+        "time_created INTEGER, time_updated INTEGER, time_archived INTEGER)"
     )
     con.executemany(
-        "INSERT INTO session (id, parent_id, directory, title, time_updated, time_archived) "
-        "VALUES (?,?,?,?,?,?)",
+        "INSERT INTO session "
+        "(id, parent_id, directory, title, time_created, time_updated, time_archived) "
+        "VALUES (?,?,?,?,?,?,?)",
         [
-            (OC_TOP, None, "/home/user/claude", "OC top one", 1777460564154, None),
-            (OC_ARCHIVED, None, "/tmp/other", "OC archived", 1777300000000, 1777400000000),
-            (OC_FORK, OC_TOP, "/home/user/claude", "OC fork skip", 1777460564999, None),
-            (OC_ACT, None, OC_ACT_DIR, "OC ephemeral CI", 1777460565000, None),
+            # time_created < time_updated (ms), like the real DB (#506).
+            (OC_TOP, None, "/home/user/claude", "OC top one", 1777400000000, 1777460564154, None),
+            (
+                OC_ARCHIVED,
+                None,
+                "/tmp/other",
+                "OC archived",
+                1777200000000,
+                1777300000000,
+                1777400000000,
+            ),
+            (
+                OC_FORK,
+                OC_TOP,
+                "/home/user/claude",
+                "OC fork skip",
+                1777460564000,
+                1777460564999,
+                None,
+            ),
+            (OC_ACT, None, OC_ACT_DIR, "OC ephemeral CI", 1777460565000, 1777460565000, None),
         ],
     )
     con.commit()

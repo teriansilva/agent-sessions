@@ -833,3 +833,43 @@ test("Scrollback cache: clear archived passes the archived scope (#206)", async 
   await userEvent.click(screen.getByRole("button", { name: /confirm clear archived/i }));
   expect(api.clearScrollback).toHaveBeenCalledWith("archived");
 });
+
+// ---- session list order (#506) ----
+
+test("the session-list order radios default to Recent activity (#506)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/appearance");
+  expect(await screen.findByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByRole("radio", { name: /Creation date/ })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  await flushFetches();
+});
+
+test("picking Creation date persists session_list_order via setPrefs (#506)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/appearance");
+  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ session_list_order: "created_at" });
+  // Optimistic: the chosen card flips immediately.
+  expect(screen.getByRole("radio", { name: /Creation date/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await flushFetches();
+});
+
+test("a failed session_list_order save rolls back the selection (#506)", async () => {
+  vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
+  renderSettings("dark", "#ffb000", "/settings/appearance");
+  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    ),
+  );
+  await flushFetches();
+});

@@ -13,6 +13,9 @@ export interface Session {
    *  launch location; with zero entities this is always `{kind:"folder", id: cwd}`. */
   project: ProjectRef;
   last_mtime: number;
+  /** Derived per-engine creation time (#506) — the sort key when the list order is
+   *  "created_at". Absent on older servers (→ treated as 0). */
+  created_at?: number;
   /** Wall-clock of the last byte the agent emitted that we observed (#156). null when
    * the server hasn't seen output for this session in this process (no WS attached). */
   last_output_at?: number | null;
@@ -279,6 +282,9 @@ export interface AppConfig {
   accent?: string;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
+  /** Session-list sort order (#506): "recent_activity" (newest update first, default) or
+   *  "created_at" (stable, newest-created first). Absent on older servers (→ recent_activity). */
+  session_list_order?: "recent_activity" | "created_at" | string;
   /** Overview (#144): expanded cluster cwds (default collapsed). */
   overview_expanded?: string[];
   /** Cwds hidden globally from the UI (#174): sidebar list, project filter, new-session

@@ -32,12 +32,13 @@ def _seed_db(tmp_home: Path, monkeypatch, rows: list[tuple]) -> Path:
     con = sqlite3.connect(str(db))
     con.execute(
         "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT, title TEXT, "
-        "time_updated INTEGER, time_archived INTEGER)"
+        "time_created INTEGER, time_updated INTEGER, time_archived INTEGER)"
     )
     con.executemany(
-        "INSERT INTO session (id, parent_id, directory, title, time_updated, time_archived) "
-        "VALUES (?,?,?,?,?,?)",
-        [(sid, parent, directory, "t", 1, None) for (sid, parent, directory) in rows],
+        "INSERT INTO session "
+        "(id, parent_id, directory, title, time_created, time_updated, time_archived) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [(sid, parent, directory, "t", 1, 1, None) for (sid, parent, directory) in rows],
     )
     con.commit()
     con.close()
@@ -48,9 +49,10 @@ def _seed_db(tmp_home: Path, monkeypatch, rows: list[tuple]) -> Path:
 def _add_rows(db: Path, rows: list[tuple]) -> None:
     con = sqlite3.connect(str(db))
     con.executemany(
-        "INSERT INTO session (id, parent_id, directory, title, time_updated, time_archived) "
-        "VALUES (?,?,?,?,?,?)",
-        [(sid, parent, directory, "t", 1, None) for (sid, parent, directory) in rows],
+        "INSERT INTO session "
+        "(id, parent_id, directory, title, time_created, time_updated, time_archived) "
+        "VALUES (?,?,?,?,?,?,?)",
+        [(sid, parent, directory, "t", 1, 1, None) for (sid, parent, directory) in rows],
     )
     con.commit()
     con.close()

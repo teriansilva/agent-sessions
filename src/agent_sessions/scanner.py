@@ -23,12 +23,95 @@ import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from . import project_dirs
 
 # Session UUIDs that Claude Code writes are RFC4122-shaped.
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# --- Session creation time (#506) ------------------------------------------------------
+# The sidebar can sort by *creation* time (a stable order) rather than the update mtime.
+# No engine recorded a creation time before, so we derive one per engine: the first
+# record's timestamp for the JSONL engines (claude/codex/gemini/antigravity), opencode's
+# ``time_created`` column, with a filesystem fallback. These helpers are shared by every
+# file-based provider so the derivation (and its "read only the first record, never the
+# whole file" guarantee) stays in one place.
+_CREATED_AT_MAX_LINES = 20  # scan at most this many leading records for a timestamp
+
+
+def _parse_epoch(value: object) -> float | None:
+    """Parse a timestamp to epoch *seconds*: an epoch number (seconds or milliseconds), or an
+    ISO-8601 string. Returns ``None`` for anything unparseable so the caller can fall back."""
+    if isinstance(value, bool):  # bool is an int subclass — never a timestamp
+        return None
+    if isinstance(value, int | float):
+        if value <= 0:
+            return None
+        return value / 1000.0 if value > 1e12 else float(value)  # heuristic: ms vs s
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def first_record_created_at(path: Path, max_lines: int = _CREATED_AT_MAX_LINES) -> float | None:
+    """Creation time from the earliest record's timestamp in a JSONL session file.
+
+    Scans at most ``max_lines`` leading records (NOT the whole file — a malformed/empty head
+    just yields ``None`` so the caller falls back to the filesystem time) and returns the first
+    usable timestamp found, looking at the common top-level (``timestamp``/``ts``/``time``/
+    ``created_at``) and nested ``payload`` shapes the various engines use. ``None`` when
+    unreadable or no timestamp is present."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                for key in ("timestamp", "ts", "time", "created_at"):
+                    ts = _parse_epoch(rec.get(key))
+                    if ts is not None:
+                        return ts
+                payload = rec.get("payload")
+                if isinstance(payload, dict):
+                    for key in ("timestamp", "ts", "time"):
+                        ts = _parse_epoch(payload.get(key))
+                        if ts is not None:
+                            return ts
+    except OSError:
+        return None
+    return None
+
+
+def fs_created_at(st: os.stat_result) -> float:
+    """Filesystem creation time: ``st_birthtime`` where the platform records it (macOS/BSD),
+    else ``st_ctime`` (on Linux ext4 birthtime is usually unavailable; ctime is the inode
+    change time — an imperfect but stable fallback used only when no record timestamp exists)."""
+    bt = getattr(st, "st_birthtime", None)
+    return float(bt) if bt else float(st.st_ctime)
+
+
+def derive_created_at(content_path: Path | None, st: os.stat_result) -> float:
+    """Creation time for a file-based session: the first-record timestamp when available,
+    else the filesystem fallback. ``content_path`` is the JSONL/transcript to peek at (``None``
+    for engines whose content isn't a readable JSONL — straight to the fs fallback)."""
+    if content_path is not None:
+        ts = first_record_created_at(content_path)
+        if ts is not None:
+            return ts
+    return fs_created_at(st)
 
 
 @dataclass(frozen=True)
@@ -41,6 +124,10 @@ class Session:
     last_mtime: float
     first_user_message: str
     archived: bool
+    # When the session was created (#506), derived per engine (first-record timestamp / opencode
+    # time_created / fs fallback). Defaults to 0.0 so back-compat constructors (and the rare row
+    # with no derivable time) stay valid; such rows sort last in creation-date order.
+    created_at: float = 0.0
 
     @property
     def short_uuid(self) -> str:
@@ -113,7 +200,7 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
             if not _UUID_RE.match(uuid):
                 continue
             try:
-                mtime = jsonl.stat().st_mtime
+                st = jsonl.stat()
             except OSError:
                 continue
             real_cwd, first_msg = _read_session_meta(jsonl)
@@ -122,9 +209,10 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
                 engine="claude",
                 uuid=uuid,
                 cwd=cwd,
-                last_mtime=mtime,
+                last_mtime=st.st_mtime,
                 first_user_message=first_msg,
                 archived=archived,
+                created_at=derive_created_at(jsonl, st),
             )
 
 

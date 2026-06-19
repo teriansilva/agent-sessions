@@ -33,7 +33,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .. import metadata as _metadata
-from ..scanner import Session
+from ..scanner import Session, derive_created_at
 from . import base
 
 # An agy ``USER_INPUT`` step wraps the human text in ``<USER_REQUEST>…</USER_REQUEST>``, alongside
@@ -177,7 +177,7 @@ class AntigravityProvider:
             if not self.id_pattern.match(native_id):
                 continue
             try:
-                mtime = db.stat().st_mtime
+                st = db.stat()
             except OSError:
                 continue
             # cwd is the launch dir + open-path allowlist key. No usable cwd -> skip the row
@@ -190,9 +190,13 @@ class AntigravityProvider:
                     engine=self.engine_id,
                     uuid=native_id,
                     cwd=cwd,
-                    last_mtime=mtime,
+                    last_mtime=st.st_mtime,
                     first_user_message=_first_user_message(root, native_id),
                     archived=False,
+                    # Creation time from the transcript's first record, else the conversation
+                    # db's fs time (#506). agy step records rarely carry a timestamp, so this
+                    # usually resolves to the fs fallback.
+                    created_at=derive_created_at(_transcript_path(root, native_id), st),
                 )
             )
         return out

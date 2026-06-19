@@ -213,6 +213,10 @@ def register(
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
+                # Session-list sort order (#506): recent_activity (newest update first, default)
+                # or created_at (stable, newest-created first). Server-side sort key; the SPA's
+                # Appearance toggle writes it and the list refetches.
+                "session_list_order": prefs.get_session_list_order(),
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
@@ -285,6 +289,10 @@ def register(
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")
             out["compose_default"] = prefs.set_compose_default(payload["compose_default"])
+        if "session_list_order" in payload:
+            if payload["session_list_order"] not in prefs.SESSION_LIST_ORDERS:
+                raise HTTPException(status_code=422, detail="unknown session_list_order")
+            out["session_list_order"] = prefs.set_session_list_order(payload["session_list_order"])
         if "vt_scrollback" in payload:
             # VT scrollback (#329): flip it live + persist it. Turning it ON also
             # (best-effort) starts the sidecar so it takes effect without an app restart.

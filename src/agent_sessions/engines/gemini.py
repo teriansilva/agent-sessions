@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from .. import metadata as _metadata
-from ..scanner import Session
+from ..scanner import Session, derive_created_at
 from . import base
 
 
@@ -98,7 +98,7 @@ class GeminiProvider:
             if not cwd:
                 continue
             try:
-                mtime = path.stat().st_mtime
+                st = path.stat()
             except OSError:
                 continue
             out.append(
@@ -106,9 +106,10 @@ class GeminiProvider:
                     engine=self.engine_id,
                     uuid=sid,
                     cwd=cwd,
-                    last_mtime=mtime,
+                    last_mtime=st.st_mtime,
                     first_user_message=first_user,
                     archived=False,
+                    created_at=derive_created_at(path, st),
                 )
             )
         return out

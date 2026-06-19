@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { ProjectRef, Session, SessionsQuery } from "../types/api";
 
@@ -33,6 +34,14 @@ export function useSessionsList() {
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
   // never overwrite the state of a newer one that already resolved.
   const reqId = useRef(0);
+  // The active sort order (#506), tracked in a ref so the optimistic favorite re-sort can mirror
+  // the server's secondary key (created_at vs last_mtime) without re-creating its callback. The
+  // server stays the source of truth; the next poll/refetch reconciles regardless.
+  const order = useConfig()?.session_list_order;
+  const orderRef = useRef(order);
+  useEffect(() => {
+    orderRef.current = order;
+  }, [order]);
   // `initialLoaded` flips after the very first fetch settles. Polling is gated on it so a
   // silent 15s poll firing while the bootstrap is in flight can't supersede it (#168).
   const [initialLoaded, setInitialLoaded] = useState(false);
@@ -185,20 +194,21 @@ export function useSessionsList() {
     setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
   }, []);
 
-  // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the
-  // loaded rows sticky-first to MIRROR the server sort (sticky desc, sort_key desc,
-  // last_mtime desc) so a just-favorited row floats to the top immediately — no waiting
-  // for the next poll/refetch. The row stays in the current view either way.
+  // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the loaded
+  // rows sticky-first to MIRROR the server sort (sticky desc, sort_key desc, then the active
+  // timestamp tier — created_at desc in "Creation date" mode, else last_mtime desc, #506) so a
+  // just-favorited row floats to the top immediately and the rest don't briefly disagree with
+  // server order. The next poll/refetch reconciles either way.
   const setSticky = useCallback(async (id: string, value: boolean) => {
     const r = await (value ? api.favorite(id) : api.unfavorite(id));
+    const ts = (s: Session) =>
+      orderRef.current === "created_at" ? (s.created_at ?? 0) : s.last_mtime;
     setSessions((prev) =>
       prev
         .map((s) => (s.id === id ? { ...s, sticky: r.sticky } : s))
         .sort(
           (a, b) =>
-            Number(b.sticky) - Number(a.sticky) ||
-            b.sort_key - a.sort_key ||
-            b.last_mtime - a.last_mtime,
+            Number(b.sticky) - Number(a.sticky) || b.sort_key - a.sort_key || ts(b) - ts(a),
         ),
     );
   }, []);
