@@ -148,18 +148,6 @@ export function Terminal({
   // Current socket id (bumped each reconnect) so Compose can detect a reconnect between its frames.
   const connEpoch = useCallback(() => sockRef.current?.connectionId ?? -1, []);
   // Copy the current selection, or the whole buffer if nothing is selected.
-  const handleCopy = useCallback(() => {
-    const t = termRef.current;
-    if (!t) return;
-    let sel = t.getSelection();
-    if (!sel) {
-      t.selectAll();
-      sel = t.getSelection();
-      t.clearSelection();
-    }
-    if (sel) void navigator.clipboard?.writeText(sel);
-  }, []);
-
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -1049,7 +1037,6 @@ export function Terminal({
         ref={composeRef}
         sendInput={sendInput}
         connEpoch={connEpoch}
-        onCopy={handleCopy}
         defaultOpen={composeDefaultOpen}
         sessionId={id.startsWith("new-") ? null : `${engine}:${id}`}
       />

@@ -1,21 +1,6 @@
-import {
-  ArrowDown,
-  ArrowRightToLine,
-  ArrowUp,
-  Copy,
-  CornerDownLeft,
-  Mic,
-  MoreHorizontal,
-  Paperclip,
-  Pencil,
-  Send,
-  Square,
-  X,
-} from "lucide-react";
-import { createPortal } from "react-dom";
+import { ArrowDown, ArrowRightToLine, ArrowUp, CornerDownLeft, Mic, Paperclip, Pencil, Send, X } from "lucide-react";
 import {
   type ClipboardEvent as ReactClipboardEvent,
-  type ReactNode,
   forwardRef,
   useCallback,
   useEffect,
@@ -26,6 +11,7 @@ import {
 import { api } from "../../lib/api";
 import { imageFilesFromData } from "../../lib/clipboardImages";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
+import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
 
 interface Attachment {
@@ -74,10 +60,11 @@ export interface ComposeHandle {
   attachImages: (files: File[]) => void;
 }
 
-/** Mobile compose + action bar (the legacy bottom bar): nav/control keys, file attach,
- *  copy, and a collapsible autocomplete-safe text field. Keystrokes + the composed
- *  message go to the PTY via `sendInput`. On desktop it stays collapsed by default; image
- *  pastes captured by the parent terminal call `attachImages` to expand it and add pills. */
+/** Mobile compose + action bar (the legacy bottom bar). The action row is a single collapsible
+ *  group — up / down / return / tab / attach / collapse, overflowing into one "…" menu when narrow
+ *  — followed by the mic (audio dictation) and the Send CTA (always last). Keystrokes + the composed
+ *  message go to the PTY via `sendInput`. On desktop it stays collapsed by default; image pastes
+ *  captured by the parent terminal call `attachImages` to expand it and add pills. */
 export const Compose = forwardRef<
   ComposeHandle,
   {
@@ -86,7 +73,6 @@ export const Compose = forwardRef<
     /** Id of the current socket (bumped on reconnect) — `send` uses it to avoid an empty submit
      *  when a reconnect splits its clear/paste/Enter frames (#287). Optional for older callers. */
     connEpoch?: () => number;
-    onCopy: () => void;
     /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
     defaultOpen?: boolean;
     /** Engine-qualified session key (`<engine>:<id>`) this box composes for, used to
@@ -94,7 +80,7 @@ export const Compose = forwardRef<
      *  `new-…` placeholder session has no metadata key — out of scope). */
     sessionId?: string | null;
   }
->(function Compose({ sendInput, connEpoch, onCopy, defaultOpen = true, sessionId = null }, ref) {
+>(function Compose({ sendInput, connEpoch, defaultOpen = true, sessionId = null }, ref) {
   const [open, setOpen] = useState(defaultOpen);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -108,16 +94,6 @@ export const Compose = forwardRef<
   const [listening, setListening] = useState(false);
   const recogRef = useRef<SpeechRecognition | null>(null);
   const dictBaseRef = useRef("");
-
-  // Compose action menu (#494/#487): the single "…" menu holds every secondary action — nav keys,
-  // copy, attach, interrupt, and collapse — leaving only mic + Send inline. It's rendered through a
-  // portal to <body> with position:fixed because the ancestor .terminal-pane has backdrop-filter +
-  // overflow:hidden — a containing block that would clip an in-tree popover — and it opens UPWARD
-  // (the bar is pinned to the viewport bottom). Position is measured from the trigger on open + reflow.
-  const kebabRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ bottom: number; left: number } | null>(null);
 
   // Server-side draft (#477) bookkeeping. `dirty` flips true on the first user edit, so a
   // late GET /draft can't clobber text the user already typed; `loadToken` discards a load
@@ -245,13 +221,10 @@ export const Compose = forwardRef<
     dictBaseRef.current = text;
     r.onresult = (e) => {
       if (recogRef.current !== r) return; // superseded recognizer — ignore late results
-      // Rebuild the WHOLE transcript from the cumulative results list every event, never
-      // accumulate per-event (#487). In `continuous` mode Chrome re-fires `onresult` many times
-      // for the same utterance (and `resultIndex` is not a reliable "only new results" cursor),
-      // so a `finalRef += segment` accumulator appended the same phrase on each re-fire — the
-      // "said it once, typed 10×" bug. `e.results` already holds the full session (finalized +
-      // current interim), so concatenating all of it and assigning is idempotent: re-fires just
-      // recompute the same string.
+      // Rebuild the WHOLE transcript from the cumulative results list every event, never accumulate
+      // per-event (#487): Chrome re-fires onresult many times for the same finalized utterance, so a
+      // `finalRef += segment` accumulator typed the phrase ~10×. `e.results` already holds the full
+      // session (finalized + current interim), so concatenating + assigning is idempotent.
       let full = "";
       for (let i = 0; i < e.results.length; i++) full += e.results[i][0].transcript;
       dirtyRef.current = true; // dictation is draftable content, just like typing
@@ -311,41 +284,6 @@ export const Compose = forwardRef<
     };
   }, []);
 
-  // Place the (portalled) action menu just ABOVE the trigger, left-aligned to it (the bar sits at
-  // the viewport bottom, so a downward menu would clip off-screen). `bottom` is measured from the
-  // viewport bottom up to the trigger's top, so the menu grows upward regardless of its height.
-  const positionMenu = useCallback(() => {
-    const el = kebabRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setMenuPos({ bottom: Math.max(8, window.innerHeight - r.top + 6), left: Math.max(8, r.left) });
-  }, []);
-
-  // While the menu is open: position it, then wire outside-click / Escape / reflow dismissal —
-  // mirrors KeyBar's overflow popover (#234).
-  useEffect(() => {
-    if (!menuOpen) return;
-    positionMenu();
-    const onDoc = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (kebabRef.current?.contains(t) || menuRef.current?.contains(t)) return;
-      setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", positionMenu);
-    window.addEventListener("scroll", positionMenu, true);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", positionMenu);
-      window.removeEventListener("scroll", positionMenu, true);
-    };
-  }, [menuOpen, positionMenu]);
-
   const send = () => {
     const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
     const savedAttachments = attachments;
@@ -356,7 +294,7 @@ export const Compose = forwardRef<
     if (!msg) {
       // Empty compose box (no trimmed text, no attachments): act as a bare Return so the Send
       // button — and Enter in the empty field — submit whatever the user typed DIRECTLY into the
-      // console (#474). Just a single \r, like a real terminal keypress / the KeyBar return chip:
+      // console (#474). Just a single \r, like a real terminal keypress / the return chip:
       // NO Ctrl-A Ctrl-K clear, NO bracketed paste, NO deferred second Enter (those belong to the
       // content path and would erase or double-submit the console-typed prompt line). If the socket
       // is mid-reconnect (`sendInput` returns false) surface the same note instead of dropping it.
@@ -478,45 +416,26 @@ export const Compose = forwardRef<
   // state, no feature flag (#483). Re-read each render so a test stub installed on `window` is seen.
   const speechSupported = !!getSpeechRecognition();
 
-  // Everything except mic + Send lives in the single "…" menu (#487): nav keys, copy, attach,
-  // interrupt, and — when open — collapse. Stable aria-labels (tests + a11y depend on them).
-  const menuActions: {
-    id: string;
-    aria: string;
-    title: string;
-    label: string;
-    icon: ReactNode;
-    run: () => void;
-  }[] = [
-    { id: "up", aria: "Up", title: "Up", label: "Up", icon: <ArrowUp size={16} />, run: () => sendInput(KEYSEQ.up) },
-    { id: "down", aria: "Down", title: "Down", label: "Down", icon: <ArrowDown size={16} />, run: () => sendInput(KEYSEQ.down) },
-    { id: "enter", aria: "Enter", title: "Enter", label: "Enter", icon: <CornerDownLeft size={16} />, run: () => sendInput(KEYSEQ.enter) },
-    { id: "esc", aria: "Escape", title: "Escape", label: "Escape", icon: <span className={styles.txt}>esc</span>, run: () => sendInput(KEYSEQ.esc) },
-    { id: "tab", aria: "Tab", title: "Tab", label: "Tab", icon: <ArrowRightToLine size={16} />, run: () => sendInput(KEYSEQ.tab) },
-    { id: "copy", aria: "Copy", title: "Copy selection", label: "Copy", icon: <Copy size={16} />, run: onCopy },
+  // The single collapsible group (#487), in order: up, down, return, tab, attach, and — when open —
+  // collapse. Everything else (mic, Send) sits inline to the right; nothing lives in a second menu.
+  const keyActions: KeyAction[] = [
+    { id: "up", aria: "Up", title: "Up", icon: <ArrowUp size={16} />, run: () => sendInput(KEYSEQ.up) },
+    { id: "down", aria: "Down", title: "Down", icon: <ArrowDown size={16} />, run: () => sendInput(KEYSEQ.down) },
+    { id: "enter", aria: "Return", title: "Return", icon: <CornerDownLeft size={16} />, run: () => sendInput(KEYSEQ.enter) },
+    { id: "tab", aria: "Tab", title: "Tab", icon: <ArrowRightToLine size={16} />, run: () => sendInput(KEYSEQ.tab) },
     {
       id: "attach",
       aria: "Attach file",
       title: "Attach an image or file",
-      label: "Attach file",
       icon: <Paperclip size={16} />,
       run: () => fileRef.current?.click(),
-    },
-    {
-      id: "interrupt",
-      aria: "Interrupt (send Ctrl-C)",
-      title: "Send Ctrl-C (interrupt)",
-      label: "Interrupt · Ctrl-C",
-      icon: <Square size={14} fill="currentColor" />,
-      run: () => sendInput(KEYSEQ.ctrlc),
     },
     ...(open
       ? [
           {
-            id: "collapse",
+            id: "close",
             aria: "Collapse compose box",
             title: "Collapse",
-            label: "Collapse",
             icon: <X size={16} />,
             run: () => setOpen(false),
           },
@@ -570,20 +489,7 @@ export const Compose = forwardRef<
       )}
 
       <div className={styles.row}>
-        {/* One "…" menu holds every secondary action (#487): nav keys, copy, attach, interrupt,
-            and (when open) collapse. Only mic + Send stay inline. Opens UPWARD via a body portal. */}
-        <button
-          ref={kebabRef}
-          type="button"
-          className={styles.kebab}
-          aria-label="More actions"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          title="More actions"
-          onClick={() => setMenuOpen((o) => !o)}
-        >
-          <MoreHorizontal size={16} />
-        </button>
+        <KeyBar actions={keyActions} />
         <span className={styles.spacer}>{note}</span>
         {open && speechSupported && (
           <button
@@ -603,8 +509,8 @@ export const Compose = forwardRef<
             Send
           </button>
         ) : (
-          // Collapsed (desktop default): the only inline control is "compose" (open) — collapse
-          // itself lives in the menu once open, per the consolidation.
+          // Collapsed (desktop default): the only inline control is "compose" (open). Collapse lives
+          // in the key group once open.
           <button
             type="button"
             className={styles.toggle}
@@ -616,35 +522,6 @@ export const Compose = forwardRef<
           </button>
         )}
       </div>
-
-      {menuOpen &&
-        menuPos &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className={styles.actionMenu}
-            role="menu"
-            style={{ bottom: menuPos.bottom, left: menuPos.left }}
-          >
-            {menuActions.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                role="menuitem"
-                aria-label={a.aria}
-                title={a.title}
-                onClick={() => {
-                  a.run();
-                  setMenuOpen(false);
-                }}
-              >
-                <span className={styles.actionMenuIcon}>{a.icon}</span>
-                <span>{a.label}</span>
-              </button>
-            ))}
-          </div>,
-          document.body,
-        )}
 
       <input
         ref={fileRef}

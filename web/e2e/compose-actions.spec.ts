@@ -1,9 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-// #487: the compose action bar is consolidated. Only the mic + Send stay inline; every other
-// action (nav keys, copy, attach, interrupt, and collapse) lives in a single "…" menu that opens
-// UPWARD from the bottom-anchored bar. Real-browser test: inline set, a portalled upward menu, and
-// the interrupt PTY frame.
+// #500: the compose bar is a single row — one collapsible key group (↑ ↓ ↵ tab 📎 ✕) that overflows
+// into ONE "…" menu when narrow, then the mic, then Send (always last). No second (kebab) menu; no
+// esc / copy / interrupt chips. Real-browser test on desktop + mobile.
 
 // WebSocket stub recording every frame the app sends (mirrors compose-empty-send.spec.ts).
 const RECORDING_WS = `
@@ -17,45 +16,80 @@ window.WebSocket = class {
 };
 `;
 
-const CTRLC_FRAME = '"d":"\\u0003"'; // {"t":"i","d":"\x03"} — Ctrl-C, JSON-escaped
-
-test("only mic + Send stay inline; attach/interrupt/collapse live in the … menu, opening upward (#487)", async ({
+test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Send last (#500)", async ({
   page,
 }) => {
   await page.addInitScript(RECORDING_WS);
-  await page.goto("/s/claude/compose-actions-487");
+  await page.goto("/s/claude/compose-actions-500");
   await expect(page.locator(".xterm")).toBeVisible();
   await page.waitForFunction(
     () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
 
-  // Open the box if collapsed (desktop default) so Send renders.
+  // Open the box if collapsed (desktop default) so Send + the close chip render.
   const send = page.getByRole("button", { name: /^send/i });
   if (!(await send.isVisible())) {
     await page.getByRole("button", { name: /open compose box/i }).click();
   }
   await expect(send).toBeVisible();
 
-  // Attach + interrupt are NOT inline buttons anymore — only reachable from the menu.
-  await expect(page.getByRole("button", { name: /attach file/i })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /interrupt/i })).toHaveCount(0);
+  // No second (kebab) menu, and no interrupt / Ctrl-C control anywhere.
+  await expect(page.getByRole("button", { name: /more actions/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /interrupt|ctrl-c/i })).toHaveCount(0);
 
-  // Open the "…" menu → it opens ABOVE the trigger and holds the consolidated actions.
-  const more = page.getByRole("button", { name: /more actions/i });
-  const moreBox = (await more.boundingBox())!;
-  await more.click();
-  const attachItem = page.getByRole("menuitem", { name: /attach file/i });
-  await expect(attachItem).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: /interrupt/i })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: /collapse compose/i })).toBeVisible();
-  // Upward: every menu item sits above the trigger's top edge.
-  expect((await attachItem.boundingBox())!.y).toBeLessThan(moreBox.y);
+  // The key group's return / attach / close chips are inline (not in a menu).
+  const ret = page.getByRole("button", { name: "Return" });
+  const attach = page.getByRole("button", { name: /attach file/i });
+  const close = page.getByRole("button", { name: /collapse compose box/i });
+  await expect(ret).toBeVisible();
+  await expect(attach).toBeVisible();
+  await expect(close).toBeVisible();
 
-  // Interrupt still sends a Ctrl-C frame to the PTY, then the menu closes.
-  await page.getByRole("menuitem", { name: /interrupt/i }).click();
+  // Send is the LAST control — to the right of the key group (attach) and the close chip.
+  const sendX = (await send.boundingBox())!.x;
+  expect((await attach.boundingBox())!.x).toBeLessThan(sendX);
+  expect((await close.boundingBox())!.x).toBeLessThan(sendX);
+
+  // The close chip collapses the box; the inline control becomes the compose/open affordance.
+  await close.click();
+  await expect(page.getByRole("button", { name: /open compose box/i })).toBeVisible();
+});
+
+test("the overflow … menu is fully on-screen (not clipped) at a narrow width (#500)", async ({
+  page,
+}) => {
+  await page.addInitScript(RECORDING_WS);
+  // Force the key group to overflow into the "…" menu (Hermes: the in-tree popover was clipped by
+  // .compose's overflow-y:auto / .terminal-pane's overflow:hidden on narrow widths).
+  await page.setViewportSize({ width: 280, height: 640 });
+  await page.goto("/s/claude/compose-narrow-500");
+  await expect(page.locator(".xterm")).toBeVisible();
   await page.waitForFunction(
-    (m) => ((window as unknown as { __sent?: string[] }).__sent ?? []).some((f) => f.includes(m)),
-    CTRLC_FRAME,
+    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
-  await expect(page.getByRole("menuitem", { name: /interrupt/i })).toBeHidden();
+
+  const send = page.getByRole("button", { name: /^send/i });
+  if (!(await send.isVisible())) {
+    await page.getByRole("button", { name: /open compose box/i }).click();
+  }
+  await expect(send).toBeVisible();
+
+  // At 280px the group can't fit → the "…" trigger appears; open it.
+  const more = page.getByRole("button", { name: /more keys/i });
+  await expect(more).toBeVisible();
+  await more.click();
+  const menu = page.getByRole("menu");
+  await expect(menu).toBeVisible();
+
+  // The popover is fully within the viewport on all four edges (portalled + clamped).
+  const box = (await menu.boundingBox())!;
+  const vw = page.viewportSize()!.width;
+  const vh = page.viewportSize()!.height;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(vw + 1);
+  expect(box.y + box.height).toBeLessThanOrEqual(vh + 1);
+
+  // A collapsed-away action (the close chip) is reachable from the menu.
+  await expect(page.getByRole("menuitem", { name: /collapse compose box/i })).toBeVisible();
 });

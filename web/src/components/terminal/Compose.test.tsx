@@ -17,15 +17,13 @@ vi.mock("../../lib/api", () => ({
 }));
 
 let sendInput: ReturnType<typeof vi.fn>;
-let onCopy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
   sendInput = vi.fn(() => true); // default: every frame is delivered (socket OPEN)
-  onCopy = vi.fn();
 });
 
 function renderCompose(connEpoch: () => number = () => 1) {
-  return render(<Compose sendInput={sendInput} connEpoch={connEpoch} onCopy={onCopy} />);
+  return render(<Compose sendInput={sendInput} connEpoch={connEpoch} />);
 }
 
 // --- Push-to-talk dictation (#483) -------------------------------------------------------------
@@ -140,9 +138,7 @@ test("collapsing the compose box stops an active dictation (#483)", async () => 
   renderCompose();
   await user.click(screen.getByRole("button", { name: /start voice input/i }));
   expect(lastRecog!.start).toHaveBeenCalled();
-  // Collapse now lives in the "…" menu (#487): open it, then collapse.
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /collapse compose/i }));
+  await user.click(screen.getByRole("button", { name: /collapse compose/i }));
   expect(lastRecog!.stop).toHaveBeenCalled();
 });
 
@@ -156,9 +152,8 @@ test("unmounting aborts an active dictation so no recognizer outlives the box (#
 });
 
 test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicated (#487)", async () => {
-  // The shipped bug: Chrome re-fires onresult repeatedly for the SAME finalized utterance, and the
-  // old handler did `finalRef += segment` each time → "said it once, typed 10×". The handler must
-  // be idempotent — rebuild from the engine's cumulative results list. Fire the same final 6×.
+  // Chrome re-fires onresult repeatedly for the SAME finalized utterance; the handler must be
+  // idempotent (rebuild from the cumulative results list), not accumulate → "said once, typed 10×".
   installSpeech();
   const user = userEvent.setup();
   renderCompose();
@@ -170,58 +165,41 @@ test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicate
   expect(ta.value).toBe("deploy the staging build"); // once — never repeated
 });
 
-test("continuous dictation across multiple finalized results concatenates, not duplicates (#487)", async () => {
-  installSpeech();
+test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {
   const user = userEvent.setup();
   renderCompose();
-  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
-  // Chrome's results list grows as utterances finalize; later events carry the full list. Each new
-  // result's transcript starts with its own spacing, so the rebuilt string reads naturally.
-  act(() => lastRecog!.emit([{ transcript: "first part", isFinal: true }]));
-  act(() => lastRecog!.emit([{ transcript: "first part", isFinal: true }])); // re-fire — no dup
-  act(() =>
-    lastRecog!.emit([
-      { transcript: "first part", isFinal: true },
-      { transcript: " second part", isFinal: true },
-    ]),
-  );
-  expect(ta.value).toBe("first part second part");
-});
-
-test("nav keys + interrupt fire from the … menu (#487)", async () => {
-  const user = userEvent.setup();
-  renderCompose();
-  // All nav/control actions now live in the single "…" menu; it closes after each pick.
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Up" }));
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /ctrl-c/i }));
+  await user.click(screen.getByRole("button", { name: "Up" }));
+  await user.click(screen.getByRole("button", { name: "Down" }));
+  await user.click(screen.getByRole("button", { name: "Return" }));
+  await user.click(screen.getByRole("button", { name: "Tab" }));
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.up);
-  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.ctrlc);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.down);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.tab);
 });
 
-test("interrupt lives in the ⋮ action menu, not inline — opening it reveals the item (#494)", async () => {
-  const user = userEvent.setup();
+test("the single-row bar has no second (kebab) menu and no esc / copy / interrupt chips (#500)", () => {
   renderCompose();
-  // Not an inline chip anymore: nothing matches "interrupt" until the kebab menu is opened.
-  expect(screen.queryByRole("button", { name: /interrupt/i })).not.toBeInTheDocument();
-  expect(screen.queryByRole("menuitem", { name: /interrupt/i })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  const item = screen.getByRole("menuitem", { name: /interrupt/i });
-  expect(item).toHaveAttribute("aria-label", expect.stringMatching(/interrupt/i));
-  expect(item).toHaveAttribute("title", expect.stringMatching(/interrupt/i));
+  expect(screen.queryByRole("button", { name: /more actions/i })).not.toBeInTheDocument(); // no kebab
+  expect(screen.queryByRole("button", { name: /interrupt|ctrl-c/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /escape/i })).not.toBeInTheDocument();
+  // The only chips are the nav group + attach + close, then the inline Send (and mic when supported).
+  expect(screen.getByRole("button", { name: "Up" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /attach file/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /collapse compose/i })).toBeInTheDocument();
 });
 
-test("attach (file-upload) lives in the … menu and triggers the file input (#487)", async () => {
+test("the attach chip lives in the key group and triggers the file input (#487/#500)", async () => {
   const user = userEvent.setup();
   renderCompose();
-  // Not an inline row button anymore — only reachable via the "…" menu.
-  expect(screen.queryByRole("button", { name: /attach file/i })).not.toBeInTheDocument();
+  const attach = screen.getByRole("button", { name: /attach file/i });
+  // Icon-only affordance (no visible text).
+  expect(attach.textContent ?? "").toBe("");
+  // Clicking it opens the (hidden) native file picker — assert it forwards the click.
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const clicked = vi.spyOn(input, "click").mockImplementation(() => {});
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /attach file/i }));
+  await user.click(attach);
   expect(clicked).toHaveBeenCalledOnce();
 });
 
@@ -306,7 +284,7 @@ test("a content send whose deferred Enter never delivers preserves + re-saves th
   const user = userEvent.setup();
   sendInput = vi.fn((d) => d !== KEYSEQ.enter); // clear + paste deliver; the bare Enter does NOT
   render(
-    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} onCopy={onCopy} />,
+    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />,
   );
   const ta = screen.getByRole("textbox");
   await user.type(ta, "keep me");
@@ -338,7 +316,7 @@ test("Send with image attachment writes Enter as its own DEFERRED frame after th
   const user = userEvent.setup();
   vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
   const handle = createRef<ComposeHandle>();
-  render(<Compose ref={handle} sendInput={sendInput} onCopy={onCopy} />);
+  render(<Compose ref={handle} sendInput={sendInput} />);
   await user.type(screen.getByRole("textbox"), "look at this");
   // Forward an image paste the way Terminal does — the upload resolves and the
   // attachment pill renders.
@@ -390,16 +368,12 @@ test("empty Send mid-reconnect surfaces the note and sends nothing else (#474)",
   expect(await screen.findByText(/reconnecting — not sent/i)).toBeInTheDocument();
 });
 
-test("collapse (from the … menu) hides the field; the compose button shows it again (#487)", async () => {
+test("the compose toggle hides/shows the text field", async () => {
   const user = userEvent.setup();
   renderCompose();
   expect(screen.getByRole("textbox")).toBeInTheDocument();
-  // Collapse lives in the "…" menu now; the inline control becomes the "compose" (open) button.
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /collapse compose/i }));
+  await user.click(screen.getByRole("button", { name: /collapse compose/i }));
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: /open compose box/i }));
-  expect(screen.getByRole("textbox")).toBeInTheDocument();
 });
 
 test("pasting an image uploads it and adds an attachment, not text (#135)", async () => {
@@ -428,19 +402,11 @@ test("pasting plain text is left to the textarea (no upload)", async () => {
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("just text");
 });
 
-test("the copy item (in the … menu) invokes onCopy (#487)", async () => {
-  const user = userEvent.setup();
-  renderCompose();
-  await user.click(screen.getByRole("button", { name: /more actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: /copy/i }));
-  expect(onCopy).toHaveBeenCalledOnce();
-});
-
 test("attachImages opens the compose (if collapsed) and adds the upload as a pill (#157)", async () => {
   const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
   vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
   const ref = createRef<ComposeHandle>();
-  render(<Compose ref={ref} sendInput={sendInput} onCopy={onCopy} defaultOpen={false} />);
+  render(<Compose ref={ref} sendInput={sendInput} defaultOpen={false} />);
   // Desktop-style: collapsed → no textarea visible.
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   ref.current!.attachImages([file]);
@@ -454,7 +420,7 @@ test("attachImages opens the compose (if collapsed) and adds the upload as a pil
 
 test("attachImages with no files is a no-op", () => {
   const ref = createRef<ComposeHandle>();
-  render(<Compose ref={ref} sendInput={sendInput} onCopy={onCopy} defaultOpen={false} />);
+  render(<Compose ref={ref} sendInput={sendInput} defaultOpen={false} />);
   ref.current!.attachImages([]);
   expect(api.upload).not.toHaveBeenCalled();
 });
