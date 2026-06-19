@@ -136,58 +136,14 @@
   opacity: 0.4;
   cursor: default;
 }
-/* Favorite star (#122): a per-row toggle that lives OUTSIDE the hover-revealed
- * .actions cluster, so a favorited row can keep its filled star visible AT REST (a
- * child can't out-opacity the opacity:0 .actions parent). Unfavorited stars stay
- * hidden until row hover/focus — and always on narrow viewports — mirroring the
- * .actions reveal; the .favorited modifier overrides that to stay visible + amber. */
-.favBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Center vertically within the (align-items:stretch) row so the star lines up with
-   * the ⋯ menu — a fixed-height flex item otherwise pins to the top on tall rows (#426). */
-  align-self: center;
+/* Favorite star prefix (#508): the favorite toggle moved into the ⋯ menu; a favorited
+ * row instead leads its meta line with a small amber ★ (decorative — the on/off state
+ * lives on the menu item). flex:none so it never shrinks; aligns with the engine tag. */
+.favStar {
   flex: none;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  color: var(--text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.1s;
-}
-.rowWrap:hover .favBtn,
-.rowWrap:focus-within .favBtn,
-.favBtn.favorited {
-  opacity: 1;
-}
-.favBtn.favorited {
+  display: inline-flex;
+  align-items: center;
   color: var(--accent, #ffb000);
-}
-.favBtn:hover:not(:disabled),
-.favBtn:focus-visible {
-  color: var(--accent);
-}
-.favBtn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent);
-}
-.favBtn:disabled {
-  cursor: default;
-}
-@media (max-width: 800px) {
-  .favBtn {
-    width: 32px;
-    height: 32px;
-  }
-}
-@media (hover: none), (max-width: 800px) {
-  .favBtn {
-    opacity: 1;
-  }
 }
 .editRow {
   display: flex;
@@ -264,9 +220,8 @@
   line-height: 15px;
 }
 /* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
- * engine tag · time — an entity name leads with its color dot, an unassigned folder
- * group gets a muted-italic folder marker. Inline (not flex) so the metaText ellipsis
- * keeps truncating the whole line. */
+ * engine tag · time — an entity name leads with its color dot. Inline (not flex) so the
+ * metaText ellipsis keeps truncating the whole line. */
 .projectChip {
   color: var(--text-muted);
 }
@@ -277,13 +232,6 @@
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: 0;
-}
-.folderChip {
-  color: var(--text-muted);
-}
-.folderMark {
-  color: var(--text-3, var(--text-muted));
-  font-style: italic;
 }
 .empty {
   color: var(--text-muted);

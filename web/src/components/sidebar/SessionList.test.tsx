@@ -102,7 +102,7 @@ test("an empty (server-normalized) title shows the (untitled) placeholder, not t
   expect(screen.queryByText("a")).not.toBeInTheDocument();
 });
 
-test("a project-assigned row shows BOTH the entity name and its launch folder (#424 Phase 3)", async () => {
+test("an entity-assigned row keeps its project chip; the launch-folder chip is dropped (#508)", async () => {
   const inProject = {
     ...sess("claude:p", "Assigned"),
     cwd: "/home/m/work/api",
@@ -115,17 +115,18 @@ test("a project-assigned row shows BOTH the entity name and its launch folder (#
     </MemoryRouter>,
   );
   await screen.findByText("Assigned");
-  // The assigned row carries the entity chip AND its own folder chip (project + folder, #424).
+  // The assigned row keeps its entity chip…
   const assignedRow = screen.getByRole("link", { name: /Assigned/ });
   expect(within(assignedRow).getByText(/SampleProject/)).toBeInTheDocument();
-  expect(within(assignedRow).getByText(/~\/work\/api/)).toBeInTheDocument();
-  // The unassigned row has no entity → folder chip only, no SampleProject.
+  // …but the launch-folder chip is gone (#508 declutter — meta line is engine · project · time).
+  expect(within(assignedRow).queryByText(/~\/work\/api/)).not.toBeInTheDocument();
+  // The unassigned row now shows neither an entity nor a folder path.
   const unassignedRow = screen.getByRole("link", { name: /Unassigned/ });
   expect(within(unassignedRow).queryByText(/SampleProject/)).not.toBeInTheDocument();
-  expect(within(unassignedRow).getByText(/~\/claude/)).toBeInTheDocument();
+  expect(within(unassignedRow).queryByText(/~\/claude/)).not.toBeInTheDocument();
 });
 
-test("the project chip shows a color dot for a colored entity; folder rows get a decorative marker (#361)", async () => {
+test("the project chip shows a color dot for a colored entity (#361)", async () => {
   const colored = {
     ...sess("claude:p", "Colored"),
     project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
@@ -142,12 +143,9 @@ test("the project chip shows a color dot for a colored entity; folder rows get a
   expect(dot).not.toBeNull();
   expect(dot.style.background).toBe("rgb(95, 215, 255)");
   expect(dot).toHaveAttribute("aria-hidden", "true");
-  // The folder marker is a separate aria-hidden span, so the visible text content the
-  // tests (and screen readers' name computation) rely on stays the project name/path.
-  const mark = container.querySelector('[class*="folderMark"]') as HTMLElement;
-  expect(mark).toHaveAttribute("aria-hidden", "true");
-  // Both rows launch from the same cwd, so the folder chip now appears on each (#424 Phase 3).
-  expect(screen.getAllByText(/~\/claude/)).toHaveLength(2);
+  // #508: the folder chip + its decorative marker were removed — neither row shows a cwd path.
+  expect(container.querySelector('[class*="folderMark"]')).toBeNull();
+  expect(screen.queryByText(/~\/claude/)).not.toBeInTheDocument();
 });
 
 test("marks the row matching the current URL as the active session (#18)", async () => {
@@ -239,9 +237,9 @@ test("archiving a row calls api.archive and removes it from the active list", as
   await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
 });
 
-// ---- favorite star (#122) ----
+// ---- favorite, relocated into the ⋯ menu (#508, was the standalone star of #122) ----
 
-test("the favorite star toggles sticky via the API and flips its pressed state (#122)", async () => {
+test("favoriting from the row menu toggles sticky and shows the ★ prefix (#508)", async () => {
   const user = userEvent.setup();
   const onNavigate = vi.fn();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
@@ -252,20 +250,24 @@ test("the favorite star toggles sticky via the API and flips its pressed state (
     </MemoryRouter>,
   );
   await screen.findByText("First");
-  const star = screen.getByRole("button", { name: "Favorite" });
-  expect(star).toHaveAttribute("aria-pressed", "false");
+  // No standalone favorite button anymore — it lives in the ⋯ menu, and an unfavorited
+  // row shows no ★ prefix.
+  expect(screen.queryByRole("button", { name: "Favorite" })).not.toBeInTheDocument();
+  expect(screen.queryByTitle("Favorited")).not.toBeInTheDocument();
 
-  await user.click(star);
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Favorite session" }));
   expect(api.favorite).toHaveBeenCalledWith("claude:a");
-  // Flips to the pressed "Unfavorite" affordance once the row's sticky is set.
-  const pressed = await screen.findByRole("button", { name: "Unfavorite" });
-  expect(pressed).toHaveAttribute("aria-pressed", "true");
-  // The star is a sibling of the row link — toggling must not navigate the row.
+  // The amber ★ prefix appears on the now-favorited row; re-opening the menu offers Unfavorite.
+  expect(await screen.findByTitle("Favorited")).toBeInTheDocument();
+  await openRowMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Unfavorite session" })).toBeInTheDocument();
+  // Favoriting from the menu must not navigate the row.
   expect(onNavigate).not.toHaveBeenCalled();
   expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute("aria-current");
 });
 
-test("an already-favorited row shows a pressed star at rest and unfavorites (#122)", async () => {
+test("a favorited row shows the ★ prefix and unfavorites from the menu (#508)", async () => {
   const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([{ ...sess("claude:a", "Pinned"), sticky: true }]));
   vi.mocked(api.unfavorite).mockResolvedValue({ id: "claude:a", sticky: false });
@@ -275,12 +277,14 @@ test("an already-favorited row shows a pressed star at rest and unfavorites (#12
     </MemoryRouter>,
   );
   await screen.findByText("Pinned");
-  const star = screen.getByRole("button", { name: "Unfavorite" });
-  expect(star).toHaveAttribute("aria-pressed", "true");
+  // Favorited rows lead the meta line with the decorative ★ (title="Favorited").
+  expect(screen.getByTitle("Favorited")).toBeInTheDocument();
 
-  await user.click(star);
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Unfavorite session" }));
   expect(api.unfavorite).toHaveBeenCalledWith("claude:a");
-  expect(await screen.findByRole("button", { name: "Favorite" })).toBeInTheDocument();
+  // The ★ prefix clears once the row is unfavorited.
+  await waitFor(() => expect(screen.queryByTitle("Favorited")).not.toBeInTheDocument());
 });
 
 // #156 / #211 4b: every row has a status LED, but only a working row carries the meaningful
@@ -325,12 +329,12 @@ test("relative-time labels advance over time without a refetch (#159)", async ()
     );
     await screen.findByText("First");
     expect(screen.getByText(/just now/i)).toBeInTheDocument();
-    // 30s passes (one clockTick interval); relTime now sees the row as 80s old → "1m ago".
+    // 30s passes (one clockTick interval); relTime now sees the row as 80s old → "1 min ago".
     vi.setSystemTime(new Date(start.getTime() + 30_000));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
-    expect(screen.getByText(/1m ago/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 min ago/i)).toBeInTheDocument();
   } finally {
     vi.useRealTimers();
   }
@@ -480,11 +484,12 @@ test("AI review menu items stay hidden while the endpoint is unconfigured (#356/
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  // Lean menu: rename + archive only — no AI-review items, no separator group.
+  // Lean menu: favorite + rename + archive — no AI-review items, no separator group.
   expect(screen.queryByRole("menuitem", { name: "Review session now" })).not.toBeInTheDocument();
   expect(
     screen.queryByRole("menuitem", { name: "Exclude from AI review" }),
   ).not.toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Favorite session" })).toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: "Rename session" })).toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: "Archive session" })).toBeInTheDocument();
 });
@@ -524,6 +529,7 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   expect(items.map((el) => el.textContent)).toEqual([
     "Review now",
     "Exclude from AI review",
+    "Favorite",
     "Rename",
     "Move to project…",
     "Archive",

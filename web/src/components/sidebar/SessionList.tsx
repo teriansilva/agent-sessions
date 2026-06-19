@@ -14,10 +14,9 @@ import {
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useConfig } from "../../app/config";
-import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
-import { displayProjectName, engineBadge, relTime } from "../../lib/format";
+import { engineBadge, relTime } from "../../lib/format";
 import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import { MoveToProjectModal } from "./MoveToProjectModal";
@@ -64,7 +63,6 @@ function Row({
   onSetProject,
   onNavigate,
 }: RowProps) {
-  const { projectNames } = useOverviewPrefs();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(s.title);
   const [busy, setBusy] = useState(false);
@@ -216,6 +214,17 @@ function Row({
   if (menuItems.length > 0) menuItems.push("separator");
   menuItems.push(
     {
+      // Favorite toggle (#508): relocated off the row surface into the menu. The visible
+      // ★ now lives as a small prefix on the meta line (favorited rows only); this item
+      // carries the on/off accessible state the old standalone .favBtn used to.
+      key: "favorite",
+      label: s.sticky ? "Unfavorite" : "Favorite",
+      ariaLabel: s.sticky ? "Unfavorite session" : "Favorite session",
+      icon: <Star size={15} fill={s.sticky ? "currentColor" : "none"} />,
+      disabled: busy,
+      onSelect: () => void toggleFavorite(),
+    },
+    {
       key: "rename",
       label: "Rename",
       ariaLabel: "Rename session",
@@ -314,13 +323,19 @@ function Row({
             )
           )}
           <div className={styles.meta}>
+            {/* Favorite star (#508): a small amber ★ leads the meta line on favorited rows
+                only (they already pin to the top). Decorative — the on/off state lives on the
+                menu's Favorite/Unfavorite item. */}
+            {s.sticky && (
+              <span className={styles.favStar} aria-hidden="true" title="Favorited">
+                <Star size={11} fill="currentColor" />
+              </span>
+            )}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
             <span className={styles.metaText}>
-              {/* #424 Phase 3: an entity-assigned row shows BOTH its project chip (entity
-                  name + color dot when set) AND its launch-folder chip, so the row tells you
-                  what it belongs to *and* where it runs. An unassigned row has no entity, so
-                  it shows the folder chip alone — the per-cwd custom name (#148) / shortened
-                  path behind a decorative ▸ marker. */}
+              {" · "}
+              {/* #508: the launch-folder chip was dropped to declutter the narrow sidebar; an
+                  entity-assigned row still shows its project chip (name + colour dot when set). */}
               {s.project.kind === "project" && (
                 <>
                   <span className={styles.projectChip}>
@@ -336,33 +351,11 @@ function Row({
                   {" · "}
                 </>
               )}
-              <span className={styles.folderChip}>
-                <span className={styles.folderMark} aria-hidden="true">
-                  {"▸ "}
-                </span>
-                {displayProjectName(s.cwd, projectNames)}
-              </span>{" "}
-              · {relTime(s.last_mtime)}
+              {relTime(s.last_mtime)}
             </span>
           </div>
         </div>
       </NavLink>
-      {/* Favorite star (#122): a sibling of the NavLink (never nested inside it — clicking
-          must not navigate, and a <button> in an <a> is invalid). aria-pressed carries the
-          on/off state; a favorited row shows a filled amber star AT REST (its own opacity
-          rule, not the hover-revealed .actions cluster), unfavorited rows reveal an outline
-          star on hover/focus. */}
-      <button
-        type="button"
-        className={`${styles.favBtn} ${s.sticky ? styles.favorited : ""}`}
-        aria-pressed={s.sticky}
-        aria-label={s.sticky ? "Unfavorite" : "Favorite"}
-        title={s.sticky ? "Unfavorite" : "Favorite"}
-        disabled={busy}
-        onClick={() => void toggleFavorite()}
-      >
-        <Star size={15} fill={s.sticky ? "currentColor" : "none"} />
-      </button>
       <div className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}>
         <RowMenu
           items={menuItems}
