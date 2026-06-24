@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import signal
 import struct
@@ -65,6 +66,8 @@ from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stay
     note_attach,
     scrollback_cache_stats,
 )
+
+log = logging.getLogger("agent_sessions.webterm")
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -419,7 +422,15 @@ async def run(
                 break
             out_bytes["n"] += len(data)  # #443: proof-of-repaint signal for _force_repaint
             if buf_key is not None:
-                scrollback._buffer_append(buf_key, data)
+                # Scrollback bookkeeping is BEST-EFFORT and must never tear down a live viewer:
+                # the bytes reach the client via `send_bytes` below regardless. A ring/registry
+                # error here used to propagate out of `pump_out`, complete the bridge's
+                # `asyncio.wait`, and collapse the whole connection — surfacing to the user as a
+                # spurious black-screen-then-reconnect. Swallow + log instead of disconnecting.
+                try:
+                    scrollback._buffer_append(buf_key, data)
+                except Exception:
+                    log.exception("scrollback append failed for %s; continuing", buf_key)
             await ws.send_bytes(data)  # awaited → natural backpressure
 
     def _gated() -> bool:

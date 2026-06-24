@@ -16,6 +16,7 @@ import contextlib
 import logging
 import os
 import re
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -69,6 +70,18 @@ _MAX_BUF = _scrollback_bytes()
 # primary reclaim path.
 _MAX_BUFFERS = 64
 _BUFFERS: OrderedDict[str, bytearray] = OrderedDict()
+# Serialises STRUCTURAL access to the `_BUFFERS` registry — inserts, pops, `move_to_end`,
+# and any *iteration* over it. The event loop is the normal writer (the WS pump + the
+# headless SessionStream drain both land in `_buffer_append`), but the AI-review path reads
+# the live tail from a WORKER THREAD (`asyncio.to_thread` → `live_tail_text` → `_ensure_loaded`),
+# which can hydrate-and-insert a buffer concurrently with the loop's `_enforce_buffer_cap` scan.
+# Unserialised, that races into `RuntimeError('OrderedDict mutated during iteration')` mid-scan —
+# which used to propagate out of `_buffer_append`, collapse the byte pump, and disconnect the
+# viewer (a "random" black-then-reconnect). In-place `bytearray.extend` of an *existing* ring
+# value is deliberately NOT held under this lock (it doesn't change the dict's shape, and readers
+# take an atomic slice copy); only the registry's structure is guarded. Re-entrant so the
+# `_buffer_append → _enforce_buffer_cap → _drop_buffer` chain on one thread never self-deadlocks.
+_RING_LOCK = threading.RLock()
 _TOTALS: OrderedDict[str, int] = OrderedDict()
 # Per-key width (cols) the buffer's bytes were last written at — i.e. the agent's current pty
 # width. Used to decide clean-load vs replay on a fresh load (#244): replay only when the
@@ -340,25 +353,35 @@ def _persist_append(key: str, data: bytes) -> None:
 def _ensure_loaded(key: str) -> None:
     """On the first touch of a key in this process, hydrate its in-memory ring from the
     persisted file — so a reattach after a restart replays the prior scrollback. No-op if
-    already loaded/live or no file exists."""
+    already loaded/live or no file exists.
+
+    Thread-safety (Hermes #512): this runs on a WORKER THREAD via the AI-review path
+    (``live_tail_text``) AND on the event loop (``_buffer_append``). The load marker
+    (``_LOADED_FROM_DISK``) must be set ATOMICALLY WITH the registry insert, under ``_RING_LOCK``
+    and set LAST — never up-front. The old "mark first, hydrate later" order let a concurrent
+    first-touch observe the key as loaded while the durable ring was still mid-read, so the loop's
+    ``_buffer_append`` would create a fresh empty ring and the persisted scrollback was silently
+    dropped. The disk reads below are one-time, idempotent, and stay OUTSIDE the lock (slow I/O);
+    only the apply step is serialised. A concurrent first-touch may read the same files twice —
+    harmless — but the winner's hydrate is always preserved."""
     if key in _LOADED_FROM_DISK:
         return
-    _LOADED_FROM_DISK.add(key)
-    if key in _BUFFERS:  # already live in this process — the ring is authoritative
-        return
-    # Restore the ring's authored width first (#348 Phase 1) — without it the post-restart
-    # reconnect can never be a same-width continuation and the hydrated ring goes unused.
-    # Independent of ring bytes existing: the width survives even an empty/missing mirror.
+    # --- all disk I/O OUTSIDE the lock; nothing here mutates shared state yet ---
+    # Restore the ring's authored width (#348 Phase 1) — without it the post-restart reconnect
+    # can never be a same-width continuation and the hydrated ring goes unused. Independent of
+    # ring bytes existing: the width survives even an empty/missing mirror.
+    cols: int | None = None
     if key not in _LAST_COLS:
         with contextlib.suppress(OSError, ValueError):
-            _LAST_COLS[key] = int(_cols_path(key).read_text().strip())
+            cols = int(_cols_path(key).read_text().strip())
     # Restore the active private-mode set (#397) so a post-restart attach replays the
     # mouse/alternate-scroll/bracketed-paste modes the agent set at startup. Corrupt or
     # partial sidecar entries are skipped per-token rather than poisoning the whole set.
+    modes: set[int] | None = None
     if key not in _MODES:
         with contextlib.suppress(OSError):
             raw = _modes_path(key).read_text().strip()
-            _MODES[key] = {
+            modes = {
                 int(tok)
                 for tok in raw.split(",")
                 if tok.strip().isdigit() and int(tok) in _MODE_TRACK
@@ -366,12 +389,21 @@ def _ensure_loaded(key: str) -> None:
     try:
         data = _scrollback_path(key).read_bytes()[-_MAX_BUF:]
     except OSError:
-        return
-    if not data:
-        return
-    _BUFFERS[key] = bytearray(data)
-    _BUFFERS.move_to_end(key)
-    _TOTALS[key] = len(data)
+        data = b""
+    # --- apply + mark-loaded atomically under the lock; marker set LAST ---
+    with _RING_LOCK:
+        if key in _LOADED_FROM_DISK:
+            return  # another first-touch finished the hydrate while we were reading disk
+        if cols is not None and key not in _LAST_COLS:
+            _LAST_COLS[key] = cols
+        if modes is not None and key not in _MODES:
+            _MODES[key] = modes
+        # Only seed the ring if nothing live already holds it (the loop's ring is authoritative).
+        if data and key not in _BUFFERS:
+            _BUFFERS[key] = bytearray(data)
+            _BUFFERS.move_to_end(key)
+            _TOTALS[key] = len(data)
+        _LOADED_FROM_DISK.add(key)
 
 
 def scrollback_cache_stats() -> dict[str, int]:
@@ -448,7 +480,8 @@ def _drop_buffer(key: str) -> None:
     # In-memory only — the on-disk scrollback is durable and is removed solely by
     # `clear_scrollback` (Settings cache management). Dropping `_LOADED_FROM_DISK` lets a
     # later touch re-hydrate the ring from disk after an eviction.
-    _BUFFERS.pop(key, None)
+    with _RING_LOCK:
+        _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
@@ -469,7 +502,8 @@ def _reset_ring(key: str) -> None:
     would re-garble (Hermes #245). The agent repaints fresh at the new width; ``_TOTALS`` stays
     monotonic so delta-resume offsets remain valid. (The width-aware screen model #242 makes this
     unnecessary by re-rendering history at any width.)"""
-    _BUFFERS[key] = bytearray()
+    with _RING_LOCK:
+        _BUFFERS[key] = bytearray()
     with contextlib.suppress(OSError):
         _scrollback_path(key).unlink()
     _LOADED_FROM_DISK.add(key)  # don't re-hydrate the now-removed file
@@ -507,7 +541,13 @@ def _enforce_buffer_cap() -> None:
     end-of-run via `_maybe_evict_ended`.
     """
     while len(_BUFFERS) > _MAX_BUFFERS:
-        victim = next((k for k in _BUFFERS if not _session_alive(k)), None)
+        # Snapshot the keys under the lock, THEN probe outside it. The snapshot makes the scan
+        # immune to a concurrent hydrate-insert from the AI-review worker thread (the
+        # `OrderedDict mutated during iteration` crash). `_session_alive` does a blocking socket
+        # probe, so it must NOT run while holding the lock — hence snapshot-then-probe.
+        with _RING_LOCK:
+            candidates = list(_BUFFERS)
+        victim = next((k for k in candidates if not _session_alive(k)), None)
         if victim is None:
             break  # everything retained is live — keep it all
         _drop_buffer(victim)
@@ -515,11 +555,14 @@ def _enforce_buffer_cap() -> None:
 
 def _buffer_append(key: str, data: bytes) -> None:
     _ensure_loaded(key)  # hydrate prior scrollback from disk before the first append (#206)
-    buf = _BUFFERS.get(key)
-    if buf is None:
-        buf = bytearray()
-        _BUFFERS[key] = buf
-    _BUFFERS.move_to_end(key)  # most-recently-used
+    # Guard only the registry structure (get-or-create + LRU touch); the `extend` below mutates
+    # the ring VALUE in place, which doesn't change the dict shape and so needs no lock.
+    with _RING_LOCK:
+        buf = _BUFFERS.get(key)
+        if buf is None:
+            buf = bytearray()
+            _BUFFERS[key] = buf
+        _BUFFERS.move_to_end(key)  # most-recently-used
     buf.extend(data)
     # Feed the VT live mirror (#273) the same bytes, in order. No-op unless the flag is on AND a
     # client has opened the session (note_resize), so detached-but-unviewed sessions cost nothing.
@@ -560,19 +603,23 @@ _ANSI_ESCAPES = re.compile(
 def live_tail_text(key: str, max_chars: int = 4000) -> str:
     """Bounded, ANSI-stripped plain text from the tail of the session's live output ring
     (#356): the NARROW accessor the AI-review engine uses, so review code never reaches
-    into the ``_BUFFERS`` module globals directly. Pure CPU over a bounded slice (no I/O
-    beyond the one-time ring hydrate), so it is safe to call from a worker thread off the
-    event loop. Returns ``""`` when the session has no observed output (headless / no PTY
-    / evicted) — the caller falls back to transcript-only review."""
+    into the ``_BUFFERS`` module globals directly. Called from a WORKER THREAD off the event
+    loop (`asyncio.to_thread`), so every touch of the shared ring registry — the one-time
+    hydrate in ``_ensure_loaded`` and the slice read below — is serialised under ``_RING_LOCK``
+    against the loop's concurrent writes/scan; the (bounded) ANSI-strip CPU work runs outside
+    the lock. Returns ``""`` when the session has no observed output (headless / no PTY /
+    evicted) — the caller falls back to transcript-only review."""
     if max_chars <= 0:
         return ""
     _ensure_loaded(key)
-    ring = _BUFFERS.get(key)
-    if not ring:
-        return ""
     # Escapes inflate raw bytes well past their visible text; an 8× slice bounds the
-    # strip work while almost always covering max_chars of visible output.
-    raw = bytes(ring[-(max_chars * 8) :])
+    # strip work while almost always covering max_chars of visible output. Copy the slice
+    # under the lock so a concurrent `extend`/evict on the loop can't tear the read.
+    with _RING_LOCK:
+        ring = _BUFFERS.get(key)
+        raw = bytes(ring[-(max_chars * 8) :]) if ring else b""
+    if not raw:
+        return ""
     text = _ANSI_ESCAPES.sub(b"", raw).decode("utf-8", "replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Collapse the blank-line runs full-screen repaints leave behind.

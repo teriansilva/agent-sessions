@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import time
 from typing import TYPE_CHECKING
 
 from . import engines, ptybridge, webterm
+
+log = logging.getLogger("agent_sessions.session_stream")
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -140,7 +143,13 @@ class SessionStream:
                 data = await loop.run_in_executor(None, self._read_once, self._master)
                 if not data:
                     break
-                webterm._buffer_append(self.key, data)
+                # Best-effort bookkeeping: a ring/registry error must not kill the headless
+                # reader (it would stop refreshing scrollback + the working signal for this
+                # session until the next attach). Swallow + log; keep draining.
+                try:
+                    webterm._buffer_append(self.key, data)
+                except Exception:
+                    log.exception("scrollback append failed for %s; continuing", self.key)
                 # Best-effort fan-out: a slow subscriber drops its queue rather
                 # than back-pressuring the whole drain loop. Reserved for the
                 # phase-2 subscribe-tail consolidation.

@@ -353,3 +353,122 @@ def test_clear_specific_key_removes_modes_after_reset_ring():
     scrollback.clear_scrollback([key])
     assert not scrollback._modes_path(key).exists()
     assert key not in scrollback._MODES
+
+
+def test_enforce_buffer_cap_survives_concurrent_insert(monkeypatch):
+    """Regression for the "random disconnect/reconnect" bug.
+
+    The AI-review path reads the live tail from a WORKER THREAD (``asyncio.to_thread`` →
+    ``live_tail_text`` → ``_ensure_loaded``), which can hydrate-and-insert a buffer while the
+    event loop is mid-scan in ``_enforce_buffer_cap``. That used to raise
+    ``RuntimeError('OrderedDict mutated during iteration')`` and propagate out of
+    ``_buffer_append`` → collapse the WS byte pump → a spurious viewer disconnect. The cap must
+    scan a stable snapshot and tolerate the insert.
+
+    Deterministic stand-in for the thread race: a patched ``_session_alive`` performs the insert
+    on its first call — exactly the mutation the GIL-release window of the real blocking socket
+    probe (``ptybridge.probe_master``) allows — so no real threads are needed to reproduce it.
+    Pre-fix this body raises; post-fix it returns cleanly.
+    """
+    for i in range(scrollback._MAX_BUFFERS + 2):
+        scrollback._BUFFERS[f"claude:sess-{i}"] = bytearray(b"x")
+
+    calls = {"n": 0}
+
+    def fake_alive(key: str) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The worker-thread hydrate landing mid-scan.
+            scrollback._BUFFERS["claude:injected-mid-scan"] = bytearray(b"y")
+        return True  # every session looks alive → the scan walks the whole registry
+
+    monkeypatch.setattr(scrollback, "_session_alive", fake_alive)
+
+    scrollback._enforce_buffer_cap()  # must not raise
+
+    assert "claude:injected-mid-scan" in scrollback._BUFFERS  # insert preserved, not lost
+    assert calls["n"] >= 2  # the scan kept walking past the mutating key without crashing
+
+
+def test_buffer_registry_thread_safe_under_live_tail_reads():
+    """``live_tail_text`` (worker thread, AI review) hydrates + slices the ring while the loop
+    churns ``_buffer_append`` + LRU eviction over the same keys. With ``_RING_LOCK`` guarding the
+    registry this is safe; without it the OrderedDict races. Assert no exception escapes either
+    side across many interleavings. (Deterministically GREEN with the fix; it was this exact
+    interleaving — minus the lock — that produced the production crash.)"""
+    import threading
+
+    errors: list[BaseException] = []
+    stop = threading.Event()
+    # > _MAX_BUFFERS distinct keys so appends push over the cap and trigger eviction scans.
+    n_keys = scrollback._MAX_BUFFERS + 16
+
+    def reader() -> None:
+        i = 0
+        try:
+            while not stop.is_set():
+                scrollback.live_tail_text(f"claude:sess-{i % n_keys}", 200)
+                i += 1
+        except BaseException as e:  # noqa: BLE001 — catching a race is the whole point
+            errors.append(e)
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        for r in range(2000):
+            scrollback._buffer_append(f"claude:sess-{r % n_keys}", b"some output\n")
+    except BaseException as e:  # noqa: BLE001
+        errors.append(e)
+    finally:
+        stop.set()
+        t.join(timeout=5)
+
+    assert not errors, f"registry race surfaced: {errors[:3]}"
+
+
+def test_concurrent_first_touch_preserves_persisted_tail(monkeypatch):
+    """Hermes #512: a worker-thread hydrate (``live_tail_text`` → ``_ensure_loaded``) whose disk
+    read is in flight when an event-loop ``_buffer_append`` for the same key lands must NOT drop
+    the durable scrollback. The load marker is now set atomically with the insert (under the lock,
+    LAST), so the loop append extends the hydrated ring instead of clobbering it with a fresh one.
+
+    Deterministic stand-in for the thread interleave: the scrollback file's ``read_bytes`` fires
+    the racing append exactly once, mid-hydrate. Pre-fix this leaves ``b"new"`` (persisted
+    ``b"old"`` silently lost); post-fix it leaves ``b"oldnew"`` with a consistent total.
+    """
+    key = "claude:hydrate-race"
+    scrollback._buffer_append(key, b"old")  # persist a tail to disk
+    # Simulate a restart: in-memory state gone, disk mirror intact.
+    scrollback._BUFFERS.clear()
+    scrollback._TOTALS.clear()
+    scrollback._LOADED_FROM_DISK.clear()
+
+    orig_path = scrollback._scrollback_path
+    state = {"raced": False}
+
+    class _RacingPath:
+        """Proxies the real scrollback Path but injects an event-loop append the first time the
+        hydrate reads the file — i.e. while the worker's disk read is 'in flight'."""
+
+        def __init__(self, p):
+            self._p = p
+
+        def read_bytes(self):
+            if not state["raced"]:
+                state["raced"] = True
+                scrollback._buffer_append(key, b"new")
+            return self._p.read_bytes()
+
+        def __getattr__(self, name):
+            return getattr(self._p, name)
+
+    monkeypatch.setattr(
+        scrollback,
+        "_scrollback_path",
+        lambda k: _RacingPath(orig_path(k)) if k == key else orig_path(k),
+    )
+
+    scrollback.live_tail_text(key, 100)  # triggers the racing first-touch hydrate
+
+    assert bytes(scrollback._BUFFERS[key]) == b"oldnew"  # persisted tail preserved + append kept
+    assert scrollback._TOTALS[key] == 6  # totals consistent with the surviving bytes
