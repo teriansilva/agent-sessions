@@ -276,6 +276,11 @@ export function Terminal({
       jiggleTimers.push(
         setTimeout(() => {
           if (sock !== sockRef.current) return;
+          // The initial attach replay is over: release the tail lock so steady-state follow is
+          // governed purely by viewport position (computeAtBottom). Without this the lock would
+          // only ever clear on a wheel/touch/key gesture, so a scrollbar-drag scroll-up was
+          // dragged back to the bottom by the next output chunk (the "always jumps to bottom" bug).
+          initialTailLock = false;
           // "Blank" used to mean "essentially no replay bytes". #407 shows the
           // byte count is not enough: a large raw replay can process successfully
           // while xterm's visible row layer remains empty. In that case, repaint too.
@@ -502,16 +507,20 @@ export function Terminal({
           sawOutput = true;
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
-          else
+          else {
+            // Follow the live tail ONLY when the viewport is already sitting on it (measured
+            // before the write) — so streaming output never yanks the reader out of scrollback,
+            // no matter HOW they scrolled up (wheel, scrollbar drag, touch, keyboard). When they
+            // are off the tail the scroll-to-bottom button (atBottom state) lets them jump back.
+            // `initialTailLock` overrides this for the first attach replay only: a large raw
+            // replay can otherwise leave xterm's DOM viewport parked above the final frame even
+            // though the user never scrolled, presenting as an empty console (#407).
+            const follow = initialTailLock || computeAtBottom();
             term.write(b, () => {
-              // During the first attach replay, keep the viewport on the live tail unless the user
-              // has made an explicit scroll gesture. Large raw replays can otherwise leave xterm's
-              // DOM viewport parked above the final frame, presenting as an empty console (#407).
-              if (initialTailLock && !userScrolled) {
-                term.scrollToBottom();
-                updateAtBottom();
-              }
+              if (follow) term.scrollToBottom();
+              updateAtBottom(); // refresh the FAB even when not following — output grew the tail
             });
+          }
         },
         onStatus: (s) => {
           setStatus(s);
@@ -960,7 +969,10 @@ export function Terminal({
             </button>
           </div>
         )}
-        {coarse && !atBottom && (
+        {/* Scroll-to-bottom button (#187, generalised): shown on EVERY pointer type whenever the
+            viewport is off the live tail, so desktop users who scrolled up into history have a
+            one-click jump back to the tail (and follow resumes once they are at the bottom). */}
+        {!atBottom && (
           <button
             type="button"
             className={styles.scrollFab}

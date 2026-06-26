@@ -287,8 +287,8 @@ test("loads WebLinksAddon and opens links in a new tab with noopener,noreferrer 
   expect(open).toHaveBeenCalledWith("https://example.com/foo", "_blank", "noopener,noreferrer");
 });
 
-// #187: mobile floating scroll-to-bottom FAB. Mounts only on coarse pointers AND when
-// the viewport is off the live tail; tapping it calls term.scrollToBottom() and the
+// #187: floating scroll-to-bottom button. Mounts on EVERY pointer type whenever the
+// viewport is off the live tail; tapping it calls term.scrollToBottom() and the
 // button auto-hides.
 function setCoarsePointer(coarse: boolean) {
   vi.stubGlobal("matchMedia", (q: string) => ({
@@ -325,17 +325,27 @@ test("#187 FAB appears when the user scrolls off the tail, dismisses on tap", ()
   expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
 });
 
-test("#187 FAB never shows on a fine-pointer (desktop) device", () => {
+test("#187 FAB shows on a fine-pointer (desktop) device too", () => {
+  // Regression: the button used to be gated behind coarse pointers, leaving desktop users
+  // who scrolled up into history with no one-click way back to the tail. It now shows on
+  // every pointer type whenever the viewport is off the live tail.
   setCoarsePointer(false);
   render(wrap(<Terminal engine="claude" id="abc" />));
   const term = xterms[0];
 
+  // On the tail: hidden.
+  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+
+  // Scrolled off the tail: visible, and a click jumps back to the bottom.
   act(() => {
     term.buffer.active.baseY = 100;
     term.buffer.active.viewportY = 0;
     term.fireScroll();
   });
-
+  const fab = screen.getByRole("button", { name: /scroll to bottom/i });
+  expect(fab).toBeInTheDocument();
+  fireEvent.click(fab);
+  expect(term.scrollToBottom).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
 });
 

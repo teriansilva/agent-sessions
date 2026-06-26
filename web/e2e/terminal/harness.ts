@@ -194,6 +194,22 @@ export async function setupBench(page: Page, opts: BenchOptions) {
   await page.addInitScript(fakeWsScript());
 }
 
+/** Stream more live output from the fake server AFTER attach — i.e. simulate the agent
+ *  printing while the user reads scrollback. Delivers raw bytes on the live bench WS (the
+ *  same channel the attach replay used), so the client writes them as ordinary output.
+ *  Used to prove streaming output never yanks a scrolled-up viewport. */
+export async function pushOutput(page: Page, text: string) {
+  await page.evaluate((t) => {
+    const ws = (
+      window as unknown as {
+        __BENCH_LAST_WS__?: { onmessage?: (e: { data: ArrayBuffer }) => void };
+      }
+    ).__BENCH_LAST_WS__;
+    if (!ws?.onmessage) throw new Error("BENCH: no live WS to push output from");
+    ws.onmessage({ data: new TextEncoder().encode(t).buffer });
+  }, text);
+}
+
 /** Assert the live terminal shows the given text (in the visible xterm rows). */
 export async function expectTerminalShows(page: Page, text: string) {
   await expect(page.locator(".xterm-rows")).toContainText(text, { timeout: 5000 });

@@ -96,8 +96,8 @@
   color: #f3b0b0;
   border-color: #5a2a2a;
 }
-/* Mobile-only floating scroll-to-bottom button (#187). Sits above any safe-area
- * inset in the bottom-right of the terminal area; frosted glass via backdrop-filter
+/* Floating scroll-to-bottom button (#187, shown on every pointer type). Sits above any
+ * safe-area inset in the bottom-right of the terminal area; frosted glass via backdrop-filter
  * so it never fully obscures the agent's text underneath. Sits above the touch-
  * capture overlay (z-index 6) so taps reach it instead of starting a scroll drag. */
 .scrollFab {
