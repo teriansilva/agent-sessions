@@ -143,7 +143,6 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 | `AGENT_SESSIONS_SCROLLBACK_BYTES` | Per-session raw-byte replay-ring cap (live scroll-up depth). Default 8 MiB; floored at 256 KiB (smaller values are ignored). |
 | `AGENT_SESSIONS_METADATA` / `_PREFS` / `_ENV_FILE` / `_LOCK_DIR` | Sidecar JSON, per-user prefs, env-file path, single-writer locks. |
 | `AGENT_SESSIONS_WEB_DIST` | Built SPA dir (`current/src/web/dist`). |
-| `AGENT_SESSIONS_VT_SIDECAR_JS` / `_NODE` / `_SOCK` · `_VT_SCROLLBACK` | VT scrollback sidecar (bundle, node, socket, enable flag). |
 | `AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK` | Enable the semantic console-style scroll-up. |
 | `AGENT_SESSIONS_TRANSCRIPT_MAX_LINES` | Transcript scroll-up render cap in lines (#348). Default `20000`; non-numeric/garbage falls back to the default, values are floored at `1`. |
 | `AGENT_SESSIONS_TRANSCRIPT_MAX_MESSAGES` | Max conversation messages read for the transcript render (#348). Default `2000`; same fallback/floor rules. |

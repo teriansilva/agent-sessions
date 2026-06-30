@@ -34,7 +34,7 @@ import struct
 import termios
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 
-from . import scrollback, sessionlock, vtsidecar
+from . import scrollback, sessionlock
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -260,13 +260,9 @@ async def run(
     # working dot (#195). Genuine output after the grace window stamps normally.
     if buf_key:
         scrollback.note_attach(buf_key)
-        # Open/size the VT live mirror (#273) at the agent's launch geometry BEFORE any snapshot or
-        # feed, so the persistent emulator exists and renders incoming bytes at the agent's width.
-        # No-op unless the flag is on. The mirror is then fed by `_buffer_append` for this session's
-        # whole life (attached pump AND detached SessionStream), so a later reattach snapshots a
-        # fully-current, duplicate-free console history.
+        # Track the agent's launch geometry so the headless SessionStream reader can size its pty
+        # to the session's last-known rows on a detached attach (session_stream reads _LAST_ROWS).
         scrollback._LAST_ROWS[buf_key] = rows
-        vtsidecar.note_resize(buf_key, cols, rows)
 
     # (Re)connect resume: replay history (or just the delta since the client's `have`
     # offset) so a reattach shows the prior conversation and a transient drop continues
@@ -315,35 +311,25 @@ async def run(
             # reconnect must survive the blank-attach rule).
             blank_attach = False
         if not scrollback._is_same_width_continuation(have, total, buffer_cols, cols):
-            # Path B (#271/#273): the faithful real-console snapshot from the VT sidecar, rebuilt
-            # from the ring at this client's width. Flag-gated + fail-safe (None when off/unhealthy)
-            # — then we fall back to transcript scroll-up, then a clean-load clear. Synthetic:
-            # `total` is unchanged so the `seq` frame + delta-resume are unaffected.
-            # transcript/VT scroll-up ends at "now" → the live replay below duplicates
-            # the tail; `synthetic` marks payloads that need the boundary rule.
+            # Not a same-width continuation: serve the engine's saved transcript scroll-up, else a
+            # clean-load clear. Synthetic: `total` is unchanged so the `seq` frame + delta-resume
+            # stay unaffected. The transcript scroll-up ends at "now" → the live replay below
+            # duplicates the tail; `synthetic` marks payloads that need the boundary rule.
             synthetic = False
-            vtpayload = await scrollback._vt_snapshot_payload(buf_key, cols, rows)
-            if vtpayload is not None:
-                payload = vtpayload
+            tres = await loop.run_in_executor(
+                None, scrollback._transcript_payload, buf_key, cols, rows
+            )
+            if tres is not None:
+                payload, hist_cursor = tres
                 synthetic = True
             else:
-                tres = await loop.run_in_executor(
-                    None, scrollback._transcript_payload, buf_key, cols, rows
-                )
-                if tres is not None:
-                    payload, hist_cursor = tres
-                    synthetic = True
-                else:
-                    # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
-                    # replay), reset the ring so a later same-width attach can't replay stale bytes.
-                    # With VT on, the ring is the source we rebuild from at any width — never reset
-                    # it (#273), or the next attach loses its faithful scroll-up.
-                    clear = scrollback._clean_load_payload(total, cols, buffer_cols)
-                    if clear is not None:
-                        if not vtsidecar.enabled():
-                            scrollback._reset_ring(buf_key)
-                        payload = clear
-                        payload_is_clear = True
+                # No transcript → clean-load: clear on a width mismatch (no garbled cross-width
+                # replay), reset the ring so a later same-width attach can't replay stale bytes.
+                clear = scrollback._clean_load_payload(total, cols, buffer_cols)
+                if clear is not None:
+                    scrollback._reset_ring(buf_key)
+                    payload = clear
+                    payload_is_clear = True
         # Track this client's width for the clean-load fallback / resize logic (every
         # connect) — attach-aware so the persisted sidecar only ever claims a width the
         # retained ring was actually authored at (Hermes #360 round 3).
@@ -475,28 +461,16 @@ async def run(
                         # Reset so the ring stays single-width = the agent's current width (#245).
                         # (Height-only resizes — the common mobile address-bar case — don't change
                         # cols, so they never reset and scrollback survives them.)
-                        # EXCEPT with VT on (#273): the live mirror tracks the agent's geometry and
-                        # reflows on resize, so the ring is no longer the scroll-up source and must
-                        # NOT be wiped — else a width change destroys delta-resume continuity.
                         ring_width_changed = bool(
                             buf_key and new_cols != scrollback._LAST_COLS.get(buf_key)
                         )
-                        if ring_width_changed and not vtsidecar.enabled():
+                        if ring_width_changed:
                             scrollback._reset_ring(buf_key)
                         if buf_key:
-                            # VT on + width change keeps the (now mixed-width) ring →
-                            # drop the persisted single-width claim (Hermes #360 r3);
-                            # otherwise the ring was reset or the width is unchanged,
-                            # so persisting stays truthful.
-                            scrollback.note_cols(
-                                buf_key,
-                                new_cols,
-                                persist=not (ring_width_changed and vtsidecar.enabled()),
-                            )
+                            # The ring was reset (or the width is unchanged), so the persisted
+                            # single-width claim stays truthful.
+                            scrollback.note_cols(buf_key, new_cols)
                             scrollback._LAST_ROWS[buf_key] = new_rows
-                            # Track the agent's new pty geometry on the live mirror so subsequent
-                            # bytes render at the right size (repaints overwrite, no dup) (#273).
-                            vtsidecar.note_resize(buf_key, new_cols, new_rows)
                         _set_winsize(master, new_rows, new_cols)
                         # TIOCSWINSZ on the master doesn't reliably deliver SIGWINCH to
                         # the dtach client here, so dtach never forwards the new size to

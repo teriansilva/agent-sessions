@@ -566,14 +566,13 @@ def test_ws_attach_clears_when_client_is_ahead_of_rehydrated_ring(tmp_path, monk
     take the width-correct path whose payload begins with the clean-load clear, wiping the client's
     stale scrollback. Without the fix the predicate said "continuation" → the full ring was replayed
     UNDER the stale screen and the conversation rendered twice."""
-    from agent_sessions import scrollback, transcript, vtsidecar, webterm
+    from agent_sessions import scrollback, transcript, webterm
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
     scrollback._LAST_COLS.clear()
     scrollback._LOADED_FROM_DISK.clear()
     monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
-    monkeypatch.setattr(vtsidecar, "enabled", lambda: False)  # force the transcript path, not VT
     turns = [
         transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(6)
     ]

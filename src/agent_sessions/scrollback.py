@@ -22,14 +22,9 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import ptybridge, transcript, vtsidecar
+from . import ptybridge, transcript
 
 log = logging.getLogger("agent_sessions.scrollback")
-
-# Once-per-key marker for the VT→transcript downgrade log (#348 Phase 2): when the live
-# mirror is enabled but can't serve a snapshot (cold/dirty/unhealthy), the attach silently
-# fell back to the capped transcript — operators had no signal that depth degraded.
-_VT_DOWNGRADE_LOGGED: set[str] = set()
 
 # `_TOTALS[key]` is a monotonic count of *all* bytes ever sent for the key (not just
 # what's still in the ring). It powers delta-resume: a reconnecting client reports the
@@ -311,18 +306,15 @@ def note_attach_width(key: str, cols: int) -> None:
     """Attach-time width bookkeeping (#348). Keeps the persisted sidecar truthful:
 
     * ring empty or already authored at ``cols`` → coherent: persist the width.
-    * retained bytes at a DIFFERENT/unknown width, VT off → mirror the #245 resize
-      policy at attach: reset the ring (the agent re-renders at this client's width
-      from here on; the old bytes could only ever garble a later same-width replay),
-      then persist the now-truthful width.
-    * same, VT on → the ring is the mirror's feed and must not be wiped (#273), but it
-      is mixed-width — drop the persisted claim so a post-restart reconnect renders
-      the width-correct transcript instead of faking a continuation.
+    * retained bytes at a DIFFERENT/unknown width → mirror the #245 resize policy at
+      attach: reset the ring (the agent re-renders at this client's width from here on;
+      the old bytes could only ever garble a later same-width replay), then persist the
+      now-truthful width.
     """
     _ensure_loaded(key)
     ring_len = len(_BUFFERS.get(key) or b"")
     coherent = ring_len == 0 or ring_cols(key) == cols
-    if not coherent and not vtsidecar.enabled():
+    if not coherent:
         _reset_ring(key)
         coherent = True
     note_cols(key, cols, persist=coherent)
@@ -491,8 +483,6 @@ def _drop_buffer(key: str) -> None:
     _MODES.pop(key, None)
     _MODE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
-    # Tear down the session's VT-sidecar emulator too (#273). No-op unless the flag is on.
-    vtsidecar.note_session_end(key)
 
 
 def _reset_ring(key: str) -> None:
@@ -564,11 +554,6 @@ def _buffer_append(key: str, data: bytes) -> None:
             _BUFFERS[key] = buf
         _BUFFERS.move_to_end(key)  # most-recently-used
     buf.extend(data)
-    # Feed the VT live mirror (#273) the same bytes, in order. No-op unless the flag is on AND a
-    # client has opened the session (note_resize), so detached-but-unviewed sessions cost nothing.
-    # This is the single chokepoint for ALL agent output — both the attached WS pump and the
-    # server-owned SessionStream drain land here — so the mirror stays current either way.
-    vtsidecar.note_feed(key, data)
     # Track DECSET/DECRST private modes off the SAME single chokepoint (#397) — both the
     # attached WS pump and the detached SessionStream land here, so mouse-reporting /
     # alternate-scroll / bracketed-paste state stays current with or without a viewer.
@@ -782,36 +767,3 @@ def _transcript_payload(buf_key: str, cols: int, rows: int = 24) -> tuple[bytes,
     # transcript scrolls up into xterm's scrollback. The live agent repaints into the blank viewport
     # below — it can't clobber the transcript above (#301). Scroll-up lands on the transcript.
     return _CLEAN_LOAD_CLEAR + body + b"\r\n" * max(1, rows), boundary
-
-
-async def _vt_snapshot_payload(buf_key: str, cols: int, rows: int) -> bytes | None:
-    """Path B faithful scroll-up (#271/#273): snapshot the session's LIVE mirror emulator — the
-    persistent emulator fed the agent's PTY output incrementally and resized in step with the agent
-    (see ``vtsidecar`` + ``_buffer_append``) — reflowed to the client width and framed like the
-    transcript payload (clear + rows + blank line).
-
-    The mirror is the only faithful source: it processed every byte in order at the agent geometry,
-    so Ink's repaints overwrote in place and scrollback holds each line once (no duplication). The
-    superseded one-shot ``rebuild`` from the saved ring could not — the ring is a mixed-geometry
-    soup of repaints and duplicated.
-
-    Flag-gated + fail-safe: returns ``None`` when the flag is off, the session isn't mirrored yet
-    (cold — e.g. just deployed / never attached this process), it's alt-screen, or the sidecar is
-    unhealthy/slow — so the caller falls back to the (clean) transcript path, NEVER a dup-prone
-    ring replay. Synthetic scroll-up; the caller leaves ``_TOTALS``/``have``/``seq`` untouched."""
-    if not vtsidecar.enabled():
-        return None
-    _ensure_loaded(buf_key)
-    ring = bytes(_BUFFERS.get(buf_key) or b"")
-    if not ring or _in_alt_screen(ring):
-        return None  # nothing to show / alt-screen TUIs repaint themselves
-    snap = await vtsidecar.live_snapshot(buf_key, cols, rows)
-    if not snap:
-        # Downgrade to the capped transcript — log once per key so a chronically dirty /
-        # unhealthy mirror is visible to operators instead of silently shallow (#348).
-        if buf_key not in _VT_DOWNGRADE_LOGGED:
-            _VT_DOWNGRADE_LOGGED.add(buf_key)
-            log.info("vt mirror unavailable for %s — attach degraded to transcript", buf_key)
-        return None  # cold mirror → caller falls back to the clean transcript, not a dup replay
-    _VT_DOWNGRADE_LOGGED.discard(buf_key)  # healthy again → a later downgrade logs again
-    return _CLEAN_LOAD_CLEAR + snap + b"\r\n"

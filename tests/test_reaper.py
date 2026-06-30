@@ -82,12 +82,9 @@ def test_sweep_kills_nothing_in_dry_run(monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_REAP_IDLE_SECONDS", "100")
     monkeypatch.setenv("AGENT_SESSIONS_REAP_DRY_RUN", "1")
     monkeypatch.setattr(reaper.engines, "scan_all", lambda: [])
-    calls = {"find": 0, "signal": 0, "mirror": 0}
+    calls = {"find": 0, "signal": 0}
     monkeypatch.setattr(reaper, "_find_master_pid", lambda e, s: calls.__setitem__("find", 1))
     monkeypatch.setattr(reaper, "_signal_tree", lambda p, s: calls.__setitem__("signal", 1))
-    monkeypatch.setattr(
-        reaper.vtsidecar, "note_session_end", lambda k: calls.__setitem__("mirror", 1)
-    )
     now = 5000.0
     reg = _FakeRegistry([_row("claude:stale", last_output_at=now - 4000)])
 
@@ -96,7 +93,7 @@ def test_sweep_kills_nothing_in_dry_run(monkeypatch):
 
     selected = asyncio.run(go())
     assert selected == ["claude:stale"]  # still SELECTED + logged...
-    assert calls == {"find": 0, "signal": 0, "mirror": 0}  # ...but nothing was torn down
+    assert calls == {"find": 0, "signal": 0}  # ...but nothing was torn down
 
 
 def test_transcript_mtime_is_the_restart_proof_activity_floor(monkeypatch):
@@ -149,8 +146,6 @@ def test_real_reap_signals_tree_and_frees_mirror(monkeypatch):
     monkeypatch.setattr(reaper, "_find_master_pid", lambda e, s: 4242)
     monkeypatch.setattr(reaper, "_signal_tree", lambda pid, sig: sigs.append((pid, sig)))
     monkeypatch.setattr(reaper, "_alive", lambda pid: False)  # died on SIGTERM
-    freed = {}
-    monkeypatch.setattr(reaper.vtsidecar, "note_session_end", lambda k: freed.update(mirror=k))
     now = 5000.0
     reg = _FakeRegistry([_row("claude:stale", last_output_at=now - 4000)])
 
@@ -160,7 +155,6 @@ def test_real_reap_signals_tree_and_frees_mirror(monkeypatch):
     selected = asyncio.run(go())
     assert selected == ["claude:stale"]
     assert sigs == [(4242, reaper.signal.SIGTERM)]  # SIGTERM only — it exited
-    assert freed["mirror"] == "claude:stale"
 
 
 def test_real_reap_escalates_to_sigkill_when_surviving(monkeypatch):
@@ -174,7 +168,6 @@ def test_real_reap_escalates_to_sigkill_when_surviving(monkeypatch):
     monkeypatch.setattr(reaper, "_find_master_pid", lambda e, s: 99)
     monkeypatch.setattr(reaper, "_signal_tree", lambda pid, sig: sigs.append((pid, sig)))
     monkeypatch.setattr(reaper, "_alive", lambda pid: True)  # survived SIGTERM
-    monkeypatch.setattr(reaper.vtsidecar, "note_session_end", lambda k: None)
     now = 5000.0
     reg = _FakeRegistry([_row("claude:stubborn", last_output_at=now - 4000)])
 

@@ -36,7 +36,7 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
-from . import engines, ptybridge, vtsidecar
+from . import engines, ptybridge
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -209,14 +209,8 @@ async def terminate_master(
     SIGTERM), or ``"kill"`` (needed SIGKILL).
     """
 
-    def _free_mirror() -> None:
-        if key is not None:
-            with contextlib.suppress(Exception):
-                vtsidecar.note_session_end(key)
-
     pid = _find_master_pid(engine, sid)
     if pid is None:
-        _free_mirror()  # already gone — still drop any stale mirror
         return "gone"
     if spare_if is not None and not spare_if():
         return "spared"
@@ -230,7 +224,6 @@ async def terminate_master(
             return "spared"
         _signal_tree(pid, signal.SIGKILL)
         outcome = "kill"
-    _free_mirror()
     return outcome
 
 

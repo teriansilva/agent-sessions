@@ -316,10 +316,6 @@ export interface AppConfig {
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;
-  /** Faithful real-frame scroll-up via the VT sidecar (#329; garble-proof since #298). The
-   *  effective on/off bit (pref override, else env default); drives the Settings →
-   *  Appearance toggle (promoted out of "Experimental" in #357 Phase 2). */
-  vt_scrollback?: boolean;
   /** AI session review (#356): public config block (write-only key → `api_key_set`). */
   ai_review?: AiReviewConfig;
   /** AI auto-sort (#424 Phase 6): opt-in; reuses the ai_review endpoint (no secret). */

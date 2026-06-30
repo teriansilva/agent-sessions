@@ -217,19 +217,6 @@ def set_session_list_order(value: str, path: Path | None = None) -> str:
     return _set("session_list_order", coerce_session_list_order(value), path)
 
 
-def get_vt_scrollback(path: Path | None = None) -> bool | None:
-    """The VT-scrollback toggle (#329): ``True``/``False`` when the user has set it,
-    or ``None`` when unset — so the caller falls back to the ``AGENT_SESSIONS_VT_SCROLLBACK`` env
-    default instead of forcing a value."""
-    v = _load(path or _default_path()).get("vt_scrollback")
-    return v if isinstance(v, bool) else None
-
-
-def set_vt_scrollback(value: bool, path: Path | None = None) -> bool:
-    """Persist the VT-scrollback toggle. Preserves other keys."""
-    return _set("vt_scrollback", bool(value), path)
-
-
 def get_onboarded(path: Path | None = None) -> bool | None:
     """First-run onboarding flag (#463): ``True`` once the wizard completes (or is skipped),
     ``False`` if explicitly reset, or ``None`` when never set — so the caller can infer a sane

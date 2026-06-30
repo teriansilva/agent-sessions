@@ -338,20 +338,6 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
   await flushFetches();
 });
 
-// VT scrollback promoted out of "Experimental" into Appearance (#357 Phase 2) — the
-// Experimental section was VT-only and is gone; the toggle's API path is unchanged.
-test("VT scrollback lives in Appearance and the Experimental section is gone (#357)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/appearance");
-  expect(screen.queryByRole("heading", { name: "Experimental" })).not.toBeInTheDocument();
-  // The toggle renders inside the Appearance tabpanel with its own subhead.
-  const panel = screen.getByRole("tabpanel");
-  expect(panel).toHaveAttribute("id", "settings-panel-appearance");
-  expect(screen.getByRole("heading", { name: /faithful scroll-up \(vt\)/i })).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("checkbox", { name: /disabled/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ vt_scrollback: true });
-  await flushFetches();
-});
-
 // ---- System tab ----
 
 test("renders the Connected agents section with each engine + new-session badge", async () => {

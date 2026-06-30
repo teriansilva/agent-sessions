@@ -105,13 +105,10 @@ def test_transcript_caps_are_env_overridable(monkeypatch):
     assert transcript._env_int("AGENT_SESSIONS_TRANSCRIPT_MAX_LINES", 20000) == 20000
 
 
-def test_cross_width_attach_does_not_poison_persisted_width(monkeypatch):
-    # Hermes #360 round 3 (VT off): a 40-col attach onto a 120-col ring must not stamp
-    # 40 onto the old bytes — the ring resets (the #245 policy applied at attach), so a
-    # post-restart 40-col have>0 reconnect replays nothing instead of 120-col garble.
-    from agent_sessions import vtsidecar
-
-    monkeypatch.setattr(vtsidecar, "enabled", lambda: False)
+def test_cross_width_attach_does_not_poison_persisted_width():
+    # Hermes #360 round 3: a 40-col attach onto a 120-col ring must not stamp 40 onto the old
+    # bytes — the ring resets (the #245 policy applied at attach), so a post-restart 40-col
+    # have>0 reconnect replays nothing instead of 120-col garble.
     key = "claude:xwidth-1"
     scrollback.note_cols(key, 120)
     scrollback._buffer_append(key, b"WIDE-120-COL-BYTES")
@@ -126,31 +123,7 @@ def test_cross_width_attach_does_not_poison_persisted_width(monkeypatch):
     assert b"WIDE-120-COL-BYTES" not in payload
 
 
-def test_cross_width_attach_vt_on_drops_persisted_claim(monkeypatch):
-    # Hermes #360 round 3 (VT on): the ring is the mirror's feed and survives, but it is
-    # mixed-width — the persisted claim is dropped, so post-restart the reconnect is NOT
-    # a continuation (buffer_cols None → width-correct transcript path).
-    from agent_sessions import vtsidecar
-
-    monkeypatch.setattr(vtsidecar, "enabled", lambda: True)
-    key = "claude:xwidth-2"
-    scrollback.note_cols(key, 120)
-    scrollback._buffer_append(key, b"WIDE-120-COL-BYTES")
-    scrollback.note_attach_width(key, 40)
-    assert bytes(scrollback._BUFFERS[key])  # ring kept for the mirror
-    assert not scrollback._cols_path(key).exists()  # but the width claim is gone
-    _wipe_memory()
-    scrollback._buffer_append(key, b"")  # touch → _ensure_loaded
-    assert scrollback._LAST_COLS.get(key) is None
-    assert (
-        scrollback._is_same_width_continuation(5, scrollback._TOTALS.get(key, 0), None, 40) is False
-    )
-
-
-def test_same_width_attach_keeps_ring_and_claim(monkeypatch):
-    from agent_sessions import vtsidecar
-
-    monkeypatch.setattr(vtsidecar, "enabled", lambda: False)
+def test_same_width_attach_keeps_ring_and_claim():
     key = "claude:xwidth-3"
     scrollback.note_cols(key, 80)
     scrollback._buffer_append(key, b"0123456789")
@@ -158,34 +131,6 @@ def test_same_width_attach_keeps_ring_and_claim(monkeypatch):
     _wipe_memory()
     payload, total = scrollback._resume_payload(key, have=4)
     assert payload == b"456789" and total == 10
-
-
-def test_vt_on_mixed_ring_blocks_same_process_continuation(monkeypatch):
-    # Hermes #360 round 4: with VT on, a cross-width attach keeps the (now mixed) ring;
-    # the IN-MEMORY tracker must not let a same-process 40-col have>0 reconnect replay
-    # raw 120-col bytes either — ring_cols() reports None until the ring is reset.
-    from agent_sessions import vtsidecar
-
-    monkeypatch.setattr(vtsidecar, "enabled", lambda: True)
-    key = "claude:xwidth-4"
-    scrollback.note_cols(key, 120)
-    scrollback._buffer_append(key, b"WIDE-120-COL-BYTES")
-    scrollback.note_attach_width(key, 40)
-    assert scrollback._LAST_COLS[key] == 40  # reader sizing etc. still track the client
-    assert scrollback.ring_cols(key) is None  # but the ring has no single authored width
-    assert (
-        scrollback._is_same_width_continuation(
-            1, scrollback._TOTALS.get(key, 0), scrollback.ring_cols(key), 40
-        )
-        is False
-    )
-    # A SECOND 40-col attach doesn't launder the marker (ring is still mixed).
-    scrollback.note_attach_width(key, 40)
-    assert scrollback.ring_cols(key) is None
-    # Only a reset makes the ring single-width again.
-    scrollback._reset_ring(key)
-    scrollback.note_cols(key, 40, persist=True)
-    assert scrollback.ring_cols(key) == 40
 
 
 # --- Private-mode replay on attach (#397) ------------------------------------------------

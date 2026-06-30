@@ -24,7 +24,6 @@ from .. import (
     sysinfo,
     twofactor,
     update,
-    vtsidecar,
 )
 from ..auth import AuthConfig, current_csrf, session_uid
 from ..version import get_version
@@ -245,9 +244,6 @@ def register(
                 # Optional TOTP 2FA (#116): only the on/off bit for the Settings UI — never
                 # the secret or recovery codes. In `none` mode 2FA is N/A → always false.
                 "two_factor_enabled": cfg.auth_mode != "none" and twofactor.is_enabled(),
-                # VT scrollback (#329): faithful real-frame scroll-up via the VT sidecar. The
-                # effective on/off bit (pref override, else env default) for the Settings toggle.
-                "vt_scrollback": vtsidecar.enabled(),
                 # AI session review config (#356) — the PUBLIC view only: the API key is
                 # write-only and surfaces here solely as `api_key_set` (never the value).
                 "ai_review": prefs.public_ai_review(),
@@ -293,18 +289,6 @@ def register(
             if payload["session_list_order"] not in prefs.SESSION_LIST_ORDERS:
                 raise HTTPException(status_code=422, detail="unknown session_list_order")
             out["session_list_order"] = prefs.set_session_list_order(payload["session_list_order"])
-        if "vt_scrollback" in payload:
-            # VT scrollback (#329): flip it live + persist it. Turning it ON also
-            # (best-effort) starts the sidecar so it takes effect without an app restart.
-            v = payload["vt_scrollback"]
-            if not isinstance(v, bool):
-                raise HTTPException(status_code=422, detail="vt_scrollback must be a boolean")
-            prefs.set_vt_scrollback(v)
-            vtsidecar.set_enabled(v)
-            if v:
-                with contextlib.suppress(Exception):
-                    await vtsidecar.ensure_started()
-            out["vt_scrollback"] = vtsidecar.enabled()
         if "projects_mode" in payload:
             # Project-visibility mode (#335): all|included.
             if payload["projects_mode"] not in prefs.PROJECT_MODES:
