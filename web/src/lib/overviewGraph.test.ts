@@ -21,7 +21,6 @@ function s(over: Partial<Session> & { id: string }): Session {
     first_user_message: "",
     title: over.id,
     sticky: false,
-    sort_key: 0,
     archived: false,
     ...over,
   } as Session;

@@ -44,7 +44,6 @@ function sess(title: string): Session {
     first_user_message: "",
     title,
     sticky: false,
-    sort_key: 0,
     archived: false,
   };
 }

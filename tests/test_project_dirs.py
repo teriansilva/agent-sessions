@@ -131,6 +131,23 @@ def test_in_scope_exclusion_drops_even_under_root():
     assert project_dirs.in_scope("/home/u/code/keep", roots=roots, exclusions=excl) is True
 
 
+def test_in_scope_curation_beats_roots():
+    # #520: explicit curation keeps a cwd that sits outside every root; without it the same cwd
+    # is dropped. (curated=False is the pre-#520 behaviour.)
+    roots = ["/home/u/code"]
+    assert project_dirs.in_scope("/tmp/other", roots=roots, exclusions=[], curated=True) is True
+    assert project_dirs.in_scope("/tmp/other", roots=roots, exclusions=[], curated=False) is False
+
+
+def test_in_scope_exclusion_beats_curation():
+    # #520 precedence rule 1: an exclusion wins even over explicit curation.
+    roots = ["/home/u/code"]
+    assert (
+        project_dirs.in_scope("/tmp/other", roots=roots, exclusions=["/tmp/other"], curated=True)
+        is False
+    )
+
+
 # ---- effective_roots: prefs ↔ env merge (#465) --------------------------------
 
 

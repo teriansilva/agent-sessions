@@ -20,7 +20,6 @@ const sessions = [
     first_user_message: "",
     title: "App session",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
   {
@@ -34,7 +33,6 @@ const sessions = [
     first_user_message: "",
     title: "Lib session",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
   {
@@ -48,7 +46,6 @@ const sessions = [
     first_user_message: "",
     title: "Plain session",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
 ];

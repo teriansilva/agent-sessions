@@ -27,7 +27,6 @@ const ROW = {
   first_user_message: "",
   title: TITLE,
   sticky: false,
-  sort_key: 0,
   archived: false,
   ai_summary: "Refactoring the token-refresh path to remove a double-refresh race.",
   ai_title: TITLE,

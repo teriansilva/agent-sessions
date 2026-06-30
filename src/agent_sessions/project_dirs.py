@@ -91,15 +91,31 @@ def project_roots() -> list[str]:
     return effective_roots()
 
 
-def in_scope(cwd: str, *, roots: list[str], exclusions: list[str]) -> bool:
-    """Whether ``cwd`` is in the discoverable scope (#465): under some root (or no roots at all,
-    i.e. the feature off) AND not under any exclusion prefix. Pure + boundary-aware
-    (via ``path_within``);
-    the existing ``scanner.is_ephemeral_cwd`` ``~/.cache/act`` filter is applied separately where it
-    already is."""
-    return (not roots or any(path_within(cwd, r) for r in roots)) and not any(
-        path_within(cwd, e) for e in exclusions
-    )
+def in_scope(cwd: str, *, roots: list[str], exclusions: list[str], curated: bool = False) -> bool:
+    """Whether ``cwd`` is in the discoverable scope, by how explicit the user's intent is.
+
+    Precedence (#520), most-explicit first:
+
+    1. **Exclusion wins.** A ``folder_exclusions`` prefix is an explicit *opt-out* — it drops the
+       row even when curated or under a root. Otherwise exclusions would be unenforceable for
+       adopted/included folders.
+    2. **Explicit curation beats discovery roots.** ``curated=True`` (an adopted project, or — in
+       ``included`` mode — an allowlisted cwd) keeps the row even when it sits outside every root.
+    3. **Roots govern the rest.** A folder the user has neither excluded nor curated is in scope iff
+       it is under a root. No roots ⇒ the #465 feature is off (everything in scope).
+
+    Pure + boundary-aware (via ``path_within``); the existing ``scanner.is_ephemeral_cwd``
+    ``~/.cache/act`` filter is applied separately where it already is.
+
+    ``curated`` defaults False, so the folder picker and terminal-cwd guards keep the plain
+    root+exclusion scope; only the session list — which knows a row's project / included state —
+    opts in. With ``curated=False`` this is identical to the pre-#520 behaviour.
+    """
+    if any(path_within(cwd, e) for e in exclusions):
+        return False
+    if not roots:
+        return True
+    return curated or any(path_within(cwd, r) for r in roots)
 
 
 def _valid_name(name: str) -> bool:

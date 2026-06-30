@@ -1410,6 +1410,96 @@ def test_sessions_root_scope_honors_exclusions(auth_cfg, fake_jsonl, tmp_home):
     assert _DEMOAPP in cwds  # still under the root, not excluded
 
 
+# ---- #520: explicit curation beats discovery roots (precedence: exclusion > curation > roots) ----
+# (The "unknown folder outside roots → dropped" leg is covered by
+# test_sessions_root_scoped_drops_out_of_root_rows_and_facets above.)
+
+
+def test_sessions_root_scope_keeps_adopted_project_outside_roots(auth_cfg, fake_jsonl, tmp_home):
+    """An adopted project whose folder is OUTSIDE the roots stays visible — explicit curation
+    beats discovery roots, so the user never loses a project they explicitly created (#520)."""
+    import agent_sessions.routes.sessions as sessions_mod
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Adopt /tmp/other (outside the /home/user/claude root) into a project entity.
+    c.post("/api/projects", json={"name": "Tmp", "folders": [_TMP_OTHER]}, headers=hdr)
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        d = c.get("/api/sessions?limit=100").json()
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    cwds = {row["cwd"] for row in d["sessions"]}
+    assert _TMP_OTHER in cwds  # adopted → kept despite being outside the root
+    assert _REPO_A in cwds  # under the root → kept
+
+
+def test_sessions_root_scope_keeps_included_cwd_outside_roots(auth_cfg, fake_jsonl, tmp_home):
+    """In `included` mode an allowlisted cwd OUTSIDE the roots stays visible (curation beats roots),
+    while a non-allowlisted cwd — even under a root — is still hidden by included-mode (#520)."""
+    import agent_sessions.routes.sessions as sessions_mod
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post(
+        "/api/prefs",
+        json={"projects_mode": "included", "projects_included": [_TMP_OTHER]},
+        headers=hdr,
+    )
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        d = c.get("/api/sessions?limit=100").json()
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    cwds = {row["cwd"] for row in d["sessions"]}
+    assert _TMP_OTHER in cwds  # included + outside root → kept (curation beats roots)
+    assert _REPO_A not in cwds  # under the root but not allowlisted → hidden by included-mode
+
+
+def test_sessions_root_scope_exclusion_beats_curation(auth_cfg, fake_jsonl, tmp_home):
+    """Precedence rule 1: an explicit exclusion wins even over explicit curation — an adopted
+    project whose folder is also excluded is still dropped (#520)."""
+    import agent_sessions.routes.sessions as sessions_mod
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/projects", json={"name": "Tmp", "folders": [_TMP_OTHER]}, headers=hdr)
+    prefs.set_folder_exclusions([_TMP_OTHER])
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        d = c.get("/api/sessions?limit=100").json()
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    cwds = {row["cwd"] for row in d["sessions"]}
+    assert _TMP_OTHER not in cwds  # excluded → dropped despite being an adopted project
+    assert _REPO_A in cwds
+
+
+def test_favorite_pins_globally_across_page_boundary(auth_cfg, fake_jsonl):
+    """The sticky pin is GLOBAL, not first-window-only (#520): a favorite that recency would place
+    on a later page is pulled into the first window."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    base = c.get("/api/sessions?limit=100").json()
+    assert base["total"] >= 3
+    newest = base["sessions"][0]["uuid"]
+    laggard = base["sessions"][-1]["uuid"]  # last by recency → would land on a later page
+    assert laggard != newest
+    c.post(f"/api/sessions/claude:{laggard}/favorite", headers=hdr)
+    win = c.get("/api/sessions?limit=1").json()
+    assert win["total"] > 1  # there ARE more pages → the pin reached across the boundary
+    assert win["sessions"][0]["uuid"] == laggard
+    assert win["sessions"][0]["sticky"] is True
+
+
 def test_folders_root_scoped(auth_cfg, fake_jsonl, tmp_home):
     """/api/folders drops out-of-scope cwds when roots are set; a root sub-dir surfaces."""
     import agent_sessions.routes.sessions as sessions_mod

@@ -14,14 +14,13 @@ def test_empty_load_for_missing_file(tmp_home):
 
 
 def test_patch_creates_file_and_persists(tmp_home):
-    m = metadata.patch("abc", title="API refactor", sticky=True, sort_key=10)
+    m = metadata.patch("abc", title="API refactor", sticky=True)
     assert m.title == "API refactor"
     assert m.sticky is True
     again = metadata.load()
     assert "abc" in again
     assert again["abc"].title == "API refactor"
     assert again["abc"].sticky is True
-    assert again["abc"].sort_key == 10
 
 
 def test_patch_merges_fields(tmp_home):
@@ -48,7 +47,7 @@ def test_concurrent_writers_do_not_corrupt(tmp_home):
     def writer(uid: str, n: int):
         try:
             for _ in range(n):
-                metadata.patch(uid, sort_key=42)
+                metadata.patch(uid, title="v42")
         except BaseException as e:  # pragma: no cover  (only if test fails)
             errors.append(e)
 
@@ -61,9 +60,9 @@ def test_concurrent_writers_do_not_corrupt(tmp_home):
     assert errors == []
     state = metadata.load()
     assert "a" in state and "b" in state
-    # Both must have the final sort_key value (last write wins for each key).
-    assert state["a"].sort_key == 42
-    assert state["b"].sort_key == 42
+    # Both must have the final value (last write wins for each key).
+    assert state["a"].title == "v42"
+    assert state["b"].title == "v42"
     # Underlying file must still be valid JSON.
     raw = Path(tmp_home / ".config" / "agent-sessions" / "metadata.json").read_text()
     json.loads(raw)

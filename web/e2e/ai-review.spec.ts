@@ -42,7 +42,6 @@ const SESSIONS = {
       first_user_message: "fix the runner",
       title: "Fix CI runner fork-EAGAIN limits",
       sticky: false,
-      sort_key: 0,
       archived: false,
       ai_summary: "Editing systemd limits; tests rerunning after thread cap",
       ai_title: "Fix CI runner fork-EAGAIN limits",

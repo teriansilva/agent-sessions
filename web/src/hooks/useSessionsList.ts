@@ -195,10 +195,10 @@ export function useSessionsList() {
   }, []);
 
   // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the loaded
-  // rows sticky-first to MIRROR the server sort (sticky desc, sort_key desc, then the active
-  // timestamp tier — created_at desc in "Creation date" mode, else last_mtime desc, #506) so a
-  // just-favorited row floats to the top immediately and the rest don't briefly disagree with
-  // server order. The next poll/refetch reconciles either way.
+  // rows sticky-first to MIRROR the server sort (sticky desc, then the active timestamp tier —
+  // created_at desc in "Creation date" mode, else last_mtime desc, #506) so a just-favorited row
+  // floats to the top immediately and the rest don't briefly disagree with server order. The next
+  // poll/refetch reconciles either way.
   const setSticky = useCallback(async (id: string, value: boolean) => {
     const r = await (value ? api.favorite(id) : api.unfavorite(id));
     const ts = (s: Session) =>
@@ -207,8 +207,7 @@ export function useSessionsList() {
       prev
         .map((s) => (s.id === id ? { ...s, sticky: r.sticky } : s))
         .sort(
-          (a, b) =>
-            Number(b.sticky) - Number(a.sticky) || b.sort_key - a.sort_key || ts(b) - ts(a),
+          (a, b) => Number(b.sticky) - Number(a.sticky) || ts(b) - ts(a),
         ),
     );
   }, []);

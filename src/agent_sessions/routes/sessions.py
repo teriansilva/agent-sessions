@@ -120,7 +120,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # so every row consumer agrees on one value.
             "title": metadata.display_title(m, s.first_user_message),
             "sticky": m.sticky,
-            "sort_key": m.sort_key,
             # AI review surface (#356): summary line, advisory badge + reason, stale-age
             # source (reviewed_at), and the per-session opt-out for the row menu.
             "ai_summary": m.ai_summary,
@@ -153,8 +152,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project: str | None = Query(None),
         engine: str | None = Query(None),
     ) -> JSONResponse:
-        # Flat, paginated, newest-first. sticky floats to the top of the
-        # *first window* (a first-window concept, not a global pin).
+        # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
+        # runs over the whole filtered set before the window is sliced, so a favorite floats to the
+        # top of the first page regardless of its recency / which page it would otherwise land on.
         meta_index = metadata.load()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
         # scan_all (the placeholder never appears here — it isn't in opencode.db), so
@@ -193,16 +193,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         hidden = set(prefs.get_projects_hidden())
         included = set(prefs.get_projects_included())
 
-        # Root scope (#465): a HARD scope applied BEFORE visibility, facets, and pagination, so the
-        # list + facets both describe the in-scope set. When project roots are configured, a session
-        # whose cwd is NOT under a root (or is under an exclusion) is dropped from the list.
-        # Empty roots ⇒ no filtering (today's behaviour).
+        # Root scope (#465) + explicit-curation precedence (#520): a HARD scope applied BEFORE
+        # visibility, facets, and pagination, so the list + facets both describe the in-scope set.
+        # Empty roots ⇒ no filtering (today's behaviour). With roots set the precedence is
+        # exclusion > curation > roots (see project_dirs.in_scope): an excluded prefix always
+        # drops the row; otherwise an adopted project (or, in `included` mode, an allowlisted
+        # cwd) stays even outside a root, so the user never loses a session they explicitly
+        # curated. Unknown/unadopted folders still obey the roots.
         roots = project_dirs.effective_roots()
         exclusions = prefs.get_folder_exclusions()
 
         def _in_scope(row: dict) -> bool:
-            return not roots or project_dirs.in_scope(
-                row["cwd"], roots=roots, exclusions=exclusions
+            if not roots:
+                return True
+            curated = row["project"]["kind"] == "project" or (
+                mode == "included" and row["cwd"] in included
+            )
+            return project_dirs.in_scope(
+                row["cwd"], roots=roots, exclusions=exclusions, curated=curated
             )
 
         def _visible(row: dict) -> bool:
@@ -300,15 +308,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
         # set and "load more" stays within results.
         rows = [r for r in scoped if _keep(r)]
-        # Sort order (#506): favorites (sticky) + manual sort_key always lead; the timestamp
-        # tier is the user's choice — update mtime (default) or creation date (stable). The
-        # created_at mode tie-breaks on last_mtime so equal/zero creation times stay stable.
+        # Sort order (#506): favorites (sticky) lead — a global pin (#520) — then the timestamp
+        # tier the user picked: update mtime (default) or creation date (stable). The created_at
+        # mode tie-breaks on last_mtime so equal/zero creation times stay stable.
         if prefs.get_session_list_order() == "created_at":
-            rows.sort(
-                key=lambda r: (not r["sticky"], -r["sort_key"], -r["created_at"], -r["last_mtime"])
-            )
+            rows.sort(key=lambda r: (not r["sticky"], -r["created_at"], -r["last_mtime"]))
         else:
-            rows.sort(key=lambda r: (not r["sticky"], -r["sort_key"], -r["last_mtime"]))
+            rows.sort(key=lambda r: (not r["sticky"], -r["last_mtime"]))
         window = rows[offset : offset + limit]
         next_offset = offset + limit if offset + limit < len(rows) else None
         return JSONResponse(

@@ -1,4 +1,4 @@
-"""Sidecar JSON for the bits Claude Code doesn't store: title, sticky, sort_key, project_alias.
+"""Sidecar JSON for the bits Claude Code doesn't store: title, sticky, project_alias.
 
 Backed by ``~/.config/agent-sessions/metadata.json``. Keyed by the engine-qualified
 session id ``<engine>:<native_id>`` (e.g. ``claude:<uuid>``). Pre-multi-engine
@@ -54,7 +54,10 @@ def _normalize_keys(data: dict) -> tuple[dict, bool]:
 class SessionMeta:
     title: str = ""
     sticky: bool = False
-    sort_key: int = 0
+    # NOTE (#520): `sort_key` (a manual ordering tiebreaker) was removed — no product flow ever
+    # wrote it, so the list sort reduced to sticky-then-recency regardless. Old sidecars may still
+    # carry a `sort_key` key; it is simply ignored on read and dropped on the next rewrite of that
+    # row. No migration is needed.
     # Legacy per-session display-name override for a cwd. RETIRED from the write path
     # by #361 (project entities supersede it); still read one release as the folder-ref
     # name fallback for sessions the one-shot alias→entity migration never saw.
@@ -196,7 +199,6 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
         out[key] = SessionMeta(
             title=str(val.get("title", "")),
             sticky=bool(val.get("sticky", False)),
-            sort_key=int(val.get("sort_key", 0)),
             project_alias=str(val.get("project_alias", "")),
             project_id=str(val.get("project_id", "") or ""),
             archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
@@ -232,7 +234,8 @@ def patch(
     allowed = {
         "title",
         "sticky",
-        "sort_key",
+        # "sort_key" was removed in #520 (never written by any product flow); patching it now
+        # raises "unknown metadata fields", same as any other retired key.
         # "project_alias" is deliberately ABSENT: write path retired by #361 (the
         # alias→entity migration); existing values are preserved on rewrite below.
         "project_id",
@@ -279,7 +282,6 @@ def patch(
         meta_dict = {
             "title": existing.get("title", ""),
             "sticky": existing.get("sticky", False),
-            "sort_key": existing.get("sort_key", 0),
             "project_alias": existing.get("project_alias", ""),
             "project_id": existing.get("project_id", ""),
             "archived": existing.get("archived"),

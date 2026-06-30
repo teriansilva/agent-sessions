@@ -66,7 +66,6 @@ function mockApi(page: Page, sessions: BenchSession[]) {
     first_user_message: "",
     title: s.title,
     sticky: false,
-    sort_key: i,
     archived: false,
   }));
   page.route("**/api/config", (r) =>

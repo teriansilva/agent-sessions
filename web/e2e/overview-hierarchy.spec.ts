@@ -17,7 +17,6 @@ const sessions = [
     first_user_message: "",
     title: "Root session",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
   {
@@ -31,7 +30,6 @@ const sessions = [
     first_user_message: "",
     title: "Child session",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
 ];

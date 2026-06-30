@@ -439,7 +439,6 @@ test("the panel header uses the server display title only — a one-char first m
       first_user_message: "a",
       title: "",
       sticky: false,
-      sort_key: 0,
       archived: false,
     },
   ] as unknown as Session[];

@@ -22,7 +22,6 @@ const mk = (id: string, cwd: string, project: unknown, title: string, dt = 0) =>
   first_user_message: "",
   title,
   sticky: false,
-  sort_key: 0,
   archived: false,
 });
 const sessions = [

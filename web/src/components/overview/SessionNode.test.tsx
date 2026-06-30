@@ -16,7 +16,6 @@ const sess = (over: Partial<Session> = {}): Session =>
     first_user_message: "",
     title: "My session",
     sticky: false,
-    sort_key: 0,
     archived: false,
     ...over,
   }) as Session;

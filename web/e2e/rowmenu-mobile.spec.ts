@@ -13,7 +13,6 @@ const sessions = [
     first_user_message: "",
     title: "First session",
     sticky: false,
-    sort_key: 0,
     archived: false,
     working: false,
   },

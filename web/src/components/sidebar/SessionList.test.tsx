@@ -42,7 +42,6 @@ function sess(id: string, title: string, engine = "claude"): Session {
     first_user_message: "",
     title,
     sticky: false,
-    sort_key: 0,
     archived: false,
   };
 }

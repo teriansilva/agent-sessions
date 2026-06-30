@@ -25,7 +25,6 @@ export interface Session {
   first_user_message: string;
   title: string;
   sticky: boolean;
-  sort_key: number;
   archived: boolean;
   /** AI review (#356): one-line summary from the last successful review. */
   ai_summary?: string;

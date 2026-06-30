@@ -157,7 +157,7 @@ agent-sessions/
 │   │   ├── terminal.py    the /ws/term/{sid} websocket handler
 │   │   └── spa.py         GET / + the /{spa_path} SPA catch-all (registered last)
 │   ├── scanner.py     read ~/.claude/projects/ (live + archive)
-│   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/sort_key/project_alias
+│   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/project_alias
 │   ├── engines/       per-engine providers (scan + launch_argv): base.py (contract +
 │   │                  patterns + binaries), claude/opencode/codex/gemini/antigravity.py, registry.py
 │   │                  (parse_key/scan_all/…); __init__ re-exports the public surface

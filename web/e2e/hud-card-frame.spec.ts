@@ -98,7 +98,6 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
         first_user_message: "",
         title: "Overview chip session",
         sticky: false,
-        sort_key: 0,
         archived: false,
       },
     ];

@@ -18,7 +18,6 @@ const sessions = [
     first_user_message: "",
     title: "Drag me",
     sticky: false,
-    sort_key: 0,
     archived: false,
   },
 ];
