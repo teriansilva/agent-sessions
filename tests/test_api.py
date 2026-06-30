@@ -1570,3 +1570,106 @@ def test_config_exposes_server_hostname(auth_cfg):
     _login(c, auth_cfg)
     conf = c.get("/api/config").json()
     assert conf["hostname"] == socket.gethostname()
+
+
+# ---- archive reaps runtime resources (#523) -----------------------------------
+
+
+def test_archive_route_reaps_runtime_then_archives(auth_cfg, fake_jsonl, monkeypatch):
+    # #523: the archive route reclaims the live runtime footprint BEFORE recording the
+    # archive (terminate-first), so a still-running claude can't recreate its JSONL between
+    # the move and the kill.
+    from agent_sessions import engines
+    from agent_sessions.routes import sessions as sroutes
+
+    order: list = []
+
+    async def fake_cleanup(engine, native, *, spare_if=None):
+        order.append(("cleanup", engine, native))
+        return "gone"
+
+    real_archive = engines.ClaudeProvider.archive
+
+    def spy_archive(self, native):
+        order.append(("archive", native))
+        return real_archive(self, native)
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", fake_cleanup)
+    monkeypatch.setattr(engines.ClaudeProvider, "archive", spy_archive)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "11111111-1111-1111-1111-111111111111"
+    r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True
+    assert order == [("cleanup", "claude", uuid), ("archive", uuid)]
+
+
+def test_archive_succeeds_even_if_cleanup_raises(auth_cfg, fake_jsonl, monkeypatch):
+    # #523: teardown is best-effort — a cleanup failure must never block the archive itself.
+    from agent_sessions.routes import sessions as sroutes
+
+    async def boom_cleanup(engine, native, *, spare_if=None):
+        raise RuntimeError("teardown blew up")
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "11111111-1111-1111-1111-111111111111"
+    r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True
+
+
+def test_unarchive_does_not_reap_runtime(auth_cfg, fake_jsonl, monkeypatch):
+    # #523: unarchive restores a session — it must NOT tear down runtime resources.
+    from agent_sessions.routes import sessions as sroutes
+
+    called: list = []
+
+    async def rec_cleanup(engine, native, *, spare_if=None):
+        called.append((engine, native))
+        return "gone"
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "11111111-1111-1111-1111-111111111111"
+    c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    called.clear()
+    r = c.post(f"/api/sessions/claude:{uuid}/unarchive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is False
+    assert called == []  # unarchive never reaps
+
+
+def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_jsonl, monkeypatch):
+    # #523: bulk archive reaps per session and is best-effort — one session's teardown failure
+    # must not abort the batch, and the archive still lands.
+    import os
+    import time
+
+    from agent_sessions.routes import sessions as sroutes
+
+    seen: list = []
+
+    async def rec_cleanup(engine, native, *, spare_if=None):
+        seen.append((engine, native))
+        raise RuntimeError("one session's teardown fails")
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    old = time.time() - 10 * 3600
+    os.utime(proj / "11111111-1111-1111-1111-111111111111.jsonl", (old, old))
+
+    r = c.post("/api/sessions/archive-older", json={"hours": 5}, headers=hdr)
+    assert r.status_code == 200
+    assert r.json()["archived"] == 1  # archived despite the cleanup error
+    assert ("claude", "11111111-1111-1111-1111-111111111111") in seen

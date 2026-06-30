@@ -5,6 +5,7 @@ archive/unarchive, and bulk archive-older. Moved verbatim from ``main.create_app
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from .. import (
     prefs,
     project_dirs,
     projects,
+    runtime_cleanup,
     scanner,
     webterm,
 )
@@ -749,6 +751,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             prov, native = engines.parse_key(sid)
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
+        # Reclaim the session's live runtime footprint BEFORE recording the archive (#523):
+        # kill the dtach master + agent group, clear scrollback/VT + owner lease, unlink the
+        # stale socket, release the single-writer lock. Terminate-first so a still-running
+        # claude can't recreate its JSONL under projects/ between the move and the kill.
+        # Best-effort — a teardown hiccup must never block the archive itself.
+        with contextlib.suppress(Exception):
+            await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
         try:
             prov.archive(native)
         except archive.ArchiveError as e:
@@ -782,8 +791,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
         # Bulk-archive every (non-archived) session whose last activity is older than `hours`
-        # (#142). Reuses the per-session archive; engines that can't archive (opencode/codex)
-        # are skipped, not errored. Reversible — the archived sessions can be unarchived.
+        # (#142). Reuses the per-session archive + runtime cleanup (#523). Every present engine
+        # archives (claude moves the JSONL, the rest flip the sidecar flag); the except below is
+        # defensive — a provider whose archive() raises is counted as skipped, not errored.
+        # Reversible — the archived sessions can be unarchived.
         try:
             payload = await request.json()
         except (ValueError, json.JSONDecodeError):
@@ -805,8 +816,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 continue
             try:
                 prov, native = engines.parse_key(engines.session_key(s))
+                # Free runtime resources before recording the archive (#523), best-effort
+                # per session so one teardown hiccup never aborts the batch.
+                with contextlib.suppress(Exception):
+                    await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
                 prov.archive(native)
                 archived += 1
             except (NotImplementedError, archive.ArchiveError, engines.EngineError):
-                skipped += 1  # engine can't archive / lost the file → leave it, keep going
+                skipped += 1  # provider can't archive / lost the file → leave it, keep going
         return JSONResponse({"archived": archived, "skipped": skipped})

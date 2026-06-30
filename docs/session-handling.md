@@ -157,6 +157,16 @@ A transient ws drop must be invisible — never blank, never relaunch:
   attach decision.
 - Exit: when the agent process exits, the master goes away, the lock releases,
   the socket is cleaned; the session becomes resumable-from-history only.
+- Archive reaps the runtime footprint (#523): archiving a session (single
+  `POST /api/sessions/{sid}/archive` or bulk `archive-older`) first runs
+  `runtime_cleanup.cleanup_runtime` — terminate the master, clear scrollback/VT
+  mirror + owner lease, unlink the stale socket under the single-writer lock — so
+  a session you're done with stops holding a process / fd / memory. It's
+  engine-agnostic (keyed by the physical session key, so it applies to every
+  engine that archives) and best-effort (a teardown hiccup never blocks the
+  archive). The on-disk transcript is preserved exactly as before, so an
+  unarchived session relaunches from history with no loss — archive frees *runtime*
+  resources, never history.
 
 ## Failure modes this design eliminates
 

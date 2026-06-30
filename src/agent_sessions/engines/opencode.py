@@ -28,10 +28,10 @@ class OpenCodeProvider:
     resumed via ``opencode <dir> --session <id>``.
 
     **Read-only to opencode.db:** the sidebar never writes opencode's DB.
-    ``archive``/``unarchive`` raise ``NotImplementedError`` (surfaced as a 4xx) —
-    our archive moves the Claude JSONL, which opencode has no equivalent for.
-    Rename/sticky *do* work for opencode: they write the engine-agnostic sidecar
-    (``metadata.json``), never ``opencode.db``. All DB access is read-only and
+    ``archive``/``unarchive`` flip the engine-agnostic sidecar flag (``metadata.json``,
+    OR'd into the row by ``list_sessions``), never ``opencode.db`` — opencode has no JSONL
+    to move, so archive is a pure sidecar toggle. Rename/sticky work the same way (sidecar
+    only). All DB access is read-only and
     **fail-soft**: any sqlite error (missing / locked / corrupt / schema drift)
     yields no opencode rows rather than taking down the Claude list.
     """
