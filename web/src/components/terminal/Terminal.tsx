@@ -74,6 +74,7 @@ export function Terminal({
   onReconcileId?: (sid: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const fabRef = useRef<HTMLButtonElement>(null);
   const sockRef = useRef<TermSocket | null>(null);
   const composeRef = useRef<ComposeHandle>(null);
   const termRef = useRef<Xterm | null>(null);
@@ -703,6 +704,20 @@ export function Terminal({
       }
     };
     const onTap = (cx: number, cy: number) => {
+      // The "jump to bottom" FAB renders ABOVE this capture overlay, but on coarse pointers the
+      // overlay wins the touch hit-test (its capture-phase touchstart preventDefault's the FAB's
+      // synthesized click), so a tap on it would otherwise just focus the keyboard and never
+      // scroll — the reported "tapping jump-to-bottom does nothing on phones". Handle the FAB's
+      // own rect here: a tap inside it jumps to the live tail and stops (no keyboard).
+      const fab = fabRef.current;
+      if (fab) {
+        const fr = fab.getBoundingClientRect();
+        if (cx >= fr.left && cx <= fr.right && cy >= fr.top && cy <= fr.bottom) {
+          term.scrollToBottom();
+          setAtBottom(true);
+          return;
+        }
+      }
       const buf = term.buffer.active;
       const rect = surfaceEl.getBoundingClientRect();
       const cols = term.cols || 80;
@@ -974,6 +989,7 @@ export function Terminal({
             one-click jump back to the tail (and follow resumes once they are at the bottom). */}
         {!atBottom && (
           <button
+            ref={fabRef}
             type="button"
             className={styles.scrollFab}
             aria-label="Scroll to bottom"
