@@ -87,9 +87,11 @@ def is_stale(attached: bool, last_activity: float | None, now: float, ttl: int) 
 
     ``last_activity`` must be a REAL last-activity time, NOT session age — reaping by age alone
     could kill long-lived *active* sessions. The caller resolves it as ``max(last_output_at,
-    transcript mtime)``: ``last_output_at`` (live while the app runs) OR the engine transcript mtime
-    (restart-proof — survives a deploy, and reflects the last real turn even for a session silent
-    since before this process started, which ``last_output_at`` alone misses).
+    last-activity time)``: ``last_output_at`` (live while the app runs) OR the engine last-activity
+    time (``Session.last_mtime`` — since #525 the newest conversation-record timestamp, so a bare
+    idle re-open no longer masquerades as activity; restart-proof — survives a deploy, and reflects
+    the last real turn even for a session silent since before this process started, which
+    ``last_output_at`` alone misses).
     """
     if attached:
         return False  # a client is viewing it — always active, never reap
@@ -99,8 +101,12 @@ def is_stale(attached: bool, last_activity: float | None, now: float, ttl: int) 
 
 
 def _activity_mtimes() -> dict[tuple[str, str], float]:
-    """``(engine, uuid) → transcript mtime`` for every scannable session (best-effort). The mtime is
-    a restart-proof last-activity signal — the engine rewrites the transcript on each turn."""
+    """``(engine, uuid) → last-activity time`` for every scannable session (best-effort). This is
+    ``Session.last_mtime``, which since #525 is the newest conversation-record timestamp (last real
+    turn), NOT the raw transcript file mtime — so a session that was merely *opened* (a bare resume
+    bumps the file mtime via timestamp-less app-state records) is no longer seen as recently active
+    and stays a valid reap candidate. Restart-proof: it survives a deploy because it's read off the
+    on-disk transcript."""
     out: dict[tuple[str, str], float] = {}
     with contextlib.suppress(Exception):
         for s in engines.scan_all():

@@ -78,11 +78,13 @@ def test_claude_created_at_from_first_record(tmp_home):
         )
         + "\n"
     )
-    # Push the file mtime far into the future: created_at must come from the record, not the file.
+    # Push the file mtime far into the future: BOTH derived times must come from the record, not
+    # the file. created_at is the first record's timestamp (#506); last_mtime is the last
+    # conversation record's timestamp (#525) — here the same single record — never the 2e9 mtime.
     os.utime(f, (2_000_000_000, 2_000_000_000))
     s = next(x for x in scanner.scan(tmp_home) if x.uuid.startswith("11111111"))
     assert s.created_at == _iso("2026-01-02T03:04:05Z")
-    assert s.last_mtime == 2_000_000_000
+    assert s.last_mtime == _iso("2026-01-02T03:04:05Z")
 
 
 def test_claude_created_at_falls_back_to_fs(tmp_home):
@@ -128,21 +130,42 @@ def test_session_list_order_unknown_coerced_to_default(tmp_path):
 
 
 def _seed_three(tmp_home):
-    """Three claude sessions whose CREATION order is the REVERSE of their UPDATE order:
-    a = oldest created / newest updated … c = newest created / oldest updated."""
+    """Three claude sessions whose CREATION order is the REVERSE of their UPDATE (last-activity)
+    order — and whose FILE MTIMES contradict BOTH. Since #525 the Update order comes from the last
+    conversation-record timestamp, so os.utime is a deliberate red herring here: a = oldest
+    created / newest last-activity … c = newest created / oldest last-activity."""
     root = tmp_home / ".claude" / "projects" / "-home-user-claude-s"
     root.mkdir(parents=True)
     specs = [
-        ("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "2026-01-01T00:00:00Z", 3000),
-        ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "2026-01-02T00:00:00Z", 2000),
-        ("cccccccc-cccc-cccc-cccc-cccccccccccc", "2026-01-03T00:00:00Z", 1000),
+        # uuid, created (first user record), last-activity (last assistant record), file mtime
+        (
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "2026-01-01T00:00:00Z",
+            "2026-06-03T00:00:00Z",
+            1000,
+        ),
+        (
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "2026-01-02T00:00:00Z",
+            "2026-06-02T00:00:00Z",
+            2000,
+        ),
+        (
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "2026-01-03T00:00:00Z",
+            "2026-06-01T00:00:00Z",
+            3000,
+        ),
     ]
-    for uuid, created, mtime in specs:
+    for uuid, created, last, mtime in specs:
         f = root / f"{uuid}.jsonl"
         f.write_text(
             json.dumps({"type": "user", "timestamp": created, "message": {"content": uuid[:4]}})
             + "\n"
+            + json.dumps({"type": "assistant", "timestamp": last, "message": {"content": "ok"}})
+            + "\n"
         )
+        # File mtime deliberately in the OPPOSITE order of last-activity — the sort must ignore it.
         os.utime(f, (mtime, mtime))
 
 
@@ -151,13 +174,59 @@ def test_sessions_default_order_is_recent_activity(auth_cfg, tmp_home):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     rows = c.get("/api/sessions?limit=200").json()["sessions"]
-    # newest update first: a (mtime 3000) > b (2000) > c (1000)
+    # newest last-activity first (#525): a (Jun 3) > b (Jun 2) > c (Jun 1) — even though the file
+    # mtimes are the REVERSE (1000/2000/3000), Update order follows the last conversation record.
     assert [r["uuid"][:4] for r in rows] == ["aaaa", "bbbb", "cccc"]
     assert [r["created_at"] for r in rows] == [
         _iso("2026-01-01T00:00:00Z"),
         _iso("2026-01-02T00:00:00Z"),
         _iso("2026-01-03T00:00:00Z"),
     ]
+
+
+def test_idle_open_does_not_reorder(auth_cfg, tmp_home):
+    """#525 regression: opening a session resumes the agent CLI, which appends timestamp-less
+    app-state records and bumps the JSONL mtime — but with NO new conversation turn the row must
+    NOT float to the top of the Update order (the reported bug). Pre-fix this asserted ['aaaa',...].
+    """
+    root = tmp_home / ".claude" / "projects" / "-home-user-claude-s"
+    root.mkdir(parents=True)
+
+    def _write(uuid, last_turn):
+        f = root / f"{uuid}.jsonl"
+        f.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "timestamp": "2025-12-01T00:00:00Z",
+                    "message": {"content": uuid[:4]},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {"type": "assistant", "timestamp": last_turn, "message": {"content": "ok"}}
+            )
+            + "\n"
+        )
+        return f
+
+    older = _write("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "2026-01-01T00:00:00Z")
+    _write("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "2026-01-02T00:00:00Z")
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    before = [r["uuid"][:4] for r in c.get("/api/sessions?limit=200").json()["sessions"]]
+    assert before == ["bbbb", "aaaa"]  # bbbb's last real turn is newer → on top
+
+    # Simulate a bare idle OPEN of the OLDER session: append the records claude writes on resume
+    # (all timestamp-less) and bump the file mtime far past everything — but add NO new turn.
+    with older.open("a") as fh:
+        for t in ("permission-mode", "mode", "ai-title", "last-prompt"):
+            fh.write(json.dumps({"type": t, "sessionId": "x"}) + "\n")
+    os.utime(older, (2_000_000_000, 2_000_000_000))
+
+    after = [r["uuid"][:4] for r in c.get("/api/sessions?limit=200").json()["sessions"]]
+    assert after == ["bbbb", "aaaa"]  # unchanged — the idle open did not reorder
 
 
 def test_sessions_created_at_order(auth_cfg, tmp_home):

@@ -121,6 +121,8 @@ def coerce_depth(value: object) -> str:
 
 
 def _classify(m: metadata.SessionMeta, last_mtime: float, live: bool, now: float) -> str:
+    # ``last_mtime`` is the last real-activity time (#525 — newest conversation-record timestamp,
+    # not the raw file mtime), so "recently_active" reflects genuine turns, not an idle re-open.
     if m.intervention_required:
         return "needs_you"
     if live:

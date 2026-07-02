@@ -1,6 +1,123 @@
+import json
+import os
+from datetime import datetime
 from pathlib import Path
 
 from agent_sessions import scanner
+
+
+def _iso(s: str) -> float:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+# ---- last_activity_at / derive_last_activity (#525) ---------------------------
+# The Update-order sort key must be the last real conversation turn, NOT the raw JSONL mtime,
+# which a bare `claude --resume` bumps by appending timestamp-less app-state records.
+
+# Records claude appends on a bare resume — all timestamp-less, none are activity.
+_RESUME_APPSTATE = [
+    {"type": "permission-mode", "permissionMode": "default"},
+    {"type": "mode", "mode": "normal"},
+    {"type": "ai-title", "aiTitle": "A title"},
+    {"type": "last-prompt", "lastPrompt": "p"},
+]
+
+
+def test_last_activity_at_uses_newest_conversation_record(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(
+        f,
+        [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "timestamp": "2026-01-02T00:00:00Z",
+                "message": {"content": "yo"},
+            },
+            *_RESUME_APPSTATE,  # trailing resume records must be ignored
+        ],
+    )
+    assert scanner.last_activity_at(f) == _iso("2026-01-02T00:00:00Z")
+
+
+def test_last_activity_at_none_when_no_conversation_record(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(f, _RESUME_APPSTATE)  # app-state only, no user/assistant, no timestamps
+    assert scanner.last_activity_at(f) is None
+
+
+def test_last_activity_at_ignores_timestamped_appstate(tmp_path):
+    """A `system` record is timestamped but is NOT a conversation turn (it can fire at resume, e.g.
+    `scheduled_task_fire`). It must not count — last activity stays the earlier user turn (#525)."""
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(
+        f,
+        [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "message": {"content": "hi"}},
+            {
+                "type": "system",
+                "subtype": "scheduled_task_fire",
+                "timestamp": "2026-05-05T00:00:00Z",
+            },
+        ],
+    )
+    assert scanner.last_activity_at(f) == _iso("2026-01-01T00:00:00Z")
+
+
+def test_last_activity_at_skips_malformed_tail_lines(tmp_path):
+    f = tmp_path / "s.jsonl"
+    f.write_text(
+        json.dumps(
+            {"type": "assistant", "timestamp": "2026-01-02T00:00:00Z", "message": {"content": "ok"}}
+        )
+        + "\n"
+        + "this is not json {{{\n"
+        + '{"partial": \n'
+    )
+    assert scanner.last_activity_at(f) == _iso("2026-01-02T00:00:00Z")
+
+
+def test_last_activity_at_survives_many_trailing_appstate_records(tmp_path):
+    """Anti-regression: however many timestamp-less resume records pile up after the last real turn
+    (repeated idle opens), the expanding backward read must still find it — never silently fall back
+    to the (bumped) file mtime. A tiny initial window forces the expansion path."""
+    f = tmp_path / "s.jsonl"
+    records = [
+        {"type": "assistant", "timestamp": "2026-01-02T00:00:00Z", "message": {"content": "ok"}}
+    ]
+    records += [{"type": "mode", "mode": "normal", "n": i} for i in range(2000)]
+    _write_jsonl(f, records)
+    # Initial 256-byte window lands entirely inside the trailing block → only the expanding read
+    # reaching further back can find the real turn.
+    assert scanner.last_activity_at(f, tail_bytes=256) == _iso("2026-01-02T00:00:00Z")
+
+
+def test_last_activity_at_empty_or_missing_file(tmp_path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    assert scanner.last_activity_at(empty) is None
+    assert scanner.last_activity_at(tmp_path / "nope.jsonl") is None
+
+
+def test_derive_last_activity_prefers_record_over_mtime(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(
+        f,
+        [{"type": "assistant", "timestamp": "2026-01-02T00:00:00Z", "message": {"content": "ok"}}],
+    )
+    os.utime(f, (2_000_000_000, 2_000_000_000))  # file mtime far in the future
+    assert scanner.derive_last_activity(f, f.stat()) == _iso("2026-01-02T00:00:00Z")
+
+
+def test_derive_last_activity_falls_back_to_fs_mtime(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(f, [{"type": "user", "message": {"content": "no ts"}}])  # no timestamp anywhere
+    os.utime(f, (1_234_567_890, 1_234_567_890))
+    assert scanner.derive_last_activity(f, f.stat()) == 1_234_567_890.0
 
 
 def test_dedup_prefers_archive_when_uuid_in_both_trees(fake_jsonl):

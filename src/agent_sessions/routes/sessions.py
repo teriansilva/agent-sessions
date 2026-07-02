@@ -106,9 +106,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "project": projects.resolve(
                 s.cwd, m.project_id, project_index, alias=m.project_alias
             ).as_dict(),
+            # Last-activity time (#525): the newest conversation-record timestamp, NOT the raw JSONL
+            # mtime — a bare resume no longer bumps it. Drives the default "Update" order + relTime.
             "last_mtime": s.last_mtime,
             # Derived per-engine creation time (#506) — the sort key when the user picks the
-            # "Creation date" list order. Update mtime stays `last_mtime` above.
+            # "Creation date" list order. Update order stays on `last_mtime` above.
             "created_at": s.created_at,
             "last_output_at": last_out,
             "working": (last_out is not None) and (time.time() - last_out < _WORKING_WINDOW_S),
@@ -311,8 +313,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # set and "load more" stays within results.
         rows = [r for r in scoped if _keep(r)]
         # Sort order (#506): favorites (sticky) lead — a global pin (#520) — then the timestamp
-        # tier the user picked: update mtime (default) or creation date (stable). The created_at
-        # mode tie-breaks on last_mtime so equal/zero creation times stay stable.
+        # tier the user picked: last-activity time (default; #525 — last real turn, not raw file
+        # mtime, so a mere open no longer reorders) or creation date (stable). The created_at mode
+        # tie-breaks on last_mtime so equal/zero creation times stay stable.
         if prefs.get_session_list_order() == "created_at":
             rows.sort(key=lambda r: (not r["sticky"], -r["created_at"], -r["last_mtime"]))
         else:

@@ -114,6 +114,90 @@ def derive_created_at(content_path: Path | None, st: os.stat_result) -> float:
     return fs_created_at(st)
 
 
+# --- Session last-activity time (#525) -------------------------------------------------
+# The Update-order sort key (and the reaper / pulse activity signal) must be the time of the last
+# *real* conversation turn, NOT the JSONL's filesystem mtime. A bare ``claude --resume`` rewrites
+# app-state records — ``permission-mode`` / ``mode`` / ``ai-title`` / ``last-prompt`` /
+# ``file-history-snapshot``, all timestamp-less — which bump ``st.st_mtime`` with zero conversation
+# activity, so sorting on the raw mtime floats a merely-*opened* session to the top of the sidebar
+# on the next poll. We instead read the newest ``timestamp`` among genuine conversation records
+# (``user`` / ``assistant``). The type allowlist matters: ``system`` records are timestamped but can
+# fire at resume (e.g. ``scheduled_task_fire``), and a future app-state record that gains a
+# ``timestamp`` must not reintroduce false activity.
+_ACTIVITY_TYPES = frozenset({"user", "assistant"})  # Claude conversation turns
+_ACTIVITY_TAIL_BYTES = 64 * 1024  # initial tail window read from the end
+_ACTIVITY_MAX_BYTES = 8 * 1024 * 1024  # cap: stop expanding + fall back to fs mtime beyond this
+
+
+def last_activity_at(
+    path: Path,
+    *,
+    types: frozenset[str] = _ACTIVITY_TYPES,
+    tail_bytes: int = _ACTIVITY_TAIL_BYTES,
+    max_bytes: int = _ACTIVITY_MAX_BYTES,
+) -> float | None:
+    """Newest ``timestamp`` among genuine conversation records in a JSONL session file, or ``None``.
+
+    Reads the file **tail** backward in growing windows (never the whole file in the common case)
+    and returns the max timestamp of records whose ``type`` is in ``types`` — the last real turn.
+    Trailing timestamp-less app-state records (written by a bare resume, #525) are skipped, and the
+    growing window guarantees that however many of them pile up over repeated idle opens, they can
+    never hide the last conversation record and cause a silent fall-back to the (bumped) file mtime.
+    ``None`` when unreadable, empty, or no conversation record exists within ``max_bytes`` — the
+    caller then falls back to the filesystem mtime.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+    window = tail_bytes
+    try:
+        with path.open("rb") as fh:
+            while True:
+                start = max(0, size - window)
+                fh.seek(start)
+                text = fh.read().decode("utf-8", errors="replace")
+                lines = text.split("\n")
+                if start > 0 and lines:
+                    lines = lines[1:]  # first line is probably partial (window cut it) — drop it
+                best: float | None = None
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type") not in types:
+                        continue
+                    ts = _parse_epoch(rec.get("timestamp"))
+                    if ts is not None and (best is None or ts > best):
+                        best = ts
+                if best is not None:
+                    return best
+                if start == 0 or window >= max_bytes:
+                    return None  # whole file (or the cap) held no conversation record
+                window = min(window * 4, max_bytes)
+    except OSError:
+        return None
+
+
+def derive_last_activity(content_path: Path | None, st: os.stat_result) -> float:
+    """Last-activity time for a file-based session: the newest conversation-record timestamp when
+    available, else the filesystem mtime. This is the sidebar's Update-order key and the reaper /
+    pulse activity signal — deliberately NOT the raw ``st.st_mtime``, which a bare ``claude
+    --resume`` bumps by writing timestamp-less app-state records (#525). ``content_path`` is
+    ``None`` for engines whose content isn't a readable JSONL — straight to the fs fallback."""
+    if content_path is not None:
+        ts = last_activity_at(content_path)
+        if ts is not None:
+            return ts
+    return float(st.st_mtime)
+
+
 @dataclass(frozen=True)
 class Session:
     """One Claude Code session as the sidebar sees it."""
@@ -121,6 +205,11 @@ class Session:
     engine: str  # "claude" (this scanner) or "opencode" (engines.OpenCodeProvider)
     uuid: str
     cwd: str
+    # Last real activity — the newest ``user``/``assistant`` record timestamp (#525), NOT the raw
+    # JSONL file mtime, which a bare ``claude --resume`` bumps by writing timestamp-less app-state
+    # records. This is the Update-order sort key + the reaper/pulse activity signal. Falls back to
+    # the fs mtime only when the file has no conversation record. (Kept named ``last_mtime`` — a
+    # rename across the API + frontend is a mechanical follow-up.)
     last_mtime: float
     first_user_message: str
     archived: bool
@@ -209,7 +298,7 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
                 engine="claude",
                 uuid=uuid,
                 cwd=cwd,
-                last_mtime=st.st_mtime,
+                last_mtime=derive_last_activity(jsonl, st),
                 first_user_message=first_msg,
                 archived=archived,
                 created_at=derive_created_at(jsonl, st),
