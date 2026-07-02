@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# scripts/check-installer-contract — keep uninstall.sh in lockstep with install.sh.
+#
+# install.sh and uninstall.sh are a contract pair: every artifact the installer CREATES
+# (systemd units, the install root, the prefs / runtime dirs) must be REMOVED by the
+# uninstaller, or a user who runs the uninstaller is left with orphaned units and leftover
+# data. Nothing enforced this, so the two could silently drift whenever install.sh changed
+# (a renamed service, a moved PREFIX, a brand-new unit). This check fails the build — it is
+# wired into pr-validate, so a drift can't merge.
+#
+# Two layers:
+#   1. systemd units — AUTO-DETECTED. Every $APP*.service / $APP*.timer the installer touches
+#      must be removed by the uninstaller. Catches a NEW unit with no matching cleanup.
+#   2. removable locations — CURATED INVARIANTS. Each must appear in BOTH scripts; a rename in
+#      one that isn't mirrored to the other trips this. Extend INVARIANTS when the installer
+#      starts creating a new persistent location.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+INS=install.sh
+UNI=uninstall.sh
+[ -f "$INS" ] && [ -f "$UNI" ] || { echo "check-installer-contract: missing $INS or $UNI" >&2; exit 2; }
+
+fail=0
+flag() { echo "DRIFT: $*" >&2; fail=1; }
+
+# 1) systemd units the installer manages (enable/restart/writes) → must be removed by uninstall.
+units="$(grep -oE '\$APP[A-Za-z0-9-]*\.(service|timer)' "$INS" | sort -u)"
+[ -n "$units" ] || flag "no \$APP*.service/.timer units detected in $INS — unit pattern drifted; update this check"
+for u in $units; do
+  grep -qF "$u" "$UNI" \
+    || flag "install.sh manages '$u' but uninstall.sh never removes it"
+done
+
+# 2) removable locations that must be referenced (created) in install AND (cleaned) in uninstall.
+#    label|extended-regex
+INVARIANTS=(
+  "install root (PREFIX)|\.local/share/\\\$APP"
+  "PREFIX override env|AGENT_SESSIONS_HOME"
+  "prefs dir (XDG_CONFIG_HOME)|XDG_CONFIG_HOME"
+  "runtime/pty dir|AGENT_SESSIONS_RUNTIME_DIR"
+)
+for entry in "${INVARIANTS[@]}"; do
+  label="${entry%%|*}"
+  rx="${entry#*|}"
+  grep -qE "$rx" "$INS" \
+    || flag "contract item '$label' (/$rx/) not in install.sh — renamed/removed? update uninstall.sh AND this list"
+  grep -qE "$rx" "$UNI" \
+    || flag "install.sh creates '$label' (/$rx/) but uninstall.sh doesn't reference it — uninstaller would leave it behind"
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "check-installer-contract: FAILED — install.sh and uninstall.sh have drifted" >&2
+  exit 1
+fi
+echo "check-installer-contract: OK — units {$(echo $units | tr '\n' ' ')} and ${#INVARIANTS[@]} location invariants are mirrored in $UNI."
+exit 0
