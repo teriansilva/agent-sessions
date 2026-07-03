@@ -709,11 +709,11 @@ export function Terminal({
       }
     };
     const onTap = (cx: number, cy: number) => {
-      // The "jump to bottom" FAB renders ABOVE this capture overlay, but on coarse pointers the
-      // overlay wins the touch hit-test (its capture-phase touchstart preventDefault's the FAB's
-      // synthesized click), so a tap on it would otherwise just focus the keyboard and never
-      // scroll — the reported "tapping jump-to-bottom does nothing on phones". Handle the FAB's
-      // own rect here: a tap inside it jumps to the live tail and stops (no keyboard).
+      // The "jump to bottom" FAB paints ABOVE this capture overlay (z-index 7 vs 6), so per real
+      // hit-testing a tap on it lands on the FAB itself — its onClick (scrollToTail, which also
+      // cancels touch momentum) does the jump; #519's assumption that the overlay wins the tap was
+      // wrong (see the #527 fix). This FAB-rect branch is a cheap defensive fallback for the rare
+      // case a tap DOES reach the overlay within the FAB's rect: jump to the tail, not the keyboard.
       const fab = fabRef.current;
       if (fab) {
         const fr = fab.getBoundingClientRect();
@@ -861,18 +861,37 @@ export function Terminal({
   const repaint = useCallback(() => {
     jiggleRef.current();
   }, []);
-  // Auto-repaint when the tab returns to the foreground (#503): a backgrounded/minimized tab can
-  // come back to a stale or blank frame (mobile browsers freeze the canvas, and a winch-repaint TUI
-  // that cleared its viewport stays quiet). On becoming visible again — owner only — fire the same
-  // non-destructive repaint nudge as the button. It is a safe no-op while disconnected (the stale
-  // jiggleRef is a no-op until a fresh socket republishes it), so a reconnect-on-return still works.
+  // Auto-repaint when the tab/window is (re)surfaced (#503): a backgrounded tab comes back to a
+  // stale or blank frame (mobile browsers freeze the canvas, and a winch-repaint TUI that cleared
+  // its viewport stays quiet). On resurfacing — owner only — fire the same non-destructive repaint
+  // nudge as the button. Three distinct signals, because none subsumes the others:
+  //   - visibilitychange: tab switch / minimize / mobile background.
+  //   - window 'focus': alt-tab BACK from another app/window while the tab stayed visibilityState
+  //     "visible" — visibilitychange never fires for that, so a desktop refocus was previously
+  //     missed (the "I clicked back and it's stale" case).
+  //   - pageshow: bfcache restore (mobile back/forward) replays a frozen canvas.
+  // The visibility guard keeps a background 'focus' from spending a wasted SIGWINCH, and a short
+  // coalesce window collapses the visibilitychange+focus double-fire that a tab-return emits into
+  // one nudge (no double flicker). The nudge is a no-op while disconnected (stale jiggleRef), so a
+  // reconnect-on-return still works.
   useEffect(() => {
     if (role !== "owner") return;
-    const onVis = () => {
-      if (document.visibilityState === "visible") repaint();
+    let lastNudge = 0;
+    const nudgeIfVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastNudge < 500) return; // collapse the visibilitychange+focus double-fire
+      lastNudge = now;
+      repaint();
     };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    document.addEventListener("visibilitychange", nudgeIfVisible);
+    window.addEventListener("focus", nudgeIfVisible);
+    window.addEventListener("pageshow", nudgeIfVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", nudgeIfVisible);
+      window.removeEventListener("focus", nudgeIfVisible);
+      window.removeEventListener("pageshow", nudgeIfVisible);
+    };
   }, [role, repaint]);
   const takeover = useCallback(() => {
     // Arm the one-shot force flag, then bump the epoch: the effect reconnects and the fresh
