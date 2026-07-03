@@ -1,11 +1,21 @@
 import { expect, test } from "@playwright/test";
 
-// Real-browser repro for the mobile "jump to bottom" FAB (↓): on a phone, *tapping* the FAB
-// must scroll the terminal back to the live tail. The bug: the coarse-pointer touch-capture
-// overlay wins the hit-test over the FAB, and its capture-phase `touchstart`+preventDefault
-// suppresses the FAB's synthesized click — so a tap just focuses the keyboard and the view
-// never moves. jsdom can't model this (no real layout / hit-test / click synthesis), so this
-// is a real-touch (Pixel 7) test driven through Playwright's actual input pipeline.
+// Real-browser repro for the mobile "jump to bottom" FAB (↓): on a phone, after flinging UP into
+// history, *tapping* the FAB must return to — and STAY at — the live tail.
+//
+// The real bug (the earlier #519 fix missed it): the FAB paints ABOVE the coarse-pointer touch
+// overlay and, per real hit-testing, RECEIVES the tap itself (elementFromPoint at its centre
+// returns the FAB, not the overlay). Its onClick already scrolls to the tail — but a scroll-up
+// gesture leaves a momentum "fling" running inside the touch overlay, and that fling is only
+// cancelled when the OVERLAY next receives a touch. A tap on the FAB never reaches the overlay,
+// so the leftover velocity keeps scrolling and drags the view straight back off the tail one
+// frame later — "tapping jump-to-bottom does nothing on phones." The fix cancels that momentum
+// when the FAB jumps to the tail.
+//
+// This test drives a REAL tap through Playwright's input pipeline (not synthetic events dispatched
+// on the overlay, which bypass hit-testing and falsely passed before), while a fling is still in
+// flight — the exact device condition. jsdom can't model layout / hit-test / momentum, so this is
+// a real-touch (Pixel 7) e2e test.
 
 const FAKE_WS = `
 window.WebSocket = class {
@@ -26,7 +36,9 @@ window.WebSocket = class {
 };
 `;
 
-test("tapping the scroll-to-bottom FAB jumps to the live tail", async ({ page }, testInfo) => {
+test("tapping the scroll-to-bottom FAB returns to the tail even with fling momentum", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
 
   await page.addInitScript(FAKE_WS);
@@ -38,9 +50,9 @@ test("tapping the scroll-to-bottom FAB jumps to the live tail", async ({ page },
     .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), { timeout: 5000 })
     .toBeGreaterThan(100);
 
-  // One finger-drag DOWN over the capture overlay = scroll UP into history. Each call is a
-  // self-contained touchstart→moves→touchend gesture on [data-touch-surface].
-  const dragUpOnce = () =>
+  // One finger-drag DOWN over the capture overlay = scroll UP into history, lifting WHILE moving so
+  // a momentum fling is launched (the condition that undoes the naive jump-to-tail).
+  const flingUpOnce = () =>
     page.locator("[data-touch-surface]").evaluate((el) => {
       const r = el.getBoundingClientRect();
       const cx = Math.round(r.x + r.width / 2);
@@ -54,63 +66,37 @@ test("tapping the scroll-to-bottom FAB jumps to the live tail", async ({ page },
             touches: type === "touchend" ? [] : [touch(y)],
           }),
         );
-      let y = r.y + r.height * 0.25;
+      let y = r.y + r.height * 0.2;
       fire("touchstart", y);
       for (let i = 0; i < 12; i++) {
-        y += r.height * 0.05;
+        y += r.height * 0.06; // fast, steady move → real velocity at lift
         fire("touchmove", y);
       }
-      fire("touchend", y);
+      fire("touchend", y); // lift mid-move → momentum fling starts
     });
 
   const fab = page.locator('[aria-label="Scroll to bottom"]');
-  // Keep scrolling up until the FAB shows (off the live tail). Looping instead of a single drag +
-  // immediate assertion makes this robust to per-gesture timing on a loaded CI host — one drag
-  // occasionally doesn't clear the FAB's 8-line dead zone before the assertion samples.
+  // Scroll up off the tail until the FAB shows.
   for (let i = 0; i < 25 && !(await fab.isVisible()); i++) {
-    await dragUpOnce();
+    await flingUpOnce();
     await page.waitForTimeout(80);
   }
-  await expect(fab).toBeVisible(); // we scrolled up off the tail
-  const scrolledUp = await viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
-  expect(scrolledUp).toBeGreaterThan(20); // genuinely off the bottom
+  await expect(fab).toBeVisible();
 
-  // Reproduce the device condition: on real mobile the coarse-pointer capture overlay wins the
-  // hit-test over the FAB and *receives the tap* (the user-confirmed symptom is "keyboard pops up,
-  // no scroll"). Chromium's Pixel-7 emulation does NOT occlude the FAB (elementFromPoint at its
-  // centre returns the FAB's own <svg>), so a synthetic "real tap" would hit the FAB instead — not
-  // the bug. So drive the overlay directly: a no-move touch (tap) on [data-touch-surface] at the
-  // FAB's centre, exactly what the overlay sees on a phone, and assert the user's symptom flips.
-  const fabBox = await fab.boundingBox();
-  if (!fabBox) throw new Error("FAB has no box");
-  const fx = Math.round(fabBox.x + fabBox.width / 2);
-  const fy = Math.round(fabBox.y + fabBox.height / 2);
-  await page.locator("[data-touch-surface]").evaluate(
-    (el, [x, y]) => {
-      const touch = new Touch({ identifier: 9, target: el, clientX: x, clientY: y });
-      const fire = (type: string, withTouch: boolean) =>
-        el.dispatchEvent(
-          new TouchEvent(type, {
-            cancelable: true,
-            bubbles: true,
-            touches: withTouch ? [touch] : [],
-            changedTouches: [touch],
-          }),
-        );
-      fire("touchstart", true); // no touchmove → touchScroll treats it as a tap → onTap(x, y)
-      fire("touchend", false);
-    },
-    [fx, fy],
+  // One last vigorous fling so momentum is DEFINITELY in flight, then immediately real-tap the FAB
+  // — no settle. This is the exact "fling up, then tap jump-to-bottom" gesture users perform.
+  await flingUpOnce();
+  const box = await fab.boundingBox();
+  if (!box) throw new Error("FAB has no box");
+  await page.touchscreen.tap(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+
+  // Let any (cancelled, if fixed) momentum decay, then assert the STEADY state is the tail. Unfixed,
+  // the leftover fling drags the view back to the top within a few frames and the FAB reappears; the
+  // fix cancels the fling so we stay pinned at the bottom (atBottom ⇒ FAB hidden).
+  await page.waitForTimeout(1200);
+  await expect(fab).toBeHidden();
+  const distanceFromBottom = await viewport.evaluate(
+    (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
   );
-
-  // Fixed: the overlay's onTap recognises the FAB rect → jumps to the live tail (FAB hides) and
-  // does NOT open the keyboard. Unfixed: onTap falls through to focus the xterm textarea (the
-  // "keyboard pops up") and the FAB stays. Assert on that exact distinction — robust to xterm's
-  // viewport/refit quirks under emulation, which make a raw scrollTop assertion flaky here.
-  const keyboardOpened = await page.evaluate(() => {
-    const ae = document.activeElement;
-    return !!ae && ae.classList.contains("xterm-helper-textarea");
-  });
-  expect(keyboardOpened).toBe(false); // the bug was: tapping the FAB just opened the keyboard
-  await expect(fab).toBeHidden(); // the tap registered as "jump to bottom" → atBottom → FAB hides
+  expect(distanceFromBottom).toBeLessThan(40); // genuinely at the live tail, not dragged back up
 });

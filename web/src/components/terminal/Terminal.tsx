@@ -75,6 +75,11 @@ export function Terminal({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
+  // Halts an in-flight touch-momentum glide (set by attachTouchScroll). The FAB's jump-to-
+  // tail calls it first, or leftover fling velocity from the scroll-up drag drags the view
+  // straight back off the tail (#519 follow-up — the FAB paints above the touch overlay and
+  // takes the tap itself, so the overlay's own stopFling never runs for it).
+  const stopMomentumRef = useRef<() => void>(() => {});
   const sockRef = useRef<TermSocket | null>(null);
   const composeRef = useRef<ComposeHandle>(null);
   const termRef = useRef<Xterm | null>(null);
@@ -777,7 +782,11 @@ export function Terminal({
       if (selecting && !window.getSelection()?.toString()) exitSelectMode();
     };
     document.addEventListener("touchend", onDocTouchEnd, true);
-    const detachTouch = attachTouchScroll(surfaceEl, term, { onTap, onLongPress });
+    const { detach: detachTouch, stopMomentum } = attachTouchScroll(surfaceEl, term, {
+      onTap,
+      onLongPress,
+    });
+    stopMomentumRef.current = stopMomentum;
 
     // Attach once the grid is stable (see connectWhenStable) — NOT synchronously, or a still-
     // settling panel makes the post-connect resize wipe the transcript scroll-up (the race).
@@ -794,6 +803,7 @@ export function Terminal({
       document.removeEventListener("keydown", armOnKeydown, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
+      stopMomentumRef.current = () => {};
       document.removeEventListener("touchend", onDocTouchEnd, true);
       exitSelectMode();
       touchLayer?.remove();
@@ -836,6 +846,12 @@ export function Terminal({
   const [recapOpen, setRecapOpen] = useState(false);
   const [recapTrigger, setRecapTrigger] = useState<HTMLElement | null>(null);
   const scrollToTail = useCallback(() => {
+    // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
+    // scroll-up fling is still decaying scrolls to the tail for one frame and is then dragged
+    // straight back up by the leftover velocity — the reported "jump-to-bottom does nothing on
+    // phones" (#519 follow-up). The fling lives in attachTouchScroll and its own stopFling only
+    // runs when the overlay receives a touch; the FAB sits above the overlay and takes the tap.
+    stopMomentumRef.current();
     termRef.current?.scrollToBottom();
     setAtBottom(true);
   }, []);

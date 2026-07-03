@@ -57,9 +57,13 @@ export interface TouchScrollHandlers {
 // Default long-press threshold before selection mode arms.
 const LONG_PRESS_MS = 450;
 
-/** Wire one-finger touch scrolling onto `surface` for an xterm-like `term`; returns a
- *  cleanup fn. `surface` is a transparent capture overlay over the terminal: claiming
- *  the touch there (xterm never sees it) is the only thing that scrolls reliably on
+/** Wire one-finger touch scrolling onto `surface` for an xterm-like `term`. Returns
+ *  `{ detach, stopMomentum }`: `detach` tears everything down; `stopMomentum` halts an
+ *  in-flight post-lift glide WITHOUT detaching — the scroll-to-bottom FAB calls it so a
+ *  tap-to-jump can't be dragged back up by leftover fling velocity (the FAB paints above
+ *  this overlay and receives the tap itself, so `onStart`'s own `stopFling` never runs for
+ *  it — #519 follow-up). `surface` is a transparent capture overlay over the terminal:
+ *  claiming the touch there (xterm never sees it) is the only thing that scrolls reliably on
  *  Android — its text layer otherwise hijacks the drag. A quick drag scrolls (+ momentum
  *  after lift); a tap runs `onTap` (or, by default, (re)opens the keyboard); a press-and-hold
  *  runs `onLongPress` (selection mode). */
@@ -67,7 +71,7 @@ export function attachTouchScroll(
   surface: HTMLElement,
   term: Scrollable,
   handlers: TouchScrollHandlers = {},
-): () => void {
+): { detach: () => void; stopMomentum: () => void } {
   const acc: ScrollAccum = { remainder: 0 };
   let lastY = 0;
   let startY = 0;
@@ -225,12 +229,15 @@ export function attachTouchScroll(
   surface.addEventListener("touchmove", onMove, { passive: false, capture: true });
   surface.addEventListener("touchend", onEnd, { passive: true, capture: true });
   surface.addEventListener("touchcancel", onEnd, { passive: true, capture: true });
-  return () => {
-    stopFling();
-    cancelLongPress();
-    surface.removeEventListener("touchstart", onStart, { capture: true });
-    surface.removeEventListener("touchmove", onMove, { capture: true });
-    surface.removeEventListener("touchend", onEnd, { capture: true });
-    surface.removeEventListener("touchcancel", onEnd, { capture: true });
+  return {
+    detach: () => {
+      stopFling();
+      cancelLongPress();
+      surface.removeEventListener("touchstart", onStart, { capture: true });
+      surface.removeEventListener("touchmove", onMove, { capture: true });
+      surface.removeEventListener("touchend", onEnd, { capture: true });
+      surface.removeEventListener("touchcancel", onEnd, { capture: true });
+    },
+    stopMomentum: stopFling,
   };
 }
