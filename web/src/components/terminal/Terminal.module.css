@@ -5,7 +5,10 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
-  background: #0e0e0e;
+  /* Must match the xterm canvas bg (themes.ts) per theme: FitAddon sizes the canvas to whole
+   * rows, so a few px of this wrapper always shows below the last row — a hardcoded near-black
+   * here painted a dark band over the compose bar on light (#473). */
+  background: var(--term-bg);
 }
 /* Panel header (#211 4c): a thin mono strip declaring the channel id + live status. Sits on
  * the opaque terminal surface so it never competes with the agent's output for legibility. */
@@ -86,7 +89,8 @@
   z-index: 5;
   font-size: 11px;
   color: var(--text-muted);
-  background: rgba(0, 0, 0, 0.65);
+  /* Frosted scrim over live terminal text — follows the terminal surface per theme (#473). */
+  background: color-mix(in srgb, var(--term-bg) 78%, transparent);
   border: 1px solid var(--border-subtle);
   padding: 2px 8px;
   border-radius: 0;
@@ -95,6 +99,12 @@
 .rejected {
   color: #f3b0b0;
   border-color: #5a2a2a;
+}
+/* On light the scrim is light, so the pale dark-theme rejection pink washes out — use the
+ * semantic status hue there; dark keeps its exact current look (#473). */
+:global([data-theme="light"]) .rejected {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 45%, var(--border-subtle));
 }
 /* Floating scroll-to-bottom button (#187, shown on every pointer type). Sits above any
  * safe-area inset in the bottom-right of the terminal area; frosted glass via backdrop-filter

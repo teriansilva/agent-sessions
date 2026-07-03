@@ -441,6 +441,32 @@ body.hud-static-grid {
   background-size: 48px 48px;
 }
 
+/* Light chrome clarity (#473). Over the paper-grey ground + static grid, the 55%-translucent
+ * bar fill and the 12%-opacity --line hairline barely register — the topbar/classbar read as
+ * washed-out. Light only: firm the separating edge to the opaque --border with a subtle 1px
+ * lift, and lift the mono telemetry tags one step (--text-3 → --text-2). Dark is untouched. */
+:root[data-theme="light"] .hud-topbar {
+  border-bottom-color: var(--border);
+  box-shadow: 0 1px 0 rgba(10, 12, 16, 0.06);
+}
+:root[data-theme="light"] .hud-classbar {
+  border-top-color: var(--border);
+  box-shadow: 0 -1px 0 rgba(10, 12, 16, 0.06);
+}
+:root[data-theme="light"] .hud-topbar .hud-tag,
+:root[data-theme="light"] .hud-classbar .hud-tag {
+  color: var(--text-2);
+}
+/* Desktop only: raise the frosted fill toward opaque (still ~92%, so the ambient grid reads
+ * faintly through). Mobile already degrades both bars to 96% (#228) — that stays the winner
+ * under 800px because this rule doesn't apply there. */
+@media (min-width: 801px) {
+  :root[data-theme="light"] .hud-topbar,
+  :root[data-theme="light"] .hud-classbar {
+    background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  }
+}
+
 /* Corner-bracket frame: wrap a positioned element, drop four <span class="hud-cnr tl|tr|bl|br">.
  * Accent brackets by default; `.hero` brackets are white + larger (at most one hero per view). */
 .hud-cnr {

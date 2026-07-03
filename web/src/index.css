@@ -7,6 +7,9 @@
   --bg-0: #0d0e10;
   --bg-1: #131418;
   --bg-2: #1a1c21;
+  /* Terminal surface (#473): equals the xterm canvas background (themes.ts) per theme, so the
+     wrapper slack FitAddon leaves below the last row is invisible in both themes. */
+  --term-bg: #0d0e10;
   --text-1: #e8e9ec;
   --text-2: #a7abb3;
   --text-3: #6f747d;
@@ -62,6 +65,7 @@
   --bg-0: #0d0e10;
   --bg-1: #131418;
   --bg-2: #1a1c21;
+  --term-bg: #0d0e10;
   --text-1: #e8e9ec;
   --text-2: #a7abb3;
   --text-3: #6f747d;
@@ -90,6 +94,7 @@
   --bg-0: #e7e8ea;
   --bg-1: #f2f3f5;
   --bg-2: #ffffff;
+  --term-bg: #f2f3f5;
   --text-1: #14161a;
   --text-2: #41454d;
   --text-3: #6f747d;
