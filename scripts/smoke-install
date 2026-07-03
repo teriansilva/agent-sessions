@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# scripts/smoke-install — end-to-end installer/uninstaller smoke in a PRISTINE container.
+#
+# Why: nothing ran the actual installer in CI, so a broken `curl … install.sh | sh` (a failed UI
+# build, a missing prereq, an uninstaller that leaves cruft) could ship unnoticed. This clones the
+# repo at $REF into a clean box that has NO new-enough Python or Node, runs install.sh exactly as a
+# user would — rootless, vendored toolchains, a real Vite build — then asserts the install is
+# functional and that uninstall.sh removes everything. Run on installer-script PRs and before every
+# release (a red smoke blocks the tag).
+#
+# The base image (ubuntu:22.04) ships python3.10 (< 3.11) and no node, so install.sh must vendor
+# BOTH toolchains — the same path a fresh customer box takes. Override with SMOKE_IMAGE.
+#
+# Usage: scripts/smoke-install [REF] [REPO_DIR]
+#   REF       commit / branch / tag to install   (default: HEAD)
+#   REPO_DIR  local repo used as the install source (default: repo root)
+set -euo pipefail
+
+REF="${1:-HEAD}"
+REPO_DIR="${2:-$(git rev-parse --show-toplevel)}"
+SHA="$(git -C "$REPO_DIR" rev-parse "$REF")"
+IMAGE="${SMOKE_IMAGE:-ubuntu:22.04}"
+
+echo "== installer smoke: ref=$REF sha=${SHA:0:12} image=$IMAGE source=$REPO_DIR =="
+
+# Single-quoted -c body: $SHA below is expanded by the CONTAINER shell (passed via -e SHA), never
+# by this host shell. The inner here-doc (<<EOS, unquoted) is written by container-root: $SHA
+# expands there; every \$… stays literal so it expands in tester's run.sh.
+docker run --rm -v "$REPO_DIR:/srepo:ro" -e SHA="$SHA" "$IMAGE" bash -euo pipefail -c '
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq >/dev/null
+  apt-get install -y -qq git curl ca-certificates xz-utils dtach >/dev/null
+
+  # Prove the box is genuinely pristine so the vendored-toolchain path is what gets exercised.
+  if python3 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" 2>/dev/null; then
+    echo "note: system python>=3.11 present — vendored-python path not exercised"
+  fi
+  command -v node >/dev/null 2>&1 && echo "note: node present — vendored-node path not exercised" || true
+
+  useradd -m tester
+  # /srepo is bind-mounted from the host and owned by a different uid than this container root;
+  # git refuses to read it ("dubious ownership") until it is marked safe. Wildcard it — this is a
+  # throwaway container, and the check fires on the gitdir (/srepo/.git), not just the worktree.
+  git config --global --add safe.directory "*"
+  git clone -q /srepo /home/tester/src
+
+  cat > /home/tester/run.sh <<EOS
+#!/usr/bin/env bash
+set -euo pipefail
+export AGENT_SESSIONS_HOME=\$HOME/.local/share/agent-sessions
+export AGENT_SESSIONS_REPO=/home/tester/src
+export AGENT_SESSIONS_REF=$SHA
+export AGENT_SESSIONS_NO_SERVICE=1
+export AGENT_SESSIONS_ASSUME_YES=1
+
+sh /srepo/install.sh
+
+P=\$AGENT_SESSIONS_HOME
+echo "-- asserting install --"
+test -L "\$P/current"                          || { echo "FAIL: no current symlink";        exit 1; }
+test -x "\$P/current/venv/bin/agent-sessions"  || { echo "FAIL: entrypoint missing";        exit 1; }
+test -f "\$P/current/src/web/dist/index.html"  || { echo "FAIL: UI dist was not built";     exit 1; }
+"\$P/current/venv/bin/agent-sessions" --help >/dev/null \
+                                               || { echo "FAIL: app --help errored";        exit 1; }
+echo INSTALL_OK
+
+echo "-- asserting uninstall --"
+AGENT_SESSIONS_ASSUME_YES=1 sh /srepo/uninstall.sh
+test ! -e "\$P"                                || { echo "FAIL: install root survived uninstall"; exit 1; }
+echo UNINSTALL_OK
+EOS
+
+  chmod +x /home/tester/run.sh
+  chown -R tester:tester /home/tester
+  su - tester -c /home/tester/run.sh
+'
+echo "== installer smoke: PASS =="
