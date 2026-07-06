@@ -916,10 +916,91 @@ def test_update_apply_202_then_503(auth_cfg, fake_jsonl, monkeypatch):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    monkeypatch.setattr(up, "_SPAWNED_AT", None)  # a real spawn elsewhere must not 409 this
     monkeypatch.setattr(up, "apply", lambda: True)
     assert c.post("/api/update/apply", headers=hdr).status_code == 202
     monkeypatch.setattr(up, "apply", lambda: False)  # not an install
     assert c.post("/api/update/apply", headers=hdr).status_code == 503
+
+
+def test_update_apply_busy_409(auth_cfg, fake_jsonl, monkeypatch):
+    # #538 single-flight: while a scheduled pass holds the lock, manual apply is refused.
+    import agent_sessions.update as up
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert up._RUN_LOCK.acquire(blocking=False)
+    try:
+        assert c.post("/api/update/apply", headers=hdr).status_code == 409
+    finally:
+        up._RUN_LOCK.release()
+
+
+def test_update_check_gains_additive_auto_update_fields(auth_cfg, fake_jsonl, monkeypatch):
+    # #538: `auto_update` + `last_auto` ride along; the pre-#538 keys keep their names and
+    # semantics (the SPA's manual-check flow depends on them).
+    import agent_sessions.update as up
+
+    monkeypatch.setattr(
+        up,
+        "check",
+        lambda: {"current": "x", "channel": "stable", "latest": None, "update_available": False},
+    )
+    monkeypatch.setattr(up, "auto_update_enabled", lambda: True)
+    monkeypatch.setattr(up, "last_auto", lambda: {"ts": 123.0, "result": "up-to-date"})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/update/check").json()
+    assert {"current", "channel", "latest", "update_available"} <= set(d)
+    assert d["auto_update"] is True
+    assert d["last_auto"] == {"ts": 123.0, "result": "up-to-date"}
+
+
+def test_update_settings_get_cheap_and_authed(auth_cfg, fake_jsonl, monkeypatch, tmp_path):
+    # The card mounts on every Settings visit — the GET must not hit the remote.
+    import agent_sessions.update as up
+
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.delenv("AGENT_SESSIONS_AUTOUPDATE", raising=False)
+    monkeypatch.delenv("AGENT_SESSIONS_CHANNEL", raising=False)
+    monkeypatch.setattr(up, "_LAST_AUTO", None)
+    monkeypatch.setattr(
+        up, "latest_ref", lambda *_: (_ for _ in ()).throw(AssertionError("remote hit"))
+    )
+    c = _client(auth_cfg)
+    assert c.get("/api/update/settings", follow_redirects=False).status_code in (401, 403)
+    _login(c, auth_cfg)
+    d = c.get("/api/update/settings").json()
+    assert d == {"auto_update": False, "channel": "stable", "last_auto": None}
+
+
+def test_update_settings_post_validation_and_roundtrip(auth_cfg, fake_jsonl, monkeypatch, tmp_path):
+    import agent_sessions.update as up
+
+    envf = tmp_path / "env"
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(envf))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # CSRF required (state-changing).
+    r = c.post(
+        "/api/update/settings", json={"auto_update": True}, headers={"Origin": auth_cfg.origin}
+    )
+    assert r.status_code == 403
+    # Strict validation: no keys / wrong types / unknown channel never reach the env file.
+    bad = [{}, {"auto_update": "yes"}, {"channel": "beta"}]
+    for body in bad:
+        assert c.post("/api/update/settings", json=body, headers=hdr).status_code == 422
+    assert not envf.exists()
+    # Round-trip: persists the two fixed keys; the live read sees them immediately.
+    d = c.post(
+        "/api/update/settings", json={"auto_update": True, "channel": "main"}, headers=hdr
+    ).json()
+    assert d["auto_update"] is True and d["channel"] == "main"
+    text = envf.read_text()
+    assert "AGENT_SESSIONS_AUTOUPDATE=1" in text and "AGENT_SESSIONS_CHANNEL=main" in text
+    assert up.auto_update_enabled() is True and up._channel() == "main"
 
 
 # ---- bulk archive: archive-older (#142) ---------------------------------------

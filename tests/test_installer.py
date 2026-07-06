@@ -531,16 +531,14 @@ def test_install_sh_unit_puts_local_bin_on_path():
     assert "Environment=PATH=%h/.local/bin:" in s
 
 
-def test_install_sh_optin_autoupdate_timer():
+def test_install_sh_never_creates_the_legacy_autoupdate_timer():
+    # #538: the systemd autoupdate timer is retired — the app schedules the daily check
+    # itself. The installer only ever REMOVES the legacy units (migration), never writes
+    # a unit for them.
     s = INSTALL_SH.read_text()
-    assert "AGENT_SESSIONS_AUTOUPDATE" in s  # opt-in flag
-    assert "$APP-update.timer" in s  # the user timer
-    assert "agent-sessions autoupdate" in s  # timer runs the autoupdate command
-    # The timer runs detached from the install shell, so the opt-in + channel + repo must
-    # be baked into the service (else it loses the channel and self-disables on first run).
-    assert "Environment=AGENT_SESSIONS_AUTOUPDATE=1" in s
-    assert "Environment=AGENT_SESSIONS_CHANNEL=" in s
-    assert "Environment=AGENT_SESSIONS_REPO=" in s
+    assert "Environment=AGENT_SESSIONS_AUTOUPDATE=1" not in s  # the old baked-in service
+    assert 'cat > "$UNIT_DIR/$APP-update' not in s  # no unit rendering for update timer
+    assert "$APP-update.timer" in s  # the migration still references the legacy units
 
 
 def test_uninstall_sh_is_safe_and_complete():
@@ -557,3 +555,105 @@ def test_uninstall_sh_is_safe_and_complete():
     for ln in s.splitlines():
         code = ln.split("#", 1)[0]
         assert not ("rm " in code and any(d in code for d in (".claude", ".codex", ".gemini"))), ln
+
+
+# ---- #538: in-app auto-update — no installer opt-in, legacy timer migration -----------
+
+
+def test_install_sh_no_legacy_autoupdate_param():
+    # Automatic updates are managed in the app (Settings → System); the installer must not
+    # create the legacy timer or read the retired opt-in outside the migration path.
+    s = INSTALL_SH.read_text()
+    assert "manage_autoupdate" not in s
+    assert "AUTOUPDATE_ONCALENDAR" not in s
+    assert "migrate_legacy_autoupdate" in s
+    # migration: preserve an enabled timer as the env-file opt-in, then remove both units
+    assert "_env_set_if_absent AGENT_SESSIONS_AUTOUPDATE 1" in s
+    assert 'rm -f "$UNIT_DIR/$APP-update.timer" "$UNIT_DIR/$APP-update.service"' in s
+    # and never under NO_SERVICE (scratch/test installs must not touch real user units)
+    migrate = s.split("migrate_legacy_autoupdate() {", 1)[1].split("\n}", 1)[0]
+    assert "AGENT_SESSIONS_NO_SERVICE" in migrate
+
+
+def test_install_sh_adopts_persisted_channel():
+    # A re-run without AGENT_SESSIONS_CHANNEL follows the UI-persisted choice; an explicit
+    # env var on the run still wins and is persisted back to the env file.
+    s = INSTALL_SH.read_text()
+    assert "adopt_persisted_channel" in s and "CHANNEL_EXPLICIT" in s
+    assert '_env_set AGENT_SESSIONS_CHANNEL "$CHANNEL"' in s
+
+
+def _extract_fn(source: str, name: str) -> str:
+    """The named shell function verbatim: from its `name() {` line to the first bare `}`
+    line (or the same line for one-liners like `_env_has`)."""
+    lines = source.split("\n")
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(f"{name}() {{"))
+    if lines[start].rstrip().endswith("}"):
+        return lines[start]
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
+    return "\n".join(lines[start : end + 1])
+
+
+def _migration_harness(tmp_path, *, timer_enabled: bool, env_lines: str = ""):
+    """Run migrate_legacy_autoupdate verbatim (extracted from install.sh) against a fake
+    systemctl + scratch UNIT_DIR/ENVF, and return (exit_code, env_text, unit_dir)."""
+    s = INSTALL_SH.read_text()
+    unit_dir = tmp_path / "systemd-user"
+    unit_dir.mkdir()
+    (unit_dir / "agent-sessions-update.timer").write_text("[Timer]\n")
+    (unit_dir / "agent-sessions-update.service").write_text("[Service]\n")
+    envf = tmp_path / "env"
+    envf.write_text(env_lines)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "systemctl"
+    # is-enabled reflects the scenario; every other verb succeeds silently.
+    rc = 0 if timer_enabled else 1
+    stub.write_text(
+        f'#!/bin/sh\nfor a in "$@"; do [ "$a" = is-enabled ] && exit {rc}; done\nexit 0\n'
+    )
+    stub.chmod(0o755)
+    driver = tmp_path / "driver.sh"
+    driver.write_text(
+        "#!/bin/sh\nset -eu\n"
+        "APP=agent-sessions\n"
+        f'ENVF="{envf}"\n'
+        f'UNIT_DIR="{unit_dir}"\n'
+        "log() { :; }\n"
+        + _extract_fn(s, "_env_has")
+        + "\n"
+        + _extract_fn(s, "_env_set_if_absent")
+        + "\n"
+        + _extract_fn(s, "migrate_legacy_autoupdate")
+        + "\nmigrate_legacy_autoupdate\n"
+    )
+    env = {**_clean_env(), "PATH": f"{bindir}:{os.environ['PATH']}"}
+    env.pop("AGENT_SESSIONS_NO_SERVICE", None)
+    proc = subprocess.run(["sh", str(driver)], env=env, capture_output=True, text=True)
+    return proc.returncode, envf.read_text(), unit_dir
+
+
+def test_migration_enabled_timer_becomes_env_opt_in(tmp_path):
+    code, env_text, unit_dir = _migration_harness(tmp_path, timer_enabled=True)
+    assert code == 0
+    assert "AGENT_SESSIONS_AUTOUPDATE=1" in env_text
+    assert not (unit_dir / "agent-sessions-update.timer").exists()
+    assert not (unit_dir / "agent-sessions-update.service").exists()
+
+
+def test_migration_disabled_timer_removes_units_without_opt_in(tmp_path):
+    code, env_text, unit_dir = _migration_harness(tmp_path, timer_enabled=False)
+    assert code == 0
+    assert "AGENT_SESSIONS_AUTOUPDATE" not in env_text
+    assert not (unit_dir / "agent-sessions-update.timer").exists()
+
+
+def test_migration_respects_an_existing_env_choice(tmp_path):
+    # The operator already toggled OFF in the UI; a still-lingering enabled timer must not
+    # flip the setting back on (set-if-absent semantics).
+    code, env_text, _ = _migration_harness(
+        tmp_path, timer_enabled=True, env_lines="AGENT_SESSIONS_AUTOUPDATE=0\n"
+    )
+    assert code == 0
+    assert "AGENT_SESSIONS_AUTOUPDATE=0" in env_text
+    assert "AGENT_SESSIONS_AUTOUPDATE=1" not in env_text

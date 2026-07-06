@@ -44,6 +44,7 @@ import type {
   SystemInfo,
   TwoFactorEnrollment,
   UpdateInfo,
+  UpdateSettings,
 } from "../types/api";
 import {
   DEFAULT_SETTINGS_TAB,
@@ -244,33 +245,73 @@ function SystemCard() {
 /** Updates: compare the running version to the channel's latest and apply (re-runs the
  *  installer). Only meaningful for installer-managed deploys; in a dev/source checkout
  *  apply returns 503 (surfaced). On the default `stable` channel with no release tags
- *  yet, the check reports "up to date" (no `latest`). */
+ *  yet, the check reports "up to date" (no `latest`).
+ *
+ *  #538: the card also owns the persisted update settings — the daily automatic-update
+ *  toggle and the release channel. Both load from the cheap `/api/update/settings` (no
+ *  remote hit on mount) and save optimistically; the server applies them live. The
+ *  last-automatic-check line is recent runtime status only (in-memory server-side —
+ *  it resets when the service restarts). */
 function UpdatesCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
+  const [settings, setSettings] = useState<UpdateSettings | null>(null);
   const [state, setState] = useState<"idle" | "checking" | "applying" | "applied" | "error">(
     "idle",
   );
   const [msg, setMsg] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // Bumped on every channel switch: an in-flight check that started under the previous
+  // channel must not repopulate `info` under the new one (Hermes #539 race).
+  const checkGen = useRef(0);
 
-  // Show the running version immediately; the remote compare (a git ls-remote) only runs
-  // when the user clicks "Check for updates".
+  // Show the running version + persisted settings immediately; the remote compare (a git
+  // ls-remote) only runs when the user clicks "Check for updates".
   useEffect(() => {
     let alive = true;
     api
       .version()
       .then((v) => alive && setCurrent(v.version))
       .catch(() => {});
+    api
+      .updateSettings()
+      .then((s) => alive && setSettings(s))
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, []);
 
+  const save = async (patch: { auto_update?: boolean; channel?: string }) => {
+    const prev = settings;
+    if (prev) setSettings({ ...prev, ...patch });
+    if (patch.channel) {
+      // Invalidate the previous channel's compare NOW (not after the POST resolves): the
+      // shown "update available" belonged to the old channel, and any check still in
+      // flight for it must land in the void.
+      checkGen.current++;
+      setInfo(null);
+    }
+    setSaveErr(null);
+    setSaving(true);
+    try {
+      setSettings(await api.setUpdateSettings(patch));
+    } catch {
+      setSettings(prev);
+      setSaveErr("Couldn’t save update settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const check = async () => {
+    const gen = checkGen.current;
     setState("checking");
     setMsg(null);
     try {
-      setInfo(await api.updateCheck());
+      const result = await api.updateCheck();
+      if (gen === checkGen.current) setInfo(result); // stale-channel response → dropped
       setState("idle");
     } catch {
       setState("error");
@@ -290,11 +331,14 @@ function UpdatesCard() {
       setMsg(
         e instanceof ApiError && e.status === 503
           ? "Self-update isn’t available for this install."
-          : "Update failed to start.",
+          : e instanceof ApiError && e.status === 409
+            ? "An update is already in progress."
+            : "Update failed to start.",
       );
     }
   };
 
+  const channel = settings?.channel ?? info?.channel ?? "stable";
   return (
     <section className={styles.section} aria-labelledby="updates-h">
       <h2 id="updates-h">Updates</h2>
@@ -303,11 +347,51 @@ function UpdatesCard() {
           <dt>Current</dt>
           <dd>{info?.current ?? current ?? "—"}</dd>
         </div>
-        <div className={styles.metaRow}>
-          <dt>Channel</dt>
-          <dd>{info?.channel ?? "stable"}</dd>
-        </div>
       </dl>
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={settings?.auto_update ?? false}
+          disabled={!settings}
+          onChange={(e) => void save({ auto_update: e.currentTarget.checked })}
+        />
+        <span>Automatic updates</span>
+      </label>
+      <p className={styles.hint}>
+        Checks daily and installs new releases with the same rollback-guarded installer as
+        “Update now”. No reinstall or terminal needed — the setting applies immediately.
+      </p>
+      {settings?.auto_update && (
+        <p className={styles.hint}>
+          {settings.last_auto
+            ? `Last automatic check: ${new Date(settings.last_auto.ts * 1000).toLocaleString()} — ${settings.last_auto.result}`
+            : "No automatic check yet since the last restart."}
+        </p>
+      )}
+      <div className={styles.themes} role="radiogroup" aria-label="Release channel">
+        {[
+          { id: "stable", label: "stable", description: "Tagged releases (recommended)" },
+          { id: "main", label: "main", description: "Development branch — expect rough edges" },
+        ].map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={channel === o.id}
+            disabled={!settings}
+            className={channel === o.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard}
+            onClick={() => void save({ channel: o.id })}
+          >
+            <span className={styles.themeName}>{o.label}</span>
+            <span className={styles.themeDesc}>{o.description}</span>
+          </button>
+        ))}
+      </div>
+      <p className={styles.hint}>
+        Switching back to stable waits for the next tagged release (it never downgrades on its
+        own).
+      </p>
+      {saveErr && <p className={styles.err}>{saveErr}</p>}
       {info &&
         (info.update_available ? (
           <p className={styles.hint}>Update available: {info.latest}</p>
@@ -322,7 +406,7 @@ function UpdatesCard() {
           type="button"
           className={styles.updateBtn}
           onClick={check}
-          disabled={state === "checking" || state === "applying"}
+          disabled={state === "checking" || state === "applying" || saving}
         >
           <RefreshCw size={15} /> {state === "checking" ? "Checking…" : "Check for updates"}
         </button>
@@ -331,7 +415,7 @@ function UpdatesCard() {
             type="button"
             className={`${styles.updateApply} shine`}
             onClick={apply}
-            disabled={state === "applying" || state === "applied"}
+            disabled={state === "applying" || state === "applied" || saving}
           >
             <Download size={15} /> {state === "applying" ? "Updating…" : "Update now"}
           </button>

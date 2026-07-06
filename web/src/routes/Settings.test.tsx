@@ -24,6 +24,8 @@ vi.mock("../lib/api", async () => {
       system: vi.fn(),
       updateCheck: vi.fn(),
       updateApply: vi.fn(),
+      updateSettings: vi.fn(),
+      setUpdateSettings: vi.fn(),
       config: vi.fn(),
       enroll2fa: vi.fn(),
       confirm2fa: vi.fn(),
@@ -122,6 +124,19 @@ beforeEach(() => {
     disk_free: 200 * 1024 ** 3,
     uptime_seconds: 90000,
   });
+  // Updates card (#538): persisted settings load on mount (cheap GET, no remote hit).
+  vi.mocked(api.updateSettings).mockResolvedValue({
+    auto_update: false,
+    channel: "stable",
+    last_auto: null,
+  });
+  vi.mocked(api.setUpdateSettings).mockImplementation((body) =>
+    Promise.resolve({
+      auto_update: body.auto_update ?? false,
+      channel: body.channel ?? "stable",
+      last_auto: null,
+    }),
+  );
   vi.mocked(api.logout).mockResolvedValue(undefined);
   vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 0, skipped: 0 });
   vi.mocked(api.setPrefs).mockResolvedValue({});
@@ -376,6 +391,66 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   await userEvent.click(screen.getByRole("button", { name: /update now/i }));
   expect(api.updateApply).toHaveBeenCalled();
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
+});
+
+// ---- Updates: in-app auto-update settings (#538) ----
+
+test("Updates: automatic-updates toggle loads from settings and persists", async () => {
+  renderSettings("dark", "#ffb000", "/settings/system");
+  const toggle = await screen.findByRole("checkbox", { name: /automatic updates/i });
+  await waitFor(() => expect(toggle).toBeEnabled()); // enabled once settings load
+  expect(toggle).not.toBeChecked(); // default off (opt-in preserved)
+  await userEvent.click(toggle);
+  expect(api.setUpdateSettings).toHaveBeenCalledWith({ auto_update: true });
+  await waitFor(() => expect(toggle).toBeChecked());
+  // With auto-update on and no pass yet this run, the recent-runtime status line shows.
+  expect(screen.getByText(/no automatic check yet since the last restart/i)).toBeInTheDocument();
+});
+
+test("Updates: last automatic check renders as recent runtime status", async () => {
+  vi.mocked(api.updateSettings).mockResolvedValue({
+    auto_update: true,
+    channel: "stable",
+    last_auto: { ts: 1720000000, result: "up-to-date" },
+  });
+  renderSettings("dark", "#ffb000", "/settings/system");
+  expect(await screen.findByText(/last automatic check: .*up-to-date/i)).toBeInTheDocument();
+});
+
+test("Updates: switching channel drops a stale in-flight check result", async () => {
+  // Hermes #539 race: a check started under the OLD channel must not repopulate the
+  // "update available" line after the user switches channels.
+  let resolveCheck!: (v: {
+    current: string;
+    channel: string;
+    latest: string;
+    update_available: boolean;
+  }) => void;
+  vi.mocked(api.updateCheck).mockReturnValue(
+    new Promise((res) => {
+      resolveCheck = res;
+    }),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  const main = await screen.findByRole("radio", { name: /main/i });
+  await waitFor(() => expect(main).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", { name: /check for updates/i }));
+  await userEvent.click(main); // switch channels while the check is still in flight
+  resolveCheck({ current: "0.0.1", channel: "stable", latest: "v9.9.9", update_available: true });
+  await flushFetches();
+  expect(screen.queryByText(/update available/i)).not.toBeInTheDocument();
+});
+
+test("Updates: release-channel radiogroup persists the channel", async () => {
+  renderSettings("dark", "#ffb000", "/settings/system");
+  const main = await screen.findByRole("radio", { name: /main/i });
+  const stable = screen.getByRole("radio", { name: /stable/i });
+  await waitFor(() => expect(main).toBeEnabled());
+  expect(stable).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(main);
+  expect(api.setUpdateSettings).toHaveBeenCalledWith({ channel: "main" });
+  await waitFor(() => expect(main).toHaveAttribute("aria-checked", "true"));
+  expect(stable).toHaveAttribute("aria-checked", "false");
 });
 
 // ---- Security tab ----

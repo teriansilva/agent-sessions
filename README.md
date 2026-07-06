@@ -97,7 +97,7 @@ Self-update never runs arbitrary input — it only moves to the **channel's late
 
 - **In-app:** the dashboard shows the version + a check/apply control (`/api/version`, `/api/update/check`, `/api/update/apply` — authed + CSRF + origin-gated).
 - **CLI:** `agent-sessions autoupdate` (check the channel, apply only if newer).
-- **Opt-in autoupdate timer:** pass `AGENT_SESSIONS_AUTOUPDATE=1` at install (optionally `AGENT_SESSIONS_AUTOUPDATE_ONCALENDAR=daily`) and a `agent-sessions-update.timer` runs the same guarded apply on a schedule. Default **off**; re-running the installer without the flag tears the timer back down.
+- **Automatic updates (Settings → System → Updates):** an in-app toggle runs the same guarded check/apply daily, and a channel selector switches between `stable` and `main` — both persist server-side and apply live, no reinstall or env var needed. Default **off**. Installs that had the old `AGENT_SESSIONS_AUTOUPDATE=1` systemd timer migrate automatically on upgrade: the opt-in is preserved as the in-app setting and the legacy timer units are removed.
 
 ### Rollback & emergency-disable
 
@@ -119,9 +119,11 @@ systemctl --user restart agent-sessions.service
 ```sh
 systemctl --user stop    agent-sessions.service          # take the app down now
 systemctl --user disable agent-sessions.service          # …and keep it down across logins
-systemctl --user disable --now agent-sessions-update.timer   # stop autoupdate only
 journalctl --user -u agent-sessions.service -f           # logs
 ```
+
+To stop **automatic updates only**, turn the toggle off under Settings → System → Updates,
+or set `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
 
 ## Security / trust model
 

@@ -122,8 +122,8 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 |---|---|---|
 | `AGENT_SESSIONS_REPO` | `https://github.com/teriansilva/agent-sessions.git` | Source to clone/update from (override for a fork/mirror). |
 | `AGENT_SESSIONS_REF` | — | Pin an exact tag/branch/sha (one-shot; self-update never inherits it). |
-| `AGENT_SESSIONS_CHANNEL` | `stable` | `stable` (highest `v*` tag) or `main` (bleeding edge). |
-| `AGENT_SESSIONS_AUTOUPDATE` / `_AUTOUPDATE_ONCALENDAR` | `0` / `daily` | Opt-in self-update timer + its schedule. |
+| `AGENT_SESSIONS_CHANNEL` | `stable` | `stable` (highest `v*` tag) or `main` (bleeding edge). Persisted to the env file and editable in Settings → System → Updates; the installer follows the persisted choice on re-runs. |
+| `AGENT_SESSIONS_AUTOUPDATE` | `0` | Daily in-app automatic updates. Not an installer flag: toggled in Settings → System → Updates (persisted to the env file, read live). A legacy `agent-sessions-update.timer` is migrated + removed on upgrade. |
 | `AGENT_SESSIONS_NO_SERVICE` | `0` | Install without touching systemd. |
 | `AGENT_SESSIONS_HOME` | `~/.local/share/agent-sessions` | Install root. |
 | `AGENT_SESSIONS_SKIP_WEB_BUILD` / `_NODE_VERSION` | — | Build knobs. |

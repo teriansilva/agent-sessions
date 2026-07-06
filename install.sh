@@ -15,11 +15,18 @@
 # Overridable via env: AGENT_SESSIONS_REPO, AGENT_SESSIONS_REF, AGENT_SESSIONS_CHANNEL
 # (stable|main), AGENT_SESSIONS_HOST, AGENT_SESSIONS_PORT, AGENT_SESSIONS_HOME,
 # AGENT_SESSIONS_ORIGIN. AGENT_SESSIONS_NO_SERVICE=1 installs without touching systemd.
+# Automatic updates are managed in the app (Settings → System → Updates, #538) — there is
+# no installer opt-in; a legacy AGENT_SESSIONS_AUTOUPDATE systemd timer is migrated to the
+# in-app setting on upgrade.
 set -eu
 
 APP=agent-sessions
 REPO_URL="${AGENT_SESSIONS_REPO:-https://github.com/teriansilva/agent-sessions.git}"
 REF="${AGENT_SESSIONS_REF:-}"
+# Track whether the channel was set explicitly (env) vs defaulted: the UI persists a channel
+# choice in the env file (#538), and a re-run without the env var must follow that choice
+# (adopt_persisted_channel) instead of silently flipping a main-channel install to stable.
+CHANNEL_EXPLICIT=0; [ -n "${AGENT_SESSIONS_CHANNEL:-}" ] && CHANNEL_EXPLICIT=1
 CHANNEL="${AGENT_SESSIONS_CHANNEL:-stable}"
 # Track whether HOST/ORIGIN were set explicitly (env) vs defaulted: an explicit value
 # suppresses the interactive bind prompt and the derived-origin recompute (choose_host).
@@ -217,6 +224,17 @@ adopt_persisted_bind() {
   HOST="$_ph"; HOST_EXPLICIT=1
   _po="$(_env_file_get AGENT_SESSIONS_ORIGIN)"
   if [ -n "$_po" ] && [ "$ORIGIN_EXPLICIT" = 0 ]; then ORIGIN="$_po"; ORIGIN_EXPLICIT=1; fi
+}
+
+adopt_persisted_channel() {
+  # The app persists the release channel in the env file (Settings → System, #538). A
+  # re-run without AGENT_SESSIONS_CHANNEL in the environment follows that choice, so a
+  # manual `curl|sh` upgrade can't silently flip a main-channel install back to stable.
+  # An env var passed on THIS run still wins (and is persisted after the env file exists).
+  [ "$CHANNEL_EXPLICIT" = 1 ] && return 0
+  [ -f "$ENVF" ] || return 0
+  _pc="$(_env_file_get AGENT_SESSIONS_CHANNEL)"
+  case "$_pc" in stable | main) CHANNEL="$_pc" ;; esac
 }
 
 choose_host() {
@@ -484,6 +502,20 @@ _env_set_if_absent() {
   # because we only append to an already-0600 file.
   _env_has "$1" || printf '%s=%s\n' "$1" "$2" >> "$ENVF"
 }
+_env_set() {
+  # Set KEY=VAL, replacing an existing line. Only for fixed installer-owned keys with
+  # token values (never secrets / user input). Rewrites via a 0600 temp + rename so the
+  # file never has looser permissions; other lines are preserved (order not guaranteed).
+  if _env_has "$1"; then
+    _tmp="$ENVF.set.$$"
+    grep -v "^$1=" "$ENVF" > "$_tmp" || true
+    printf '%s=%s\n' "$1" "$2" >> "$_tmp"
+    chmod 600 "$_tmp"
+    mv "$_tmp" "$ENVF"
+  else
+    printf '%s=%s\n' "$1" "$2" >> "$ENVF"
+  fi
+}
 
 migrate_env() {
   # Bring an env file (fresh OR pre-existing from an older install) up to the current
@@ -495,6 +527,12 @@ migrate_env() {
   umask 077
   _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
   _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
+  # Persist an explicitly-passed channel (#538) so the app (which reads the env file
+  # live) and later re-runs (adopt_persisted_channel) follow it. UI changes rewrite the
+  # same key; a defaulted run leaves whatever the operator/UI chose untouched.
+  if [ "$CHANNEL_EXPLICIT" = 1 ]; then
+    _env_set AGENT_SESSIONS_CHANNEL "$CHANNEL"
+  fi
 }
 
 render_unit() {
@@ -583,52 +621,28 @@ manage_service() {
   die "service started but /healthz never came up on $HOST:$PORT"
 }
 
-manage_autoupdate() {
-  # Opt-in (AGENT_SESSIONS_AUTOUPDATE=1): a user timer that periodically runs
-  # `agent-sessions autoupdate` (check the channel + apply via the same rollback-guarded
-  # installer). Disabled (and torn down on re-run) by default.
+migrate_legacy_autoupdate() {
+  # The systemd autoupdate timer is retired (#538): the app now schedules the daily
+  # check itself, gated on the AGENT_SESSIONS_AUTOUPDATE env-file key (Settings →
+  # System → Updates). Preserve a previously-enabled timer as the in-app opt-in, then
+  # remove the legacy units. No-op on fresh installs and once migrated.
+  [ "${AGENT_SESSIONS_NO_SERVICE:-0}" = 1 ] && return 0
   systemctl --user >/dev/null 2>&1 || return 0
-  case "${AGENT_SESSIONS_AUTOUPDATE:-}" in
-    1 | true | yes)
-      mkdir -p "$UNIT_DIR"
-      cat > "$UNIT_DIR/$APP-update.service" <<EOF
-[Unit]
-Description=agent-sessions autoupdate
-[Service]
-Type=oneshot
-EnvironmentFile=$ENVF
-# Carry the opt-in + channel + repo explicitly: the timer runs detached from the install
-# shell, and the re-run installer must see AGENT_SESSIONS_AUTOUPDATE (so it keeps the
-# timer) and the channel/repo (so the update targets the right ref) — none of which live
-# in the env file. (Non-secret values only.)
-Environment=AGENT_SESSIONS_AUTOUPDATE=1
-Environment=AGENT_SESSIONS_CHANNEL=$CHANNEL
-Environment=AGENT_SESSIONS_REPO=$REPO_URL
-ExecStart=$CURRENT/venv/bin/agent-sessions autoupdate
-EOF
-      cat > "$UNIT_DIR/$APP-update.timer" <<EOF
-[Unit]
-Description=agent-sessions autoupdate timer
-[Timer]
-OnCalendar=${AGENT_SESSIONS_AUTOUPDATE_ONCALENDAR:-daily}
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
-      systemctl --user daemon-reload
-      systemctl --user enable --now "$APP-update.timer" >/dev/null 2>&1 || true
-      log "autoupdate enabled ($CHANNEL channel)"
-      ;;
-    *)
-      systemctl --user disable --now "$APP-update.timer" >/dev/null 2>&1 || true
-      ;;
-  esac
+  [ -f "$UNIT_DIR/$APP-update.timer" ] || [ -f "$UNIT_DIR/$APP-update.service" ] || return 0
+  if systemctl --user is-enabled "$APP-update.timer" >/dev/null 2>&1; then
+    _env_set_if_absent AGENT_SESSIONS_AUTOUPDATE 1
+  fi
+  systemctl --user disable --now "$APP-update.timer" >/dev/null 2>&1 || true
+  rm -f "$UNIT_DIR/$APP-update.timer" "$UNIT_DIR/$APP-update.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  log "migrated the legacy autoupdate timer → in-app automatic updates (Settings → System)"
 }
 
 main() {
   mkdir -p "$PREFIX"
-  adopt_persisted_bind   # re-run: a persisted bind in the env file wins (no silent revert to localhost)
-  choose_host            # fresh interactive install: offer to bind a chosen address / all interfaces
+  adopt_persisted_bind    # re-run: a persisted bind in the env file wins (no silent revert to localhost)
+  adopt_persisted_channel # re-run: a persisted (UI-chosen) channel wins the same way (#538)
+  choose_host             # fresh interactive install: offer to bind a chosen address / all interfaces
   ensure_prereqs
   ref="$(resolve_ref)"
   log "installing $APP (${ref:-default branch}) into $PREFIX …"
@@ -661,8 +675,8 @@ main() {
   # Discover installed agent CLIs and record their paths in the env (best-effort; also
   # re-runs on every upgrade so newly-installed engines are picked up).
   "$CURRENT/venv/bin/agent-sessions" doctor --env "$ENVF" >/dev/null 2>&1 || true
+  migrate_legacy_autoupdate  # retire the systemd timer → in-app setting BEFORE the service (re)starts
   manage_service "$prev_target"
-  manage_autoupdate
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"
 
   note "agent-sessions $version installed."

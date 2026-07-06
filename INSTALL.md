@@ -106,7 +106,6 @@ Set at install time (persisted into `env`):
 | `AGENT_SESSIONS_REF` | Pin an exact tag/branch/sha. |
 | `AGENT_SESSIONS_REPO` | Source repo URL (for private mirrors). |
 | `AGENT_SESSIONS_NO_SERVICE=1` | Install without touching systemd. |
-| `AGENT_SESSIONS_AUTOUPDATE=1` | Install the opt-in autoupdate timer (`AGENT_SESSIONS_AUTOUPDATE_ONCALENDAR=daily` to tune cadence). Default off. |
 
 The engine CLI binary paths are recorded automatically by `doctor`; you don't normally set them by
 hand.
@@ -123,10 +122,13 @@ paths, and point `proxy_pass` at the app's bind address. **Rate-limit `/login`**
 Self-update moves to the **channel's latest** release, flips `current`, restarts, health-checks
 `/healthz`, and **rolls back** automatically if the new release fails.
 
-- **In-app:** version + check/apply control on the dashboard.
+- **In-app:** version + check/apply control on the dashboard, plus **automatic updates**
+  (daily) and the release channel under Settings → System → Updates — both persist
+  server-side and apply live.
 - **CLI:** `agent-sessions autoupdate` (apply only if newer).
-- **Re-run the installer:** also upgrades; without `AGENT_SESSIONS_AUTOUPDATE=1` it tears the
-  autoupdate timer back down.
+- **Re-run the installer:** also upgrades; it keeps your persisted auto-update/channel
+  settings. An old `agent-sessions-update.timer` from a pre-Settings install is migrated
+  automatically (opt-in preserved, legacy units removed).
 
 ## Rollback & emergency-disable
 
@@ -144,9 +146,11 @@ Emergency-disable:
 ```sh
 systemctl --user stop    agent-sessions.service          # take the app down now
 systemctl --user disable agent-sessions.service          # …and keep it down across logins
-systemctl --user disable --now agent-sessions-update.timer   # stop autoupdate only
 journalctl --user -u agent-sessions.service -f           # logs
 ```
+
+To stop **automatic updates only**, turn the toggle off under Settings → System → Updates,
+or set `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
 
 ## Lost the password?
 

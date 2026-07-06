@@ -154,7 +154,50 @@ def register(
     @app.get("/api/update/check")
     async def update_check(_: str = Depends(logged_in)) -> JSONResponse:
         # Compare the running version to the channel's latest on the remote (#65 Phase 5).
-        return JSONResponse(update.check())
+        # The remote compare is a blocking `git ls-remote` (up to 15 s) → worker thread.
+        # #538: additive `auto_update` + `last_auto` fields; the pre-#538 fields keep their
+        # names and semantics (the SPA's manual-check flow depends on them).
+        info = await asyncio.to_thread(update.check)
+        info["auto_update"] = update.auto_update_enabled()
+        info["last_auto"] = update.last_auto()
+        return JSONResponse(info)
+
+    @app.get("/api/update/settings")
+    async def update_settings_get(_: str = Depends(logged_in)) -> JSONResponse:
+        # Cheap read (no network) for the Settings card mount (#538) — `check` would hit
+        # the remote, which the card must not do on every Settings visit.
+        out = update.settings()
+        out["last_auto"] = update.last_auto()
+        return JSONResponse(out)
+
+    @app.post("/api/update/settings")
+    async def update_settings_set(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Persist the auto-update opt-in + release channel (#538). Strictly the two fixed
+        # env-file keys — bool/enum validated here, never raw user input into the env file.
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail="expected {auto_update?, channel?}")
+        auto_update = body.get("auto_update")
+        channel = body.get("channel")
+        if auto_update is None and channel is None:
+            raise HTTPException(status_code=422, detail="expected {auto_update?, channel?}")
+        if auto_update is not None and not isinstance(auto_update, bool):
+            raise HTTPException(status_code=422, detail="auto_update must be a boolean")
+        if channel is not None and channel not in update.CHANNELS:
+            raise HTTPException(
+                status_code=422, detail=f"channel must be one of {list(update.CHANNELS)}"
+            )
+        try:
+            out = update.set_settings(auto_update=auto_update, channel=channel)
+        except OSError:
+            raise HTTPException(status_code=503, detail="could not persist settings") from None
+        out["last_auto"] = update.last_auto()
+        return JSONResponse(out)
 
     @app.post("/api/update/apply")
     async def update_apply(
@@ -162,8 +205,12 @@ def register(
     ) -> JSONResponse:
         # Update to the channel's latest — no user-supplied ref/command. Re-runs the
         # installer detached (atomic release + flip + restart + health-check + rollback).
-        if not update.apply():
+        # Single-flight with the scheduled auto-update pass (#538).
+        status = update.apply_manual()
+        if status == "unavailable":
             raise HTTPException(status_code=503, detail="self-update unavailable (not an install)")
+        if status == "busy":
+            raise HTTPException(status_code=409, detail="an update is already in progress")
         return JSONResponse({"status": "updating"}, status_code=202)
 
     @app.get("/api/config")

@@ -372,6 +372,23 @@ export interface UpdateInfo {
    *  or null when git/network is unavailable or no release tag exists yet. */
   latest: string | null;
   update_available: boolean;
+  /** #538 additive fields (present on current servers; optional for back-compat). */
+  auto_update?: boolean;
+  last_auto?: UpdateLastAuto | null;
+}
+
+/** Recent-runtime status of the last scheduled auto-update pass (#538). In-memory on the
+ *  server by design — resets on restart; a status hint, not an audit log. */
+export interface UpdateLastAuto {
+  ts: number;
+  result: string;
+}
+
+/** The persisted update settings (#538): the Settings card's cheap read + POST shape. */
+export interface UpdateSettings {
+  auto_update: boolean;
+  channel: string;
+  last_auto?: UpdateLastAuto | null;
 }
 
 /** One page of older transcript history for scroll-up lazy-load (#348 Phase 3).

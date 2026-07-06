@@ -19,6 +19,7 @@ import type {
   SystemInfo,
   TwoFactorEnrollment,
   UpdateInfo,
+  UpdateSettings,
 } from "../types/api";
 
 export class ApiError extends Error {
@@ -186,6 +187,11 @@ export const api = {
   updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
   /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */
   updateApply: () => postJson<{ status: string }>("/api/update/apply"),
+  /** Cheap read (no remote hit) of the persisted update settings for the card mount (#538). */
+  updateSettings: () => getJson<UpdateSettings>("/api/update/settings"),
+  /** Persist the auto-update opt-in and/or release channel (#538). CSRF-guarded. */
+  setUpdateSettings: (body: { auto_update?: boolean; channel?: string }) =>
+    postJson<UpdateSettings>("/api/update/settings", body),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
   /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
