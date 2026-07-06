@@ -29,6 +29,11 @@ interface Attachment {
 const ENTER_DELAY_MS = 60;
 const ENTER_DELAY_AFTER_ATTACHMENT_MS = 120;
 
+/** Fresh-launch readiness hold (#533): how long a first Send waits for the booting agent's
+ *  input to come live before giving up (keeping the draft + surfacing "not sent"). Generous —
+ *  a loaded host has been observed taking ~10s to first paint. */
+const READY_WAIT_MS = 20_000;
+
 /** Debounce for the server-side compose draft (#477): long enough that a burst of typing is
  *  one PUT, short enough that a draft is safe within a beat of pausing. */
 const DRAFT_SAVE_DEBOUNCE_MS = 700;
@@ -73,6 +78,12 @@ export const Compose = forwardRef<
     /** Id of the current socket (bumped on reconnect) — `send` uses it to avoid an empty submit
      *  when a reconnect splits its clear/paste/Enter frames (#287). Optional for older callers. */
     connEpoch?: () => number;
+    /** Fresh-launch readiness gate (#533): `true` when the agent's input is live (the common
+     *  case — delivery proceeds synchronously, sequencing unchanged), else a promise resolving
+     *  true on readiness / false when `timeoutMs` expires. Input written into a booting agent
+     *  is swallowed or mis-submitted, so the content send holds until this yields true.
+     *  Optional — absent (older callers/tests) ⇒ always ready. */
+    waitInputReady?: (timeoutMs: number) => true | Promise<boolean>;
     /** Whether the text field starts expanded (mobile) or collapsed to the bar (desktop). */
     defaultOpen?: boolean;
     /** Engine-qualified session key (`<engine>:<id>`) this box composes for, used to
@@ -80,13 +91,18 @@ export const Compose = forwardRef<
      *  `new-…` placeholder session has no metadata key — out of scope). */
     sessionId?: string | null;
   }
->(function Compose({ sendInput, connEpoch, defaultOpen = true, sessionId = null }, ref) {
+>(function Compose(
+  { sendInput, connEpoch, waitInputReady, defaultOpen = true, sessionId = null },
+  ref,
+) {
   const [open, setOpen] = useState(defaultOpen);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [note, setNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // #533: token guarding the fresh-launch readiness hold — a newer Send supersedes a pending one.
+  const holdRef = useRef(0);
 
   // Push-to-talk dictation (#483). At most one active recognizer (`recogRef`); `dictBaseRef` is
   // the draft text present when dictation began. Each result event rebuilds the transcript from the
@@ -306,7 +322,7 @@ export const Compose = forwardRef<
     }
     // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
     // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
-    const abortNotDelivered = () => {
+    const abortNotDelivered = (why = "reconnecting — not sent, try again") => {
       setText(savedText);
       setAttachments(savedAttachments);
       // #477: the turn wasn't submitted — guarantee the restored content is persisted (it may not
@@ -314,58 +330,83 @@ export const Compose = forwardRef<
       // keeps the draft. flushDraft is a no-op when the server already holds this exact content.
       dirtyRef.current = true;
       flushDraft(savedText, savedAttachments);
-      setNote("reconnecting — not sent, try again");
+      setNote(why);
       setTimeout(() => setNote(""), 3000);
     };
-    // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
-    // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
-    // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
-    // → one PTY write → one read, so the agent could read the trailing ``\r`` as still inside the
-    // bracketed-paste buffer and leave the prompt typed but unsubmitted. Splitting the ``\r``
-    // into its own frame made it a discrete keystroke after the paste-end marker.
-    // (#197) Even split, an attachment's async image-path ingestion still raced an immediate
-    // Enter and dropped it, so the Enter was deferred for attachments.
-    // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
-    // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
-    // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
-    const enterDelay = attachments.length > 0 ? ENTER_DELAY_AFTER_ATTACHMENT_MS : ENTER_DELAY_MS;
-    // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
-    // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it submits
-    // an EMPTY turn (#287). Keep the text so the user can resend, and say why.
-    sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-    if (!sendInput(bracketedPaste(msg))) {
-      abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
-      return;
-    }
-    // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end marker
-    // (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead socket while
-    // the Enter would hit a FRESH socket that never received it → empty turn. Gate on the socket id:
-    // if it changed, re-send clear+paste on the new socket first (the clear prevents any doubling) —
-    // and if THAT re-paste also fails (a second reconnect), abort instead of submitting empty.
-    const epoch = connEpoch?.();
-    setTimeout(() => {
-      if (epoch !== undefined && connEpoch?.() !== epoch) {
-        sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-        if (!sendInput(bracketedPaste(msg))) {
+    const deliver = () => {
+      // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
+      // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
+      // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
+      // → one PTY write → one read, so the agent could read the trailing ``\r`` as still inside the
+      // bracketed-paste buffer and leave the prompt typed but unsubmitted. Splitting the ``\r``
+      // into its own frame made it a discrete keystroke after the paste-end marker.
+      // (#197) Even split, an attachment's async image-path ingestion still raced an immediate
+      // Enter and dropped it, so the Enter was deferred for attachments.
+      // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
+      // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
+      // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
+      const enterDelay =
+        savedAttachments.length > 0 ? ENTER_DELAY_AFTER_ATTACHMENT_MS : ENTER_DELAY_MS;
+      // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
+      // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it
+      // submits an EMPTY turn (#287). Keep the text so the user can resend, and say why.
+      sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+      if (!sendInput(bracketedPaste(msg))) {
+        abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
+        return;
+      }
+      // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end
+      // marker (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead
+      // socket while the Enter would hit a FRESH socket that never received it → empty turn. Gate on
+      // the socket id: if it changed, re-send clear+paste on the new socket first (the clear
+      // prevents any doubling) — and if THAT re-paste also fails (a second reconnect), abort
+      // instead of submitting empty.
+      const epoch = connEpoch?.();
+      setTimeout(() => {
+        if (epoch !== undefined && connEpoch?.() !== epoch) {
+          sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+          if (!sendInput(bracketedPaste(msg))) {
+            abortNotDelivered();
+            return;
+          }
+        }
+        // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
+        // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
+        // than clearing it. Previously the composer + server draft were cleared synchronously before
+        // this point, so a dropped final Enter lost both the message and the draft (Hermes #480).
+        if (!sendInput(KEYSEQ.enter)) {
           abortNotDelivered();
           return;
         }
-      }
-      // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
-      // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
-      // than clearing it. Previously the composer + server draft were cleared synchronously before
-      // this point, so a dropped final Enter lost both the message and the draft (Hermes #480).
-      if (!sendInput(KEYSEQ.enter)) {
-        abortNotDelivered();
+        // Delivered: clear the composer AND the server draft (a just-sent turn must not linger as a
+        // draft). clearDraft cancels any pending debounce so a trailing flush can't resurrect it.
+        setText("");
+        setAttachments([]);
+        clearDraft();
+        if (taRef.current) taRef.current.style.height = "auto";
+      }, enterDelay);
+    };
+    // Fresh-launch readiness hold (#533): input written into a still-booting agent is swallowed
+    // (the composed text) or mis-submitted (the incident's first turn was the literal Ctrl-A of
+    // the clear). `true` — the common case, including every attach to a running session — keeps
+    // the delivery fully synchronous so the established frame sequencing is untouched. Otherwise
+    // hold visibly, deliver on readiness, and give up (draft intact) when the bounded wait fails.
+    const ready = waitInputReady?.(READY_WAIT_MS) ?? true;
+    if (ready === true) {
+      deliver();
+      return;
+    }
+    const token = ++holdRef.current;
+    setNote("waiting for agent…");
+    void ready.then((ok) => {
+      if (holdRef.current !== token) return; // superseded by a newer Send
+      if (!ok) {
+        abortNotDelivered("agent not ready — not sent, try again");
         return;
       }
-      // Delivered: clear the composer AND the server draft (a just-sent turn must not linger as a
-      // draft). clearDraft cancels any pending debounce so a trailing flush can't resurrect it.
-      setText("");
-      setAttachments([]);
-      clearDraft();
-      if (taRef.current) taRef.current.style.height = "auto";
-    }, enterDelay);
+      setNote("");
+      deliver();
+    });
   };
 
   const uploadFiles = async (files: File[], forceAttachment = false) => {

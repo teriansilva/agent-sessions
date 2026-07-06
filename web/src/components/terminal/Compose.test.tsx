@@ -431,3 +431,52 @@ test("attachImages with no files is a no-op", () => {
   ref.current!.attachImages([]);
   expect(api.upload).not.toHaveBeenCalled();
 });
+
+// --- Fresh-launch readiness gate (#533) ---------------------------------------------------------
+// Input written into a still-booting agent is swallowed (the composed text) or mis-submitted (the
+// production incident's first turn was the literal Ctrl-A of the compose clear). The content send
+// must hold until the terminal reports the agent's input live, and give up non-destructively.
+
+test("holds the first Send until the agent's input is ready, then delivers (#533)", async () => {
+  const user = userEvent.setup();
+  let resolveReady!: (ok: boolean) => void;
+  const waitInputReady = vi.fn(
+    (): true | Promise<boolean> => new Promise<boolean>((r) => (resolveReady = r)),
+  );
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={waitInputReady} />);
+  await user.type(screen.getByRole("textbox"), "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // Nothing may reach the PTY while the agent is booting — the lost-first-message incident was
+  // exactly these frames landing inside the boot window.
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(screen.getByText(/waiting for agent/i)).toBeTruthy();
+  act(() => resolveReady(true));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("hello world")));
+  expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter)); // deferred Enter intact
+});
+
+test("ready-before-send (synchronous true) keeps the delivery sequence unchanged (#533)", async () => {
+  const user = userEvent.setup();
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={() => true} />);
+  await user.type(screen.getByRole("textbox"), "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // Identical to the ungated path: clear + paste synchronously, Enter deferred (#180).
+  expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
+  expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+});
+
+test("readiness timeout never sends, keeps the text, and says why (#533)", async () => {
+  const user = userEvent.setup();
+  render(
+    <Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={() => Promise.resolve(false)} />,
+  );
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(screen.getByText(/agent not ready/i)).toBeTruthy());
+  expect(sendInput).not.toHaveBeenCalled(); // no frame ever reached the booting agent
+  expect((ta as HTMLTextAreaElement).value).toBe("hello world"); // preserved for a retry
+});

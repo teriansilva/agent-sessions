@@ -28,6 +28,10 @@ import { Compose, type ComposeHandle } from "./Compose";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 
+// #533: fresh-launch compose gate. Engines that never emit the bracketed-paste enable
+// (ESC[?2004h) still count as input-ready this long after their first output bytes.
+const READY_FALLBACK_MS = 1500;
+
 function statusText(s: TermStatus): string {
   switch (s.kind) {
     case "connecting":
@@ -143,6 +147,33 @@ export function Terminal({
   // the converge is meant to preserve. useRef captures only the first render's value, so later
   // prop changes can't move it; a genuine session switch remounts via `key` and re-seeds it.
   const freshRef = useRef(fresh);
+
+  // First-compose gate for a FRESH launch (#533). The agent boots for several seconds after
+  // new=1; input written into that window is swallowed (the composed text) or submitted as
+  // garbage — in the incident the literal Ctrl-A of the compose clear became the whole first
+  // turn. "Input ready" = the boot stream showed the TUI arming its input via the bracketed-
+  // paste enable (ESC[?2004h), with a bounded fallback after the first output bytes for
+  // engines that never emit it. Attaches to already-running sessions are ready immediately.
+  const inputReadyRef = useRef<boolean>(!fresh);
+  const readyWaitersRef = useRef<Array<() => void>>([]);
+  const markInputReady = useCallback(() => {
+    if (inputReadyRef.current) return;
+    inputReadyRef.current = true;
+    for (const w of readyWaitersRef.current.splice(0)) w();
+  }, []);
+  // Compose calls this before its first delivery: `true` (synchronous — the common case, so
+  // the established clear→paste→deferred-Enter sequencing is untouched) or a promise that
+  // resolves true on readiness / false when `timeoutMs` expires first.
+  const waitInputReady = useCallback((timeoutMs: number): true | Promise<boolean> => {
+    if (inputReadyRef.current) return true;
+    return new Promise<boolean>((resolve) => {
+      const t = setTimeout(() => resolve(false), timeoutMs);
+      readyWaitersRef.current.push(() => {
+        clearTimeout(t);
+        resolve(true);
+      });
+    });
+  }, []);
 
   // Send raw input to the PTY (used by the mobile action bar / compose). Returns whether the frame
   // was actually delivered (socket OPEN) — Compose uses this so it never submits a bare Enter after
@@ -426,6 +457,20 @@ export function Terminal({
     // regression). Programmatic scrolls must never arm it.
     let userScrolled = false;
     let sawOutput = false;
+    // #533: fresh-launch input-ready detection. Scan the boot stream for the bracketed-paste
+    // enable; the 8-char carry handles the sequence splitting across chunks. Engines that never
+    // emit ?2004h count as ready READY_FALLBACK_MS after their first output bytes. Only runs
+    // until readiness fires (attaches to running sessions start ready, so it never runs there).
+    let readyCarry = "";
+    let readyFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    const latin1 = new TextDecoder("latin1");
+    const noteBootOutput = (b: Uint8Array) => {
+      if (readyFallbackTimer === null)
+        readyFallbackTimer = setTimeout(markInputReady, READY_FALLBACK_MS);
+      const hay = readyCarry + latin1.decode(b);
+      if (hay.includes("\x1b[?2004h")) markInputReady();
+      else readyCarry = hay.slice(-8);
+    };
     const eventInTermArea = (target: EventTarget | null) => {
       const area = host.parentElement;
       return target instanceof Node && !!area?.contains(target);
@@ -511,6 +556,7 @@ export function Terminal({
         onOutput: (b) => {
           attachBytes += b.byteLength; // repaint-backstop signal: did this attach paint anything?
           sawOutput = true;
+          if (!inputReadyRef.current) noteBootOutput(b); // #533: fresh-launch compose gate
           recordOutput(b); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting) rewriteQueue.push(b); // never interleave into a rewrite (#348)
           else {
@@ -804,6 +850,7 @@ export function Terminal({
     return () => {
       cancelAnimationFrame(settleRaf);
       if (resizeTimer != null) clearTimeout(resizeTimer);
+      if (readyFallbackTimer != null) clearTimeout(readyFallbackTimer);
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
       clearJiggle();
@@ -1072,6 +1119,7 @@ export function Terminal({
         ref={composeRef}
         sendInput={sendInput}
         connEpoch={connEpoch}
+        waitInputReady={waitInputReady}
         defaultOpen={composeDefaultOpen}
         sessionId={id.startsWith("new-") ? null : `${engine}:${id}`}
       />
