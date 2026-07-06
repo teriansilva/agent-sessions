@@ -297,3 +297,62 @@
     animation: none;
   }
 }
+
+/* Auto copy-on-select confirmation (#554). A transient tactical-HUD telemetry chip shown when a
+ * mouse selection is copied to the clipboard, then fades. Square + flat + tokenized per
+ * docs/design.md (no rounded corners; only the LED stays circular); mono uppercase like the rest
+ * of the HUD chrome. Duration matches COPIED_TOAST_MS in Terminal.tsx. */
+.copiedToast {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border: 1px solid var(--accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: copiedFlash 1200ms ease forwards;
+}
+/* Accent LED — dots stay circular in the HUD. */
+.copiedToast::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+@keyframes copiedFlash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 5px);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  78% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .copiedToast {
+    animation: none;
+    transform: translateX(-50%);
+  }
+}

@@ -32,6 +32,9 @@ import styles from "./Terminal.module.css";
 // (ESC[?2004h) still count as input-ready this long after their first output bytes.
 const READY_FALLBACK_MS = 1500;
 
+// #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
+const COPIED_TOAST_MS = 1200;
+
 function statusText(s: TermStatus): string {
   switch (s.kind) {
     case "connecting":
@@ -109,6 +112,9 @@ export function Terminal({
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
+  // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
+  // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
+  const [copiedTick, setCopiedTick] = useState(0);
   // Scroll-up lazy-load (#348 Phase 3): pill state (loading / start-of-history / error)
   // + whether the viewport sits at the very top of the scrollback (the end pill only
   // shows there). `histRetryRef` holds the effect-scoped retry closure for the error pill.
@@ -885,6 +891,35 @@ export function Terminal({
       if (selecting && !window.getSelection()?.toString()) exitSelectMode();
     };
     document.addEventListener("touchend", onDocTouchEnd, true);
+
+    // Auto copy-on-select (#554): when a mouse selection settles, copy it to the clipboard and
+    // flash the "Copied" toast — the operator-chosen flavor on top of #536 (plain-drag select +
+    // Ctrl/⌘+C). Fires on `mouseup` (a real user gesture, so the async clipboard write is allowed
+    // and the selection is already built up from the drag's mousemoves) — NOT `onSelectionChange`,
+    // which fires mid-drag and outside a fresh gesture. Guards: our own synthetic events and the
+    // touch select-mode (#415, its native Copy bubble owns mobile) are skipped; a plain click / an
+    // empty or whitespace-only selection never clobbers the clipboard; and an unchanged selection is
+    // not re-copied (so a click elsewhere while text stays selected is a no-op). `document` (not
+    // `host`) so a drag that ends outside the terminal still copies. Fail-soft like #536.
+    let lastAutoCopied = "";
+    let copiedHideTimer: number | undefined;
+    let toastSeq = 0;
+    const copyOnSelectSettle = (e: MouseEvent) => {
+      if (!e.isTrusted || selecting || !term.hasSelection()) return;
+      const text = term.getSelection();
+      if (!text.trim() || text === lastAutoCopied) return;
+      lastAutoCopied = text;
+      void navigator.clipboard?.writeText(text).catch(() => {});
+      const id = ++toastSeq;
+      setCopiedTick(id);
+      if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
+      copiedHideTimer = window.setTimeout(
+        () => setCopiedTick((t) => (t === id ? 0 : t)),
+        COPIED_TOAST_MS,
+      );
+    };
+    document.addEventListener("mouseup", copyOnSelectSettle);
+
     const { detach: detachTouch, stopMomentum } = attachTouchScroll(surfaceEl, term, {
       onTap,
       onLongPress,
@@ -910,6 +945,8 @@ export function Terminal({
       detachTouch();
       stopMomentumRef.current = () => {};
       document.removeEventListener("touchend", onDocTouchEnd, true);
+      document.removeEventListener("mouseup", copyOnSelectSettle);
+      if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
       exitSelectMode();
       touchLayer?.remove();
       ro.disconnect();
@@ -1075,6 +1112,19 @@ export function Terminal({
           </div>
         )}
         <div ref={hostRef} className={styles.term} />
+        {/* Auto copy-on-select confirmation (#554): keyed on the tick so each copy restarts the
+            fade. role/aria-live announce it; the JS timer unmounts it after COPIED_TOAST_MS. */}
+        {copiedTick !== 0 && (
+          <div
+            key={copiedTick}
+            className={styles.copiedToast}
+            role="status"
+            aria-live="polite"
+            data-copied-toast=""
+          >
+            Copied
+          </div>
+        )}
         {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely
             positioned overlays at the terminal top — never buffer rows, so a page
             prepend can't shift them. */}
