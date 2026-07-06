@@ -1,0 +1,36 @@
+.banner {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 0;
+  background: var(--surface-2, #2a223f);
+  color: var(--text-1, #ece7f7);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  border: 1px solid var(--border, #3b3357);
+}
+
+.banner button {
+  appearance: none;
+  background: var(--accent, #c8a14a);
+  color: var(--accent-fg, #1b1226);
+  border: 0;
+  border-radius: 0;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.banner button:hover {
+  filter: brightness(1.1);
+}
+.banner button:focus-visible {
+  outline: 2px solid var(--focus, #ffe28a);
+  outline-offset: 2px;
+}
