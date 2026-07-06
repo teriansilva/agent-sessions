@@ -55,6 +55,12 @@ CURRENT="$PREFIX/current"
 ENVF="$PREFIX/env"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT="$UNIT_DIR/$APP.service"
+# Home Free (#27): optional "stream via BattleLab" remote-access channel. OFF by default —
+# a plain `curl|sh` stays self-host and never contacts a relay. Opt in with
+# AGENT_SESSIONS_REMOTE=stream, or the interactive prompt on a fresh tty install.
+REMOTE="${AGENT_SESSIONS_REMOTE:-}"
+HOMEFREE_DIR="$PREFIX/homefree"
+HOMEFREE_UNIT="$UNIT_DIR/$APP-homefree.service"
 
 log()  { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }
@@ -574,6 +580,108 @@ WantedBy=default.target
 EOF
 }
 
+# --- Home Free stream channel (#27) -----------------------------------------------
+# A machine-generated console name + access key let the user reach this box from any
+# browser through a blind relay. The key is NEVER user-chosen and NEVER leaves the box
+# except as the E2E pre-shared key (the relay only sees ciphertext). Off unless opted in.
+homefree_gen_name() {  # random callsign like "viper-8231" (matches the relay name rule)
+  set -- viper falcon cobra raven hydra onyx delta sierra tango zulu nomad specter atlas orbit lynx
+  _i=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % $# ))
+  eval "_w=\${$((_i + 1))}"
+  _n=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 9000 + 1000 ))
+  printf '%s-%s\n' "$_w" "$_n"
+}
+
+homefree_gen_key() {  # >=128-bit, base32, lowercase, no padding — machine-generated only
+  if have base32; then
+    head -c 20 /dev/urandom | base32 | tr -d '=' | tr 'A-Z' 'a-z' | cut -c1-32
+  else
+    openssl rand -hex 20  # 160-bit hex fallback
+  fi
+}
+
+render_homefree_unit() {
+  mkdir -p "$UNIT_DIR"
+  cat > "$HOMEFREE_UNIT" <<EOF
+[Unit]
+Description=agent-sessions Home Free relay agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AGENT_SESSIONS_RELAY_URL=${AGENT_SESSIONS_RELAY_URL:-wss://REPLACE-WITH-YOUR-RELAY/relay/ws}
+Environment=HOMEFREE_CONSOLE_NAME_FILE=$HOMEFREE_DIR/console_name
+Environment=HOMEFREE_ACCESS_KEY_FILE=$HOMEFREE_DIR/access_key
+Environment=HOMEFREE_IDENTITY_PATH=$HOMEFREE_DIR/identity
+ExecStart=$CURRENT/venv/bin/python -m agent_sessions.homefree
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+homefree_print_credentials() {
+  _name="$1"; _key="$2"
+  if [ -t 1 ]; then _R='\033[1;31m'; _B='\033[1m'; _Z='\033[0m'; else _R=''; _B=''; _Z=''; fi
+  note "BattleLab remote (stream) is enabled — reach this box from any browser."
+  log "Console name: ${_name}"
+  log "Access key:   ${_key}"
+  printf '  %sOpen the connect page for your relay and enter the name + key above.%s\n' "$_B" "$_Z"
+  printf '\n'
+  printf '  %s* SECURITY: the access key grants FULL CONTROL of this machine.%s\n' "$_R" "$_Z"
+  printf '  %sNever enter it for anyone who contacted you. BattleLab staff will%s\n' "$_R" "$_Z"
+  printf '  %sNEVER ask for your access key or console name.%s\n' "$_R" "$_Z"
+}
+
+homefree_setup() {
+  mkdir -p "$HOMEFREE_DIR"; chmod 700 "$HOMEFREE_DIR" 2>/dev/null || true
+  [ -f "$HOMEFREE_DIR/console_name" ] || homefree_gen_name > "$HOMEFREE_DIR/console_name"
+  [ -f "$HOMEFREE_DIR/access_key" ] || homefree_gen_key > "$HOMEFREE_DIR/access_key"
+  chmod 600 "$HOMEFREE_DIR/console_name" "$HOMEFREE_DIR/access_key" 2>/dev/null || true
+  _name="$(cat "$HOMEFREE_DIR/console_name")"
+  _key="$(cat "$HOMEFREE_DIR/access_key")"
+  render_homefree_unit
+  if [ "${AGENT_SESSIONS_NO_SERVICE:-0}" != 1 ] && systemctl --user >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user enable "$APP-homefree.service" >/dev/null 2>&1 || true
+    systemctl --user restart "$APP-homefree.service" || true
+  else
+    log "start the agent with:  $CURRENT/venv/bin/python -m agent_sessions.homefree"
+  fi
+  homefree_print_credentials "$_name" "$_key"
+}
+
+homefree_prompt_remote() {  # echo "stream" or "selfhost"; only prompts on a real tty
+  [ -e /dev/tty ] || { echo selfhost; return 0; }
+  {
+    printf '\n  Remote access to this machine:\n'
+    printf '    1) Self-host (default) — you provide reachability (your network / nginx)\n'
+    printf '    2) Stream via BattleLab — reach it from anywhere with a name + key (free)\n'
+    printf '  Choose [1]: '
+  } > /dev/tty
+  read -r _ans < /dev/tty || _ans=1
+  case "$_ans" in 2 | stream | s) echo stream ;; *) echo selfhost ;; esac
+}
+
+homefree_maybe_setup() {  # self-host default; stream only when explicitly chosen
+  _mode="$REMOTE"
+  if [ -z "$_mode" ]; then
+    if [ -t 0 ] && [ "${AGENT_SESSIONS_ASSUME_YES:-0}" != 1 ] \
+      && [ "${AGENT_SESSIONS_NO_SERVICE:-0}" != 1 ]; then
+      _mode="$(homefree_prompt_remote)"
+    else
+      _mode=selfhost  # non-interactive / no-tty / no-service → never contact a relay
+    fi
+  fi
+  case "$_mode" in
+    stream) homefree_setup ;;
+    *) : ;;  # self-host: nothing extra
+  esac
+}
+
 prune_releases() {
   # Keep the newest $KEEP_RELEASES (plus whatever `current` points at) for rollback.
   [ -d "$RELEASES" ] || return 0
@@ -688,6 +796,8 @@ main() {
   else
     log "(existing credentials kept; upgrade in place)"
   fi
+
+  homefree_maybe_setup  # optional stream channel (#27) — self-host default, no relay contacted
 }
 
 main "$@"

@@ -53,10 +53,10 @@ _confirm() {  # y/N on the controlling tty (default NO — this is destructive).
 
 stop_services() {
   systemctl --user >/dev/null 2>&1 || { log "no systemctl --user session — skipping units"; return 0; }
-  for u in "$APP.service" "$APP-update.timer" "$APP-update.service"; do
+  for u in "$APP.service" "$APP-homefree.service" "$APP-update.timer" "$APP-update.service"; do
     systemctl --user disable --now "$u" >/dev/null 2>&1 || true
   done
-  for f in "$APP.service" "$APP-update.service" "$APP-update.timer"; do
+  for f in "$APP.service" "$APP-homefree.service" "$APP-update.service" "$APP-update.timer"; do
     rm -f "$UNIT_DIR/$f"
   done
   systemctl --user daemon-reload >/dev/null 2>&1 || true
