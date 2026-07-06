@@ -9,10 +9,11 @@ import {
   Plus,
   Sparkles,
   Star,
+  Tag,
   X,
 } from "lucide-react";
-import { type CSSProperties, useEffect, useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { Link, NavLink, useMatch } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
@@ -35,9 +36,70 @@ function reviewIsStale(s: Session): boolean {
   );
 }
 
+/** Auto-scrolling text line (#551). Renders `children` (or `text`) inside a truncating
+ *  container, and — only while the row is SELECTED, the content actually overflows, and the
+ *  user hasn't asked to reduce motion — animates it horizontally back and forth (ping-pong,
+ *  pausing at each end) so the whole string can be read. Otherwise it's the plain ellipsis
+ *  line it was before. `text` is always exposed via the native `title` tooltip, so the full
+ *  value stays reachable under reduced-motion / on hover regardless. Only the selected row
+ *  animates, so the list stays calm. */
+function MarqueeText({
+  active,
+  className,
+  text,
+  children,
+}: {
+  active: boolean;
+  className?: string;
+  text: string;
+  children?: ReactNode;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [shift, setShift] = useState(0); // px of overflow to travel; 0 ⇒ static (no scroll)
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const measure = () => {
+      // scrollWidth − clientWidth is the hidden overflow regardless of the inner display mode;
+      // transforms don't affect it, so it stays stable once scrolling.
+      const over = wrap.scrollWidth - wrap.clientWidth;
+      setShift(active && !reduce && over > 1 ? over : 0);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return; // jsdom / very old browsers → static
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [active, text]);
+
+  const scrolling = shift > 0;
+  const style = scrolling
+    ? ({
+        // Travel the exact overflow; duration scales with distance (bounded) so long and short
+        // lines read at a similar pace.
+        "--marq-shift": `-${shift}px`,
+        "--marq-dur": `${Math.min(20, Math.max(5, shift / 30 + 3))}s`,
+      } as CSSProperties)
+    : undefined;
+
+  return (
+    <div ref={wrapRef} className={className} title={text}>
+      <span className={scrolling ? styles.marqScroll : undefined} style={style}>
+        {children ?? text}
+      </span>
+    </div>
+  );
+}
+
 interface RowProps {
   s: Session;
+  /** This row is the currently selected/open session — gates the auto-scroll marquee (#551). */
+  active: boolean;
   onRename: (id: string, title: string) => Promise<void>;
+  /** Set (or clear, with "") the row's custom tag (#551). */
+  onSetTag: (id: string, tag: string) => Promise<void>;
   onToggleArchive: (id: string, currentlyArchived: boolean) => Promise<void>;
   /** Favorite toggle (#122): flips the row's `sticky` flag; favorited rows pin to the top. */
   onToggleFavorite: (id: string, value: boolean) => Promise<void>;
@@ -55,7 +117,9 @@ interface RowProps {
 
 function Row({
   s,
+  active,
   onRename,
+  onSetTag,
   onToggleArchive,
   onToggleFavorite,
   onReviewNow,
@@ -63,7 +127,9 @@ function Row({
   onSetProject,
   onNavigate,
 }: RowProps) {
-  const [editing, setEditing] = useState(false);
+  // Inline editor (#551): the row's title (Rename) OR its custom tag (Set tag…) share one
+  // input row. "none" = not editing; `draft` holds whichever value is being edited.
+  const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
   const [draft, setDraft] = useState(s.title);
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
@@ -110,15 +176,31 @@ function Row({
   };
 
   const commit = async () => {
-    const title = draft.trim();
-    if (!title || title === s.title) {
-      setEditing(false);
+    const value = draft.trim();
+    if (editMode === "tag") {
+      // Empty IS valid for a tag — it clears it; skip the write only when unchanged.
+      if (value === (s.tag ?? "")) {
+        setEditMode("none");
+        return;
+      }
+      setBusy(true);
+      try {
+        await onSetTag(s.id, value);
+        setEditMode("none");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // Title (Rename): an empty title is a no-op, unlike a tag.
+    if (!value || value === s.title) {
+      setEditMode("none");
       return;
     }
     setBusy(true);
     try {
-      await onRename(s.id, title);
-      setEditing(false);
+      await onRename(s.id, value);
+      setEditMode("none");
     } finally {
       setBusy(false);
     }
@@ -142,7 +224,8 @@ function Row({
     }
   };
 
-  if (editing) {
+  if (editMode !== "none") {
+    const isTag = editMode === "tag";
     return (
       <li className={styles.rowWrap}>
         <form
@@ -155,29 +238,30 @@ function Row({
           <input
             ref={(el) => el?.focus()}
             className={styles.editInput}
-            aria-label="Session title"
+            aria-label={isTag ? "Session tag" : "Session title"}
+            placeholder={isTag ? "Tag (text or emoji)" : undefined}
+            maxLength={isTag ? 32 : undefined}
             value={draft}
             disabled={busy}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setDraft(s.title);
-                setEditing(false);
-              }
+              if (e.key === "Escape") setEditMode("none");
             }}
           />
-          <button type="submit" className={styles.iconBtn} aria-label="Save title" disabled={busy}>
+          <button
+            type="submit"
+            className={styles.iconBtn}
+            aria-label={isTag ? "Save tag" : "Save title"}
+            disabled={busy}
+          >
             <Check size={15} />
           </button>
           <button
             type="button"
             className={styles.iconBtn}
-            aria-label="Cancel rename"
+            aria-label={isTag ? "Cancel tag edit" : "Cancel rename"}
             disabled={busy}
-            onClick={() => {
-              setDraft(s.title);
-              setEditing(false);
-            }}
+            onClick={() => setEditMode("none")}
           >
             <X size={15} />
           </button>
@@ -232,7 +316,19 @@ function Row({
       disabled: busy,
       onSelect: () => {
         setDraft(s.title);
-        setEditing(true);
+        setEditMode("title");
+      },
+    },
+    {
+      // Custom tag (#551): the same inline input as Rename, seeded with the current tag.
+      key: "tag",
+      label: s.tag ? "Edit tag…" : "Set tag…",
+      ariaLabel: s.tag ? "Edit session tag" : "Set session tag",
+      icon: <Tag size={15} />,
+      disabled: busy,
+      onSelect: () => {
+        setDraft(s.tag ?? "");
+        setEditMode("tag");
       },
     },
     {
@@ -279,6 +375,18 @@ function Row({
   // stable hash of the ref key (entity id / folder cwd). One CSS var feeds the rail + dot.
   const proj = { "--proj": s.project.color || projectColor(s.project.id) } as CSSProperties;
 
+  // Summary line (#356 + #551): an optional custom tag prefixes the AI summary (or the
+  // "excluded" marker), joined by " · ". The line renders whenever there's a tag OR summary,
+  // so a tagged-but-unreviewed row still shows its tag. `summaryText` is the plain-text form
+  // for the marquee tooltip / reduced-motion fallback.
+  const staleHint =
+    !s.review_excluded && s.ai_summary && reviewIsStale(s) && s.reviewed_at != null
+      ? ` · reviewed ${relTime(s.reviewed_at)}`
+      : "";
+  const summaryBody = s.review_excluded ? "Excluded from AI review" : (s.ai_summary ?? "");
+  const showSummary = !!(s.tag || summaryBody);
+  const summaryText = [s.tag, summaryBody].filter(Boolean).join(" · ") + staleHint;
+
   return (
     <li className={styles.rowWrap}>
       {moving && (
@@ -310,25 +418,26 @@ function Row({
           title={dot.title}
         />
         <div className={styles.body}>
-          <div className={styles.title}>{s.title || "(untitled)"}</div>
-          {/* One-line AI summary (#356) — or the exclusion marker; stale-age hint when
-              there has been activity since the last successful review. */}
-          {s.review_excluded ? (
-            <div className={`${styles.summary} ${styles.summaryExcluded}`}>
-              Excluded from AI review
-            </div>
-          ) : (
-            s.ai_summary && (
-              <div className={styles.summary}>
-                {s.ai_summary}
-                {reviewIsStale(s) && s.reviewed_at != null && (
-                  <span className={styles.summaryStale}>
-                    {" "}
-                    · reviewed {relTime(s.reviewed_at)}
-                  </span>
-                )}
-              </div>
-            )
+          {/* Title + summary auto-scroll (#551) when this row is selected and the text
+              overflows; otherwise the same single-line ellipsis as before. */}
+          <MarqueeText active={active} className={styles.title} text={s.title || "(untitled)"} />
+          {/* One-line summary (#356): optional custom tag (#551) + AI summary / exclusion
+              marker + stale-age hint when there's been activity since the last review. */}
+          {showSummary && (
+            <MarqueeText active={active} className={styles.summary} text={summaryText}>
+              {s.tag && <span className={styles.summaryTag}>{s.tag}</span>}
+              {s.tag && summaryBody ? " · " : null}
+              {s.review_excluded ? (
+                <span className={styles.summaryExcluded}>Excluded from AI review</span>
+              ) : (
+                <>
+                  {s.ai_summary}
+                  {reviewIsStale(s) && s.reviewed_at != null && (
+                    <span className={styles.summaryStale}> · reviewed {relTime(s.reviewed_at)}</span>
+                  )}
+                </>
+              )}
+            </MarqueeText>
           )}
           <div className={styles.meta}>
             {/* Favorite star (#508): a small amber ★ leads the meta line on favorited rows
@@ -393,12 +502,17 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     update,
     clear,
     renameRow,
+    setTag,
     setArchived,
     setSticky,
     reviewRow,
     setReviewExcluded,
     setProject,
   } = useSessionsList();
+
+  // The currently open session (#551) — gates the per-row auto-scroll marquee so only the
+  // selected row animates. Matches the row link route `/s/:engine/:id`.
+  const openMatch = useMatch("/s/:engine/:id");
 
   // AI review controls (#356) only appear once the endpoint is configured — an
   // unconfigured install keeps the lean three-button row.
@@ -456,7 +570,13 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
             <Row
               key={s.id}
               s={s}
+              active={
+                !!openMatch &&
+                openMatch.params.engine === s.engine &&
+                openMatch.params.id === s.uuid
+              }
               onRename={renameRow}
+              onSetTag={setTag}
               onToggleArchive={setArchived}
               onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewRow : undefined}

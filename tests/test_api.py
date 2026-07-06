@@ -1754,3 +1754,59 @@ def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_
     assert r.status_code == 200
     assert r.json()["archived"] == 1  # archived despite the cleanup error
     assert ("claude", "11111111-1111-1111-1111-111111111111") in seen
+
+
+# --- Custom per-session tag (#551) ------------------------------------------------------
+
+
+def test_set_tag_surfaces_in_row(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": "🔥 hotpath"}, headers=hdr)
+    assert r.status_code == 200 and r.json()["tag"] == "🔥 hotpath"
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["uuid"] == uuid)["tag"] == "🔥 hotpath"
+
+
+def test_set_tag_clears_on_whitespace(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": "review"}, headers=hdr)
+    r = c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": "   "}, headers=hdr)
+    assert r.status_code == 200 and r.json()["tag"] == ""
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["uuid"] == uuid)["tag"] == ""
+
+
+def test_set_tag_is_length_capped(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": "x" * 100}, headers=hdr)
+    assert r.status_code == 200 and len(r.json()["tag"]) == 32
+
+
+def test_set_tag_requires_csrf(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    # No X-CSRF-Token header → rejected before any sidecar write.
+    r = c.post(
+        f"/api/sessions/claude:{uuid}/tag",
+        json={"tag": "nope"},
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_set_tag_unknown_session_404(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/sessions/claude:not-a-real-uuid/tag", json={"tag": "x"}, headers=hdr)
+    assert r.status_code == 404

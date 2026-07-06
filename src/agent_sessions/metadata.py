@@ -54,6 +54,10 @@ def _normalize_keys(data: dict) -> tuple[dict, bool]:
 class SessionMeta:
     title: str = ""
     sticky: bool = False
+    # Custom per-session tag (#551): a short user label (free text / emoji) rendered before the
+    # AI summary in the sidebar row. A SEPARATE field from the AI review output, written only by
+    # the tag route, so re-review never clobbers it (same discipline as user `title` vs `ai_title`).
+    tag: str = ""
     # NOTE (#520): `sort_key` (a manual ordering tiebreaker) was removed — no product flow ever
     # wrote it, so the list sort reduced to sticky-then-recency regardless. Old sidecars may still
     # carry a `sort_key` key; it is simply ignored on read and dropped on the next rewrite of that
@@ -199,6 +203,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
         out[key] = SessionMeta(
             title=str(val.get("title", "")),
             sticky=bool(val.get("sticky", False)),
+            tag=str(val.get("tag", "") or ""),
             project_alias=str(val.get("project_alias", "")),
             project_id=str(val.get("project_id", "") or ""),
             archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
@@ -234,6 +239,8 @@ def patch(
     allowed = {
         "title",
         "sticky",
+        # Custom per-session tag (#551) — written by the tag route, never by the review path.
+        "tag",
         # "sort_key" was removed in #520 (never written by any product flow); patching it now
         # raises "unknown metadata fields", same as any other retired key.
         # "project_alias" is deliberately ABSENT: write path retired by #361 (the
@@ -282,6 +289,7 @@ def patch(
         meta_dict = {
             "title": existing.get("title", ""),
             "sticky": existing.get("sticky", False),
+            "tag": existing.get("tag", ""),
             "project_alias": existing.get("project_alias", ""),
             "project_id": existing.get("project_id", ""),
             "archived": existing.get("archived"),

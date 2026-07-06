@@ -193,6 +193,13 @@ export function useSessionsList() {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: r.title } : s)));
   }, []);
 
+  // Set/clear the custom tag (#551): patch the row in place from the server's echoed value
+  // (already trimmed + capped), so the summary line reflects it without a refetch.
+  const setTag = useCallback(async (id: string, tag: string) => {
+    const r = await api.setTag(id, tag);
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tag: r.tag } : s)));
+  }, []);
+
   // Toggle archived: the list is scoped to one archived-state, so after the flip the
   // row leaves the current view → drop it locally (avoids a full refetch + flicker).
   // Removing it shrinks the server's archived-scoped set by one, so every still-unloaded
@@ -289,6 +296,7 @@ export function useSessionsList() {
     update,
     clear,
     renameRow,
+    setTag,
     setArchived,
     setSticky,
     reviewRow,

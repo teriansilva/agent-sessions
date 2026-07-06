@@ -38,6 +38,10 @@ _WORKING_WINDOW_S = 10.0
 _DRAFT_TEXT_MAX = 100_000
 _DRAFT_ATTACH_MAX = 50
 
+# Custom per-session tag (#551): a short label shown before the AI summary. Capped so it stays
+# a tag, not a second title, and the sidecar stays small.
+_TAG_MAX = 32
+
 
 def _clean_draft_payload(payload: object) -> dict | None:
     """Validate + normalize a PUT /draft body into the stored shape, or None to clear (#477).
@@ -124,6 +128,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # so every row consumer agrees on one value.
             "title": metadata.display_title(m, s.first_user_message),
             "sticky": m.sticky,
+            # Custom per-session tag (#551): a short user label rendered before the AI summary
+            # on the row's second line. "" when unset (the row renders exactly as before).
+            "tag": m.tag,
             # AI review surface (#356): summary line, advisory badge + reason, stale-age
             # source (reviewed_at), and the per-session opt-out for the row menu.
             "ai_summary": m.ai_summary,
@@ -674,6 +681,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=422, detail="title required")
         m = metadata.patch(key, title=title[:120])
         return JSONResponse({"id": key, "title": m.title})
+
+    @app.post("/api/sessions/{sid}/tag")
+    async def set_tag(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Custom per-session tag (#551): a short user label shown before the AI summary in the
+        # sidebar row. Pure sidecar write, engine-agnostic, exactly like favorite/rename/draft —
+        # resolve_key mirrors the list read precedence (logical → physical) so a reconciled
+        # opencode session's tag follows its real row instead of shadowing it under a sparse
+        # logical key. Never the review path, so re-review can't clobber it. An empty/whitespace
+        # value clears the tag; the value is trimmed and length-capped.
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        payload = await request.json()
+        tag = str(payload.get("tag", "")).strip()[:_TAG_MAX]
+        m = metadata.patch(metadata.resolve_key(key), tag=tag)
+        return JSONResponse({"id": key, "tag": m.tag})
 
     def _set_favorite(sid: str, value: bool) -> JSONResponse:
         # Favorite (#122) = the existing sidecar `sticky` flag surfaced as a star; a

@@ -272,6 +272,45 @@
   color: var(--text-3, var(--text-muted));
   font-style: italic;
 }
+/* Custom per-session tag (#551): a short user label leading the summary line, so it reads as a
+ * deliberate annotation distinct from the muted AI summary. Amber, but mixed toward --text so it
+ * stays readable in BOTH themes (lightens on the dark ground, darkens on the light panel) rather
+ * than a raw accent that would wash out on light — theme-adaptive and token-based (no hardcoded
+ * hex, so a custom accent still cascades). */
+.summaryTag {
+  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+  font-weight: 600;
+  white-space: pre; /* keep the tag's own spacing/emoji intact within the single-line summary */
+}
+/* Selected-row auto-scroll (#551): only the OPEN row's overflowing title/summary get this class
+ * (measured in JS), and it pauses at each end. Distance + duration come from the measured overflow
+ * via CSS vars. Fully disabled under reduced motion — the JS already gates on it, this is a belt-
+ * and-suspenders guard so the animation can never run against the user's preference (design §8). */
+.marqScroll {
+  display: inline-block;
+  will-change: transform;
+  animation: marq var(--marq-dur, 8s) ease-in-out infinite;
+}
+@keyframes marq {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+  44%,
+  56% {
+    transform: translateX(var(--marq-shift, 0));
+  }
+  88%,
+  100% {
+    transform: translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marqScroll {
+    animation: none;
+    transform: none;
+  }
+}
 .spin {
   animation: reviewSpin 1.2s linear infinite;
 }

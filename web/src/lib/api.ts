@@ -277,6 +277,10 @@ export const api = {
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),
+  /** Set (or clear, with "") a session's custom tag (#551): a short label shown before the
+   *  AI summary in the sidebar row. Trimmed + length-capped server-side. */
+  setTag: (id: string, tag: string) =>
+    postJson<{ id: string; tag: string }>(`/api/sessions/${enc(id)}/tag`, { tag }),
   /** Favorite/unfavorite a session (#122): flips the sidecar `sticky` flag so the row
    *  pins to the top of the sidebar. Engine-agnostic; CSRF-guarded. Returns `{id, sticky}`. */
   favorite: (id: string) =>

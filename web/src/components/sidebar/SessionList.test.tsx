@@ -15,6 +15,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
     api: {
       sessions: vi.fn(),
       rename: vi.fn(),
+      setTag: vi.fn(),
       archive: vi.fn(),
       unarchive: vi.fn(),
       favorite: vi.fn(),
@@ -244,6 +245,51 @@ test("renaming a row calls api.rename and updates the title in place", async () 
   await user.click(screen.getByRole("button", { name: /save title/i }));
   expect(mockRename).toHaveBeenCalledWith("claude:a", "New name");
   expect(await screen.findByText("New name")).toBeInTheDocument();
+});
+
+// ---- Custom per-session tag (#551) ----
+
+test("renders the tag before the AI summary; a tagged row with no summary still shows the tag (#551)", async () => {
+  mockSessions.mockResolvedValue(
+    pageOf(
+      [
+        { ...sess("claude:a", "Auth"), tag: "🔥 hot", ai_summary: "Wiring the pbkdf2 check" },
+        { ...sess("claude:b", "Fresh"), tag: "todo" }, // tagged, not reviewed yet
+      ],
+      { total: 2 },
+    ),
+  );
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Auth");
+  // The tag leads the summary line, joined by " · " (it renders BEFORE the summary).
+  const tag = screen.getByText("🔥 hot");
+  expect(tag.parentElement?.textContent).toBe("🔥 hot · Wiring the pbkdf2 check");
+  // A tagged-but-unreviewed row still shows its tag, so the line is never empty.
+  const todo = screen.getByText("todo");
+  expect(todo.parentElement?.textContent).toBe("todo");
+});
+
+test("Set tag… opens the inline editor and saves via api.setTag, updating the row (#551)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.setTag).mockResolvedValue({ id: "claude:a", tag: "prod" });
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: /set session tag/i }));
+  const input = screen.getByRole("textbox", { name: /session tag/i });
+  await user.type(input, "prod");
+  await user.click(screen.getByRole("button", { name: /save tag/i }));
+  expect(api.setTag).toHaveBeenCalledWith("claude:a", "prod");
+  expect(await screen.findByText("prod")).toBeInTheDocument();
 });
 
 test("archiving a row calls api.archive and removes it from the active list", async () => {
@@ -556,6 +602,7 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
     "Exclude from AI review",
     "Favorite",
     "Rename",
+    "Set tag…",
     "Move to project…",
     "Archive",
   ]);

@@ -25,6 +25,9 @@ export interface Session {
   first_user_message: string;
   title: string;
   sticky: boolean;
+  /** Custom per-session tag (#551): a short user label (text / emoji) rendered before the
+   *  AI summary on the row's second line. "" / undefined when unset. */
+  tag?: string;
   archived: boolean;
   /** AI review (#356): one-line summary from the last successful review. */
   ai_summary?: string;

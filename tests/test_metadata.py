@@ -247,3 +247,20 @@ def test_recap_survives_unrelated_patch(tmp_home):
     metadata.patch("claude:x", ai_summary="new summary")  # a summary write must not drop recap
     again = metadata.load()["claude:x"]
     assert again.ai_recap == "R" and again.recap_fingerprint == "f"
+
+
+# --- Custom per-session tag (#551) ------------------------------------------------------
+
+
+def test_patch_tag_round_trips(tmp_home):
+    m = metadata.patch("claude:tag-1", tag="🔥 hotpath")
+    assert m.tag == "🔥 hotpath"
+    assert metadata.load()["claude:tag-1"].tag == "🔥 hotpath"
+
+
+def test_review_write_does_not_clobber_user_tag(tmp_home):
+    # The tag is a separate field from the AI review output — a re-review (which writes
+    # ai_summary / ai_title) must leave the user's tag untouched, like user title vs ai_title.
+    metadata.patch("claude:tag-2", tag="prod")
+    metadata.patch("claude:tag-2", ai_summary="a new summary", ai_title="An AI title")
+    assert metadata.get("claude:tag-2").tag == "prod"
