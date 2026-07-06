@@ -178,6 +178,23 @@ export interface PulseOverview {
   cards: PulseCard[];
 }
 
+/** A Pulse "Ask" match (#522): the full Pulse card plus the model's one-line reason —
+ *  rendered by the same Card component, so "Jump in" works unchanged. */
+export interface PulseAskMatch extends PulseCard {
+  why: string;
+}
+
+/** POST /api/pulse/ask (#522). `stage`: `catalog` = ranked from session metadata only;
+ *  `content` = confirmed against transcript tails; `empty` = no sessions at all (no AI
+ *  call was made). Errors: 409 unconfigured (`configured: false` in the body) or a
+ *  question already running; 502 endpoint failure. */
+export interface PulseAskResult {
+  answer: string;
+  matches: PulseAskMatch[];
+  stage: "catalog" | "content" | "empty";
+  configured: boolean;
+}
+
 /** One running AI task in the shared activity surface (#441 Phase 1). */
 export interface AiActivityTask {
   kind: string;

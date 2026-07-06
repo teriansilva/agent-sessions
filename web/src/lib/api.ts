@@ -11,6 +11,7 @@ import type {
   DraftAttachment,
   ProjectArchiveReport,
   ProjectEntity,
+  PulseAskResult,
   PulseDepth,
   PulseOverview,
   SessionDraft,
@@ -352,6 +353,12 @@ export const api = {
    *  returns 200 with `synthesis_skipped`. CSRF-guarded. */
   pulseScan: (opts?: { depth?: PulseDepth; window_days?: number }) =>
     mutateJson<PulseOverview>("POST", "/api/pulse/scan", opts ?? {}),
+  /** Pulse "Ask" (#522): one natural-language question over past sessions. `history` is
+   *  the replayed conversation tail (the server clamps it again). 409 = endpoint
+   *  unconfigured or a question already running; 502 = endpoint failure — `mutateJson`
+   *  surfaces the server `detail` either way. CSRF-guarded. */
+  pulseAsk: (query: string, history: { role: "user" | "assistant"; content: string }[]) =>
+    mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
   /** Shared AI-activity surface (#441): AI tasks running now + the last run per kind. The
    *  Settings panel polls it; read-only, no CSRF. */
   aiActivity: () => getJson<AiActivity>("/api/ai/activity"),

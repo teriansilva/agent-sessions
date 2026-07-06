@@ -365,8 +365,153 @@
      * below its content's min-content — pairs with .card{min-width:0} to kill h-overflow (#494). */
     grid-template-columns: minmax(0, 1fr);
   }
+  .askCards {
+    /* Same shrink treatment for the Ask panel's matched cards (#522): the panel's extra
+     * padding leaves ~266px at a 320px viewport — under the 280px min track — so without
+     * this a matched card clips instead of shrinking (Hermes on PR #547). */
+    grid-template-columns: minmax(0, 1fr);
+  }
   .headRight {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+/* --- Ask panel (#522) --------------------------------------------------------- */
+/* Docked above the banner/groups: a HUD panel holding the stateless chat. The THREAD
+ * scrolls (bounded height), the page doesn't; long questions/answers wrap — the panel
+ * must never scroll horizontally (same #494 rule as the rest of Pulse). */
+.ask {
+  position: relative;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.askHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.askIcon {
+  color: var(--accent);
+  align-self: center;
+}
+.askSub {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-3);
+}
+.askThread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(46vh, 460px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-bottom: 10px;
+}
+.askUser {
+  margin: 0;
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--glass-strong);
+  color: var(--text-1);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.askReply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.askAnswer {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-1);
+  font-size: 0.88rem;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.askBusy {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+/* Matched sessions reuse the Pulse card grid, slightly tighter inside the panel. */
+.askCards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+/* The model's one-line match reason on an Ask card — mono chrome, data not markup. */
+.why {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.askForm {
+  display: flex;
+  gap: 8px;
+}
+.askInput {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 0.85rem;
+  background: var(--bg-1, var(--panel));
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+}
+.askInput:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.askInput:disabled {
+  opacity: 0.55;
+}
+.askInput::placeholder {
+  color: var(--text-3);
+}
+.askBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  cursor: pointer;
+  flex: none;
+}
+.askBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.askHint {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.askHint a {
+  color: var(--accent);
 }

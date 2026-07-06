@@ -9,7 +9,7 @@ import Pulse from "./Pulse";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { pulse: vi.fn(), pulseScan: vi.fn(), setPrefs: vi.fn() } };
+  return { ...actual, api: { pulse: vi.fn(), pulseScan: vi.fn(), pulseAsk: vi.fn(), setPrefs: vi.fn() } };
 });
 
 function card(over: Partial<PulseCard> & { id: string; state: PulseState }): PulseCard {
@@ -143,4 +143,93 @@ test("a degraded scan (synthesis skipped) tells the user to configure the endpoi
   await screen.findByText(/no work in the last/i);
   await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
   expect(await screen.findByText(/synthesis needs the ai endpoint/i)).toBeInTheDocument();
+});
+
+// ---- Ask panel (#522) ----------------------------------------------------------
+
+const ASK_CFG = {
+  auto_enabled: false,
+  interval_minutes: 30,
+  window_days: 3,
+  scan_depth: "fast",
+  configured: true,
+} as PulseConfig;
+
+function askMatch(over: Partial<PulseCard> & { id: string }, why: string) {
+  return { ...card({ state: "idle", ...over }), why };
+}
+
+test("Ask: unconfigured endpoint disables the input, shows the Settings hint, makes no call (#522)", async () => {
+  renderPulse({ ...ASK_CFG, configured: false });
+  const input = await screen.findByRole("textbox", { name: /ask about your past work/i });
+  expect(input).toBeDisabled();
+  expect(screen.getByRole("button", { name: /^ask$/i })).toBeDisabled();
+  expect(screen.getByRole("link", { name: /settings → ai review/i })).toBeInTheDocument();
+  expect(api.pulseAsk).not.toHaveBeenCalled();
+});
+
+test("Ask: a question renders the answer plus matched cards with why + Jump in (#522)", async () => {
+  vi.mocked(api.pulseAsk).mockResolvedValue({
+    answer: "That was your ws delta-resume session.",
+    matches: [
+      askMatch({ id: "claude:ws1", title: "fix ws delta-resume" }, "transcript discusses reconnect backoff"),
+    ],
+    stage: "content",
+    configured: true,
+  });
+  renderPulse(ASK_CFG);
+  const input = await screen.findByRole("textbox", { name: /ask about your past work/i });
+  await userEvent.type(input, "which session had the websocket reconnect bug?");
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+  expect(api.pulseAsk).toHaveBeenCalledWith("which session had the websocket reconnect bug?", []);
+  // The question echoes into the thread; the answer + matched card render below it.
+  expect(await screen.findByText("That was your ws delta-resume session.")).toBeInTheDocument();
+  expect(screen.getByText("which session had the websocket reconnect bug?")).toBeInTheDocument();
+  expect(screen.getByText("fix ws delta-resume")).toBeInTheDocument();
+  expect(screen.getByText(/transcript discusses reconnect backoff/)).toBeInTheDocument();
+  // The match reuses the Pulse card — Jump in routes to the session view.
+  const jump = screen.getByRole("link", { name: /jump into fix ws delta-resume/i });
+  expect(jump).toHaveAttribute("href", "/s/claude/ws1");
+});
+
+test("Ask: no matches renders the answer line only (#522)", async () => {
+  vi.mocked(api.pulseAsk).mockResolvedValue({
+    answer: "Nothing in your sessions matches that.",
+    matches: [],
+    stage: "catalog",
+    configured: true,
+  });
+  renderPulse(ASK_CFG);
+  const input = await screen.findByRole("textbox", { name: /ask about your past work/i });
+  await userEvent.type(input, "did I ever port this to zig?");
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+  expect(await screen.findByText("Nothing in your sessions matches that.")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /jump into/i })).not.toBeInTheDocument();
+});
+
+test("Ask: a busy 409 surfaces the server detail as a note, not an error (#522)", async () => {
+  vi.mocked(api.pulseAsk).mockRejectedValue(new ApiError(409, "a question is already running"));
+  renderPulse(ASK_CFG);
+  const input = await screen.findByRole("textbox", { name: /ask about your past work/i });
+  await userEvent.type(input, "which one?");
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+  expect(await screen.findByText(/a question is already running/i)).toBeInTheDocument();
+});
+
+test("Ask: a follow-up replays the prior turns as history (#522)", async () => {
+  vi.mocked(api.pulseAsk)
+    .mockResolvedValueOnce({ answer: "First answer.", matches: [], stage: "catalog", configured: true })
+    .mockResolvedValueOnce({ answer: "Second answer.", matches: [], stage: "catalog", configured: true });
+  renderPulse(ASK_CFG);
+  const input = await screen.findByRole("textbox", { name: /ask about your past work/i });
+  await userEvent.type(input, "first question");
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+  await screen.findByText("First answer.");
+  await userEvent.type(input, "and a follow-up");
+  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
+  await screen.findByText("Second answer.");
+  expect(api.pulseAsk).toHaveBeenLastCalledWith("and a follow-up", [
+    { role: "user", content: "first question" },
+    { role: "assistant", content: "First answer." },
+  ]);
 });

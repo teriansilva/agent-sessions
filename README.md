@@ -21,6 +21,10 @@ real terminal that survives reboots and deploys — drive your whole fleet from 
   a tab close, reboot, or app upgrade and the conversation is right where you left it.
 - **Console-style scroll-up.** Scroll back into clean, rendered history (markdown + `●` turn markers)
   for *all four* engines — not a width-fragile byte replay.
+- **Pulse + Ask.** An AI-curated overview of recent work across every agent — and an embedded
+  chat that finds past sessions from a plain-language question ("which session fixed the ws
+  reconnect bug?") with a one-tap jump back in. Both reuse your own OpenAI-compatible endpoint
+  (configured in Settings → AI Review); session content is sent nowhere else.
 - **Start new sessions** for Claude, Codex, and opencode straight from the picker.
 - **Mobile-first.** A touch-ready terminal with a real compose bar, control keys, and image paste.
 - **One-line, rootless install.** No root, no system daemon; atomic releases with one-step rollback

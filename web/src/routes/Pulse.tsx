@@ -1,11 +1,17 @@
-import { ArrowRight, RefreshCw, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, MessageSquare, RefreshCw, Send, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { HudFrame } from "../components/hud/HudFrame";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, relTime, shortCwd } from "../lib/format";
-import type { PulseCard, PulseDepth, PulseOverview, PulseState } from "../types/api";
+import type {
+  PulseAskMatch,
+  PulseCard,
+  PulseDepth,
+  PulseOverview,
+  PulseState,
+} from "../types/api";
 import styles from "./Pulse.module.css";
 
 const DEPTHS: { id: PulseDepth; label: string }[] = [
@@ -30,9 +36,10 @@ function sessionPath(card: PulseCard): string {
 }
 
 /** One curated session card. ALL model-derived text (`synthesis`, `ai_summary`, the page
- *  banner) is rendered as plain text via React's default escaping — never markup — so a
- *  session title/summary can't inject into the page (#441). */
-function Card({ card }: { card: PulseCard }) {
+ *  banner, an Ask `why`) is rendered as plain text via React's default escaping — never
+ *  markup — so a session title/summary can't inject into the page (#441). `why` (#522) is
+ *  the Ask panel's one-line match reason, an optional extra row on the same card. */
+function Card({ card, why }: { card: PulseCard; why?: string }) {
   const summary = card.synthesis || card.ai_summary || "";
   const intervention = card.intervention_required;
   return (
@@ -60,6 +67,7 @@ function Card({ card }: { card: PulseCard }) {
         </span>
       </div>
       {summary && <p className={styles.summary}>{summary}</p>}
+      {why && <p className={styles.why}>{`// ${why}`}</p>}
       {intervention && card.intervention_reason && (
         <p className={styles.reason}>{card.intervention_reason}</p>
       )}
@@ -76,6 +84,143 @@ function Card({ card }: { card: PulseCard }) {
         </Link>
       </div>
     </li>
+  );
+}
+
+/** One thread turn in the Ask panel (#522): the user's question, or the assistant's answer
+ *  line plus its matched session cards. */
+interface AskTurn {
+  role: "user" | "assistant";
+  content: string;
+  matches?: PulseAskMatch[];
+}
+
+/** Ask — the natural-language session finder embedded at the top of Pulse (#522). The
+ *  conversation is stateless on the server: this panel holds the thread and replays a
+ *  bounded tail with every question (the server clamps again). Matches render as the
+ *  existing Pulse Card (same "Jump in"), each with the model's one-line `why`. The panel
+ *  pre-gates on the reused ai_review endpoint (`pulse.configured`) — unconfigured shows a
+ *  disabled input + Settings hint and makes NO call; 409/502 from the backstops surface as
+ *  a note/error row. */
+function AskPanel({ configured }: { configured: boolean }) {
+  const [thread, setThread] = useState<AskTurn[]>([]);
+  const [input, setInput] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest turn in view as the thread grows (the thread scrolls, not the page).
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thread, asking]);
+
+  const submit = useCallback(async () => {
+    const query = input.trim();
+    if (!query || asking || !configured) return;
+    setAsking(true);
+    setNote(null);
+    setFailed(null);
+    setInput("");
+    // The replayed history is the thread BEFORE this question (bounded server-side too).
+    const history = thread.map((t) => ({ role: t.role, content: t.content })).slice(-8);
+    setThread((prev) => [...prev, { role: "user", content: query }]);
+    try {
+      const r = await api.pulseAsk(query, history);
+      setThread((prev) => [
+        ...prev,
+        { role: "assistant", content: r.answer, matches: r.matches },
+      ]);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // Busy or (backstop) unconfigured — the server detail says which.
+        setNote(e.message);
+      } else {
+        setFailed(e instanceof ApiError ? e.message : "Ask failed — please try again.");
+      }
+    } finally {
+      setAsking(false);
+    }
+  }, [asking, configured, input, thread]);
+
+  return (
+    <section className={styles.ask} aria-label="Ask about your past work">
+      <HudFrame />
+      <h2 className={styles.askHead}>
+        <MessageSquare size={14} className={styles.askIcon} aria-hidden="true" />
+        Ask
+        <span className={styles.sl} aria-hidden="true">
+          //
+        </span>
+        <span className={styles.askSub}>find past sessions in plain language</span>
+      </h2>
+
+      {thread.length > 0 && (
+        <div className={styles.askThread} ref={threadRef} role="log" aria-label="Ask conversation">
+          {thread.map((t, i) =>
+            t.role === "user" ? (
+              <p key={i} className={styles.askUser}>
+                {t.content}
+              </p>
+            ) : (
+              <div key={i} className={styles.askReply}>
+                {t.content && <p className={styles.askAnswer}>{t.content}</p>}
+                {t.matches && t.matches.length > 0 && (
+                  <ul className={styles.askCards}>
+                    {t.matches.map((m) => (
+                      <Card key={m.id} card={m} why={m.why} />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ),
+          )}
+          {asking && <p className={styles.askBusy}>Searching your sessions…</p>}
+        </div>
+      )}
+
+      {note && <p className={styles.note}>{note}</p>}
+      {failed && <p className={styles.err}>{failed}</p>}
+
+      <form
+        className={styles.askForm}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <input
+          className={styles.askInput}
+          type="text"
+          value={input}
+          maxLength={2000}
+          disabled={!configured || asking}
+          placeholder={
+            configured
+              ? "e.g. I worked on the websocket reconnect bug — which session was that?"
+              : "Configure the AI endpoint to ask about your work"
+          }
+          aria-label="Ask about your past work"
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button
+          type="submit"
+          className={styles.askBtn}
+          disabled={!configured || asking || !input.trim()}
+          aria-label="Ask"
+        >
+          <Send size={14} aria-hidden="true" />
+          {asking ? "Asking…" : "Ask"}
+        </button>
+      </form>
+      {!configured && (
+        <p className={styles.askHint}>
+          Needs the AI endpoint — configure it in{" "}
+          <Link to="/settings/ai-review">Settings → AI Review</Link>.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -199,6 +344,8 @@ export default function Pulse() {
 
       {note && <p className={styles.note}>{note}</p>}
       {error && <p className={styles.err}>{error}</p>}
+
+      <AskPanel configured={cfg?.configured ?? false} />
 
       {overview?.banner && (
         <section className={styles.banner} aria-label="State of your work">

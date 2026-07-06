@@ -133,7 +133,7 @@ def _classify(m: metadata.SessionMeta, last_mtime: float, live: bool, now: float
 
 
 def build_cards(
-    *, window_days: int, now: float | None = None, working_keys: set[str] | None = None
+    *, window_days: int | None, now: float | None = None, working_keys: set[str] | None = None
 ) -> list[dict]:
     """Curate the in-window, non-archived sessions into ranked cards. Pure FS + metadata, no
     network — safe to run under ``asyncio.to_thread``.
@@ -142,10 +142,15 @@ def build_cards(
     native state, mirroring the sidebar) or review-excluded, or its last activity is older than
     the window. ``working_keys`` (logical or physical session keys currently live) marks cards
     ``live`` → state ``in_flight``.
+
+    ``window_days=None`` disables the recency cutoff (full history). That mode is consumed
+    ONLY by ``pulse_chat.build_catalog`` (#522) — the Pulse scan/loop/cache paths
+    (``run_scan`` / ``fingerprint_for``) always pass a concrete window, so normal Pulse
+    recency/caching behaviour is unchanged.
     """
     now = time.time() if now is None else now
     working = working_keys or set()
-    cutoff = now - window_days * 86400
+    cutoff = None if window_days is None else now - window_days * 86400
     meta_index = metadata.load()
     aliases = metadata.load_aliases()
     project_index = projects.load()
@@ -158,7 +163,7 @@ def build_cards(
         archived = m.archived if m.archived is not None else s.archived
         if archived or m.review_excluded:
             continue
-        if s.last_mtime < cutoff:
+        if cutoff is not None and s.last_mtime < cutoff:
             continue
         live = key in working or phys in working
         cards.append(

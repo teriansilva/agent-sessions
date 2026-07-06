@@ -10,6 +10,13 @@
   AI-activity snapshot so the UI shows the running scan, not an error. An **unconfigured AI
   gateway never 409s here**: depth ≥ medium degrades to ``fast`` curation and returns **200**
   with ``synthesis_skipped: true`` (the page always works).
+* ``POST /api/pulse/ask`` (#522) — one natural-language question over past sessions
+  (``pulse_chat.ask``). Its own single-flight kind ``pulse-chat`` (an ask never blocks a
+  scan, or vice-versa; concurrent asks 409 with the activity snapshot). Deliberate contrast
+  with ``/scan``: an **unconfigured endpoint is a 409** (``configured: false``) and an
+  endpoint failure a **502** — a chat has no useful non-LLM fallback, so it surfaces the
+  condition instead of returning an empty "answer". The UI pre-gates on ``configured``;
+  these are backstops.
 
 The shared ``GET /api/ai/activity`` surface lives in ``routes/system.py``.
 """
@@ -21,7 +28,7 @@ import contextlib
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import aitasks, prefs, pulse
+from .. import aitasks, prefs, pulse, pulse_chat, review
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -78,3 +85,45 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 status_code=409,
             )
         return JSONResponse(artifact)
+
+    @app.post("/api/pulse/ask")
+    async def ask_pulse(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Hand-rolled body parsing (like /scan): the bounds are the contract (#522) —
+        # a missing/empty/oversized query is a 422 with a plain detail.
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        query = body.get("query") if isinstance(body, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            return JSONResponse({"detail": "query (string) is required"}, status_code=422)
+        query = query.strip()
+        if len(query) > pulse_chat.QUERY_MAX:
+            return JSONResponse(
+                {"detail": f"query too long (max {pulse_chat.QUERY_MAX} chars)"},
+                status_code=422,
+            )
+        history = body.get("history") if isinstance(body, dict) else None
+        try:
+            # Separate kind from "pulse-scan" ON PURPOSE: an ask never blocks a scan (or
+            # vice-versa); only concurrent ASKS serialize.
+            async with aitasks.single_flight("pulse-chat", "ask"):
+                result = await pulse_chat.ask(query, history, working_keys=_working_keys())
+        except aitasks.AlreadyRunning:
+            return JSONResponse(
+                {"detail": "a question is already running", **aitasks.snapshot()},
+                status_code=409,
+            )
+        except review.NotConfiguredError:
+            # Contrast with /scan (which degrades to 200/fast): a chat has no non-LLM
+            # fallback, so an unconfigured endpoint surfaces as a 409 the UI pre-gates on.
+            return JSONResponse(
+                {"detail": "AI endpoint is not configured", "configured": False},
+                status_code=409,
+            )
+        except review.ReviewError as e:
+            return JSONResponse({"detail": str(e)}, status_code=502)
+        return JSONResponse(result)
