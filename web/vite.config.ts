@@ -17,6 +17,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     cssTarget: ["chrome111", "firefox128", "safari18", "edge111"],
+    // Multi-entry: the SPA (index.html) + the standalone Home Free connect page
+    // (connect.html). connect.html is NOT linked from the app — a dark page for
+    // reaching a box through the blind relay.
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        connect: "connect.html",
+      },
+    },
   },
   plugins: [
     react(),
@@ -39,6 +48,10 @@ export default defineConfig({
           /^\/logout/,
           /^\/change-password/,
           /^\/healthz/,
+          // The standalone Home Free connect page is its own precached shell — the
+          // SPA index.html fallback must not shadow it for browsers already
+          // controlled by the app's service worker (#27 / #558 review).
+          /^\/connect\.html$/,
         ],
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
       },
