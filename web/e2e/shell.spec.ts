@@ -15,9 +15,12 @@ test("shell renders + new-session landing at /", async ({ page }) => {
 test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async ({ page }) => {
   await page.goto("/s/claude/abc123");
   // No backend in the preview, so the ws can't connect — but the xterm pane must mount
-  // and a connection status must surface (connecting/reconnecting), never a blank route.
+  // and a CONNECTION status must surface (connecting/reconnecting), never a blank route.
+  // Filtered by text since #392: the sidebar carries an always-mounted (empty until a
+  // Review-now outcome lands) status live region, so the bare role query is ambiguous —
+  // and role=status takes no name from content, so a name filter can't disambiguate.
   await expect(page.locator(".xterm")).toBeVisible();
-  await expect(page.getByRole("status")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: /connect/i })).toBeVisible();
 });
 
 test("responsive nav: drawer hamburger on mobile; single collapse affordance on desktop", async ({

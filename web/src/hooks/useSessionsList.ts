@@ -233,6 +233,8 @@ export function useSessionsList() {
 
   // Manual "Review now" (#356): run one AI review and fold the result into the row in
   // place (summary, badge, and the possibly-new display title) — no refetch flicker.
+  // Returns the fresh payload so the sidebar can toast the outcome (#392); a failure
+  // throws (with the server's `detail`) and leaves the last good row state untouched.
   const reviewRow = useCallback(async (id: string) => {
     const r = await api.reviewNow(id);
     setSessions((prev) =>
@@ -254,6 +256,7 @@ export function useSessionsList() {
           : s,
       ),
     );
+    return r;
   }, []);
 
   // Per-session exclude-from-review toggle (#356); the row stays, only the flag flips.

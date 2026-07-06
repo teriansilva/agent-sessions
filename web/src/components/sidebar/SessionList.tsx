@@ -12,11 +12,19 @@ import {
   Tag,
   X,
 } from "lucide-react";
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Link, NavLink, useMatch } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
+import { ApiError } from "../../lib/api";
 import { engineBadge, projectColor, relTime } from "../../lib/format";
 import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
@@ -29,6 +37,11 @@ import styles from "./SessionList.module.css";
  *  letting an old green summary read as current. Small grace so the review that *caused*
  *  the latest mtime bump doesn't immediately flag itself. */
 const REVIEW_STALE_GRACE_S = 60;
+
+/** Review-now outcome toast dwell (#392): success flashes the fresh summary briefly;
+ *  an error lingers long enough to actually read the gateway detail. */
+export const TOAST_OK_MS = 6_000;
+export const TOAST_ERR_MS = 12_000;
 
 function reviewIsStale(s: Session): boolean {
   return (
@@ -518,6 +531,33 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
   // unconfigured install keeps the lean three-button row.
   const aiConfigured = useConfig()?.ai_review?.configured ?? false;
 
+  // Review-now outcome toast (#392): the spinner shows activity but not OUTCOME — success
+  // flashes the fresh one-line summary; failure shows the server's sanitized error `detail`
+  // (e.g. "review endpoint returned HTTP 502") and lingers longer so it can be read.
+  const [reviewToast, setReviewToast] = useState<{ kind: "ok" | "err"; text: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!reviewToast) return;
+    const ms = reviewToast.kind === "ok" ? TOAST_OK_MS : TOAST_ERR_MS;
+    const t = window.setTimeout(() => setReviewToast(null), ms);
+    return () => window.clearTimeout(t);
+  }, [reviewToast]);
+  const reviewNowWithOutcome = useCallback(
+    async (id: string) => {
+      try {
+        const r = await reviewRow(id);
+        setReviewToast({ kind: "ok", text: r.ai_summary || "Review complete." });
+      } catch (e) {
+        // `api.reviewNow` surfaces the server's `detail` (already operator-safe: the
+        // backend never embeds keys/headers in it). Anything else gets a generic line.
+        const detail = e instanceof ApiError ? e.message : "";
+        setReviewToast({ kind: "err", text: `Review failed — ${detail || "unexpected error."}` });
+      }
+    },
+    [reviewRow],
+  );
+
   // Publish the loaded rows so the compact header can resolve the current session's title.
   const { setSessions } = useSessionsStore();
   useEffect(() => {
@@ -579,7 +619,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               onSetTag={setTag}
               onToggleArchive={setArchived}
               onToggleFavorite={setSticky}
-              onReviewNow={aiConfigured ? reviewRow : undefined}
+              onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
               onSetProject={setProject}
               onNavigate={onNavigate}
@@ -594,6 +634,31 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
           )}
         </ul>
       )}
+      {/* Always-mounted polite live region (#392): the region exists BEFORE its content
+       *  changes, the reliable announcement pattern for assistive tech (Hermes on PR #544
+       *  — inserting region + text in one render can fail to announce in some SR/browser
+       *  combos). Only the toast CONTENT is conditional; empty, the region collapses to
+       *  zero height. e2e role queries elsewhere disambiguate by text (shell.spec). */}
+      <div className={styles.toastRegion} role="status" aria-live="polite">
+        {reviewToast && (
+          <div
+            className={`${styles.toast} ${
+              reviewToast.kind === "ok" ? styles.toastOk : styles.toastErr
+            }`}
+          >
+            <span className={styles.toastLed} aria-hidden="true" />
+            <span className={styles.toastText}>{reviewToast.text}</span>
+            <button
+              type="button"
+              className={styles.toastClose}
+              aria-label="Dismiss review result"
+              onClick={() => setReviewToast(null)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

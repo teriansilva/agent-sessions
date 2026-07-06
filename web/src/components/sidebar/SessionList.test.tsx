@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../../app/config";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { projectColor } from "../../lib/format";
 import type { AppConfig, Session, SessionsPage } from "../../types/api";
 import { SessionList } from "./SessionList";
@@ -526,7 +526,78 @@ test("Review now calls the API and folds the result into the row (#356)", async 
   expect(api.reviewNow).toHaveBeenCalledWith("claude:a");
   // Title precedence: the AI title becomes the display title for an untitled session.
   expect(await screen.findByText("Refit the pipeline")).toBeInTheDocument();
-  expect(screen.getByText("Pipeline being refit")).toBeInTheDocument();
+  // The fresh summary lands on the row AND flashes as the outcome toast (#392).
+  expect(screen.getAllByText("Pipeline being refit")).toHaveLength(2);
+});
+
+// ---- Review-now outcome toast (#392) ----
+
+test("Review now success toasts the fresh summary and is dismissible (#392)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  vi.mocked(api.reviewNow).mockResolvedValue({
+    id: "claude:a",
+    title: "First",
+    ai_summary: "Deploy verified live",
+    ai_title: "",
+    intervention_required: false,
+    intervention_reason: "",
+    reviewed_at: Math.floor(Date.now() / 1000),
+    review_excluded: false,
+    ai_recap: "",
+    recap_fingerprint: "",
+  });
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
+  // The outcome lands in the polite live region so screen readers announce it too.
+  const region = await screen.findByRole("status");
+  await waitFor(() =>
+    expect(within(region).getByText(/Deploy verified live/)).toBeInTheDocument(),
+  );
+  await user.click(within(region).getByRole("button", { name: /dismiss review result/i }));
+  expect(within(region).queryByText(/Deploy verified live/)).not.toBeInTheDocument();
+});
+
+test("Review now failure toasts the server error detail and keeps the last good summary (#392)", async () => {
+  const user = userEvent.setup();
+  const now = Math.floor(Date.now() / 1000);
+  mockSessions.mockResolvedValue(
+    pageOf([
+      {
+        ...sess("claude:a", "First"),
+        ai_summary: "Last good summary",
+        reviewed_at: now,
+        last_mtime: now,
+      },
+    ]),
+  );
+  // api.reviewNow surfaces the server's `detail` via ApiError (mutateJson) — the toast
+  // must show THAT, not a generic "POST … → 502" (#392).
+  vi.mocked(api.reviewNow).mockRejectedValue(
+    new ApiError(502, "review endpoint timed out after 120s"),
+  );
+  renderWithAi(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Last good summary");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
+  const region = await screen.findByRole("status");
+  await waitFor(() =>
+    expect(
+      within(region).getByText(/Review failed — review endpoint timed out after 120s/),
+    ).toBeInTheDocument(),
+  );
+  // The failure never overwrites the last good row summary (#356 fail-soft holds).
+  expect(screen.getByText("Last good summary")).toBeInTheDocument();
 });
 
 test("the exclude toggle flips review_excluded via the API (#356)", async () => {

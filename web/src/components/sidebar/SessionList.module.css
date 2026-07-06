@@ -319,3 +319,64 @@
     transform: rotate(360deg);
   }
 }
+
+/* Review-now outcome toast (#392): pinned to the sidebar foot — flex sibling of the
+   scrolling list, so it never overlays rows or the mobile bottom edge. Square HUD
+   panel; the status LED + left rule carry the ok/err semantics. The region itself is
+   always mounted (polite live region) and collapses to zero height when empty. */
+.toastRegion {
+  flex: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 8px 8px;
+  padding: 8px 10px;
+  background: var(--surface-2, var(--bg));
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.toastOk {
+  border-left-color: var(--status-up);
+}
+.toastErr {
+  border-left-color: var(--status-down);
+}
+.toastLed {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+}
+.toastOk .toastLed {
+  background: var(--status-up);
+}
+.toastErr .toastLed {
+  background: var(--status-down);
+}
+.toastText {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  /* A long summary stays bounded: clamp to a few lines rather than flooding the sidebar. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.toastClose {
+  flex: none;
+  display: inline-flex;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 2px;
+  cursor: pointer;
+}
+.toastClose:hover {
+  color: var(--text);
+}

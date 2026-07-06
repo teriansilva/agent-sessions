@@ -321,9 +321,11 @@ export const api = {
   aiReviewModels: (opts?: { refresh?: boolean }) =>
     getJson<{ models: string[] }>(`/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`),
   /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
-   *  endpoint isn't configured; 502 when the review failed (last good result stays). */
+   *  endpoint isn't configured; 502 when the review failed (last good result stays).
+   *  `mutateJson` so the server's error `detail` (gateway timeout, endpoint HTTP status)
+   *  reaches the outcome toast (#392) instead of a generic "POST … → 502". */
   reviewNow: (id: string) =>
-    postJson<{
+    mutateJson<{
       id: string;
       title: string;
       ai_summary: string;
@@ -335,7 +337,7 @@ export const api = {
       /** #481: chronological whole-session recap, refreshed by this review. */
       ai_recap: string;
       recap_fingerprint: string;
-    }>(`/api/sessions/${enc(id)}/review`),
+    }>("POST", `/api/sessions/${enc(id)}/review`),
   /** AI review (#356): set (or toggle, when `excluded` is omitted) the per-session
    *  exclude-from-review flag. CSRF-guarded. */
   reviewExclude: (id: string, excluded?: boolean) =>
