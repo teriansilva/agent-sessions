@@ -115,6 +115,22 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   await expect.poll(() => prefsBody).toEqual({ ai_review: { prompt: "watch my fleet" } });
 });
 
+test("settings: a plain visit with a stored config stays quiet — no phantom dirty/validating state (#543)", async ({
+  page,
+}) => {
+  await page.goto("/settings/ai-review");
+  // Mount probe done: the dropdown is populated through the proxy.
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue("minimax-m2.7");
+  // The status line reports explicit actions only — a plain visit must show neither the
+  // save-style validation lifecycle nor an unsaved-changes warning (#543).
+  await expect(page.getByText(/Validating endpoint/i)).toBeHidden();
+  await expect(page.getByText(/Endpoint validated/i)).toBeHidden();
+  await expect(page.getByText(/Unsaved changes/i)).toBeHidden();
+  // The write-only key field opts out of password-manager autofill — browsers ignore
+  // "off" and would fill the app's login password here, dirtying the form.
+  await expect(page.getByLabel(/API key/i)).toHaveAttribute("autocomplete", "new-password");
+});
+
 test("settings: Remove key clears the stored secret and refetches /api/config", async ({
   page,
 }) => {

@@ -32,12 +32,14 @@ type ModelsState =
 
 /** Endpoint save/validation lifecycle (#394). `ok` = the /models probe succeeded against
  *  the PERSISTED config ("validated"); `error` carries the gateway's error text verbatim
- *  (#382); `incomplete` = saved but base URL or key still missing. */
+ *  (#382); `incomplete` = saved but base URL or key still missing. `quiet` marks an ok
+ *  reached by the mount-time probe (#543): it keeps the validated semantics (model control
+ *  unlock) but renders no status line — a plain visit must not look like a save happened. */
 type EndpointState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "validating" }
-  | { kind: "ok"; count: number }
+  | { kind: "ok"; count: number; quiet?: boolean }
   | { kind: "incomplete" }
   | { kind: "error"; message: string };
 
@@ -130,17 +132,20 @@ export function AiReviewSettings() {
   // a listing failure never blocks configuration (#356).
   const [models, setModels] = useState<ModelsState>({ kind: "idle" });
   const [endpoint, setEndpoint] = useState<EndpointState>({ kind: "idle" });
-  const probe = useCallback(async (refresh = false) => {
+  const probe = useCallback(async (opts: { refresh?: boolean; quiet?: boolean } = {}) => {
     setModels({ kind: "loading" });
-    setEndpoint({ kind: "validating" });
+    // The quiet (mount) path drives only the model list: no "Validating endpoint…" on a
+    // plain visit (#543). Probe FAILURES still surface either way — a broken stored
+    // endpoint must not become invisible.
+    if (!opts.quiet) setEndpoint({ kind: "validating" });
     try {
-      const d = await api.aiReviewModels(refresh ? { refresh: true } : undefined);
+      const d = await api.aiReviewModels(opts.refresh ? { refresh: true } : undefined);
       if (d.models.length > 0) {
         setModels({ kind: "ok", models: d.models });
-        setEndpoint({ kind: "ok", count: d.models.length });
+        setEndpoint({ kind: "ok", count: d.models.length, quiet: opts.quiet });
       } else {
         setModels({ kind: "unsupported" });
-        setEndpoint({ kind: "ok", count: 0 });
+        setEndpoint({ kind: "ok", count: 0, quiet: opts.quiet });
       }
     } catch (e) {
       setModels({ kind: "unsupported" });
@@ -158,7 +163,7 @@ export function AiReviewSettings() {
   useEffect(() => {
     if (!block.configured || probedOnce.current) return;
     probedOnce.current = true;
-    void probe();
+    void probe({ quiet: true });
   }, [block.configured, probe]);
 
   // --- excluded sessions (#356): row-menu opt-outs surface here for re-inclusion ---
@@ -220,7 +225,7 @@ export function AiReviewSettings() {
       setModels({ kind: "idle" });
       return;
     }
-    await probe(true);
+    await probe({ refresh: true });
   };
   /** Explicit clear (Hermes #367): `api_key: null` is the backend's "remove the stored
    *  secret" contract — the blank field means "unchanged", so removal needs its own
@@ -298,14 +303,15 @@ export function AiReviewSettings() {
 
   // One status line under the Save button: the in-flight save/validation wins, then
   // dirty edits (any prior result describes values the user is replacing), then the
-  // last validation outcome.
+  // last validation outcome. A quiet (mount-probe) ok renders nothing — the line only
+  // ever reports explicit user actions and real errors (#543).
   const endpointNote = endpoint.kind === "saving" ? (
     <p className={styles.hint}>Saving…</p>
   ) : endpoint.kind === "validating" ? (
     <p className={styles.hint}>Validating endpoint…</p>
   ) : endpointDirty ? (
     <p className={styles.warn}>● Unsaved changes — Save applies and validates them.</p>
-  ) : endpoint.kind === "ok" ? (
+  ) : endpoint.kind === "ok" && endpoint.quiet ? null : endpoint.kind === "ok" ? (
     <p className={styles.ok}>
       {endpoint.count > 0
         ? `✓ Endpoint validated — ${endpoint.count} model${endpoint.count === 1 ? "" : "s"} available.`
@@ -360,7 +366,10 @@ export function AiReviewSettings() {
               id="ai-api-key"
               className={styles.aiInput}
               type="password"
-              autoComplete="off"
+              // "off" is ignored by password managers — Chrome autofills the app's LOGIN
+              // password here on a plain visit, dirtying the form and one click away from
+              // overwriting the stored API key (#543). "new-password" suppresses the fill.
+              autoComplete="new-password"
               spellCheck={false}
               placeholder={block.api_key_set ? `${KEY_MASK} (write-only)` : "sk-…"}
               value={keyDraft}
@@ -413,7 +422,7 @@ export function AiReviewSettings() {
               aria-label="Refresh model list"
               title="Refresh model list"
               disabled={!block.configured || models.kind === "loading" || modelLocked}
-              onClick={() => void probe(true)}
+              onClick={() => void probe({ refresh: true })}
             >
               <RefreshCw size={14} />
             </button>

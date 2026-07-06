@@ -126,6 +126,37 @@ test("falls back to free-text model entry when the endpoint can't list models", 
   ).toBeInTheDocument();
 });
 
+test("a plain visit with a stored config stays quiet — no dirty note, no status line (#543)", async () => {
+  // The mount probe populates the dropdown but must not wear save-validation clothes:
+  // no "Validating endpoint…", no "✓ Endpoint validated", and mount-only behavior can
+  // never produce a dirty key draft.
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" }); // mount probe done
+  expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Validating endpoint/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Endpoint validated/i)).not.toBeInTheDocument();
+  expect(screen.getByLabelText(/API key/i)).toHaveValue("");
+  expect(screen.getByRole("button", { name: /save & validate/i })).toBeDisabled();
+});
+
+test("the API-key field opts out of password-manager autofill (#543)", () => {
+  // autocomplete="off" is ignored for stored credentials — Chrome fills the app's login
+  // password into the field on load, dirtying the form one click away from overwriting
+  // the stored API key. "new-password" is the standard suppression signal.
+  renderPanel();
+  expect(screen.getByLabelText(/API key/i)).toHaveAttribute("autocomplete", "new-password");
+});
+
+test("a failed mount probe still surfaces the gateway error on a plain visit (#543)", async () => {
+  // Only the in-flight/success status goes quiet on mount — a broken stored endpoint
+  // must stay visible.
+  const gw = "model listing returned HTTP 401: key rejected.";
+  vi.mocked(api.aiReviewModels).mockRejectedValue(new ApiError(502, gw));
+  renderPanel();
+  expect(await screen.findByText(`✗ ${gw}`)).toBeInTheDocument();
+  expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument();
+});
+
 test("model list is not fetched while unconfigured (no endpoint/key yet)", async () => {
   renderPanel(aiBlock({ configured: false, api_key_set: false, base_url: "" }));
   await screen.findByRole("heading", { name: "AI endpoint" });
