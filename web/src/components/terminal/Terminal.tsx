@@ -9,7 +9,7 @@ import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
-import { imageFilesFromData } from "../../lib/clipboardImages";
+import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
 import { isPasteShortcut } from "../../lib/termKeys";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
@@ -621,7 +621,17 @@ export function Terminal({
         e.preventDefault();
         e.stopPropagation();
         termRef.current?.paste(text);
+        return;
       }
+      // Neither an image nor text on the sync path. Deferred clipboard backends (observed:
+      // Windows Chrome 149) can deliver an empty DataTransfer for a real image paste — try
+      // the async clipboard before treating the paste as a no-op (#530), same fallback as
+      // Compose. An actually-empty clipboard resolves to [] and stays a no-op.
+      e.preventDefault();
+      e.stopPropagation();
+      void imageFilesFromAsyncClipboard().then((fallback) => {
+        if (fallback.length) composeRef.current?.attachImages(fallback);
+      });
     };
     host.addEventListener("paste", onHostPaste, true);
 

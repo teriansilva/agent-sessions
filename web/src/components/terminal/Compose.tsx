@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { api } from "../../lib/api";
-import { imageFilesFromData } from "../../lib/clipboardImages";
+import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
@@ -404,12 +404,30 @@ export const Compose = forwardRef<
 
   // Paste an image (screenshot) into the compose box → upload it like an attachment
   // instead of letting the textarea swallow the (empty) text. Plain-text paste is left
-  // to the textarea (#135).
+  // to the textarea (#135). When the DataTransfer yields no usable file AND no text —
+  // deferred clipboard backends (observed: Windows Chrome 149) can deliver exactly that
+  // for a real image paste — fall back to reading the async clipboard inside the same
+  // gesture instead of silently doing nothing (#530).
   const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
     const images = imageFilesFromData(e.clipboardData);
-    if (!images.length) return;
-    e.preventDefault();
-    void uploadFiles(images);
+    if (images.length) {
+      e.preventDefault();
+      void uploadFiles(images);
+      return;
+    }
+    if (e.clipboardData?.getData("text/plain")) return; // normal text paste — textarea handles it
+    const hadFileKind = Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === "file");
+    e.preventDefault(); // nothing would have pasted anyway
+    void imageFilesFromAsyncClipboard().then((fallback) => {
+      if (fallback.length) {
+        void uploadFiles(fallback);
+      } else if (hadFileKind) {
+        // The event claimed to carry a file we couldn't read anywhere — say so instead of
+        // leaving the paste a dead keystroke.
+        setNote("couldn't read image from clipboard");
+        setTimeout(() => setNote(""), 3000);
+      }
+    });
   };
 
   // Hide the mic entirely where the browser has no speech engine (e.g. Firefox) — a natural empty
