@@ -79,9 +79,12 @@ class Transport:
 class Initiator:
     """The browser side. ``start`` -> msg1; ``finish(msg2)`` -> (Transport, msg3)."""
 
-    def __init__(self, psk: bytes) -> None:
+    def __init__(self, psk: bytes, *, _ephemeral: X25519PrivateKey | None = None) -> None:
+        # ``_ephemeral`` is a TEST-ONLY hook to pin the ephemeral key so
+        # deterministic cross-implementation vectors can be generated. Production
+        # callers never pass it — a fresh ephemeral is generated each handshake.
         self._psk = psk
-        self._eph = X25519PrivateKey.generate()
+        self._eph = _ephemeral or X25519PrivateKey.generate()
         self._e_i = self._eph.public_key().public_bytes_raw()
 
     def start(self) -> bytes:
@@ -105,9 +108,10 @@ class Initiator:
 class Responder:
     """The agent side. ``respond(msg1)`` -> msg2; ``finish(msg3)`` -> Transport."""
 
-    def __init__(self, psk: bytes) -> None:
+    def __init__(self, psk: bytes, *, _ephemeral: X25519PrivateKey | None = None) -> None:
+        # ``_ephemeral``: TEST-ONLY deterministic-vector hook (see Initiator).
         self._psk = psk
-        self._eph = X25519PrivateKey.generate()
+        self._eph = _ephemeral or X25519PrivateKey.generate()
         self._e_r = self._eph.public_key().public_bytes_raw()
         self._k_i2r: bytes | None = None
         self._k_r2i: bytes | None = None
