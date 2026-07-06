@@ -37,3 +37,20 @@ export function isPasteShortcut(
   if (e.key !== "v" && e.key !== "V") return false;
   return isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
+
+/** Ctrl+C / Ctrl+Shift+C as a COPY shortcut on key DOWN (#536). Only meaningful while the
+ *  terminal holds a selection — the CALLER checks that; without one Ctrl+C must stay the
+ *  ``^C`` interrupt it always was. Meta/Alt combos are left alone: macOS Cmd+C already
+ *  copies natively via xterm's mirrored DOM selection and never reaches the PTY, so it
+ *  needs no interception on any platform. Keydown only — acting on keyup too would
+ *  double-fire the copy. */
+export function isCopyShortcut(e: {
+  type: string;
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+}): boolean {
+  if (e.type !== "keydown" || e.altKey || e.metaKey || !e.ctrlKey) return false;
+  return e.key === "c" || e.key === "C";
+}

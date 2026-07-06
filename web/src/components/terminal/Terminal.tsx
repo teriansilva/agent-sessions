@@ -10,7 +10,7 @@ import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
-import { isPasteShortcut } from "../../lib/termKeys";
+import { isCopyShortcut, isPasteShortcut } from "../../lib/termKeys";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import {
@@ -181,7 +181,6 @@ export function Terminal({
   const sendInput = useCallback((d: string) => sockRef.current?.send({ t: "i", d }) ?? false, []);
   // Current socket id (bumped each reconnect) so Compose can detect a reconnect between its frames.
   const connEpoch = useCallback(() => sockRef.current?.connectionId ?? -1, []);
-  // Copy the current selection, or the whole buffer if nothing is selected.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -220,7 +219,55 @@ export function Terminal({
     // Returning false makes xterm skip the key WITHOUT preventDefault, so the browser's
     // native paste still fires → onHostPaste → term.paste(text), one clean paste.
     const isMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent || "");
-    term.attachCustomKeyEventHandler((e) => !isPasteShortcut(e, isMac));
+    term.attachCustomKeyEventHandler((e) => {
+      if (isPasteShortcut(e, isMac)) return false;
+      // Ctrl+C / Ctrl+Shift+C with an active selection COPIES it (#536) — the Windows
+      // Terminal convention. The key never reaches the PTY: an accidental ^C while trying
+      // to copy is a SIGINT that can kill the agent's running turn. Without a selection
+      // Ctrl+C stays the interrupt it always was. The key is consumed even if the async
+      // clipboard write later fails (secure-context-only edge) — falling through to a
+      // SIGINT would be strictly worse than a failed copy. preventDefault so the browser's
+      // own copy command doesn't double-fire on the mirrored DOM selection.
+      if (isCopyShortcut(e) && term.hasSelection()) {
+        void navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
+        e.preventDefault();
+        return false;
+      }
+      return true;
+    });
+
+    // Plain-drag selection despite app mouse-tracking (#536). claude arms mouse reporting
+    // (?1000h/?1002h/?1003h, re-emitted on every attach by #397), and xterm routes an
+    // unmodified left-drag to the app — selection then silently requires Shift. For
+    // NORMAL-buffer sessions (inline agents: claude/codex/gemini) re-dispatch the press as
+    // its Shift twin so xterm's SelectionService forces selection; the synthetic event is
+    // untrusted, so the guard below lets it through untouched. Alt-screen TUIs (opencode)
+    // keep their mouse — clicks there are real UI, and Shift+drag remains the selection
+    // path. detail is passed through so double/triple-click word/line selection still work.
+    const forceSelectMousedown = (e: MouseEvent) => {
+      if (!e.isTrusted) return; // our own synthetic twin — let it reach xterm
+      if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (term.buffer.active.type !== "normal") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.target?.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+          detail: e.detail,
+          screenX: e.screenX,
+          screenY: e.screenY,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          button: 0,
+          buttons: e.buttons,
+          shiftKey: true,
+        }),
+      );
+    };
+    host.addEventListener("mousedown", forceSelectMousedown, true);
 
     // #187: track whether the viewport is sitting at the live tail. xterm fires
     // onScroll with the topmost line of the viewport whenever the user scrolls or
@@ -858,6 +905,7 @@ export function Terminal({
       document.removeEventListener("wheel", armOnWheel, true);
       document.removeEventListener("touchmove", armOnTouchMove, true);
       document.removeEventListener("keydown", armOnKeydown, true);
+      host.removeEventListener("mousedown", forceSelectMousedown, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       stopMomentumRef.current = () => {};
