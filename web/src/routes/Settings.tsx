@@ -21,7 +21,7 @@ import {
   useState,
 } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useConfig } from "../app/config";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
@@ -724,12 +724,25 @@ function AccountCard() {
   );
 }
 
+/** Content key over the effective discovery scope (#470). Changes exactly when the server-echoed
+ *  `project_roots` / `folder_exclusions` in /api/config change, so effects that fetch the
+ *  discovered folder set can depend on it without re-running for unrelated config updates. */
+function useDiscoveryKey(): string {
+  const config = useConfig();
+  const roots = config?.project_roots ?? [];
+  const exclusions = config?.folder_exclusions ?? [];
+  return `${roots.join("\n")}\u0000${exclusions.join("\n")}`;
+}
+
 /** Folder discovery (#465): the operator picks the root dir(s) discovery is scoped to (a HARD
  *  scope — out-of-root folders are hidden from the sidebar too) plus a manual exclusion list for
  *  ephemerals that slip through. Empty roots ⇒ today's unscoped behaviour. Each list commits via
  *  `setPrefs`; roots/exclusions are added through the existing `~/`-rooted FolderPickerModal. */
 function FolderDiscoveryCard() {
   const config = useConfig();
+  // #470: a saved root/exclusion changes what /api/folders discovers — refetch /api/config so
+  // the Session overview + Default project cards (keyed on the discovery prefs) refresh live.
+  const refreshConfig = useConfigRefresh();
   // Optimistic local state seeded from config; reflect external changes (another device / reload)
   // via React's render-phase "adjust state on change" pattern, like the compose/default-project
   // controls. `project_roots` echoes the EFFECTIVE (normalized) list the server returns.
@@ -761,13 +774,17 @@ function FolderDiscoveryCard() {
       .then((r) => {
         const eff = (r as { project_roots?: string[] }).project_roots;
         if (Array.isArray(eff)) setRoots(eff);
+        refreshConfig();
       })
       .catch(() => setRoots(prev));
   };
   const commitExclusions = (next: string[]) => {
     const prev = exclusions;
     setExclusions(next);
-    api.setPrefs({ folder_exclusions: next }).catch(() => setExclusions(prev));
+    api
+      .setPrefs({ folder_exclusions: next })
+      .then(() => refreshConfig())
+      .catch(() => setExclusions(prev));
   };
 
   const onPick = (path: string) => {
@@ -978,6 +995,10 @@ function OverviewCard() {
     projectNames,
     setProjectName,
   } = useOverviewPrefs();
+  // #470: the discovered set depends on the discovery scope. FolderDiscoveryCard refreshes
+  // /api/config after a save, so keying the fetch on the EFFECTIVE (server-echoed) prefs
+  // re-runs it live — and only when the scope actually changed.
+  const discoveryKey = useDiscoveryKey();
   const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
   const [entities, setEntities] = useState<ProjectEntity[]>([]);
   const [renaming, setRenaming] = useState<{ cwd: string; trigger: HTMLElement | null } | null>(
@@ -990,7 +1011,15 @@ function OverviewCard() {
       .folders()
       .then((d) => alive && setProjects(d.folders))
       .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
+    return () => {
+      alive = false;
+    };
+  }, [discoveryKey]);
+
+  useEffect(() => {
+    let alive = true;
     // Entities drive the grouping (#465). A failed fetch → no groups, everything Unassigned.
+    // Mount-only: entity ownership doesn't depend on the discovery scope.
     api
       .projectEntities()
       .then((d) => alive && setEntities(d.projects))
@@ -1129,6 +1158,8 @@ function OverviewCard() {
 function DefaultProjectCard() {
   const config = useConfig();
   const { projectNames } = useOverviewPrefs();
+  // #470: re-run the pickable-set fetch when the discovery scope changes (see useDiscoveryKey).
+  const discoveryKey = useDiscoveryKey();
   const [projects, setProjects] = useState<Folder[] | null>(null);
   const configDefault = config?.default_project ?? "";
   const [choice, setChoice] = useState(configDefault);
@@ -1148,7 +1179,7 @@ function DefaultProjectCard() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [discoveryKey]);
 
   const choose = (cwd: string) => {
     const prev = choice;

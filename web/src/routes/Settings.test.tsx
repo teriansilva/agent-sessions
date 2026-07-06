@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-import { ConfigCtx } from "../app/config";
+import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
 import type { AppConfig } from "../types/api";
@@ -684,6 +684,127 @@ test("Default project: seeds from config.default_project and '' clears it", asyn
   await userEvent.selectOptions(select, "");
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "" });
   expect(select).toHaveValue("");
+});
+
+// ---- Discovery-scope live refresh (#470) ----
+
+/** A rerenderable Projects-tab tree so tests can deliver a NEW config value the way a
+ *  FolderDiscoveryCard save does (setPrefs → useConfigRefresh → fresh /api/config). */
+function projectsTree(cfg: AppConfig) {
+  return (
+    <MemoryRouter initialEntries={["/settings/projects"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ConfigCtx.Provider value={cfg}>
+          <OverviewPrefsProvider>
+            <Routes>
+              <Route path="/settings/:tab" element={<Settings />} />
+            </Routes>
+          </OverviewPrefsProvider>
+        </ConfigCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>
+  );
+}
+
+const baseProjectsCfg: AppConfig = {
+  csrf: "t",
+  new_session_engines: [],
+  terminal_backend: "ws",
+  auth_mode: "single-user",
+  two_factor_enabled: false,
+};
+
+test("Session overview + Default project refetch /api/folders when the discovery scope changes (#470)", async () => {
+  const { rerender } = render(projectsTree({ ...baseProjectsCfg, project_roots: [] }));
+  await screen.findByRole("heading", { name: /session overview/i });
+  await flushFetches();
+  // Mount: OverviewCard fetches all folders, DefaultProjectCard the visible set, and the
+  // ProjectsManager card (out of scope for #470 — mount-only) its picker list.
+  const before = vi.mocked(api.folders).mock.calls.length;
+  expect(before).toBe(3);
+  // A roots change lands in config (FolderDiscoveryCard save → config refresh) → both refetch.
+  rerender(projectsTree({ ...baseProjectsCfg, project_roots: ["/home/u/code"] }));
+  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2));
+  // …and an exclusions change refetches again.
+  rerender(
+    projectsTree({
+      ...baseProjectsCfg,
+      project_roots: ["/home/u/code"],
+      folder_exclusions: ["/home/u/code/scratch"],
+    }),
+  );
+  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 4));
+  await flushFetches();
+});
+
+test("unrelated config changes do NOT refetch /api/folders (#470)", async () => {
+  const { rerender } = render(projectsTree(baseProjectsCfg));
+  await screen.findByRole("heading", { name: /session overview/i });
+  await flushFetches();
+  const before = vi.mocked(api.folders).mock.calls.length;
+  // A non-discovery config update (e.g. a new default project) must not churn discovery.
+  rerender(projectsTree({ ...baseProjectsCfg, default_project: "/home/u/alpha" }));
+  await flushFetches();
+  expect(vi.mocked(api.folders).mock.calls.length).toBe(before);
+});
+
+test("Folder discovery: saving a root or exclusion refreshes /api/config (#470)", async () => {
+  const refresh = vi.fn();
+  render(
+    <MemoryRouter initialEntries={["/settings/projects"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ConfigRefreshCtx.Provider value={refresh}>
+          <ConfigCtx.Provider
+            value={{
+              ...baseProjectsCfg,
+              project_roots: ["/home/u/code"],
+              folder_exclusions: ["/home/u/code/scratch"],
+            }}
+          >
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigCtx.Provider>
+        </ConfigRefreshCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  // Committing a roots change refreshes config once the save resolves…
+  await userEvent.click(await screen.findByRole("button", { name: /remove root ~\/code/i }));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  // …and so does an exclusions change.
+  await userEvent.click(
+    screen.getByRole("button", { name: /remove exclusion ~\/code\/scratch/i }),
+  );
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  await flushFetches();
+});
+
+test("Folder discovery: a failed save does NOT refresh /api/config (#470)", async () => {
+  const refresh = vi.fn();
+  vi.mocked(api.setPrefs).mockRejectedValue(new Error("boom"));
+  render(
+    <MemoryRouter initialEntries={["/settings/projects"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ConfigRefreshCtx.Provider value={refresh}>
+          <ConfigCtx.Provider value={{ ...baseProjectsCfg, project_roots: ["/home/u/code"] }}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigCtx.Provider>
+        </ConfigRefreshCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /remove root ~\/code/i }));
+  // The optimistic removal rolls back and no config refresh fires.
+  await screen.findByRole("button", { name: /remove root ~\/code/i });
+  expect(refresh).not.toHaveBeenCalled();
+  await flushFetches();
 });
 
 test("Default project: a stale stored default stays visible (and clearable), never hidden", async () => {
