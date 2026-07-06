@@ -1357,3 +1357,75 @@ def test_synthetic_attach_payload_ends_with_live_screen_seam(monkeypatch):
     assert b"HISTORY-TAIL" in payload
     assert "live screen ↓".encode() in payload
     assert payload.find(b"HISTORY-TAIL") < payload.find("live screen ↓".encode())
+
+
+def test_terminate_then_kill_reaps_sigterm_ignoring_child():
+    """#532: a child that survives SIGTERM is escalated to SIGKILL within the bounded wait."""
+    import asyncio
+    import signal
+    import sys
+
+    from agent_sessions import webterm
+
+    async def scenario():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('up', flush=True); time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+        )
+        assert (await proc.stdout.readline()).strip() == b"up"  # SIGTERM-ignore installed
+        await webterm.terminate_then_kill(proc, timeout=0.3)
+        return proc.returncode
+
+    assert asyncio.run(scenario()) == -signal.SIGKILL
+
+
+def test_webterm_run_teardown_reaps_sigterm_ignoring_client(tmp_path, monkeypatch):
+    """#532: the viewer bridge's teardown must never leak a dtach client that ignores SIGTERM.
+
+    The leaked client of the production incident stopped reading its socket and wedged the
+    dtach master's broadcast select for every other viewer, so the bridge escalates to
+    SIGKILL after the bounded wait. The stand-in installs a SIGTERM-ignore and then writes
+    its pid; the fake ws holds the bridge open until that pid file exists, so the teardown's
+    SIGTERM provably lands on a process that ignores it.
+    """
+    import asyncio
+    import os
+    import sys
+
+    import pytest
+
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_TERMINATE_WAIT_S", 0.3)
+    pidfile = tmp_path / "client.pid"
+    argv = [
+        sys.executable,
+        "-c",
+        "import os, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)",
+    ]
+
+    class FakeWS:
+        async def receive(self):
+            while not pidfile.exists():  # keep the bridge open until the ignore is armed
+                await asyncio.sleep(0.02)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            pass
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), argv, cwd=str(tmp_path), buf_key=None))
+    pid = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # reaped by the bridge — a leak would still answer signal 0

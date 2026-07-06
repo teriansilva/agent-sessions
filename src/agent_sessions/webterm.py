@@ -134,6 +134,32 @@ _HEARTBEAT_INTERVAL_S = 20.0
 # non-retryable launch misconfiguration and permanently kills the client's terminal.
 SPAWN_TIMEOUT_S = 15.0
 
+# Bounded wait between SIGTERM and the SIGKILL escalation when tearing down an owned dtach
+# client (#532). Module-level so tests can shrink it.
+_TERMINATE_WAIT_S = 3.0
+
+
+async def terminate_then_kill(proc: asyncio.subprocess.Process, *, timeout: float) -> None:
+    """Escalating teardown for an owned subprocess: SIGTERM → bounded wait → SIGKILL.
+
+    A dtach client can survive SIGTERM (#532: one was found futex-stuck with its tty fds
+    already deleted, after its bridge had closed the pty). A leaked client stops reading
+    its socket, and the dtach *master* — single-threaded, select()ing on client
+    writability with no timeout — can then stall its broadcast loop for every other
+    viewer of that session. Escalate to SIGKILL when the bounded wait expires so a
+    teardown can never leak the process. Shared by the viewer bridge (`run`) and the
+    headless reader (`session_stream.SessionStream.stop`) so the two paths cannot drift.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+
 
 async def _force_repaint(
     master: int,
@@ -543,10 +569,9 @@ async def run(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter
         # Detach (don't kill the agent): terminate our dtach client; the master persists.
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(proc.wait(), timeout=3)
+        # Escalate to SIGKILL if the client survives SIGTERM (#532) — a leaked client
+        # wedges the dtach master's broadcast loop for every viewer of this session.
+        await terminate_then_kill(proc, timeout=_TERMINATE_WAIT_S)
         # On a demotion we leave the socket OPEN so the route can send the gate frame;
         # every other exit (client gone / agent died) closes it as before.
         if stop_event is None or not stop_event.is_set():

@@ -187,15 +187,9 @@ class SessionStream:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
         if self._proc is not None:
-            with contextlib.suppress(ProcessLookupError):
-                self._proc.terminate()
-            try:
-                await asyncio.wait_for(self._proc.wait(), timeout=2.0)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    self._proc.kill()
-                with contextlib.suppress(Exception):
-                    await self._proc.wait()
+            # Shared escalating teardown (#532): terminate → bounded wait → kill, same
+            # helper as the viewer bridge so the two paths cannot drift.
+            await webterm.terminate_then_kill(self._proc, timeout=2.0)
             self._proc = None
         if self._master is not None:
             with contextlib.suppress(OSError):
