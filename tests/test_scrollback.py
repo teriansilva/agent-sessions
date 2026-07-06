@@ -417,3 +417,42 @@ def test_concurrent_first_touch_preserves_persisted_tail(monkeypatch):
 
     assert bytes(scrollback._BUFFERS[key]) == b"oldnew"  # persisted tail preserved + append kept
     assert scrollback._TOTALS[key] == 6  # totals consistent with the surviving bytes
+
+
+# --- First-output AI-review kick (#552) -------------------------------------------------
+# A brand-new session's first title/summary must not wait for the periodic review interval:
+# the FIRST reviewable output wakes the review loop. Edge-triggered (once per key) so chatty
+# output never re-wakes, and suppressed during the post-attach replay burst.
+
+
+def test_first_output_kicks_ai_review_once(monkeypatch):
+    key = "claude:first-out-1"
+    scrollback._LAST_OUTPUT_AT.pop(key, None)
+    kicks = []
+    monkeypatch.setattr(scrollback, "_kick_review_on_first_output", lambda: kicks.append(1))
+    scrollback._buffer_append(key, b"hello")  # first output → one kick
+    scrollback._buffer_append(key, b" world")  # more output → no re-kick (edge)
+    assert kicks == [1]
+    assert key in scrollback._LAST_OUTPUT_AT
+
+
+def test_no_review_kick_during_attach_replay_grace(monkeypatch):
+    # The dtach replay burst right after an attach is not new agent activity (#195): it must
+    # not stamp the working signal, and so must not fire a premature review kick either.
+    key = "claude:grace-1"
+    scrollback._LAST_OUTPUT_AT.pop(key, None)
+    kicks = []
+    monkeypatch.setattr(scrollback, "_kick_review_on_first_output", lambda: kicks.append(1))
+    scrollback.note_attach(key)  # opens the suppress window
+    scrollback._buffer_append(key, b"replay burst")  # inside grace → no stamp, no kick
+    assert kicks == []
+    assert key not in scrollback._LAST_OUTPUT_AT
+
+
+def test_kick_helper_wakes_the_review_loop(monkeypatch):
+    from agent_sessions import ai_review_loop
+
+    called = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: called.append(1))
+    scrollback._kick_review_on_first_output()
+    assert called == [1]

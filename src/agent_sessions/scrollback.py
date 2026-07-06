@@ -543,6 +543,26 @@ def _enforce_buffer_cap() -> None:
         _drop_buffer(victim)
 
 
+def _kick_review_on_first_output() -> None:
+    """Nudge the AI-review loop when a session first produces reviewable output (#552).
+
+    The only launch-time kick (``request_review_soon`` from the new-session path) fires ~3s
+    after create, when the session is still empty and ``review.gather_input`` has nothing to
+    hash — so the first title/summary otherwise waits up to the full review interval. Firing
+    here, at the single output chokepoint, lands the wake exactly when live-tail content first
+    exists. Lazy import breaks the ``scrollback → ai_review_loop → review → scrollback`` module
+    cycle; the kick is a no-op until the loop is armed. Only ever called on the event loop (see
+    ``_buffer_append``), where setting the loop's ``asyncio.Event`` is safe. Best-effort — a
+    review-side hiccup must never break the byte pump.
+    """
+    try:
+        from . import ai_review_loop
+
+        ai_review_loop.request_review_soon()
+    except Exception:  # pragma: no cover - defensive; the pump must survive anything here
+        log.debug("first-output AI-review kick failed — non-fatal", exc_info=True)
+
+
 def _buffer_append(key: str, data: bytes) -> None:
     _ensure_loaded(key)  # hydrate prior scrollback from disk before the first append (#206)
     # Guard only the registry structure (get-or-create + LRU touch); the `extend` below mutates
@@ -566,8 +586,16 @@ def _buffer_append(key: str, data: bytes) -> None:
     # always updated so a reattach still resumes the full screen.
     now = time.time()
     if now >= _SUPPRESS_OUTPUT_UNTIL.get(key, 0.0):
+        first_output = key not in _LAST_OUTPUT_AT
         _LAST_OUTPUT_AT[key] = now
         _LAST_OUTPUT_AT.move_to_end(key)
+        if first_output:
+            # First genuine (post-replay-grace) output for this session (#552): wake the
+            # AI-review loop now so a brand-new session's title/summary populates promptly
+            # instead of waiting up to the review interval. Edge-triggered — once per key until
+            # eviction — so chatty output never re-wakes; keyless + gated downstream, so it can
+            # never force an endpoint call the periodic loop wouldn't have made.
+            _kick_review_on_first_output()
     if len(buf) > _MAX_BUF:
         del buf[: len(buf) - _MAX_BUF]
     _enforce_buffer_cap()
