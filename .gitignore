@@ -16,3 +16,6 @@ env
 *.pem
 *.key
 .venv-local/
+
+# local dev venv for Home Free work
+.venv-hf/
