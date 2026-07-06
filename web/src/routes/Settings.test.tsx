@@ -1055,3 +1055,56 @@ test("a failed session_list_order save rolls back the selection (#506)", async (
   );
   await flushFetches();
 });
+
+// #548: the sidebar list re-sorts by watching the shared config's order, so the Settings
+// radio must refresh the config after a successful save — and must NOT on a failed one.
+test("a session_list_order save refreshes the shared config (#548)", async () => {
+  const refresh = vi.fn();
+  render(
+    <MemoryRouter initialEntries={["/settings/appearance"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
+          <ConfigRefreshCtx.Provider value={refresh}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigRefreshCtx.Provider>
+        </AccentCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  await flushFetches();
+});
+
+test("a failed session_list_order save does NOT refresh the config (#548)", async () => {
+  const refresh = vi.fn();
+  vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
+  render(
+    <MemoryRouter initialEntries={["/settings/appearance"]}>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
+          <ConfigRefreshCtx.Provider value={refresh}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+            </OverviewPrefsProvider>
+          </ConfigRefreshCtx.Provider>
+        </AccentCtx.Provider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    ),
+  );
+  expect(refresh).not.toHaveBeenCalled();
+  await flushFetches();
+});

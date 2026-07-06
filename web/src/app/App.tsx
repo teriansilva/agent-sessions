@@ -19,8 +19,9 @@ import { MissionTimer } from "../components/hud/MissionTimer";
 import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
+import { api } from "../lib/api";
 import "./App.css";
-import { useConfig } from "./config";
+import { useConfig, useConfigRefresh } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
@@ -180,6 +181,25 @@ function Layout() {
   const engaged = sessions.length;
   const live = sessions.filter((s) => s.working).length;
 
+  // Session-list order toggle in the sidebar header (#548) — same server-synced pref as the
+  // Settings → Appearance radio (#506). `orderPending` is the optimistic flip; it reconciles
+  // away once the refreshed config echoes the value back, and a failed save clears it so the
+  // control snaps back to the server truth (no drift between the two surfaces).
+  const refreshConfig = useConfigRefresh();
+  const cfgOrder = config?.session_list_order ?? "recent_activity";
+  const [orderPending, setOrderPending] = useState<string | null>(null);
+  if (orderPending && orderPending === cfgOrder) setOrderPending(null);
+  const listOrder = orderPending ?? cfgOrder;
+  const chooseOrder = (mode: string) => {
+    if (mode === listOrder) return;
+    setOrderPending(mode);
+    api
+      .setPrefs({ session_list_order: mode })
+      // The config refetch is what re-sorts the list: useSessionsList watches the pref (#548).
+      .then(() => refreshConfig())
+      .catch(() => setOrderPending(null));
+  };
+
   const cls = ["app", navOpen ? "navOpen" : "", collapsed ? "collapsed" : "", resizing ? "resizing" : ""]
     .filter(Boolean)
     .join(" ");
@@ -253,9 +273,34 @@ function Layout() {
         <span className="hud-cnr tr" />
         <span className="hud-cnr bl" />
         <span className="hud-cnr br" />
+        {/* Header row (#548): the decorative "Sessions / SEC // 01" label gave way to the
+            sort-order toggle — same chrome, functional content. The heading stays for the
+            <aside> landmark's accessible name, visually hidden. */}
         <header className="sidebar-head">
-          <h2 className="hud-h">Sessions</h2>
-          <span className="hud-tag">SEC // 01</span>
+          <h2 className="hud-h sr-only">Sessions</h2>
+          <span className="hud-tag" id="list-order-label">
+            Order
+          </span>
+          <span className="hud-seg" role="radiogroup" aria-labelledby="list-order-label">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={listOrder === "recent_activity"}
+              onClick={() => chooseOrder("recent_activity")}
+              title="Newest update first"
+            >
+              Recent
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={listOrder === "created_at"}
+              onClick={() => chooseOrder("created_at")}
+              title="Newest-created first — order stays put as sessions update"
+            >
+              Created
+            </button>
+          </span>
         </header>
         {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
         <div className="sidebar-actions">

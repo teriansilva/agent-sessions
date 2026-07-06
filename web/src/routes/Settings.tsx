@@ -1507,9 +1507,11 @@ export function Settings() {
     setComposeMode(mode);
     api.setPrefs({ compose_default: mode }).catch(() => setComposeMode(prev));
   };
-  // Session list order (#506): persisted via /api/prefs; the server sorts the list, so the
-  // sidebar picks up the new order on its next poll. Optimistic with rollback, like the others.
+  // Session list order (#506): persisted via /api/prefs; the server sorts the list. Optimistic
+  // with rollback, like the others. A successful save refreshes the shared config (#548): the
+  // sidebar list watches the config's order and re-sorts in place — no waiting for the poll.
   const configOrder = useConfig()?.session_list_order ?? "recent_activity";
+  const refreshConfig = useConfigRefresh();
   const [listOrder, setListOrder] = useState<string>(configOrder);
   const [syncedOrder, setSyncedOrder] = useState(configOrder);
   if (configOrder !== syncedOrder) {
@@ -1519,7 +1521,10 @@ export function Settings() {
   const chooseOrder = (mode: string) => {
     const prev = listOrder;
     setListOrder(mode);
-    api.setPrefs({ session_list_order: mode }).catch(() => setListOrder(prev));
+    api
+      .setPrefs({ session_list_order: mode })
+      .then(() => refreshConfig())
+      .catch(() => setListOrder(prev));
   };
   const commitHex = () => {
     const norm = normalizeAccent(hexDraft);

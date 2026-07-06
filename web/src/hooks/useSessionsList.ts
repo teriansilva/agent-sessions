@@ -123,6 +123,18 @@ export function useSessionsList() {
     void fetchPage(0, true);
   }, [fetchPage]);
 
+  // Refetch when the sort-order pref flips (#548: the sidebar toggle — and the Settings radio —
+  // write the pref and refresh the shared config; the server sorts, so re-sorting in place is a
+  // page-0 replace through the regular fetch path with its reqId/visibleInFlight guards). The
+  // prev-compare skips the bootstrap and the config's initial load — those are already fetched
+  // with the then-current order.
+  const seenOrder = useRef(order);
+  useEffect(() => {
+    const prev = seenOrder.current;
+    seenOrder.current = order;
+    if (order !== undefined && prev !== undefined && prev !== order) void fetchPage(0, true);
+  }, [order, fetchPage]);
+
   /** Silent refresh from offset 0 covering every loaded row, so a session that just got new
    *  activity moves up + relative-time labels stay fresh without losing pages the user has
    *  already loaded (#159). Skipped while any visible request (bootstrap / filter / loadMore)

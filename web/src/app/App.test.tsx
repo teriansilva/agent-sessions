@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { api } from "../lib/api";
 import App from "./App";
 
 // Mock the whole API surface the shell touches on load so render is deterministic.
@@ -9,6 +10,7 @@ vi.mock("../lib/api", () => ({
     config: vi.fn().mockResolvedValue({ csrf: "x", new_session_engines: [], terminal_backend: "ws" }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
     setTheme: vi.fn().mockResolvedValue({ theme: "dark" }),
+    setPrefs: vi.fn().mockResolvedValue({ session_list_order: "created_at" }),
     sessions: vi
       .fn()
       .mockResolvedValue({ sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } }),
@@ -115,6 +117,67 @@ test("a stale tr-sidebar-view pref is cleared on mount (#424)", async () => {
   render(<App />);
   await screen.findByRole("link", { name: /new session/i });
   await waitFor(() => expect(localStorage.getItem("tr-sidebar-view")).toBeNull());
+});
+
+// #548: the sidebar header's decorative "Sessions / SEC // 01" label row is now the sort-order
+// toggle — same server-synced pref as the Settings radio (#506). The heading survives sr-only
+// so the <aside> landmark keeps its accessible name.
+test("sidebar header hosts the sort-order toggle; SEC // 01 is gone (#548)", async () => {
+  render(<App />);
+  const group = await screen.findByRole("radiogroup", { name: "Order" });
+  expect(within(group).getByRole("radio", { name: "Recent" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(within(group).getByRole("radio", { name: "Created" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  expect(screen.queryByText(/SEC \/\/ 01/)).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument();
+});
+
+test("sidebar: flipping to Created persists the pref, refreshes config, and refetches the list (#548)", async () => {
+  // Two Onces (initial load, post-save refresh) so no persistent implementation leaks into
+  // later tests — clearAllMocks resets calls, not implementations.
+  vi.mocked(api.config)
+    .mockResolvedValueOnce({
+      csrf: "x",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      session_list_order: "recent_activity",
+    })
+    .mockResolvedValueOnce({
+      csrf: "x",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      session_list_order: "created_at",
+    });
+  render(<App />);
+  const created = await screen.findByRole("radio", { name: "Created" });
+  await waitFor(() => expect(api.sessions).toHaveBeenCalled());
+  const fetches = vi.mocked(api.sessions).mock.calls.length;
+
+  await userEvent.click(created);
+  expect(created).toHaveAttribute("aria-checked", "true"); // optimistic flip
+  await waitFor(() =>
+    expect(api.setPrefs).toHaveBeenCalledWith({ session_list_order: "created_at" }),
+  );
+  // The save refreshes the shared config…
+  await waitFor(() => expect(api.config).toHaveBeenCalledTimes(2));
+  // …whose new order triggers exactly one page-0 refetch, re-sorting the list in place.
+  await waitFor(() => expect(vi.mocked(api.sessions).mock.calls.length).toBe(fetches + 1));
+  expect(created).toHaveAttribute("aria-checked", "true"); // reconciled, not reverted
+});
+
+test("sidebar: a failed order save snaps the toggle back to the server truth (#548)", async () => {
+  vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("boom"));
+  render(<App />);
+  const created = await screen.findByRole("radio", { name: "Created" });
+  await userEvent.click(created);
+  await waitFor(() => expect(created).toHaveAttribute("aria-checked", "false"));
+  expect(screen.getByRole("radio", { name: "Recent" })).toHaveAttribute("aria-checked", "true");
+  expect(api.config).toHaveBeenCalledTimes(1); // no config refresh on a failed save
 });
 
 // #283: on mobile, same-route nav targets (New session / Overview / Settings while already on

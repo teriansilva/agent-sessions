@@ -128,7 +128,8 @@
   display: flex;
   flex-direction: column;
 }
-/* Sidebar panel header (#211 redux): "SESSIONS  SEC // 01" — mono uppercase heading + tag. */
+/* Sidebar panel header (#211 redux → #548): the 38px HUD row now hosts the sort-order
+ * toggle (ORDER  RECENT|CREATED); the "Sessions" heading is sr-only, "SEC // 01" retired. */
 .sidebar-head {
   flex: none;
   display: flex;
@@ -148,6 +149,55 @@
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-2);
+}
+/* Sidebar sort-order toggle (#548): hud-tag label + two-segment radiogroup on the .hud-tag
+ * type metrics. Square corners per the HUD system. */
+.hud-seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+}
+.hud-seg button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-3);
+  padding: 6px 12px;
+}
+.hud-seg button + button {
+  border-left: 1px solid var(--line-strong);
+}
+.hud-seg button[aria-checked="true"] {
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+/* The light-amber accent fails AA on the pale glow in light mode — use the darker wordmark amber. */
+:root[data-theme="light"] .hud-seg button[aria-checked="true"] {
+  color: var(--brand);
+}
+.hud-seg button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+/* Screen-reader-only (#548): keeps the <aside> landmark's "Sessions" name now that the
+ * visible heading became the sort control. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 /* Sidebar panel footer: "60 ENGAGED · 4 LIVE" telemetry tag. */
 .sidebar-foot {
