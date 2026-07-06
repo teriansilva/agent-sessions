@@ -11,12 +11,12 @@ import {
   Star,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
-import { engineBadge, relTime } from "../../lib/format";
+import { engineBadge, projectColor, relTime } from "../../lib/format";
 import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import { MoveToProjectModal } from "./MoveToProjectModal";
@@ -275,6 +275,10 @@ function Row({
           ? { variant: "draft", role: "img" as const, label: "unsent draft", title: "Unsent draft" }
           : { variant: "idle", role: undefined, label: undefined, title: "idle" };
 
+  // Per-project accent (#285): the explicit entity color (Settings, #361) wins; otherwise a
+  // stable hash of the ref key (entity id / folder cwd). One CSS var feeds the rail + dot.
+  const proj = { "--proj": s.project.color || projectColor(s.project.id) } as CSSProperties;
+
   return (
     <li className={styles.rowWrap}>
       {moving && (
@@ -288,8 +292,12 @@ function Row({
       <NavLink
         to={`/s/${s.engine}/${s.uuid}`}
         className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
+        style={proj}
         onClick={onNavigate}
       >
+        {/* Project rail (#285): its own inset layer so the active row's border-left accent
+            and the status LED stay legible as separate cues. */}
+        <span className={styles.projRail} aria-hidden="true" />
         {/* Single leading status dot (#477): colour-coded by precedence (intervention >
             working > draft > idle), reusing the global .hud-led primitive so it matches the
             topbar/classbar. This replaces the old separate green/idle LED + amber "!" badge
@@ -339,13 +347,7 @@ function Row({
               {s.project.kind === "project" && (
                 <>
                   <span className={styles.projectChip}>
-                    {s.project.color && (
-                      <span
-                        className={styles.projectDot}
-                        style={{ background: s.project.color }}
-                        aria-hidden="true"
-                      />
-                    )}
+                    <span className={styles.projectDot} aria-hidden="true" />
                     {s.project.name}
                   </span>
                   {" · "}

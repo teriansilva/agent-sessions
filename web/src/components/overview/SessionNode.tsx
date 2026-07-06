@@ -1,6 +1,6 @@
 import { type NodeProps } from "@xyflow/react";
 import { type CSSProperties } from "react";
-import { engineBadge, engineColor, relTime, shortCwd } from "../../lib/format";
+import { engineBadge, engineColor, projectColor, relTime, shortCwd } from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
 import { HudFrame } from "../hud/HudFrame";
 
@@ -26,7 +26,13 @@ export function SessionNode({ data }: NodeProps) {
   return (
     <div
       className={`tr-ov-chip nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}`}
-      style={{ "--eng": color } as CSSProperties}
+      style={
+        {
+          "--eng": color,
+          // Project accent for the foot dot (#285): explicit entity color, else the id hash.
+          "--proj": session.project.color || projectColor(session.project.id),
+        } as CSSProperties
+      }
       title={`${title}\n${session.cwd}`}
       aria-label={`Open ${title}`}
       aria-current={selected ? "true" : undefined}
@@ -62,13 +68,7 @@ export function SessionNode({ data }: NodeProps) {
         {session.project.kind === "project" && (
           <>
             <span className="tr-ov-chip-proj">
-              {session.project.color && (
-                <span
-                  className="tr-ov-proj-dot"
-                  style={{ background: session.project.color }}
-                  aria-hidden="true"
-                />
-              )}
+              <span className="tr-ov-proj-dot" aria-hidden="true" />
               {session.project.name}
             </span>
             <span className="tr-ov-foot-sep" aria-hidden="true">

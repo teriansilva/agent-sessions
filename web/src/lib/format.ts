@@ -56,6 +56,20 @@ export function engineColor(engine: string): string {
           : "#d98a5c"; // claude — amber
 }
 
+/** Deterministic per-project accent (#285): FNV-1a over the project key (entity id, or the
+ *  cwd for a folder ref) → golden-angle hue. `light-dark()` picks the theme-appropriate
+ *  lightness — the app sets `color-scheme` per theme, so the same hue reads on both canvases.
+ *  Fallback only — an explicit entity color (Settings, #361) wins at the call sites. */
+export function projectColor(key: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  const hue = Math.round(((h >>> 0) * 137.508) % 360);
+  return `light-dark(hsl(${hue} 55% 40%), hsl(${hue} 60% 58%))`;
+}
+
 /** Human display name for an engine id (sidebar uses short badges; cards want the name). */
 export function engineName(engine: string): string {
   return engine === "opencode"

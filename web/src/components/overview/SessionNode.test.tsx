@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import type { NodeProps } from "@xyflow/react";
 import { expect, test } from "vitest";
+import { projectColor } from "../../lib/format";
 import type { Session } from "../../types/api";
 import { SessionNode } from "./SessionNode";
 
@@ -135,6 +136,36 @@ test("an unassigned chip shows the launch folder only, no project chip (#424 par
   });
   expect(screen.getByText(/~\/claude/)).toBeInTheDocument();
   expect(container.querySelector(".tr-ov-chip-proj")).toBeNull();
+});
+
+// #285: the chip publishes the project accent as --proj (explicit entity colour, else the
+// stable ref-key hash) so the foot's project dot always renders for assigned sessions.
+test("chip carries --proj: explicit entity colour wins, uncoloured entities hash their id (#285)", () => {
+  const { container } = renderNode({
+    session: sess({
+      project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
+    }),
+    active: true,
+    working: false,
+    selected: false,
+    folderLabel: "p",
+  });
+  const chip = container.querySelector(".tr-ov-chip") as HTMLElement;
+  expect(chip.style.getPropertyValue("--proj")).toBe("#5fd7ff");
+  expect(container.querySelector(".tr-ov-proj-dot")).not.toBeNull();
+
+  const { container: c2 } = renderNode({
+    session: sess({
+      project: { kind: "project" as const, id: "p-2", name: "Two" },
+    }),
+    active: true,
+    working: false,
+    selected: false,
+    folderLabel: "p",
+  });
+  const chip2 = c2.querySelector(".tr-ov-chip") as HTMLElement;
+  expect(chip2.style.getPropertyValue("--proj")).toBe(projectColor("p-2"));
+  expect(c2.querySelector(".tr-ov-proj-dot")).not.toBeNull();
 });
 
 // #284: the server resolves the meaningful display title (manual rename → AI title →

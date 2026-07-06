@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../../app/config";
 import { api } from "../../lib/api";
+import { projectColor } from "../../lib/format";
 import type { AppConfig, Session, SessionsPage } from "../../types/api";
 import { SessionList } from "./SessionList";
 
@@ -125,7 +126,7 @@ test("an entity-assigned row keeps its project chip; the launch-folder chip is d
   expect(within(unassignedRow).queryByText(/~\/claude/)).not.toBeInTheDocument();
 });
 
-test("the project chip shows a color dot for a colored entity (#361)", async () => {
+test("the project chip shows a color dot for a colored entity (#361), fed by the --proj var (#285)", async () => {
   const colored = {
     ...sess("claude:p", "Colored"),
     project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
@@ -137,14 +138,39 @@ test("the project chip shows a color dot for a colored entity (#361)", async () 
     </MemoryRouter>,
   );
   await screen.findByText("Colored");
-  // The dot carries the entity color inline; it's decorative (aria-hidden).
+  // The row publishes the entity color as --proj (#285); the decorative dot consumes it.
+  const row = screen.getByRole("link", { name: /Colored/ });
+  expect(row.style.getPropertyValue("--proj")).toBe("#5fd7ff");
   const dot = container.querySelector('[class*="projectDot"]') as HTMLElement;
   expect(dot).not.toBeNull();
-  expect(dot.style.background).toBe("rgb(95, 215, 255)");
   expect(dot).toHaveAttribute("aria-hidden", "true");
   // #508: the folder chip + its decorative marker were removed — neither row shows a cwd path.
   expect(container.querySelector('[class*="folderMark"]')).toBeNull();
   expect(screen.queryByText(/~\/claude/)).not.toBeInTheDocument();
+});
+
+test("every row gets a stable project accent — explicit colour or the key hash — plus a rail on its own layer (#285)", async () => {
+  const inProject = {
+    ...sess("claude:p", "Assigned"),
+    project: { kind: "project" as const, id: "p-2", name: "Two", color: "" },
+  };
+  mockSessions.mockResolvedValue(pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }));
+  render(
+    <MemoryRouter initialEntries={["/s/claude/p"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Assigned");
+  // An uncoloured entity falls back to its id hash; a folder ref hashes its cwd.
+  const assigned = screen.getByRole("link", { name: /Assigned/ });
+  expect(assigned.style.getPropertyValue("--proj")).toBe(projectColor("p-2"));
+  const unassigned = screen.getByRole("link", { name: /Unassigned/ });
+  expect(unassigned.style.getPropertyValue("--proj")).toBe(projectColor("/home/m/claude"));
+  // The rail is a decorative layer inside the row — and the active-session cue (#18)
+  // still marks the open row independently of the project accent.
+  expect(assigned.querySelector('[class*="projRail"]')).not.toBeNull();
+  expect(assigned).toHaveAttribute("aria-current", "page");
+  expect(unassigned).not.toHaveAttribute("aria-current");
 });
 
 test("marks the row matching the current URL as the active session (#18)", async () => {

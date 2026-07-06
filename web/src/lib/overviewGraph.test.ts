@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import type { Session } from "../types/api";
+import { engineColor, projectColor } from "./format";
 import {
   ACTIVE_WINDOW_S,
   buildOverview,
@@ -544,4 +545,48 @@ test("expandableKeys includes empty project keys in project mode only (#447)", (
   expect(expandableKeys([], new Set(), "project", projects)).toEqual(["project:p-2"]);
   expect(expandableKeys([], new Set(), "folder", projects)).toEqual([]);
   expect(expandableKeys([], new Set(), "agent", projects)).toEqual([]);
+});
+
+// ---- per-project colour (#285) --------------------------------------------------
+// Explicit entity colour wins; everything else falls back to the stable key hash. The
+// synthetic Default catch-all is many folders, not one project — it stays neutral.
+
+test("project mode: explicit entity colour wins; uncoloured entities hash their id; Default stays neutral (#285)", () => {
+  const input = [
+    s({ id: "claude:a", cwd: "/p/app", project: ref({ color: "#5fd7ff" }) }),
+    s({ id: "claude:b", cwd: "/p/two", project: ref({ id: "p-2", name: "Two" }) }),
+    s({ id: "claude:c", cwd: "/p/three", project: { kind: "folder" as const, id: "/p/three", name: "three" } }),
+  ];
+  const { nodes } = buildOverview(input, { nowS: NOW });
+  const byId = Object.fromEntries(
+    nodes.filter((n) => n.type === "projectGroup").map((n) => [n.id, n.data as ProjectGroupData]),
+  );
+  expect(byId["group:project:p-1"].color).toBe("#5fd7ff");
+  expect(byId["group:project:p-2"].color).toBe(projectColor("p-2"));
+  expect(byId["group:project:__default__"].color).toBeUndefined();
+});
+
+test("folder mode: every folder group tints by its cwd hash (#285)", () => {
+  const { nodes } = buildOverview([s({ id: "claude:a", cwd: "/p/one" })], { nowS: NOW, ...FOLDER });
+  const g = nodes.find((n) => n.id === "group:/p/one")!.data as ProjectGroupData;
+  expect(g.color).toBe(projectColor("/p/one"));
+});
+
+test("agent mode keeps the engine accent, not a project colour (#285)", () => {
+  const { nodes } = buildOverview([s({ id: "claude:a" })], { nowS: NOW, groupBy: "agent" });
+  const g = nodes.find((n) => n.id === "group:agent:claude")!.data as ProjectGroupData;
+  expect(g.color).toBe(engineColor("claude"));
+});
+
+test("empty entity clusters fall back to the id hash too (#447/#285)", () => {
+  const { nodes } = buildOverview([], { nowS: NOW, projects: [{ id: "p-9", name: "Nine" }] });
+  const g = nodes.find((n) => n.id === "group:project:p-9")!.data as ProjectGroupData;
+  expect(g.color).toBe(projectColor("p-9"));
+});
+
+test("folder node's owner badge colour falls back to the entity id hash (#445/#285)", () => {
+  const input = [s({ id: "claude:a", cwd: "/p/app", project: ref() })];
+  const { nodes } = buildOverview(input, { nowS: NOW, ...FOLDER });
+  const g = nodes.find((n) => n.id === "group:/p/app")!.data as ProjectGroupData;
+  expect(g.owner).toEqual({ name: "Side", color: projectColor("p-1") });
 });

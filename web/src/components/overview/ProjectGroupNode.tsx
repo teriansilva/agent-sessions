@@ -1,6 +1,6 @@
 import { Handle, type NodeProps, Position } from "@xyflow/react";
 import { ChevronDown, ChevronRight, FolderInput } from "lucide-react";
-import { type MouseEvent, useState } from "react";
+import { type CSSProperties, type MouseEvent, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import { pathBase, shortCwd } from "../../lib/format";
 import type { ProjectGroupData } from "../../lib/overviewGraph";
@@ -55,8 +55,8 @@ export function ProjectGroupNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}`}
-      style={color ? { borderTop: `2px solid ${color}` } : undefined}
+      className={`tr-ov-group tr-ov-group--${kind}${collapsed ? " collapsed" : ""}${isEmptyProject ? " empty" : ""}${color ? " tinted" : ""}`}
+      style={color ? ({ "--proj": color } as CSSProperties) : undefined}
     >
       <HudFrame />
       <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />
@@ -66,15 +66,15 @@ export function ProjectGroupNode({ data }: NodeProps) {
         title={`${collapsed ? "Expand" : "Collapse"} ${kind === "folder" ? cwd : project}`}
       >
         <Chevron size={14} className="tr-ov-chev" aria-hidden="true" />
-        {color && <span className="tr-ov-proj-dot" style={{ background: color }} aria-hidden="true" />}
+        {color && <span className="tr-ov-proj-dot" aria-hidden="true" />}
         <span className="tr-ov-meta">
           {kind === "folder" && owner && (
-            <span className="tr-ov-owner" title={`In project ${owner.name}`}>
-              <span
-                className="tr-ov-owner-dot"
-                style={owner.color ? { background: owner.color } : undefined}
-                aria-hidden="true"
-              />
+            <span
+              className="tr-ov-owner"
+              title={`In project ${owner.name}`}
+              style={owner.color ? ({ "--owner": owner.color } as CSSProperties) : undefined}
+            >
+              <span className="tr-ov-owner-dot" aria-hidden="true" />
               {owner.name}
             </span>
           )}

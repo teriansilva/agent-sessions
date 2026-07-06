@@ -7,7 +7,7 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
-import { displayProjectName, engineColor, engineName } from "./format";
+import { displayProjectName, engineColor, engineName, projectColor } from "./format";
 
 /** A session counts as "active" if its last activity is within this window. */
 export const ACTIVE_WINDOW_S = 15 * 60;
@@ -154,11 +154,19 @@ const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
     return { key: `agent:${s.engine}`, kind: "agent", label: engineName(s.engine), color: engineColor(s.engine) };
   }
   if (groupBy === "folder") {
-    // Pure cwd tree — the path is the label fallback; entity name/color are intentionally dropped.
-    return { key: s.cwd, kind: "folder", label: s.cwd };
+    // Pure cwd tree — the path is the label fallback; entity name/color are intentionally
+    // dropped. The folder still gets its own stable accent from the cwd hash (#285).
+    return { key: s.cwd, kind: "folder", label: s.cwd, color: projectColor(s.cwd) };
   }
+  // Entity groups tint by the explicit entity color, else the stable id hash (#285). The
+  // synthetic Default catch-all stays neutral — it is many folders, not one project.
   return s.project.kind === "project"
-    ? { key: `project:${s.project.id}`, kind: "project", label: s.project.name, color: s.project.color }
+    ? {
+        key: `project:${s.project.id}`,
+        kind: "project",
+        label: s.project.name,
+        color: s.project.color || projectColor(s.project.id),
+      }
     : { key: DEFAULT_GROUP_KEY, kind: "project", label: DEFAULT_PROJECT_NAME };
 };
 
@@ -183,7 +191,7 @@ const ownerOf = (items: Session[]): { name: string; color?: string } => {
       if (id === undefined) {
         id = s.project.id;
         name = s.project.name;
-        color = s.project.color;
+        color = s.project.color || projectColor(s.project.id);
       } else if (id !== s.project.id) {
         conflict = true;
       }
@@ -278,7 +286,7 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
           items: [],
           maxMtime: 0,
           cwds: new Set<string>(),
-          color: p.color || undefined,
+          color: p.color || projectColor(p.id),
         });
       }
     }

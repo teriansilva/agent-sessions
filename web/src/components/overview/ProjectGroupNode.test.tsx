@@ -71,6 +71,37 @@ test("an entity color renders the header dot", () => {
   expect(container.querySelector(".tr-ov-proj-dot")).toBeTruthy();
 });
 
+// #285: the group publishes its colour as the --proj var; the tinted top border + dot are
+// CSS consumers of it. A colourless group (the synthetic Default) gets neither layer.
+test("the group colour propagates as --proj + the tinted class (#285)", () => {
+  const { container } = renderGroup({
+    project: "Side", kind: "project", cwd: "/home/u/app", cwdCount: 1, count: 1, collapsed: true, color: "#5fd7ff",
+  });
+  const root = container.querySelector(".tr-ov-group") as HTMLElement;
+  expect(root.classList.contains("tinted")).toBe(true);
+  expect(root.style.getPropertyValue("--proj")).toBe("#5fd7ff");
+});
+
+test("a colourless group (Default catch-all) has no tint layer and no dot (#285)", () => {
+  const { container } = renderGroup({
+    project: "Default", kind: "project", cwd: "/home/u/app", cwdCount: 1, count: 1, collapsed: true,
+  });
+  const root = container.querySelector(".tr-ov-group") as HTMLElement;
+  expect(root.classList.contains("tinted")).toBe(false);
+  expect(root.style.getPropertyValue("--proj")).toBe("");
+  expect(container.querySelector(".tr-ov-proj-dot")).toBeNull();
+});
+
+test("the owner badge publishes its colour as --owner (#445/#285)", () => {
+  const { container } = renderGroup({
+    project: "one", kind: "folder", cwd: "/home/u/one", cwdCount: 1, count: 1, collapsed: true,
+    owner: { name: "Side", color: "#5fd7ff" },
+  });
+  const owner = container.querySelector(".tr-ov-owner") as HTMLElement;
+  expect(owner).not.toBeNull();
+  expect(owner.style.getPropertyValue("--owner")).toBe("#5fd7ff");
+});
+
 test("'Make this a project' POSTs {name: basename, folders: [cwd]} then refetches", async () => {
   const user = userEvent.setup();
   const refetch = vi.fn();

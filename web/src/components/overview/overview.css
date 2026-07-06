@@ -156,14 +156,19 @@
   height: 6px;
   flex: none;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--owner, var(--text-muted));
 }
-/* Entity color marker (#361 Phase 4) — pairs with the tinted top border on .tr-ov-group. */
+/* Project color marker (#361 Phase 4 / #285) — the group/chip sets --proj (explicit entity
+ * color, else the stable key hash); the tinted top border + dots just consume the var. */
+.tr-ov-group.tinted {
+  border-top: 2px solid var(--proj);
+}
 .tr-ov-proj-dot {
   width: 8px;
   height: 8px;
   flex: none;
   border-radius: 50%;
+  background: var(--proj);
 }
 /* Inline create-project failure (409 detail) in the header's subtitle slot (#361 Phase 4). */
 .tr-ov-err {

@@ -67,6 +67,7 @@
   background: var(--row-hover);
 }
 .row {
+  position: relative;
   display: flex;
   gap: 8px;
   align-items: flex-start;
@@ -83,6 +84,19 @@
 .active {
   background: var(--row-hover);
   border-left-color: var(--accent);
+}
+/* Per-project rail (#285): coloured by the row's --proj var (explicit entity color, else
+ * the stable cwd/id hash). An inset absolute layer just right of the active-row border so
+ * the amber "open session" edge and the project accent never merge into one cue. */
+.projRail {
+  position: absolute;
+  left: 1px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: var(--proj);
+  opacity: 0.55;
+  pointer-events: none;
 }
 /* Action cluster: hidden until row hover on pointer devices; always shown on
  * narrow viewports (<= 800px) so phone/tablet users can reach rename/archive
@@ -232,6 +246,7 @@
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: 0;
+  background: var(--proj);
 }
 .empty {
   color: var(--text-muted);

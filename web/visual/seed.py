@@ -271,6 +271,27 @@ def seed_pulse(home: Path) -> None:
     (d / "pulse-cache.json").write_text(json.dumps(artifact, indent=2, sort_keys=True))
 
 
+def seed_projects(home: Path) -> None:
+    """One project entity adopting the alpha folder (#285): the overview then renders a
+    TINTED entity group next to the neutral Default catch-all, and the alpha rows carry the
+    entity chip. No explicit color on purpose — the capture proves the deterministic
+    id-hash fallback accent, not a hand-picked one."""
+    alpha = str(home / "seed" / "seed-alpha")  # _real_cwd("/seed/alpha")
+    d = home / ".config" / "agent-sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    entity = {
+        "name": "Alpha",
+        "color": "",
+        "folders": [alpha],
+        "default_folder": alpha,
+        "archived": False,
+        "created_at": 0,
+    }
+    (d / "projects.json").write_text(
+        json.dumps({"version": 1, "projects": {"p-seed0001": entity}}, indent=2)
+    )
+
+
 def seed(home: Path) -> None:
     _refuse_real_home(home)
     home.mkdir(parents=True, exist_ok=True)
@@ -280,6 +301,7 @@ def seed(home: Path) -> None:
     seed_antigravity(home)
     seed_opencode(home)
     seed_pulse(home)
+    seed_projects(home)
 
 
 if __name__ == "__main__":
@@ -289,5 +311,5 @@ if __name__ == "__main__":
     seed(target)
     print(
         f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) + opencode(1) "
-        "+ pulse-cache"
+        "+ pulse-cache + 1 project entity"
     )
