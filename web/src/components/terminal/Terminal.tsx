@@ -513,6 +513,21 @@ export function Terminal({
     // scroll moves the DOM `.xterm-viewport` without emitting it, so we listen to that
     // element's `scroll` event too (its ydisp sync can lag a frame; scrollTop doesn't).
     const vpEl = host.querySelector<HTMLElement>(".xterm-viewport");
+    // #559: while a text selection is actively being made (desktop mouse-drag or mobile
+    // long-press select-mode), pin the viewport so neither the browser/xterm drag-select edge
+    // auto-scroll nor live-output follow drifts the view out from under the selection — the
+    // reported "selecting text scrolls the terminal around." `beginSelectionPin` records the
+    // scrollTop to hold; `onScrolled` snaps back to it, and the live-output `follow` is gated on
+    // `!selectionActive`. Released on selection end (mouseup / exit select mode).
+    let selectionActive = false;
+    let selectionPinTop = 0;
+    const beginSelectionPin = () => {
+      selectionActive = true;
+      selectionPinTop = vpEl?.scrollTop ?? 0;
+    };
+    const endSelectionPin = () => {
+      selectionActive = false;
+    };
     const atTopNow = () => {
       const buf = term.buffer.active;
       if (buf.type !== "normal" || buf.baseY <= 0) return false;
@@ -581,6 +596,13 @@ export function Terminal({
       }
     };
     const onScrolled = () => {
+      // #559: hold the viewport still while a selection is in progress — drag-select edge
+      // auto-scroll (or a stray follow) just tried to move it; snap straight back to where the
+      // selection began so the highlighted text stays under the finger/cursor.
+      if (selectionActive && vpEl && vpEl.scrollTop !== selectionPinTop) {
+        vpEl.scrollTop = selectionPinTop;
+        return;
+      }
       updateAtBottom();
       const top = atTopNow();
       setAtTop(top);
@@ -593,6 +615,15 @@ export function Terminal({
     document.addEventListener("wheel", armOnWheel, { passive: true, capture: true });
     document.addEventListener("touchmove", armOnTouchMove, { passive: true, capture: true });
     document.addEventListener("keydown", armOnKeydown, true);
+    // #559 (desktop): a trusted left-button press may begin a drag-selection → pin the viewport
+    // for the duration of the press (mobile arms the same pin from onLongPress below). isTrusted so
+    // our own synthetic selection twin (forceSelectMousedown) doesn't re-arm it; button 0 only.
+    const onSelMouseDown = (e: MouseEvent) => {
+      if (e.isTrusted && e.button === 0 && eventInTermArea(e.target)) beginSelectionPin();
+    };
+    const onSelMouseUp = () => endSelectionPin();
+    document.addEventListener("mousedown", onSelMouseDown, true);
+    document.addEventListener("mouseup", onSelMouseUp, true);
 
     // Indirection so onStatus (fires async) can call resize logic defined below.
     let onConnected = () => {};
@@ -647,7 +678,9 @@ export function Terminal({
             // `initialTailLock` overrides this for the first attach replay only: a large raw
             // replay can otherwise leave xterm's DOM viewport parked above the final frame even
             // though the user never scrolled, presenting as an empty console (#407).
-            const follow = initialTailLock || computeAtBottom();
+            // #559: never follow while a selection is in progress — new output must not yank the
+            // view (and the highlighted text) away from under an active selection.
+            const follow = (initialTailLock || computeAtBottom()) && !selectionActive;
             term.write(b, () => {
               if (follow) term.scrollToBottom();
               updateAtBottom(); // refresh the FAB even when not following — output grew the tail
@@ -889,6 +922,7 @@ export function Terminal({
     const exitSelectMode = () => {
       if (!selecting) return;
       selecting = false;
+      endSelectionPin(); // #559: release the viewport pin when mobile select-mode ends
       term.element?.classList.remove(styles.selecting);
       if (touchLayer) touchLayer.style.pointerEvents = "";
       window.getSelection()?.removeAllRanges();
@@ -897,6 +931,7 @@ export function Terminal({
       const el = term.element;
       if (!el) return;
       selecting = true;
+      beginSelectionPin(); // #559: pin the viewport for the duration of mobile text selection
       el.classList.add(styles.selecting);
       if (touchLayer) touchLayer.style.pointerEvents = "none"; // before hit-test, so caret resolves to the rows
       try {
@@ -977,6 +1012,8 @@ export function Terminal({
       document.removeEventListener("wheel", armOnWheel, true);
       document.removeEventListener("touchmove", armOnTouchMove, true);
       document.removeEventListener("keydown", armOnKeydown, true);
+      document.removeEventListener("mousedown", onSelMouseDown, true); // #559 selection pin
+      document.removeEventListener("mouseup", onSelMouseUp, true);
       host.removeEventListener("mousedown", forceSelectMousedown, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
