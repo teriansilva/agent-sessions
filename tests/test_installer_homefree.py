@@ -102,6 +102,25 @@ def test_stream_mode_writes_0600_creds_and_unit(tmp_path):
     assert "Never enter it for anyone who contacted you" in r.stdout
 
 
+def test_stream_mode_defaults_to_battlelab_relay(tmp_path):
+    # Turnkey: with no AGENT_SESSIONS_RELAY_URL, stream mode targets the BattleLab public
+    # relay and prints the public connect URL — no placeholder, no env var needed.
+    home = tmp_path / "home"
+    cfg = tmp_path / "cfg"
+    env = {
+        "AGENT_SESSIONS_HOME": str(home),
+        "XDG_CONFIG_HOME": str(cfg),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_REMOTE": "stream",
+    }
+    r = _run("homefree_maybe_setup </dev/null", tmp_path, env)
+    assert r.returncode == 0, r.stderr
+    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
+    assert "wss://relay.battlelab.superstatus.io/relay/ws" in unit
+    assert "REPLACE-WITH-YOUR-RELAY" not in unit
+    assert "https://battlelab.superstatus.io/connect" in r.stdout
+
+
 def test_structural_invariants():
     s = INSTALL_SH.read_text()
     assert "AGENT_SESSIONS_REMOTE" in s

@@ -61,6 +61,11 @@ UNIT="$UNIT_DIR/$APP.service"
 REMOTE="${AGENT_SESSIONS_REMOTE:-}"
 HOMEFREE_DIR="$PREFIX/homefree"
 HOMEFREE_UNIT="$UNIT_DIR/$APP-homefree.service"
+# Streamed mode targets the BattleLab public relay + connect page by default, so a plain
+# `AGENT_SESSIONS_REMOTE=stream` install is turnkey. Both are overridable via env for
+# self-hosters running their own relay / connect page.
+HOMEFREE_RELAY_URL="${AGENT_SESSIONS_RELAY_URL:-wss://relay.battlelab.superstatus.io/relay/ws}"
+HOMEFREE_CONNECT_URL="${AGENT_SESSIONS_CONNECT_URL:-https://battlelab.superstatus.io/connect}"
 
 log()  { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }
@@ -610,7 +615,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=AGENT_SESSIONS_RELAY_URL=${AGENT_SESSIONS_RELAY_URL:-wss://REPLACE-WITH-YOUR-RELAY/relay/ws}
+Environment=AGENT_SESSIONS_RELAY_URL=$HOMEFREE_RELAY_URL
 Environment=HOMEFREE_CONSOLE_NAME_FILE=$HOMEFREE_DIR/console_name
 Environment=HOMEFREE_ACCESS_KEY_FILE=$HOMEFREE_DIR/access_key
 Environment=HOMEFREE_IDENTITY_PATH=$HOMEFREE_DIR/identity
@@ -629,7 +634,8 @@ homefree_print_credentials() {
   note "BattleLab remote (stream) is enabled — reach this box from any browser."
   log "Console name: ${_name}"
   log "Access key:   ${_key}"
-  printf '  %sOpen the connect page for your relay and enter the name + key above.%s\n' "$_B" "$_Z"
+  printf '  %sConnect at:   %s%s\n' "$_B" "$HOMEFREE_CONNECT_URL" "$_Z"
+  printf '  %s(enter the console name + access key above; nothing else to set up.)%s\n' "$_B" "$_Z"
   printf '\n'
   printf '  %s* SECURITY: the access key grants FULL CONTROL of this machine.%s\n' "$_R" "$_Z"
   printf '  %sNever enter it for anyone who contacted you. BattleLab staff will%s\n' "$_R" "$_Z"
