@@ -35,6 +35,13 @@ npm run test:e2e  # Playwright (desktop + emulated mobile); installs chromium on
 
 Run all of the above locally before opening a PR — CI runs the same checks.
 
+`install.sh` / `uninstall.sh` are smoke-tested on **every PR** (`installer-smoke.yml`): a pristine
+container (no usable Python/Node — the vendored-toolchain path) installs from your checkout, the
+installed app must serve `/healthz` → `{"ok":true}`, and the uninstall must remove the install
+root + prefs + cache while a seeded `~/.claude` survives. It takes ~5–10 min (vendors both
+toolchains + a real Vite build) and runs in parallel with the other checks. Reproduce locally
+with `scripts/smoke-install` (needs Docker).
+
 Tests never touch your real `~/.claude`: they use a `mktemp -d` `AGENT_SESSIONS_HOME`. Installer
 tests must set `AGENT_SESSIONS_NO_SERVICE=1` so they don't write your real systemd unit. Heavy
 UI-build tests (real `npm ci` + Vite build) are gated behind `AGENT_SESSIONS_TEST_UI_BUILD=1`.
