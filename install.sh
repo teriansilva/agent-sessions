@@ -32,6 +32,7 @@ CHANNEL="${AGENT_SESSIONS_CHANNEL:-stable}"
 # suppresses the interactive bind prompt and the derived-origin recompute (choose_host).
 HOST_EXPLICIT=0; [ -n "${AGENT_SESSIONS_HOST:-}" ] && HOST_EXPLICIT=1
 HOST="${AGENT_SESSIONS_HOST:-127.0.0.1}"
+PORT_EXPLICIT=0; [ -n "${AGENT_SESSIONS_PORT:-}" ] && PORT_EXPLICIT=1
 PORT="${AGENT_SESSIONS_PORT:-8765}"
 PREFIX="${AGENT_SESSIONS_HOME:-$HOME/.local/share/$APP}"
 ORIGIN_EXPLICIT=0; [ -n "${AGENT_SESSIONS_ORIGIN:-}" ] && ORIGIN_EXPLICIT=1
@@ -223,11 +224,18 @@ _offer_firewall() {
 }
 
 adopt_persisted_bind() {
-  # Re-run / upgrade / autoupdate: the systemd unit bakes `--host` from the install-time shell
-  # var, but `serve --host` only *defaults* to $AGENT_SESSIONS_HOST — so a re-run with no
-  # AGENT_SESSIONS_HOST in the environment would regenerate the unit with 127.0.0.1 and silently
-  # revert a prior 0.0.0.0 / LAN bind. Adopt the persisted choice from the env file (and treat it
-  # as explicit, so choose_host doesn't re-prompt). An env var passed on THIS run still wins.
+  # Re-run / upgrade / autoupdate: the systemd unit bakes `--host`/`--port` from the install-time
+  # shell vars, but `serve` only *defaults* to $AGENT_SESSIONS_HOST/_PORT — so a re-run with
+  # neither in the environment would regenerate the unit with 127.0.0.1:8765 and silently revert a
+  # prior 0.0.0.0 / LAN bind OR a persisted reverse-proxy port (e.g. a proxied :3402 flips to
+  # :8765, orphaning the fronting proxy → 502). Adopt the persisted choice from the
+  # env file (and treat it as explicit, so choose_host doesn't re-prompt). An env var passed on
+  # THIS run still wins. Port is adopted independently of host: a re-run that sets HOST but not
+  # PORT must still keep the persisted port.
+  if [ "$PORT_EXPLICIT" = 0 ] && [ -f "$ENVF" ]; then
+    _pp="$(_env_file_get AGENT_SESSIONS_PORT)"
+    if [ -n "$_pp" ]; then PORT="$_pp"; PORT_EXPLICIT=1; fi
+  fi
   [ "$HOST_EXPLICIT" = 1 ] && return 0
   [ -f "$ENVF" ] || return 0
   _ph="$(_env_file_get AGENT_SESSIONS_HOST)"

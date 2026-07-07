@@ -311,6 +311,51 @@ def test_installer_explicit_host_persists_and_is_adopted_on_rerun(tmp_path):
     assert "http://127.0.0.1:8795" not in r2.stdout
 
 
+def _run_adopt_bind(tmp_path, *, envf_lines, port="8765", port_explicit="0", host_explicit="0"):
+    """Source install.sh (minus `main`), point ENVF at a fixture env file, set the pre-adoption
+    bind vars, call adopt_persisted_bind(), and echo the resulting PORT/HOST. No tty, no service —
+    a direct unit test of the persisted-bind adoption."""
+    envf = tmp_path / "env"
+    envf.write_text(envf_lines)
+    body = INSTALL_SH.read_text().replace('\nmain "$@"\n', "\n")
+    harness = body + (
+        f'\nENVF="{envf}"\n'
+        f"PORT={port}\nPORT_EXPLICIT={port_explicit}\n"
+        f"HOST=127.0.0.1\nHOST_EXPLICIT={host_explicit}\nORIGIN_EXPLICIT=0\n"
+        "adopt_persisted_bind\n"
+        'printf "RESULT PORT=%s\\n" "$PORT"\n'
+        'printf "RESULT HOST=%s\\n" "$HOST"\n'
+    )
+    hp = tmp_path / "harness.sh"
+    hp.write_text(harness)
+    r = subprocess.run(
+        ["sh", str(hp)], env=_clean_env(), capture_output=True, text=True, timeout=30
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def test_installer_adopts_persisted_port_on_rerun(tmp_path):
+    # An env-less re-run (autoupdate / manual `sh install.sh`) must NOT regenerate the unit with the
+    # 8765 default and orphan a persisted reverse-proxy port (a proxied :3402 flips to :8765 → 502).
+    # adopt_persisted_bind reads the persisted port back from the env file, mirroring host adoption.
+    out = _run_adopt_bind(
+        tmp_path, envf_lines="AGENT_SESSIONS_HOST=10.0.0.5\nAGENT_SESSIONS_PORT=3402\n"
+    )
+    assert "RESULT PORT=3402" in out
+
+    # An explicit port on THIS run still wins over the persisted value.
+    out = _run_adopt_bind(
+        tmp_path, envf_lines="AGENT_SESSIONS_PORT=3402\n", port="9999", port_explicit="1"
+    )
+    assert "RESULT PORT=9999" in out
+
+    # Port adoption is independent of host: a re-run that sets HOST explicitly but omits PORT must
+    # still keep the persisted port (the host branch early-returns, the port branch runs first).
+    out = _run_adopt_bind(tmp_path, envf_lines="AGENT_SESSIONS_PORT=3402\n", host_explicit="1")
+    assert "RESULT PORT=3402" in out
+
+
 def test_install_sh_builds_and_serves_react_ui():
     s = INSTALL_SH.read_text()
     # The React UI is built from source at install time and the app is pointed at it.
