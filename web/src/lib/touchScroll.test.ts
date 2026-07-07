@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { attachTouchScroll, dragToLines, type ScrollAccum } from "./touchScroll";
+import { appConsumesWheel, attachTouchScroll, dragToLines, type ScrollAccum } from "./touchScroll";
 
 test("converts a drag into whole lines by row height", () => {
   const acc: ScrollAccum = { remainder: 0 };
@@ -130,4 +130,85 @@ test("exposes detach + stopMomentum; stopMomentum halts an in-flight fling", () 
     rafSpy.mockRestore();
     vi.useRealTimers();
   }
+});
+
+// --- app-consuming (mouse-tracking / alt-screen) scroll: FAB parity for claude (#559) --------
+
+// A session whose app owns the scroll: a mouse-tracking TUI with a real .xterm-screen element so
+// the forwarded synthetic wheels have a target.
+function fakeAppTerm() {
+  const element = document.createElement("div");
+  const screen = document.createElement("div");
+  screen.className = "xterm-screen";
+  element.appendChild(screen);
+  return {
+    rows: 24,
+    scrollLines: () => {},
+    focus: () => {},
+    textarea: null,
+    element,
+    buffer: { active: { type: "normal" as const } },
+    modes: { mouseTrackingMode: "any" },
+    screen,
+  };
+}
+
+test("appConsumesWheel: mouse-tracking OR alt-screen consumes the wheel; a plain normal buffer does not", () => {
+  // claude/opencode: mouse tracking on → app owns the scroll.
+  expect(
+    appConsumesWheel({ modes: { mouseTrackingMode: "any" }, buffer: { active: { type: "normal" } } }),
+  ).toBe(true);
+  // alt-screen even without mouse tracking.
+  expect(
+    appConsumesWheel({ modes: { mouseTrackingMode: "none" }, buffer: { active: { type: "alternate" } } }),
+  ).toBe(true);
+  // codex/gemini inline: no mouse tracking, normal buffer → xterm keeps real scrollback.
+  expect(
+    appConsumesWheel({ modes: { mouseTrackingMode: "none" }, buffer: { active: { type: "normal" } } }),
+  ).toBe(false);
+  expect(appConsumesWheel({})).toBe(false); // defensive: unknown modes/buffer
+});
+
+test("app-consuming session: a touch drag forwards a wheel to the app and reports the scroll direction", () => {
+  const surface = document.createElement("div");
+  Object.defineProperty(surface, "clientHeight", { value: 480, configurable: true }); // 20px/row
+  const term = fakeAppTerm();
+  const dirs: number[] = [];
+  let wheels = 0;
+  term.screen.addEventListener("wheel", () => wheels++);
+  const api = attachTouchScroll(surface, term, { onAppScroll: (d) => dirs.push(d) });
+  const move = (type: string, y: number, empty = false) =>
+    surface.dispatchEvent(touchEvent(type, empty ? [] : [{ clientX: 10, clientY: y }]));
+  move("touchstart", 100);
+  move("touchmove", 160); // finger DOWN 60px → scroll UP into history (lines < 0)
+  expect(wheels).toBeGreaterThan(0); // forwarded a synthetic wheel to the app (not scrollLines)
+  expect(dirs.some((d) => d < 0)).toBe(true); // reported an "up" notch → FAB should show
+  api.detach();
+});
+
+test("jumpToTail forwards a downward wheel burst for an app-consuming session; no-op for a scrollback session", () => {
+  const surface = document.createElement("div");
+  Object.defineProperty(surface, "clientHeight", { value: 480, configurable: true });
+  const term = fakeAppTerm();
+  const deltas: number[] = [];
+  term.screen.addEventListener("wheel", (e) => deltas.push((e as WheelEvent).deltaY));
+  const api = attachTouchScroll(surface, term, {});
+  api.jumpToTail(5); // fewer than a screenful → floored to term.rows so a tap always moves
+  expect(deltas.length).toBeGreaterThanOrEqual(term.rows);
+  expect(deltas.every((d) => d > 0)).toBe(true); // all downward — toward the live tail
+  api.detach();
+
+  // A plain scrollback session (codex): no mouse tracking, normal buffer → jumpToTail does nothing
+  // (the FAB uses term.scrollToBottom() there instead).
+  const plainSurface = document.createElement("div");
+  const plainScreen = document.createElement("div");
+  plainScreen.className = "xterm-screen";
+  const plainEl = document.createElement("div");
+  plainEl.appendChild(plainScreen);
+  let plainWheels = 0;
+  plainScreen.addEventListener("wheel", () => plainWheels++);
+  const plainApi = attachTouchScroll(plainSurface, { ...fakeTerm(), element: plainEl }, {});
+  plainApi.jumpToTail(50);
+  expect(plainWheels).toBe(0);
+  plainApi.detach();
 });

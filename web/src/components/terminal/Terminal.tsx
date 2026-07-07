@@ -20,7 +20,7 @@ import {
   type TermStatus,
 } from "../../lib/termSocket";
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
-import { attachTouchScroll } from "../../lib/touchScroll";
+import { appConsumesWheel, attachTouchScroll } from "../../lib/touchScroll";
 import { useAccent } from "../../theme/accentStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
@@ -112,6 +112,16 @@ export function Terminal({
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
+  // Scroll-to-bottom for app-consuming sessions (#559). A mouse-tracking TUI (claude arms
+  // ?1000/?1002/?1003; opencode via mouse+alt) owns its OWN scroll, so xterm's buffer never leaves
+  // the tail — `atBottom` stays true and the FAB would never show, and `scrollToBottom()` is a
+  // no-op. Track how far we've forwarded the agent up (in wheel notches) so the FAB appears once the
+  // user scrolls the agent up, and so the jump-to-tail forwards the same distance back down.
+  // (codex/gemini run inline with NO mouse tracking → they keep real scrollback and use the #187
+  // path above, unchanged.) `jumpToTailRef` is filled by the effect from attachTouchScroll.
+  const [appScrolledUp, setAppScrolledUp] = useState(false);
+  const appScrollNotchesRef = useRef(0);
+  const jumpToTailRef = useRef<(notches: number) => void>(() => {});
   // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
   const [copiedTick, setCopiedTick] = useState(0);
@@ -190,6 +200,11 @@ export function Terminal({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+
+    // Fresh terminal instance / reconnect → the agent is at its live tail; clear any app-scroll
+    // state so a stale count from a prior connection can't keep the FAB up (#559).
+    appScrollNotchesRef.current = 0;
+    setAppScrolledUp(false);
 
     // Initial look from the active theme; a separate effect re-applies on theme/accent change.
     // The cursor follows the brand accent (#211 Phase 2), overriding the theme's default.
@@ -534,7 +549,19 @@ export function Terminal({
       initialTailLock = false;
     };
     const armOnWheel = (e: WheelEvent) => {
-      if (eventInTermArea(e.target)) armHistory();
+      if (!eventInTermArea(e.target)) return;
+      armHistory();
+      // App-consuming sessions (claude/opencode): xterm forwards this wheel to the agent, whose
+      // scroll position we can't read — track net up-notches ourselves so the FAB knows the agent
+      // has been scrolled up (#559). Trusted only: the jump-to-tail dispatches UNtrusted wheels,
+      // which must not re-inflate the counter.
+      if (e.isTrusted && appConsumesWheel(term)) {
+        appScrollNotchesRef.current = Math.max(
+          0,
+          appScrollNotchesRef.current + (e.deltaY < 0 ? 1 : -1),
+        );
+        setAppScrolledUp(appScrollNotchesRef.current > 0);
+      }
     };
     const armOnTouchMove = (e: TouchEvent) => {
       if (eventInTermArea(e.target)) armHistory();
@@ -827,6 +854,9 @@ export function Terminal({
       if (fab) {
         const fr = fab.getBoundingClientRect();
         if (cx >= fr.left && cx <= fr.right && cy >= fr.top && cy <= fr.bottom) {
+          jumpToTailRef.current(appScrollNotchesRef.current); // #559: app-consuming → forward to tail
+          appScrollNotchesRef.current = 0;
+          setAppScrolledUp(false);
           term.scrollToBottom();
           setAtBottom(true);
           return;
@@ -920,11 +950,18 @@ export function Terminal({
     };
     document.addEventListener("mouseup", copyOnSelectSettle);
 
-    const { detach: detachTouch, stopMomentum } = attachTouchScroll(surfaceEl, term, {
+    const { detach: detachTouch, stopMomentum, jumpToTail } = attachTouchScroll(surfaceEl, term, {
       onTap,
       onLongPress,
+      // #559: one notch of touch scroll was forwarded to an app-consuming session — track how far
+      // off the tail the agent is so the FAB shows and the jump-to-tail is sized (−1 = up).
+      onAppScroll: (dir) => {
+        appScrollNotchesRef.current = Math.max(0, appScrollNotchesRef.current + (dir < 0 ? 1 : -1));
+        setAppScrolledUp(appScrollNotchesRef.current > 0);
+      },
     });
     stopMomentumRef.current = stopMomentum;
+    jumpToTailRef.current = jumpToTail;
 
     // Attach once the grid is stable (see connectWhenStable) — NOT synchronously, or a still-
     // settling panel makes the post-connect resize wipe the transcript scroll-up (the race).
@@ -944,6 +981,7 @@ export function Terminal({
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       stopMomentumRef.current = () => {};
+      jumpToTailRef.current = () => {}; // #559: a stale FAB click must not wheel a disposed socket
       document.removeEventListener("touchend", onDocTouchEnd, true);
       document.removeEventListener("mouseup", copyOnSelectSettle);
       if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
@@ -994,6 +1032,12 @@ export function Terminal({
     // phones" (#519 follow-up). The fling lives in attachTouchScroll and its own stopFling only
     // runs when the overlay receives a touch; the FAB sits above the overlay and takes the tap.
     stopMomentumRef.current();
+    // App-consuming sessions (claude/opencode): the agent owns the scroll, so scrollToBottom() is a
+    // no-op — forward the tracked up-distance back down as wheel notches so the agent returns to its
+    // live tail (#559). No-op for a scrollback session (codex), where scrollToBottom() does the work.
+    jumpToTailRef.current(appScrollNotchesRef.current);
+    appScrollNotchesRef.current = 0;
+    setAppScrolledUp(false);
     termRef.current?.scrollToBottom();
     setAtBottom(true);
   }, []);
@@ -1176,8 +1220,10 @@ export function Terminal({
         )}
         {/* Scroll-to-bottom button (#187, generalised): shown on EVERY pointer type whenever the
             viewport is off the live tail, so desktop users who scrolled up into history have a
-            one-click jump back to the tail (and follow resumes once they are at the bottom). */}
-        {!atBottom && (
+            one-click jump back to the tail (and follow resumes once they are at the bottom).
+            `appScrolledUp` extends it to mouse-tracking sessions (claude/opencode), whose scroll the
+            agent owns so xterm's `atBottom` stays true — there the tap forwards a jump-to-tail (#559). */}
+        {(!atBottom || appScrolledUp) && (
           <button
             ref={fabRef}
             type="button"

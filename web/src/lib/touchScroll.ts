@@ -35,6 +35,19 @@ interface Scrollable {
   modes?: { mouseTrackingMode?: string };
 }
 
+/** True when the app itself consumes scroll — a mouse-tracking TUI (claude/codex/gemini arm
+ *  ?1000/?1002/?1003; opencode too) and/or one drawing in the alternate screen. xterm then keeps
+ *  no usable scrollback, so scrolling means forwarding a wheel to the app (xterm re-encodes it as a
+ *  mouse-wheel report) rather than moving xterm's own viewport. Shared with Terminal: the
+ *  scroll-to-bottom FAB uses it to decide between forwarding a jump-to-tail vs `scrollToBottom()`,
+ *  since for these sessions `term.buffer` never leaves the tail (nothing to be "not at bottom" of). */
+export function appConsumesWheel(term: Pick<Scrollable, "modes" | "buffer">): boolean {
+  return (
+    (term.modes?.mouseTrackingMode ?? "none") !== "none" ||
+    term.buffer?.active?.type === "alternate"
+  );
+}
+
 // A touch that moves less than this (px) is treated as a tap, not a scroll.
 const TAP_SLOP = 8;
 // Momentum (fling) after lift: velocity in px/ms, decayed each frame; stops below MIN.
@@ -52,6 +65,11 @@ export interface TouchScrollHandlers {
   onLongPress?: (clientX: number, clientY: number) => void;
   /** Long-press threshold (ms). Default 450. */
   longPressMs?: number;
+  /** One notch of scroll was forwarded to an app that consumes the wheel (mouse-tracking / alt
+   *  screen), so the caller can track how far off the tail the app has been scrolled: `dir` is
+   *  −1 (up, into history) or +1 (down, toward the live tail). Lets the scroll-to-bottom FAB show
+   *  for these sessions (whose xterm buffer stays pinned at the tail) and size its jump-to-tail. */
+  onAppScroll?: (dir: number) => void;
 }
 
 // Default long-press threshold before selection mode arms.
@@ -71,7 +89,7 @@ export function attachTouchScroll(
   surface: HTMLElement,
   term: Scrollable,
   handlers: TouchScrollHandlers = {},
-): { detach: () => void; stopMomentum: () => void } {
+): { detach: () => void; stopMomentum: () => void; jumpToTail: (notches: number) => void } {
   const acc: ScrollAccum = { remainder: 0 };
   let lastY = 0;
   let startY = 0;
@@ -99,35 +117,35 @@ export function attachTouchScroll(
   // reports / alternate-scroll) whenever mouse tracking is on, regardless of buffer. We mirror
   // that exactly: when the app wants the wheel, synthesize one on xterm's screen element and let
   // xterm do its own translation (honoring the app's mouse mode) — no re-encoding of protocols.
-  // Otherwise (e.g. claude in the normal buffer with no mouse tracking) scroll xterm's scrollback.
+  // Otherwise (e.g. codex in the normal buffer with no mouse tracking) scroll xterm's scrollback.
   // Gating on mouseTrackingMode (not just the alt buffer) is the fix: opencode runs in the NORMAL
   // buffer with mouse tracking, so an alt-buffer-only check never engaged for it.
-  const appConsumesWheel = () =>
-    (term.modes?.mouseTrackingMode ?? "none") !== "none" ||
-    term.buffer?.active?.type === "alternate";
   const wheelTarget = () =>
     term.element?.querySelector<HTMLElement>(".xterm-screen") ?? term.element ?? null;
+  // Synthesize one wheel over xterm's screen element. deltaY>0 = scroll toward newer output
+  // (down), matching positive scrollLines(). Real pointer coords at the screen centre so xterm
+  // encodes a valid cell (a bare 0,0 can land outside the screen on a laid-out page).
+  const dispatchWheelPx = (dyPx: number) => {
+    const target = wheelTarget();
+    if (!target) return;
+    const r = target.getBoundingClientRect();
+    target.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY: dyPx,
+        deltaMode: 0, // DOM_DELTA_PIXEL — xterm divides by cell height into wheel notches
+        clientX: Math.round(r.left + r.width / 2),
+        clientY: Math.round(r.top + r.height / 2),
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  };
   const scrollByPx = (dyPx: number) => {
     const lines = dragToLines(dyPx, pxPerRow(), acc);
     if (lines === 0) return;
-    if (appConsumesWheel()) {
-      const target = wheelTarget();
-      // deltaY>0 = scroll toward newer output (down), matching positive scrollLines(). Give the
-      // synthetic wheel real pointer coords at the screen centre so xterm encodes a valid cell
-      // (a bare 0,0 can land outside the screen on a laid-out page).
-      if (target) {
-        const r = target.getBoundingClientRect();
-        target.dispatchEvent(
-          new WheelEvent("wheel", {
-            deltaY: lines * pxPerRow(),
-            deltaMode: 0, // DOM_DELTA_PIXEL — xterm divides by cell height into wheel notches
-            clientX: Math.round(r.left + r.width / 2),
-            clientY: Math.round(r.top + r.height / 2),
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      }
+    if (appConsumesWheel(term)) {
+      dispatchWheelPx(lines * pxPerRow());
+      handlers.onAppScroll?.(Math.sign(lines)); // ±1 notch forwarded (−1 = up into history)
       return;
     }
     term.scrollLines(lines);
@@ -229,6 +247,18 @@ export function attachTouchScroll(
   surface.addEventListener("touchmove", onMove, { passive: false, capture: true });
   surface.addEventListener("touchend", onEnd, { passive: true, capture: true });
   surface.addEventListener("touchcancel", onEnd, { passive: true, capture: true });
+  // Jump an app-consuming session (mouse-tracking / alt-screen) back to its live tail: the app
+  // owns the scroll, so we can't move xterm's viewport — forward a burst of downward wheel
+  // notches and let the app scroll itself to the bottom (it clamps there, so an over-estimate is
+  // harmless). `notches` is how far the caller tracked us scrolling up; bounded, with a screenful
+  // floor so a tap always moves even if tracking under-counted. No-op for a scrollback session
+  // (the FAB uses term.scrollToBottom() there instead).
+  const jumpToTail = (notches: number) => {
+    if (!appConsumesWheel(term)) return;
+    const step = pxPerRow() || 24;
+    const n = Math.min(Math.max(Math.ceil(notches), term.rows || 12), 600);
+    for (let i = 0; i < n; i++) dispatchWheelPx(step); // deltaY>0 = toward newer output (down)
+  };
   return {
     detach: () => {
       stopFling();
@@ -239,5 +269,6 @@ export function attachTouchScroll(
       surface.removeEventListener("touchcancel", onEnd, { capture: true });
     },
     stopMomentum: stopFling,
+    jumpToTail,
   };
 }
