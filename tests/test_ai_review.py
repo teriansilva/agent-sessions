@@ -115,6 +115,70 @@ def test_gather_input_tail_truncates_and_fingerprint_tracks_content(ai_prefs, fa
     assert fp1 != fp2
 
 
+# ---- engine: pending-draft framing (#560) ------------------------------------------------
+
+
+def test_gather_input_frames_live_tail_as_pending(ai_prefs, fake_jsonl):
+    # The live terminal tail carries the agent's still-being-typed input line; it must be labeled
+    # UNSENT/PENDING so the model never reads a queued instruction as already completed.
+    webterm._buffer_append(LIVE_ONLY_SID, b"do the deploy step\r\n")
+    text, _ = review.gather_input(LIVE_ONLY_SID, 24000)
+    assert "## Live terminal (tail)" in text  # heading unchanged for back-compat
+    assert "LIVE SCREEN SNAPSHOT" in text and "UNSENT" in text and "PENDING" in text
+
+
+def test_gather_input_includes_unsent_compose_draft(ai_prefs, fake_jsonl):
+    # Phase 2: the app's compose-box draft (#477 SessionMeta.draft) is folded in, clearly marked
+    # not-yet-sent — reusing the existing metadata contract, no new write path. Attachment NAMES
+    # only, never the stored path/blob.
+    metadata.patch(
+        SID, draft={"text": "do this", "attachments": [{"name": "shot.png", "path": "/uploads/x"}]}
+    )
+    text, _ = review.gather_input(SID, 24000)
+    assert "## Pending draft (UNSENT" in text
+    assert "do this" in text
+    assert "shot.png" in text
+    assert "/uploads/x" not in text  # the sanitized path is not leaked into the review input
+
+
+def test_compose_draft_change_moves_the_fingerprint(ai_prefs, fake_jsonl):
+    # The draft is deliberately part of the review input (#560), so editing it re-triggers a
+    # scheduled review — the one intentional exception to "metadata-only writes don't move the fp".
+    _, fp0 = review.gather_input(SID, 24000)
+    metadata.patch(SID, draft={"text": "do this", "attachments": []})
+    _, fp1 = review.gather_input(SID, 24000)
+    assert fp0 != fp1
+    metadata.patch(SID, draft={"text": "do this differently", "attachments": []})
+    _, fp2 = review.gather_input(SID, 24000)
+    assert fp1 != fp2
+
+
+def test_empty_draft_adds_no_section_and_does_not_move_fingerprint(ai_prefs, fake_jsonl):
+    _, fp0 = review.gather_input(SID, 24000)
+    metadata.patch(SID, draft={"text": "   ", "attachments": []})  # whitespace-only = empty
+    text, fp1 = review.gather_input(SID, 24000)
+    assert "Pending draft" not in text
+    assert fp0 == fp1
+
+
+def test_gather_recap_frames_pending_and_includes_draft(ai_prefs, fake_jsonl):
+    # Recap parity: the whole-session recap also gets the pending framing + draft, so it never
+    # claims an unsent instruction as completed history.
+    webterm._buffer_append(SID, b"partial typed command\r\n")
+    metadata.patch(SID, draft={"text": "do this", "attachments": []})
+    text, _ = review.gather_recap_input(SID, 24000)
+    assert "LIVE SCREEN SNAPSHOT" in text
+    assert "## Pending draft (UNSENT" in text and "do this" in text
+
+
+def test_draft_alone_is_not_reviewable(ai_prefs, fake_jsonl):
+    # A draft with no transcript and no live output is supplementary, not a session to review.
+    sid = "claude:77777777-7777-7777-7777-777777777777"
+    metadata.patch(sid, draft={"text": "do this", "attachments": []})
+    with pytest.raises(review.ReviewError):
+        review.gather_input(sid, 24000)
+
+
 # ---- engine: review round trip -----------------------------------------------------------
 
 

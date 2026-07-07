@@ -159,16 +159,69 @@ def _plain_transcript(key: str) -> str:
     return "\n".join(lines)
 
 
-def gather_input(key: str, max_input_chars: int) -> tuple[str, str]:
-    """Build ``(review_input, fingerprint)`` for a session: transcript tail + live tail,
-    tail-truncated to ``max_input_chars``. The live tail goes through the bounded
-    ANSI-stripped accessor; the transcript through the engine adapters. Raises
-    :class:`ReviewError` when there is nothing at all to review (no transcript adapter
-    output AND no observed PTY output).
+# Pending-draft framing (#560). Two things the model kept misreading as completed work:
+#   1. the LIVE terminal tail is a live screen snapshot, not finalized history — the agent's
+#      input line may hold a command the user is still typing but has NOT submitted; and
+#   2. the app's compose box carries an explicit server-side draft (#477) not sent to the agent.
+# Both are the user's *intent*, not done work — a queued "do this" was being reviewed/recapped as
+# already handled. Label them so the model treats unsent text as pending; the caveats below are the
+# actual instruction (belt-and-braces alongside the system prompt).
+_LIVE_TAIL_SECTION = (
+    "## Live terminal (tail) — LIVE SCREEN SNAPSHOT, NOT FINALIZED HISTORY\n"
+    "Any command or text visible in the agent's input line below may be an UNSENT DRAFT the "
+    "user is still typing. Treat typed-but-not-yet-submitted input as PENDING intent, never as "
+    "work the agent has already done.\n"
+)
 
-    The fingerprint is a hash of the assembled input — it changes exactly when the
-    reviewable content changes, which is the property the Phase-2 scheduler's
-    change-detection needs (metadata-only writes / timestamp quirks don't move it).
+# How much of the compose-box draft to feed the model — bounded SEPARATELY from the PTY tail so a
+# long draft can't crowd out the transcript.
+PENDING_DRAFT_MAX = 2000
+
+
+def _pending_draft_section(key: str) -> str:
+    """The session's unsent compose-box draft (#477 ``SessionMeta.draft``) rendered as a clearly
+    labeled PENDING section, or ``""`` when there is none. Fail-soft: any metadata error → "" (a
+    draft is advisory context, never a reason to fail a review). Only the already-sanitized draft
+    text + attachment names stored in the sidecar are used — no blobs, no extra file reads."""
+    try:
+        meta = metadata.get(metadata.resolve_key(key))
+    except Exception:
+        return ""
+    if not metadata.has_draft(meta):
+        return ""
+    d = meta.draft or {}
+    text = str(d.get("text", "")).strip()[:PENDING_DRAFT_MAX]
+    names = [
+        str(a.get("name", "")).strip()
+        for a in (d.get("attachments") or [])
+        if isinstance(a, dict) and str(a.get("name", "")).strip()
+    ]
+    body: list[str] = []
+    if text:
+        body.append(text)
+    if names:
+        body.append("attachments: " + ", ".join(names))
+    if not body:
+        return ""
+    return (
+        "## Pending draft (UNSENT — the user is still composing this in the app; it has NOT been "
+        "sent to the agent)\n" + "\n".join(body)
+    )
+
+
+def gather_input(key: str, max_input_chars: int) -> tuple[str, str]:
+    """Build ``(review_input, fingerprint)`` for a session: transcript tail + live tail (+ any
+    unsent compose-box draft), tail-truncated to ``max_input_chars``. The live tail goes through
+    the bounded ANSI-stripped accessor; the transcript through the engine adapters. The live tail
+    and the draft are framed as PENDING (#560) so a typed-but-unsent instruction is never read as
+    completed work. Raises :class:`ReviewError` when there is nothing at all to review (no
+    transcript adapter output AND no observed PTY output — a draft alone is supplementary).
+
+    The fingerprint is a hash of the assembled input — it changes exactly when the reviewable
+    content changes, the property the Phase-2 scheduler's change-detection needs (timestamp quirks
+    don't move it). The compose-box draft (#560) is deliberately part of that input, so editing a
+    pending draft DOES move the fingerprint and re-triggers review — the one intentional exception
+    to "metadata-only writes don't move it."
     """
     try:
         from . import engines
@@ -184,7 +237,10 @@ def gather_input(key: str, max_input_chars: int) -> tuple[str, str]:
     if transcript_text:
         parts.append("## Transcript (tail)\n" + transcript_text)
     if live_text:
-        parts.append("## Live terminal (tail)\n" + live_text)
+        parts.append(_LIVE_TAIL_SECTION + live_text)
+    draft_section = _pending_draft_section(key)
+    if draft_section:
+        parts.append(draft_section)
     text = "\n\n".join(parts)
     if len(text) > max_input_chars:
         text = text[-max_input_chars:]
@@ -230,7 +286,10 @@ def gather_recap_input(key: str, max_chars: int) -> tuple[str, str]:
     if transcript_text:
         parts.append("## Transcript (full)\n" + transcript_text)
     if live_text:
-        parts.append("## Live terminal (tail)\n" + live_text)
+        parts.append(_LIVE_TAIL_SECTION + live_text)
+    draft_section = _pending_draft_section(key)
+    if draft_section:
+        parts.append(draft_section)
     text = _head_tail_sample("\n\n".join(parts), max_chars)
     fingerprint = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
     return text, fingerprint
