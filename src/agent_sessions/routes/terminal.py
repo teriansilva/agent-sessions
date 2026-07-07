@@ -326,6 +326,9 @@ def register(
                     # the AI-review loop to summarize it promptly (#413). Mint-its-own-id engines
                     # are kicked from the reconcile coroutine once their real id is durable.
                     ai_review_loop.request_review_soon()
+                    # A new JSONL just appeared under ~/.claude/projects → bust the sidebar's scan
+                    # snapshot so the new session shows on the next list without the TTL lag (#561).
+                    engines.invalidate_scan_cache()
             else:
                 # Resume an EXISTING scanned session.
                 sessions_all = engines.scan_all()

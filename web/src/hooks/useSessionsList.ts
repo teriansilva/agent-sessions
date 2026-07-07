@@ -6,6 +6,12 @@ import type { ProjectRef, Session, SessionsQuery } from "../types/api";
 const PAGE = 20;
 /** Background refresh cadence — keeps the sidebar live without hammering the server (#159). */
 const POLL_MS = 15_000;
+/** Search-input debounce (#561): a burst of keystrokes collapses to ONE `/api/sessions` request
+ *  instead of one per key (each fires a full uncached disk scan server-side). 250 ms is below the
+ *  perceptual "instant" bar; the input value itself updates immediately (the box never lags) —
+ *  only the derived query/fetch is debounced. Dropdown/tab changes stay immediate (discrete
+ *  single events — debouncing them would feel laggy). */
+const SEARCH_DEBOUNCE_MS = 250;
 
 export interface Filters {
   q: string;
@@ -53,15 +59,29 @@ export function useSessionsList() {
   // case where two visible requests overlap (e.g. fast filter typing).
   const visibleInFlight = useRef(0);
 
+  // Debounce ONLY the search text (#561): `filters.q` updates on every keystroke (so the input
+  // stays responsive), but `debouncedQ` — the value folded into the fetch — trails it by
+  // SEARCH_DEBOUNCE_MS, so a typed burst yields one request, not one per key. Project/engine/
+  // archived are NOT debounced (see the query memo below): they change on discrete clicks and
+  // should re-filter instantly. The existing reqId supersession + visibleInFlight poll-suppression
+  // guards (Hermes #168) are untouched — they still cover the debounced query vs a dropdown change,
+  // loadMore, and the silent poll.
+  const [debouncedQ, setDebouncedQ] = useState(filters.q);
+  useEffect(() => {
+    if (debouncedQ === filters.q) return; // no pending change (e.g. bootstrap) → no timer churn
+    const h = setTimeout(() => setDebouncedQ(filters.q), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(h);
+  }, [filters.q, debouncedQ]);
+
   const query: SessionsQuery = useMemo(
     () => ({
-      q: filters.q,
+      q: debouncedQ,
       project: filters.project || undefined,
       engine: filters.engine || undefined,
       archived: filters.archived,
       limit: PAGE,
     }),
-    [filters],
+    [debouncedQ, filters.project, filters.engine, filters.archived],
   );
 
   // Live row count — read inside refresh() without re-creating it on every list mutation,

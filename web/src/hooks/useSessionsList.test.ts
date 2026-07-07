@@ -56,6 +56,9 @@ beforeEach(() => {
   mockArchive.mockReset();
 });
 
+// Search debounce (#561): the input debounces by 250 ms; advance past it to flush each query.
+const SEARCH_DEBOUNCE_MS = 250;
+
 test("a stale (slower, earlier) filter response cannot overwrite the newer query", async () => {
   const mount = deferred();
   const qa = deferred();
@@ -65,28 +68,74 @@ test("a stale (slower, earlier) filter response cannot overwrite the newer query
     .mockReturnValueOnce(qa.promise) // query "a"
     .mockReturnValueOnce(qab.promise); // query "ab"
 
-  const { result } = renderHook(() => useSessionsList());
-  await act(async () => {
-    mount.resolve(pageOf([]));
-  });
+  vi.useFakeTimers();
+  try {
+    const { result } = renderHook(() => useSessionsList());
+    await act(async () => {
+      mount.resolve(pageOf([]));
+    });
 
-  await act(async () => {
-    result.current.update({ q: "a" });
-  });
-  await act(async () => {
-    result.current.update({ q: "ab" });
-  });
+    // Two DISTINCT searches, each flushed past the debounce so both actually fetch (the point of
+    // this test is the reqId supersession guard, not the debounce collapse — that's tested below).
+    await act(async () => {
+      result.current.update({ q: "a" });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    });
+    await act(async () => {
+      result.current.update({ q: "ab" });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    });
 
-  // The NEWER request ("ab") resolves first, then the stale older one ("a").
-  await act(async () => {
-    qab.resolve(pageOf([sess("AB")]));
-  });
-  await act(async () => {
-    qa.resolve(pageOf([sess("A-stale")]));
-  });
+    // The NEWER request ("ab") resolves first, then the stale older one ("a").
+    await act(async () => {
+      qab.resolve(pageOf([sess("AB")]));
+    });
+    await act(async () => {
+      qa.resolve(pageOf([sess("A-stale")]));
+    });
 
-  // The stale "a" response must be dropped — state reflects the current "ab" query.
-  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["AB"]));
+    // The stale "a" response must be dropped — state reflects the current "ab" query.
+    expect(result.current.sessions.map((s) => s.title)).toEqual(["AB"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a burst of search keystrokes collapses to a single fetch (#561 debounce)", async () => {
+  mockSessions.mockResolvedValue(pageOf([]));
+  vi.useFakeTimers();
+  try {
+    const { result } = renderHook(() => useSessionsList());
+    // Let the bootstrap fetch settle (one call).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    mockSessions.mockClear();
+
+    // Type five characters faster than the debounce window — no fetch should fire yet.
+    for (const q of ["h", "he", "hel", "hell", "hello"]) {
+      await act(async () => {
+        result.current.update({ q });
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS / 5); // 50 ms — inside the window
+      });
+    }
+    expect(mockSessions).not.toHaveBeenCalled(); // still coalescing
+
+    // Once the burst settles past the window, exactly ONE request goes out — for the final value.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    });
+    expect(mockSessions).toHaveBeenCalledTimes(1);
+    expect(mockSessions.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ q: "hello" }));
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("archiving a row in a partially loaded list keeps the next unloaded row reachable", async () => {

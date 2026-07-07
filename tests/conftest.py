@@ -54,6 +54,27 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scan_cache() -> None:
+    """Disable + reset the ``/api/sessions`` scan snapshot cache (#561) for every test.
+
+    The cache memoises ``engines.scan_all()`` for a short TTL keyed on ``Path.home()``. With it
+    live, a test that mutates the tree (archive moves a JSONL) and re-queries within the TTL would
+    read the pre-mutation snapshot — and many tests monkeypatch ``engines.scan_all`` then call the
+    route twice expecting each call to re-run the patch. Setting the TTL to 0 makes every request
+    re-walk (identical to pre-#561 behaviour); the dedicated cache tests opt back in with an
+    explicit ``set_scan_cache_ttl``. Cleared on the way in and out so no snapshot leaks across
+    tests (distinct ``$HOME``s already isolate the key, but a shared 0-key entry could otherwise
+    survive a test that raised the TTL)."""
+    from agent_sessions import engines
+
+    engines.set_scan_cache_ttl(0.0)
+    engines.invalidate_scan_cache()
+    yield
+    engines.set_scan_cache_ttl(0.0)
+    engines.invalidate_scan_cache()
+
+
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch) -> Path:
     """Pretend the user's ``$HOME`` is an empty tmp dir."""

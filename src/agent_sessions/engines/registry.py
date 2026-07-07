@@ -8,6 +8,10 @@ native shape before any dispatch. See the package ``__init__`` docstring for the
 
 from __future__ import annotations
 
+import threading
+import time
+from pathlib import Path
+
 from ..scanner import Session
 from . import base
 from .antigravity import AntigravityProvider
@@ -46,6 +50,59 @@ def scan_all() -> list[Session]:
     for p in present_providers():
         out.extend(p.scan())
     return out
+
+
+# Short-lived scan-snapshot cache (#561). A single `/api/sessions` request re-walks the whole
+# ``~/.claude/projects`` tree with three reads per JSONL, and a keystroke burst (no debounce),
+# the 15 s poll, and "load more" pagination each trigger a full walk. This memoises the parsed
+# ``scan_all()`` snapshot for a short TTL so that burst collapses to a single real disk walk. Only
+# the DISK WALK is cached — routes still build rows from fresh ``metadata.load()`` / ``webterm``
+# state every request, so the live "working" signal, favorites, renames, etc. never go stale.
+#
+# Keyed on ``str(Path.home())`` (re-resolved per call) because the Claude scanner walks
+# ``Path.home()/.claude/projects`` — tests monkeypatch ``$HOME`` to a ``mktemp -d`` home, so a
+# global singleton would leak one test's sessions into another. A single lock makes the miss
+# single-flight: two concurrent requests within the TTL yield at most one real walk (the second
+# blocks on the lock, then reads the just-populated entry).
+_SCAN_CACHE_TTL_S = 1.5
+_scan_cache_lock = threading.Lock()
+_scan_cache: dict[str, tuple[float, list[Session]]] = {}
+
+
+def set_scan_cache_ttl(seconds: float) -> None:
+    """Set the scan-snapshot TTL (seconds). ``0`` disables caching — the test suite sets this so
+    each request re-walks (mutation-then-rescan tests stay deterministic); the dedicated cache
+    tests opt back in."""
+    global _SCAN_CACHE_TTL_S
+    _SCAN_CACHE_TTL_S = max(0.0, float(seconds))
+
+
+def invalidate_scan_cache() -> None:
+    """Drop every cached scan snapshot. Called after any write that changes what the scanner sees
+    (archive/unarchive — Claude moves the JSONL; a new-session launch writes a fresh JSONL) so the
+    next list request re-walks instead of serving the just-mutated tree stale."""
+    with _scan_cache_lock:
+        _scan_cache.clear()
+
+
+def scan_all_cached() -> list[Session]:
+    """``scan_all()`` behind the short TTL + single-flight cache (#561), keyed on the effective
+    home. Read path for the sidebar list; falls straight through when the TTL is 0.
+
+    Resolves ``scan_all`` through the package namespace so a ``monkeypatch.setattr(engines,
+    "scan_all", …)`` (the established test seam) is honoured here too."""
+    from .. import engines as _pkg
+
+    if _SCAN_CACHE_TTL_S <= 0:
+        return _pkg.scan_all()
+    key = str(Path.home())
+    with _scan_cache_lock:
+        hit = _scan_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < _SCAN_CACHE_TTL_S:
+            return hit[1]
+        sessions = _pkg.scan_all()
+        _scan_cache[key] = (time.monotonic(), sessions)
+        return sessions
 
 
 def session_key(s: Session) -> str:

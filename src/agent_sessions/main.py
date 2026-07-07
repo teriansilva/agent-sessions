@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from . import (
     ai_review_loop,
     autosort_loop,
+    engines,
     metadata,
     owner,
     prefs,
@@ -128,6 +129,11 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
             await asyncio.to_thread(metadata.set_alias, placeholder_key, real_key)
         except Exception:
             return  # alias not durable → never converge; keep serving under the placeholder
+        # The real (mint-its-own-id) session is now durable + discoverable → bust the sidebar's
+        # scan snapshot so the just-reconciled row shows on the next /api/sessions without the TTL
+        # lag (#561). The pinned-id path invalidates at launch in routes/terminal.py; reconciling
+        # engines (opencode/codex/antigravity) only become discoverable here, after the alias write.
+        engines.invalidate_scan_cache()
         # Then converge the client: it replaces /s/opencode/new-… → /s/opencode/ses_…
         # (history replace, no reload, keep the socket) and the sidebar shows one row.
         with contextlib.suppress(Exception):

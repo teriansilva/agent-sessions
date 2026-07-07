@@ -48,13 +48,16 @@ from .registry import (  # noqa: F401 — public re-exports
     all_providers,
     canonical_key,
     get,
+    invalidate_scan_cache,
     is_new_session_placeholder,
     is_opencode_new_placeholder,
     parse_key,
     physical_key,
     present_providers,
     scan_all,
+    scan_all_cached,
     session_key,
+    set_scan_cache_ttl,
 )
 
 __all__ = [
@@ -69,6 +72,9 @@ __all__ = [
     "present_providers",
     "get",
     "scan_all",
+    "scan_all_cached",
+    "invalidate_scan_cache",
+    "set_scan_cache_ttl",
     "session_key",
     "parse_key",
     "canonical_key",

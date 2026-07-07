@@ -5,6 +5,7 @@ archive/unarchive, and bulk archive-older. Moved verbatim from ``main.create_app
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import time
@@ -166,6 +167,32 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
         # top of the first page regardless of its recency / which page it would otherwise land on.
+        #
+        # The whole pipeline — the (cached) disk scan, the row build, facets, filter + sort — is
+        # blocking disk/CPU work, so it runs in a worker thread (#561 Phase 2): a search keystroke
+        # burst no longer serializes on the event loop or stalls the terminal WebSocket. The scan
+        # itself is memoised for a short TTL (#561 Phase 3) so the burst collapses to one real walk.
+        def _build() -> dict:
+            return _list_sessions_sync(
+                limit=limit,
+                offset=offset,
+                archived=archived,
+                q=q,
+                project=project,
+                engine=engine,
+            )
+
+        return JSONResponse(await asyncio.to_thread(_build))
+
+    def _list_sessions_sync(
+        *,
+        limit: int,
+        offset: int,
+        archived: bool,
+        q: str | None,
+        project: str | None,
+        engine: str | None,
+    ) -> dict:
         meta_index = metadata.load()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
         # scan_all (the placeholder never appears here — it isn't in opencode.db), so
@@ -180,7 +207,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             phys = engines.physical_key(key, aliases)
             return meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
 
-        sessions = list(engines.scan_all())
+        # Short-TTL scan snapshot (#561 Phase 3): a keystroke burst + the 15 s poll + pagination
+        # reuse one disk walk instead of re-reading 900+ JSONLs each time. Only the walk is cached;
+        # rows below are built from fresh metadata / webterm state, so live signals stay fresh.
+        sessions = list(engines.scan_all_cached())
         # One-shot legacy migration (#361): per-session `project_alias` renames become
         # project entities adopting that cwd. Idempotence is a flag inside the store
         # (checked under its lock), so this is a cheap read once it has run.
@@ -329,14 +359,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             rows.sort(key=lambda r: (not r["sticky"], -r["last_mtime"]))
         window = rows[offset : offset + limit]
         next_offset = offset + limit if offset + limit < len(rows) else None
-        return JSONResponse(
-            {
-                "sessions": window,
-                "next_offset": next_offset,
-                "total": len(rows),
-                "facets": facets,
-            }
-        )
+        return {
+            "sessions": window,
+            "next_offset": next_offset,
+            "total": len(rows),
+            "facets": facets,
+        }
 
     @app.get("/api/projects")
     async def list_projects(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
@@ -484,6 +512,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 results.append({"id": key, "result": done})
             except (archive.ArchiveError, engines.EngineError, NotImplementedError) as e:
                 results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
+        engines.invalidate_scan_cache()  # members' JSONLs moved → next list must re-walk (#561)
         return JSONResponse(
             {
                 "id": pid,
@@ -798,6 +827,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(
                 status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
             ) from None
+        engines.invalidate_scan_cache()  # Claude moved the JSONL → next list must re-walk (#561)
         return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": True})
 
     @app.post("/api/sessions/{sid}/unarchive")
@@ -816,6 +846,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(
                 status_code=400, detail=f"unarchive not supported for engine {prov.engine_id}"
             ) from None
+        engines.invalidate_scan_cache()  # membership changed → next list must re-walk (#561)
         return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": False})
 
     @app.post("/api/sessions/archive-older")
@@ -856,4 +887,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 archived += 1
             except (NotImplementedError, archive.ArchiveError, engines.EngineError):
                 skipped += 1  # provider can't archive / lost the file → leave it, keep going
+        if archived:
+            engines.invalidate_scan_cache()  # JSONLs moved → next list must re-walk (#561)
         return JSONResponse({"archived": archived, "skipped": skipped})
