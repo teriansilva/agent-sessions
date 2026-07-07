@@ -16,7 +16,7 @@ import json
 import os
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -29,6 +29,43 @@ _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
 # socket / lock still live under the *placeholder* key, so an attach by the real id must
 # resolve back to the placeholder, and a freshly-loaded app reads the alias to do so.
 _ALIAS_KEY = "__aliases__"
+
+# Shared color validator (#571). Lives in ``metadata`` so the SAME rule governs the
+# project-color write/read path AND the per-session-color write path; the rule lives
+# in exactly one place. ``validate_color(value, fail_soft=...)`` is consumed by
+# ``projects._validate_color`` (write path, raises ValueError that's re-raised as
+# ``ProjectError``), ``projects._from_raw`` (read path, fail-soft → ""), and the
+# session-color endpoint (write path, raises ValueError → 422).
+_COLOR_RE_HELP = "color must be #rgb or #rrggbb"
+
+
+def validate_color(color: object, *, fail_soft: bool = False) -> str:
+    """Validate + normalize a hex color. ``""`` is the canonical clear form.
+
+    Empty/None → ``""``. A valid ``#rgb`` or ``#rrggbb`` (lower-case letters allowed)
+    is normalized to lower-case hex. Anything else either raises
+    ``ValueError(_COLOR_RE_HELP)`` (``fail_soft=False``, write paths) or silently
+    degrades to ``""`` (``fail_soft=True``, read paths — hand-edited sidecars /
+    project stores must NEVER crash the sidebar).
+    """
+    if color is None:
+        return ""
+    if not isinstance(color, str):
+        if fail_soft:
+            return ""
+        raise ValueError(_COLOR_RE_HELP)
+    c = color.strip()
+    if not c:
+        return ""
+    if (
+        c.startswith("#")
+        and len(c) in (4, 7)
+        and all(ch in "0123456789abcdefABCDEF" for ch in c[1:])
+    ):
+        return c.lower()
+    if fail_soft:
+        return ""
+    raise ValueError(_COLOR_RE_HELP)
 
 
 def _normalize_keys(data: dict) -> tuple[dict, bool]:
@@ -60,8 +97,9 @@ class SessionMeta:
     tag: str = ""
     # NOTE (#520): `sort_key` (a manual ordering tiebreaker) was removed — no product flow ever
     # wrote it, so the list sort reduced to sticky-then-recency regardless. Old sidecars may still
-    # carry a `sort_key` key; it is simply ignored on read and dropped on the next rewrite of that
-    # row. No migration is needed.
+    # carry a `sort_key` key; it is simply ignored on read. Since #571 introduced general
+    # unknown-key preservation in ``patch()``, ``sort_key`` is also preserved on rewrite (no
+    # drop) — the ``list_sessions`` reducer just ignores it. No migration is needed.
     # Legacy per-session display-name override for a cwd. RETIRED from the write path
     # by #361 (project entities supersede it); still read one release as the folder-ref
     # name fallback for sessions the one-shot alias→entity migration never saw.
@@ -105,6 +143,24 @@ class SessionMeta:
     # server-issued upload PATHS are stored — never image blobs (the route validates that
     # each path lives inside the upload namespace).
     draft: dict | None = None
+    # Per-session color override (#571): a ``#rgb``/``#rrggbb`` hex string. ``""`` when unset
+    # (= "no override", fall through to project / engine). The picker reads RAW ``m.color``
+    # to know whether the user explicitly set a color (preserves the round-trip discipline
+    # that PATCH ``""`` → row.color = ``""``); rendering surfaces consume the resolver
+    # (``resolveSessionColor()`` in the SPA) which returns ``{color, source}``. Engine-agnostic
+    # — rides the same sidecar as ``title``/``sticky``/``tag``, so opencode/codex/gemini get
+    # it for free. Validated by ``metadata.validate_color`` (write path raises, read path
+    # fail-soft normalizes invalid stored values to ``""`` so a hand-edited sidecar can
+    # never 500 the sidebar).
+    color: str = ""
+
+
+# Schema-known field names frozen at module-import time — used by ``patch()`` to
+# filter the rebuilt ``meta_dict`` to fields the dataclass accepts when constructing
+# the returned ``SessionMeta``. The persisted sidecar dict is allowed to carry MORE
+# fields than this set (the unknown-key preservation contract above); the dataclass
+# instance is not.
+_SESSIONMETA_FIELDS = tuple(fields(SessionMeta))
 
 
 def has_draft(meta: SessionMeta) -> bool:
@@ -200,6 +256,13 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             continue  # the alias map is not a session row — never surface it
         if not isinstance(val, dict):
             continue
+        # Per-session color override (#571): read-time fail-soft normalizes any hand-edited
+        # invalid value to ``""`` so a corrupted entry can never raise into the sidebar —
+        # same discipline as ``draft`` (None when shape-wrong) and ``archived`` (None when
+        # non-bool). The write path enforces the regex; this is the safety net.
+        # ``validate_color`` accepts any scalar (None / bool / int / list → ""), so the
+        # call is uniform and shape-agnostic.
+        color = validate_color(val.get("color", ""), fail_soft=True)
         out[key] = SessionMeta(
             title=str(val.get("title", "")),
             sticky=bool(val.get("sticky", False)),
@@ -222,6 +285,7 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             ai_recap=str(val.get("ai_recap", "") or ""),
             recap_fingerprint=str(val.get("recap_fingerprint", "") or ""),
             draft=(val["draft"] if isinstance(val.get("draft"), dict) else None),
+            color=color,
         )
     return out
 
@@ -261,6 +325,10 @@ def patch(
         "recap_fingerprint",
         # Compose draft (#477) — written by the draft route; a dict or None.
         "draft",
+        # Per-session color override (#571) — written by the color route. Validated by
+        # ``metadata.validate_color`` upstream; the route layer translates
+        # ``ValueError`` → 422 with the helper string.
+        "color",
     }
     bad = set(fields) - allowed
     if bad:
@@ -303,11 +371,40 @@ def patch(
             "ai_recap": existing.get("ai_recap", ""),
             "recap_fingerprint": existing.get("recap_fingerprint", ""),
             "draft": existing.get("draft"),
+            # Per-session color override (#571): persisted only when non-empty on write,
+            # so a freshly-untouched row reads back as ``""`` (no override), not ``"#fff"``.
+            # The ``color != ""`` truthiness gate is owned by the color route — this layer
+            # just passes through whatever it received (validated upstream).
+            "color": existing.get("color", ""),
         }
+        # General unknown-key preservation (#571): a hand-edited or future-added field on
+        # a row that the schema doesn't recognize must NOT be silently dropped by
+        # ``patch()`` rewriting that row's dict. We rebuild from the schema baseline
+        # (which applies defaults + type coercion + the validated write via ``fields``),
+        # then carry every non-schema key forward. ``project_alias`` is schema-known
+        # (it's persisted in the baseline above) but is NOT in ``allowed``; treating it
+        # as schema-known here is correct — we don't want the rewrite to surface a
+        # shadow row by surprise, only to preserve any other unmodeled keys.
+        known = set(meta_dict)
+        meta_dict.update({k: v for k, v in existing.items() if k not in known})
         meta_dict.update(fields)
+        # Per-session color normalization (#571): route callers pre-validate via
+        # ``metadata.validate_color``, but ``patch()`` is also called from tests /
+        # internal paths that may not. Re-run the shared validator AFTER applying
+        # ``fields`` so storage is always canonical (``#5FD7FF`` → ``#5fd7ff``) —
+        # defense-in-depth that costs one cheap regex and avoids surprises in
+        # read-back assertions. If the caller passed an invalid value, this re-raises
+        # the same ``ValueError`` the route layer would have raised.
+        if "color" in fields:
+            meta_dict["color"] = validate_color(fields["color"])
         data[key] = meta_dict
         _rewrite_in_place(fh, data)
-        return SessionMeta(**meta_dict)
+        # The persisted sidecar dict MAY carry unmodeled keys (the preservation
+        # contract above), but the SessionMeta dataclass only knows schema fields.
+        # Construct it from the schema-known subset — the unmodeled keys survive on
+        # disk via the persisted ``data[key]`` above, never in the returned object.
+        schema_field_names = {f.name for f in _SESSIONMETA_FIELDS}
+        return SessionMeta(**{k: v for k, v in meta_dict.items() if k in schema_field_names})
 
 
 def get(key: str, path: Path | None = None) -> SessionMeta:

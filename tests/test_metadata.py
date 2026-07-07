@@ -264,3 +264,172 @@ def test_review_write_does_not_clobber_user_tag(tmp_home):
     metadata.patch("claude:tag-2", tag="prod")
     metadata.patch("claude:tag-2", ai_summary="a new summary", ai_title="An AI title")
     assert metadata.get("claude:tag-2").tag == "prod"
+
+
+# --- Per-session color override (#571) ------------------------------------------------
+
+
+def test_validate_color_normalizes_hex():
+    # Round-trip in lower-case form for valid inputs; ``""`` for empty / None.
+    assert metadata.validate_color("#5FD7FF") == "#5fd7ff"
+    assert metadata.validate_color("#abc") == "#abc"
+    assert metadata.validate_color("#ABC") == "#abc"
+    assert metadata.validate_color("") == ""
+    assert metadata.validate_color(None) == ""  # type: ignore[arg-type]
+    # Non-hex shapes raise on the write path...
+    with pytest.raises(ValueError):
+        metadata.validate_color("not-a-color")
+    with pytest.raises(ValueError):
+        metadata.validate_color("#xyz")
+    with pytest.raises(ValueError):
+        metadata.validate_color("#1234")  # wrong length (3 or 6 only)
+
+
+def test_validate_color_fail_soft_returns_empty():
+    # Read-path discipline: hand-edited / corrupt color values degrade to ``""`` so they
+    # can never crash the sidebar.
+    assert metadata.validate_color("not-a-color", fail_soft=True) == ""
+    assert metadata.validate_color("#xyz", fail_soft=True) == ""
+    assert metadata.validate_color(None, fail_soft=True) == ""  # type: ignore[arg-type]
+    assert metadata.validate_color(42, fail_soft=True) == ""  # type: ignore[arg-type]
+    # Valid inputs pass through unchanged.
+    assert metadata.validate_color("#5fd7ff", fail_soft=True) == "#5fd7ff"
+
+
+def test_patch_color_round_trips(tmp_home):
+    m = metadata.patch("claude:c-1", color="#5FD7FF")
+    assert m.color == "#5fd7ff"  # normalized lower-case
+    assert metadata.load()["claude:c-1"].color == "#5fd7ff"
+
+
+def test_patch_color_clear_with_empty_string(tmp_home):
+    # ``""`` is the canonical clear form (#571): a PATCH with color="" must read back as
+    # ``""``, NOT the previous non-empty value.
+    metadata.patch("claude:c-2", color="#ff0")
+    metadata.patch("claude:c-2", color="")
+    assert metadata.load()["claude:c-2"].color == ""
+
+
+def test_patch_color_rejects_invalid_hex(tmp_home):
+    # Write path raises — the route layer translates ValueError → 422.
+    metadata.patch("claude:c-3", color="#5fd7ff")  # valid seed
+    with pytest.raises(ValueError):
+        metadata.patch("claude:c-3", color="not-a-color")
+
+
+def test_load_fail_soft_normalizes_invalid_color(tmp_home):
+    # A hand-edited sidecar with a junk color must read as ``""`` (no crash, no leak).
+    from agent_sessions.metadata import _default_path
+
+    p = _default_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(
+            {
+                "claude:c-4": {
+                    "title": "old",
+                    "color": "not-a-color",  # invalid; must degrade to ""
+                    "sticky": False,
+                    "tag": "",
+                    "project_id": "",
+                    "archived": None,
+                    "ai_summary": "",
+                    "ai_title": "",
+                    "intervention_required": False,
+                    "intervention_reason": "",
+                    "reviewed_at": None,
+                    "review_fingerprint": "",
+                    "review_excluded": False,
+                    "ai_recap": "",
+                    "recap_fingerprint": "",
+                    "draft": None,
+                }
+            }
+        )
+    )
+    row = metadata.load()["claude:c-4"]
+    assert row.color == ""
+    assert row.title == "old"  # other fields intact
+
+
+def test_patch_preserves_unknown_sidecar_keys(tmp_home):
+    """``patch()`` rebuilds the row's dict on every write; unmodeled keys must survive (#571).
+
+    The contract is: hand-edited OR future-added fields never get silently dropped by a
+    routine ``patch()`` call (only an explicit rewrite back to schema-known keys wipes
+    them). Each test below confirms an unmodeled key on the same row persists across an
+    unrelated write.
+    """
+    # 1) Direct write to a known field; an unknown key on the row survives.
+    p = Path(metadata._default_path())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(
+            {
+                "claude:c-5": {
+                    "title": "old",
+                    "custom_marker": "important-data",  # not in ``allowed`` set
+                    "future_field": 42,
+                    "sticky": False,
+                    "tag": "",
+                    "project_id": "",
+                    "archived": None,
+                    "ai_summary": "",
+                    "ai_title": "",
+                    "intervention_required": False,
+                    "intervention_reason": "",
+                    "reviewed_at": None,
+                    "review_fingerprint": "",
+                    "review_excluded": False,
+                    "ai_recap": "",
+                    "recap_fingerprint": "",
+                    "draft": None,
+                    "color": "",
+                }
+            }
+        )
+    )
+    metadata.patch("claude:c-5", title="new")
+    again = json.loads(p.read_text())
+    row = again["claude:c-5"]
+    assert row["custom_marker"] == "important-data"
+    assert row["future_field"] == 42
+    assert row["title"] == "new"
+
+    # 2) A color write must also preserve the same unmodeled keys.
+    metadata.patch("claude:c-5", color="#abc")
+    again = json.loads(p.read_text())
+    row = again["claude:c-5"]
+    assert row["custom_marker"] == "important-data"
+    assert row["future_field"] == 42
+    assert row["color"] == "#abc"
+
+
+def test_patch_color_placeholder_reconcile_survives_resolve_key(tmp_home, tmp_path):
+    """A color write via ``resolve_key`` to a reconciled-opencode row must hit the
+    PHYSICAL (placeholder) sidecar key, not a sparse logical one (#571).
+
+    Without ``resolve_key``, writing to the logical id would create a sparse new entry
+    that shadows the physical one — hiding the existing title/sticky state on the next
+    read. We seed the alias map AND the placeholder row to mirror the post-reconcile
+    state, then confirm ``resolve_key`` targets the placeholder.
+    """
+    placeholder = "opencode:new-deadbeef-1111-2222-3333-444455556666"
+    real = "opencode:ses_cafef00d-1111-2222-3333-444455556666"
+    # Seed: a row exists under the PLACEHOLDER key (the opencode new-session discipline).
+    metadata.patch(placeholder, title="placeholder title", sticky=True)
+    # Register the placeholder→real alias so ``resolve_key(real)`` resolves to placeholder.
+    metadata.set_alias(placeholder, real)
+    # ``resolve_key`` must return the placeholder when the row is missing under the
+    # logical id (mirrors the list read precedence).
+    target = metadata.resolve_key(real)
+    assert target == placeholder
+    # Write color via the resolved placeholder target — the row keeps its prior state.
+    metadata.patch(target, color="#abc")
+    # Reads see the color AND the title/sticky that lived under the placeholder.
+    assert metadata.load()[placeholder].color == "#abc"
+    assert metadata.load()[placeholder].title == "placeholder title"
+    assert metadata.load()[placeholder].sticky is True
+    # Sanity: the alias resolution wires through the engines package.
+    assert placeholder.startswith("opencode:")
+    assert real.startswith("opencode:ses_")

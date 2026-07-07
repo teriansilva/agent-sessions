@@ -480,3 +480,70 @@ def test_zero_entities_rows_are_plain_folder_refs(auth_cfg, fake_jsonl):
     assert [f["id"] for f in d["facets"]["projects"]] == ["__default__"]
     assert all(f["kind"] == "project" for f in d["facets"]["projects"])
     assert c.get("/api/projects").json()["projects"] == []
+
+
+# --- Project color read-path fail-soft (#571) ---------------------------------------
+
+
+def test_load_fail_soft_normalizes_invalid_project_color(tmp_home):
+    """A hand-edited ``projects.json`` with a junk ``color`` must read as ``""`` (#571).
+
+    Mirrors the metadata sidecar discipline — a corrupted entry on disk can never
+    crash the SPA. Same shared validator (``metadata.validate_color``, ``fail_soft=True``).
+    """
+    import json as _json
+
+    from agent_sessions.projects import _default_path
+
+    p = _default_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        _json.dumps(
+            {
+                "alias_migration_done": True,
+                "projects": {
+                    "p-junk": {
+                        "name": "Bad color",
+                        "color": "definitely-not-a-color",  # invalid → ""
+                        "folders": [],
+                        "default_folder": "",
+                        "archived": False,
+                        "created_at": 1700000000.0,
+                    },
+                    "p-ok": {
+                        "name": "Good color",
+                        "color": "#5fd7ff",  # valid; preserved
+                        "folders": [],
+                        "default_folder": "",
+                        "archived": False,
+                        "created_at": 1700000001.0,
+                    },
+                },
+            }
+        )
+    )
+    index = projects.load()
+    assert index["p-junk"].color == ""
+    assert index["p-junk"].name == "Bad color"  # other fields intact
+    assert index["p-ok"].color == "#5fd7ff"
+
+
+def test_validate_color_is_single_source_of_truth_for_projects(tmp_home):
+    """``projects._validate_color`` delegates to ``metadata.validate_color`` (#571).
+
+    Ensures the project write path uses the SAME rule as the per-session color path.
+    Same regex, same error message — if one ever drifts, both this test and the
+    metadata-side counterpart will catch it.
+    """
+    # ``projects._COLOR_RE_HELP`` was retired in #571: callers import ``metadata`` for
+    # the helper string. Guard against the module-level constant creeping back.
+    assert not hasattr(projects, "_COLOR_RE_HELP")
+    # Both surfaces raise on the same bad shape with the same message.
+    with pytest.raises(projects.ProjectError) as exc_proj:
+        projects._validate_color("not-a-color")
+    with pytest.raises(ValueError) as exc_meta:
+        metadata.validate_color("not-a-color")
+    assert str(exc_proj.value) == str(exc_meta.value)
+    # Round-trip on a valid input normalizes the same way.
+    assert projects._validate_color("#5FD7FF") == "#5fd7ff"
+    assert metadata.validate_color("#5FD7FF") == "#5fd7ff"

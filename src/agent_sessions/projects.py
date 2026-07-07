@@ -32,7 +32,7 @@ from pathlib import Path
 
 # Same file-locking discipline as the metadata sidecar — shared helpers, not a copy,
 # so the two stores can't drift on lock/rewrite semantics.
-from .metadata import _exclusive, _rewrite_in_place
+from .metadata import _exclusive, _rewrite_in_place, validate_color
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +48,6 @@ _MIGRATED_KEY = "alias_migration_done"
 # ``__``-prefix keeps it disjoint from generated ids (``p-<hex>``) and from folder-conflict checks.
 DEFAULT_PROJECT_ID = "__default__"
 DEFAULT_PROJECT_NAME = "Default"
-
-_COLOR_RE_HELP = "color must be #rgb or #rrggbb"
 
 
 class ProjectError(Exception):
@@ -126,20 +124,17 @@ def _normalize_folder(folder: object) -> str:
 
 
 def _validate_color(color: object) -> str:
-    if color is None:
-        return ""
-    if not isinstance(color, str):
-        raise ProjectError(_COLOR_RE_HELP, status=422)
-    c = color.strip()
-    if not c:
-        return ""
-    if (
-        c.startswith("#")
-        and len(c) in (4, 7)
-        and all(ch in "0123456789abcdefABCDEF" for ch in c[1:])
-    ):
-        return c.lower()
-    raise ProjectError(_COLOR_RE_HELP, status=422)
+    """Write-path validator (#571). Delegates to the shared ``metadata.validate_color``
+    so the project-color rule and the per-session-color rule can never drift apart —
+    the rule lives in exactly one place (``metadata.validate_color``).
+
+    A ``ValueError`` from the shared validator becomes a ``ProjectError`` here (the
+    existing exception the route layer translates into HTTP responses).
+    """
+    try:
+        return validate_color(color)
+    except ValueError as e:
+        raise ProjectError(str(e), status=422) from None
 
 
 def _validate_name(name: object) -> str:
@@ -192,7 +187,11 @@ def _from_raw(pid: str, raw: dict) -> Project:
     return Project(
         id=pid,
         name=str(raw.get("name", "") or ""),
-        color=str(raw.get("color", "") or ""),
+        # Read-path color normalization (#571): any stored value that isn't a valid
+        # ``#rgb``/``#rrggbb`` hex degrades to ``""`` (no color) instead of poisoning the
+        # sidebar. Mirrors the discipline ``validate_color`` brings to the session sidecar
+        # and to the write path — hand-edited ``projects.json`` can never 500 the SPA.
+        color=validate_color(raw.get("color", ""), fail_soft=True),
         folders=folders,
         default_folder=default_folder,
         archived=bool(raw.get("archived", False)),

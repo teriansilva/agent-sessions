@@ -1810,3 +1810,132 @@ def test_set_tag_unknown_session_404(auth_cfg, fake_jsonl):
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     r = c.post("/api/sessions/claude:not-a-real-uuid/tag", json={"tag": "x"}, headers=hdr)
     assert r.status_code == 404
+
+
+# --- Per-session color endpoint (#571) -----------------------------------------------
+
+
+def test_set_color_surfaces_in_row(auth_cfg, fake_jsonl):
+    """``POST /api/sessions/{sid}/color`` writes the sidecar field; ``/api/sessions``
+    surfaces the same color in the row's metadata projection.
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        f"/api/sessions/claude:{uuid}/color",
+        json={"color": "#5FD7FF"},
+        headers=hdr,
+    )
+    assert r.status_code == 200
+    assert r.json() == {"id": f"claude:{uuid}", "color": "#5fd7ff"}  # normalized lower-case
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["uuid"] == uuid)["color"] == "#5fd7ff"
+
+
+def test_set_color_clears_on_empty_string(auth_cfg, fake_jsonl):
+    """``{"color": ""}`` clears the override — a re-fetch returns ``""`` (#571)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Seed a color then clear it.
+    c.post(f"/api/sessions/claude:{uuid}/color", json={"color": "#ff0"}, headers=hdr)
+    r = c.post(f"/api/sessions/claude:{uuid}/color", json={"color": ""}, headers=hdr)
+    assert r.status_code == 200 and r.json()["color"] == ""
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert next(s for s in rows if s["uuid"] == uuid)["color"] == ""
+
+
+def test_set_color_clears_on_null(auth_cfg, fake_jsonl):
+    """``{"color": null}`` (or missing) also clears — same as the metadata.write path."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post(f"/api/sessions/claude:{uuid}/color", json={"color": "#ff0"}, headers=hdr)
+    r = c.post(f"/api/sessions/claude:{uuid}/color", json={"color": None}, headers=hdr)
+    assert r.status_code == 200 and r.json()["color"] == ""
+
+
+def test_set_color_rejects_invalid_hex(auth_cfg, fake_jsonl):
+    """Invalid hex → 422 with the validator's helper string (NOT a 500, NOT a 400)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        f"/api/sessions/claude:{uuid}/color",
+        json={"color": "not-a-color"},
+        headers=hdr,
+    )
+    assert r.status_code == 422
+    assert "color" in r.json()["detail"].lower()
+    # Wrong-length hex (#1234) is also rejected.
+    r = c.post(
+        f"/api/sessions/claude:{uuid}/color",
+        json={"color": "#1234"},
+        headers=hdr,
+    )
+    assert r.status_code == 422
+
+
+def test_set_color_requires_csrf(auth_cfg, fake_jsonl):
+    """CSRF is mandatory on every state-changing request — color is no exception."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    # No X-CSRF-Token header → rejected before any sidecar write.
+    r = c.post(
+        f"/api/sessions/claude:{uuid}/color",
+        json={"color": "#abc"},
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_set_color_unknown_session_404(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/sessions/claude:not-a-real-uuid/color",
+        json={"color": "#abc"},
+        headers=hdr,
+    )
+    assert r.status_code == 404
+
+
+def test_set_color_unknown_engine_404(auth_cfg, fake_jsonl):
+    """An engine id the registry doesn't recognize → 404, not 5xx (#265 identity gate)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/sessions/bogus:abc/color",
+        json={"color": "#abc"},
+        headers=hdr,
+    )
+    assert r.status_code == 404
+
+
+def test_set_color_preserves_other_fields(auth_cfg, fake_jsonl):
+    """A color write must not clobber adjacent sidecar fields (title, tag, sticky)."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Seed: title, tag, favorite via existing endpoints.
+    c.post(f"/api/sessions/claude:{uuid}/rename", json={"title": "My Title"}, headers=hdr)
+    c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": "prod"}, headers=hdr)
+    c.post(f"/api/sessions/claude:{uuid}/favorite", headers=hdr)
+    # Now write the color.
+    c.post(f"/api/sessions/claude:{uuid}/color", json={"color": "#abc"}, headers=hdr)
+    # Re-read all three fields.
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    row = next(s for s in rows if s["uuid"] == uuid)
+    assert row["color"] == "#abc"
+    assert row["title"] == "My Title"
+    assert row["tag"] == "prod"
+    assert row["sticky"] is True

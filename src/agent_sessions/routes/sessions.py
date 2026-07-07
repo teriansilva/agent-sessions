@@ -152,6 +152,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # natively-archived opencode/codex row be unarchived), else the engine's
             # native state (claude's JSONL tree / opencode.db time_archived).
             "archived": m.archived if m.archived is not None else s.archived,
+            # Per-session color override (#571): the RAW ``m.color`` is what the picker
+            # reads (so a PATCH ``""`` → row.color = ``""`` round-trips). Rendering
+            # surfaces consume ``resolveSessionColor(row)`` on the SPA side, which falls
+            # through to the project color and engine accent when this is ``""``.
+            "color": m.color,
         }
 
     @app.get("/api/sessions")
@@ -732,6 +737,47 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         tag = str(payload.get("tag", "")).strip()[:_TAG_MAX]
         m = metadata.patch(metadata.resolve_key(key), tag=tag)
         return JSONResponse({"id": key, "tag": m.tag})
+
+    @app.post("/api/sessions/{sid}/color")
+    async def set_session_color(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Per-session color override (#571): set/clear the ``color`` sidecar field.
+
+        Body shape: ``{"color": "#rgb"|"#rrggbb"}`` to set, or ``{"color": ""}`` (or
+        ``null``/missing) to clear. Engine-agnostic — rides the same sidecar as
+        ``title``/``sticky``/``tag``, so opencode/codex/gemini get it for free and the
+        opencode read-only guarantee is preserved (the SQLite db is never touched).
+
+        ``resolve_key`` mirrors the list read precedence so a reconciled opencode
+        session's color follows its real row instead of shadowing it under a sparse
+        logical key. The response is ``{id, color}`` — the SPA merges the new field
+        into its local row, identical to ``/tag`` and ``/favorite``.
+
+        Validation: ``metadata.validate_color`` is the single source of truth
+        (shared with ``projects._validate_color`` so the rule can never drift).
+        Invalid input → 422 with the validator's helper string.
+        """
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        try:
+            payload = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        # ``color`` may be missing, ``null``, ``""``, or a hex string. ``validate_color``
+        # treats ``None`` as ``""`` (clear) — callers can omit the field to clear.
+        raw_color = payload.get("color") if isinstance(payload, dict) else ""
+        try:
+            normalized = metadata.validate_color(raw_color)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+        m = metadata.patch(metadata.resolve_key(key), color=normalized)
+        return JSONResponse({"id": key, "color": m.color})
 
     def _set_favorite(sid: str, value: bool) -> JSONResponse:
         # Favorite (#122) = the existing sidecar `sticky` flag surfaced as a star; a
