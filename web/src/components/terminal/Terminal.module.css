@@ -55,6 +55,18 @@
   min-width: 0;
   min-height: 0;
 }
+/* On a session where the agent owns the scroll — a mouse-tracking TUI (claude/opencode: the
+ * wheel is forwarded to the agent so xterm's viewport stays pinned at the tail) or an alt-screen
+ * app (no usable scrollback) — xterm's native scrollbar can't reflect the agent's internal scroll.
+ * It sits stuck at the bottom and only misleads, so hide it. Toggled via data-app-owns-scroll in
+ * Terminal.tsx; the wheel still scrolls inside the agent and the ↓ FAB jumps to the tail. A plain
+ * scrollback session (codex/gemini/antigravity) has no attribute and keeps its working bar. */
+.term[data-app-owns-scroll="true"] :global(.xterm-viewport) {
+  scrollbar-width: none; /* Firefox + modern Blink */
+}
+.term[data-app-owns-scroll="true"] :global(.xterm-viewport)::-webkit-scrollbar {
+  display: none; /* legacy WebKit/Blink */
+}
 /* On touch devices, xterm's hidden helper textarea sits over the text and would grab a
  * touch-drag (the gesture then went to the caret, not us — "scrolled one line then
  * stuck"). Make it non-interactive to pointers so drags reach the terminal: our handler

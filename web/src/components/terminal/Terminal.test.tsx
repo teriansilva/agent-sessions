@@ -66,6 +66,9 @@ vi.mock("@xterm/xterm", () => ({
     onScroll(cb: () => void) {
       this.scrollCb = cb;
     }
+    onWriteParsed() {
+      return { dispose() {} };
+    }
     dispose() {}
     getSelection() {
       return "";

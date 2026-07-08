@@ -234,6 +234,23 @@ export function Terminal({
     termRef.current = term;
     fitRef.current = fit;
 
+    // Hide xterm's native scrollbar on sessions where the AGENT owns the scroll. A mouse-tracking
+    // TUI (claude/opencode) has the wheel forwarded to it, so xterm's viewport never leaves the
+    // tail — the bar sits stuck at the bottom and can't reflect the agent's own scroll, it just
+    // misleads. An alt-screen app keeps no usable scrollback either. `appConsumesWheel` covers both;
+    // a plain scrollback session (codex/gemini/antigravity) keeps its working bar. Re-checked after
+    // every parsed write because mouse mode is armed mid-stream (and re-emitted on attach by #397).
+    // The wheel still scrolls inside the agent, and the ↓ FAB (#559) jumps back to the tail.
+    let ownsScroll = "";
+    const syncScrollbarChrome = () => {
+      const v = appConsumesWheel(term) ? "true" : "false";
+      if (v === ownsScroll) return;
+      ownsScroll = v;
+      host.dataset.appOwnsScroll = v;
+    };
+    syncScrollbarChrome();
+    const writeParsedSub = term.onWriteParsed(syncScrollbarChrome);
+
     // Don't forward the paste shortcut (Ctrl+V / Cmd+V) to the PTY as a raw keystroke
     // (#209): the agent (Claude Code) binds Ctrl+V to "paste image from clipboard" and
     // reads the SERVER clipboard, printing "no image found in clipboard" on a text paste.
@@ -1029,6 +1046,7 @@ export function Terminal({
       sockRef.current = null;
       termRef.current = null;
       fitRef.current = null;
+      writeParsedSub.dispose();
       term.dispose();
     };
     // Identity-only deps: this socket lives and dies with the terminal's `key` (engine:id).
