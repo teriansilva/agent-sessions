@@ -121,6 +121,14 @@ export function Terminal({
   // path above, unchanged.) `jumpToTailRef` is filled by the effect from attachTouchScroll.
   const [appScrolledUp, setAppScrolledUp] = useState(false);
   const appScrollNotchesRef = useRef(0);
+  // #584: a FRESH attach to an app-consuming (mouse-tracking) session opens wherever claude last
+  // repainted — frequently NOT its live tail — and we can't measure the agent's own scroll. Since
+  // xterm's buffer stays pinned at the tail (`atBottom` true) and `appScrolledUp` is false until
+  // the user scrolls up, the ↓ FAB would be hidden with no way back to the prompt. This flag shows
+  // the FAB from attach until the user reaches / requests the tail. Ref mirrors the state so the
+  // jump handlers (defined outside the effect) can read + size a robust jump-to-tail.
+  const [appTailUnknown, setAppTailUnknown] = useState(false);
+  const appTailUnknownRef = useRef(false);
   const jumpToTailRef = useRef<(notches: number) => void>(() => {});
   // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
@@ -205,6 +213,10 @@ export function Terminal({
     // state so a stale count from a prior connection can't keep the FAB up (#559).
     appScrollNotchesRef.current = 0;
     setAppScrolledUp(false);
+    // #584: start each connection with the tail "known" — the fresh-attach FAB is (re)armed only by
+    // armRepaintBackstop below, for a true fresh attach (consumed === 0) once mouse tracking is seen.
+    setAppTailUnknown(false);
+    appTailUnknownRef.current = false;
 
     // Initial look from the active theme; a separate effect re-applies on theme/accent change.
     // The cursor follows the brand accent (#211 Phase 2), overriding the theme's default.
@@ -410,6 +422,17 @@ export function Terminal({
           // only ever clear on a wheel/touch/key gesture, so a scrollbar-drag scroll-up was
           // dragged back to the bottom by the next output chunk (the "always jumps to bottom" bug).
           initialTailLock = false;
+          // #584: the initial attach replay has settled, so the agent's private modes are now known
+          // (the server re-emits them at the very start of the replay, #397). If this is an
+          // app-consuming session (mouse-tracking claude / alt-screen TUI), the agent owns its scroll
+          // and may have opened off its live tail — reveal the ↓ FAB so the user has a one-tap jump
+          // back. Gated on mode status HERE (post-attach), never assumed at mount. Cleared by a user
+          // gesture (armHistory) or the jump itself (scrollToTail). No-op for a scrollback session
+          // (codex/antigravity: appConsumesWheel false → the FAB stays driven by computeAtBottom).
+          if (appConsumesWheel(term)) {
+            setAppTailUnknown(true);
+            appTailUnknownRef.current = true;
+          }
           // "Blank" used to mean "essentially no replay bytes". #407 shows the
           // byte count is not enough: a large raw replay can process successfully
           // while xterm's visible row layer remains empty. In that case, repaint too.
@@ -586,6 +609,12 @@ export function Terminal({
       if (!sawOutput) return;
       userScrolled = true;
       initialTailLock = false;
+      // #584: the user is now navigating, so the FAB is governed by their tracked scroll
+      // (`appScrolledUp`) — drop the fresh-attach "tail unknown" flag so it doesn't linger.
+      if (appTailUnknownRef.current) {
+        setAppTailUnknown(false);
+        appTailUnknownRef.current = false;
+      }
     };
     const armOnWheel = (e: WheelEvent) => {
       if (!eventInTermArea(e.target)) return;
@@ -911,9 +940,16 @@ export function Terminal({
       if (fab) {
         const fr = fab.getBoundingClientRect();
         if (cx >= fr.left && cx <= fr.right && cy >= fr.top && cy <= fr.bottom) {
-          jumpToTailRef.current(appScrollNotchesRef.current); // #559: app-consuming → forward to tail
+          // #559: app-consuming → forward to tail. #584: on a fresh attach the up-distance was never
+          // tracked, so send a generous bounded burst (jumpToTail clamps at the agent's bottom).
+          const notches = appTailUnknownRef.current
+            ? Math.max(appScrollNotchesRef.current, (term.rows || 24) * 3)
+            : appScrollNotchesRef.current;
+          jumpToTailRef.current(notches);
           appScrollNotchesRef.current = 0;
           setAppScrolledUp(false);
+          setAppTailUnknown(false);
+          appTailUnknownRef.current = false;
           term.scrollToBottom();
           setAtBottom(true);
           return;
@@ -1097,9 +1133,18 @@ export function Terminal({
     // App-consuming sessions (claude/opencode): the agent owns the scroll, so scrollToBottom() is a
     // no-op — forward the tracked up-distance back down as wheel notches so the agent returns to its
     // live tail (#559). No-op for a scrollback session (codex), where scrollToBottom() does the work.
-    jumpToTailRef.current(appScrollNotchesRef.current);
+    // #584: on a fresh attach we never tracked how far up the agent opened (appScrollNotchesRef is 0),
+    // so forward a generous, bounded burst (a few screenfuls; jumpToTail clamps at the agent's bottom
+    // and caps the count) — otherwise a 0-notch jump would move nothing.
+    const jumpNotches = appTailUnknownRef.current
+      ? Math.max(appScrollNotchesRef.current, (termRef.current?.rows ?? 24) * 3)
+      : appScrollNotchesRef.current;
+    jumpToTailRef.current(jumpNotches);
     appScrollNotchesRef.current = 0;
     setAppScrolledUp(false);
+    // #584: the user asked for the tail — resolve the fresh-attach "unknown" state so the FAB clears.
+    setAppTailUnknown(false);
+    appTailUnknownRef.current = false;
     termRef.current?.scrollToBottom();
     setAtBottom(true);
   }, []);
@@ -1284,8 +1329,10 @@ export function Terminal({
             viewport is off the live tail, so desktop users who scrolled up into history have a
             one-click jump back to the tail (and follow resumes once they are at the bottom).
             `appScrolledUp` extends it to mouse-tracking sessions (claude/opencode), whose scroll the
-            agent owns so xterm's `atBottom` stays true — there the tap forwards a jump-to-tail (#559). */}
-        {(!atBottom || appScrolledUp) && (
+            agent owns so xterm's `atBottom` stays true — there the tap forwards a jump-to-tail (#559).
+            `appTailUnknown` extends it further to a FRESH attach of such a session, which opens off
+            its live tail with nothing yet scrolled — so the user has a one-tap way back (#584). */}
+        {(!atBottom || appScrolledUp || appTailUnknown) && (
           <button
             ref={fabRef}
             type="button"

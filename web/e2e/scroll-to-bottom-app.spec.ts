@@ -4,9 +4,13 @@ import { expect, test } from "@playwright/test";
 // its own scrollback. claude (and any mouse-tracking TUI) owns its OWN scroll — xterm's buffer never
 // leaves the tail, so `atBottom` stays true, the FAB never showed, and `scrollToBottom()` was a
 // no-op. This drives a REAL browser (desktop wheel + Pixel 7 touch) against a stubbed mouse-tracking
-// session and asserts: scrolling the agent up reveals the FAB, and tapping it forwards a downward
+// session and asserts: scrolling the agent up keeps the FAB, and tapping it forwards a downward
 // wheel burst (SGR mouse report `ESC [ < 65 … M/m`) that returns the agent to its live tail. jsdom
 // can't model xterm's mouse-mode wheel forwarding, so this is a real-browser test.
+//
+// #584: the FAB now also shows on a FRESH attach of a mouse-tracking session (it opens off its live
+// tail with nothing scrolled yet, and the app can't measure the agent's scroll) — so these tests
+// assert the FAB is present right after attach, and that a tap forwards the jump-to-tail + clears it.
 
 function fakeWs(enter: string) {
   return `
@@ -52,10 +56,10 @@ test("mouse-tracking session (desktop): wheel-up reveals the ↓ FAB; clicking i
   await waitForPaint(page);
 
   const fab = page.getByRole("button", { name: /scroll to bottom/i });
-  await expect(fab).toHaveCount(0); // sitting on the tail → hidden
+  await expect(fab).toBeVisible(); // #584: a fresh mouse-tracking attach opens off-tail → FAB shown
 
   // Scroll the agent up: a real wheel over the terminal. xterm forwards it to the app AND our
-  // tracker notes the agent is now off the tail → the FAB appears.
+  // tracker notes the agent is now off the tail → the FAB stays visible.
   await page.locator(".xterm-screen").hover();
   await page.mouse.wheel(0, -300);
   await expect(fab).toBeVisible();
@@ -79,10 +83,10 @@ test("mouse-tracking session (mobile): a scroll-up drag reveals the ↓ FAB; tap
   await waitForPaint(page);
 
   const fab = page.getByRole("button", { name: /scroll to bottom/i });
-  await expect(fab).toHaveCount(0);
+  await expect(fab).toBeVisible(); // #584: a fresh mouse-tracking attach opens off-tail → FAB shown
 
   // Drag the finger DOWN on the touch overlay (finger down = scroll UP into history) → the agent
-  // scrolls up and the FAB appears.
+  // scrolls up and the FAB stays visible.
   const surface = page.locator("[data-touch-surface]");
   await expect(surface).toBeVisible();
   await surface.evaluate((el) => {
