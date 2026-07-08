@@ -9,10 +9,12 @@ import { describe, expect, it } from "vitest";
 
 import { Responder, derivePsk } from "./handshake";
 import {
+  APP_ADVERT,
   type AltchaChallenge,
   type SessionEvent,
   type SocketLike,
   ViewerError,
+  runAppSession,
   runViewerSession,
   solveAltcha,
 } from "./connect";
@@ -201,5 +203,56 @@ describe("Home Free connect core", () => {
     await expect(
       runViewerSession(clientWs, "k", "x", { onOutput: () => {}, onEvent: () => {} }),
     ).rejects.toMatchObject({ code: "busy" });
+  });
+});
+
+// A relay + Responder for app mode: pairs, handshakes, records the FIRST decrypted frame
+// (must be the advert), then echoes the next frame (+ a marker byte) as an agent→viewer frame.
+async function fakeAppRelay(
+  ws: MockSocket,
+  accessKey: string,
+  received: Uint8Array[],
+): Promise<void> {
+  const chan = makeChannel(ws);
+  await chan.opened;
+  await chan.recvText(); // hello
+  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 3600 }));
+  const res = new Responder(await derivePsk(accessKey));
+  const msg1 = await chan.recvBinary();
+  chan.send(await res.respond(msg1));
+  const msg3 = await chan.recvBinary();
+  const transport = await res.finish(msg3);
+  received.push(await transport.decrypt(await chan.recvBinary())); // 1st frame = advert
+  const next = await transport.decrypt(await chan.recvBinary()); // a mux frame from the viewer
+  chan.send(await transport.encrypt(new Uint8Array([...next, 0xab]))); // echo back +marker
+}
+
+describe("runAppSession", () => {
+  it("sends the app advert first, then bridges mux frames both ways", async () => {
+    const [clientWs, serverWs] = linkedPair();
+    const key = "app-mode-key";
+    const received: Uint8Array[] = [];
+    const relay = fakeAppRelay(serverWs, key, received);
+
+    const frames: Uint8Array[] = [];
+    const handle = await runAppSession(clientWs, key, "captcha", {
+      onFrame: (f) => frames.push(f),
+      onEvent: () => {},
+    });
+    handle.sendFrame(new Uint8Array([1, 2, 3])); // a mux frame after the advert
+    await relay;
+    await new Promise((r) => setTimeout(r, 20)); // let the echo arrive
+
+    expect(received[0]).toEqual(APP_ADVERT); // advert was the FIRST encrypted frame
+    expect(frames.at(-1)).toEqual(new Uint8Array([1, 2, 3, 0xab])); // agent frame bridged back
+    handle.close();
+  });
+
+  it("rejects a wrong access key at the handshake", async () => {
+    const [clientWs, serverWs] = linkedPair();
+    void fakeAppRelay(serverWs, "correct-key", []).catch(() => {});
+    await expect(
+      runAppSession(clientWs, "wrong-key", "x", { onFrame: () => {}, onEvent: () => {} }),
+    ).rejects.toThrow(); // the Initiator handshake rejects a bad key (generic Error)
   });
 });

@@ -225,3 +225,79 @@ export async function runViewerSession(
 
   return { sendInput, close: () => chan.close() };
 }
+
+/** The app-mode advert (#579 P4a/P4b): the exact first encrypted frame that requests full-app
+ *  streaming. Must byte-match the agent's `_APP_ADVERT` (`b"\x00HF-APP/1"`). Anything else — or
+ *  no advert — makes the agent serve the recovery shell (fail-closed). */
+export const APP_ADVERT: Uint8Array = new Uint8Array([0, ...new TextEncoder().encode("HF-APP/1")]);
+
+export interface AppSessionCallbacks {
+  /** One decrypted mux frame from the box (feed it to the tunnel's `Mux`). */
+  onFrame: (frame: Uint8Array) => void;
+  onEvent: (evt: SessionEvent) => void;
+}
+
+export interface AppSessionHandle {
+  /** Encrypt + send one mux frame, serialized (AES-GCM counters stay monotonic). */
+  sendFrame: (frame: Uint8Array) => void;
+  close: () => void;
+}
+
+/**
+ * Drive an **app-mode** viewer session (#579 P4b): same hello + pairing + Initiator handshake
+ * as {@link runViewerSession}, but instead of bridging raw PTY bytes it (1) sends the app advert
+ * as the first encrypted frame to request full-app streaming, and (2) bridges each subsequent
+ * encrypted frame to/from a mux via callbacks — so the caller can run the P1 mux + P3 tunnel over
+ * it. The relay still only sees ciphertext.
+ */
+export async function runAppSession(
+  ws: SocketLike,
+  accessKey: string,
+  captcha: string,
+  cb: AppSessionCallbacks,
+): Promise<AppSessionHandle> {
+  const chan = new FrameChannel(ws);
+  await chan.open();
+
+  chan.send(JSON.stringify({ t: "hello", captcha }));
+  const first = JSON.parse(await chan.recvText());
+  if (first.t === "error") throw new ViewerError(first.code ?? "error");
+  if (first.t !== "paired") throw new ViewerError("protocol", `expected paired, got ${first.t}`);
+  cb.onEvent({ type: "paired", deadline: first.deadline, ttl: first.ttl });
+
+  const ini = new Initiator(await derivePsk(accessKey));
+  chan.send(ini.start()); // msg1
+  const msg2 = await chan.recvBinary();
+  const { transport, msg3 } = await ini.finish(msg2);
+  chan.send(msg3);
+
+  let sendChain: Promise<void> = Promise.resolve();
+  const sendFrame = (frame: Uint8Array): void => {
+    sendChain = sendChain.then(async () => {
+      chan.send(await transport.encrypt(frame));
+    });
+  };
+  sendFrame(APP_ADVERT); // request app mode — the FIRST encrypted frame (counter 0)
+
+  void (async () => {
+    for (;;) {
+      const frame = await chan.recv();
+      if (frame == null) {
+        cb.onEvent({ type: "closed" });
+        break;
+      }
+      if (typeof frame === "string") {
+        const m = JSON.parse(frame);
+        if (m.t === "warn") cb.onEvent({ type: "warn", remaining: m.remaining });
+        else if (m.t === "expired") {
+          cb.onEvent({ type: "expired" });
+          break;
+        }
+      } else {
+        cb.onFrame(await transport.decrypt(frame));
+      }
+    }
+  })();
+
+  return { sendFrame, close: () => chan.close() };
+}

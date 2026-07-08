@@ -70,6 +70,17 @@ const CONNECT_TIMEOUT_MS = 8_000;
 
 export type WsFactory = (url: string) => WebSocket;
 
+// The factory used to open a terminal socket when a TermSocket isn't given an explicit one
+// (the app's Terminal component uses the default). Same-origin `new WebSocket` by default;
+// Home Free's connect page (#579 P4b) injects a mux-backed factory so the terminal `/ws`
+// rides the blind relay. Behaviour-neutral when unset — the app can't tell it's tunneled.
+const defaultWsFactory: WsFactory = (u) => new WebSocket(u);
+let wsFactoryImpl: WsFactory = defaultWsFactory;
+/** Route default terminal sockets through `fn` (Home Free tunnel), or back to `new WebSocket`. */
+export function setWsFactory(fn: WsFactory | null): void {
+  wsFactoryImpl = fn ?? defaultWsFactory;
+}
+
 export class TermSocket {
   private ws: WebSocket | null = null;
   /** Absolute count of PTY bytes consumed — sent back as `?have=` to resume. */
@@ -102,7 +113,7 @@ export class TermSocket {
   constructor(
     urlFor: (have: number) => string,
     handlers: TermSocketHandlers,
-    wsFactory: WsFactory = (u) => new WebSocket(u),
+    wsFactory: WsFactory = (u) => wsFactoryImpl(u),
   ) {
     this.urlFor = urlFor;
     this.handlers = handlers;

@@ -16,6 +16,12 @@ import {
   runViewerSession,
   solveAltcha,
 } from "./connect";
+import { mountApp } from "./appMount";
+
+// Full-app streaming (#579 P4b) is opt-in via `?app` for now — the default stays the
+// recovery shell (the only path with a real-browser test until P7), so this can't regress
+// the working page. P7 validates app mode end-to-end, then the default flips.
+const appMode = new URLSearchParams(location.search).has("app");
 
 const byId = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -60,6 +66,12 @@ async function connect(): Promise<void> {
   }
 
   connectBtn.disabled = true;
+
+  if (appMode) {
+    await connectApp(base, name, key);
+    return;
+  }
+
   const { altchaUrl, wsUrl } = relayUrls(base, name);
 
   const term = new Terminal({
@@ -101,6 +113,39 @@ async function connect(): Promise<void> {
         }
       },
     });
+  } catch (err) {
+    const code = err instanceof ViewerError ? err.code : String(err);
+    setStatus(`could not connect: ${code}`, "error");
+    connectBtn.disabled = false;
+  }
+}
+
+/** Full-app mode: solve the captcha, open the relay socket, then mount the real BattleLab SPA
+ *  over the tunnel (`appMount`). On success the connect chrome collapses and #app-root fills
+ *  the screen; on failure the error surfaces and the user can retry (or drop the `?app` to use
+ *  the recovery shell). */
+async function connectApp(base: string, name: string, key: string): Promise<void> {
+  const { altchaUrl, wsUrl } = relayUrls(base, name);
+  try {
+    setStatus("solving human verification…");
+    const challenge = (await (await fetch(altchaUrl)).json()) as AltchaChallenge;
+    const captcha = solveAltcha(challenge);
+
+    setStatus("connecting to the relay…");
+    const ws = new WebSocket(wsUrl);
+    await mountApp(ws as unknown as SocketLike, key, captcha, {
+      onEvent: (evt) => {
+        if (evt.type === "paired") {
+          setStatus("connected — streaming your BattleLab, the relay is blind", "ok");
+          if (evt.deadline) startCountdown(evt.deadline);
+        } else if (evt.type === "expired") {
+          setStatus("session expired (60-min limit) — reload to reconnect", "error");
+        } else if (evt.type === "closed") {
+          setStatus("disconnected", "error");
+        }
+      },
+    });
+    document.body.classList.add("app-mounted"); // collapse the connect chrome, reveal #app-root
   } catch (err) {
     const code = err instanceof ViewerError ? err.code : String(err);
     setStatus(`could not connect: ${code}`, "error");
