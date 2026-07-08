@@ -224,6 +224,32 @@ def test_browser_close_propagates_to_the_app_websocket():
     _run(go())
 
 
+def test_websocket_propagates_app_deliberate_close_code_to_the_browser():
+    async def go():
+        # The app (/ws/term) rejects with a deliberate 4401 — the proxy must serialize that
+        # code as a CLOSE frame (type 2) so the browser adapter surfaces a no-retry reject
+        # instead of a generic close.
+        async def rejecting(ws):
+            await ws.close(code=4401, reason="nope")
+
+        server = await websockets.serve(rejecting, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            proxy = AppProxyTarget(app_port=port)
+            browser = _browser_to(proxy)
+            s = browser.open(json.dumps({"k": "ws", "path": "/ws/term/x"}).encode())
+            mtype, payload = await _read_ws_msg(s)
+            assert mtype == 2  # CLOSE frame
+            assert struct.unpack(">H", payload[:2])[0] == 4401
+            assert payload[2:].decode() == "nope"
+            assert await asyncio.wait_for(s.read(), timeout=2) == b""  # then clean EOF
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    _run(go())
+
+
 def test_websocket_forwards_auth_cookie_and_rewrites_origin_on_upgrade():
     async def go():
         seen = {}

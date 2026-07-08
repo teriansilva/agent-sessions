@@ -24,6 +24,10 @@ Per-stream sub-protocol (over one mux stream):
         ``type(u8) · len(u32) · payload`` (type 0 = text, 1 = binary), in both
         directions. The mux stream is a *byte* stream — DATA frames coalesce and
         fragment — so messages MUST be length-delimited, not read-boundary-delimited.
+        On teardown the agent may send one **close frame** (type 2, agent→browser only:
+        ``u16 code + utf8 reason``) carrying the app WebSocket's deliberate close code so
+        the browser adapter can surface ``/ws/term`` rejects (4401/4403/4404/4500) instead
+        of a generic close; a browser-initiated close just gets EOF (clean 1000).
 
 The recovery `PtyShellTarget` (targets.py) is untouched — this is the full-app path.
 """
@@ -53,6 +57,11 @@ _HOP = frozenset(
         "host",
     }
 )
+
+
+# WS message-frame types (the `type` byte of `type·len·payload`). 0/1 are bidirectional
+# data; 2 is an agent→browser CLOSE carrying the app WS close code (u16 BE + utf8 reason).
+_WS_CLOSE = 2
 
 
 def _safe_path(p: object) -> bool:
@@ -203,6 +212,18 @@ class AppProxyTarget:
                 up.cancel()
                 down.cancel()
                 await asyncio.gather(up, down, return_exceptions=True)
+                # If the APP closed with a deliberate code (/ws/term rejects with
+                # 4401/4403/4404/4500), serialize it as a CLOSE frame so the browser adapter
+                # surfaces the reject to TermSocket (its NO_RETRY set) instead of a generic
+                # 1000/1006 that would reconnect forever. A browser-initiated close leaves
+                # appws still open here (close_code is None) → no frame, just the EOF below.
+                with contextlib.suppress(Exception):
+                    code = appws.close_code
+                    if code is not None and code != 1000:
+                        reason = (appws.close_reason or "")[:123].encode("utf-8", "replace")
+                        payload = struct.pack(">H", code & 0xFFFF) + reason
+                        frame = bytes([_WS_CLOSE]) + struct.pack(">I", len(payload)) + payload
+                        await stream.write(frame)
                 # Always half-close the mux stream back to the browser so its read side
                 # gets EOF — a cancelled downstream() never reaches its own end(), which
                 # would leave the browser adapter's socket half-open. (On errors, serve()

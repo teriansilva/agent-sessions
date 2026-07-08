@@ -32,6 +32,18 @@ export class ApiError extends Error {
   }
 }
 
+// The fetch used for every `/api` call. Same-origin `globalThis.fetch` by default;
+// Home Free's connect page (#579 P3) injects a mux-backed `tunnelFetch` so the SPA's
+// private traffic rides the blind relay instead of hitting the network directly. The
+// seam is behaviour-neutral when unset — the app can't tell it's tunneled.
+export type ApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
+const defaultFetch: ApiFetch = (input, init) => fetch(input, init);
+let apiFetch: ApiFetch = defaultFetch;
+/** Route every `/api` call through `fn` (Home Free tunnel), or back to same-origin fetch with `null`. */
+export function setApiFetch(fn: ApiFetch | null): void {
+  apiFetch = fn ?? defaultFetch;
+}
+
 /** Where to send an unauthenticated user: the server login form, carrying the
  *  current location so it can bounce back after sign-in (server open-redirect guards). */
 export function loginRedirectUrl(loc: { pathname: string; search: string } = location): string {
@@ -77,7 +89,7 @@ async function authGate(r: Response): Promise<never> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const r = await fetch(path, { credentials: "same-origin" });
+  const r = await apiFetch(path, { credentials: "same-origin" });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
   return (await r.json()) as T;
@@ -91,7 +103,7 @@ export function setCsrfToken(token: string): void {
 }
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
@@ -110,7 +122,7 @@ async function mutateJson<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
@@ -138,7 +150,7 @@ const deleteJson = <T>(path: string): Promise<T> => mutateJson<T>("DELETE", path
 
 /** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
 async function postVoid(path: string, body?: unknown): Promise<void> {
-  const r = await fetch(path, {
+  const r = await apiFetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
@@ -166,7 +178,7 @@ const enc = encodeURIComponent;
 async function upload(file: File): Promise<{ path: string; name: string }> {
   const fd = new FormData();
   fd.append("file", file, file.name || "pasted");
-  const r = await fetch("/api/upload", {
+  const r = await apiFetch("/api/upload", {
     method: "POST",
     credentials: "same-origin",
     headers: { "X-CSRF-Token": csrfToken },
