@@ -33,6 +33,12 @@ window.WebSocket = class {
 const CLAUDE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
 // opencode's: alt screen + mouse tracking (the #397/#414 contract this fix must not break).
 const OPENCODE = "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H\x1b[2J";
+// antigravity (`agy`): INLINE on the normal buffer with NO mouse tracking (verified against agy
+// 1.0.16 — it flips ?1049h only for the ~0.6s splash, then leaves it and renders the conversation
+// inline, arming only ?2004h and never ?1000/?1002/?1003/?1006). xterm selects natively here, so
+// the #536 force-select twin must stay OUT of the way; firing it turned the drag into an empty
+// Shift-incremental extend and selected nothing — the reported "selection doesn't work" in agy.
+const AGY = "\x1b[?2004h\x1b[H\x1b[2J";
 
 const SIGINT_FRAME = '"d":"\\u0003"'; // {"t":"i","d":"\x03"} — ^C reaching the PTY
 
@@ -70,6 +76,18 @@ test("plain drag selects text while the agent owns the mouse (#536)", async ({
   await expect
     .poll(async () => page.evaluate(() => (window as never as { __sent: string[] }).__sent))
     .toContain('{"t":"i","d":"x"}');
+});
+
+test("inline agent with NO mouse tracking (antigravity) still selects on a plain drag", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "mouse behavior");
+  // RED before the fix: the #536 force-select twin fired for agy too (normal buffer), replacing
+  // the plain press with a Shift press → xterm did an empty incremental extend → nothing selected.
+  // GREEN after: with no mouse tracking the twin is skipped, so xterm's native drag-selection runs.
+  await openTerm(page, AGY, "selcopy-nomouse");
+  await dragSelect(page);
+  expect(await selectionCells(page)).toBeGreaterThan(0);
 });
 
 test("Ctrl+C with a selection copies it and never reaches the PTY (#536)", async ({

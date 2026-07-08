@@ -274,18 +274,25 @@ export function Terminal({
       return true;
     });
 
-    // Plain-drag selection despite app mouse-tracking (#536). claude arms mouse reporting
-    // (?1000h/?1002h/?1003h, re-emitted on every attach by #397), and xterm routes an
-    // unmodified left-drag to the app — selection then silently requires Shift. For
-    // NORMAL-buffer sessions (inline agents: claude/codex/gemini) re-dispatch the press as
-    // its Shift twin so xterm's SelectionService forces selection; the synthetic event is
-    // untrusted, so the guard below lets it through untouched. Alt-screen TUIs (opencode)
-    // keep their mouse — clicks there are real UI, and Shift+drag remains the selection
-    // path. detail is passed through so double/triple-click word/line selection still work.
+    // Plain-drag selection despite app mouse-tracking (#536). A mouse-tracking agent (claude arms
+    // ?1000h/?1002h/?1003h, re-emitted on every attach by #397) makes xterm route an unmodified
+    // left-drag to the app — selection then silently requires Shift. For such a session on the
+    // NORMAL buffer we re-dispatch the press as its Shift twin so xterm's SelectionService forces
+    // selection; the synthetic event is untrusted, so the guard below lets it through untouched.
+    // Two sessions must NOT get the twin, for opposite reasons:
+    //   • Alt-screen TUIs (opencode) keep their mouse — clicks there are real UI, so Shift+drag
+    //     stays the selection path (the buffer-type guard).
+    //   • Inline agents that arm NO mouse reporting (antigravity/`agy` runs on the normal buffer
+    //     without mouse tracking; also codex/gemini when idle) already get NATIVE xterm selection
+    //     on a plain drag — forcing a Shift twin there turns the fresh selection into an (empty)
+    //     Shift-incremental *extend* from a nonexistent anchor, so the drag selected nothing. The
+    //     mouse-tracking guard skips the twin whenever the app doesn't own the mouse.
+    // detail is passed through so double/triple-click word/line selection still work.
     const forceSelectMousedown = (e: MouseEvent) => {
       if (!e.isTrusted) return; // our own synthetic twin — let it reach xterm
       if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
       if (term.buffer.active.type !== "normal") return;
+      if ((term.modes?.mouseTrackingMode ?? "none") === "none") return; // xterm selects natively
       e.preventDefault();
       e.stopImmediatePropagation();
       e.target?.dispatchEvent(
