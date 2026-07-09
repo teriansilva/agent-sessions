@@ -773,7 +773,9 @@ def test_ws_opencode_placeholder_passes_validation_on_new(
     # argv-build (bare-name bin → 4500) to prove validation passed without needing a real
     # opencode/dtach. The launch cwd must be a pickable project.
     from agent_sessions import engines, scanner
+    from agent_sessions.engines import opencode
 
+    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
@@ -867,6 +869,74 @@ def test_ws_codex_placeholder_rejected_on_resume(fake_jsonl, auth_cfg):
     assert _close_code(c, f"/ws/term/{_CDX_PLACEHOLDER}", headers) == 4404
 
 
+def test_ws_codex_alias_attach_uses_physical_runtime_and_logical_transcript(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    # Codex new sessions launch under a placeholder dtach key, then reconcile to the real rollout
+    # uuid. Attaching by the real URL must still attach to the placeholder runtime, while transcript
+    # replay reads the real/logical key where Codex history is stored.
+    from agent_sessions import engines, metadata, scanner, sessions
+    from agent_sessions.routes import terminal
+
+    placeholder = "codex:new-141532f2-58f7-4ba3-9d35-dd1f21e60a5b"
+    real = "codex:019f45cb-50fa-7fb0-a1c2-1164c47f11f8"
+    real_native = real.split(":", 1)[1]
+    placeholder_native = placeholder.split(":", 1)[1]
+    metadata.set_alias(placeholder, real)
+
+    monkeypatch.setattr(terminal.owner, "takeover_enabled", lambda: False)
+    monkeypatch.setattr(
+        engines,
+        "scan_all",
+        lambda: [
+            scanner.Session(
+                engine="codex",
+                uuid=real_native,
+                cwd="/tmp/project",
+                last_mtime=1.0,
+                first_user_message="",
+                archived=False,
+            )
+        ],
+    )
+    actions = []
+
+    def fake_open_action(engine, native):
+        actions.append((engine, native))
+        return sessions.ATTACH, None
+
+    seen = {}
+
+    async def fake_run(ws, argv, *, cwd, buf_key=None, transcript_key=None, **kwargs):
+        seen.update(
+            argv=argv,
+            cwd=cwd,
+            buf_key=buf_key,
+            transcript_key=transcript_key,
+            kwargs=kwargs,
+        )
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(sessions, "open_action", fake_open_action)
+    monkeypatch.setattr(terminal.webterm, "run", fake_run)
+
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    try:
+        with c.websocket_connect(f"/ws/term/{real}", headers=headers) as ws:
+            for _ in range(4):
+                if seen:
+                    break
+                ws.receive()
+    except WebSocketDisconnect:
+        pass
+
+    assert actions == [("codex", placeholder_native)]
+    assert seen["cwd"] == "/tmp/project"
+    assert seen["buf_key"] == placeholder
+    assert seen["transcript_key"] == real
+
+
 class _FakeWS:
     """Minimal ws stand-in capturing control frames sent by the reconcile coroutine."""
 
@@ -950,8 +1020,10 @@ def test_ws_opencode_resume_real_id_with_aliased_dead_master(
     # 4500 on a bare-name bin), not 4404 — which is what would happen if `native` were
     # overwritten to the placeholder before the resume scan.
     from agent_sessions import engines, metadata
+    from agent_sessions.engines import opencode
 
     OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
+    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
     c = _client(auth_cfg)
@@ -969,7 +1041,9 @@ def test_ws_opencode_placeholder_launch_failure_releases_lock(
     # placeholder: the launch lock was released, so the 2nd attempt LAUNCHes again (4500),
     # not BUSY (4409).
     from agent_sessions import engines, scanner
+    from agent_sessions.engines import opencode
 
+    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
@@ -1357,6 +1431,48 @@ def test_synthetic_attach_payload_ends_with_live_screen_seam(monkeypatch):
     assert b"HISTORY-TAIL" in payload
     assert "live screen ↓".encode() in payload
     assert payload.find(b"HISTORY-TAIL") < payload.find("live screen ↓".encode())
+
+
+def test_alias_backed_attach_uses_logical_key_for_transcript(monkeypatch):
+    # Codex/opencode/antigravity new sessions run under a placeholder socket, then converge to
+    # the real id. Runtime resources stay keyed by the placeholder, but transcript stores use the
+    # real native id. Attaching by the real URL must therefore render history from the logical key.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    phys = "codex:new-141532f2-58f7-4ba3-9d35-dd1f21e60a5b"
+    logical = "codex:019f45cb-50fa-7fb0-a1c2-1164c47f11f8"
+    seen = []
+    sent = []
+
+    def transcript_payload(k, c, r):
+        seen.append(k)
+        return (b"CODEX-HISTORY-TAIL", 3)
+
+    monkeypatch.setattr(webterm.scrollback, "_transcript_payload", transcript_payload)
+
+    class WS(_ScriptedWS):
+        async def send_bytes(self, b):
+            sent.append(bytes(b))
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", 0.01)
+    asyncio.run(
+        webterm.run(
+            WS([("sleep", 0.1)]),
+            ["dtach"],
+            cwd="/tmp",
+            buf_key=phys,
+            transcript_key=logical,
+            have=0,
+        )
+    )
+    assert seen == [logical]
+    assert b"CODEX-HISTORY-TAIL" in b"".join(sent)
 
 
 def test_terminate_then_kill_reaps_sigterm_ignoring_child():

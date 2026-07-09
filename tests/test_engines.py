@@ -31,6 +31,7 @@ def test_scan_all_returns_claude_sessions(fake_jsonl):
 
 def test_absent_provider_drops_out(tmp_home, monkeypatch):
     # No ~/.claude/projects under tmp_home and no claude on PATH → claude absent.
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
     monkeypatch.setattr(engines.shutil, "which", lambda _name: None)
     assert engines.present_providers() == []
     assert engines.scan_all() == []
@@ -149,16 +150,34 @@ def test_opencode_archived_and_title(opencode_db):
 
 
 def test_opencode_fail_soft_missing_db(tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(tmp_home / "nope.db"))
+    monkeypatch.setattr(engines.shutil, "which", lambda _name: None)
     prov = engines.OpenCodeProvider()
     assert prov.is_present() is False
     assert prov.scan() == []
 
 
+def test_opencode_binary_without_db_is_present_and_launchable(tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_DB", raising=False)
+    oc = tmp_home / ".opencode" / "bin" / "opencode"
+    oc.parent.mkdir(parents=True)
+    oc.write_text("#!/bin/sh\n")
+    oc.chmod(0o755)
+
+    prov = engines.OpenCodeProvider()
+    assert prov.is_present() is True
+    assert prov.scan() == []
+    assert prov.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True) == [str(oc), "/tmp/proj"]
+
+
 def test_opencode_fail_soft_corrupt_db(tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
     bad = tmp_home / "corrupt.db"
     bad.write_text("this is not a sqlite database")
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(bad))
+    monkeypatch.setattr(engines.shutil, "which", lambda _name: None)
     prov = engines.OpenCodeProvider()
     assert prov.is_present() is False
     assert prov.scan() == []
@@ -179,6 +198,9 @@ def test_opencode_archive_unarchive_via_sidecar(tmp_path, monkeypatch):
 
 
 def test_opencode_launch_argv(monkeypatch):
+    from agent_sessions.engines import opencode as opencode_mod
+
+    monkeypatch.setattr(opencode_mod.discover, "resolve", lambda _name: None)
     monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")
     argv = engines.OpenCodeProvider().launch_argv(_OC_TOP, cwd="/tmp/other", bypass=True)
     assert argv == ["opencode", "/tmp/other", "--session", _OC_TOP]
@@ -196,10 +218,13 @@ def test_supports_new_agrees_with_new_launch_argv():
         assert isinstance(argv, list) and argv, f"{prov.engine_id} new_launch_argv must yield argv"
 
 
-def test_opencode_advertises_new_session_via_reconcile():
+def test_opencode_advertises_new_session_via_reconcile(monkeypatch):
     # #127: opencode now supports new-session via launch-then-reconcile. supports_new is
     # True and new_launch_argv yields a bare `opencode <dir>` (NO --session: opencode
     # mints its own id, which the reconcile discovers).
+    from agent_sessions.engines import opencode as opencode_mod
+
+    monkeypatch.setattr(opencode_mod.discover, "resolve", lambda _name: None)
     p = engines.OpenCodeProvider()
     assert p.supports_new is True
     argv = p.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True)

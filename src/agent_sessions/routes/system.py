@@ -85,21 +85,19 @@ def register(
     @app.get("/api/engines")
     async def list_engines(_: str = Depends(logged_in)) -> JSONResponse:
         # Discovery for the Settings "Connected agents" section: every known provider
-        # with its presence + whether it can start a new session + the resolved binary
-        # path (or null). Authed; GET, so no CSRF.
-        return JSONResponse(
-            {
-                "engines": [
-                    {
-                        "id": p.engine_id,
-                        "present": p.is_present(),
-                        "supports_new": bool(getattr(p, "supports_new", False)),
-                        "bin": discover.resolve(p.engine_id),
-                    }
-                    for p in engines.all_providers()
-                ]
+        # with whether the CLI is installed + whether this host can start a new session +
+        # the resolved binary path (or null). Authed; GET, so no CSRF.
+        def row(p: engines.EngineProvider) -> dict:
+            bin_path = discover.resolve(p.engine_id)
+            can_start = bool(bin_path and getattr(p, "supports_new", False))
+            return {
+                "id": p.engine_id,
+                "present": bin_path is not None,
+                "supports_new": can_start,
+                "bin": bin_path,
             }
-        )
+
+        return JSONResponse({"engines": [row(p) for p in engines.all_providers()]})
 
     @app.get("/api/ai/activity")
     async def ai_activity(_: str = Depends(logged_in)) -> JSONResponse:
@@ -239,8 +237,8 @@ def register(
                 "onboarded": onboarded_val,
                 "new_session_engines": [
                     p.engine_id
-                    for p in engines.present_providers()
-                    if getattr(p, "supports_new", False)
+                    for p in engines.all_providers()
+                    if getattr(p, "supports_new", False) and discover.resolve(p.engine_id)
                 ],
                 "terminal_backend": "ws",
                 "must_change_password": must_change["v"],

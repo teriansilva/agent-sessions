@@ -214,6 +214,7 @@ async def run(
     *,
     cwd: str,
     buf_key: str | None = None,
+    transcript_key: str | None = None,
     cols: int = 80,
     rows: int = 24,
     lock: sessionlock.SessionLock | None = None,
@@ -232,6 +233,10 @@ async def run(
     single-writer lock; its fd is passed to the spawned process so the long-lived
     ``dtach`` master inherits it and holds the flock for the master's lifetime. We
     only borrow the fd here — the caller owns closing/transferring the lock.
+
+    ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
+    is the logical session key for saved transcript replay; alias-backed Codex sessions need
+    these to differ because the runtime placeholder is not the rollout UUID.
 
     ``read_only_gate`` (set by the caller for secondary-tab attaches, or fired
     mid-session when another tab force-takes the owner role — #184 slice 3):
@@ -342,8 +347,12 @@ async def run(
             # stay unaffected. The transcript scroll-up ends at "now" → the live replay below
             # duplicates the tail; `synthetic` marks payloads that need the boundary rule.
             synthetic = False
+            # Runtime resources for reconciled mint-own-id engines live under their placeholder
+            # key (dtach socket / lock / ring), but transcripts live under the REAL engine id.
+            # Use the logical key for transcript replay so alias-backed Codex sessions do not
+            # attach with an empty clean-load screen.
             tres = await loop.run_in_executor(
-                None, scrollback._transcript_payload, buf_key, cols, rows
+                None, scrollback._transcript_payload, transcript_key or buf_key, cols, rows
             )
             if tres is not None:
                 payload, hist_cursor = tres

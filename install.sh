@@ -525,6 +525,7 @@ _env_set() {
   # Set KEY=VAL, replacing an existing line. Only for fixed installer-owned keys with
   # token values (never secrets / user input). Rewrites via a 0600 temp + rename so the
   # file never has looser permissions; other lines are preserved (order not guaranteed).
+  [ "$(_env_file_get "$1")" = "$2" ] && _env_has "$1" && return 0
   if _env_has "$1"; then
     _tmp="$ENVF.set.$$"
     grep -v "^$1=" "$ENVF" > "$_tmp" || true

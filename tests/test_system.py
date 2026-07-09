@@ -31,7 +31,14 @@ def _login(c, cfg):
 # ---- /api/engines -------------------------------------------------------------
 
 
-def test_engines_lists_all_providers(auth_cfg, fake_jsonl):
+def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_home / "bin"))
+    claude_bin = tmp_home / ".local" / "bin" / "claude"
+    claude_bin.parent.mkdir(parents=True)
+    claude_bin.write_text("#!/bin/sh\n")
+    claude_bin.chmod(0o755)
+
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     r = c.get("/api/engines")
@@ -46,10 +53,30 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl):
         assert isinstance(e["present"], bool)
         assert isinstance(e["supports_new"], bool)
         assert e["bin"] is None or isinstance(e["bin"], str)
-    # claude is present in the fake-jsonl fixture
+    # claude is installed in the isolated HOME, so it can launch new sessions
     claude = next(e for e in d["engines"] if e["id"] == "claude")
     assert claude["present"] is True
     assert claude["supports_new"] is True
+    assert claude["bin"] == str(claude_bin)
+
+
+def test_engines_marks_binary_only_opencode_installed(auth_cfg, tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
+    oc_bin = tmp_home / ".opencode" / "bin" / "opencode"
+    oc_bin.parent.mkdir(parents=True)
+    oc_bin.write_text("#!/bin/sh\n")
+    oc_bin.chmod(0o755)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/engines").json()
+    opencode = next(e for e in d["engines"] if e["id"] == "opencode")
+    assert opencode == {
+        "id": "opencode",
+        "present": True,
+        "supports_new": True,
+        "bin": str(oc_bin),
+    }
 
 
 def test_engines_requires_auth(auth_cfg):

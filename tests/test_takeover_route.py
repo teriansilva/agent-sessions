@@ -62,6 +62,7 @@ def _serve(ws, registry, *, fp, tab_id, force=False, label=""):
         engine=ENG,
         phys_native=SID,
         phys_key=KEY,
+        transcript_key=KEY,
         argv=["/bin/true"],
         cwd="/",
         init_cols=80,

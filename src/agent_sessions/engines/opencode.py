@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 
+from .. import discover
 from .. import metadata as _metadata
 from ..scanner import Session, is_ephemeral_cwd
 from . import base
@@ -74,9 +75,7 @@ class OpenCodeProvider:
         except sqlite3.Error:
             return []
 
-    def is_present(self) -> bool:
-        # Present only when the DB is actually *readable* (not merely that the file
-        # or binary exists) — so a half-installed / locked opencode stays silent.
+    def _db_readable(self) -> bool:
         db = base._opencode_db()
         if not os.path.exists(db):
             return False
@@ -89,6 +88,16 @@ class OpenCodeProvider:
                 con.close()
         except sqlite3.Error:
             return False
+
+    def _bin(self) -> str:
+        # The service may have started before opencode was installed/doctor rewrote env.
+        # Resolve dynamically so ~/.opencode/bin/opencode still launches as an absolute argv[0].
+        return discover.resolve(self.engine_id) or base.OPENCODE_BIN
+
+    def is_present(self) -> bool:
+        # A fresh opencode install has a CLI before it has an opencode.db. Treat either a
+        # launchable binary or a readable DB as enough for the provider to participate.
+        return discover.resolve(self.engine_id) is not None or self._db_readable()
 
     def scan(self) -> list[Session]:
         out: list[Session] = []
@@ -127,7 +136,7 @@ class OpenCodeProvider:
     def launch_argv(self, native_id, *, cwd, bypass):
         # opencode resumes a session by id within its project dir. `bypass` is
         # accepted only for interface parity (permissions are config-side).
-        return [base.OPENCODE_BIN, cwd, "--session", native_id]
+        return [self._bin(), cwd, "--session", native_id]
 
     def new_launch_argv(self, native_id, *, cwd, bypass):
         # Start a *fresh* opencode session in `cwd`. We deliberately pass NO `--session`:
@@ -135,7 +144,7 @@ class OpenCodeProvider:
         # discovers afterwards. `native_id` here is the client-minted ``new-<uuid>``
         # placeholder the bridge keys the socket/lock by; opencode never sees it. `bypass`
         # is config-side for opencode, so it doesn't change the argv (interface parity).
-        return [base.OPENCODE_BIN, cwd]
+        return [self._bin(), cwd]
 
     def snapshot_session_ids(self, cwd: str) -> set[str] | None:
         """The set of top-level opencode ``ses_…`` ids currently in ``cwd`` (#127), or

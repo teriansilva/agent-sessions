@@ -100,6 +100,7 @@ async def _serve_takeover(
     engine: str,
     phys_native: str,
     phys_key: str,
+    transcript_key: str,
     argv: list[str],
     cwd: str,
     init_cols: int,
@@ -154,6 +155,7 @@ async def _serve_takeover(
             argv,
             cwd=cwd,
             buf_key=phys_key,
+            transcript_key=transcript_key,
             cols=init_cols,
             rows=init_rows,
             lock=lock,
@@ -229,6 +231,7 @@ def register(
             if resolved != f"{prov.engine_id}:{native}":
                 _eng, _, phys_native = resolved.partition(":")
         phys_key = f"{prov.engine_id}:{phys_native}"
+        transcript_key = f"{prov.engine_id}:{native}"
 
         # Single-writer policy: ATTACH to a live master, LAUNCH under the launch lock,
         # or BUSY (no local master but the lock is held elsewhere — never relaunch).
@@ -421,6 +424,7 @@ def register(
                     engine=prov.engine_id,
                     phys_native=phys_native,
                     phys_key=phys_key,
+                    transcript_key=transcript_key,
                     argv=argv,
                     cwd=cwd,
                     init_cols=init_cols,
@@ -472,6 +476,7 @@ def register(
                     argv,
                     cwd=cwd,
                     buf_key=phys_key,
+                    transcript_key=transcript_key,
                     cols=init_cols,
                     rows=init_rows,
                     lock=lock,

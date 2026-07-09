@@ -785,7 +785,14 @@ def test_upload_empty_is_422(auth_cfg, tmp_home):
     assert r.status_code == 422
 
 
-def test_api_config_returns_csrf_engines_backend(auth_cfg, fake_jsonl):
+def test_api_config_returns_csrf_engines_backend(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_BIN", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_home / "bin"))
+    claude_bin = tmp_home / ".local" / "bin" / "claude"
+    claude_bin.parent.mkdir(parents=True)
+    claude_bin.write_text("#!/bin/sh\n")
+    claude_bin.chmod(0o755)
+
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/config").json()
@@ -799,8 +806,32 @@ def test_api_config_requires_auth(auth_cfg, fake_jsonl):
     assert c.get("/api/config", follow_redirects=False).status_code in (401, 403)
 
 
-def test_api_config_advertises_opencode_new_session(auth_cfg, fake_jsonl, opencode_db):
-    # #127: opencode is now offered in the new-session picker (present + supports_new).
+def test_api_config_advertises_opencode_new_session(
+    auth_cfg, fake_jsonl, opencode_db, tmp_home, monkeypatch
+):
+    # #127: opencode is offered in the new-session picker when a launchable binary resolves.
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
+    oc_bin = tmp_home / ".opencode" / "bin" / "opencode"
+    oc_bin.parent.mkdir(parents=True)
+    oc_bin.write_text("#!/bin/sh\n")
+    oc_bin.chmod(0o755)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/config").json()
+    assert "opencode" in d["new_session_engines"]
+
+
+def test_api_config_advertises_binary_only_opencode_new_session(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    # Fresh opencode installs have a CLI before the first opencode.db exists.
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
+    oc_bin = tmp_home / ".opencode" / "bin" / "opencode"
+    oc_bin.parent.mkdir(parents=True)
+    oc_bin.write_text("#!/bin/sh\n")
+    oc_bin.chmod(0o755)
+
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     d = c.get("/api/config").json()
