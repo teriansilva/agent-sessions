@@ -23,24 +23,27 @@ function Brackets({ hero = false }: { hero?: boolean }) {
 
 /** Slideshow tour slides — images are placeholders (web/public/onboarding/*.svg); the copy is
  *  the durable part. Real screenshots are a follow-up (#463 out-of-scope). */
+const publicAsset = (path: string): string =>
+  `${import.meta.env.BASE_URL}${path.replace(/^\/+/, "")}`;
+
 const SLIDES: { img: string; title: string; body: string }[] = [
   {
-    img: "/onboarding/sessions.svg",
+    img: publicAsset("onboarding/sessions.svg"),
     title: "Your sessions",
     body: "Every agent session lives in the sidebar — search, filter by project or engine, favorite, archive.",
   },
   {
-    img: "/onboarding/pulse.svg",
+    img: publicAsset("onboarding/pulse.svg"),
     title: "Pulse",
     body: "An AI-curated read on what needs you, what's in flight, and what's gone idle. Open it from the topbar.",
   },
   {
-    img: "/onboarding/overview.svg",
+    img: publicAsset("onboarding/overview.svg"),
     title: "Overview map",
     body: "Your projects and sessions as a flowchart — drag a session onto a project to reassign it.",
   },
   {
-    img: "/onboarding/settings.svg",
+    img: publicAsset("onboarding/settings.svg"),
     title: "Settings → AI",
     body: "Tune your AI endpoint, auto-sort, themes and more. Re-open this tour any time from Help.",
   },

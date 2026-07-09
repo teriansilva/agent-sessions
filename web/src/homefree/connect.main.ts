@@ -24,6 +24,20 @@ const connectBtn = byId("connect") as HTMLButtonElement;
 const statusEl = byId("status");
 const countdownEl = byId("countdown");
 
+// On the public BattleLab deploy (battlelab.superstatus.io/connect), the relay is ours:
+// prefill it and hide the field so the user only supplies name + key. Self-hosted copies keep
+// the relay field editable. We deliberately do NOT read `?relay=`; a link-controlled relay
+// default would make phishing the access key too easy.
+const PUBLIC_RELAY = "https://relay.battlelab.superstatus.io";
+if (
+  location.hostname === "battlelab.superstatus.io" ||
+  location.hostname.endsWith(".battlelab.superstatus.io")
+) {
+  relayInput.value = PUBLIC_RELAY;
+  relayInput.readOnly = true;
+  relayInput.hidden = true; // stays in the DOM so connect() still reads .value
+}
+
 function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
   statusEl.textContent = text;
   statusEl.dataset.kind = kind;

@@ -14,6 +14,10 @@ const viteConfig = readFileSync(
   fileURLToPath(new URL("../../vite.config.ts", import.meta.url)),
   "utf8",
 );
+const connectViteConfig = readFileSync(
+  fileURLToPath(new URL("../../vite.config.connect.ts", import.meta.url)),
+  "utf8",
+);
 
 describe("PWA navigation fallback", () => {
   it("denylists /connect.html so the SW never shadows it with index.html", () => {
@@ -23,5 +27,12 @@ describe("PWA navigation fallback", () => {
 
   it("still builds connect.html as its own entry", () => {
     expect(viteConfig).toMatch(/connect:\s*"connect\.html"/);
+  });
+
+  it("keeps the public /connect/ build static, app-capable, and service-worker-free", () => {
+    expect(connectViteConfig).toMatch(/base:\s*"\/connect\/"/);
+    expect(connectViteConfig).toMatch(/publicDir:\s*"public"/);
+    expect(connectViteConfig).toMatch(/input:\s*\{\s*connect:\s*"connect\.html"\s*\}/);
+    expect(connectViteConfig).not.toMatch(/vite-plugin-pwa|VitePWA\s*\(|workbox:|registerType:/);
   });
 });

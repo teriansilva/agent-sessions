@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:connect": "vite build --config vite.config.connect.ts",
     "lint": "eslint .",
     "preview": "vite preview",
     "test:e2e": "playwright test",
