@@ -217,6 +217,32 @@ test("MuxWebSocket carries the tunnel session cookie on the WS upgrade after log
   ws.close();
 });
 
+test("switching sessions reuses the tunnel session cookie — no re-auth (#595 P5)", async () => {
+  const wsCookies: (string | undefined)[] = [];
+  const { tunnel } = wire(async (info, s) => {
+    if (info.k === "http") {
+      await drain(s);
+      await httpReply(s, 200, [["set-cookie", "agent_sessions=SID9; Path=/"]], te.encode("{}"));
+      return;
+    }
+    wsCookies.push((info.headers as Record<string, string>).cookie);
+    await drain(s);
+    await s.end();
+  });
+
+  await tunnel.fetch("/api/config"); // ConfigContext boot → mints the session (no login prompt)
+  for (const sid of ["claude:one", "opencode:two"]) {
+    const ws = tunnel.wsFactory(`/ws/term/${sid}`); // open / switch to another session
+    await opened(ws);
+    await tick();
+    ws.close();
+    await tick();
+  }
+  // Both terminal sockets carried the SAME session cookie — the app never re-prompts.
+  expect(wsCookies.length).toBe(2);
+  expect(wsCookies.every((c) => c?.includes("agent_sessions=SID9"))).toBe(true);
+});
+
 // --------------------------------- MuxWebSocket ---------------------------------
 
 test("MuxWebSocket round-trips text + binary messages (echo)", async () => {

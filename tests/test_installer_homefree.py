@@ -10,6 +10,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
 
@@ -129,3 +131,92 @@ def test_structural_invariants():
     assert "FULL CONTROL of this machine" in s  # anti-scam copy
     # a plain curl|sh must not default to contacting a relay
     assert "_mode=selfhost" in s
+
+
+def test_stream_appmode_loopback_sets_auth_none_and_app_port(tmp_path):
+    """Loopback bind (default) → option A: the box app becomes AUTH_MODE=none (no login
+    prompt), the Home Free unit carries HOMEFREE_APP_PORT, and the auth change is disclosed."""
+    home = tmp_path / "home"
+    cfg = tmp_path / "cfg"
+    env = {
+        "AGENT_SESSIONS_HOME": str(home),
+        "XDG_CONFIG_HOME": str(cfg),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_REMOTE": "stream",
+        "AGENT_SESSIONS_RELAY_URL": "wss://box.example/relay/ws",
+        # HOST defaults to 127.0.0.1 → loopback → app-mode
+    }
+    snippet = (
+        'mkdir -p "$PREFIX"; '
+        'printf "AGENT_SESSIONS_PASSWORD_HASH=x\\n" > "$ENVF"; '
+        'printf "AGENT_SESSIONS_FORCE_PASSWORD_CHANGE=1\\n" >> "$ENVF"; '
+        "homefree_maybe_setup </dev/null"
+    )
+    r = _run(snippet, tmp_path, env)
+    assert r.returncode == 0, r.stderr
+
+    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
+    assert "HOMEFREE_APP_PORT=8765" in unit  # agent reverse-proxies the box app
+
+    envf = (home / "env").read_text()
+    assert "AGENT_SESSIONS_AUTH_MODE=none" in envf  # option A: single access-key gate
+    assert "FORCE_PASSWORD_CHANGE" not in envf  # dropped (inert under AUTH_MODE=none)
+    assert "FULL-APP mode" in r.stdout  # the auth handoff is disclosed
+
+
+def test_stream_non_loopback_stays_recovery_shell(tmp_path):
+    """A non-loopback bind keeps the app's password and the recovery shell — no AUTH_MODE
+    flip, no HOMEFREE_APP_PORT (app-mode fail-closed)."""
+    home = tmp_path / "home"
+    cfg = tmp_path / "cfg"
+    env = {
+        "AGENT_SESSIONS_HOME": str(home),
+        "XDG_CONFIG_HOME": str(cfg),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_REMOTE": "stream",
+        "AGENT_SESSIONS_RELAY_URL": "wss://box.example/relay/ws",
+        "AGENT_SESSIONS_HOST": "0.0.0.0",  # exposed → NOT loopback
+        "AGENT_SESSIONS_ORIGIN": "http://box.example",
+    }
+    snippet = (
+        'mkdir -p "$PREFIX"; '
+        'printf "AGENT_SESSIONS_PASSWORD_HASH=x\\n" > "$ENVF"; '
+        'printf "AGENT_SESSIONS_FORCE_PASSWORD_CHANGE=1\\n" >> "$ENVF"; '
+        "homefree_maybe_setup </dev/null"
+    )
+    r = _run(snippet, tmp_path, env)
+    assert r.returncode == 0, r.stderr
+
+    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
+    assert "HOMEFREE_APP_PORT" not in unit  # app-mode not enabled
+
+    envf = (home / "env").read_text()
+    assert "AGENT_SESSIONS_AUTH_MODE=none" not in envf  # password stays in place
+    assert "RECOVERY-SHELL mode" in r.stdout
+
+
+@pytest.mark.parametrize("host", ["localhost", "::1"])
+def test_stream_loopback_alias_stays_recovery_shell(tmp_path, host):
+    """Only the exact 127.0.0.1 default enables app-mode; localhost/::1 (different Origin /
+    IPv6 address than the agent would proxy to) fall back to the recovery shell (#596 review)."""
+    home = tmp_path / "home"
+    cfg = tmp_path / "cfg"
+    env = {
+        "AGENT_SESSIONS_HOME": str(home),
+        "XDG_CONFIG_HOME": str(cfg),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_REMOTE": "stream",
+        "AGENT_SESSIONS_RELAY_URL": "wss://box.example/relay/ws",
+        "AGENT_SESSIONS_HOST": host,
+    }
+    snippet = (
+        'mkdir -p "$PREFIX"; '
+        'printf "AGENT_SESSIONS_PASSWORD_HASH=x\\n" > "$ENVF"; '
+        "homefree_maybe_setup </dev/null"
+    )
+    r = _run(snippet, tmp_path, env)
+    assert r.returncode == 0, r.stderr
+    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
+    assert "HOMEFREE_APP_PORT" not in unit  # app-mode not enabled
+    assert "AGENT_SESSIONS_AUTH_MODE=none" not in (home / "env").read_text()  # password kept
+    assert "RECOVERY-SHELL mode" in r.stdout

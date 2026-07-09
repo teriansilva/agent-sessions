@@ -615,6 +615,11 @@ homefree_gen_key() {  # >=128-bit, base32, lowercase, no padding — machine-gen
 
 render_homefree_unit() {
   mkdir -p "$UNIT_DIR"
+  # Full-app streaming (#579 P5): with app-mode ($1=1) the agent reverse-proxies the box app
+  # at HOMEFREE_APP_PORT; without it, HOMEFREE_APP_PORT is absent and the agent fail-closes
+  # every viewer to the recovery shell. systemd ignores the resulting blank line.
+  _appport_env=""
+  [ "${1:-0}" = 1 ] && _appport_env="Environment=HOMEFREE_APP_PORT=$PORT"
   cat > "$HOMEFREE_UNIT" <<EOF
 [Unit]
 Description=agent-sessions Home Free relay agent
@@ -627,6 +632,7 @@ Environment=AGENT_SESSIONS_RELAY_URL=$HOMEFREE_RELAY_URL
 Environment=HOMEFREE_CONSOLE_NAME_FILE=$HOMEFREE_DIR/console_name
 Environment=HOMEFREE_ACCESS_KEY_FILE=$HOMEFREE_DIR/access_key
 Environment=HOMEFREE_IDENTITY_PATH=$HOMEFREE_DIR/identity
+$_appport_env
 ExecStart=$CURRENT/venv/bin/python -m agent_sessions.homefree
 Restart=on-failure
 RestartSec=3
@@ -636,14 +642,38 @@ WantedBy=default.target
 EOF
 }
 
+# Option A (#595): set the box app to AUTH_MODE=none so app-mode streams without an in-app
+# login prompt — the access key + loopback binding are the single gate. Idempotent; only
+# called on a loopback bind. Drops the force-password-change flag (inert under AUTH_MODE=none).
+homefree_enable_app_auth() {
+  [ -f "$ENVF" ] || return 0
+  _tmp="$ENVF.hf.$$"
+  grep -vE '^(AGENT_SESSIONS_AUTH_MODE|AGENT_SESSIONS_FORCE_PASSWORD_CHANGE)=' "$ENVF" > "$_tmp" 2>/dev/null || true
+  printf 'AGENT_SESSIONS_AUTH_MODE=none\n' >> "$_tmp"
+  mv "$_tmp" "$ENVF"
+  chmod 600 "$ENVF" 2>/dev/null || true
+  if [ "${AGENT_SESSIONS_NO_SERVICE:-0}" != 1 ] && systemctl --user >/dev/null 2>&1; then
+    systemctl --user restart "$APP.service" 2>/dev/null || true  # pick up AUTH_MODE=none
+  fi
+}
+
 homefree_print_credentials() {
-  _name="$1"; _key="$2"
+  _name="$1"; _key="$2"; _appmode="${3:-0}"
   if [ -t 1 ]; then _R='\033[1;31m'; _B='\033[1m'; _Z='\033[0m'; else _R=''; _B=''; _Z=''; fi
   note "BattleLab remote (stream) is enabled — reach this box from any browser."
   log "Console name: ${_name}"
   log "Access key:   ${_key}"
   printf '  %sConnect at:   %s%s\n' "$_B" "$HOMEFREE_CONNECT_URL" "$_Z"
   printf '  %s(enter the console name + access key above; nothing else to set up.)%s\n' "$_B" "$_Z"
+  printf '\n'
+  if [ "$_appmode" = 1 ]; then
+    printf '  %sFULL-APP mode: the browser streams your entire BattleLab UI.%s\n' "$_B" "$_Z"
+    printf '  %s* Your box app now uses the ACCESS KEY as its ONLY gate (no password),%s\n' "$_R" "$_Z"
+    printf '  %s  bound to loopback. The access key alone grants full control.%s\n' "$_R" "$_Z"
+  else
+    printf '  %sRECOVERY-SHELL mode (single terminal): the app is not loopback-bound,%s\n' "$_B" "$_Z"
+    printf '  %s  so its password stays in place and the full UI is not streamed.%s\n' "$_B" "$_Z"
+  fi
   printf '\n'
   printf '  %s* SECURITY: the access key grants FULL CONTROL of this machine.%s\n' "$_R" "$_Z"
   printf '  %sNever enter it for anyone who contacted you. BattleLab staff will%s\n' "$_R" "$_Z"
@@ -657,7 +687,18 @@ homefree_setup() {
   chmod 600 "$HOMEFREE_DIR/console_name" "$HOMEFREE_DIR/access_key" 2>/dev/null || true
   _name="$(cat "$HOMEFREE_DIR/console_name")"
   _key="$(cat "$HOMEFREE_DIR/access_key")"
-  render_homefree_unit
+  # Full-app streaming (#579 P5, option A): app-mode needs the box app to auto-session (no
+  # login prompt), which is only safe when the app is loopback-bound — then the access key is
+  # the single gate. Restricted to the exact 127.0.0.1 default: the agent proxies to (and
+  # sends Origin) 127.0.0.1:$PORT, which must match the app's persisted AGENT_SESSIONS_ORIGIN,
+  # so `localhost`/`::1` (different Origin / IPv6 address) fall back to the recovery shell
+  # rather than fail CSRF/origin. Any non-loopback bind keeps the app password + shell.
+  _appmode=0
+  if [ "$HOST" = "127.0.0.1" ]; then
+    _appmode=1
+    homefree_enable_app_auth
+  fi
+  render_homefree_unit "$_appmode"
   if [ "${AGENT_SESSIONS_NO_SERVICE:-0}" != 1 ] && systemctl --user >/dev/null 2>&1; then
     systemctl --user daemon-reload
     systemctl --user enable "$APP-homefree.service" >/dev/null 2>&1 || true
@@ -665,7 +706,7 @@ homefree_setup() {
   else
     log "start the agent with:  $CURRENT/venv/bin/python -m agent_sessions.homefree"
   fi
-  homefree_print_credentials "$_name" "$_key"
+  homefree_print_credentials "$_name" "$_key" "$_appmode"
 }
 
 homefree_prompt_remote() {  # echo "stream" or "selfhost"; only prompts on a real tty

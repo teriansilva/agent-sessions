@@ -85,3 +85,14 @@ the frame is dropped.
   frames at the relay finds ciphertext only (enforced by a regression test).
 - **No nonce reuse** — confirmation uses counter 0; transport starts at 1 and never
   repeats per key.
+
+## App auth in full-app (stream) mode
+
+In app mode (#579), the tunnel carries the box's own app, so the **access key is the single
+gate** — there is no second in-app login. The installer (option A) sets the box app to
+`AGENT_SESSIONS_AUTH_MODE=none` **only when it is loopback-bound**; the app then auto-mints a
+session (still enforcing CSRF + Origin), which the browser tunnel's cookie jar carries across
+`/api` and every terminal `/ws` — so opening or switching sessions never re-prompts. This is
+**disclosed at install time** (the credentials banner). A non-loopback bind keeps the app's
+password and falls back to the recovery shell (app mode fail-closes). The access key grants full
+control of the box, exactly as the installer warns.
