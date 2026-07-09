@@ -2,8 +2,8 @@
 
 Holds an outbound control WebSocket to the blind relay, registers a console name
 under an Ed25519 identity, and for each paired viewer dials a per-session leg,
-runs the responder handshake, and bridges the decrypted stream to a local target
-(the recovery shell by default). The relay only ever sees ciphertext.
+runs the responder handshake, and bridges the decrypted app-mode mux to the box's
+local BattleLab app. The relay only ever sees ciphertext.
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ import base64
 import json
 import logging
 import os
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import websockets
@@ -23,18 +22,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .appproxy import AppProxyTarget
 from .handshake import Responder, derive_psk
 from .mux import Mux, StreamReset
-from .targets import LocalTarget, PtyShellTarget
 
 log = logging.getLogger("battlelab.homefree.agent")
 
 _MAX_FRAME = 2**21  # generous ceiling for a WS frame (transport frames are small)
 
-# App-mode advert (#579 P4a): the viewer sends this exact plaintext as its FIRST encrypted
-# frame to request full-app streaming (the mux tunnel → AppProxyTarget). Anything else — a
-# non-advert first frame, a timeout, no configured app port, or a shell-only agent — falls
-# back to the recovery shell. Fail-closed by construction; the relay never sees it (it rides
-# inside the E2E transport, like everything else).
+# App-mode advert (#579): the viewer sends this exact plaintext as its FIRST encrypted frame
+# after the handshake. It is now a version handshake, not a mode negotiation: anything else
+# closes the session. The relay never sees it because it rides inside the E2E transport.
 _APP_ADVERT = b"\x00HF-APP/1"
+_APP_ADVERT_TIMEOUT = 5.0
 
 
 def load_or_create_identity(path: Path) -> Ed25519PrivateKey:
@@ -58,19 +55,11 @@ class AgentConfig:
     access_key: str
     identity_path: Path
     appver: str = "battlelab-home-free/1"
-    # Factory for the per-session recovery-shell endpoint (the fallback / non-app path).
-    target_factory: Callable[[], LocalTarget] = field(default=lambda: PtyShellTarget())
-    # Full-app streaming (#579 P4a): the box's local app to proxy in app mode. When
-    # ``app_port`` is None (or ``force_shell``), app-mode is unavailable and every viewer
-    # gets the recovery shell — fail-closed.
+    # Full-app streaming (#579): the box's local app to proxy. When ``app_port`` is None,
+    # viewer sessions are refused; there is no recovery-shell fallback.
     app_host: str = "127.0.0.1"
     app_port: int | None = None
     app_origin: str | None = None  # the origin the app expects (defaults to http://host:port)
-    force_shell: bool = False  # operator override: recovery shell only, ignore app adverts
-    # How long to wait for the viewer's first frame (the app advert) before defaulting to
-    # the shell. Small: the app browser adverts immediately; an old recovery browser that
-    # sends nothing on connect times out fast and gets its prompt.
-    mode_negotiate_timeout: float = 0.75
 
 
 class HomeFreeAgent:
@@ -180,60 +169,29 @@ class HomeFreeAgent:
         return responder.finish(bytes(msg3))
 
     async def _bridge(self, ws, transport) -> None:
-        mode, first = await self._negotiate_mode(ws, transport)
-        if mode == "app":
-            await self._bridge_app(ws, transport)
-        else:
-            await self._bridge_shell(ws, transport, first)
+        if self.config.app_port is None:
+            log.warning("refusing Home Free viewer: HOMEFREE_APP_PORT is not configured")
+            return
+        await self._expect_app_advert(ws, transport)
+        await self._bridge_app(ws, transport)
 
-    async def _negotiate_mode(self, ws, transport) -> tuple[str, bytes | None]:
-        """Decide app vs recovery-shell for this viewer, fail-closed.
-
-        Returns ``("app", None)`` only when app-mode is configured AND the viewer's first
-        frame is exactly the app advert. Otherwise ``("shell", first_plaintext_or_None)`` —
-        any non-advert first frame is returned so the shell can replay it as terminal input.
-        """
-        if self.config.force_shell or self.config.app_port is None:
-            return "shell", None  # app-mode not available → recovery shell
+    async def _expect_app_advert(self, ws, transport) -> None:
+        """Require the app-mode advert as the first encrypted viewer frame."""
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=self.config.mode_negotiate_timeout)
-        except (TimeoutError, websockets.ConnectionClosed):
-            return "shell", None  # viewer sent nothing in time (e.g. old recovery browser)
+            raw = await asyncio.wait_for(ws.recv(), timeout=_APP_ADVERT_TIMEOUT)
+        except TimeoutError as exc:
+            raise RuntimeError("app-mode advert timed out") from exc
         if not isinstance(raw, bytes | bytearray):
-            return "shell", None
+            raise RuntimeError("expected binary app-mode advert")
         plaintext = transport.decrypt(bytes(raw))
-        if plaintext == _APP_ADVERT:
-            return "app", None
-        return "shell", plaintext  # not an advert → shell, replaying the first frame
-
-    async def _bridge_shell(self, ws, transport, replay: bytes | None) -> None:
-        target = self.config.target_factory()
-        out_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        await target.start(lambda data: out_queue.put_nowait(data))
-        if replay:
-            await target.feed(replay)  # the first non-advert frame was terminal input
-
-        async def writer() -> None:
-            while True:
-                data = await out_queue.get()
-                await ws.send(transport.encrypt(data))
-
-        writer_task = asyncio.create_task(writer())
-        try:
-            async for message in ws:
-                if isinstance(message, bytes | bytearray):
-                    plaintext = transport.decrypt(bytes(message))
-                    await target.feed(plaintext)
-        finally:
-            writer_task.cancel()
-            await asyncio.gather(writer_task, return_exceptions=True)
-            await target.close()
+        if plaintext != _APP_ADVERT:
+            raise RuntimeError("unexpected app-mode advert")
 
     async def _bridge_app(self, ws, transport) -> None:
         """Full-app mode: carry the P1 mux over the transport and reverse-proxy each opened
         stream to the box's local app via P2's AppProxyTarget. The relay still only sees the
         ciphertext of each mux frame."""
-        assert self.config.app_port is not None  # guaranteed by _negotiate_mode
+        assert self.config.app_port is not None  # guaranteed by _bridge
         proxy = AppProxyTarget(
             app_host=self.config.app_host,
             app_port=self.config.app_port,

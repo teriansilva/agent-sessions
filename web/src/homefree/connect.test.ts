@@ -1,8 +1,7 @@
 // @vitest-environment node
 //
-// Drives the DOM-free connect core against an in-process relay stub (using the
-// Responder from handshake.ts) over a linked in-memory socket pair — proving the
-// viewer session completes the handshake and bridges bytes end-to-end.
+// Drives the DOM-free app-mode connect core against an in-process relay stub
+// (using the Responder from handshake.ts) over a linked in-memory socket pair.
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { describe, expect, it } from "vitest";
@@ -11,11 +10,9 @@ import { Responder, derivePsk } from "./handshake";
 import {
   APP_ADVERT,
   type AltchaChallenge,
-  type SessionEvent,
   type SocketLike,
   ViewerError,
   runAppSession,
-  runViewerSession,
   solveAltcha,
 } from "./connect";
 
@@ -52,30 +49,6 @@ function linkedPair(): [MockSocket, MockSocket] {
   a._peer = b;
   b._peer = a;
   return [a, b];
-}
-
-// A tiny relay + Responder that pairs, handshakes, and echoes "echo:<input>".
-async function fakeRelay(ws: MockSocket, accessKey: string): Promise<void> {
-  const chan = makeChannel(ws);
-  await chan.opened;
-  await chan.recvText(); // hello (captcha ignored in the stub)
-  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 3600 }));
-  const res = new Responder(await derivePsk(accessKey));
-  const msg1 = await chan.recvBinary();
-  chan.send(await res.respond(msg1));
-  const msg3 = await chan.recvBinary();
-  const transport = await res.finish(msg3);
-  for (;;) {
-    const f = await chan.recv();
-    if (f == null) break;
-    if (f instanceof Uint8Array) {
-      const pt = await transport.decrypt(f);
-      const out = new Uint8Array(5 + pt.length);
-      out.set(new TextEncoder().encode("echo:"));
-      out.set(pt, 5);
-      chan.send(await transport.encrypt(out));
-    }
-  }
 }
 
 // Minimal awaitable channel for the relay side of the test.
@@ -117,14 +90,6 @@ function makeChannel(ws: MockSocket) {
   };
 }
 
-const waitFor = async (pred: () => boolean, ms = 2000) => {
-  const start = Date.now();
-  while (!pred()) {
-    if (Date.now() - start > ms) throw new Error("waitFor timed out");
-    await new Promise((r) => setTimeout(r, 2));
-  }
-};
-
 describe("Home Free connect core", () => {
   it("solves an ALTCHA challenge and encodes the payload", () => {
     const enc = new TextEncoder();
@@ -147,33 +112,6 @@ describe("Home Free connect core", () => {
     expect(payload.signature).toBe("sig");
   });
 
-  it("completes the handshake and round-trips bytes through the relay", async () => {
-    const key = "AZURE-TEST-KEY-abc123";
-    const [clientWs, serverWs] = linkedPair();
-    const outputs: Uint8Array[] = [];
-    const events: SessionEvent[] = [];
-    void fakeRelay(serverWs, key);
-
-    const handle = await runViewerSession(clientWs, key, "captcha-ignored", {
-      onOutput: (b) => outputs.push(b),
-      onEvent: (e) => events.push(e),
-    });
-    expect(events.some((e) => e.type === "paired")).toBe(true);
-
-    handle.sendInput(new TextEncoder().encode("whoami\n"));
-    await waitFor(() => outputs.length > 0);
-    expect(new TextDecoder().decode(outputs[0])).toBe("echo:whoami\n");
-    handle.close();
-  });
-
-  it("rejects a wrong access key at the handshake", async () => {
-    const [clientWs, serverWs] = linkedPair();
-    void fakeRelay(serverWs, "correct-key");
-    await expect(
-      runViewerSession(clientWs, "wrong-key", "x", { onOutput: () => {}, onEvent: () => {} }),
-    ).rejects.toThrow();
-  });
-
   it("rejects (does not hang) when the socket fails before opening", async () => {
     // A socket that errors before onopen — e.g. an unreachable relay / bad TLS.
     const ws: SocketLike = {
@@ -188,7 +126,7 @@ describe("Home Free connect core", () => {
     };
     setTimeout(() => ws.onerror?.(), 0);
     await expect(
-      runViewerSession(ws, "k", "x", { onOutput: () => {}, onEvent: () => {} }),
+      runAppSession(ws, "k", "x", { onFrame: () => {}, onEvent: () => {} }),
     ).rejects.toBeInstanceOf(ViewerError);
   });
 
@@ -201,7 +139,7 @@ describe("Home Free connect core", () => {
       chan.send(JSON.stringify({ t: "error", code: "busy" }));
     })();
     await expect(
-      runViewerSession(clientWs, "k", "x", { onOutput: () => {}, onEvent: () => {} }),
+      runAppSession(clientWs, "k", "x", { onFrame: () => {}, onEvent: () => {} }),
     ).rejects.toMatchObject({ code: "busy" });
   });
 });

@@ -55,9 +55,8 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
     if not identity:
         raise ConfigError("HOMEFREE_IDENTITY_PATH is not set")
 
-    # Full-app streaming (#579 P5): the box's local app to reverse-proxy in app mode. When
-    # HOMEFREE_APP_PORT is unset (self-host / non-loopback box) app_port stays None and the
-    # agent fail-closes every viewer to the recovery shell — app-mode is opt-in + loopback-only.
+    # Full-app streaming (#579): the box's local app to reverse-proxy. When HOMEFREE_APP_PORT
+    # is unset, the agent refuses viewer sessions; there is no recovery-shell fallback.
     app_port_raw = env.get("HOMEFREE_APP_PORT")
     app_port: int | None = None
     if app_port_raw:
@@ -76,7 +75,6 @@ def build_config_from_env(env: Mapping[str, str] | None = None) -> AgentConfig:
         app_host=env.get("HOMEFREE_APP_HOST", "127.0.0.1"),
         app_port=app_port,
         app_origin=env.get("HOMEFREE_APP_ORIGIN"),
-        force_shell=env.get("HOMEFREE_FORCE_SHELL") == "1",
     )
 
 

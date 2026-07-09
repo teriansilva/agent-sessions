@@ -164,9 +164,8 @@ def test_stream_appmode_loopback_sets_auth_none_and_app_port(tmp_path):
     assert "FULL-APP mode" in r.stdout  # the auth handoff is disclosed
 
 
-def test_stream_non_loopback_stays_recovery_shell(tmp_path):
-    """A non-loopback bind keeps the app's password and the recovery shell — no AUTH_MODE
-    flip, no HOMEFREE_APP_PORT (app-mode fail-closed)."""
+def test_stream_non_loopback_refuses_homefree(tmp_path):
+    """A non-loopback bind cannot use app-only streaming, so Home Free is not enabled."""
     home = tmp_path / "home"
     cfg = tmp_path / "cfg"
     env = {
@@ -185,20 +184,17 @@ def test_stream_non_loopback_stays_recovery_shell(tmp_path):
         "homefree_maybe_setup </dev/null"
     )
     r = _run(snippet, tmp_path, env)
-    assert r.returncode == 0, r.stderr
-
-    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
-    assert "HOMEFREE_APP_PORT" not in unit  # app-mode not enabled
+    assert r.returncode != 0
+    assert "requires AGENT_SESSIONS_HOST=127.0.0.1" in r.stderr
+    assert not (cfg / "systemd" / "user" / "agent-sessions-homefree.service").exists()
 
     envf = (home / "env").read_text()
     assert "AGENT_SESSIONS_AUTH_MODE=none" not in envf  # password stays in place
-    assert "RECOVERY-SHELL mode" in r.stdout
 
 
 @pytest.mark.parametrize("host", ["localhost", "::1"])
-def test_stream_loopback_alias_stays_recovery_shell(tmp_path, host):
-    """Only the exact 127.0.0.1 default enables app-mode; localhost/::1 (different Origin /
-    IPv6 address than the agent would proxy to) fall back to the recovery shell (#596 review)."""
+def test_stream_loopback_alias_refuses_homefree(tmp_path, host):
+    """Only the exact 127.0.0.1 default enables app-only streaming (#596 review)."""
     home = tmp_path / "home"
     cfg = tmp_path / "cfg"
     env = {
@@ -215,8 +211,7 @@ def test_stream_loopback_alias_stays_recovery_shell(tmp_path, host):
         "homefree_maybe_setup </dev/null"
     )
     r = _run(snippet, tmp_path, env)
-    assert r.returncode == 0, r.stderr
-    unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
-    assert "HOMEFREE_APP_PORT" not in unit  # app-mode not enabled
+    assert r.returncode != 0
+    assert "requires AGENT_SESSIONS_HOST=127.0.0.1" in r.stderr
+    assert not (cfg / "systemd" / "user" / "agent-sessions-homefree.service").exists()
     assert "AGENT_SESSIONS_AUTH_MODE=none" not in (home / "env").read_text()  # password kept
-    assert "RECOVERY-SHELL mode" in r.stdout

@@ -1,28 +1,20 @@
-// Presentational connect-page states (#579 P3) — loading / error / recovery-shell
-// fallback, rendered to the HUD tokens per docs/mockup-connect-states.svg. Pure DOM
-// (the connect page is vanilla, no framework); no network / mux / xterm logic lives
-// here. P4 mounts this into the app-mode connect flow (the tunnel lifecycle drives the
-// state transitions); it is intentionally framework-free and side-effect-free so it can
-// be unit-tested and reused.
+// Presentational connect-page states (#579) — loading / error. Pure DOM (the
+// connect page is vanilla, no framework); no network / mux logic lives here.
+// It is intentionally framework-free and side-effect-free so it can be
+// unit-tested and reused.
 //
 // Design notes it enforces (docs/design.md): the brand `--accent` (amber) is the LED for
 // the live/loading state, kept SEPARATE from the status hues — red (`--status-down`) is
-// reserved for active failure, amber-status (`--status-degraded`) marks the degraded
-// "version skew" fallback. The "recovery shell" action is worded distinctly from RETRY so
-// the fallback can't be confused with retrying the full-app tunnel (Hermes #589 note).
+// reserved for active failure.
 
 export type ConnectStep = { label: string; state: "done" | "active" | "pending" };
 
 export type ConnectState =
   | { kind: "loading"; box?: string; steps?: ConnectStep[]; progress?: number }
-  | { kind: "error"; title?: string; message: string }
-  | { kind: "fallback"; message?: string };
+  | { kind: "error"; title?: string; message: string };
 
 export interface ConnectActions {
-  /** Retry the SAME connection (full-app tunnel). Shown on the error state. */
   onRetry?: () => void;
-  /** Drop to the single-terminal recovery shell — a DIFFERENT path, never a retry. */
-  onRecoveryShell?: () => void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -36,7 +28,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return n;
 }
 
-function led(kind: "accent" | "down" | "degraded"): HTMLElement {
+function led(kind: "accent" | "down"): HTMLElement {
   return el("span", `cs-led cs-led-${kind}`);
 }
 
@@ -97,27 +89,8 @@ export function renderConnectState(
     host.append(header, el("div", "cs-message", state.message));
 
     const row = el("div", "cs-actions");
-    row.append(
-      button("cs-btn cs-btn-primary", "RETRY", actions.onRetry),
-      button("cs-btn cs-btn-ghost", "RECOVERY SHELL", actions.onRecoveryShell),
-    );
+    row.append(button("cs-btn cs-btn-primary", "RETRY", actions.onRetry));
     host.append(row);
     return;
   }
-
-  // fallback — degraded (amber-status), offers ONLY the recovery shell (never a RETRY).
-  header.append(led("degraded"), title);
-  title.textContent = "FULL APP UNAVAILABLE";
-  host.append(
-    header,
-    el(
-      "div",
-      "cs-message",
-      state.message ??
-        "This box can't stream the full UI yet. You can still reach it in the single-terminal recovery shell.",
-    ),
-  );
-  const row = el("div", "cs-actions");
-  row.append(button("cs-btn cs-btn-primary cs-btn-wide", "OPEN RECOVERY SHELL", actions.onRecoveryShell));
-  host.append(row);
 }

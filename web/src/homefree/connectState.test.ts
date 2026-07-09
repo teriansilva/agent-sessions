@@ -24,31 +24,19 @@ test("loading renders the box, step checklist, progress rail, and blind-relay no
   expect(host.querySelector(".cs-note")?.textContent).toMatch(/relay is blind/);
 });
 
-test("error shows the message with a RETRY and a distinct RECOVERY SHELL action", () => {
+test("error shows the message with a RETRY action", () => {
   let retried = 0;
-  let recovery = 0;
   renderConnectState(
     host,
     { kind: "error", message: "connection_failed" },
-    { onRetry: () => retried++, onRecoveryShell: () => recovery++ },
+    { onRetry: () => retried++ },
   );
   expect(host.dataset.state).toBe("error");
   expect(host.querySelector(".cs-message")?.textContent).toBe("connection_failed");
   const btns = [...host.querySelectorAll("button")];
+  expect(btns.map((b) => b.textContent)).toEqual(["RETRY"]);
   btns.find((b) => b.textContent === "RETRY")?.click();
-  btns.find((b) => b.textContent === "RECOVERY SHELL")?.click();
   expect(retried).toBe(1);
-  expect(recovery).toBe(1);
-});
-
-test("fallback offers ONLY 'OPEN RECOVERY SHELL' — never a RETRY", () => {
-  let recovery = 0;
-  renderConnectState(host, { kind: "fallback" }, { onRecoveryShell: () => recovery++ });
-  expect(host.dataset.state).toBe("fallback");
-  const btns = [...host.querySelectorAll("button")];
-  expect(btns.some((b) => (b.textContent ?? "").includes("RETRY"))).toBe(false);
-  btns.find((b) => b.textContent === "OPEN RECOVERY SHELL")?.click();
-  expect(recovery).toBe(1);
 });
 
 test("an action with no handler renders a disabled button (no dead click target)", () => {

@@ -1,8 +1,8 @@
-// Home Free connect flow — the DOM-free, testable core that drives a viewer
-// session against the blind relay: solve the ALTCHA proof-of-work, open the
-// viewer WebSocket, run the E2E handshake (Initiator from handshake.ts), and
-// bridge the encrypted Transport to an output sink + input source. The DOM /
-// xterm wiring lives in connect.main.ts.
+// Home Free connect flow — the DOM-free, testable core that drives an app-mode
+// viewer session against the blind relay: solve the ALTCHA proof-of-work, open
+// the viewer WebSocket, run the E2E handshake (Initiator from handshake.ts), and
+// bridge encrypted mux frames to/from the tunnel. The DOM wiring lives in
+// connect.main.ts.
 
 import { sha256 } from "@noble/hashes/sha2.js";
 
@@ -72,7 +72,7 @@ export interface SocketLike {
 }
 
 /** Turns a SocketLike's callbacks into an awaitable frame queue. */
-class FrameChannel {
+export class FrameChannel {
   private readonly ws: SocketLike;
   private readonly queue: (string | Uint8Array)[] = [];
   private readonly waiters: ((v: string | Uint8Array | null) => void)[] = [];
@@ -158,77 +158,9 @@ export type SessionEvent =
   | { type: "expired" }
   | { type: "closed" };
 
-export interface SessionCallbacks {
-  onOutput: (data: Uint8Array) => void;
-  onEvent: (evt: SessionEvent) => void;
-}
-
-export interface SessionHandle {
-  sendInput: (data: Uint8Array) => void;
-  close: () => void;
-}
-
-/**
- * Drive a viewer session on an (already-created) socket: hello + captcha, wait
- * for pairing, run the Initiator handshake, then bridge the encrypted transport.
- * Returns a handle to feed terminal input and to close the session.
- */
-export async function runViewerSession(
-  ws: SocketLike,
-  accessKey: string,
-  captcha: string,
-  cb: SessionCallbacks,
-): Promise<SessionHandle> {
-  const chan = new FrameChannel(ws);
-  await chan.open();
-
-  chan.send(JSON.stringify({ t: "hello", captcha }));
-  const first = JSON.parse(await chan.recvText());
-  if (first.t === "error") throw new ViewerError(first.code ?? "error");
-  if (first.t !== "paired") throw new ViewerError("protocol", `expected paired, got ${first.t}`);
-  cb.onEvent({ type: "paired", deadline: first.deadline, ttl: first.ttl });
-
-  const ini = new Initiator(await derivePsk(accessKey));
-  chan.send(ini.start()); // msg1
-  const msg2 = await chan.recvBinary();
-  const { transport, msg3 } = await ini.finish(msg2);
-  chan.send(msg3);
-
-  // Serialize outbound sends so the AES-GCM counters stay strictly increasing
-  // even under a burst of keystrokes (the receiver rejects out-of-order frames).
-  let sendChain: Promise<void> = Promise.resolve();
-  const sendInput = (data: Uint8Array): void => {
-    sendChain = sendChain.then(async () => {
-      chan.send(await transport.encrypt(data));
-    });
-  };
-
-  void (async () => {
-    for (;;) {
-      const frame = await chan.recv();
-      if (frame == null) {
-        cb.onEvent({ type: "closed" });
-        break;
-      }
-      if (typeof frame === "string") {
-        const m = JSON.parse(frame);
-        if (m.t === "warn") cb.onEvent({ type: "warn", remaining: m.remaining });
-        else if (m.t === "expired") {
-          cb.onEvent({ type: "expired" });
-          break;
-        }
-      } else {
-        cb.onOutput(await transport.decrypt(frame));
-      }
-    }
-  })();
-
-  return { sendInput, close: () => chan.close() };
-}
-
-/** The app-mode advert (#579 P4a/P4b): the exact first encrypted frame that requests full-app
- *  streaming. Must byte-match the agent's `_APP_ADVERT` (`b"\x00HF-APP/1"`). Anything else — or
- *  no advert — makes the agent serve the recovery shell (fail-closed). */
+/** The app-mode advert (#579): the exact first encrypted frame after the E2E handshake.
+ *  Must byte-match the agent's `_APP_ADVERT` (`b"\x00HF-APP/1"`). Anything else makes the
+ *  agent close the session; there is no recovery-shell fallback. */
 export const APP_ADVERT: Uint8Array = new Uint8Array([0, ...new TextEncoder().encode("HF-APP/1")]);
 
 export interface AppSessionCallbacks {
@@ -244,11 +176,10 @@ export interface AppSessionHandle {
 }
 
 /**
- * Drive an **app-mode** viewer session (#579 P4b): same hello + pairing + Initiator handshake
- * as {@link runViewerSession}, but instead of bridging raw PTY bytes it (1) sends the app advert
- * as the first encrypted frame to request full-app streaming, and (2) bridges each subsequent
- * encrypted frame to/from a mux via callbacks — so the caller can run the P1 mux + P3 tunnel over
- * it. The relay still only sees ciphertext.
+ * Drive an **app-mode** viewer session (#579): hello + pairing + Initiator handshake, then
+ * (1) send the app advert as the first encrypted frame to prove this is an app-capable viewer,
+ * and (2) bridge each subsequent encrypted frame to/from a mux via callbacks — so the caller can
+ * run the P1 mux + P3 tunnel over it. The relay still only sees ciphertext.
  */
 export async function runAppSession(
   ws: SocketLike,

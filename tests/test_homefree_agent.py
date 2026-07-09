@@ -1,8 +1,8 @@
 """End-to-end tests: real agent + a minimal blind relay stub + a Python viewer.
 
 Proves the full path — agent registration, per-session handshake, encrypted
-bridge — works, that the relay sees only ciphertext (blindness regression), and
-that the PTY recovery shell round-trips.
+app-mode bridge — works, and that the relay sees only ciphertext (blindness
+regression).
 """
 
 import asyncio
@@ -19,7 +19,6 @@ import websockets
 from agent_sessions.homefree.agent import _APP_ADVERT, AgentConfig, HomeFreeAgent
 from agent_sessions.homefree.handshake import Initiator, derive_psk
 from agent_sessions.homefree.mux import Mux
-from agent_sessions.homefree.targets import EchoTarget, PtyShellTarget
 
 
 class RelayStub:
@@ -118,25 +117,25 @@ async def _serve(relay: RelayStub):
     return server, f"ws://127.0.0.1:{port}/relay/ws"
 
 
-def _agent(url: str, access_key: str, tmp_path, target_factory) -> HomeFreeAgent:
+def _agent(url: str, access_key: str, tmp_path, *, app_port: int | None = None) -> HomeFreeAgent:
     return HomeFreeAgent(
         AgentConfig(
             relay_url=url,
             console_name="viper-8231",
             access_key=access_key,
             identity_path=tmp_path / "identity.key",
-            target_factory=target_factory,
+            app_port=app_port,
         )
     )
 
 
 # ---------------------------------------------------------------------------
-# P4a — mode negotiation (fail-closed) + app-mode dispatch to AppProxyTarget
+# App-only dispatch + app advert validation
 # ---------------------------------------------------------------------------
 
 
 class _IdentityTransport:
-    """A passthrough transport for unit-testing _negotiate_mode in isolation."""
+    """A passthrough transport for unit-testing app advert handling in isolation."""
 
     def encrypt(self, data: bytes) -> bytes:
         return data
@@ -148,7 +147,7 @@ class _IdentityTransport:
 class _OneMsgWS:
     """A fake session WS whose recv() yields `first` once, then blocks (never a 2nd)."""
 
-    def __init__(self, first: bytes | None) -> None:
+    def __init__(self, first: object | None) -> None:
         self._first = first
         self._served = False
 
@@ -171,34 +170,36 @@ def _mk_agent(tmp_path, **cfg) -> HomeFreeAgent:
     )
 
 
-def test_negotiate_defaults_to_shell_without_app_port(tmp_path):
+def test_expect_app_advert_accepts_expected_first_frame(tmp_path):
+    agent = _mk_agent(tmp_path, app_port=9)
+    asyncio.run(agent._expect_app_advert(_OneMsgWS(_APP_ADVERT), _IdentityTransport()))
+
+
+def test_expect_app_advert_rejects_non_advert(tmp_path):
+    agent = _mk_agent(tmp_path, app_port=9)
+    try:
+        asyncio.run(agent._expect_app_advert(_OneMsgWS(b"keystroke"), _IdentityTransport()))
+    except RuntimeError as exc:
+        assert "unexpected app-mode advert" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("non-advert frame was accepted")
+
+
+def test_expect_app_advert_rejects_text_frame(tmp_path):
+    agent = _mk_agent(tmp_path, app_port=9)
+    try:
+        asyncio.run(agent._expect_app_advert(_OneMsgWS("hello"), _IdentityTransport()))
+    except RuntimeError as exc:
+        assert "expected binary app-mode advert" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("text advert was accepted")
+
+
+def test_bridge_refuses_without_app_port(tmp_path, caplog):
     agent = _mk_agent(tmp_path)  # app_port None
-    mode, first = asyncio.run(agent._negotiate_mode(_OneMsgWS(_APP_ADVERT), _IdentityTransport()))
-    assert (mode, first) == ("shell", None)  # never even consumes a frame
-
-
-def test_negotiate_force_shell_overrides_app_advert(tmp_path):
-    agent = _mk_agent(tmp_path, app_port=9, force_shell=True)
-    mode, first = asyncio.run(agent._negotiate_mode(_OneMsgWS(_APP_ADVERT), _IdentityTransport()))
-    assert (mode, first) == ("shell", None)  # operator override wins
-
-
-def test_negotiate_app_advert_selects_app_mode(tmp_path):
-    agent = _mk_agent(tmp_path, app_port=9)
-    mode, first = asyncio.run(agent._negotiate_mode(_OneMsgWS(_APP_ADVERT), _IdentityTransport()))
-    assert (mode, first) == ("app", None)
-
-
-def test_negotiate_non_advert_falls_back_to_shell_and_replays(tmp_path):
-    agent = _mk_agent(tmp_path, app_port=9)
-    mode, first = asyncio.run(agent._negotiate_mode(_OneMsgWS(b"keystroke"), _IdentityTransport()))
-    assert (mode, first) == ("shell", b"keystroke")  # first frame preserved as terminal input
-
-
-def test_negotiate_timeout_falls_back_to_shell(tmp_path):
-    agent = _mk_agent(tmp_path, app_port=9, mode_negotiate_timeout=0.05)
-    mode, first = asyncio.run(agent._negotiate_mode(_OneMsgWS(None), _IdentityTransport()))
-    assert (mode, first) == ("shell", None)  # viewer silent → shell (old recovery browser)
+    with caplog.at_level("WARNING"):
+        asyncio.run(agent._bridge(_OneMsgWS(_APP_ADVERT), _IdentityTransport()))
+    assert "HOMEFREE_APP_PORT is not configured" in caplog.text
 
 
 def test_app_stream_task_exceptions_are_observed(tmp_path, caplog):
@@ -267,6 +268,43 @@ async def _read_exact(stream, n: int) -> bytes:
     return bytes(buf)
 
 
+async def _app_get_ping(vw, viewer: ViewerClient) -> bytes:
+    await viewer.send(_APP_ADVERT)  # app-mode version handshake (counter 0, before mux frames)
+
+    # A viewer-side mux (initiator) over the same E2E transport, sends serialized.
+    out_q: asyncio.Queue[bytes] = asyncio.Queue()
+    mux = Mux(is_initiator=True, on_send=out_q.put_nowait)
+
+    async def writer():
+        while True:
+            await vw.send(viewer.transport.encrypt(await out_q.get()))
+
+    async def reader():
+        async for raw in vw:
+            if isinstance(raw, bytes | bytearray):
+                mux.feed(viewer.transport.decrypt(bytes(raw)))
+
+    wt, rt = asyncio.create_task(writer()), asyncio.create_task(reader())
+    try:
+        open_info = {"k": "http", "method": "GET", "path": "/ping", "headers": {}}
+        s = mux.open(json.dumps(open_info).encode())
+        await s.end()
+        meta_len = struct.unpack(">I", await _read_exact(s, 4))[0]
+        meta = json.loads(await _read_exact(s, meta_len))
+        body = bytearray()
+        while True:
+            part = await asyncio.wait_for(s.read(), 5)
+            if not part:
+                break
+            body += part
+        assert meta["status"] == 200
+        return bytes(body)
+    finally:
+        wt.cancel()
+        rt.cancel()
+        await asyncio.gather(wt, rt, return_exceptions=True)
+
+
 def test_app_mode_dispatches_http_request_through_the_tunnel(tmp_path):
     """Full app-mode path: viewer adverts, opens a mux HTTP stream, and the agent's
     AppProxyTarget proxies it to the box's local app — end to end, through the blind relay."""
@@ -283,44 +321,11 @@ def test_app_mode_dispatches_http_request_through_the_tunnel(tmp_path):
         async with websockets.connect(f"{url}?role=viewer&name=viper-8231", max_size=2**21) as vw:
             viewer = ViewerClient(vw, access_key)
             await viewer.handshake()
-            await viewer.send(_APP_ADVERT)  # request app mode (counter 0, before any frame)
+            assert await _app_get_ping(vw, viewer) == b"PONG"
 
-            # A viewer-side mux (initiator) over the same E2E transport, sends serialized.
-            out_q: asyncio.Queue[bytes] = asyncio.Queue()
-            mux = Mux(is_initiator=True, on_send=out_q.put_nowait)
-
-            async def writer():
-                while True:
-                    await vw.send(viewer.transport.encrypt(await out_q.get()))
-
-            async def reader():
-                async for raw in vw:
-                    if isinstance(raw, bytes | bytearray):
-                        mux.feed(viewer.transport.decrypt(bytes(raw)))
-
-            wt, rt = asyncio.create_task(writer()), asyncio.create_task(reader())
-            try:
-                open_info = {"k": "http", "method": "GET", "path": "/ping", "headers": {}}
-                s = mux.open(json.dumps(open_info).encode())
-                await s.end()
-                meta_len = struct.unpack(">I", await _read_exact(s, 4))[0]
-                meta = json.loads(await _read_exact(s, meta_len))
-                body = bytearray()
-                while True:
-                    part = await asyncio.wait_for(s.read(), 5)
-                    if not part:
-                        break
-                    body += part
-                assert meta["status"] == 200
-                assert bytes(body) == b"PONG"
-
-                # Blindness still holds — no cleartext of the response rode the relay.
-                assert relay.forwarded_frames
-                assert b"PONG" not in b"".join(relay.forwarded_frames)
-            finally:
-                wt.cancel()
-                rt.cancel()
-                await asyncio.gather(wt, rt, return_exceptions=True)
+            # Blindness still holds — no cleartext of the response rode the relay.
+            assert relay.forwarded_frames
+            assert b"PONG" not in b"".join(relay.forwarded_frames)
 
         agent_task.cancel()
         await asyncio.gather(agent_task, return_exceptions=True)
@@ -343,75 +348,11 @@ def _mk_agent_relay(url, access_key, tmp_path, app_port) -> HomeFreeAgent:
     )
 
 
-def test_end_to_end_echo_and_blindness(tmp_path):
-    async def scenario():
-        relay = RelayStub()
-        server, url = await _serve(relay)
-        access_key = "TEST-ACCESS-KEY-7Q2X"
-        agent = _agent(url, access_key, tmp_path, lambda: EchoTarget())
-        agent_task = asyncio.create_task(agent.run_once())
-        await asyncio.sleep(0.3)  # let it register
-
-        async with websockets.connect(f"{url}?role=viewer&name=viper-8231", max_size=2**21) as vw:
-            viewer = ViewerClient(vw, access_key)
-            await viewer.handshake()
-
-            marker = b"SECRET_MARKER_ABCDEF123456"
-            await viewer.send(marker)
-            reply = await asyncio.wait_for(viewer.recv(), 5)
-            assert reply == b"echo:" + marker
-
-            # Blindness: the relay forwarded only ciphertext — the marker (and its
-            # echo) never appear in cleartext in any forwarded frame.
-            assert relay.forwarded_frames, "relay forwarded nothing"
-            joined = b"".join(relay.forwarded_frames)
-            assert marker not in joined
-            assert b"echo:" + marker not in joined
-
-        agent_task.cancel()
-        await asyncio.gather(agent_task, return_exceptions=True)
-        server.close()
-        await server.wait_closed()
-
-    asyncio.run(scenario())
-
-
-def test_end_to_end_pty_recovery_shell(tmp_path):
-    async def scenario():
-        relay = RelayStub()
-        server, url = await _serve(relay)
-        access_key = "TEST-ACCESS-KEY-PTY99"
-        agent = _agent(url, access_key, tmp_path, lambda: PtyShellTarget(["/bin/sh"]))
-        agent_task = asyncio.create_task(agent.run_once())
-        await asyncio.sleep(0.3)
-
-        async with websockets.connect(f"{url}?role=viewer&name=viper-8231", max_size=2**21) as vw:
-            viewer = ViewerClient(vw, access_key)
-            await viewer.handshake()
-
-            await viewer.send(b"echo HFPTYOK\n")
-            collected = b""
-            deadline = asyncio.get_running_loop().time() + 5
-            while b"HFPTYOK" not in collected and asyncio.get_running_loop().time() < deadline:
-                try:
-                    collected += await asyncio.wait_for(viewer.recv(), 1)
-                except TimeoutError:
-                    break
-            assert b"HFPTYOK" in collected
-
-        agent_task.cancel()
-        await asyncio.gather(agent_task, return_exceptions=True)
-        server.close()
-        await server.wait_closed()
-
-    asyncio.run(scenario())
-
-
 def test_wrong_access_key_cannot_handshake(tmp_path):
     async def scenario():
         relay = RelayStub()
         server, url = await _serve(relay)
-        agent = _agent(url, "CORRECT-KEY-1234", tmp_path, lambda: EchoTarget())
+        agent = _agent(url, "CORRECT-KEY-1234", tmp_path, app_port=9)
         agent_task = asyncio.create_task(agent.run_once())
         await asyncio.sleep(0.3)
 
@@ -439,8 +380,9 @@ def test_malformed_handshake_is_contained(tmp_path):
     async def scenario():
         relay = RelayStub()
         server, url = await _serve(relay)
+        app_srv, app_port = _local_http_app()
         access_key = "TEST-KEY-CONTAIN-01"
-        agent = _agent(url, access_key, tmp_path, lambda: EchoTarget())
+        agent = _agent(url, access_key, tmp_path, app_port=app_port)
         agent_task = asyncio.create_task(agent.run_once())
         await asyncio.sleep(0.3)
 
@@ -459,11 +401,11 @@ def test_malformed_handshake_is_contained(tmp_path):
         async with websockets.connect(f"{url}?role=viewer&name=viper-8231", max_size=2**21) as vw:
             viewer = ViewerClient(vw, access_key)
             await viewer.handshake()
-            await viewer.send(b"still-works")
-            assert await asyncio.wait_for(viewer.recv(), 5) == b"echo:still-works"
+            assert await _app_get_ping(vw, viewer) == b"PONG"
 
         agent_task.cancel()
         await asyncio.gather(agent_task, return_exceptions=True)
+        app_srv.shutdown()
         server.close()
         await server.wait_closed()
 

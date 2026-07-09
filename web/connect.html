@@ -77,21 +77,13 @@
       }
       #status[data-kind="error"] { color: #e5484d; }
       #status[data-kind="ok"] { color: #3fbf6f; }
-      #term { flex: 1; padding: 8px; background: #000; min-height: 320px; }
       .warn {
         padding: 8px 20px;
         font-size: 11px;
         color: #e5484d;
         border-bottom: 1px solid var(--line);
       }
-      /* Full-app mode (#579 P4b): the mounted SPA fills the page and the connect chrome
-         collapses once app mode is live. Hidden until then. */
-      #app-root { display: none; }
-      body.app-mounted > header,
-      body.app-mounted > .warn,
-      body.app-mounted > #term { display: none; }
-      body.app-mounted > #status { padding: 4px 20px; }
-      body.app-mounted > #app-root { display: block; flex: 1; min-height: 0; }
+      #app-root { display: block; flex: 1; min-height: 320px; }
     </style>
   </head>
   <body>
@@ -108,7 +100,6 @@
       ⚠ The access key grants full control of that machine. Never enter a key given to you by
       someone who contacted you.
     </div>
-    <div id="term"></div>
     <div id="app-root"></div>
     <script type="module" src="/src/homefree/connect.main.ts"></script>
   </body>

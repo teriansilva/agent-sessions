@@ -31,12 +31,11 @@ def _base_env(**extra):
     }
 
 
-def test_app_mode_fail_closed_without_app_port():
-    # No HOMEFREE_APP_PORT → app_port None → the agent serves only the recovery shell (#579 P5).
+def test_app_mode_refuses_viewers_without_app_port():
+    # No HOMEFREE_APP_PORT -> app_port None -> viewer sessions are refused.
     cfg = build_config_from_env(_base_env())
     assert cfg.app_port is None
     assert cfg.app_host == "127.0.0.1"
-    assert cfg.force_shell is False
 
 
 def test_app_port_enables_app_mode_with_defaults():
@@ -46,18 +45,16 @@ def test_app_port_enables_app_mode_with_defaults():
     assert cfg.app_origin is None
 
 
-def test_app_host_origin_and_force_shell_parsed():
+def test_app_host_and_origin_parsed():
     cfg = build_config_from_env(
         _base_env(
             HOMEFREE_APP_PORT="3402",
             HOMEFREE_APP_HOST="127.0.0.1",
             HOMEFREE_APP_ORIGIN="http://127.0.0.1:3402",
-            HOMEFREE_FORCE_SHELL="1",
         )
     )
     assert cfg.app_port == 3402
     assert cfg.app_origin == "http://127.0.0.1:3402"
-    assert cfg.force_shell is True  # operator override: recovery shell only
 
 
 @pytest.mark.parametrize("bad", ["notaport", "80x", ""])

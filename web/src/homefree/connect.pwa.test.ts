@@ -2,8 +2,8 @@
 //
 // Regression (#558 review): the PWA navigation fallback serves index.html for
 // every navigation except the denylist, so the standalone /connect.html page
-// must be denylisted or a service-worker-controlled browser gets the SPA shell
-// instead of the terminal page.
+// must be denylisted or a service-worker-controlled browser gets the default SPA shell
+// instead of the connect page.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

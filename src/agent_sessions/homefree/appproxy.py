@@ -28,8 +28,6 @@ Per-stream sub-protocol (over one mux stream):
         ``u16 code + utf8 reason``) carrying the app WebSocket's deliberate close code so
         the browser adapter can surface ``/ws/term`` rejects (4401/4403/4404/4500) instead
         of a generic close; a browser-initiated close just gets EOF (clean 1000).
-
-The recovery `PtyShellTarget` (targets.py) is untouched — this is the full-app path.
 """
 
 from __future__ import annotations
