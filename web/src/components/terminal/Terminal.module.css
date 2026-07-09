@@ -1,0 +1,370 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  /* Must match the xterm canvas bg (themes.ts) per theme: FitAddon sizes the canvas to whole
+   * rows, so a few px of this wrapper always shows below the last row — a hardcoded near-black
+   * here painted a dark band over the compose bar on light (#473). */
+  background: var(--term-bg);
+}
+/* Panel header (#211 4c): a thin mono strip declaring the channel id + live status. Sits on
+ * the opaque terminal surface so it never competes with the agent's output for legibility. */
+.panelHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 26px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
+}
+/* Left side of the header: "<ENGINE> // <session title>" — the engine prefix is fixed, the
+ * title takes the remaining width and ellipsises so it can't push the STATUS readout off (#232). */
+.headLeft {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.headEng {
+  flex: none;
+}
+.headTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-weight: 600;
+}
+/* Terminal area: the xterm host + the touch-capture overlay + status sit here, so the
+ * overlay covers only the terminal and not the compose bar below it. */
+.termArea {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.term {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+/* On a session where the agent owns the scroll — a mouse-tracking TUI (claude/opencode: the
+ * wheel is forwarded to the agent so xterm's viewport stays pinned at the tail) or an alt-screen
+ * app (no usable scrollback) — xterm's native scrollbar can't reflect the agent's internal scroll.
+ * It sits stuck at the bottom and only misleads, so hide it. Toggled via data-app-owns-scroll in
+ * Terminal.tsx; the wheel still scrolls inside the agent and the ↓ FAB jumps to the tail. A plain
+ * scrollback session (codex/gemini/antigravity) has no attribute and keeps its working bar. */
+.term[data-app-owns-scroll="true"] :global(.xterm-viewport) {
+  scrollbar-width: none; /* Firefox + modern Blink */
+}
+.term[data-app-owns-scroll="true"] :global(.xterm-viewport)::-webkit-scrollbar {
+  display: none; /* legacy WebKit/Blink */
+}
+/* On touch devices, xterm's hidden helper textarea sits over the text and would grab a
+ * touch-drag (the gesture then went to the caret, not us — "scrolled one line then
+ * stuck"). Make it non-interactive to pointers so drags reach the terminal: our handler
+ * disambiguates scroll vs hold-to-select, and a tap re-focuses it for the keyboard. */
+@media (pointer: coarse) {
+  .term :global(.xterm-helper-textarea) {
+    pointer-events: none;
+  }
+}
+/* Transparent capture surface over the terminal (added in JS on coarse pointers): a
+ * plain element scrolls reliably where xterm's text layer hijacks the touch. */
+.touchLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: transparent;
+  touch-action: none;
+}
+/* Selection mode (#415): applied to the xterm root on a press-and-hold so the OS can select
+ * the DOM-rendered rows (xterm sets user-select:none by default). The overlay's pointer-events
+ * are dropped in JS for the duration so touches reach the text. */
+.selecting,
+.selecting :global(.xterm-rows),
+.selecting :global(.xterm-rows *) {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+.status {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 5;
+  font-size: 11px;
+  color: var(--text-muted);
+  /* Frosted scrim over live terminal text — follows the terminal surface per theme (#473). */
+  background: color-mix(in srgb, var(--term-bg) 78%, transparent);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 8px;
+  border-radius: 0;
+  pointer-events: none;
+}
+.rejected {
+  color: #f3b0b0;
+  border-color: #5a2a2a;
+}
+/* On light the scrim is light, so the pale dark-theme rejection pink washes out — use the
+ * semantic status hue there; dark keeps its exact current look (#473). */
+:global([data-theme="light"]) .rejected {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 45%, var(--border-subtle));
+}
+/* Floating scroll-to-bottom button (#187, shown on every pointer type). Sits above any
+ * safe-area inset in the bottom-right of the terminal area; frosted glass via backdrop-filter
+ * so it never fully obscures the agent's text underneath. Sits above the touch-
+ * capture overlay (z-index 6) so taps reach it instead of starting a scroll drag. */
+.scrollFab {
+  position: absolute;
+  right: calc(12px + env(safe-area-inset-right, 0));
+  bottom: calc(12px + env(safe-area-inset-bottom, 0));
+  z-index: 7;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+  cursor: pointer;
+  transition:
+    transform 120ms ease-out,
+    opacity 120ms ease-out;
+}
+.scrollFab:hover,
+.scrollFab:active {
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  transform: translateY(-1px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .scrollFab {
+    transition: none;
+  }
+  .scrollFab:hover,
+  .scrollFab:active {
+    transform: none;
+  }
+}
+/* Solid-background fallback for browsers without backdrop-filter support
+ * (older Android WebViews). Loses the see-through effect but stays legible. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .scrollFab {
+    background: var(--bg);
+  }
+}
+
+/* Per-tab ownership read-only banner (#184). Sits at the top of the terminal
+ * area; a translucent panel with the "Take over" affordance on the right.
+ * Sits above the touch-capture overlay (z-index 6) and below the scroll FAB
+ * so a mid-screen banner never traps the jump-to-tail button. */
+.secondaryBanner {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top, 0));
+  left: 8px;
+  right: 8px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  border-radius: 0;
+  font-size: 13px;
+  backdrop-filter: blur(10px) saturate(150%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+}
+.secondaryBanner > span {
+  flex: 1;
+  min-width: 0;
+}
+.takeoverBtn {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 0;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--on-accent); /* dark text on amber, theme-independent (#211) */
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  cursor: pointer;
+}
+.takeoverBtn:hover,
+.takeoverBtn:focus-visible {
+  background: color-mix(in srgb, var(--accent) 90%, white);
+}
+/* Manual session-restart control (#331): a compact HUD-tag button in the panel header. Recovers a
+ * wedged session (kill the agent process → resume from disk). Muted by default so it reads as a
+ * recovery affordance, not a primary action; warms toward the accent on hover/focus. */
+.restartBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.restartBtn:hover,
+.restartBtn:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.restartBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* The session-brief trigger (#481) reuses .restartBtn now — a "Recap" text button matching the
+ * REPAINT / RESTART chips beside it in the panel header (#497-followup). */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .secondaryBanner {
+    background: var(--bg);
+  }
+}
+
+/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): slim centered pill
+ * OVERLAYS at the top edge of the terminal viewport — absolutely positioned, never
+ * buffer rows, so a page prepend can't shift them. Three states: loading (spinner,
+ * accent), start-of-history (muted), error (status-down, whole pill = tap-to-retry).
+ * z-index 7: above the touch-capture overlay so the retry tap lands. */
+.histPillRow {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top, 0));
+  left: 0;
+  right: 0;
+  z-index: 7;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.histPill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 24px);
+  padding: 4px 12px;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  white-space: nowrap;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.histPillMuted {
+  color: var(--text-3);
+  border-color: var(--border);
+  box-shadow: none;
+}
+.histPillError {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 40%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--status-down) 15%, transparent);
+  cursor: pointer;
+}
+.histPillError .histRetry {
+  color: var(--accent);
+}
+.histSpin {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: histRot 0.8s linear infinite;
+}
+@keyframes histRot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .histSpin {
+    animation: none;
+  }
+}
+
+/* Auto copy-on-select confirmation (#554). A transient tactical-HUD telemetry chip shown when a
+ * mouse selection is copied to the clipboard, then fades. Square + flat + tokenized per
+ * docs/design.md (no rounded corners; only the LED stays circular); mono uppercase like the rest
+ * of the HUD chrome. Duration matches COPIED_TOAST_MS in Terminal.tsx. */
+.copiedToast {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border: 1px solid var(--accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: copiedFlash 1200ms ease forwards;
+}
+/* Accent LED — dots stay circular in the HUD. */
+.copiedToast::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+@keyframes copiedFlash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 5px);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  78% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .copiedToast {
+    animation: none;
+    transform: translateX(-50%);
+  }
+}
