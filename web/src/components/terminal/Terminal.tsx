@@ -325,6 +325,7 @@ export function Terminal({
       );
     };
     host.addEventListener("mousedown", forceSelectMousedown, true);
+    const vpEl = host.querySelector<HTMLElement>(".xterm-viewport");
 
     // #187: track whether the viewport is sitting at the live tail. xterm fires
     // onScroll with the topmost line of the viewport whenever the user scrolls or
@@ -332,10 +333,16 @@ export function Terminal({
     // baseY (the bottom of the scrollback). Eight-line dead zone so a single
     // wheel click while live output is streaming doesn't flicker the FAB on/off.
     const SCROLL_DEAD_ZONE = 8;
+    const computeDomAtBottom = () => {
+      if (!vpEl) return true;
+      const rowHeight = vpEl.clientHeight / Math.max(1, term.rows || 24);
+      const deadPx = SCROLL_DEAD_ZONE * Math.max(1, rowHeight);
+      return vpEl.scrollHeight - vpEl.clientHeight - vpEl.scrollTop <= deadPx;
+    };
     const computeAtBottom = () => {
       const buf = term.buffer?.active;
       if (!buf) return true;
-      return buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE;
+      return buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE && computeDomAtBottom();
     };
     const updateAtBottom = () => setAtBottom(computeAtBottom());
 
@@ -599,7 +606,6 @@ export function Terminal({
     // `onScroll` only for scrollLines-driven scrolls (touch/API) — a desktop mouse-wheel
     // scroll moves the DOM `.xterm-viewport` without emitting it, so we listen to that
     // element's `scroll` event too (its ydisp sync can lag a frame; scrollTop doesn't).
-    const vpEl = host.querySelector<HTMLElement>(".xterm-viewport");
     // #559: while a text selection is actively being made (desktop mouse-drag or mobile
     // long-press select-mode), pin the viewport so neither the browser/xterm drag-select edge
     // auto-scroll nor live-output follow drifts the view out from under the selection — the
@@ -608,6 +614,8 @@ export function Terminal({
     // `!selectionActive`. Released on selection end (mouseup / exit select mode).
     let selectionActive = false;
     let selectionPinTop = 0;
+    type ViewportAnchor = { viewportY: number; scrollTop: number };
+    let readerAnchor: ViewportAnchor | null = null;
     const beginSelectionPin = () => {
       selectionActive = true;
       selectionPinTop = vpEl?.scrollTop ?? 0;
@@ -696,10 +704,67 @@ export function Terminal({
         vpEl.scrollTop = selectionPinTop;
         return;
       }
+      if (
+        sawOutput &&
+        !selectionActive &&
+        term.buffer.active.type === "normal" &&
+        hasDomReaderOffset()
+      ) {
+        initialTailLock = false;
+        readerAnchor = currentReaderAnchor();
+      }
       updateAtBottom();
       const top = atTopNow();
       setAtTop(top);
+      if (shouldPreserveReaderViewport()) readerAnchor = currentReaderAnchor();
+      else if (computeAtBottom()) readerAnchor = null;
       if (top && userScrolled) maybeLoadOlder();
+    };
+    const shouldPreserveReaderViewport = () =>
+      sawOutput &&
+      !selectionActive &&
+      !initialTailLock &&
+      term.buffer.active.type === "normal" &&
+      !computeAtBottom();
+    const hasDomReaderOffset = () => !!vpEl && vpEl.scrollTop > 0 && !computeDomAtBottom();
+    const currentReaderAnchor = (): ViewportAnchor => {
+      const rowHeight = vpEl ? Math.max(1, vpEl.clientHeight / Math.max(1, term.rows || 24)) : 1;
+      return {
+        viewportY:
+          vpEl && !computeDomAtBottom()
+            ? Math.floor(vpEl.scrollTop / rowHeight)
+            : term.buffer.active.viewportY,
+        scrollTop: vpEl?.scrollTop ?? 0,
+      };
+    };
+    const captureReaderAnchor = (): ViewportAnchor | null => {
+      if (
+        initialTailLock &&
+        sawOutput &&
+        !selectionActive &&
+        term.buffer.active.type === "normal" &&
+        hasDomReaderOffset()
+      ) {
+        initialTailLock = false;
+      }
+      if (shouldPreserveReaderViewport()) {
+        readerAnchor = currentReaderAnchor();
+        return readerAnchor;
+      }
+      if (selectionActive || initialTailLock || term.buffer.active.type !== "normal") return null;
+      return readerAnchor;
+    };
+    const restoreReaderAnchor = (anchor: ViewportAnchor | null) => {
+      if (!anchor) return;
+      readerAnchor = anchor;
+      const buf = term.buffer.active;
+      const line = Math.min(Math.max(anchor.viewportY, 0), buf.baseY);
+      term.scrollToLine(line);
+      if (vpEl) {
+        const maxTop = Math.max(0, vpEl.scrollHeight - vpEl.clientHeight);
+        vpEl.scrollTop = Math.min(anchor.scrollTop, maxTop);
+      }
+      updateAtBottom();
     };
     term.onScroll?.(onScrolled);
     vpEl?.addEventListener("scroll", onScrolled, { passive: true });
@@ -775,9 +840,11 @@ export function Terminal({
             // though the user never scrolled, presenting as an empty console (#407).
             // #559: never follow while a selection is in progress — new output must not yank the
             // view (and the highlighted text) away from under an active selection.
-            const follow = (initialTailLock || computeAtBottom()) && !selectionActive;
+            const anchor = captureReaderAnchor();
+            const follow = !anchor && (initialTailLock || computeAtBottom()) && !selectionActive;
             term.write(displayBytes, () => {
               if (follow) term.scrollToBottom();
+              else restoreReaderAnchor(anchor);
               updateAtBottom(); // refresh the FAB even when not following — output grew the tail
             });
           }
@@ -834,9 +901,11 @@ export function Terminal({
     // so we MUST tell it our real size or the agent renders at the wrong dimensions
     // (garbled / blank-until-scroll until something else triggers a resize).
     const refit = (force = false) => {
+      const readerAnchor = captureReaderAnchor();
       fit.fit();
       if (force) lastCols = lastRows = 0; // bypass the dedupe so the new pty is sized
       sendResize();
+      if (readerAnchor) requestAnimationFrame(() => restoreReaderAnchor(readerAnchor));
     };
     onConnected = () => refit(true);
     // Coalesce resize bursts (#227): mobile's address-bar show/hide fires a stream of
