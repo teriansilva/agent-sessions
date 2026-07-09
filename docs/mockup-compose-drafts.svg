@@ -1,0 +1,177 @@
+<svg width="980" height="700" viewBox="0 0 980 700" xmlns="http://www.w3.org/2000/svg"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+  <!--
+    Single status dot per session; colour is the whole signal (no extra glyphs, no extra width):
+      green  = agent working      (existing .hud-led.up, blinking)
+      blue   = unsent draft        (new .hud-led.draft, new status-draft token, steady soft glow)
+      orange = needs intervention  (new .hud-led.attention, status-degraded, glowing/blinking;
+                                     replaces the old amber "!" badge)
+      grey   = idle                (existing .hud-led.idle, static)
+    Cross-device compose drafts restore text + pasted-image pills when the session reopens.
+    Colours are the real index.css tokens (plus the proposed status-draft blue). Dark + light.
+  -->
+  <rect width="980" height="700" fill="#08090b"/>
+  <text x="32" y="34" fill="#e8e9ec" font-size="18" font-weight="700"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    agent-sessions — one status dot per session · cross-device compose drafts
+  </text>
+  <text x="32" y="56" fill="#a7abb3" font-size="13">
+    Colour is the whole signal — no extra glyphs, no extra row width. A draft is a blue dot; the old "!" intervention badge becomes an orange glowing dot.
+  </text>
+
+  <!-- column headers -->
+  <text x="252" y="86" fill="#a7abb3" font-size="13" font-weight="700" text-anchor="middle"
+        letter-spacing="2" font-family="ui-monospace, monospace">DARK</text>
+  <text x="728" y="86" fill="#a7abb3" font-size="13" font-weight="700" text-anchor="middle"
+        letter-spacing="2" font-family="ui-monospace, monospace">LIGHT</text>
+
+  <!-- ===================== SESSION LIST · DARK ===================== -->
+  <g>
+    <rect x="32" y="100" width="440" height="252" fill="#131418" stroke="#25282e"/>
+    <text x="46" y="121" fill="#6f747d" font-size="10" letter-spacing="2"
+          font-family="ui-monospace, monospace">SESSIONS // 12</text>
+    <line x1="44" y1="129" x2="460" y2="129" stroke="rgba(255,255,255,.08)"/>
+
+    <!-- R1 — DRAFT (blue, steady glow) -->
+    <rect x="34" y="132" width="436" height="54" fill="#1c1f25"/>
+    <circle cx="54" cy="159" r="6" fill="#3b9eff" fill-opacity="0.22"/>
+    <circle cx="54" cy="159" r="3.6" fill="#3b9eff"/>
+    <text x="74" y="155" fill="#e8e9ec" font-size="13" font-weight="600">Wire up compose draft sync</text>
+    <text x="74" y="171" fill="#a7abb3" font-size="11">Draft · &#8220;also handle refresh-token rotation when…&#8221;</text>
+    <text x="74" y="185" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; agent-sessions · 2m</text>
+
+    <!-- R2 — WORKING (green, blinking) -->
+    <line x1="44" y1="186" x2="460" y2="186" stroke="rgba(255,255,255,.08)"/>
+    <circle cx="54" cy="213" r="6" fill="#3fbf6f" fill-opacity="0.20"/>
+    <circle cx="54" cy="213" r="3.6" fill="#3fbf6f"/>
+    <text x="74" y="209" fill="#e8e9ec" font-size="13" font-weight="600">Deploy staging rollout</text>
+    <text x="74" y="225" fill="#a7abb3" font-size="11">Watching deploy run #482 → verifying live…</text>
+    <text x="74" y="239" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; agent-sessions · now</text>
+
+    <!-- R3 — INTERVENTION (orange, glowing) -->
+    <line x1="44" y1="240" x2="460" y2="240" stroke="rgba(255,255,255,.08)"/>
+    <circle cx="54" cy="267" r="8.5" fill="#f59e0b" fill-opacity="0.20"/>
+    <circle cx="54" cy="267" r="6" fill="#f59e0b" fill-opacity="0.35"/>
+    <circle cx="54" cy="267" r="3.8" fill="#f59e0b"/>
+    <text x="74" y="263" fill="#e8e9ec" font-size="13" font-weight="600">Schema migration paused</text>
+    <text x="74" y="279" fill="#a7abb3" font-size="11">Needs a human · confirm the destructive step</text>
+    <text x="74" y="293" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; superstatus · 5m</text>
+
+    <!-- R4 — IDLE (grey) + favorite -->
+    <line x1="44" y1="294" x2="460" y2="294" stroke="rgba(255,255,255,.08)"/>
+    <circle cx="54" cy="321" r="3.4" fill="#3a3e45"/>
+    <text x="74" y="317" fill="#e8e9ec" font-size="13" font-weight="600">Fix mobile drawer z-index</text>
+    <text x="74" y="333" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">opencode · &#9656; battlelab-web · 1h</text>
+    <text x="446" y="325" fill="#ffb000" font-size="15" text-anchor="middle">&#9733;</text>
+  </g>
+
+  <!-- ===================== SESSION LIST · LIGHT ===================== -->
+  <g>
+    <rect x="508" y="100" width="440" height="252" fill="#f2f3f5" stroke="#c9ccd2"/>
+    <text x="522" y="121" fill="#6f747d" font-size="10" letter-spacing="2"
+          font-family="ui-monospace, monospace">SESSIONS // 12</text>
+    <line x1="520" y1="129" x2="936" y2="129" stroke="rgba(10,12,16,.12)"/>
+
+    <rect x="510" y="132" width="436" height="54" fill="#e3e5e8"/>
+    <circle cx="530" cy="159" r="6" fill="#3b9eff" fill-opacity="0.25"/>
+    <circle cx="530" cy="159" r="3.6" fill="#3b9eff"/>
+    <text x="550" y="155" fill="#14161a" font-size="13" font-weight="600">Wire up compose draft sync</text>
+    <text x="550" y="171" fill="#41454d" font-size="11">Draft · &#8220;also handle refresh-token rotation when…&#8221;</text>
+    <text x="550" y="185" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; agent-sessions · 2m</text>
+
+    <line x1="520" y1="186" x2="936" y2="186" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="530" cy="213" r="6" fill="#3fbf6f" fill-opacity="0.22"/>
+    <circle cx="530" cy="213" r="3.6" fill="#3fbf6f"/>
+    <text x="550" y="209" fill="#14161a" font-size="13" font-weight="600">Deploy staging rollout</text>
+    <text x="550" y="225" fill="#41454d" font-size="11">Watching deploy run #482 → verifying live…</text>
+    <text x="550" y="239" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; agent-sessions · now</text>
+
+    <line x1="520" y1="240" x2="936" y2="240" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="530" cy="267" r="8.5" fill="#f59e0b" fill-opacity="0.22"/>
+    <circle cx="530" cy="267" r="6" fill="#f59e0b" fill-opacity="0.38"/>
+    <circle cx="530" cy="267" r="3.8" fill="#f59e0b"/>
+    <text x="550" y="263" fill="#14161a" font-size="13" font-weight="600">Schema migration paused</text>
+    <text x="550" y="279" fill="#41454d" font-size="11">Needs a human · confirm the destructive step</text>
+    <text x="550" y="293" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">claude · &#9656; superstatus · 5m</text>
+
+    <line x1="520" y1="294" x2="936" y2="294" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="530" cy="321" r="3.4" fill="#b9bdc4"/>
+    <text x="550" y="317" fill="#14161a" font-size="13" font-weight="600">Fix mobile drawer z-index</text>
+    <text x="550" y="333" fill="#6f747d" font-size="10" font-family="ui-monospace, monospace">opencode · &#9656; battlelab-web · 1h</text>
+    <text x="922" y="325" fill="#ffb000" font-size="15" text-anchor="middle">&#9733;</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="11.5">
+    <circle cx="40" cy="372" r="4" fill="#3fbf6f"/><text x="50" y="376" fill="#a7abb3">working</text>
+    <circle cx="132" cy="372" r="4" fill="#3b9eff"/><text x="142" y="376" fill="#a7abb3">draft (unsent)</text>
+    <circle cx="262" cy="372" r="4" fill="#f59e0b"/><text x="272" y="376" fill="#a7abb3">needs intervention</text>
+    <circle cx="430" cy="372" r="4" fill="#3a3e45"/><text x="440" y="376" fill="#a7abb3">idle</text>
+    <text x="486" y="376" fill="#6f747d">— colour is the only signal; the dot keeps an accessible label / tooltip for each state.</text>
+  </g>
+
+  <!-- ===================== COMPOSE · DARK (restoring a draft) ===================== -->
+  <g>
+    <rect x="32" y="392" width="440" height="252" fill="#131418" stroke="#25282e"/>
+    <text x="46" y="414" fill="#6f747d" font-size="10" letter-spacing="2"
+          font-family="ui-monospace, monospace">COMPOSE // restored on this device</text>
+
+    <rect x="46" y="424" width="214" height="24" fill="#1a1c21" stroke="#25282e"/>
+    <text x="56" y="440" fill="#e8e9ec" font-size="11" font-family="ui-monospace, monospace">screenshot-2026-06-18.png</text>
+    <text x="246" y="441" fill="#a7abb3" font-size="13" text-anchor="middle">&#215;</text>
+
+    <rect x="46" y="456" width="408" height="104" fill="#08090b" stroke="#25282e"/>
+    <text x="58" y="478" fill="#e8e9ec" font-size="12.5">Please also handle the refresh-token rotation when the</text>
+    <text x="58" y="498" fill="#e8e9ec" font-size="12.5">access token is within 60s of expiry — and add a test</text>
+    <text x="58" y="518" fill="#e8e9ec" font-size="12.5">for the race.<tspan fill="#ffb000">&#9612;</tspan></text>
+    <text x="58" y="546" fill="#6f747d" font-size="10.5">Type here — Enter sends, Shift+Enter = newline.</text>
+
+    <g font-family="ui-monospace, monospace" font-size="10.5">
+      <rect x="46" y="572" width="34" height="24" fill="#1a1c21" stroke="#25282e"/><text x="63" y="588" fill="#a7abb3" text-anchor="middle">esc</text>
+      <rect x="84" y="572" width="34" height="24" fill="#1a1c21" stroke="#25282e"/><text x="101" y="588" fill="#a7abb3" text-anchor="middle">tab</text>
+      <rect x="122" y="572" width="30" height="24" fill="#1a1c21" stroke="#25282e"/><text x="137" y="588" fill="#a7abb3" text-anchor="middle">&#8593;</text>
+      <rect x="156" y="572" width="30" height="24" fill="#1a1c21" stroke="#25282e"/><text x="171" y="588" fill="#a7abb3" text-anchor="middle">&#8595;</text>
+      <rect x="190" y="572" width="34" height="24" fill="#1a1c21" stroke="#25282e"/><text x="207" y="588" fill="#a7abb3" text-anchor="middle">&#9166;</text>
+    </g>
+    <rect x="382" y="570" width="72" height="28" fill="#ffb000"/>
+    <text x="418" y="589" fill="#120c00" font-size="12" font-weight="700" text-anchor="middle"
+          font-family="ui-monospace, monospace">Send</text>
+
+    <text x="46" y="624" fill="#6f747d" font-size="10.5" font-style="italic">&#8627; draft saved · synced to server · clears on send</text>
+  </g>
+
+  <!-- ===================== COMPOSE · LIGHT (restoring a draft) ===================== -->
+  <g>
+    <rect x="508" y="392" width="440" height="252" fill="#f2f3f5" stroke="#c9ccd2"/>
+    <text x="522" y="414" fill="#6f747d" font-size="10" letter-spacing="2"
+          font-family="ui-monospace, monospace">COMPOSE // restored on this device</text>
+
+    <rect x="522" y="424" width="214" height="24" fill="#ffffff" stroke="#c9ccd2"/>
+    <text x="532" y="440" fill="#14161a" font-size="11" font-family="ui-monospace, monospace">screenshot-2026-06-18.png</text>
+    <text x="722" y="441" fill="#41454d" font-size="13" text-anchor="middle">&#215;</text>
+
+    <rect x="522" y="456" width="408" height="104" fill="#dfe1e4" stroke="#c9ccd2"/>
+    <text x="534" y="478" fill="#14161a" font-size="12.5">Please also handle the refresh-token rotation when the</text>
+    <text x="534" y="498" fill="#14161a" font-size="12.5">access token is within 60s of expiry — and add a test</text>
+    <text x="534" y="518" fill="#14161a" font-size="12.5">for the race.<tspan fill="#ffb000">&#9612;</tspan></text>
+    <text x="534" y="546" fill="#6f747d" font-size="10.5">Type here — Enter sends, Shift+Enter = newline.</text>
+
+    <g font-family="ui-monospace, monospace" font-size="10.5">
+      <rect x="522" y="572" width="34" height="24" fill="#ffffff" stroke="#c9ccd2"/><text x="539" y="588" fill="#41454d" text-anchor="middle">esc</text>
+      <rect x="560" y="572" width="34" height="24" fill="#ffffff" stroke="#c9ccd2"/><text x="577" y="588" fill="#41454d" text-anchor="middle">tab</text>
+      <rect x="598" y="572" width="30" height="24" fill="#ffffff" stroke="#c9ccd2"/><text x="613" y="588" fill="#41454d" text-anchor="middle">&#8593;</text>
+      <rect x="632" y="572" width="30" height="24" fill="#ffffff" stroke="#c9ccd2"/><text x="647" y="588" fill="#41454d" text-anchor="middle">&#8595;</text>
+      <rect x="666" y="572" width="34" height="24" fill="#ffffff" stroke="#c9ccd2"/><text x="683" y="588" fill="#41454d" text-anchor="middle">&#9166;</text>
+    </g>
+    <rect x="858" y="570" width="72" height="28" fill="#ffb000"/>
+    <text x="894" y="589" fill="#120c00" font-size="12" font-weight="700" text-anchor="middle"
+          font-family="ui-monospace, monospace">Send</text>
+
+    <text x="522" y="624" fill="#6f747d" font-size="10.5" font-style="italic">&#8627; draft saved · synced to server · clears on send</text>
+  </g>
+
+  <!-- footer caption -->
+  <text x="32" y="672" fill="#a7abb3" font-size="11.5">
+    Dot precedence when states coincide: intervention (orange) &gt; working (green) &gt; draft (blue) &gt; idle. Drafts auto-save (debounced) &amp; on nav-away; clear on send.
+  </text>
+</svg>
