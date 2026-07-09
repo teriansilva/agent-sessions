@@ -39,6 +39,8 @@ export interface TermSocketHandlers {
    *  in-memory #184 path. A `secondary` viewer streams read-only — never blank — and offers
    *  "Take over" (a reconnect with force=1). */
   onRole?: (role: TermRole, holder?: TermGateHolder | null) => void;
+  /** Server sent the authoritative byte offset for the just-delivered attach/replay batch. */
+  onSeq?: (n: number) => void;
   /** Scroll-up lazy-load first-page cursor (#348, Hermes #365 r2): sent right after `seq`
    *  when the attach payload came from the transcript renderer, carrying the EXACT turn
    *  index the payload starts at. The terminal seeds its HistoryLoader from it so the
@@ -225,7 +227,10 @@ export class TermSocket {
           holder?: TermGateHolder | null;
           cursor?: number;
         };
-        if (msg.t === "seq" && typeof msg.n === "number") this.offset = msg.n;
+        if (msg.t === "seq" && typeof msg.n === "number") {
+          this.offset = msg.n;
+          this.handlers.onSeq?.(msg.n);
+        }
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
         else if (msg.t === "id" && typeof msg.sid === "string") this.handlers.onId?.(msg.sid);
         // {"t":"role","role":"owner"|"secondary","holder"?} — per-tab claim verdict

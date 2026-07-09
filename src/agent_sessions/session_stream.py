@@ -143,6 +143,9 @@ class SessionStream:
                 data = await loop.run_in_executor(None, self._read_once, self._master)
                 if not data:
                     break
+                data = webterm.scrollback.sanitize_live_output(self.key, data)
+                if not data:
+                    continue
                 # Best-effort bookkeeping: a ring/registry error must not kill the headless
                 # reader (it would stop refreshing scrollback + the working signal for this
                 # session until the next attach). Swallow + log; keep draining.

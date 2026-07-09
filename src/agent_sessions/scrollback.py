@@ -464,7 +464,7 @@ def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
                 pass
         if cleared:
             removed += 1
-        _drop_buffer(key)  # in-memory ring + `_MODES`/`_MODE_CARRY` + VT mirror
+        _drop_buffer(key)  # in-memory ring + mode/sanitizer carry + VT mirror
     return {"removed": removed, "bytes_freed": freed}
 
 
@@ -482,6 +482,7 @@ def _drop_buffer(key: str) -> None:
     # `_ensure_loaded` — exactly like the ring itself.
     _MODES.pop(key, None)
     _MODE_CARRY.pop(key, None)
+    _SANITIZE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
 
 
@@ -686,6 +687,36 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
 
 # Clean-load clear sequence (#227): cursor home + clear screen + clear scrollback.
 _CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
+_CODEX_SCROLLBACK_ERASE = b"\x1b[3J"
+_SANITIZE_CARRY: dict[str, bytes] = {}
+
+
+def sanitize_live_output(key: str, data: bytes) -> bytes:
+    """Return live PTY output safe for BattleLab-managed scrollback.
+
+    Codex's ratatui repaint path periodically emits CSI 3J (erase scrollback) as part of a
+    full-screen clear. In a standalone terminal that is reasonable; in BattleLab it deletes the
+    semantic transcript/scrollback we intentionally keep above the live frame, leaving mobile touch
+    scroll with nothing to move. Server-authored attach clears still use ``_CLEAN_LOAD_CLEAR``;
+    this helper is only for bytes read from the live dtach PTY stream.
+    """
+    if not key.startswith("codex:"):
+        _SANITIZE_CARRY.pop(key, None)
+        return data
+    src = _SANITIZE_CARRY.pop(key, b"") + data
+    out = bytearray()
+    i = 0
+    while i < len(src):
+        remaining = len(src) - i
+        if remaining >= len(_CODEX_SCROLLBACK_ERASE) and src.startswith(_CODEX_SCROLLBACK_ERASE, i):
+            i += len(_CODEX_SCROLLBACK_ERASE)
+            continue
+        if remaining < len(_CODEX_SCROLLBACK_ERASE) and _CODEX_SCROLLBACK_ERASE.startswith(src[i:]):
+            _SANITIZE_CARRY[key] = src[i:]
+            break
+        out.append(src[i])
+        i += 1
+    return bytes(out)
 
 
 def _is_same_width_continuation(have: int, total: int, buffer_cols: int | None, cols: int) -> bool:

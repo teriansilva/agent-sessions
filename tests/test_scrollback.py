@@ -16,6 +16,23 @@ def _wipe_memory():
     scrollback._TOTALS.clear()
     scrollback._LAST_COLS.clear()
     scrollback._LOADED_FROM_DISK.clear()
+    scrollback._SANITIZE_CARRY.clear()
+
+
+def test_codex_live_output_drops_app_clear_scrollback():
+    data = b"\x1b[H\x1b[2J\x1b[3Jcodex frame"
+    assert scrollback.sanitize_live_output("codex:abc", data) == b"\x1b[H\x1b[2Jcodex frame"
+
+
+def test_codex_live_output_drops_split_clear_scrollback():
+    key = "codex:split"
+    assert scrollback.sanitize_live_output(key, b"\x1b[H\x1b[2J\x1b[") == b"\x1b[H\x1b[2J"
+    assert scrollback.sanitize_live_output(key, b"3Jcodex frame") == b"codex frame"
+
+
+def test_non_codex_live_output_keeps_clear_scrollback():
+    data = b"\x1b[H\x1b[2J\x1b[3Jclaude frame"
+    assert scrollback.sanitize_live_output("claude:abc", data) == data
 
 
 def test_note_cols_persists_and_survives_restart():

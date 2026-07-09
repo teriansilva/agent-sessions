@@ -434,6 +434,10 @@ async def run(
                 break
             out_bytes["n"] += len(data)  # #443: proof-of-repaint signal for _force_repaint
             if buf_key is not None:
+                data = scrollback.sanitize_live_output(buf_key, data)
+                if not data:
+                    continue
+            if buf_key is not None:
                 # Scrollback bookkeeping is BEST-EFFORT and must never tear down a live viewer:
                 # the bytes reach the client via `send_bytes` below regardless. A ring/registry
                 # error here used to propagate out of `pump_out`, complete the bridge's
