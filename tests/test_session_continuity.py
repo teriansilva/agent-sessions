@@ -11,7 +11,9 @@ These tests exercise the underlying dtach contract end-to-end — they use a rea
 
 from __future__ import annotations
 
+import contextlib
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -57,16 +59,59 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _sleep_child() -> tuple[list[str], str]:
+    """A ~60s stand-in for the agent process, with a cmdline UNIQUE to this pytest process.
+
+    These tests used to spawn a plain `/bin/sleep 60` and tear it down with a host-wide
+    `pkill -9 -f "sleep 60"`. The runner is shared: two PRs' `pr-validate` jobs run
+    concurrently on the same box, so one run's teardown reaped the OTHER run's child — the
+    orphaned dtach master then exited and the other run failed with "master died with the
+    spawner" / "no surviving dtach master". Observed on 2026-07-10, when PR #620 and PR #621
+    each failed a different test in this file at the same second.
+
+    `sleep` takes a fractional duration, so the pid makes the argv unique without changing
+    what is being tested (a long-lived child that outlives its spawner).
+
+    The base is 61, not 60, and that matters: `pkill -f` takes an unanchored REGEX, so the legacy
+    `pkill -9 -f "sleep 60"` still matches a cmdline of `/bin/sleep 60.12345`. Any branch that has
+    not yet picked up this commit would keep reaping our children. `sleep 61.12345` does not match
+    it, so this test file is immune to concurrent runs of its own older self — which is what made
+    the fix land in the first place (task 6341 killed task 6344's child one second after start).
+    """
+    marker = f"61.{os.getpid() % 100000:05d}"
+    return ["/bin/sleep", marker], marker
+
+
+def _reap(sock, marker: str) -> None:
+    """Kill only THIS test's dtach master and its child, then drop the socket.
+
+    Scoped two ways, both process-local: masters are matched by our unique socket path, and
+    the child is killed via `pkill -P <master>` (its own children) plus a fallback on our
+    unique marker for the case where the master already died and orphaned it.
+    """
+    for line in subprocess.run(
+        ["pgrep", "-fa", "dtach"], capture_output=True, text=True
+    ).stdout.splitlines():
+        if str(sock) in line:
+            pid = int(line.split()[0])
+            subprocess.run(["pkill", "-9", "-P", str(pid)], check=False)  # the master's child
+            with contextlib.suppress(OSError):
+                os.kill(pid, 9)
+    # An orphaned child (master already dead) — matched on OUR marker, never a bare "sleep 60".
+    subprocess.run(["pkill", "-9", "-f", re.escape(f"sleep {marker}")], check=False)
+    if sock.exists():
+        sock.unlink()
+
+
 def test_dtach_master_survives_spawner_death():
     """The core invariant for #165: killing the process that spawned `dtach -c`
     (analogous to the broker exiting on a deploy) leaves the dtach master + its
     child command alive. Without this property, every deploy would kill agents."""
     sock = ptybridge.socket_path("test", "survive")
+    child, marker = _sleep_child()
     # Use launch_argv (the production code path) to confirm it produces a working
     # create-only invocation that survives the spawner.
-    argv = ptybridge.launch_argv(
-        engine="test", session_id="survive", launch_argv=["/bin/sleep", "60"]
-    )
+    argv = ptybridge.launch_argv(engine="test", session_id="survive", launch_argv=child)
     # dtach -c attaches in the foreground and refuses to start without a tty — the
     # production broker provides one via os.openpty(); we do the same here.
     master_fd, slave_fd = os.openpty()
@@ -95,36 +140,22 @@ def test_dtach_master_survives_spawner_death():
             "test", "survive"
         ), "session_exists reports dead despite live master"
 
-        # The sleep process — the analogue of `claude --resume <uuid>` — is still alive.
-        # Find it via pgrep so we don't depend on the dtach PID tree shape.
+        # The child — the analogue of `claude --resume <uuid>` — is still alive. Match OUR
+        # marker: a bare "sleep 60" would also match a concurrent run's child and pass falsely.
         ps = subprocess.run(
-            ["pgrep", "-f", f"sleep 60.*|.*{sock}.*sleep"],
-            capture_output=True,
-            text=True,
+            ["pgrep", "-f", re.escape(f"sleep {marker}")], capture_output=True, text=True
         )
-        # Either the sleep itself or the dtach master must still be alive.
+        # Either the child itself or the dtach master must still be alive.
         alive = subprocess.run(["pgrep", "-fa", "dtach"], capture_output=True, text=True)
         assert (
-            str(sock) in alive.stdout or "sleep 60" in ps.stdout
+            str(sock) in alive.stdout or ps.stdout.strip()
         ), f"no surviving dtach master for sock {sock}"
     finally:
         try:
             os.close(master_fd)
         except OSError:
             pass
-        # Tear down: kill surviving dtach masters referencing this sock + the sleep child.
-        for line in subprocess.run(
-            ["pgrep", "-fa", "dtach"], capture_output=True, text=True
-        ).stdout.splitlines():
-            if str(sock) in line:
-                pid = int(line.split()[0])
-                try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-        subprocess.run(["pkill", "-9", "-f", "sleep 60"], check=False)
-        if sock.exists():
-            sock.unlink()
+        _reap(sock, marker)
 
 
 def test_dtach_a_attaches_to_a_surviving_master():
@@ -132,9 +163,8 @@ def test_dtach_a_attaches_to_a_surviving_master():
     succeed against the surviving master. This is what makes reconnect-after-deploy
     invisible to the user."""
     sock = ptybridge.socket_path("test", "reattach")
-    argv = ptybridge.launch_argv(
-        engine="test", session_id="reattach", launch_argv=["/bin/sleep", "60"]
-    )
+    child, marker = _sleep_child()
+    argv = ptybridge.launch_argv(engine="test", session_id="reattach", launch_argv=child)
     # dtach -c attaches in the foreground and refuses to start without a tty — the
     # production broker provides one via os.openpty(); we do the same here.
     master_fd, slave_fd = os.openpty()
@@ -190,15 +220,4 @@ def test_dtach_a_attaches_to_a_surviving_master():
             except OSError:
                 pass
     finally:
-        for line in subprocess.run(
-            ["pgrep", "-fa", "dtach"], capture_output=True, text=True
-        ).stdout.splitlines():
-            if str(sock) in line:
-                pid = int(line.split()[0])
-                try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-        subprocess.run(["pkill", "-9", "-f", "sleep 60"], check=False)
-        if sock.exists():
-            sock.unlink()
+        _reap(sock, marker)

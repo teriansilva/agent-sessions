@@ -246,12 +246,19 @@ test("re-sends clear+paste on the new socket before Enter if a reconnect split t
   // The paste went to socket A, then a reconnect → the deferred Enter would hit socket B which never
   // got the paste. Detect the socket-id change and re-send clear+paste on B before submitting.
   const user = userEvent.setup();
-  let epoch = 1;
-  renderCompose(() => epoch);
+  // Compose reads connEpoch() once in deliver() and again inside the DEFERRED Enter — so a counter
+  // makes the reconnect land in that gap by construction. Flipping a variable after `await click()`
+  // instead assumed the 60ms Enter timer had not fired yet, which is only true on an idle machine:
+  // on the loaded shared runner it had, and this test failed with "called 2 times, but got 3".
+  let epochReads = 0;
+  renderCompose(() => (++epochReads === 1 ? 1 : 2));
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  expect(sendInput).toHaveBeenCalledTimes(2); // clear + paste on socket A
-  epoch = 2; // a reconnect happens before the deferred Enter fires
+  // clear + paste reached socket A first, whatever the scheduler did with the deferred Enter.
+  expect(sendInput.mock.calls.slice(0, 2).map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+  ]);
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
   // The deferred batch re-sent clear+paste (on B) AND then the Enter — 5 calls total, Enter last.
   const calls = sendInput.mock.calls.map((c) => c[0]);
@@ -276,12 +283,13 @@ test("a SECOND reconnect during the deferred retry still never submits an empty 
     }
     return true;
   });
-  let epoch = 1;
-  renderCompose(() => epoch);
+  // As above: the reconnect is keyed to connEpoch's SECOND read (inside the deferred Enter), not to
+  // wall-clock ordering, so a slow runner can't let the Enter slip through before the epoch flips.
+  let epochReads = 0;
+  renderCompose(() => (++epochReads === 1 ? 1 : 2));
   const ta = screen.getByRole("textbox");
   await user.type(ta, "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  epoch = 2; // reconnect before the deferred Enter → re-paste path, which then fails to deliver
   await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("hello world")); // text restored
   expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
 });
