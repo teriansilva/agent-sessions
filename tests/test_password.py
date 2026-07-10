@@ -141,3 +141,17 @@ def test_must_change_gate_and_change_page(auth_cfg, tmp_path, monkeypatch):
     assert c.get("/", follow_redirects=False).status_code == 200  # no longer gated
     assert c.get("/api/config").json()["must_change_password"] is False
     assert "FORCE_PASSWORD_CHANGE" not in envf.read_text()
+
+
+def test_production_kdf_iteration_count_is_not_silently_downgraded():
+    """Guard for #395: the test suite reuses a session-scoped hash to skip the KDF cost, so
+    a silent drop in the *production* iteration count would no longer be caught by fixture
+    timing. Pin it here — the shipped hash must encode 600k PBKDF2 iterations and round-trip."""
+    from agent_sessions import auth
+
+    assert auth._PBKDF2_ITERS == 600_000
+    encoded = auth.hash_password("hunter2")
+    scheme, iters, _salt, _key = encoded.split("$")
+    assert scheme == "pbkdf2_sha256" and int(iters) == 600_000
+    assert verify_password("hunter2", encoded)
+    assert not verify_password("wrong", encoded)

@@ -126,10 +126,21 @@ def fake_jsonl(tmp_home) -> Path:
     return tmp_home
 
 
+@pytest.fixture(scope="session")
+def password_hash() -> str:
+    """The encoded ``hunter2`` hash, computed ONCE per test session (#395). ``hash_password``
+    runs production-strength PBKDF2 (600k iterations — ~0.6 s on a free core, multiple seconds
+    under load); the function-scoped ``auth_cfg`` re-ran it on every construction across ~16
+    modules, so the suite paid that KDF cost dozens of times and page-thrashed on a loaded CI
+    runner (#393). Fixtures only need a *valid* hash, not a fresh one — the KDF scheme itself is
+    covered by the dedicated auth/password unit tests. Byte-format-identical, zero API change."""
+    return hash_password("hunter2")
+
+
 @pytest.fixture
-def auth_cfg(tmp_path, monkeypatch) -> AuthConfig:
+def auth_cfg(tmp_path, monkeypatch, password_hash) -> AuthConfig:
     monkeypatch.setenv("AGENT_SESSIONS_USERNAME", "marcus")
-    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", hash_password("hunter2"))
+    monkeypatch.setenv("AGENT_SESSIONS_PASSWORD_HASH", password_hash)
     monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
     monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
     # Isolate the 2FA store (#116) to a tmp path — otherwise twofactor.default_path()
