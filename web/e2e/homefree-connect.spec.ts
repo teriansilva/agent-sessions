@@ -51,6 +51,50 @@ test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchab
   await expect(page.locator("#connect")).toHaveClass(/\bshine\b/);
 });
 
+// The <dialog> UA sheet sets `overflow: auto`, and the corner brackets sit 1px outside the box —
+// so the panel grew scrollbars around its own frame (h + v), and `.modal-inner`'s
+// `max-height: inherit` overflowed the dialog's border box by another 2px. Headless Chromium draws
+// OVERLAY scrollbars, so a gutter measurement sees nothing; assert the conditions that *cause* a
+// bar instead — a scroll container that overflows. docs/design.md §7: no horizontal overflow.
+test("the how-it-works modal paints no scrollbars, and its body still scrolls", async ({ page }) => {
+  await page.setViewportSize({ width: 666, height: 1006 });
+  await page.goto("/connect.html");
+  await page.getByRole("button", { name: "How does it work?" }).click();
+
+  const m = await page.evaluate(() => {
+    const dlg = document.getElementById("how-modal")!;
+    const inner = document.querySelector(".modal-inner") as HTMLElement;
+    const dcs = getComputedStyle(dlg);
+    const ics = getComputedStyle(inner);
+    return {
+      dlgOverflowX: dcs.overflowX,
+      dlgOverflowY: dcs.overflowY,
+      // The body must fit the panel's content box. `max-height: inherit` made it 2px taller
+      // (the dialog's 1px borders), which is what overflowed the panel.
+      innerFitsPanel: inner.offsetHeight <= dlg.clientHeight,
+      innerOverflowsH: inner.scrollWidth > inner.clientWidth,
+      innerScrollbarWidth: ics.scrollbarWidth,
+      innerScrollable: inner.scrollHeight > inner.clientHeight,
+    };
+  });
+
+  // The panel itself is never a scroll container — the brackets may hang 1px outside it in peace.
+  expect(m.dlgOverflowX).toBe("visible");
+  expect(m.dlgOverflowY).toBe("visible");
+  expect(m.innerFitsPanel, "modal body overflows the panel").toBe(true);
+  // The scrolling body never overflows sideways, and paints no bar.
+  expect(m.innerOverflowsH, "modal body overflows horizontally").toBe(false);
+  expect(m.innerScrollbarWidth).toBe("none");
+
+  // Hiding the bar must not strand the content: the body still scrolls to the wire-spec link.
+  if (m.innerScrollable) {
+    await page.locator(".modal-inner").hover();
+    await page.mouse.wheel(0, 400);
+    await expect.poll(() => page.locator(".modal-inner").evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
+  }
+  await expect(page.getByRole("link", { name: /home-free-handshake\.md/ })).toBeVisible();
+});
+
 test("connect page explains the blind relay in a dismissible modal", async ({ page }) => {
   await page.goto("/connect.html");
 

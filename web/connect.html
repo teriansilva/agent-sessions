@@ -335,16 +335,34 @@
         color: var(--text-1);
         font-family: var(--font-mono);
         box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+        /* The UA sheet gives <dialog> `overflow: auto`, and the corner brackets deliberately sit
+         * 1px OUTSIDE this box — so the dialog grew its own 1px scrollbars around the frame.
+         * The panel never scrolls; .modal-inner below is the one scroll container. */
+        overflow: visible;
+      }
+      /* Flex so .modal-inner fills the panel and owns the scrolling. `max-height: inherit` on the
+       * inner used to inherit this element's max-height, which is 2px taller than its own content
+       * box (1px border each side) — enough to overflow the dialog and raise a second scrollbar. */
+      #how-modal[open] {
+        display: flex;
+        flex-direction: column;
       }
       #how-modal::backdrop {
         background: rgba(6, 7, 9, 0.72);
         backdrop-filter: blur(3px);
       }
       .modal-inner {
-        max-height: inherit;
+        flex: 1;
+        min-height: 0;
         overflow-y: auto;
+        overflow-x: clip; /* never a horizontal bar (design.md §7); `clip` keeps overflow-y auto */
         overscroll-behavior: contain;
+        scrollbar-width: none; /* Firefox: scroll, don't paint a bar over the HUD chrome */
         padding: 26px;
+      }
+      .modal-inner::-webkit-scrollbar {
+        width: 0;
+        height: 0;
       }
       .modal-head {
         display: flex;
