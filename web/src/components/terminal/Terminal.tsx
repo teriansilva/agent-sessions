@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { ArrowDown, ScrollText } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { createBootReadyGate } from "../../lib/bootReady";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
@@ -28,13 +29,6 @@ import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
-
-// #533/#607: fresh-launch compose gate. Engines that never emit the bracketed-paste
-// enable (ESC[?2004h) still count as input-ready only after boot output has gone quiet
-// for this long. Starting the fallback on the first byte was too early for Codex:
-// startup/progress frames could arrive well before its input loop was ready, so the
-// first compose send was still swallowed.
-const READY_FALLBACK_MS = 1500;
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
@@ -180,12 +174,13 @@ export function Terminal({
   // prop changes can't move it; a genuine session switch remounts via `key` and re-seeds it.
   const freshRef = useRef(fresh);
 
-  // First-compose gate for a FRESH launch (#533). The agent boots for several seconds after
-  // new=1; input written into that window is swallowed (the composed text) or submitted as
-  // garbage — in the incident the literal Ctrl-A of the compose clear became the whole first
-  // turn. "Input ready" = the boot stream showed the TUI arming its input via the bracketed-
-  // paste enable (ESC[?2004h), with a bounded fallback after the first output bytes for
-  // engines that never emit it. Attaches to already-running sessions are ready immediately.
+  // First-compose gate for a FRESH launch (#533/#607/#616). The agent boots for several seconds
+  // after new=1; input written into that window is swallowed (the composed text) or submitted as
+  // garbage — in the incident the literal Ctrl-A of the compose clear became the whole first turn.
+  // "Input ready" = the boot output has gone QUIET (see lib/bootReady). The bracketed-paste enable
+  // (ESC[?2004h) only shortens the quiet window — it is not itself readiness, because claude emits
+  // it before switching to the alternate screen and clearing it, wiping anything pasted on it.
+  // Attaches to already-running sessions are ready immediately.
   const inputReadyRef = useRef<boolean>(!fresh);
   const readyWaitersRef = useRef<Array<() => void>>([]);
   const markInputReady = useCallback(() => {
@@ -701,22 +696,11 @@ export function Terminal({
     // regression). Programmatic scrolls must never arm it.
     let userScrolled = false;
     let sawOutput = false;
-    // #533/#607: fresh-launch input-ready detection. Scan the boot stream for the bracketed-paste
-    // enable; the 8-char carry handles the sequence splitting across chunks. Engines that never
-    // emit ?2004h count as ready only after output has been quiet for READY_FALLBACK_MS, not
-    // READY_FALLBACK_MS after the FIRST output byte. Codex can keep painting boot/progress frames
-    // before its prompt loop is writable; resetting the fallback on every chunk makes the first
-    // compose send wait for the prompt to settle instead of racing the startup clear.
-    let readyCarry = "";
-    let readyFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-    const latin1 = new TextDecoder("latin1");
-    const noteBootOutput = (b: Uint8Array) => {
-      if (readyFallbackTimer !== null) clearTimeout(readyFallbackTimer);
-      readyFallbackTimer = setTimeout(markInputReady, READY_FALLBACK_MS);
-      const hay = readyCarry + latin1.decode(b);
-      if (hay.includes("\x1b[?2004h")) markInputReady();
-      else readyCarry = hay.slice(-8);
-    };
+    // #533/#607/#616: fresh-launch input-ready detection. Readiness is "the boot output has gone
+    // quiet"; the bracketed-paste enable (ESC[?2004h) only shortens the window it must stay quiet
+    // for. It is NOT an instant ready — claude emits it before switching to the alternate screen
+    // and clearing it, so a paste released on ?2004h gets wiped. See lib/bootReady.
+    const bootGate = createBootReadyGate(markInputReady);
     const eventInTermArea = (target: EventTarget | null) => {
       const area = host.parentElement;
       return target instanceof Node && !!area?.contains(target);
@@ -893,7 +877,7 @@ export function Terminal({
         onOutput: (b) => {
           attachBytes += b.byteLength; // repaint-backstop signal: did this attach paint anything?
           sawOutput = true;
-          if (!inputReadyRef.current) noteBootOutput(b); // #533: fresh-launch compose gate
+          if (!inputReadyRef.current) bootGate.note(b); // #533/#607/#616: fresh-launch compose gate
           const displayBytes = stripCodexLiveScrollbackErase(b);
           if (!displayBytes.byteLength) return;
           recordOutput(displayBytes); // feed the lazy-load rewrite buffer (#348 Phase 3)
@@ -1264,7 +1248,7 @@ export function Terminal({
     return () => {
       cancelAnimationFrame(settleRaf);
       if (resizeTimer != null) clearTimeout(resizeTimer);
-      if (readyFallbackTimer != null) clearTimeout(readyFallbackTimer);
+      bootGate.dispose();
       vv?.removeEventListener("resize", onVV);
       vpEl?.removeEventListener("scroll", onScrolled);
       clearJiggle();

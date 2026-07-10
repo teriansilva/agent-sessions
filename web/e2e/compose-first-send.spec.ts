@@ -4,8 +4,11 @@ import { expect, test } from "@playwright/test";
 // Enter frames landed before the TUI's input loop was live, the pasted text was swallowed, and
 // the literal Ctrl-A of the line-clear was submitted as the whole first turn (production
 // incident 2026-07-06, session 506b4314…). The fix holds the content delivery until the boot
-// stream shows the agent arming its input (the bracketed-paste enable, ESC[?2004h).
-// Real browser: jsdom can't model the WS-open-vs-agent-boot interleaving this bug lives in.
+// stream shows the agent's input is live.
+// #607 made that "boot output has gone quiet" for engines with no bracketed-paste enable (Codex).
+// #616 made it so for EVERY engine: ESC[?2004h is no longer an instant ready, because Claude Code
+// emits it during pre-TUI setup, then switches to the alternate screen and clears it.
+// Real browser: jsdom can't model the WS-open-vs-agent-boot interleaving these bugs live in.
 
 // A WebSocket stub modelling a BOOTING agent: the socket OPENS immediately (the server accepted
 // new=1 and launched) but emits NO output until the test calls __emitOutput — exactly the window
@@ -39,7 +42,7 @@ declare global {
   }
 }
 
-test("first compose Send into a fresh session waits for the agent's input to come live (#533)", async ({
+test("first compose Send into a fresh session waits for the agent's first paint to settle, not just ESC[?2004h (#533/#616)", async ({
   page,
 }) => {
   await page.route("**/api/config", (r) =>
@@ -91,9 +94,21 @@ test("first compose Send into a fresh session waits for the agent's input to com
   const during = await page.evaluate(() => window.__sentInput.slice());
   expect(during).toEqual([]);
 
-  // The agent's first paint arms bracketed paste → the held message delivers: clear, paste,
-  // then the deferred Enter (#180 sequencing preserved).
-  await page.evaluate(() => window.__emitOutput("\x1b[?2004h\x1b[2J\x1b[Hwelcome ❯ "));
+  // Claude's PRE-TUI setup arms bracketed paste first — at byte ~25, ~40 bytes before it clears
+  // the screen. Nothing may be released on this chunk: the #616 bug delivered here, and the clear
+  // below then wiped the paste. (Red before the fix: __sentInput is already non-empty at this
+  // point, and the message never reaches the agent.)
+  await page.evaluate(() => window.__emitOutput("\x1b[?25h\x1b[?25l\x1b[?2004h"));
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
+  await expect(page.getByText(/waiting for agent/i)).toBeVisible();
+
+  // The paint the old gate raced: alternate-screen switch, clear, then the banner.
+  await page.evaluate(() => window.__emitOutput("\x1b[?1049h\x1b[2J\x1b[H"));
+  await page.evaluate(() => window.__emitOutput("\x1b[?1000h\x1b[?1006h✳ Claude Code\r\n❯ "));
+
+  // Paint settled → the held message delivers: clear, paste, then the deferred Enter (#180
+  // sequencing preserved).
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.join("")))
     .toContain("\x1b[200~hello from the compose gate\x1b[201~");
