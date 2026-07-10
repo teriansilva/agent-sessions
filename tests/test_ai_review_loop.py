@@ -328,3 +328,155 @@ def test_kick_wakes_loop_before_the_interval(ai_prefs, monkeypatch):
         assert len(swept) == 1
 
     asyncio.run(scenario())
+
+
+# ---- #611: fair sweep order + the first-send kick ---------------------------------------
+
+
+def test_never_reviewed_session_is_not_starved_by_noisy_older_ones(
+    ai_prefs, fake_jsonl, monkeypatch
+):
+    """`snapshot()` is insertion-ordered and SWEEP_CAP bounds ATTEMPTS. An agent that is
+    actively working changes its frame every sweep, so in insertion order the first SWEEP_CAP
+    busy sessions consumed the whole budget forever and anything behind them was starved —
+    a brand-new session sat at `(untitled)` indefinitely. Ordering by `reviewed_at` makes the
+    cap a fair rotation."""
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
+
+    noisy = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-1111-1111-1111-111111111111" for i in range(1, 6)]
+    for i, key in enumerate(noisy):
+        webterm._buffer_append(key, f"busy agent {i} output\r\n".encode())
+        # Already reviewed a moment ago, and still changing (their frames differ every sweep).
+        metadata.patch(key, reviewed_at=1000.0 + i, review_fingerprint="stale")
+    assert len(noisy) > ai_review_loop.SWEEP_CAP
+
+    fresh = "claude:99999999-9999-9999-9999-999999999999"
+    webterm._buffer_append(fresh, b"the user just sent their first message\r\n")
+    assert metadata.get(fresh).reviewed_at is None
+
+    # Registry order puts the never-reviewed session LAST, exactly as insertion order would.
+    reviewed, failures = _sweep(_FakeRegistry([_row(k) for k in [*noisy, fresh]]))
+    assert failures == 0
+    assert fresh in reviewed, "a never-reviewed session must win the first sweep, not starve"
+    assert len(reviewed) == ai_review_loop.SWEEP_CAP
+
+
+def test_sweep_rotates_through_the_stalest_sessions(ai_prefs, fake_jsonl, monkeypatch):
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
+    keys = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-2222-2222-2222-222222222222" for i in range(1, 6)]
+    for i, key in enumerate(keys):
+        webterm._buffer_append(key, f"output {i}\r\n".encode())
+        metadata.patch(key, reviewed_at=2000.0 + i, review_fingerprint="stale")
+
+    # Present them FRESHEST-first, so insertion order is the exact opposite of staleness order.
+    reviewed, _ = _sweep(_FakeRegistry([_row(k) for k in reversed(keys)]))
+    # The four stalest (lowest reviewed_at) go first — not the four first in the registry.
+    assert set(reviewed) == set(keys[: ai_review_loop.SWEEP_CAP])
+
+
+def test_candidates_orders_never_reviewed_before_stalest(ai_prefs, fake_jsonl):
+    a, b, c = (
+        "claude:aaaaaaaa-1111-1111-1111-111111111111",
+        "claude:bbbbbbbb-1111-1111-1111-111111111111",
+        "claude:cccccccc-1111-1111-1111-111111111111",
+    )
+    metadata.patch(a, reviewed_at=500.0)
+    metadata.patch(b, reviewed_at=100.0)
+    # c: never reviewed
+    order = [k for k, _ in ai_review_loop._candidates(_FakeRegistry([_row(a), _row(b), _row(c)]))]
+    assert order == [c, b, a]
+
+
+def test_first_submit_kicks_the_review_loop_once(monkeypatch):
+    kicks = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: kicks.append(1))
+    key = "claude:dddddddd-1111-1111-1111-111111111111"
+    webterm.scrollback._SUBMITTED.discard(key)
+
+    webterm.scrollback.note_user_submit(key)
+    webterm.scrollback.note_user_submit(key)
+    webterm.scrollback.note_user_submit(key)
+    assert len(kicks) == 1  # edge-triggered: later submits ride the interval
+
+
+def test_submit_detection_distinguishes_typing_from_sending(monkeypatch):
+    seen = []
+    monkeypatch.setattr(webterm.scrollback, "note_user_submit", lambda k: seen.append(k))
+    key = "claude:eeeeeeee-1111-1111-1111-111111111111"
+
+    webterm._note_submit(key, b"deploy the thing")  # typed, not sent
+    assert seen == []
+    webterm._note_submit(key, b"\r")  # Enter
+    assert seen == [key]
+    webterm._note_submit(key, b"more\n")  # LF also counts
+    assert seen == [key, key]
+    webterm._note_submit(None, b"\r")  # no session key
+    webterm._note_submit(key, b"")  # nothing typed
+    assert seen == [key, key]
+
+
+def test_first_submit_kick_does_not_re_review_an_unchanged_fingerprint(
+    ai_prefs, fake_jsonl, monkeypatch
+):
+    """Hermes: the extra wake must not double-review what the first-output kick already did.
+    The sweep's fingerprint gate is what makes a redundant kick free."""
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
+    webterm._buffer_append(SID, b"agent banner\r\n")
+
+    reviewed, _ = _sweep(_FakeRegistry([_row(SID)]))
+    assert reviewed == [SID]
+    before = len(calls)
+
+    # A submit kick with no new content: the sweep runs and skips without an endpoint call.
+    webterm.scrollback._SUBMITTED.discard(SID)
+    webterm.scrollback.note_user_submit(SID)
+    reviewed2, _ = _sweep(_FakeRegistry([_row(SID)]))
+    assert reviewed2 == []
+    assert len(calls) == before
+
+
+# ---- Hermes on PR #618: a FAILING session must not monopolise the cap either --------------
+
+
+def _failing_transport(calls: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500, json={"error": "endpoint down"})
+
+    return httpx.MockTransport(handler)
+
+
+def test_failing_never_reviewed_sessions_do_not_starve_the_rest(ai_prefs, fake_jsonl, monkeypatch):
+    """A failed review persists nothing (#356), so `reviewed_at` never advances and the same
+    never-reviewed sessions sort first on every sweep. With SWEEP_CAP=4 and five failing
+    candidates, session 5 would never be attempted. `_LAST_ATTEMPT` breaks the tie."""
+    ai_review_loop._LAST_ATTEMPT.clear()
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _failing_transport(calls))
+    monkeypatch.setattr(ai_review_loop, "CALL_SPACING_S", 0)
+
+    keys = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-7777-7777-7777-777777777777" for i in range(1, 6)]
+    for i, key in enumerate(keys):
+        webterm._buffer_append(key, f"dirty output {i}\r\n".encode())
+    assert len(keys) == ai_review_loop.SWEEP_CAP + 1
+    reg = _FakeRegistry([_row(k) for k in keys])
+
+    reviewed, failures = _sweep(reg)
+    assert reviewed == [] and failures == ai_review_loop.SWEEP_CAP
+    first_round = set(ai_review_loop._LAST_ATTEMPT)
+    assert len(first_round) == ai_review_loop.SWEEP_CAP
+    assert keys[4] not in first_round  # the fifth never got a turn in sweep 1
+
+    # Second sweep: everyone still never-reviewed, but the four already-attempted yield.
+    _sweep(reg)
+    assert keys[4] in ai_review_loop._LAST_ATTEMPT, "the fifth session must be attempted eventually"
+
+
+def test_last_attempt_is_pruned_for_sessions_that_leave_the_registry(ai_prefs, fake_jsonl):
+    ai_review_loop._LAST_ATTEMPT.clear()
+    ai_review_loop._LAST_ATTEMPT["claude:gone-forever"] = 1.0
+    ai_review_loop._candidates(_FakeRegistry([_row(SID)]))
+    assert "claude:gone-forever" not in ai_review_loop._LAST_ATTEMPT

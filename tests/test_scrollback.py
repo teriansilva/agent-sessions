@@ -473,3 +473,77 @@ def test_kick_helper_wakes_the_review_loop(monkeypatch):
     monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: called.append(1))
     scrollback._kick_review_on_first_output()
     assert called == [1]
+
+
+def test_strip_fallback_does_not_leak_control_string_payloads():
+    """Hermes on PR #618: the escape-strip fallback shares the renderer's blind spot. An
+    unterminated OSC (a tail slice cuts one routinely) left the ESC to be eaten as a stray C0
+    and the payload — OSC 52 is the clipboard — rendered as visible text."""
+    assert "SECRET" not in scrollback._stripped_tail_text(b"ok \x1b]52;c;SECRET", 200)
+    assert "secret" not in scrollback._stripped_tail_text(b"ok \x1bPsecret\x1b\\", 200)
+    assert scrollback._stripped_tail_text(b"ok \x1b]0;title\x07done", 200) == "ok done"
+
+
+# ---- Hermes on PR #618: a tail slice that BEGINS inside a control string -------------------
+
+
+def _leak_ring(payload_terminator: bytes) -> bytes:
+    return b"pre \x1b]52;c;" + b"SECRET" * 40 + payload_terminator + b"after\r\n"
+
+
+def test_tail_slice_beginning_inside_a_control_string_never_leaks_its_payload(monkeypatch):
+    """The introducer sits BEHIND the review's tail slice, so the parser handed only the slice
+    cannot know the bytes are an OSC 52 (clipboard) payload rather than screen text. Only the
+    accessor holds the whole ring, so only it can look back and drop the stranded fragment."""
+    monkeypatch.setattr(scrollback, "_SCREEN_TAIL_BYTES", 64)
+    for name, terminator in (
+        ("bel", b"\x07"),
+        ("st", b"\x1b\\"),
+        ("abandoned", b"\x1b[1m"),  # agent never terminated it; a new sequence begins
+    ):
+        key = f"claude:leak-{name}"
+        scrollback._BUFFERS[key] = bytearray(_leak_ring(terminator))
+        out = scrollback.live_tail_text(key, 200)
+        assert "SECRET" not in out, name
+        assert "after" in out, name
+
+
+def test_head_cut_leak_is_sealed_on_the_rendered_path_too(monkeypatch):
+    monkeypatch.setattr(scrollback, "_SCREEN_TAIL_BYTES", 64)
+    key = "claude:leak-rendered"
+    scrollback._BUFFERS[key] = bytearray(_leak_ring(b"\x07"))
+    scrollback._LAST_COLS[key] = 80
+    scrollback._LAST_ROWS[key] = 24
+    out = scrollback.live_tail_text(key, 200)
+    assert "SECRET" not in out
+    assert "after" in out
+
+
+def test_a_slice_that_is_control_payload_end_to_end_yields_nothing(monkeypatch):
+    # Better to review nothing than to review a secret; the caller falls back to transcript-only.
+    monkeypatch.setattr(scrollback, "_SCREEN_TAIL_BYTES", 64)
+    key = "claude:leak-all"
+    scrollback._BUFFERS[key] = bytearray(b"pre \x1b]52;c;" + b"SECRET" * 100)
+    assert scrollback.live_tail_text(key, 200) == ""
+
+
+def test_an_ordinary_tail_slice_is_not_trimmed(monkeypatch):
+    monkeypatch.setattr(scrollback, "_SCREEN_TAIL_BYTES", 64)
+    key = "claude:no-control-string"
+    scrollback._BUFFERS[key] = bytearray(b"x" * 200 + b"visible text\r\n")
+    assert "visible text" in scrollback.live_tail_text(key, 200)
+
+
+def test_introducer_straddling_the_cut_is_still_detected():
+    # ESC at start-1, `]` at start: the two-byte introducer spans the boundary.
+    ring = b"a\x1b]52;c;SECRET\x07ok"
+    start = ring.index(b"]")
+    assert scrollback.vtscreen.starts_inside_control_string(ring, start)
+    assert b"SECRET" not in scrollback.vtscreen.drop_open_control_prefix(ring[start:])
+
+
+def test_starts_inside_control_string_is_false_once_terminated():
+    ring = b"\x1b]0;title\x07 plain text here"
+    assert not scrollback.vtscreen.starts_inside_control_string(ring, len(ring) - 5)
+    assert not scrollback.vtscreen.starts_inside_control_string(b"no escapes at all", 5)
+    assert not scrollback.vtscreen.starts_inside_control_string(b"anything", 0)

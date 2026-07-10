@@ -138,6 +138,20 @@ SPAWN_TIMEOUT_S = 15.0
 # client (#532). Module-level so tests can shrink it.
 _TERMINATE_WAIT_S = 3.0
 
+# A submit is Enter — CR (what a real terminal sends) or LF. Keystrokes that merely edit the
+# input box carry neither, so this distinguishes "the user typed" from "the user sent".
+_SUBMIT_BYTES = (b"\r", b"\n")
+
+
+def _note_submit(buf_key: str | None, data: bytes) -> None:
+    """Tell the reviewer the user submitted a line (#611). Called from the ws input path only
+    once the read-only gate has passed, so a secondary tab never kicks. Best-effort and
+    edge-triggered downstream — the input path must never fail on the reviewer's account."""
+    if not buf_key or not data:
+        return
+    if any(b in data for b in _SUBMIT_BYTES):
+        scrollback.note_user_submit(buf_key)
+
 
 async def terminate_then_kill(proc: asyncio.subprocess.Process, *, timeout: float) -> None:
     """Escalating teardown for an owned subprocess: SIGTERM → bounded wait → SIGKILL.
@@ -478,8 +492,10 @@ async def run(
                 # client can never write to the dtach master. Server-side gate
                 # is the source of truth — not the client.
                 if kind == "i" and not _gated():
+                    data = obj.get("d", "").encode("utf-8", "replace")
                     with contextlib.suppress(OSError):
-                        os.write(master, obj.get("d", "").encode("utf-8", "replace"))
+                        os.write(master, data)
+                    _note_submit(buf_key, data)
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
                         new_cols = int(obj.get("cols", cols))
@@ -529,6 +545,7 @@ async def run(
             elif msg.get("bytes") is not None and not _gated():
                 with contextlib.suppress(OSError):
                     os.write(master, msg["bytes"])
+                _note_submit(buf_key, msg["bytes"])
 
     async def _nudge_repaint() -> None:
         # A FRESH attach needs it (#304); a have>0 reconnect normally doesn't (it holds

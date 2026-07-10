@@ -22,7 +22,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import ptybridge, transcript
+from . import ptybridge, transcript, vtscreen
 
 log = logging.getLogger("agent_sessions.scrollback")
 
@@ -41,6 +41,15 @@ log = logging.getLogger("agent_sessions.scrollback")
 # the session's *recent* output, well under the cap for most. Operators on a tight VM (or wanting
 # deeper history) can override via AGENT_SESSIONS_SCROLLBACK_BYTES; the floor keeps a malformed
 # value from shrinking the ring below a few screens.
+
+
+def _int_env(name: str, default: int) -> int:
+    """A positive int from the environment, or ``default`` on absent/malformed/non-positive."""
+    try:
+        v = int(os.environ.get(name) or 0)
+    except (ValueError, TypeError):
+        return default
+    return v if v > 0 else default
 
 
 def _scrollback_bytes() -> int:
@@ -482,6 +491,7 @@ def _drop_buffer(key: str) -> None:
     # `_ensure_loaded` — exactly like the ring itself.
     _MODES.pop(key, None)
     _MODE_CARRY.pop(key, None)
+    _SUBMITTED.discard(key)
     _SANITIZE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
 
@@ -544,6 +554,20 @@ def _enforce_buffer_cap() -> None:
         _drop_buffer(victim)
 
 
+def _kick_review(reason: str) -> None:
+    """Wake the AI-review loop ahead of its interval. Lazy import breaks the
+    ``scrollback → ai_review_loop → review → scrollback`` module cycle; the kick is a no-op
+    until the loop is armed. Only ever called on the event loop, where setting the loop's
+    ``asyncio.Event`` is safe. Best-effort — a review-side hiccup must never break the byte
+    pump or the input path."""
+    try:
+        from . import ai_review_loop
+
+        ai_review_loop.request_review_soon()
+    except Exception:  # pragma: no cover - defensive; the pump must survive anything here
+        log.debug("%s AI-review kick failed — non-fatal", reason, exc_info=True)
+
+
 def _kick_review_on_first_output() -> None:
     """Nudge the AI-review loop when a session first produces reviewable output (#552).
 
@@ -551,17 +575,33 @@ def _kick_review_on_first_output() -> None:
     after create, when the session is still empty and ``review.gather_input`` has nothing to
     hash — so the first title/summary otherwise waits up to the full review interval. Firing
     here, at the single output chokepoint, lands the wake exactly when live-tail content first
-    exists. Lazy import breaks the ``scrollback → ai_review_loop → review → scrollback`` module
-    cycle; the kick is a no-op until the loop is armed. Only ever called on the event loop (see
-    ``_buffer_append``), where setting the loop's ``asyncio.Event`` is safe. Best-effort — a
-    review-side hiccup must never break the byte pump.
+    exists.
     """
-    try:
-        from . import ai_review_loop
+    _kick_review("first-output")
 
-        ai_review_loop.request_review_soon()
-    except Exception:  # pragma: no cover - defensive; the pump must survive anything here
-        log.debug("first-output AI-review kick failed — non-fatal", exc_info=True)
+
+# Sessions whose user has submitted at least one line (#611). Edge-trigger state for
+# `note_user_submit`, cleared with the rest of a key's in-memory state in `_drop_buffer`.
+_SUBMITTED: set[str] = set()
+
+
+def note_user_submit(key: str) -> None:
+    """The user just submitted a line to this session — wake the reviewer (#611).
+
+    The first-output kick above fires on the agent's *banner*: at that moment there is no
+    transcript and no first user message, so the reviewer titles a splash screen and the
+    session shows ``(untitled)`` until the next periodic sweep. The moment worth reviewing is
+    the one right after the user actually sends something.
+
+    Edge-triggered per key — later submits ride the normal interval — and the sweep's
+    fingerprint gate means even a redundant wake costs no endpoint call. Called from the ws
+    input chokepoint only after the read-only gate has passed, so a secondary (read-only) tab
+    can never kick.
+    """
+    if not key or key in _SUBMITTED:
+        return
+    _SUBMITTED.add(key)
+    _kick_review("first-submit")
 
 
 def _buffer_append(key: str, data: bytes) -> None:
@@ -605,8 +645,16 @@ def _buffer_append(key: str, data: bytes) -> None:
 # ANSI/VT escape stripper for the live-tail accessor (#356): CSI sequences, OSC strings
 # (BEL- or ST-terminated), other ESC-prefixed singles, and the remaining C0 controls
 # except \n and \t. Bounded input keeps the regex work cheap.
+# The string-control terminators are OPTIONAL: a tail slice of a live ring routinely cuts an
+# OSC/DCS in half, and a pattern that insists on the terminator fails to match — leaving the ESC
+# to be eaten as a stray C0 and the payload to render as visible text. That is how an OSC 52
+# clipboard write reached the AI reviewer as `]52;c;<base64>`. A control-string payload is never
+# display content; consume it to its terminator or to the end of the slice. The string controls
+# must also precede the ESC-single alternative, whose `[@-Z\\^_]` class would otherwise claim the
+# `P` of a DCS and leak the rest.
 _ANSI_ESCAPES = re.compile(
-    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC … BEL / OSC … ST
+    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC … BEL / ST / unterminated
+    rb"|\x1b[P^_X][^\x1b]*(?:\x1b\\)?"  # DCS / PM / APC / SOS … ST / unterminated
     rb"|\x1b\[[0-9;:?<=>]*[ -/]*[@-~]"  # CSI
     rb"|\x1b[@-Z\\^_]"  # other ESC singles (incl. ESC ( … handled below)
     rb"|\x1b[()][0-9A-Za-z]"  # charset designations
@@ -614,31 +662,85 @@ _ANSI_ESCAPES = re.compile(
 )
 
 
-def live_tail_text(key: str, max_chars: int = 4000) -> str:
-    """Bounded, ANSI-stripped plain text from the tail of the session's live output ring
-    (#356): the NARROW accessor the AI-review engine uses, so review code never reaches
-    into the ``_BUFFERS`` module globals directly. Called from a WORKER THREAD off the event
-    loop (`asyncio.to_thread`), so every touch of the shared ring registry — the one-time
-    hydrate in ``_ensure_loaded`` and the slice read below — is serialised under ``_RING_LOCK``
-    against the loop's concurrent writes/scan; the (bounded) ANSI-strip CPU work runs outside
-    the lock. Returns ``""`` when the session has no observed output (headless / no PTY /
-    evicted) — the caller falls back to transcript-only review."""
-    if max_chars <= 0:
-        return ""
-    _ensure_loaded(key)
-    # Escapes inflate raw bytes well past their visible text; an 8× slice bounds the
-    # strip work while almost always covering max_chars of visible output. Copy the slice
-    # under the lock so a concurrent `extend`/evict on the loop can't tear the read.
-    with _RING_LOCK:
-        ring = _BUFFERS.get(key)
-        raw = bytes(ring[-(max_chars * 8) :]) if ring else b""
-    if not raw:
-        return ""
-    text = _ANSI_ESCAPES.sub(b"", raw).decode("utf-8", "replace")
+# How much of the ring's tail to replay through the screen renderer (#611). A repainting TUI
+# only re-emits the cells it dirties, so the current frame is assembled from writes spread far
+# back in the stream — a few KB is not enough to reconstruct it. 256 KiB renders a live codex
+# frame faithfully in ~160 ms of worker-thread CPU, and the review sweep is bounded to
+# SWEEP_CAP sessions every `interval_minutes`.
+_SCREEN_TAIL_BYTES = _int_env("AGENT_SESSIONS_REVIEW_SCREEN_BYTES", 256 * 1024)
+
+
+def _stripped_tail_text(raw: bytes, max_chars: int) -> str:
+    """The pre-#611 accessor: delete escape sequences and keep what's left. Retained as the
+    fallback for rings the screen renderer can't render (unknown geometry, mixed-width ring,
+    a frame that comes out empty) so the reviewer never gets *less* than it used to."""
+    # This re-slices `raw`, so it cuts the byte stream a SECOND time and can land inside a
+    # control string all over again — the leak `live_tail_text` just guarded against.
+    start = max(0, len(raw) - max_chars * 8)
+    tail = raw[start:]
+    if vtscreen.starts_inside_control_string(raw, start):
+        tail = vtscreen.drop_open_control_prefix(tail)
+    text = _ANSI_ESCAPES.sub(b"", tail).decode("utf-8", "replace")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Collapse the blank-line runs full-screen repaints leave behind.
     text = re.sub(r"\n[ \t]*\n[ \t\n]*", "\n\n", text)
     return text[-max_chars:]
+
+
+def live_tail_text(key: str, max_chars: int = 4000) -> str:
+    """The session's current terminal SCREEN as plain text (#356 accessor, #611 renderer).
+
+    The NARROW accessor the AI-review engine uses, so review code never reaches into the
+    ``_BUFFERS`` module globals directly. The ring's tail is replayed through ``vtscreen``
+    at the geometry the bytes were authored at, yielding the frame a human would see —
+    rather than the escape-stripped byte soup an in-place repaint leaves behind (a codex
+    spinner stripped of its cursor moves reads as ``Working•4orking•rking•king``).
+
+    Falls back to the plain escape-strip when the frame can't be trusted: a mixed-width ring
+    (``ring_cols`` → None), an unknown width, or a render that comes out empty. So this can
+    only ever add information, never remove it.
+
+    Called from a WORKER THREAD off the event loop (``asyncio.to_thread``), so every touch of
+    the shared ring registry — the one-time hydrate in ``_ensure_loaded`` and the slice read
+    below — is serialised under ``_RING_LOCK`` against the loop's concurrent writes/scan; the
+    (bounded) render CPU work runs outside the lock. Returns ``""`` when the session has no
+    observed output (headless / no PTY / evicted) — the caller falls back to a
+    transcript-only review.
+    """
+    if max_chars <= 0:
+        return ""
+    _ensure_loaded(key)
+    # Copy the slice under the lock so a concurrent `extend`/evict on the loop can't tear the
+    # read. Sized for the renderer; the strip fallback re-slices its own (smaller) window.
+    #
+    # The cut can land INSIDE a control string, whose introducer then sits behind the slice
+    # where no parser can see it — the payload that follows reads as ordinary text, which is how
+    # an OSC 52 clipboard write leaked into the review input. Only this function holds the whole
+    # ring, so only this function can tell; the look-back is a few `rfind`s over the prefix.
+    with _RING_LOCK:
+        ring = _BUFFERS.get(key)
+        if not ring:
+            return ""
+        start = max(0, len(ring) - _SCREEN_TAIL_BYTES)
+        open_control_string = vtscreen.starts_inside_control_string(ring, start)
+        raw = bytes(ring[start:])
+    if open_control_string:
+        raw = vtscreen.drop_open_control_prefix(raw)
+    if not raw:
+        return ""
+    # `ring_cols` is None for a mixed-width ring — rendering absolute cursor moves against the
+    # wrong width is exactly the garble #245/#293 exists to prevent, so don't.
+    cols = ring_cols(key)
+    if cols:
+        # `_LAST_ROWS` is in-memory only, so after a restart with no browser attached we don't
+        # know the height. The agent tells us: the tallest absolute row it addressed IS the
+        # screen it is drawing to.
+        rows = _LAST_ROWS.get(key) or vtscreen.infer_rows(raw)
+        if rows:
+            screen = vtscreen.render(raw, rows, cols)
+            if screen:
+                return screen[-max_chars:]
+    return _stripped_tail_text(raw, max_chars)
 
 
 def get_last_output_at(key: str) -> float | None:

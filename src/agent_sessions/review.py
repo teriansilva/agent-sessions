@@ -1,12 +1,17 @@
 """AI session review engine (#356).
 
 One bounded, non-streaming chat completion per review against the user-configured
-OpenAI-compatible endpoint (prefs `ai_review` block): the input is the engine's saved
-transcript tail (via the engine-agnostic ``transcript`` adapters) plus the live terminal
-tail (via the narrow ``scrollback.live_tail_text`` accessor — never the ring globals),
-tail-truncated to ``max_input_chars``. The response must be JSON shaped as
-``{"summary", "title", "intervention_required", "reason"}``; a server-owned shape guard +
-length caps treat the model output strictly as data (no tool calls, no actions).
+OpenAI-compatible endpoint (prefs `ai_review` block). The input has four parts (#611): a
+bounded ``## Session`` context header naming the engine and the agent's last-output age; the
+engine's saved transcript (via the engine-agnostic ``transcript`` adapters, resolved through
+``engines.logical_key`` so a reconciled placeholder still finds its store); the current
+terminal SCREEN (via the narrow ``scrollback.live_tail_text`` accessor — never the ring
+globals — which replays the ring onto a grid rather than merely stripping its escapes); and
+any unsent compose-box draft. Only the transcript is elastic: it is tail-trimmed so the whole
+body fits ``max_input_chars`` while every section keeps its heading. The context header sits
+OUTSIDE both that budget and the fingerprint, because it carries a clock. The response must be
+JSON shaped as ``{"summary", "title", "intervention_required", "reason"}``; a server-owned
+shape guard + length caps treat the model output strictly as data (no tool calls, no actions).
 
 Fail-soft contract (#356 staleness semantics): ANY failure — endpoint down, timeout, bad
 JSON, empty input — raises :class:`ReviewError` and persists NOTHING, so the last good
@@ -20,11 +25,13 @@ deliberately scheduler-free.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -37,9 +44,19 @@ SUMMARY_MAX = 200
 TITLE_MAX = 120
 REASON_MAX = 280
 
-# How much live terminal tail to feed the model (chars, post-ANSI-strip). Bounded
-# separately from max_input_chars so a chatty terminal can't crowd out the transcript.
+# How much of the rendered terminal screen to feed the model (chars). Bounded separately from
+# max_input_chars so a chatty terminal can't crowd out the transcript.
 LIVE_TAIL_CHARS = 4000
+
+
+def _screen_budget(max_input_chars: int) -> int:
+    """The screen CONTENT's share of ``max_input_chars``: at most ``LIVE_TAIL_CHARS``, and never
+    so much that the section (heading included) exceeds half the payload. The cap alone was not
+    enough to keep the promise above — with the pref at its 1 000-char floor, a 4 000-char screen
+    consumed the whole payload and the transcript was truncated out of it entirely, heading and
+    all. The heading is deducted here so ``_assemble`` can guarantee its total by construction."""
+    return max(0, min(LIVE_TAIL_CHARS, max_input_chars // 2 - len(_LIVE_TAIL_SECTION)))
+
 
 # Recap (#481): a SECOND review pass over the WHOLE-session transcript producing a
 # chronological "what happened" brief for the session-brief modal. Output capped
@@ -47,6 +64,20 @@ LIVE_TAIL_CHARS = 4000
 # over) so the opening phases of a long session aren't lost.
 RECAP_MAX = 1500
 RECAP_INPUT_CHARS = 16000
+
+
+def recap_input_chars(cfg: dict | None = None) -> int:
+    """The recap's input budget. The recap sees the WHOLE session (head+tail sampled), so it must
+    never get a *narrower* view than the tail review's ``max_input_chars`` — which the bare
+    ``RECAP_INPUT_CHARS`` constant did whenever the user raised that pref above 16 000 (its default
+    is 24 000, so the recap was the narrower of the two out of the box, contradicting its own
+    docstring)."""
+    block = cfg if cfg is not None else prefs.get_ai_review()
+    try:
+        return max(RECAP_INPUT_CHARS, int(block["max_input_chars"]))
+    except (KeyError, TypeError, ValueError):
+        return RECAP_INPUT_CHARS
+
 
 RECAP_SYSTEM_PROMPT = (
     "You write a brief for a developer returning to a coding-agent session. From the session "
@@ -133,13 +164,19 @@ def _base(cfg: dict) -> str:
 # --- input assembly ------------------------------------------------------------------
 
 
-def _plain_transcript(key: str) -> str:
+def _plain_transcript(key: str, aliases: dict[str, str] | None = None) -> str:
     """The engine's saved conversation rendered as plain text (no ANSI). Fail-soft: any
-    adapter/parse error → "" (live-tail-only review)."""
+    adapter/parse error → "" (live-tail-only review).
+
+    ``key`` is the session's PHYSICAL key — for codex / opencode / antigravity that is the
+    ``new-<uuid>`` placeholder the master was launched under, which ``parse_key`` rejects. Map
+    it to the id the engine's own transcript store uses (#611) or every in-app-created session
+    on those engines reviews with an empty transcript, on nothing but its terminal screen.
+    """
     try:
         from . import engines
 
-        prov, native = engines.parse_key(key)
+        prov, native = engines.parse_key(engines.logical_key(key, aliases))
     except Exception:
         return ""
     adapter = transcript.adapter_for(prov.engine_id)
@@ -159,26 +196,97 @@ def _plain_transcript(key: str) -> str:
     return "\n".join(lines)
 
 
-# Pending-draft framing (#560). Two things the model kept misreading as completed work:
-#   1. the LIVE terminal tail is a live screen snapshot, not finalized history — the agent's
-#      input line may hold a command the user is still typing but has NOT submitted; and
-#   2. the app's compose box carries an explicit server-side draft (#477) not sent to the agent.
-# Both are the user's *intent*, not done work — a queued "do this" was being reviewed/recapped as
-# already handled. Label them so the model treats unsent text as pending; the caveats below are the
-# actual instruction (belt-and-braces alongside the system prompt).
+# Live-screen framing (#560 pending-draft rule, re-worded for the #611 renderer).
+#
+# The section below is now a RENDERED SNAPSHOT of the terminal grid (`scrollback.live_tail_text`
+# replays the ring through `vtscreen`), not a strip of raw bytes. The old wording — "any text in
+# the input line may be an UNSENT DRAFT the user is still typing" — was written for that byte
+# soup and actively primed the failure it was meant to prevent: handed the debris a repainting
+# spinner leaves behind, the model dutifully reported that the agent was "typing random
+# characters". Describe what the section actually is, and keep the one caveat that is still
+# true: the agent's input box holds text that has not been submitted yet.
 _LIVE_TAIL_SECTION = (
-    "## Live terminal (tail) — LIVE SCREEN SNAPSHOT, NOT FINALIZED HISTORY\n"
-    "Any command or text visible in the agent's input line below may be an UNSENT DRAFT the "
-    "user is still typing. Treat typed-but-not-yet-submitted input as PENDING intent, never as "
-    "work the agent has already done.\n"
+    "## Terminal screen (rendered snapshot of what is on screen right now)\n"
+    "This is the current frame of the agent's terminal, not a log of finalized history. Text "
+    "sitting in the agent's input box has NOT been submitted — treat it as PENDING intent, "
+    "never as work the agent has already done. Progress spinners, status bars and box-drawing "
+    "borders are the agent's own chrome, not output it produced.\n"
 )
+
+# Session-context framing (#611). The payload used to be a transcript and a screen with no
+# statement of what they belonged to: the model was never told which engine it was reading, so
+# it could not know that codex's `Working ·` status line is chrome rather than a literal word,
+# and it had no ground truth for idleness — the session whose review read "Idle: agent appears
+# to be typing random characters" had emitted bytes milliseconds earlier. These are facts the
+# app already holds; they cost three lines and they anchor `intervention_required`.
+_ACTIVITY_FRESH_S = 5.0
+
+# The header sits OUTSIDE `max_input_chars` rather than eating into it, so this bounds it
+# instead. Deducting it from the body budget would be worse than it looks: the header embeds a
+# last-output age whose DIGIT COUNT grows with the age ("0s" → "1234s"), so the body's
+# truncation point — and therefore its fingerprint — would drift purely with the clock, and
+# every session would look permanently changed. A fixed ceiling here keeps the payload bounded
+# at `max_input_chars + SESSION_CONTEXT_MAX` while the hashed body stays clock-independent.
+SESSION_CONTEXT_MAX = 200
+
+
+def _session_context(key: str, phys_key: str, aliases: dict[str, str] | None = None) -> str:
+    """A short, bounded ``## Session`` header: which engine produced the transcript + screen
+    below, and how long ago the agent last wrote a byte. Fail-soft: an unresolvable key or an
+    unobserved session simply omits the field it can't state. Never part of the fingerprint —
+    see ``gather_input``."""
+    lines: list[str] = []
+    with contextlib.suppress(Exception):
+        from . import engines
+
+        prov, _ = engines.parse_key(engines.logical_key(key, aliases))
+        lines.append(f"- agent: {prov.engine_id}")
+    last = scrollback.get_last_output_at(phys_key)
+    if last is not None:
+        age = max(0.0, time.time() - last)
+        state = "RUNNING (producing output right now)" if age < _ACTIVITY_FRESH_S else "quiet"
+        lines.append(f"- last terminal output: {age:.0f}s ago — the agent is {state}")
+    if not lines:
+        return ""
+    return ("## Session\n" + "\n".join(lines))[:SESSION_CONTEXT_MAX]
+
 
 # How much of the compose-box draft to feed the model — bounded SEPARATELY from the PTY tail so a
 # long draft can't crowd out the transcript.
 PENDING_DRAFT_MAX = 2000
 
+_TRANSCRIPT_TAIL_HEADING = "## Transcript (tail)\n"
+_TRANSCRIPT_FULL_HEADING = "## Transcript (full)\n"
+_DRAFT_HEADING = (
+    "## Pending draft (UNSENT — the user is still composing this in the app; it has NOT been "
+    "sent to the agent)\n"
+)
 
-def _pending_draft_section(key: str) -> str:
+
+def _draft_budget(max_input_chars: int) -> int:
+    """The draft's share of ``max_input_chars`` — at most ``PENDING_DRAFT_MAX``, and never more
+    than a fifth of the payload. Without this the draft was bounded only by its own constant, so a
+    2 000-char draft against the pref's 1 000-char floor filled the whole body; the joined text was
+    then tail-truncated, which sheared off EVERY heading — including the draft's own "UNSENT"
+    label. Unsent text arriving unlabeled is exactly the failure #560 added the label to prevent."""
+    return max(0, min(PENDING_DRAFT_MAX, max_input_chars // 5 - len(_DRAFT_HEADING)))
+
+
+def _section(heading: str, content: str, budget: int, *, keep: str = "tail") -> str | None:
+    """A headed section fitted into ``budget`` TOTAL characters, or ``None`` when the budget
+    cannot hold the heading plus at least one character of content. A section is therefore always
+    complete and always labeled: it is never half a heading, and content is trimmed rather than
+    the label. ``keep`` selects which end of over-long content survives."""
+    if not content:
+        return None
+    room = budget - len(heading)
+    if room <= 0:
+        return None
+    body = content[-room:] if keep == "tail" else content[:room]
+    return heading + body
+
+
+def _pending_draft_section(key: str, budget: int) -> str:
     """The session's unsent compose-box draft (#477 ``SessionMeta.draft``) rendered as a clearly
     labeled PENDING section, or ``""`` when there is none. Fail-soft: any metadata error → "" (a
     draft is advisory context, never a reason to fail a review). Only the already-sanitized draft
@@ -190,7 +298,7 @@ def _pending_draft_section(key: str) -> str:
     if not metadata.has_draft(meta):
         return ""
     d = meta.draft or {}
-    text = str(d.get("text", "")).strip()[:PENDING_DRAFT_MAX]
+    text = str(d.get("text", "")).strip()
     names = [
         str(a.get("name", "")).strip()
         for a in (d.get("attachments") or [])
@@ -203,49 +311,121 @@ def _pending_draft_section(key: str) -> str:
         body.append("attachments: " + ", ".join(names))
     if not body:
         return ""
+    # Keep the HEAD of a long draft — what the user started typing — and drop the section whole
+    # if the budget cannot carry its label. Unlabeled unsent text is worse than no draft at all.
     return (
-        "## Pending draft (UNSENT — the user is still composing this in the app; it has NOT been "
-        "sent to the agent)\n" + "\n".join(body)
+        _section(_DRAFT_HEADING, "\n".join(body), budget + len(_DRAFT_HEADING), keep="head") or ""
     )
 
 
-def gather_input(key: str, max_input_chars: int) -> tuple[str, str]:
-    """Build ``(review_input, fingerprint)`` for a session: transcript tail + live tail (+ any
-    unsent compose-box draft), tail-truncated to ``max_input_chars``. The live tail goes through
-    the bounded ANSI-stripped accessor; the transcript through the engine adapters. The live tail
-    and the draft are framed as PENDING (#560) so a typed-but-unsent instruction is never read as
-    completed work. Raises :class:`ReviewError` when there is nothing at all to review (no
-    transcript adapter output AND no observed PTY output — a draft alone is supplementary).
+def _physical(key: str) -> str:
+    """The physical key ``key``'s live resources (ring, lock, socket) are under. Fail-soft."""
+    try:
+        from . import engines
+
+        return engines.physical_key(key)
+    except Exception:
+        return key
+
+
+def _load_aliases() -> dict[str, str]:
+    """The placeholder→real alias map, fail-soft. Callers inside a sweep should load it once
+    and thread it through rather than re-reading the sidecar per session."""
+    try:
+        return metadata.load_aliases()
+    except Exception:
+        return {}
+
+
+def _with_context(key: str, phys_key: str, body: str, aliases: dict[str, str] | None) -> str:
+    header = _session_context(key, phys_key, aliases)
+    return f"{header}\n\n{body}" if header else body
+
+
+def gather_input(
+    key: str, max_input_chars: int, aliases: dict[str, str] | None = None
+) -> tuple[str, str]:
+    """Build ``(review_input, fingerprint)`` for a session: a session-context header, the
+    transcript tail, the rendered terminal screen, and any unsent compose-box draft — with the
+    body tail-truncated to ``max_input_chars``. The screen goes through the bounded
+    ``scrollback.live_tail_text`` accessor; the transcript through the engine adapters, resolved
+    to the engine's own id (#611). The screen and the draft are framed as PENDING (#560) so a
+    typed-but-unsent instruction is never read as completed work. Raises :class:`ReviewError`
+    when there is nothing at all to review (no transcript adapter output AND no observed PTY
+    output — a draft alone is supplementary).
 
     The fingerprint is a hash of the assembled input — it changes exactly when the reviewable
     content changes, the property the Phase-2 scheduler's change-detection needs (timestamp quirks
     don't move it). The compose-box draft (#560) is deliberately part of that input, so editing a
     pending draft DOES move the fingerprint and re-triggers review — the one intentional exception
     to "metadata-only writes don't move it."
-    """
-    try:
-        from . import engines
 
-        phys_key = engines.physical_key(key)
-    except Exception:
-        phys_key = key
-    transcript_text = _plain_transcript(key)
-    live_text = scrollback.live_tail_text(phys_key, LIVE_TAIL_CHARS)
+    The ``## Session`` context header (#611) is deliberately OUTSIDE the fingerprint and outside
+    the truncation budget. It carries a last-output *age*, which by construction changes on every
+    sweep — hashing it would mark every session permanently changed and re-review the whole
+    registry forever. It is prepended after the hash so it also can never be the thing that falls
+    off the front when the body is truncated.
+    """
+    phys_key = _physical(key)
+    if aliases is None:
+        aliases = _load_aliases()
+    transcript_text = _plain_transcript(key, aliases)
+    live_text = scrollback.live_tail_text(phys_key, _screen_budget(max_input_chars))
     if not transcript_text and not live_text:
         raise ReviewError("nothing to review: no transcript and no live terminal output")
-    parts: list[str] = []
+    body = _assemble(
+        key,
+        max_input_chars,
+        transcript_text,
+        _TRANSCRIPT_TAIL_HEADING,
+        live_text,
+        keep_transcript="tail",
+    )
+    fingerprint = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()
+    return _with_context(key, phys_key, body, aliases), fingerprint
+
+
+def _assemble(
+    key: str,
+    budget: int,
+    transcript_text: str,
+    transcript_heading: str,
+    live_text: str,
+    *,
+    keep_transcript: str,
+    sample: Callable[[str, int], str] | None = None,
+) -> str:
+    """Join the body's sections so the total never exceeds ``budget`` **by construction**, and no
+    section is ever emitted without its heading.
+
+    The screen and the draft take fixed shares (``_screen_budget`` / ``_draft_budget``); the
+    transcript is elastic and takes what remains. A section whose share cannot carry its heading
+    plus a character of content is dropped whole rather than sliced. The previous approach — join
+    everything, then tail-truncate the result — could shear every heading off the front, leaving
+    the model an unlabeled blend of transcript, terminal output, and (worst) the user's UNSENT
+    draft, which #560 exists to keep distinguishable from completed work.
+    """
+    sections: list[str] = []
+    spent = 0
+
+    screen = _section(_LIVE_TAIL_SECTION, live_text, len(_LIVE_TAIL_SECTION) + len(live_text))
+    draft = _pending_draft_section(key, _draft_budget(budget))
+    for fixed in (screen, draft):
+        if fixed:
+            spent += len(fixed) + 2  # + the "\n\n" separator
+
     if transcript_text:
-        parts.append("## Transcript (tail)\n" + transcript_text)
-    if live_text:
-        parts.append(_LIVE_TAIL_SECTION + live_text)
-    draft_section = _pending_draft_section(key)
-    if draft_section:
-        parts.append(draft_section)
-    text = "\n\n".join(parts)
-    if len(text) > max_input_chars:
-        text = text[-max_input_chars:]
-    fingerprint = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
-    return text, fingerprint
+        room = budget - spent
+        if sample is not None:
+            transcript_text = sample(transcript_text, max(0, room - len(transcript_heading)))
+        head = _section(transcript_heading, transcript_text, room, keep=keep_transcript)
+        if head:
+            sections.append(head)
+    if screen:
+        sections.append(screen)
+    if draft:
+        sections.append(draft)
+    return "\n\n".join(sections)
 
 
 def _head_tail_sample(text: str, max_chars: int) -> str:
@@ -264,35 +444,37 @@ def _head_tail_sample(text: str, max_chars: int) -> str:
     return text[:head] + marker + text[-tail:]
 
 
-def gather_recap_input(key: str, max_chars: int) -> tuple[str, str]:
+def gather_recap_input(
+    key: str, max_chars: int, aliases: dict[str, str] | None = None
+) -> tuple[str, str]:
     """Build ``(recap_input, fingerprint)`` for a session from the WHOLE saved transcript
-    (#481) plus the live terminal tail — a wider view than ``gather_input``'s tail so the
+    (#481) plus the rendered terminal screen — a wider view than ``gather_input``'s tail so the
     recap can describe the whole session. Bounded by ``_head_tail_sample`` (head+tail when
     over ``max_chars``). Raises :class:`ReviewError` when there is nothing to review. The
-    fingerprint hashes the assembled (post-sampling) text so the recap regenerates only when
+    fingerprint hashes the assembled (post-sampling) BODY so the recap regenerates only when
     the content it actually sees changes — its own change-detection, independent of the tail
-    review's fingerprint."""
-    try:
-        from . import engines
-
-        phys_key = engines.physical_key(key)
-    except Exception:
-        phys_key = key
-    transcript_text = _plain_transcript(key)
-    live_text = scrollback.live_tail_text(phys_key, LIVE_TAIL_CHARS)
+    review's fingerprint, and (like ``gather_input``) blind to the context header's clock."""
+    phys_key = _physical(key)
+    if aliases is None:
+        aliases = _load_aliases()
+    transcript_text = _plain_transcript(key, aliases)
+    live_text = scrollback.live_tail_text(phys_key, _screen_budget(max_chars))
     if not transcript_text and not live_text:
         raise ReviewError("nothing to recap: no transcript and no live terminal output")
-    parts: list[str] = []
-    if transcript_text:
-        parts.append("## Transcript (full)\n" + transcript_text)
-    if live_text:
-        parts.append(_LIVE_TAIL_SECTION + live_text)
-    draft_section = _pending_draft_section(key)
-    if draft_section:
-        parts.append(draft_section)
-    text = _head_tail_sample("\n\n".join(parts), max_chars)
-    fingerprint = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
-    return text, fingerprint
+    # Sample the TRANSCRIPT head+tail rather than the joined body: eliding the middle of the
+    # joined text could drop the screen's and the draft's headings, the same mislabeling
+    # `_assemble` exists to prevent.
+    body = _assemble(
+        key,
+        max_chars,
+        transcript_text,
+        _TRANSCRIPT_FULL_HEADING,
+        live_text,
+        keep_transcript="head",
+        sample=_head_tail_sample,
+    )
+    fingerprint = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()
+    return _with_context(key, phys_key, body, aliases), fingerprint
 
 
 # --- response parsing ----------------------------------------------------------------
@@ -368,12 +550,17 @@ def _recap_shape_guard(obj: dict) -> str:
 # --- the review ----------------------------------------------------------------------
 
 
-async def run_review(key: str) -> dict:
+async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     """Review one session now: assemble input, call the endpoint, guard the shape,
     persist via ``metadata.patch``. Returns the persisted fields (plus the fingerprint).
-    Raises NotConfiguredError / ReviewError — never partial writes."""
+    Raises NotConfiguredError / ReviewError — never partial writes.
+
+    ``aliases`` (``metadata.load_aliases()``) is threaded in by the sweep so the sidecar is read
+    once per pass rather than once per session; omit it and each gather reads it itself."""
     cfg = _require_config()
-    text, fingerprint = await asyncio.to_thread(gather_input, key, int(cfg["max_input_chars"]))
+    text, fingerprint = await asyncio.to_thread(
+        gather_input, key, int(cfg["max_input_chars"]), aliases
+    )
     body = {
         "model": cfg["model"],
         "messages": [
@@ -419,7 +606,9 @@ async def run_review(key: str) -> dict:
     # raises above, before we reach here, so the recap never blocks it). Its own fingerprint
     # skips a redundant call when the whole-session content is unchanged.
     try:
-        recap_text, recap_fp = await asyncio.to_thread(gather_recap_input, key, RECAP_INPUT_CHARS)
+        recap_text, recap_fp = await asyncio.to_thread(
+            gather_recap_input, key, recap_input_chars(cfg), aliases
+        )
         if recap_fp != meta.recap_fingerprint:
             obj = await complete_json(
                 [

@@ -230,3 +230,53 @@ def test_opencode_advertises_new_session_via_reconcile(monkeypatch):
     argv = p.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True)
     assert argv == [engines.OPENCODE_BIN, "/tmp/proj"]
     assert "--session" not in argv  # never pins an id; opencode creates a fresh one
+
+
+# ---- #611: logical_key — the inverse of physical_key --------------------------------------
+
+
+def test_logical_key_maps_placeholder_to_the_engines_real_id():
+    aliases = {
+        "codex:new-d63b0fd4-6043-4f59-8b4b-54b904ce7414": (
+            "codex:019f4a49-57a9-76c0-b3d4-6476f4aceef5"
+        ),
+        "opencode:new-aaaaaaaa-1111-1111-1111-111111111111": (
+            "opencode:ses_15873112effeDtw4Xl4qIC4d"
+        ),
+        "antigravity:new-bbbbbbbb-1111-1111-1111-111111111111": (
+            "antigravity:cccccccc-3333-3333-3333-333333333333"
+        ),
+    }
+    for placeholder, real in aliases.items():
+        assert engines.logical_key(placeholder, aliases) == real
+        # ...and it is the exact inverse of physical_key.
+        assert engines.physical_key(real, aliases) == placeholder
+
+
+def test_logical_key_is_identity_for_pinned_engines_and_unknown_keys():
+    aliases = {"codex:new-11111111-1111-1111-1111-111111111111": "codex:real"}
+    for key in (
+        "claude:11111111-1111-1111-1111-111111111111",
+        "gemini:22222222-2222-2222-2222-222222222222",
+        "codex:new-99999999-9999-9999-9999-999999999999",  # launched, not yet reconciled
+        "codex:019f4a49-57a9-76c0-b3d4-6476f4aceef5",  # already the real id
+    ):
+        assert engines.logical_key(key, aliases) == key
+
+
+def test_placeholder_keys_are_rejected_by_parse_key_but_resolve_through_logical_key():
+    """The bug #611 fixes: `_plain_transcript` fed the physical key straight to `parse_key`,
+    which rejects the placeholder shape for every mint-its-own-id engine — so the transcript
+    silently read as empty for the whole life of an in-app-created session."""
+    for engine, real in (
+        ("codex", "019f4a49-57a9-76c0-b3d4-6476f4aceef5"),
+        ("opencode", "ses_15873112effeDtw4Xl4qIC4d"),
+        ("antigravity", "cccccccc-3333-3333-3333-333333333333"),
+    ):
+        placeholder = f"{engine}:new-11111111-1111-1111-1111-111111111111"
+        with pytest.raises(engines.EngineError):
+            engines.parse_key(placeholder)
+        aliases = {placeholder: f"{engine}:{real}"}
+        prov, native = engines.parse_key(engines.logical_key(placeholder, aliases))
+        assert prov.engine_id == engine
+        assert native == real

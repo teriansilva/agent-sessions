@@ -84,8 +84,9 @@ _BANNER_SYSTEM_PROMPT = (
 
 _SESSION_SYSTEM_PROMPT = (
     "You summarize ONE coding-agent session in a single line: its current state and the most "
-    "useful next step for the user. You are given the session's title, summary, state, and "
-    "last-activity age. Be specific and concise — no preamble, no markdown. "
+    "useful next step for the user. You are given the session's title, state, last-activity age, "
+    "and a summary — which may be a short chronological recap of what happened, one step per "
+    "line. Be specific and concise — no preamble, no markdown. "
     'Reply with ONLY a JSON object: {"line": "<one line, max 140 chars>"}.'
 )
 
@@ -188,6 +189,15 @@ def build_cards(
                 "synthesis": None,
                 # Internal: feeds the input fingerprint; stripped from the public artifact.
                 "_review_fingerprint": m.review_fingerprint,
+                # Internal: the `slow` per-session pass prefers this over `ai_summary` (#611).
+                # Stripped from the public artifact alongside the fingerprint.
+                "_ai_recap": m.ai_recap,
+                # Internal: the recap is now a synthesis INPUT, so it must move the scan's input
+                # fingerprint too. Otherwise a recap generated later (summary fingerprint
+                # unchanged — e.g. a failed recap call finally succeeding, or a legacy session
+                # backfilled) leaves `fingerprint_for()` identical and the #441 Phase-3 loop skips
+                # the scan as "unchanged", so the cards keep their pre-recap synthesis forever.
+                "_recap_fingerprint": m.recap_fingerprint,
             }
         )
     cards.sort(key=lambda c: (_STATE_ORDER[c["state"]], -c["last_activity"]))
@@ -203,7 +213,8 @@ def _fingerprint(cards: list[dict], window_days: int, depth: str) -> str:
             "window_days": window_days,
             "depth": depth,
             "sessions": sorted(
-                [c["id"], c["last_activity"], c["_review_fingerprint"]] for c in cards
+                [c["id"], c["last_activity"], c["_review_fingerprint"], c["_recap_fingerprint"]]
+                for c in cards
             ),
         },
         sort_keys=True,
@@ -249,7 +260,10 @@ async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
             await asyncio.sleep(SYNTH_CALL_SPACING_S)
         user = {
             "title": card["title"],
-            "summary": card["ai_summary"] or "",
+            # The recap (#481) is a ≤1500-char chronological brief on the same sidecar; the
+            # summary is one ≤200-char line distilled from it. Given the choice, hand the model
+            # the fuller input — same call, same cost, strictly more to work with (#611).
+            "summary": card.get("_ai_recap") or card["ai_summary"] or "",
             "state": card["state"],
             "age_hours": round((now - card["last_activity"]) / 3600, 1),
         }

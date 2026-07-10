@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from . import aitasks, metadata, prefs, review
 
@@ -108,18 +109,46 @@ async def sweep(registry) -> tuple[list[str], int]:
         return await _sweep(registry, cfg)
 
 
-async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
-    """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
-    max_chars = int(cfg["max_input_chars"])
-    reviewed: list[str] = []
-    failures = 0
-    attempts = 0
+# Wall-clock of the last review ATTEMPT per key, successful or not. In-memory and best-effort:
+# it only orders a sweep, so losing it on restart costs nothing. This is the secondary sort key
+# and it is what keeps a FAILING session from monopolising the cap — `reviewed_at` alone cannot,
+# because a failed review deliberately persists nothing (the #356 staleness contract), so the
+# stalest sessions stay the stalest forever and are retried ahead of everyone else on every sweep.
+_LAST_ATTEMPT: dict[str, float] = {}
+
+
+def _sort_key(key: str, meta) -> tuple[float, float]:
+    reviewed = float("-inf") if meta.reviewed_at is None else float(meta.reviewed_at)
+    return (reviewed, _LAST_ATTEMPT.get(key, float("-inf")))
+
+
+def _candidates(registry) -> list[tuple[str, object]]:
+    """The reviewable sessions in the registry, LEAST-RECENTLY-REVIEWED FIRST (#611).
+
+    ``registry.snapshot()`` is insertion-ordered (oldest session first, a brand-new one last)
+    and ``SWEEP_CAP`` bounds *attempts*, not successes. A session that changes every sweep —
+    any agent that is actively working — is therefore a candidate every sweep, and in insertion
+    order the first ``SWEEP_CAP`` busy sessions consume the whole budget forever. Anything
+    behind them is not merely delayed, it is starved: a freshly created session can sit at
+    ``(untitled)`` indefinitely while four older sessions churn.
+
+    Ordering by ``reviewed_at`` turns the cap into a fair rotation — never-reviewed sessions
+    (``None`` → ``-inf``) sort first, then the stalest — so every session is reached within
+    ``ceil(N / SWEEP_CAP)`` sweeps and the configured interval is honoured.
+
+    ``reviewed_at`` alone is not enough, though: a review that FAILS persists nothing, so the
+    session's ``reviewed_at`` never advances and it sorts first again next sweep. Four
+    never-reviewed sessions against a down endpoint would retry each other forever and the fifth
+    would never be attempted. ``_LAST_ATTEMPT`` breaks that tie — an attempted-and-failed session
+    yields to one that has not been tried yet.
+    """
+    out: list[tuple[str, object]] = []
+    live: set[str] = set()
     for row in registry.snapshot():
-        if attempts >= SWEEP_CAP:
-            break
         key = row.get("id")
         if not key:
             continue
+        live.add(key)
         try:
             meta = metadata.get(metadata.resolve_key(key))
         except Exception:
@@ -127,12 +156,36 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
             continue
         if meta.review_excluded or meta.archived is True:
             continue
+        out.append((key, meta))
+    for gone in _LAST_ATTEMPT.keys() - live:  # don't retain state for dead sessions
+        _LAST_ATTEMPT.pop(gone, None)
+    out.sort(key=lambda km: _sort_key(km[0], km[1]))
+    return out
+
+
+async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
+    """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
+    max_chars = int(cfg["max_input_chars"])
+    recap_chars = review.recap_input_chars(cfg)
+    # One alias-sidecar read per sweep, threaded through every gather (#611) rather than
+    # re-read per session per gather. Fail-soft: no aliases just means no placeholder→real
+    # resolution, i.e. the pre-#611 behaviour, never a failed sweep.
+    try:
+        aliases = metadata.load_aliases()
+    except Exception:
+        aliases = {}
+    reviewed: list[str] = []
+    failures = 0
+    attempts = 0
+    for key, meta in _candidates(registry):
+        if attempts >= SWEEP_CAP:
+            break
         # Change detection BEFORE any network I/O: gather_input is exactly what
         # run_review hashes+persists, so fingerprint equality ⇔ the endpoint would see
         # the same input it already reviewed. Nothing to review / a gather error just
         # skips the session (fail-soft, no endpoint call either way).
         try:
-            _, fingerprint = await asyncio.to_thread(review.gather_input, key, max_chars)
+            _, fingerprint = await asyncio.to_thread(review.gather_input, key, max_chars, aliases)
         except Exception:
             # Includes ReviewError("nothing to review") — common for fresh/quiet
             # sessions; never worth an endpoint call, never worth log spam.
@@ -150,7 +203,7 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
         recap_stale = False
         try:
             _, recap_fp = await asyncio.to_thread(
-                review.gather_recap_input, key, review.RECAP_INPUT_CHARS
+                review.gather_recap_input, key, recap_chars, aliases
             )
             recap_stale = recap_fp != meta.recap_fingerprint
         except Exception:
@@ -160,8 +213,11 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
         if attempts:
             await asyncio.sleep(CALL_SPACING_S)
         attempts += 1
+        # Stamp BEFORE the call: an attempt counts even if it fails (or raises), which is exactly
+        # the case `reviewed_at` cannot record and the case that would otherwise starve the queue.
+        _LAST_ATTEMPT[key] = time.time()
         try:
-            await review.run_review(key)
+            await review.run_review(key, aliases)
             reviewed.append(key)
         except review.NotConfiguredError:
             # Config cleared mid-sweep — nothing further can succeed this pass.

@@ -185,6 +185,29 @@ def physical_key(key: str, aliases: dict[str, str] | None = None) -> str:
     return key
 
 
+def logical_key(key: str, aliases: dict[str, str] | None = None) -> str:
+    """Resolve an engine-qualified ``key`` to the LOGICAL key its *engine* knows it by —
+    the inverse of :func:`physical_key` (#611).
+
+    A session launched on a mint-its-own-id engine (codex / opencode / antigravity) keeps the
+    ``new-<uuid>`` placeholder as its physical key for life: that's what the dtach socket, the
+    lock, the ring and the sidecar are keyed by. But the engine's own transcript store is keyed
+    by the REAL id it minted. Anything that wants to read that store — the AI reviewer and its
+    recap — must map placeholder → real, or ``parse_key`` rejects the placeholder shape and the
+    transcript silently reads as empty.
+
+    The stored alias map is already ``placeholder → real``, so this is a direct lookup. Pass
+    ``aliases`` (``metadata.load_aliases()``) to avoid re-reading the sidecar; omit to read it.
+    Idempotent, and a no-op for pinned-id engines and unreconciled placeholders (returns
+    ``key``).
+    """
+    if aliases is None:
+        from .. import metadata as _md
+
+        aliases = _md.load_aliases()
+    return aliases.get(key, key)
+
+
 def canonical_key(raw: str) -> str:
     """Normalize a raw/back-compat id to its canonical ``engine:native_id`` form."""
     prov, native = parse_key(raw)

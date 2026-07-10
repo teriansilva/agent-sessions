@@ -395,3 +395,90 @@ def test_scan_honors_body_depth_override(auth_cfg, fake_jsonl):
     assert art["scan_depth"] == "medium"
     assert art["synthesis_skipped"] is True
     assert art["banner"] is None
+
+
+# ---- #611: the slow per-session pass prefers the recap over the distilled summary --------
+
+
+def test_slow_pass_sends_the_recap_when_one_exists(pulse_cache, configured_ai, monkeypatch):
+    """`ai_recap` (#481) is a ≤1500-char chronological brief on the same sidecar; `ai_summary`
+    is one ≤200-char line distilled from it. Same call, same cost — hand the model the fuller
+    input rather than re-summarizing a summary."""
+    now = 1_000_000.0
+    _setup(
+        monkeypatch,
+        [FakeSession("claude", "u", "/a", now - 100)],
+        {
+            "claude:u": metadata.SessionMeta(
+                ai_summary="did x",
+                ai_recap="Cloned repo.\nRan the suite.\nTwo tests fail.",
+                review_fingerprint="fp",
+            )
+        },
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _json_transport({"line": "fix them", "banner": "b"}, calls)
+    )
+    art = asyncio.run(pulse.run_scan(depth="slow", now=now))
+
+    session_call = json.loads(calls[0]["messages"][1]["content"])
+    assert session_call["summary"] == "Cloned repo.\nRan the suite.\nTwo tests fail."
+    assert art["cards"][0]["synthesis"] == "fix them"
+    # The internal field never leaks into the public artifact.
+    assert "_ai_recap" not in art["cards"][0]
+
+
+def test_slow_pass_falls_back_to_the_summary_without_a_recap(
+    pulse_cache, configured_ai, monkeypatch
+):
+    now = 1_000_000.0
+    _setup(
+        monkeypatch,
+        [FakeSession("claude", "u", "/a", now - 100)],
+        {"claude:u": metadata.SessionMeta(ai_summary="did x", review_fingerprint="fp")},
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _json_transport({"line": "go on", "banner": "b"}, calls)
+    )
+    asyncio.run(pulse.run_scan(depth="slow", now=now))
+    assert json.loads(calls[0]["messages"][1]["content"])["summary"] == "did x"
+
+
+def test_recap_change_moves_the_scan_input_fingerprint(pulse_cache, configured_ai, monkeypatch):
+    """Hermes on PR #618: the `slow` pass now feeds `_ai_recap` into synthesis, so the recap is a
+    scan INPUT. If the input fingerprint still hashed only `_review_fingerprint`, a recap that
+    arrived later (summary fingerprint unchanged — a failed recap call finally succeeding, or a
+    legacy session backfilled) would leave `fingerprint_for()` identical and the Phase-3 loop
+    would skip the scan as unchanged, stranding the pre-recap synthesis forever."""
+    now = 1_000_000.0
+    session = FakeSession("claude", "u", "/a", now - 100)
+
+    _setup(
+        monkeypatch,
+        [session],
+        {
+            "claude:u": metadata.SessionMeta(
+                ai_summary="did x", review_fingerprint="fp", recap_fingerprint=""
+            )
+        },
+    )
+    before = asyncio.run(pulse.fingerprint_for(window_days=3, depth="slow", now=now))
+
+    # Same summary + same review fingerprint; only the recap landed.
+    _setup(
+        monkeypatch,
+        [session],
+        {
+            "claude:u": metadata.SessionMeta(
+                ai_summary="did x",
+                review_fingerprint="fp",
+                ai_recap="Cloned repo.\nRan the suite.",
+                recap_fingerprint="rfp",
+            )
+        },
+    )
+    after = asyncio.run(pulse.fingerprint_for(window_days=3, depth="slow", now=now))
+
+    assert before != after

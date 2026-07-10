@@ -97,9 +97,9 @@ def test_gather_input_transcript_only(ai_prefs, fake_jsonl):
 def test_gather_input_live_only(ai_prefs, fake_jsonl):
     webterm._buffer_append(LIVE_ONLY_SID, b"\x1b[1mrunning pytest\x1b[0m\r\n$ done\r\n")
     text, _ = review.gather_input(LIVE_ONLY_SID, 24000)
-    assert "## Live terminal (tail)" in text
+    assert "## Terminal screen" in text
     assert "running pytest" in text
-    assert "\x1b" not in text  # ANSI stripped by the narrow accessor
+    assert "\x1b" not in text  # escapes consumed by the narrow accessor
 
 
 def test_gather_input_missing_everything_raises(ai_prefs, fake_jsonl):
@@ -108,10 +108,14 @@ def test_gather_input_missing_everything_raises(ai_prefs, fake_jsonl):
 
 
 def test_gather_input_tail_truncates_and_fingerprint_tracks_content(ai_prefs, fake_jsonl):
-    text, fp1 = review.gather_input(SID, 64)
-    assert len(text) <= 64
+    # The `## Session` header (#611) sits outside `max_input_chars` — it carries a last-output
+    # age, so folding it into the budget would drift the body's cut point (and its fingerprint)
+    # with the clock. The payload stays bounded by cap + SESSION_CONTEXT_MAX.
+    budget = 1_000  # prefs.AI_REVIEW_INPUT_CHARS_MIN — below it the screen loses its heading
+    text, fp1 = review.gather_input(SID, budget)
+    assert len(text) <= budget + review.SESSION_CONTEXT_MAX
     webterm._buffer_append(SID, b"new live bytes change the fingerprint\r\n")
-    _, fp2 = review.gather_input(SID, 64)
+    _, fp2 = review.gather_input(SID, budget)
     assert fp1 != fp2
 
 
@@ -123,8 +127,9 @@ def test_gather_input_frames_live_tail_as_pending(ai_prefs, fake_jsonl):
     # UNSENT/PENDING so the model never reads a queued instruction as already completed.
     webterm._buffer_append(LIVE_ONLY_SID, b"do the deploy step\r\n")
     text, _ = review.gather_input(LIVE_ONLY_SID, 24000)
-    assert "## Live terminal (tail)" in text  # heading unchanged for back-compat
-    assert "LIVE SCREEN SNAPSHOT" in text and "UNSENT" in text and "PENDING" in text
+    assert "## Terminal screen" in text
+    assert "rendered snapshot" in text
+    assert "NOT been submitted" in text and "PENDING" in text
 
 
 def test_gather_input_includes_unsent_compose_draft(ai_prefs, fake_jsonl):
@@ -167,7 +172,7 @@ def test_gather_recap_frames_pending_and_includes_draft(ai_prefs, fake_jsonl):
     webterm._buffer_append(SID, b"partial typed command\r\n")
     metadata.patch(SID, draft={"text": "do this", "attachments": []})
     text, _ = review.gather_recap_input(SID, 24000)
-    assert "LIVE SCREEN SNAPSHOT" in text
+    assert "## Terminal screen" in text and "NOT been submitted" in text
     assert "## Pending draft (UNSENT" in text and "do this" in text
 
 
@@ -576,10 +581,21 @@ def test_gather_recap_input_uses_whole_transcript(ai_prefs, fake_jsonl):
 
 
 def test_gather_recap_input_bounds_over_cap(ai_prefs, fake_jsonl):
-    webterm._buffer_append(SID, b"y" * 6000 + b"\r\n")
-    text, _ = review.gather_recap_input(SID, 300)
-    assert len(text) <= 300
+    # The recap head+tail-samples the TRANSCRIPT (not the joined body — eliding the middle of
+    # the joined text would drop the screen's and the draft's headings). So the elision marker
+    # appears when the transcript itself is over budget.
+    big = ai_prefs / ".claude" / "projects" / "-home-user-claude-repo-a"
+    (big / "11111111-1111-1111-1111-111111111111.jsonl").write_text(
+        "".join(
+            json.dumps({"type": "user", "message": {"content": f"msg {i} " + "y" * 200}}) + "\n"
+            for i in range(60)
+        )
+    )
+    webterm._buffer_append(SID, b"screen line\r\n")
+    text, _ = review.gather_recap_input(SID, 2_000)
+    assert len(text) <= 2_000 + review.SESSION_CONTEXT_MAX
     assert "elided" in text
+    assert "## Transcript (full)" in text and "## Terminal screen" in text
 
 
 def test_run_review_generates_recap(ai_prefs, fake_jsonl, monkeypatch):
@@ -628,3 +644,164 @@ def test_run_review_recap_skips_when_unchanged(ai_prefs, fake_jsonl, monkeypatch
         if "returning to a coding-agent session" in json.loads(c.content)["messages"][0]["content"]
     ]
     assert recap_calls == []
+
+
+# ---- #611: the reviewer's input --------------------------------------------------------
+
+
+def _codex_rollout(home, real_uuid: str, text: str) -> None:
+    """Lay down a codex rollout JSONL the transcript adapter can find."""
+    d = home / ".codex" / "sessions" / "2026" / "07" / "10"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"rollout-2026-07-10T07-29-08-{real_uuid}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": [{"text": text}]},
+            }
+        )
+        + "\n"
+    )
+
+
+def test_reconciled_codex_session_reviews_its_real_transcript(ai_prefs, fake_jsonl):
+    """The bug: a codex/opencode/antigravity session created in the app keeps its
+    `new-<uuid>` placeholder as its physical key forever. `parse_key` rejects that shape, so
+    `_plain_transcript` swallowed the error and the reviewer saw an EMPTY transcript for the
+    session's whole life — reviewing nothing but terminal bytes."""
+    real = "019f4a49-57a9-76c0-b3d4-6476f4aceef5"
+    placeholder = "codex:new-d63b0fd4-6043-4f59-8b4b-54b904ce7414"
+    _codex_rollout(ai_prefs, real, "audit the dependencies")
+    metadata.set_alias(placeholder, f"codex:{real}")
+
+    text, _ = review.gather_input(placeholder, 24000)
+    assert "audit the dependencies" in text
+    assert "## Transcript (tail)" in text
+    # The recap must resolve identically — Hermes asked for this in P1's acceptance, not P8.
+    recap, _ = review.gather_recap_input(placeholder, 24000)
+    assert "audit the dependencies" in recap
+
+
+def test_unreconciled_placeholder_still_reviews_live_only(ai_prefs, fake_jsonl):
+    # No alias yet (the session just launched): no transcript, but the live screen still is one.
+    placeholder = "codex:new-aaaaaaaa-1111-2222-3333-444444444444"
+    webterm._buffer_append(placeholder, b"booting codex\r\n")
+    text, _ = review.gather_input(placeholder, 24000)
+    assert "booting codex" in text
+    assert "## Transcript" not in text
+
+
+def test_session_context_names_the_engine_and_grounds_idleness(ai_prefs, fake_jsonl):
+    webterm._buffer_append(LIVE_ONLY_SID, b"compiling\r\n")
+    text, _ = review.gather_input(LIVE_ONLY_SID, 24000)
+    assert text.startswith("## Session")
+    assert "- agent: claude" in text
+    assert "RUNNING" in text  # bytes just landed — the model is told so explicitly
+
+
+def test_session_context_is_bounded_and_outside_the_fingerprint(ai_prefs, fake_jsonl):
+    """The header carries a last-output AGE. Hashing it would mark every session changed on
+    every sweep and re-review the whole registry forever."""
+    webterm._buffer_append(LIVE_ONLY_SID, b"work\r\n")
+    text, fp1 = review.gather_input(LIVE_ONLY_SID, 24000)
+    header = text.split("\n\n", 1)[0]
+    assert len(header) <= review.SESSION_CONTEXT_MAX
+
+    # Advance only the clock: the header's rendered age changes, the fingerprint must not.
+    real_time = review.time.time
+    try:
+        review.time.time = lambda: real_time() + 3600  # noqa: ARG005
+        text2, fp2 = review.gather_input(LIVE_ONLY_SID, 24000)
+    finally:
+        review.time.time = real_time
+    assert fp1 == fp2
+    assert text != text2  # the model still sees the fresh age
+
+
+def test_fingerprint_ignores_cursor_only_repaints_but_tracks_visible_text(ai_prefs, fake_jsonl):
+    sid = "claude:55555555-5555-5555-5555-555555555555"
+    webterm.scrollback._LAST_COLS[sid] = 80
+    webterm.scrollback._LAST_ROWS[sid] = 24
+    webterm._buffer_append(sid, b"\x1b[1;1Hbuilding\x1b[0m")
+    _, fp1 = review.gather_input(sid, 24000)
+
+    # Pure chrome: colour + cursor parking. Nothing a human would see changes.
+    webterm._buffer_append(sid, b"\x1b[0m\x1b[?25l\x1b[1;1H\x1b[39m")
+    _, fp2 = review.gather_input(sid, 24000)
+    assert fp1 == fp2
+
+    # A permission prompt appearing on screen MUST move it — that's what the ⚠ badge is for.
+    webterm._buffer_append(sid, b"\x1b[3;1HAllow this command? (y/n)")
+    _, fp3 = review.gather_input(sid, 24000)
+    assert fp3 != fp1
+
+
+def test_recap_budget_is_never_narrower_than_the_review_budget():
+    assert review.recap_input_chars({"max_input_chars": 40_000}) == 40_000
+    assert review.recap_input_chars({"max_input_chars": 1_000}) == review.RECAP_INPUT_CHARS
+    assert review.recap_input_chars({}) == review.RECAP_INPUT_CHARS
+
+
+def test_over_budget_transcript_keeps_its_heading(ai_prefs, fake_jsonl):
+    """Truncating the JOINED body sheared off `## Transcript (tail)` on any session over
+    budget, so the model got an unlabeled wall of text it could not tell apart from the
+    terminal screen. Trim the transcript's own tail instead."""
+    sid = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(sid, b"live screen line\r\n" + b"noise\r\n" * 500)
+    budget = 1_000  # prefs.AI_REVIEW_INPUT_CHARS_MIN — the tightest a user can set
+    text, _ = review.gather_input(sid, budget)
+    body = text.split("\n\n", 1)[1]
+    assert body.startswith("## Transcript (tail)")
+    assert "## Terminal screen" in text
+    assert len(body) <= budget
+
+
+def test_screen_never_crowds_out_the_transcript():
+    # The screen SECTION (heading included) never exceeds half the payload, so the transcript
+    # always keeps a share. Below the pref floor the section cannot carry its own heading and is
+    # dropped whole — degenerate, unreachable through Settings, and never unlabeled.
+    assert review._screen_budget(24_000) == review.LIVE_TAIL_CHARS
+    hdr = len(review._LIVE_TAIL_SECTION)
+    assert review._screen_budget(1_000) == 1_000 // 2 - hdr
+    assert hdr + review._screen_budget(1_000) <= 1_000 // 2
+    assert review._screen_budget(2 * hdr) == 0
+    assert review._screen_budget(0) == 0
+
+
+# ---- Hermes on PR #618: a long draft must never strip the section labels ------------------
+
+
+def test_long_draft_cannot_crowd_out_or_unlabel_any_section(ai_prefs, fake_jsonl):
+    """A 2k pending draft against the 1 000-char pref floor filled the body; tail-truncating the
+    joined text then sheared off EVERY heading — including the draft's own "UNSENT" label. Unsent
+    text arriving unlabeled is precisely what #560's label exists to prevent."""
+    sid = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(sid, b"terminal output line\r\n")
+    metadata.patch(sid, draft={"text": "D" * 2000, "attachments": []})
+    budget = 1_000  # prefs.AI_REVIEW_INPUT_CHARS_MIN
+
+    text, _ = review.gather_input(sid, budget)
+    body = text.split("\n\n", 1)[1]
+    assert len(body) <= budget
+    assert "## Pending draft (UNSENT" in body
+    assert "## Terminal screen" in body
+    assert "## Transcript (tail)" in body
+    # The draft's content is trimmed, never its label, and it never swallows the whole body.
+    assert body.index("## Transcript (tail)") < body.index("## Pending draft (UNSENT")
+
+
+def test_recap_keeps_every_heading_under_a_tight_budget(ai_prefs, fake_jsonl):
+    sid = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(sid, b"screen line\r\n")
+    metadata.patch(sid, draft={"text": "D" * 2000, "attachments": []})
+    text, _ = review.gather_recap_input(sid, 1_000)
+    body = text.split("\n\n", 1)[1]
+    assert len(body) <= 1_000
+    assert "## Terminal screen" in body and "## Pending draft (UNSENT" in body
+
+
+def test_draft_section_is_dropped_whole_rather_than_unlabeled(ai_prefs, fake_jsonl):
+    # Budget too small to carry the draft's own heading → no draft section at all, never a
+    # naked fragment of the user's unsent text.
+    assert review._draft_budget(100) == 0
+    assert review._pending_draft_section("claude:nope", 0) == ""
