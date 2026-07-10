@@ -19,14 +19,17 @@ from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .gemini import GeminiProvider
 from .opencode import OpenCodeProvider
+from .shell import ShellProvider
 
-# Order is scan/display order; a provider only surfaces when present.
+# Order is scan/display order; a provider only surfaces when present. Shell is last — the agent
+# engines lead, and the always-present plain terminal (#636) trails them.
 _PROVIDERS: list[base.EngineProvider] = [
     ClaudeProvider(),
     OpenCodeProvider(),
     CodexProvider(),
     GeminiProvider(),
     AntigravityProvider(),
+    ShellProvider(),
 ]
 _BY_ID: dict[str, base.EngineProvider] = {p.engine_id: p for p in _PROVIDERS}
 

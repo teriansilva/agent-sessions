@@ -805,3 +805,28 @@ def test_draft_section_is_dropped_whole_rather_than_unlabeled(ai_prefs, fake_jso
     # naked fragment of the user's unsent text.
     assert review._draft_budget(100) == 0
     assert review._pending_draft_section("claude:nope", 0) == ""
+
+
+# ---- #636 shell "terminal as agent": reviewed on the live screen, no transcript --------------
+
+SHELL_SID = "shell:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def test_gather_input_shell_reviews_on_screen_only(ai_prefs, fake_jsonl):
+    # The core claim (#636): a shell registers NO transcript adapter, so _plain_transcript is
+    # empty and the reviewer runs on the live SCREEN alone — and the Session header names the
+    # engine so the model knows it is reviewing a plain terminal.
+    webterm._buffer_append(SHELL_SID, b"$ pytest -q\r\n42 passed\r\n")
+    text, fp = review.gather_input(SHELL_SID, 24000)
+    assert "## Terminal screen" in text
+    assert "42 passed" in text
+    assert "## Transcript (tail)" not in text  # shell has no transcript adapter
+    assert "- agent: shell" in text
+    assert len(fp) == 64
+
+
+def test_gather_input_shell_with_no_screen_still_raises(ai_prefs, fake_jsonl):
+    # The screen-only path must not regress into "always reviewable": no transcript AND no screen
+    # still raises, exactly like any other engine.
+    with pytest.raises(review.ReviewError):
+        review.gather_input("shell:11111111-2222-3333-4444-555555555555", 24000)

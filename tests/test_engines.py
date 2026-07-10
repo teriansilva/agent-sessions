@@ -8,11 +8,15 @@ scanner/archive modules — those keep their own dedicated tests.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from agent_sessions import engines, scanner
 
 _U1 = "11111111-1111-1111-1111-111111111111"
+_SHELL_U = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 # ---- registry + scan ----------------------------------------------------------
@@ -280,3 +284,111 @@ def test_placeholder_keys_are_rejected_by_parse_key_but_resolve_through_logical_
         prov, native = engines.parse_key(engines.logical_key(placeholder, aliases))
         assert prov.engine_id == engine
         assert native == real
+
+
+# ---- shell provider — "terminal as agent" (#636) ------------------------------------------
+
+
+def _write_shell_record(tmp_home: Path, sid: str, cwd: str, created_at: float = 1_700_000_000.0):
+    d = tmp_home / ".claude" / "shell-sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{sid}.json").write_text(json.dumps({"id": sid, "cwd": cwd, "created_at": created_at}))
+
+
+def test_shell_present_when_bash_on_path(tmp_home, monkeypatch):
+    monkeypatch.setattr(engines.shutil, "which", lambda n: "/usr/bin/bash" if n == "bash" else None)
+    assert engines.ShellProvider().is_present() is True
+
+
+def test_parse_key_shell():
+    prov, native = engines.parse_key(f"shell:{_SHELL_U}")
+    assert prov.engine_id == "shell" and native == _SHELL_U
+
+
+def test_shell_scan_reads_records(tmp_home):
+    _write_shell_record(tmp_home, _SHELL_U, "/home/user/proj")
+    rows = engines.ShellProvider().scan()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.engine == "shell" and r.uuid == _SHELL_U and r.cwd == "/home/user/proj"
+    assert r.first_user_message == "" and r.archived is False
+    assert abs(r.created_at - 1_700_000_000.0) < 1
+
+
+def test_shell_scan_is_fail_soft_per_record(tmp_home):
+    _write_shell_record(tmp_home, _SHELL_U, "/home/user/good")
+    d = tmp_home / ".claude" / "shell-sessions"
+    (d / "not-a-uuid.json").write_text("{ this is not json")  # junk file
+    # a well-formed JSON record but with no usable cwd → skipped
+    (d / "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.json").write_text(json.dumps({"id": "nope"}))
+    rows = engines.ShellProvider().scan()
+    assert [r.uuid for r in rows] == [_SHELL_U]  # only the good record survives
+
+
+def test_shell_scan_appears_in_scan_all(tmp_home, monkeypatch):
+    # A shell record surfaces through the merged registry scan like any other engine's row.
+    monkeypatch.setattr(engines.shutil, "which", lambda n: "/usr/bin/bash" if n == "bash" else None)
+    _write_shell_record(tmp_home, _SHELL_U, "/home/user/proj")
+    assert any(r.engine == "shell" and r.uuid == _SHELL_U for r in engines.scan_all())
+
+
+def test_shell_on_new_session_writes_then_failure_removes(tmp_home):
+    p = engines.ShellProvider()
+    rec = tmp_home / ".claude" / "shell-sessions" / f"{_SHELL_U}.json"
+    p.on_new_session(_SHELL_U, cwd="/home/user/proj")
+    assert rec.is_file()
+    assert json.loads(rec.read_text())["cwd"] == "/home/user/proj"
+    p.on_new_session_failed(_SHELL_U)  # launch was rejected → no phantom row
+    assert not rec.exists()
+
+
+def test_shell_record_path_rejects_non_uuid(tmp_home):
+    # Defense in depth: the store never builds a path from anything but our own UUID shape.
+    p = engines.ShellProvider()
+    assert p._record_path("../../etc/passwd") is None
+    p.on_new_session("../../etc/passwd", cwd="/x")  # must be a no-op, not a traversal write
+    assert not (tmp_home / ".claude" / "shell-sessions").exists()
+
+
+def test_shell_launch_argv_is_a_literal_login_shell(monkeypatch):
+    # The shell-free launcher contract: a literal argv (bash binary + login flag), NEVER a
+    # command string handed to an interpreter (no "-c").
+    monkeypatch.setattr(engines.base, "BASH_BIN", "/usr/bin/bash")
+    argv = engines.ShellProvider().launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True)
+    assert argv == ["/usr/bin/bash", "-l"]
+    assert "-c" not in argv
+
+
+def test_shell_new_launch_argv_is_pinned_and_matches_resume(monkeypatch):
+    monkeypatch.setattr(engines.base, "BASH_BIN", "/usr/bin/bash")
+    p = engines.ShellProvider()
+    assert p.supports_new is True
+    assert getattr(p, "new_session_reconciles", False) is False  # pinned id, no reconcile
+    new = p.new_launch_argv(_SHELL_U, cwd="/tmp/x", bypass=False)
+    assert new == p.launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True) == ["/usr/bin/bash", "-l"]
+
+
+def test_shell_placeholder_is_rejected_by_parse_key(tmp_home):
+    # shell is a pinned-id engine (not a reconcile engine), so the new-<uuid> placeholder shape is
+    # NOT accepted for it — only a real UUID key.
+    placeholder = f"shell:new-{_U1}"
+    assert engines.is_new_session_placeholder(placeholder) is False
+    with pytest.raises(engines.EngineError):
+        engines.parse_key(placeholder, allow_new_placeholder=True)
+
+
+def test_shell_archive_via_sidecar_keeps_record_and_override_wins(tmp_home, monkeypatch):
+    # Archive rides the engine-agnostic sidecar (like gemini/codex/opencode); the record row
+    # intentionally REMAINS, and the row builder's `m.archived if not None else s.archived`
+    # override is what flips the effective state. Prove both halves here.
+    monkeypatch.setenv("AGENT_SESSIONS_METADATA", str(tmp_home / "metadata.json"))
+    _write_shell_record(tmp_home, _SHELL_U, "/home/user/proj")
+    p = engines.ShellProvider()
+    p.archive(_SHELL_U)
+    assert engines._metadata.get(f"shell:{_SHELL_U}").archived is True
+    # record still present, and the scan row's NATIVE archived stays False → the sidecar override
+    # is the thing that archives the row.
+    assert (tmp_home / ".claude" / "shell-sessions" / f"{_SHELL_U}.json").is_file()
+    assert p.scan()[0].archived is False
+    p.unarchive(_SHELL_U)
+    assert engines._metadata.get(f"shell:{_SHELL_U}").archived is False

@@ -325,12 +325,24 @@ def register(
                         reconcile_new_session(ws, prov, native, new_cwd, new_snapshot)
                     )
                 if not getattr(prov, "new_session_reconciles", False):
-                    # Pinned-id new session (e.g. claude): the key is final at launch, so wake
-                    # the AI-review loop to summarize it promptly (#413). Mint-its-own-id engines
-                    # are kicked from the reconcile coroutine once their real id is durable.
+                    # Pinned-id new session (e.g. claude, shell): the key is final at launch.
+                    # An engine with no native store of its own (shell, #636) persists a record
+                    # NOW — after cwd validation (every reject is above), and BEFORE the review
+                    # wake / cache bust below — so the row is scannable/listable the instant the
+                    # review loop can pick it up (never review-woken while invisible to scan).
+                    # Best-effort: a sidecar write must never block the terminal. The
+                    # PtyBridgeError path below removes it if the launch argv is rejected, so a
+                    # failed new session leaves no phantom row. No-op for engines without the hook.
+                    on_new = getattr(prov, "on_new_session", None)
+                    if on_new is not None:
+                        with contextlib.suppress(Exception):
+                            on_new(native, cwd=cwd)
+                    # The key is final, so wake the AI-review loop to summarize it promptly (#413).
+                    # Mint-its-own-id engines are kicked from the reconcile coroutine instead.
                     ai_review_loop.request_review_soon()
-                    # A new JSONL just appeared under ~/.claude/projects → bust the sidebar's scan
-                    # snapshot so the new session shows on the next list without the TTL lag (#561).
+                    # A new session just appeared (claude JSONL / shell record) → bust the
+                    # sidebar's scan snapshot so it shows on the next list without the TTL lag
+                    # (#561).
                     engines.invalidate_scan_cache()
             else:
                 # Resume an EXISTING scanned session.
@@ -379,6 +391,14 @@ def register(
                     if scope_unit is not None:
                         log.info("launching %s in scope %s", phys_key, scope_unit)
             except ptybridge.PtyBridgeError:
+                # A pinned-id new session persisted a record above; the launch argv was rejected,
+                # so drop it rather than leave a phantom row (best-effort, no-op for engines
+                # without the hook / for attach + resume where nothing was written).
+                if is_new:
+                    on_fail = getattr(prov, "on_new_session_failed", None)
+                    if on_fail is not None:
+                        with contextlib.suppress(Exception):
+                            on_fail(native)
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
             # Delta-resume: a reconnecting client reports the absolute byte offset it
             # last saw; we stream only the bytes since then (never re-blank). Bad/absent

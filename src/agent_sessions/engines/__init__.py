@@ -33,6 +33,7 @@ from . import base as base  # noqa: F401 — exposed for `engines.base` (patch t
 from .antigravity import AntigravityProvider
 from .base import (  # noqa: F401 — public re-exports
     AGY_BIN,
+    BASH_BIN,
     CLAUDE_BIN,
     CODEX_BIN,
     GEMINI_BIN,
@@ -60,6 +61,7 @@ from .registry import (  # noqa: F401 — public re-exports
     session_key,
     set_scan_cache_ttl,
 )
+from .shell import ShellProvider
 
 __all__ = [
     "EngineError",
@@ -88,5 +90,7 @@ __all__ = [
     "CODEX_BIN",
     "GEMINI_BIN",
     "AGY_BIN",
+    "BASH_BIN",
+    "ShellProvider",
     "OPENCODE_SCHEMA",
 ]

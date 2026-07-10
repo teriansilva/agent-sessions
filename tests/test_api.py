@@ -1970,3 +1970,18 @@ def test_set_color_preserves_other_fields(auth_cfg, fake_jsonl):
     assert row["title"] == "My Title"
     assert row["tag"] == "prod"
     assert row["sticky"] is True
+
+
+def test_api_config_advertises_shell_new_session(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    # #636: the plain-terminal "shell" engine is always offered when bash resolves — it's the
+    # one engine present even on a host with no agent CLIs.
+    bash = tmp_home / "bin" / "bash"
+    bash.parent.mkdir(parents=True, exist_ok=True)
+    bash.write_text("#!/bin/sh\n")
+    bash.chmod(0o755)
+    monkeypatch.setenv("AGENT_SESSIONS_BASH_BIN", str(bash))
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    d = c.get("/api/config").json()
+    assert "shell" in d["new_session_engines"]

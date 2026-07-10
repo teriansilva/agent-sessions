@@ -112,6 +112,7 @@ def test_doctor_cli_writes_bins(tmp_path, monkeypatch):
             "codex": None,
             "gemini": None,
             "antigravity": None,
+            "shell": None,
         },
     )
     rc = cli.main(["doctor", "--env", str(env)])
@@ -135,7 +136,22 @@ def test_doctor_cli_dry_run_does_not_write(tmp_path, monkeypatch):
             "codex": None,
             "gemini": None,
             "antigravity": None,
+            "shell": None,
         },
     )
     cli.main(["doctor", "--env", str(env), "--dry-run"])
     assert "CLAUDE_BIN" not in env.read_text()
+
+
+def test_shell_engine_env_knob_keys_on_bash_binary(tmp_path, monkeypatch):
+    # The shell engine's binary is `bash`, not `shell` (#636): the env knob is
+    # AGENT_SESSIONS_BASH_BIN and the PATH probe looks up `bash`, matching base.BASH_BIN.
+    assert "shell" in discover.ENGINES
+    assert discover.envvar("shell") == "AGENT_SESSIONS_BASH_BIN"
+    explicit = _make_exec(tmp_path / "bash")
+    assert discover.resolve("shell", {"AGENT_SESSIONS_BASH_BIN": explicit}) == explicit
+    monkeypatch.setattr(
+        discover.shutil, "which", lambda n: "/usr/bin/bash" if n == "bash" else None
+    )
+    assert discover.resolve("shell", {}) == "/usr/bin/bash"
+    assert "shell" not in discover._NPM_GLOBAL_ENGINES

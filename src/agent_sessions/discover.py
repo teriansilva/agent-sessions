@@ -17,12 +17,13 @@ from pathlib import Path
 
 from . import envfile
 
-ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity")
+ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity", "shell")
 
-# Engines whose CLI binary name differs from the engine id. antigravity's binary is ``agy``; every
-# other engine's binary matches its id. The PATH/dir probe AND the env var key derive from the
-# *binary* name, so antigravity's knob is ``AGENT_SESSIONS_AGY_BIN`` (matches ``base.AGY_BIN``).
-_BIN_NAME: dict[str, str] = {"antigravity": "agy"}
+# Engines whose CLI binary name differs from the engine id. antigravity's binary is ``agy`` and the
+# shell engine's binary is ``bash`` (#636); every other engine's binary matches its id. The
+# PATH/dir probe AND the env var key derive from the *binary* name, so antigravity's knob is
+# ``AGENT_SESSIONS_AGY_BIN`` and shell's is ``AGENT_SESSIONS_BASH_BIN`` (matches ``base.BASH_BIN``).
+_BIN_NAME: dict[str, str] = {"antigravity": "agy", "shell": "bash"}
 
 # Command name on PATH + known install dirs to probe as a last resort.
 _DIRS: dict[str, list[str]] = {
@@ -32,6 +33,8 @@ _DIRS: dict[str, list[str]] = {
     "gemini": ["~/.local/bin"],
     # agy is a single Go binary from the curl installer (not npm); it lands in ~/.local/bin.
     "antigravity": ["~/.local/bin"],
+    # bash is a base system binary — PATH resolves it; the extra dirs cover a non-PATH shell.
+    "shell": ["/bin", "/usr/bin"],
 }
 
 _NPM_GLOBAL_ENGINES = frozenset({"codex", "gemini"})

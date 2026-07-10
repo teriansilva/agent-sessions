@@ -40,7 +40,9 @@ export function engineBadge(engine: string): string {
         ? "gm"
         : engine === "antigravity"
           ? "ag" // agy
-          : "cc";
+          : engine === "shell"
+            ? "sh" // plain terminal, no agent (#636)
+            : "cc";
 }
 
 /** Per-engine accent for the overview chips (tuned for the dark HUD canvas). */
@@ -53,7 +55,9 @@ export function engineColor(engine: string): string {
         ? "#7aa2ff" // blue
         : engine === "antigravity"
           ? "#a78bfa" // violet — agy
-          : "#d98a5c"; // claude — amber
+          : engine === "shell"
+            ? "#8b98a5" // neutral slate — a plain terminal, deliberately NOT a vivid "agent" hue
+            : "#d98a5c"; // claude — amber
 }
 
 /** Deterministic per-project accent (#285): FNV-1a over the project key (entity id, or the
@@ -82,7 +86,9 @@ export function engineName(engine: string): string {
           ? "antigravity"
           : engine === "claude"
             ? "claude"
-            : engine;
+            : engine === "shell"
+              ? "shell"
+              : engine;
 }
 
 /** Humanize a byte count to a compact GB/MB string (binary units). */

@@ -33,6 +33,9 @@ _NEW_PLACEHOLDER_RE = re.compile(
 _CODEX_UUID_RE = _CLAUDE_UUID_RE
 _GEMINI_UUID_RE = _CLAUDE_UUID_RE
 _ANTIGRAVITY_UUID_RE = _CLAUDE_UUID_RE
+# shell (terminal-as-agent, #636): a plain login shell has no engine store and no native id of its
+# own, so we mint our own UUID (same shape as Claude's) as the permanent bookkeeping key.
+_SHELL_UUID_RE = _CLAUDE_UUID_RE
 
 # --- engine binaries ------------------------------------------------------------------------
 # Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
@@ -47,6 +50,10 @@ GEMINI_BIN = os.environ.get("AGENT_SESSIONS_GEMINI_BIN") or shutil.which("gemini
 # Antigravity's binary is ``agy`` (not ``antigravity``), so the env knob is keyed on the binary
 # name — ``AGENT_SESSIONS_AGY_BIN`` — to match what operators type and what ``doctor`` writes.
 AGY_BIN = os.environ.get("AGENT_SESSIONS_AGY_BIN") or shutil.which("agy") or "agy"
+# bash backs the shell engine (#636). Keyed on the *binary* name (``AGENT_SESSIONS_BASH_BIN``, so
+# discover's binary-name convention lines up) and resolved to a concrete path so the pty bridge
+# gets a real argv[0], never a bare name that ptybridge would reject.
+BASH_BIN = os.environ.get("AGENT_SESSIONS_BASH_BIN") or shutil.which("bash") or "/bin/bash"
 
 
 # --- per-engine store locations (env-overridable) -------------------------------------------
@@ -83,6 +90,17 @@ def _codex_sessions_dir(home: Path | None = None) -> Path:
 def _opencode_db(home: Path | None = None) -> str:
     return os.environ.get("AGENT_SESSIONS_OPENCODE_DB") or str(
         (home or Path.home()) / ".local" / "share" / "opencode" / "opencode.db"
+    )
+
+
+def _shell_dir(home: Path | None = None) -> Path:
+    """Per-session record store for the shell engine (#636). A plain shell has no native engine
+    store to scan, so ``ShellProvider`` persists one JSON record per session here (``scan`` globs
+    it). ``home``-injectable and env-overridable so tests root it under a ``mktemp`` home and
+    NEVER touch the real ``~/.claude`` (per the repo's test rule)."""
+    return Path(
+        os.environ.get("AGENT_SESSIONS_SHELL_DIR")
+        or ((home or Path.home()) / ".claude" / "shell-sessions")
     )
 
 

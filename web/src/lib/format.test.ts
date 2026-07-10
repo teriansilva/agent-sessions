@@ -1,5 +1,26 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { projectColor, relTime } from "./format";
+import { engineBadge, engineColor, engineName, projectColor, relTime } from "./format";
+
+// #636: the plain-terminal "shell" engine gets its own badge / neutral accent / name, and any
+// unknown engine still falls through to the claude default (the helpers never throw).
+describe("engine presentation — shell (#636)", () => {
+  test("shell badge/color/name", () => {
+    expect(engineBadge("shell")).toBe("sh");
+    expect(engineColor("shell")).toBe("#8b98a5"); // neutral slate — deliberately not a vivid hue
+    expect(engineName("shell")).toBe("shell");
+  });
+
+  test("shell's accent differs from every agent engine's", () => {
+    const agents = ["claude", "opencode", "codex", "gemini", "antigravity"].map(engineColor);
+    expect(agents).not.toContain(engineColor("shell"));
+  });
+
+  test("an unknown engine falls through without throwing", () => {
+    expect(engineBadge("mystery")).toBe("cc");
+    expect(engineColor("mystery")).toBe("#d98a5c");
+    expect(engineName("mystery")).toBe("mystery");
+  });
+});
 
 // #508: relTime now spells units out ("3 mins ago", "1 hour ago") instead of the compact
 // "3m"/"1h", with singular/plural agreement. Pin the boundaries + pluralization.

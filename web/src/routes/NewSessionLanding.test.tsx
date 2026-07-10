@@ -71,6 +71,9 @@ test.each([
   // #454: antigravity reconciles (mints its own id) → MUST get the new-<uuid> placeholder, or
   // the ws new=1 launch rejects 4404 "session not found".
   ["antigravity", /^new-[0-9a-f-]{36}$/],
+  // #636: shell is a PINNED-id engine (we mint the UUID and launch under it) → bare UUID, never
+  // a placeholder, so the ws new=1 path treats it like claude.
+  ["shell", /^[0-9a-f-]{36}$/],
 ])("mintNewSessionId(%s) → %s", (engine, shape) => {
   expect(mintNewSessionId(engine)).toMatch(shape);
 });
