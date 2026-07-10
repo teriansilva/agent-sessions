@@ -11,6 +11,7 @@ import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
 import { isCopyShortcut, isPasteShortcut } from "../../lib/termKeys";
+import { decideMouseDown, exceededSlop, forceSelectModifier } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import {
@@ -37,6 +38,9 @@ const READY_FALLBACK_MS = 1500;
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
+// #617: the failure toast asks the operator to do something ("use a secure origin"), so it needs
+// longer to read than the success flash. Matches .copyFailed's animation-duration.
+const COPY_FAILED_TOAST_MS = 2600;
 
 function statusText(s: TermStatus): string {
   switch (s.kind) {
@@ -135,7 +139,8 @@ export function Terminal({
   const jumpToTailRef = useRef<(notches: number) => void>(() => {});
   // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
-  const [copiedTick, setCopiedTick] = useState(0);
+  // #554 copy-on-select toast; `ok` false = the clipboard write failed (insecure origin) (#617).
+  const [copied, setCopied] = useState<{ tick: number; ok: boolean }>({ tick: 0, ok: true });
   // Scroll-up lazy-load (#348 Phase 3): pill state (loading / start-of-history / error)
   // + whether the viewport sits at the very top of the scrollback (the end pill only
   // shows there). `histRetryRef` holds the effect-scoped retry closure for the error pill.
@@ -234,6 +239,16 @@ export function Terminal({
       scrollback: 50000,
       fontFamily: t0.fontFamily,
       theme: { ...xtermTheme(theme), cursor: accent },
+      // #617: on macOS xterm's `shouldForceSelection` is `altKey && macOptionClickForcesSelection`
+      // (Shift is inert there), so without this NO modifier — synthetic or real — can select while
+      // the agent owns the mouse. We only ever synthesize Alt ourselves (see lib/termSelect); the
+      // cost is that a real Alt+click now forces a selection on Mac instead of reaching the app.
+      macOptionClickForcesSelection: true,
+      // …which makes xterm's default `altClickMovesCursor: true` actively dangerous: its mouseup
+      // handler fires on `altKey` with a <=1-char selection and writes cursor-move ARROW KEYS to
+      // the PTY. Alt is now the Mac selection modifier, so an Alt+click would both select AND
+      // inject keystrokes into the agent. Alt selects; it never moves the cursor.
+      altClickMovesCursor: false,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -289,45 +304,93 @@ export function Terminal({
       return true;
     });
 
-    // Plain-drag selection despite app mouse-tracking (#536). A mouse-tracking agent (claude arms
-    // ?1000h/?1002h/?1003h, re-emitted on every attach by #397) makes xterm route an unmodified
-    // left-drag to the app — selection then silently requires Shift. For such a session on the
-    // NORMAL buffer we re-dispatch the press as its Shift twin so xterm's SelectionService forces
-    // selection; the synthetic event is untrusted, so the guard below lets it through untouched.
-    // Two sessions must NOT get the twin, for opposite reasons:
-    //   • Alt-screen TUIs (opencode) keep their mouse — clicks there are real UI, so Shift+drag
-    //     stays the selection path (the buffer-type guard).
-    //   • Inline agents that arm NO mouse reporting (antigravity/`agy` runs on the normal buffer
-    //     without mouse tracking; also codex/gemini when idle) already get NATIVE xterm selection
-    //     on a plain drag — forcing a Shift twin there turns the fresh selection into an (empty)
-    //     Shift-incremental *extend* from a nonexistent anchor, so the drag selected nothing. The
-    //     mouse-tracking guard skips the twin whenever the app doesn't own the mouse.
-    // detail is passed through so double/triple-click word/line selection still work.
-    const forceSelectMousedown = (e: MouseEvent) => {
-      if (!e.isTrusted) return; // our own synthetic twin — let it reach xterm
-      if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-      if (term.buffer.active.type !== "normal") return;
-      if ((term.modes?.mouseTrackingMode ?? "none") === "none") return; // xterm selects natively
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      e.target?.dispatchEvent(
+    // Selection vs the agent's mouse (#536/#582/#617). A mouse-tracking agent (claude, opencode —
+    // both alt-screen since claude 2.1.178; ?1000h/?1002h/?1003h re-emitted on every attach by
+    // #397) makes xterm route an unmodified left-press to the app, so a plain drag selects nothing.
+    // We arbitrate by GESTURE, not by buffer type: a press is swallowed until the pointer either
+    // moves (a drag → force a selection at the anchor) or lifts in place (a click → replay the
+    // press so the TUI's clickable UI still works). Sessions with no mouse tracking are left to
+    // xterm's native selection. See lib/termSelect for the decision table and the macOS modifier.
+    const { shiftKey: twinShift, altKey: twinAlt } = forceSelectModifier(isMac);
+    /** Re-dispatch a press at (x, y) — as the force-selection twin, or as a plain replayed click.
+     *  Synthetic ⇒ untrusted ⇒ `onTermMouseDown` lets it through to xterm untouched. */
+    const dispatchPress = (
+      target: EventTarget,
+      src: { screenX: number; screenY: number; clientX: number; clientY: number; detail: number },
+      opts: { force: boolean },
+    ) =>
+      target.dispatchEvent(
         new MouseEvent("mousedown", {
           bubbles: true,
           cancelable: true,
           composed: true,
           view: window,
-          detail: e.detail,
-          screenX: e.screenX,
-          screenY: e.screenY,
-          clientX: e.clientX,
-          clientY: e.clientY,
+          detail: src.detail,
+          screenX: src.screenX,
+          screenY: src.screenY,
+          clientX: src.clientX,
+          clientY: src.clientY,
           button: 0,
-          buttons: e.buttons,
-          shiftKey: true,
+          buttons: 1,
+          ...(opts.force ? { shiftKey: twinShift, altKey: twinAlt } : {}),
         }),
       );
+
+    /** A swallowed press awaiting its drag-vs-click verdict. */
+    let pending: {
+      target: EventTarget;
+      screenX: number;
+      screenY: number;
+      clientX: number;
+      clientY: number;
+      detail: number;
+    } | null = null;
+
+    const onTermMouseDown = (e: MouseEvent) => {
+      const decision = decideMouseDown(e, {
+        mouseTracking: (term.modes?.mouseTrackingMode ?? "none") !== "none",
+      });
+      if (decision === "native") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.target) return;
+      // detail > 1: word/line select now — no drag is coming.
+      if (decision === "force-select") {
+        dispatchPress(e.target, e, { force: true });
+        return;
+      }
+      pending = {
+        target: e.target,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        detail: e.detail,
+      };
     };
-    host.addEventListener("mousedown", forceSelectMousedown, true);
+
+    // Pointer moved past the slop → it was a drag. Force the selection AT THE ANCHOR; xterm's
+    // SelectionService then binds its own move/up listeners and extends from the real mousemoves.
+    const onGestureMove = (e: MouseEvent) => {
+      if (!pending || !e.isTrusted) return;
+      if (!exceededSlop(pending.clientX, pending.clientY, e.clientX, e.clientY)) return;
+      const anchor = pending;
+      pending = null;
+      dispatchPress(anchor.target, anchor, { force: true });
+    };
+
+    // Released without moving → it was a click. Replay the plain press so the app sees it; the real
+    // (trusted) mouseup keeps propagating, so the TUI gets its release and copy-on-select still runs.
+    const onGestureUp = () => {
+      if (!pending) return;
+      const anchor = pending;
+      pending = null;
+      dispatchPress(anchor.target, anchor, { force: false });
+    };
+
+    host.addEventListener("mousedown", onTermMouseDown, true);
+    document.addEventListener("mousemove", onGestureMove, true);
+    document.addEventListener("mouseup", onGestureUp, true);
     const vpEl = host.querySelector<HTMLElement>(".xterm-viewport");
 
     // #187: track whether the viewport is sitting at the live tail. xterm fires
@@ -780,7 +843,7 @@ export function Terminal({
     document.addEventListener("keydown", armOnKeydown, true);
     // #559 (desktop): a trusted left-button press may begin a drag-selection → pin the viewport
     // for the duration of the press (mobile arms the same pin from onLongPress below). isTrusted so
-    // our own synthetic selection twin (forceSelectMousedown) doesn't re-arm it; button 0 only.
+    // our own synthetic selection twin / click replay doesn't re-arm it; button 0 only.
     const onSelMouseDown = (e: MouseEvent) => {
       if (e.isTrusted && e.button === 0 && eventInTermArea(e.target)) beginSelectionPin();
     };
@@ -1145,22 +1208,39 @@ export function Terminal({
     // touch select-mode (#415, its native Copy bubble owns mobile) are skipped; a plain click / an
     // empty or whitespace-only selection never clobbers the clipboard; and an unchanged selection is
     // not re-copied (so a click elsewhere while text stays selected is a no-op). `document` (not
-    // `host`) so a drag that ends outside the terminal still copies. Fail-soft like #536.
+    // `host`) so a drag that ends outside the terminal still copies.
+    // #617: the toast FOLLOWS the clipboard write. `navigator.clipboard` is undefined on a
+    // non-secure origin (plain-http LAN / dev), so the write silently no-opped while the toast
+    // still said "Copied" — the UI lied. A failure now says so instead.
     let lastAutoCopied = "";
     let copiedHideTimer: number | undefined;
     let toastSeq = 0;
+    const flashToast = (ok: boolean) => {
+      const id = ++toastSeq;
+      setCopied({ tick: id, ok });
+      if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
+      copiedHideTimer = window.setTimeout(
+        () => setCopied((c) => (c.tick === id ? { tick: 0, ok: true } : c)),
+        ok ? COPIED_TOAST_MS : COPY_FAILED_TOAST_MS,
+      );
+    };
     const copyOnSelectSettle = (e: MouseEvent) => {
       if (!e.isTrusted || selecting || !term.hasSelection()) return;
       const text = term.getSelection();
       if (!text.trim() || text === lastAutoCopied) return;
       lastAutoCopied = text;
-      void navigator.clipboard?.writeText(text).catch(() => {});
-      const id = ++toastSeq;
-      setCopiedTick(id);
-      if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
-      copiedHideTimer = window.setTimeout(
-        () => setCopiedTick((t) => (t === id ? 0 : t)),
-        COPIED_TOAST_MS,
+      const write = navigator.clipboard?.writeText(text);
+      if (!write) {
+        lastAutoCopied = ""; // nothing landed — let the same selection be retried
+        flashToast(false);
+        return;
+      }
+      void write.then(
+        () => flashToast(true),
+        () => {
+          lastAutoCopied = "";
+          flashToast(false);
+        },
       );
     };
     document.addEventListener("mouseup", copyOnSelectSettle);
@@ -1194,7 +1274,9 @@ export function Terminal({
       document.removeEventListener("keydown", armOnKeydown, true);
       document.removeEventListener("mousedown", onSelMouseDown, true); // #559 selection pin
       document.removeEventListener("mouseup", onSelMouseUp, true);
-      host.removeEventListener("mousedown", forceSelectMousedown, true);
+      host.removeEventListener("mousedown", onTermMouseDown, true);
+      document.removeEventListener("mousemove", onGestureMove, true);
+      document.removeEventListener("mouseup", onGestureUp, true);
       host.removeEventListener("paste", onHostPaste, true);
       detachTouch();
       stopMomentumRef.current = () => {};
@@ -1385,15 +1467,17 @@ export function Terminal({
         <div ref={hostRef} className={styles.term} />
         {/* Auto copy-on-select confirmation (#554): keyed on the tick so each copy restarts the
             fade. role/aria-live announce it; the JS timer unmounts it after COPIED_TOAST_MS. */}
-        {copiedTick !== 0 && (
+        {copied.tick !== 0 && (
           <div
-            key={copiedTick}
-            className={styles.copiedToast}
+            key={copied.tick}
+            className={copied.ok ? styles.copiedToast : `${styles.copiedToast} ${styles.copyFailed}`}
             role="status"
             aria-live="polite"
             data-copied-toast=""
+            data-copy-ok={copied.ok ? "" : undefined}
+            data-copy-failed={copied.ok ? undefined : ""}
           >
-            Copied
+            {copied.ok ? "Copied" : "Copy needs a secure origin"}
           </div>
         )}
         {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely

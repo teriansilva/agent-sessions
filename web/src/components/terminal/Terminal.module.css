@@ -344,6 +344,17 @@
   background: var(--accent);
   box-shadow: 0 0 7px var(--accent);
 }
+/* The clipboard write failed — a non-secure origin has no `navigator.clipboard` (#617). Semantic
+ * status red, never the brand accent: this is a failure, not a brand moment (docs/design.md). It
+ * lingers longer than the success flash because it asks the operator to do something. */
+.copyFailed {
+  border-color: var(--status-down);
+  animation-duration: 2600ms;
+}
+.copyFailed::before {
+  background: var(--status-down);
+  box-shadow: 0 0 7px var(--status-down);
+}
 @keyframes copiedFlash {
   0% {
     opacity: 0;
