@@ -11,6 +11,97 @@ test("Home Free connect page exposes the app root, not a recovery terminal pane"
   await expect(page.locator(".xterm")).toHaveCount(0);
 });
 
+/** Count rAF calls so "the ambient loop is running / is not running" is observable, not inferred. */
+async function countRaf(page: import("@playwright/test").Page): Promise<void> {
+  await page.addInitScript(() => {
+    (window as unknown as { __raf: number }).__raf = 0;
+    const real = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => {
+      (window as unknown as { __raf: number }).__raf++;
+      return real(cb);
+    };
+  });
+}
+const rafCount = (page: import("@playwright/test").Page) =>
+  page.evaluate(() => (window as unknown as { __raf: number }).__raf);
+
+// The connect page is a standalone shell (it can't import the SPA's CSS), so nothing else
+// guards it against drifting off the HUD design system — docs/design.md §6/§8.
+test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchable CTA", async ({
+  page,
+}) => {
+  await countRaf(page);
+  await page.goto("/connect.html");
+  // The ambient field is actually animating, not just present in the DOM.
+  await expect.poll(() => rafCount(page)).toBeGreaterThan(0);
+
+  // The ambient data-flow field paints behind everything and never eats a click.
+  const canvas = page.locator("canvas#bg.hud-canvas");
+  await expect(canvas).toHaveCount(1);
+  await expect(canvas).toHaveCSS("pointer-events", "none");
+  await expect
+    .poll(() => canvas.evaluate((c: HTMLCanvasElement) => c.width > 0 && c.height > 0))
+    .toBe(true);
+
+  // Corner-bracket frame, not a rounded box.
+  await expect(page.locator(".connect-card .hud-cnr")).toHaveCount(4);
+  await expect(page.locator(".connect-card")).toHaveCSS("border-radius", "0px");
+
+  // The CTA opts into the ambient glitch, and clicking it still hits the button.
+  await expect(page.locator("#connect")).toHaveClass(/\bshine\b/);
+});
+
+test("connect page explains the blind relay in a dismissible modal", async ({ page }) => {
+  await page.goto("/connect.html");
+
+  const modal = page.locator("#how-modal");
+  await expect(modal).toBeHidden();
+
+  await page.getByRole("button", { name: "How does it work?" }).click();
+  await expect(modal).toBeVisible();
+  await expect(page.getByRole("heading", { name: "The relay is blind" })).toBeVisible();
+  // The trust claims that make the page worth believing.
+  await expect(modal).toContainText("X25519");
+  await expect(modal).toContainText("AES-256-GCM");
+  await expect(modal).toContainText("Forward secrecy");
+  await expect(modal.getByRole("link", { name: /home-free-handshake\.md/ })).toBeVisible();
+
+  // Both new controls are thumb-sized on touch (design.md §8). Pixel 7 runs this at ≤800px.
+  const isMobile = page.viewportSize()!.width <= 800;
+  if (isMobile) {
+    for (const name of ["How does it work?", "Close"]) {
+      const box = await page.getByRole("button", { name }).boundingBox();
+      expect(box!.height, `${name} touch target`).toBeGreaterThanOrEqual(44);
+    }
+  }
+
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(modal).toBeHidden();
+
+  // Esc closes it too (native <dialog> focus trap).
+  await page.getByRole("button", { name: "How does it work?" }).click();
+  await expect(modal).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+});
+
+// docs/design.md §8: under reduced motion the canvas is gone, a static grid takes over, and
+// *zero* animation loops start — a hidden canvas that still burns rAF would pass a CSS-only check.
+// Emulated per-page rather than via `test.use({ reducedMotion })`: the file-level `test.use` below
+// wins over a describe-scoped one, and the fixture silently no-ops (matchMedia stayed false).
+test("connect page starts no animation loop under reduced motion, and falls back to the static grid", async ({
+  page,
+}) => {
+  await countRaf(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/connect.html");
+
+  await expect(page.locator("canvas#bg")).toBeHidden();
+  await page.waitForTimeout(600); // a loop, had one started, would have ticked by now
+  expect(await rafCount(page)).toBe(0);
+  await expect(page.locator("body")).toHaveCSS("background-image", /linear-gradient/);
+});
+
 test.use({
   launchOptions: {
     args: ["--host-resolver-rules=MAP battlelab.superstatus.io 127.0.0.1"],

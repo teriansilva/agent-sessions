@@ -4,6 +4,7 @@
 // canonicalization. This page is standalone and NOT linked from the app — it exists
 // for reaching a box through the relay.
 
+import { runButtonGlitch, runDataFlow } from "../components/hud/dataFlow";
 import {
   type AltchaChallenge,
   type SocketLike,
@@ -45,6 +46,10 @@ const byId = (id: string): HTMLElement => {
 };
 
 const body = document.body;
+const bgCanvas = byId("bg") as HTMLCanvasElement;
+const howModal = byId("how-modal") as HTMLDialogElement;
+const howOpenBtn = byId("how-it-works") as HTMLButtonElement;
+const howCloseBtn = byId("how-close") as HTMLButtonElement;
 const form = byId("connect-form") as HTMLFormElement;
 const relayInput = byId("relay") as HTMLInputElement;
 const relayOptions = byId("relay-options") as HTMLDetailsElement;
@@ -73,10 +78,30 @@ function isPublicDeploy(): boolean {
   );
 }
 
+// The ambient HUD backdrop + button glitch, shared with the SPA (components/hud/dataFlow).
+// Both are torn down once the streamed app takes the screen — it mounts its own pair.
+let stopDataFlow: (() => void) | null = null;
+let stopGlitch: (() => void) | null = null;
+
+function setAmbient(on: boolean): void {
+  if (on && !stopDataFlow) {
+    stopDataFlow = runDataFlow(bgCanvas);
+    stopGlitch = runButtonGlitch();
+    return;
+  }
+  if (!on) {
+    stopDataFlow?.();
+    stopGlitch?.();
+    stopDataFlow = null;
+    stopGlitch = null;
+  }
+}
+
 function setState(state: UiState): void {
   body.dataset.state = state;
   connectBtn.disabled = state === "connecting";
   sessionBox.hidden = state !== "connected";
+  setAmbient(state !== "connected");
 }
 
 function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
@@ -292,6 +317,15 @@ signoutBtn.addEventListener("click", () => {
   endSession("signed out", "signed-out");
 });
 
+// "How does it work?" — what the relay can and cannot see. <dialog> gives us the focus trap,
+// Esc-to-close and inert background for free; the only extra is click-outside-to-dismiss.
+howOpenBtn.addEventListener("click", () => howModal.showModal());
+howCloseBtn.addEventListener("click", () => howModal.close());
+howModal.addEventListener("click", (event) => {
+  if (event.target === howModal) howModal.close(); // the backdrop, not the panel
+});
+
+setAmbient(true);
 applyPublicRelayDefault();
 const restored = restoreSavedSession();
 if (restored) {
