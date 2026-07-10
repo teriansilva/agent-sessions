@@ -12,6 +12,7 @@ import contextlib
 import os
 import signal
 import subprocess
+import time
 
 import pytest
 
@@ -144,10 +145,28 @@ def test_lock_fd_inherited_through_systemd_run(tmp_path, monkeypatch):
         lock.transfer()
         assert sessionlock.is_locked(key) is True
     finally:
+        # Deterministic teardown of the transient scope (#626). The payload lives in a
+        # systemd-managed scope, so killing the `systemd-run` client's process group is not
+        # a reliable way to reap it — stop the unit explicitly. `killpg` stays as a fast
+        # belt-and-suspenders; the `systemctl stop` is the authoritative reap.
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
+        if unit:
+            subprocess.run(  # noqa: S603
+                ["systemctl", "--user", "stop", unit],  # noqa: S607
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         asyncio.run(_wait(proc))
-    assert sessionlock.is_locked(key) is False
+    # The kernel releases the holder's flock when its fd closes, which races the client's
+    # own exit under heavy runner load (#626: `assert True is False` on a contended box).
+    # Poll the observable — lock free — with a deadline instead of asserting on a fixed
+    # instant. A released lock never re-locks, so polling only removes false negatives; a
+    # genuinely-never-released lock (a real regression) still fails, promptly enough.
+    deadline = time.monotonic() + 5.0
+    while sessionlock.is_locked(key) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sessionlock.is_locked(key) is False, "lock still held after the scoped holder was reaped"
 
 
 async def _wait(proc):
