@@ -657,7 +657,12 @@ homefree_enable_app_auth() {
 
 homefree_print_credentials() {
   _name="$1"; _key="$2"
-  if [ -t 1 ]; then _R='\033[1;31m'; _B='\033[1m'; _Z='\033[0m'; else _R=''; _B=''; _Z=''; fi
+  if [ -t 1 ]; then
+    _ESC="$(printf '\033')"
+    _R="${_ESC}[1;31m"; _B="${_ESC}[1m"; _Z="${_ESC}[0m"
+  else
+    _R=''; _B=''; _Z=''
+  fi
   note "BattleLab remote (stream) is enabled — reach this box from any browser."
   log "Console name: ${_name}"
   log "Access key:   ${_key}"

@@ -48,6 +48,45 @@ def _run(snippet: str, tmp_path: Path, env: dict | None = None) -> subprocess.Co
     )
 
 
+def _run_stdout_pty(
+    snippet: str, tmp_path: Path, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    base = {k: v for k, v in os.environ.items() if k not in _LEAK_KEYS}
+    base.update(env or {})
+    src = _sourceable(tmp_path)
+    master_fd, slave_fd = os.openpty()
+    try:
+        proc = subprocess.Popen(
+            ["sh", "-c", f'. "{src}"; {snippet}'],
+            stdin=subprocess.DEVNULL,
+            stdout=slave_fd,
+            stderr=subprocess.PIPE,
+            env=base,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        chunks = []
+        while True:
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        stderr = proc.stderr.read() if proc.stderr is not None else b""
+        return subprocess.CompletedProcess(
+            proc.args,
+            proc.wait(),
+            b"".join(chunks).decode(errors="replace"),
+            stderr.decode(errors="replace"),
+        )
+    finally:
+        if slave_fd != -1:
+            os.close(slave_fd)
+        os.close(master_fd)
+
+
 def test_generated_name_matches_relay_rule(tmp_path):
     for _ in range(6):
         r = _run("homefree_gen_name", tmp_path)
@@ -120,6 +159,15 @@ def test_stream_mode_defaults_to_battlelab_relay(tmp_path):
     unit = (cfg / "systemd" / "user" / "agent-sessions-homefree.service").read_text()
     assert "wss://relay.battlelab.superstatus.io/relay/ws" in unit
     assert "REPLACE-WITH-YOUR-RELAY" not in unit
+    assert "https://battlelab.superstatus.io/connect" in r.stdout
+
+
+def test_stream_credentials_tty_output_uses_real_escape_bytes(tmp_path):
+    r = _run_stdout_pty("homefree_print_credentials atlas-2471 key123", tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "\\033[" not in r.stdout
+    assert "\x1b[1mConnect at:" in r.stdout
+    assert "\x1b[1;31m* SECURITY:" in r.stdout
     assert "https://battlelab.superstatus.io/connect" in r.stdout
 
 
