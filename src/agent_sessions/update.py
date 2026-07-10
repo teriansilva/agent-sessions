@@ -153,12 +153,47 @@ def _semver_key(tag: str) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _running_sha(version: str) -> str | None:
+    """The commit the running build was built from, parsed from the version's local
+    segment: setuptools_scm's ``+g<sha>`` (e.g. ``0.9.1.dev3+g64eefb3``) or the dev
+    placeholder ``0.0.0+<sha>``. Returns lowercase hex, or None for a **clean release**
+    version that carries no local segment (``0.9.0``) — nothing to compare a SHA against."""
+    local = version.partition("+")[2]
+    if not local:
+        return None
+    token = local.split(".", 1)[0]  # drop .dirty / .dYYYYMMDD suffixes
+    if token[:1] == "g":  # setuptools_scm prefixes the git SHA with 'g'
+        token = token[1:]
+    token = token.lower()
+    return token if token and all(c in "0123456789abcdef" for c in token) else None
+
+
+def _main_update_available(cur: str, latest: str | None) -> bool:
+    """`main`-channel availability (#583). Compare the running build's commit SHA to the
+    remote HEAD SHA — **never** the SHA to the whole version string, which reported "update
+    available" forever whenever main HEAD sat on a release tag (a clean ``0.9.0`` never
+    *contains* the SHA, so the old ``latest not in cur`` heuristic was always true → a
+    reinstall loop). A clean release version has no SHA to compare; treat it as current
+    rather than perpetually behind — a false negative only restores "don't update", which
+    is safe, and prod's intended posture on a tag is ``stable`` anyway."""
+    if not latest:
+        return False
+    cur_sha = _running_sha(cur)
+    if cur_sha is None:
+        return False  # clean release sitting on main HEAD → converged, don't churn
+    n = min(len(cur_sha), len(latest))
+    return cur_sha[:n] != latest.lower()[:n]  # SHA↔SHA, tolerant of differing short lengths
+
+
 def check() -> dict[str, object]:
     cur = get_version()
     channel = _channel()
     latest = latest_ref(channel, _repo_url())
-    norm = latest.lstrip("v") if (latest and channel != "main") else latest
-    available = bool(latest) and norm != cur and (latest or "") not in cur
+    if channel == "main":
+        available = _main_update_available(cur, latest)
+    else:
+        norm = latest.lstrip("v") if latest else latest
+        available = bool(latest) and norm != cur
     return {"current": cur, "channel": channel, "latest": latest, "update_available": available}
 
 

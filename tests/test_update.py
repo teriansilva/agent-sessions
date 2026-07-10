@@ -41,6 +41,55 @@ def test_check_available_and_up_to_date(monkeypatch, tmp_path):
     assert update.check()["update_available"] is False  # tag == running version
 
 
+# ---- #583: main-channel check compares SHA↔SHA, never SHA↔version-string ---------------
+
+
+def test_running_sha_parses_setuptools_scm_and_dev_placeholder():
+    assert update._running_sha("0.9.1.dev3+g64eefb3") == "64eefb3"
+    assert update._running_sha("0.0.0+ab12cd3") == "ab12cd3"
+    assert update._running_sha("0.9.1.dev3+g64eefb3.dirty") == "64eefb3"  # suffix dropped
+    assert update._running_sha("0.9.0") is None  # clean release → no SHA to compare
+    assert update._running_sha("0.9.0+glocal") is None  # non-hex local segment
+
+
+def _main_channel(monkeypatch, tmp_path):
+    """Point the channel read at ``main`` hermetically (env var + absent env file)."""
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL", "main")
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(tmp_path / "env"))
+
+
+def test_check_main_tagged_head_is_current_not_a_reinstall_loop(monkeypatch, tmp_path):
+    # The #583 repro: main HEAD sits on a release tag → setuptools_scm reports a clean
+    # "0.9.0" with no SHA. The remote main HEAD is a short SHA. The old code did
+    # ("64eefb3" not in "0.9.0") → True → update_available forever → reinstall loop.
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "64eefb3")
+    monkeypatch.setattr(update, "get_version", lambda: "0.9.0")
+    assert update.check()["update_available"] is False
+
+
+def test_check_main_dev_build_behind_head_is_available(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "abcdef1")  # remote moved
+    monkeypatch.setattr(update, "get_version", lambda: "0.9.1.dev3+g64eefb3")
+    assert update.check()["update_available"] is True
+
+
+def test_check_main_dev_build_at_head_is_current(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "64eefb3")
+    monkeypatch.setattr(update, "get_version", lambda: "0.9.1.dev3+g64eefb3")
+    assert update.check()["update_available"] is False
+
+
+def test_check_main_head_at_head_tolerates_short_sha_lengths(monkeypatch, tmp_path):
+    # latest_ref truncates to 7 chars; the embedded SHA may be longer — prefix-compare.
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "64eefb3")
+    monkeypatch.setattr(update, "get_version", lambda: "0.9.1.dev3+g64eefb3a9")
+    assert update.check()["update_available"] is False
+
+
 def test_apply_returns_false_without_an_installer(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_SESSIONS_HOME", str(tmp_path))  # no current/src/install.sh
     assert update.apply() is False
