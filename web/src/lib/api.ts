@@ -22,6 +22,7 @@ import type {
   UpdateInfo,
   UpdateSettings,
 } from "../types/api";
+import { clearSent } from "./sentHistory";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -389,5 +390,6 @@ export const api = {
 
 async function logout(): Promise<void> {
   await postVoid("/logout"); // CSRF POST; the server clears the cookie + 303s to /login
+  clearSent(); // #619: sent prompt text must not outlive the session on a shared device
   window.location.assign("/login");
 }

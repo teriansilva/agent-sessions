@@ -4,6 +4,7 @@ import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
+import { appendSent, readSent } from "../../lib/sentHistory";
 import { Compose, type ComposeHandle } from "./Compose";
 
 vi.mock("../../lib/api", () => ({
@@ -19,6 +20,7 @@ vi.mock("../../lib/api", () => ({
 let sendInput: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear(); // #619: the sent-message ring is device-global
   sendInput = vi.fn(() => true); // default: every frame is delivered (socket OPEN)
 });
 
@@ -479,4 +481,89 @@ test("readiness timeout never sends, keeps the text, and says why (#533)", async
   await waitFor(() => expect(screen.getByText(/agent not ready/i)).toBeTruthy());
   expect(sendInput).not.toHaveBeenCalled(); // no frame ever reached the booting agent
   expect((ta as HTMLTextAreaElement).value).toBe("hello world"); // preserved for a retry
+});
+
+// --- Sent-message history (#619) ---------------------------------------------------------------
+// The safety net for a send the agent swallows (#616): every submission is recorded BEFORE the
+// composer and the server draft are cleared, so it stays recoverable even when delivery "succeeds".
+
+test("a send is recorded BEFORE the composer clears, and confirmed only once the Enter lands (#619)", async () => {
+  const user = userEvent.setup();
+  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+  await user.type(screen.getByRole("textbox"), "recover me");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+
+  // Recorded at submit time — unconfirmed until the deferred Enter is delivered.
+  expect(readSent().map((e) => e.text)).toEqual(["recover me"]);
+  expect(readSent()[0].session).toBe("claude:s1");
+
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  await waitFor(() => expect(readSent()[0].confirmed).toBe(true));
+});
+
+test("a send whose Enter never reaches the socket stays UNCONFIRMED (#619)", async () => {
+  const user = userEvent.setup();
+  // clear + paste deliver; the deferred Enter does not (a reconnect landed in the gap, #287).
+  sendInput = vi.fn((d: string) => d !== KEYSEQ.enter);
+  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+  await user.type(screen.getByRole("textbox"), "never landed");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  expect(readSent()[0].text).toBe("never landed");
+  expect(readSent()[0].confirmed).toBe(false); // the abort path leaves it recoverable + flagged
+});
+
+test("an empty Send (bare Return) records nothing (#619 / #474)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
+  expect(readSent()).toEqual([]); // a bare Return is not a message
+});
+
+test("the history chip is hidden until there is something to recover (#619)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  expect(screen.queryByRole("button", { name: /sent messages/i })).toBeNull();
+  await user.type(screen.getByRole("textbox"), "first message");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /sent messages/i })).toBeTruthy());
+});
+
+test("Restore refills the composer with the exact text + attachments, and flushes the draft (#619)", async () => {
+  const user = userEvent.setup();
+  appendSent({ text: "  keep my\n\nwhitespace  ", attachments: ["/up/a.png"], session: "claude:s1" });
+  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+
+  await user.click(screen.getByRole("button", { name: /sent messages/i }));
+  await user.click(screen.getByRole("button", { name: /restore/i }));
+
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await waitFor(() => expect(ta.value).toBe("  keep my\n\nwhitespace  ")); // untrimmed round-trip
+  expect(screen.getByTitle("/up/a.png")).toBeTruthy(); // the attachment pill is back
+  // Hermes: Restore must share typing's dirty + flushDraft path, or a refresh loses it again.
+  await waitFor(() =>
+    expect(api.saveDraft).toHaveBeenCalledWith("claude:s1", {
+      text: "  keep my\n\nwhitespace  ",
+      attachments: [{ name: "a.png", path: "/up/a.png" }],
+    }),
+  );
+});
+
+test("a failing localStorage never blocks the send (#619)", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("localStorage", {
+    getItem: () => null,
+    setItem: () => {
+      throw new DOMException("QuotaExceededError");
+    },
+    removeItem: () => {},
+  });
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "still sends");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("still sends")));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  vi.unstubAllGlobals();
 });

@@ -1,0 +1,192 @@
+/* Sent-messages recovery modal (#619). Same HUD vocabulary as the session brief (#481) and the
+ * canonical tokens in index.css: near-black ground, phosphor-amber accent, mono micro-labels,
+ * square chrome (no rounded corners, no gradients). Mobile reflows to a bottom sheet. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.dialog {
+  width: min(460px, 100%);
+  max-height: min(80vh, 660px);
+  overflow-y: auto;
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 15px 18px 16px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+/* The heading doubles as the dialog's accessible name, so it carries the accent, not --text-3. */
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 0;
+  cursor: pointer;
+}
+.close:hover,
+.close:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.when {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The only delivery claim the client can honestly make, and it's the negative one. Uses the
+ * unsent-draft blue (#477) — deliberately not a status hue: this is information, not an error. */
+.badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--status-draft);
+  border: 1px solid color-mix(in srgb, var(--status-draft) 45%, transparent);
+  background: color-mix(in srgb, var(--status-draft) 10%, transparent);
+  padding: 1px 5px;
+}
+/* The ring is device-global (a fresh session has no id yet), so an entry can come from elsewhere. */
+.other {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Two-line preview: enough to recognise the message, never enough to bury the actions. */
+.body {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.attachments {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.acts {
+  display: flex;
+  gap: 6px;
+}
+/* 26px chips read as secondary next to the compose CTA; the mobile rule below lifts them to a
+ * comfortable touch target. */
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  cursor: pointer;
+}
+.act:hover,
+.act:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.foot {
+  margin: 11px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Mobile (≤800px): a bottom sheet; the row actions grow to a real touch target. */
+@media (max-width: 800px) {
+  .backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .dialog {
+    width: 100%;
+    max-height: 82vh;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
+  }
+  .act {
+    height: 34px;
+    padding: 0 12px;
+  }
+}

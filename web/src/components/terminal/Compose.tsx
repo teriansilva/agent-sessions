@@ -1,4 +1,15 @@
-import { ArrowDown, ArrowRightToLine, ArrowUp, CornerDownLeft, Mic, Paperclip, Pencil, Send, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowRightToLine,
+  ArrowUp,
+  CornerDownLeft,
+  History,
+  Mic,
+  Paperclip,
+  Pencil,
+  Send,
+  X,
+} from "lucide-react";
 import {
   type ClipboardEvent as ReactClipboardEvent,
   forwardRef,
@@ -10,6 +21,8 @@ import {
 } from "react";
 import { api } from "../../lib/api";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
+import { type SentMessage, appendSent, confirmSent, readSent } from "../../lib/sentHistory";
+import { SentMessagesModal } from "./SentMessagesModal";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
@@ -103,6 +116,11 @@ export const Compose = forwardRef<
   const taRef = useRef<HTMLTextAreaElement>(null);
   // #533: token guarding the fresh-launch readiness hold — a newer Send supersedes a pending one.
   const holdRef = useRef(0);
+  // #619: recoverable history of sent messages. Read lazily (localStorage) and refreshed on every
+  // send / modal open, so a send from another tab shows up without a reload.
+  const [history, setHistory] = useState<SentMessage[]>(() => readSent());
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyBtnRef = useRef<HTMLElement | null>(null);
 
   // Push-to-talk dictation (#483). At most one active recognizer (`recogRef`); `dictBaseRef` is
   // the draft text present when dictation began. Each result event rebuilds the transcript from the
@@ -300,6 +318,26 @@ export const Compose = forwardRef<
     };
   }, []);
 
+  // #619: drop a recorded message back into the composer. It takes the SAME path as typing and the
+  // attachment pills — mark dirty, then flush the draft immediately — or a restore made just before
+  // a refresh / session switch would be lost again before the autosave debounce ever ran.
+  const restoreSent = (entry: SentMessage) => {
+    const atts: Attachment[] = entry.attachments.map((path) => ({
+      name: path.split("/").pop() || path,
+      path,
+    }));
+    setText(entry.text);
+    setAttachments(atts);
+    dirtyRef.current = true;
+    flushDraft(entry.text, atts);
+    setHistoryOpen(false);
+    setOpen(true); // the composer may be collapsed (desktop default) — surface what we restored
+    requestAnimationFrame(() => {
+      taRef.current?.focus();
+      grow();
+    });
+  };
+
   const send = () => {
     const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
     const savedAttachments = attachments;
@@ -320,6 +358,17 @@ export const Compose = forwardRef<
       }
       return;
     }
+    // #619: record the submission BEFORE anything is delivered or cleared. Whatever happens next —
+    // a dropped frame, or an agent that silently swallows the paste (#616) — the text is recoverable
+    // from the history modal. Recorded unconfirmed; the deferred Enter below flips it. Fail-soft:
+    // a null id (no localStorage / quota) just means no safety net, never a blocked send.
+    const historyId = appendSent({
+      text: savedText,
+      attachments: savedAttachments.map((a) => a.path),
+      session: sessionId,
+    });
+    setHistory(readSent());
+
     // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
     // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
     const abortNotDelivered = (why = "reconnecting — not sent, try again") => {
@@ -378,7 +427,13 @@ export const Compose = forwardRef<
           abortNotDelivered();
           return;
         }
-        // Delivered: clear the composer AND the server draft (a just-sent turn must not linger as a
+        // Delivered: every frame reached the socket. Flip the history entry out of UNCONFIRMED —
+        // which asserts delivery to the SOCKET, never that the agent processed the turn (#619).
+        if (historyId) {
+          confirmSent(historyId);
+          setHistory(readSent());
+        }
+        // Clear the composer AND the server draft (a just-sent turn must not linger as a
         // draft). clearDraft cancels any pending debounce so a trailing flush can't resurrect it.
         setText("");
         setAttachments([]);
@@ -490,6 +545,23 @@ export const Compose = forwardRef<
       icon: <Paperclip size={16} />,
       run: () => fileRef.current?.click(),
     },
+    ...(history.length > 0
+      ? [
+          {
+            id: "history",
+            aria: "Sent messages",
+            title: `Sent messages (last ${history.length})`,
+            icon: <History size={16} />,
+            run: () => {
+              // The chip may be inline or inside KeyBar's "…" overflow menu — either way the
+              // trigger is whatever holds focus, and focus returns there on close.
+              historyBtnRef.current = document.activeElement as HTMLElement | null;
+              setHistory(readSent()); // another tab may have sent since we last looked
+              setHistoryOpen(true);
+            },
+          },
+        ]
+      : []),
     ...(open
       ? [
           {
@@ -590,6 +662,16 @@ export const Compose = forwardRef<
         multiple
         onChange={(e) => void pickFiles(e.target.files)}
       />
+
+      {historyOpen && (
+        <SentMessagesModal
+          entries={history}
+          currentSession={sessionId}
+          onRestore={restoreSent}
+          onClose={() => setHistoryOpen(false)}
+          returnFocusTo={historyBtnRef.current}
+        />
+      )}
     </div>
   );
 });
