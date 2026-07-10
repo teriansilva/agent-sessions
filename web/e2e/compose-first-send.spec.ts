@@ -105,3 +105,60 @@ test("first compose Send into a fresh session waits for the agent's input to com
   // Delivered → the composer cleared (the draft is gone with it).
   await expect(page.getByPlaceholder(/type here/i)).toHaveValue("");
 });
+
+test("fresh Codex send waits for boot output to go quiet before using fallback readiness (#607)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "timing-sensitive fallback path runs once");
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: {
+        csrf: "x",
+        new_session_engines: ["codex"],
+        terminal_backend: "ws",
+        auth_mode: "none",
+        default_project: "/home/u/proj",
+      },
+    }),
+  );
+  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
+  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+    }),
+  );
+  await page.route(/\/api\/sessions\/[^/]+\/draft$/, (r) =>
+    r.fulfill({ json: { id: "", text: "", attachments: [], updated_at: null } }),
+  );
+  await page.addInitScript(BOOTING_WS);
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page).toHaveURL(/\/s\/codex\/new-/);
+  await expect(page.locator(".xterm")).toBeVisible();
+
+  const sendBtn = page.getByRole("button", { name: /^send/i });
+  if (!(await sendBtn.isVisible())) {
+    await page.getByRole("button", { name: /open compose box/i }).click();
+  }
+  await page.getByPlaceholder(/type here/i).fill("do the first codex task");
+  await sendBtn.click();
+  await expect(page.getByText(/waiting for agent/i)).toBeVisible();
+
+  // Codex-style boot frames without ESC[?2004h: every chunk resets the fallback timer.
+  // Broken behavior sent 1.5s after the FIRST output chunk, while startup was still painting.
+  await page.evaluate(() => window.__emitOutput("loading codex…"));
+  await page.waitForTimeout(1000);
+  await page.evaluate(() => window.__emitOutput("still preparing…"));
+  await page.waitForTimeout(700);
+  expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
+
+  await expect
+    .poll(async () => page.evaluate(() => window.__sentInput.join("")), { timeout: 3000 })
+    .toContain("\x1b[200~do the first codex task\x1b[201~");
+  await expect
+    .poll(async () => page.evaluate(() => window.__sentInput.at(-1)))
+    .toBe("\r");
+});

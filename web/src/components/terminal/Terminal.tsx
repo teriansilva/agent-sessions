@@ -28,8 +28,11 @@ import { Compose, type ComposeHandle } from "./Compose";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 
-// #533: fresh-launch compose gate. Engines that never emit the bracketed-paste enable
-// (ESC[?2004h) still count as input-ready this long after their first output bytes.
+// #533/#607: fresh-launch compose gate. Engines that never emit the bracketed-paste
+// enable (ESC[?2004h) still count as input-ready only after boot output has gone quiet
+// for this long. Starting the fallback on the first byte was too early for Codex:
+// startup/progress frames could arrive well before its input loop was ready, so the
+// first compose send was still swallowed.
 const READY_FALLBACK_MS = 1500;
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
@@ -635,16 +638,18 @@ export function Terminal({
     // regression). Programmatic scrolls must never arm it.
     let userScrolled = false;
     let sawOutput = false;
-    // #533: fresh-launch input-ready detection. Scan the boot stream for the bracketed-paste
+    // #533/#607: fresh-launch input-ready detection. Scan the boot stream for the bracketed-paste
     // enable; the 8-char carry handles the sequence splitting across chunks. Engines that never
-    // emit ?2004h count as ready READY_FALLBACK_MS after their first output bytes. Only runs
-    // until readiness fires (attaches to running sessions start ready, so it never runs there).
+    // emit ?2004h count as ready only after output has been quiet for READY_FALLBACK_MS, not
+    // READY_FALLBACK_MS after the FIRST output byte. Codex can keep painting boot/progress frames
+    // before its prompt loop is writable; resetting the fallback on every chunk makes the first
+    // compose send wait for the prompt to settle instead of racing the startup clear.
     let readyCarry = "";
     let readyFallbackTimer: ReturnType<typeof setTimeout> | null = null;
     const latin1 = new TextDecoder("latin1");
     const noteBootOutput = (b: Uint8Array) => {
-      if (readyFallbackTimer === null)
-        readyFallbackTimer = setTimeout(markInputReady, READY_FALLBACK_MS);
+      if (readyFallbackTimer !== null) clearTimeout(readyFallbackTimer);
+      readyFallbackTimer = setTimeout(markInputReady, READY_FALLBACK_MS);
       const hay = readyCarry + latin1.decode(b);
       if (hay.includes("\x1b[?2004h")) markInputReady();
       else readyCarry = hay.slice(-8);

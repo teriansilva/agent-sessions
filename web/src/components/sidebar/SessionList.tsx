@@ -17,6 +17,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -42,6 +43,8 @@ const REVIEW_STALE_GRACE_S = 60;
  *  an error lingers long enough to actually read the gateway detail. */
 export const TOAST_OK_MS = 6_000;
 export const TOAST_ERR_MS = 12_000;
+const ROW_REORDER_ANIM_MS = 240;
+const ROW_REORDER_MIN_DELTA_PX = 2;
 
 function reviewIsStale(s: Session): boolean {
   return (
@@ -126,6 +129,8 @@ interface RowProps {
   /** Close the mobile drawer on tap — tapping the already-active row is a same-route no-op,
    *  so the route-change effect in App won't fire (#283). */
   onNavigate?: () => void;
+  /** Physical list item ref used by the sidebar FLIP reorder animation (#607). */
+  rowRef?: (el: HTMLLIElement | null) => void;
 }
 
 function Row({
@@ -139,6 +144,7 @@ function Row({
   onToggleReviewExcluded,
   onSetProject,
   onNavigate,
+  rowRef,
 }: RowProps) {
   // Inline editor (#551): the row's title (Rename) OR its custom tag (Set tag…) share one
   // input row. "none" = not editing; `draft` holds whichever value is being edited.
@@ -240,7 +246,7 @@ function Row({
   if (editMode !== "none") {
     const isTag = editMode === "tag";
     return (
-      <li className={styles.rowWrap}>
+      <li ref={rowRef} className={styles.rowWrap}>
         <form
           className={styles.editRow}
           onSubmit={(e) => {
@@ -401,7 +407,7 @@ function Row({
   const summaryText = [s.tag, summaryBody].filter(Boolean).join(" · ") + staleHint;
 
   return (
-    <li className={styles.rowWrap}>
+    <li ref={rowRef} className={styles.rowWrap}>
       {moving && (
         <MoveToProjectModal
           session={s}
@@ -522,6 +528,71 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     setReviewExcluded,
     setProject,
   } = useSessionsList();
+  const rowRefs = useRef(new Map<string, HTMLLIElement>());
+  const previousRowTops = useRef(new Map<string, number>());
+  const reorderTimers = useRef<number[]>([]);
+
+  const setRowRef = useCallback(
+    (id: string) => (el: HTMLLIElement | null) => {
+      if (el) rowRefs.current.set(id, el);
+      else rowRefs.current.delete(id);
+    },
+    [],
+  );
+
+  const clearReorderTimers = useCallback(() => {
+    for (const id of reorderTimers.current) window.clearTimeout(id);
+    reorderTimers.current = [];
+  }, []);
+
+  useEffect(() => clearReorderTimers, [clearReorderTimers]);
+
+  // Animate rows to their new visual position when the server refresh changes the session order
+  // (#607). This is FLIP: remember each row's previous top, let React commit the new order, then
+  // temporarily translate moved rows back to their old top and transition transform to zero.
+  // Sort/pagination semantics stay owned by useSessionsList and the API; this is only motion.
+  useLayoutEffect(() => {
+    const nextTops = new Map<string, number>();
+    for (const s of sessions) {
+      const el = rowRefs.current.get(s.id);
+      if (el) nextTops.set(s.id, el.getBoundingClientRect().top);
+    }
+
+    const prevTops = previousRowTops.current;
+    previousRowTops.current = nextTops;
+    if (prevTops.size === 0) return; // initial load
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    for (const timer of reorderTimers.current) window.clearTimeout(timer);
+    reorderTimers.current = [];
+
+    for (const s of sessions) {
+      const el = rowRefs.current.get(s.id);
+      const before = prevTops.get(s.id);
+      const after = nextTops.get(s.id);
+      if (!el || before == null || after == null) continue;
+      const delta = before - after;
+      if (Math.abs(delta) < ROW_REORDER_MIN_DELTA_PX) continue;
+
+      el.classList.remove(styles.rowReordering);
+      el.style.transition = "none";
+      el.style.transform = `translateY(${delta}px)`;
+      el.dataset.reorderMotion = "true";
+      el.classList.add(styles.rowReordering);
+      void el.offsetHeight; // force the inverted position before transitioning to zero
+      requestAnimationFrame(() => {
+        el.style.transition = `transform ${ROW_REORDER_ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`;
+        el.style.transform = "translateY(0)";
+      });
+      const cleanupTimer = window.setTimeout(() => {
+        el.classList.remove(styles.rowReordering);
+        el.style.removeProperty("transition");
+        el.style.removeProperty("transform");
+        delete el.dataset.reorderMotion;
+      }, ROW_REORDER_ANIM_MS + 100);
+      reorderTimers.current.push(cleanupTimer);
+    }
+  }, [sessions]);
 
   // The currently open session (#551) — gates the per-row auto-scroll marquee so only the
   // selected row animates. Matches the row link route `/s/:engine/:id`.
@@ -623,6 +694,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
               onSetProject={setProject}
               onNavigate={onNavigate}
+              rowRef={setRowRef(s.id)}
             />
           ))}
           {hasMore && (

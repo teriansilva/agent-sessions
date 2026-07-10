@@ -63,6 +63,10 @@
   align-items: stretch;
   border-bottom: 1px solid var(--border-subtle);
 }
+.rowReordering {
+  z-index: 2;
+  will-change: transform;
+}
 .rowWrap:hover {
   background: var(--row-hover);
 }
@@ -306,6 +310,10 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .rowReordering {
+    transition: none !important;
+    transform: none !important;
+  }
   .marqScroll {
     animation: none;
     transform: none;
