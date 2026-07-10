@@ -85,6 +85,54 @@ def _clean_draft_payload(payload: object) -> dict | None:
     return {"text": text, "attachments": attachments, "updated_at": time.time()}
 
 
+def _scope_filter():
+    """The session-list membership scope (#567) — active + #465 root-scope + visibility —
+    as ONE predicate shared by ``GET /api/sessions`` (the list) and ``GET /api/projects``
+    (the per-project count badge). They drifted apart in #465, which scoped the list but
+    never the count, so the Settings badge counted the full unfiltered scan (live + archived,
+    no roots, no exclusions, no visibility) and overstated a project by ~100×. Sharing this
+    predicate is what keeps ``session_count == /api/sessions?project=… total`` from silently
+    diverging again.
+
+    Reads the per-request prefs once and returns ``keep(cwd, project_ref, *, archived,
+    want_archived)`` over the minimal fields, so the count path need not build a full row.
+    """
+    # Visibility (#174/#335, refined by #361): folder visibility governs UNASSIGNED
+    # folder-groups only. Once a session resolves to a project entity it is visible iff the
+    # project is not archived — archiving the project is the hide mechanism, so a hidden
+    # folder never hides an adopted project's sessions.
+    mode = prefs.get_projects_mode()
+    hidden = set(prefs.get_projects_hidden())
+    included = set(prefs.get_projects_included())
+    # Root scope (#465) + explicit-curation precedence (#520): a HARD scope. Empty roots ⇒
+    # no filtering. Precedence exclusion > curation > roots: an excluded prefix always drops
+    # the row; otherwise an adopted project (or, in `included` mode, an allowlisted cwd) stays
+    # even outside a root.
+    roots = project_dirs.effective_roots()
+    exclusions = prefs.get_folder_exclusions()
+
+    def _in_scope(cwd: str, project_ref: dict) -> bool:
+        if not roots:
+            return True
+        curated = project_ref["kind"] == "project" or (mode == "included" and cwd in included)
+        return project_dirs.in_scope(cwd, roots=roots, exclusions=exclusions, curated=curated)
+
+    def _visible(cwd: str, project_ref: dict) -> bool:
+        # Project-resolved rows are always visible: hiding members happens through the
+        # per-session archived flag (project archive, #361 Phase 2), never by dropping live
+        # rows — a row must stay reachable in exactly one of the active/archived views.
+        if project_ref["kind"] == "project":
+            return True
+        return prefs.project_visible(cwd, mode=mode, hidden=hidden, included=included)
+
+    def keep(cwd: str, project_ref: dict, *, archived: bool, want_archived: bool = False) -> bool:
+        return (
+            archived == want_archived and _in_scope(cwd, project_ref) and _visible(cwd, project_ref)
+        )
+
+    return keep
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(s, m: metadata.SessionMeta, project_index: dict[str, projects.Project]) -> dict:
         key = engines.session_key(s)
@@ -229,50 +277,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         )
         project_index = projects.load()
 
-        # Visibility (#174/#335, refined by #361): folder visibility governs UNASSIGNED
-        # folder-groups only. Once a session resolves to a project entity it is visible
-        # iff the project is not archived — the user created the project explicitly, so
-        # a hidden folder never hides an adopted project's sessions (archiving the
-        # project is the hide mechanism). Stripped server-side BEFORE pagination +
-        # facets, so totals/next_offset/facets all describe the visible-to-the-user set.
-        mode = prefs.get_projects_mode()
-        hidden = set(prefs.get_projects_hidden())
-        included = set(prefs.get_projects_included())
-
-        # Root scope (#465) + explicit-curation precedence (#520): a HARD scope applied BEFORE
-        # visibility, facets, and pagination, so the list + facets both describe the in-scope set.
-        # Empty roots ⇒ no filtering (today's behaviour). With roots set the precedence is
-        # exclusion > curation > roots (see project_dirs.in_scope): an excluded prefix always
-        # drops the row; otherwise an adopted project (or, in `included` mode, an allowlisted
-        # cwd) stays even outside a root, so the user never loses a session they explicitly
-        # curated. Unknown/unadopted folders still obey the roots.
-        roots = project_dirs.effective_roots()
-        exclusions = prefs.get_folder_exclusions()
-
-        def _in_scope(row: dict) -> bool:
-            if not roots:
-                return True
-            curated = row["project"]["kind"] == "project" or (
-                mode == "included" and row["cwd"] in included
-            )
-            return project_dirs.in_scope(
-                row["cwd"], roots=roots, exclusions=exclusions, curated=curated
-            )
-
-        def _visible(row: dict) -> bool:
-            # Project-resolved rows are always visible: hiding members happens through
-            # the per-session archived flag (project archive, #361 Phase 2, archives
-            # every member), never by dropping live rows — a row must always be
-            # reachable in exactly one of the active/archived views.
-            if row["project"]["kind"] == "project":
-                return True
-            return prefs.project_visible(row["cwd"], mode=mode, hidden=hidden, included=included)
-
+        # Membership scope (#567): active + #465 root-scope + visibility, via THE shared
+        # predicate the per-project count badge (`/api/projects`) also uses — so the badge
+        # can never again overstate what the list shows. Stripped server-side BEFORE
+        # pagination + facets, so totals/next_offset/facets all describe the visible set.
+        keep = _scope_filter()
         scoped = [
             row
             for s in sessions
             for row in [_row(s, _meta_for(s), project_index)]
-            if row["archived"] == archived and _in_scope(row) and _visible(row)
+            if keep(row["cwd"], row["project"], archived=row["archived"], want_archived=archived)
         ]
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
@@ -381,13 +395,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project_index = projects.load()
         meta_index = metadata.load()
         aliases = metadata.load_aliases()
+        # Count EXACTLY what the list shows for the project (#567): resolve membership the
+        # same way `_row` does (legacy `project_alias` fallback included) and apply the shared
+        # list scope, so `session_count == /api/sessions?project=… total`. Previously this
+        # counted the full unfiltered scan (live + archived, no roots/exclusions/visibility)
+        # → the Settings badge overstated a project by ~100×.
+        keep = _scope_filter()
         counts: dict[str, int] = {}
         for s in engines.scan_all():
             key = engines.session_key(s)
             phys = engines.physical_key(key, aliases)
             m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-            ref = projects.resolve(s.cwd, m.project_id, project_index)
-            if ref.kind == "project":
+            ref = projects.resolve(s.cwd, m.project_id, project_index, alias=m.project_alias)
+            if ref.kind != "project":
+                continue
+            archived = m.archived if m.archived is not None else s.archived
+            if keep(s.cwd, ref.as_dict(), archived=archived):
                 counts[ref.id] = counts.get(ref.id, 0) + 1
         out = [
             {**p.as_dict(), "session_count": counts.get(p.id, 0)}

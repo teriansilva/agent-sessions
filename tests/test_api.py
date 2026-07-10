@@ -308,6 +308,56 @@ def test_default_filter_respects_included_mode(auth_cfg, fake_jsonl):
 # ---- projects picker ----------------------------------------------------------
 
 
+# ---- #567: per-project count == filtered-list total (shared scope) -------------------
+
+
+def test_project_session_count_matches_filtered_list(auth_cfg, fake_jsonl):
+    """#567: the Settings per-project ``session_count`` must equal the list's ``total`` for
+    that project — the badge and the list share ONE scope (active + in-scope + visible).
+    Before the fix the count also folded in archived sessions, overstating the badge."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Adopt repo/a → its two live sessions (1111, 2222) resolve to the entity.
+    a = c.post("/api/projects", json={"name": "Repo A", "folders": [_REPO_A]}, headers=hdr).json()[
+        "id"
+    ]
+    # Archive one member: it must drop from BOTH the list and the badge count.
+    r = c.post("/api/sessions/claude:11111111-1111-1111-1111-111111111111/archive", headers=hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True
+
+    projs = {p["id"]: p for p in c.get("/api/projects").json()["projects"]}
+    assert projs[a]["session_count"] == 1  # only the live member — not the archived one
+
+    # The invariant that pins them together: every project's badge == its list total.
+    for pid, p in projs.items():
+        total = c.get(f"/api/sessions?project={pid}&limit=200").json()["total"]
+        assert p["session_count"] == total, (pid, p["name"])
+
+
+def test_project_count_drops_excluded_prefix_like_the_list(auth_cfg, fake_jsonl):
+    """An excluded prefix drops an adopted project's sessions from the list; the badge count
+    must drop with it — exclusion > curation, same as the list (#567/#465)."""
+    import agent_sessions.routes.sessions as sessions_mod
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    a = c.post("/api/projects", json={"name": "Repo A", "folders": [_REPO_A]}, headers=hdr).json()[
+        "id"
+    ]
+    prefs.set_folder_exclusions([_REPO_A])
+    orig = sessions_mod.project_dirs.effective_roots
+    sessions_mod.project_dirs.effective_roots = lambda: ["/home/user/claude"]
+    try:
+        projs = {p["id"]: p for p in c.get("/api/projects").json()["projects"]}
+        total = c.get(f"/api/sessions?project={a}&limit=200").json()["total"]
+    finally:
+        sessions_mod.project_dirs.effective_roots = orig
+    assert projs[a]["session_count"] == total == 0  # excluded → dropped from both
+
+
 def test_projects_endpoint(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
