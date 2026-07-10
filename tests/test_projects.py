@@ -465,6 +465,28 @@ def test_hiding_folder_never_removes_it_from_its_project(auth_cfg, fake_jsonl):
     assert any(r["cwd"] == _TMP_OTHER and r["project"]["id"] == pid for r in rows)
 
 
+def test_included_mode_adopted_folder_keeps_sessions_but_not_the_picker(auth_cfg, fake_jsonl):
+    """Direction 3 (#615): the same split holds under the `included` allowlist, not just
+    the `all` denylist. An adopted folder absent from `projects_included` still resolves
+    its sessions (``_visible`` exempts ``kind == "project"`` rows regardless of mode), yet
+    is still withheld as a LAUNCH location. Adoption is membership, never auto-inclusion —
+    the two halves are separate controls and must not be collapsed into one."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post(
+        "/api/projects", json={"name": "Curated", "folders": [_TMP_OTHER]}, headers=h
+    ).json()["id"]
+    # Curated allowlist that deliberately omits the adopted folder.
+    prefs.set_projects_mode("included")
+    prefs.set_projects_included([_REPO_A])
+    rows = c.get("/api/sessions?limit=50").json()["sessions"]
+    assert any(r["cwd"] == _TMP_OTHER and r["project"]["id"] == pid for r in rows)
+    visible = {f["cwd"] for f in c.get("/api/folders?visible=1").json()["folders"]}
+    assert _TMP_OTHER not in visible
+    assert _REPO_A in visible
+
+
 # ---- zero entities: today's behaviour, exactly ---------------------------------------
 
 

@@ -959,13 +959,22 @@ function FolderDiscoveryCard() {
 }
 
 /** One project row in the Settings → Session overview card (#174). Indented by tree depth,
- *  inverse checkbox semantics (checked = visible; unchecked = hidden everywhere), and the
- *  custom name opens a rename modal on click instead of an inline input. */
+ *  inverse checkbox semantics, and the custom name opens a rename modal on click instead of
+ *  an inline input.
+ *
+ *  #615: what unticking *does* depends on whether a project has adopted the folder, so the
+ *  checkbox label says which. `projects_hidden` withholds a folder as a LAUNCH location for
+ *  every row; for an UNADOPTED folder it additionally drops its sessions from the sidebar,
+ *  the filter, and the map. An adopted folder's sessions are exempt server-side
+ *  (`sessions.py` `_visible`) — a row must stay reachable in exactly one of the active /
+ *  archived views, so hiding those is the project *archive*'s job, not this checkbox's.
+ *  Pinned in both directions + both modes by `tests/test_projects.py`. */
 function ProjectRow({
   cwd,
   depth,
   stale,
   hidden,
+  adopted,
   currentName,
   onToggleHidden,
   onOpenRename,
@@ -974,6 +983,7 @@ function ProjectRow({
   depth: number;
   stale: boolean;
   hidden: boolean;
+  adopted: boolean;
   currentName: string;
   onToggleHidden: (cwd: string, hidden: boolean) => void;
   onOpenRename: (cwd: string, trigger: HTMLElement) => void;
@@ -990,7 +1000,11 @@ function ProjectRow({
         type="checkbox"
         checked={!hidden}
         onChange={(e) => onToggleHidden(cwd, !e.target.checked)}
-        aria-label={`Show ${shortCwd(cwd)} in the sidebar, filter, and overview`}
+        aria-label={
+          adopted
+            ? `Offer ${shortCwd(cwd)} as a launch location`
+            : `Show ${shortCwd(cwd)} in the sidebar, filter, and overview`
+        }
       />
       <span className={styles.excludeMeta}>
         {/* Click anywhere on the name to open the rename modal. Path is shown as a subtitle
@@ -1018,6 +1032,7 @@ function OverviewGroup({
   name,
   color,
   rows,
+  adopted,
   isVisible,
   projectNames,
   onToggleHidden,
@@ -1026,6 +1041,8 @@ function OverviewGroup({
   name: string;
   color?: string;
   rows: { cwd: string; depth: number; stale: boolean }[];
+  /** False for the synthetic "Unassigned" group — every other group IS a project entity. */
+  adopted: boolean;
   isVisible: (cwd: string) => boolean;
   projectNames: Record<string, string>;
   onToggleHidden: (cwd: string, hidden: boolean) => void;
@@ -1054,6 +1071,7 @@ function OverviewGroup({
             depth={r.depth}
             stale={r.stale}
             hidden={!isVisible(r.cwd)}
+            adopted={adopted}
             currentName={projectNames[r.cwd] ?? ""}
             onToggleHidden={onToggleHidden}
             onOpenRename={onOpenRename}
@@ -1066,8 +1084,19 @@ function OverviewGroup({
 
 /** Session overview (#174, reworked #465): discovered launch folders grouped under their owning
  *  project entity (#361), with an "Unassigned" group for folders no entity owns. Each folder keeps
- *  its inverse-checkbox visibility toggle + rename; hide is GLOBAL (sidebar list, project filter,
- *  new-session picker, and the map). The all/included mode radios are preserved. */
+ *  its inverse-checkbox visibility toggle + rename. The all/included mode radios are preserved.
+ *
+ *  What hiding a folder does depends on adoption (#615). For EVERY folder it withholds the folder
+ *  as a launch location (`/api/folders?visible=1` has no entity carve-out). For an UNADOPTED
+ *  folder it additionally drops its sessions from the sidebar list, the project filter, and the
+ *  map. An ADOPTED folder's sessions survive in the sidebar and the project filter (`sessions.py`
+ *  `_visible` returns True for `kind == "project"` rows), and on the map only under `project`
+ *  grouping, which mirrors that exemption via `keepsHiddenCwd` — under `folder`/`agent` grouping
+ *  every cluster is cwd- or engine-keyed, so a hidden cwd hides its sessions there regardless of
+ *  adoption (#424). A row must stay reachable in exactly one of the active/archived views, so
+ *  hiding an adopted folder's sessions is the project ARCHIVE's job. Pinned in both directions
+ *  and under both modes by
+ *  `tests/test_projects.py`, and on the client by `overviewGraph.test.ts`. */
 function OverviewCard() {
   const {
     hiddenProjects,
@@ -1191,10 +1220,20 @@ function OverviewCard() {
           Only included
         </label>
       </div>
+      {/* #615: state what unticking actually does, per row kind. Unticking always withholds a
+       *  folder as a launch location; only for an UNADOPTED folder does it also drop its
+       *  sessions from the sidebar/filter/map. A project's sessions stay visible either way —
+       *  archive the project to hide those. The old copy promised "hide it everywhere", which
+       *  was never true for adopted folders. */}
       <p className={styles.hint}>
         {curated
-          ? "Folders are grouped under their owning project. Only ticked folders show — sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically). Click a name for a custom display name."
-          : "Folders are grouped under their owning project. Untick a folder to hide it everywhere — sidebar, filter, new-session picker, and the overview map. Click a name to give it a custom display name. Filtering still uses the full path under the hood."}
+          ? "Folders are grouped under their owning project. Only ticked folders are offered as launch locations; an unticked, unassigned folder also drops out of the sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically)."
+          : "Folders are grouped under their owning project. Unticking a folder stops it being offered as a launch location; if no project has adopted it, its sessions also disappear from the sidebar, filter, and overview map. Filtering still uses the full path under the hood."}
+      </p>
+      <p className={styles.hint}>
+        A project&rsquo;s sessions stay in the sidebar and filter even with its folders unticked —
+        archive the project to hide those. Click a folder&rsquo;s name to give it a custom display
+        name.
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>
@@ -1210,6 +1249,7 @@ function OverviewCard() {
             name={g.name}
             color={g.color}
             rows={g.rows}
+            adopted={g.key !== "__unassigned__"}
             isVisible={isVisible}
             projectNames={projectNames}
             onToggleHidden={(cwd, hidden) => setProjectVisible(cwd, !hidden)}

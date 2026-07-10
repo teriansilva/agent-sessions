@@ -306,8 +306,14 @@ export interface AppConfig {
   session_list_order?: "recent_activity" | "created_at" | string;
   /** Overview (#144): expanded cluster cwds (default collapsed). */
   overview_expanded?: string[];
-  /** Cwds hidden globally from the UI (#174): sidebar list, project filter, new-session
-   *  picker, and the overview map. The legacy `overview_excluded` alias is retired
+  /** Hidden cwds (#174). NOT a global hide (#615). For every folder it withholds the folder as
+   *  a launch location (the new-session picker). For a folder no project has adopted it also
+   *  drops that folder's sessions from the sidebar list and the overview map. A folder adopted
+   *  by a project entity keeps its sessions in the sidebar — the server's `_visible` exempts
+   *  `kind: "project"` rows — and on the map only under `project` grouping (`folder`/`agent`
+   *  grouping is cwd/engine-keyed, so a hidden cwd hides its sessions there, #424). Archive the
+   *  project to hide an adopted folder's sessions. Nothing is removed from the project filter,
+   *  which lists entities, not folders (#445). The legacy `overview_excluded` alias is retired
    *  (#357 Phase 2) — the server migrates old on-disk values into this key. */
   projects_hidden?: string[];
   /** Project-visibility mode (#335): "all" (legacy denylist, default) or "included" (curated

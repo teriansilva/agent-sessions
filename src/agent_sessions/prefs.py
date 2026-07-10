@@ -259,9 +259,23 @@ def set_overview_expanded(cwds: object, path: Path | None = None) -> list[str]:
 
 
 def get_projects_hidden(path: Path | None = None) -> list[str]:
-    """Project cwds globally hidden from the UI (#174). Hide is broader than the retired
-    `overview_excluded` (#144): an unchecked project also disappears from the sidebar list,
-    the project filter dropdown, and the new-session picker — not just the overview map.
+    """Hidden project cwds (#174). Hide is broader than the retired `overview_excluded`
+    (#144): an unchecked folder also disappears from the new-session picker, not just the
+    overview map.
+
+    It is NOT global, and never was for adopted folders (#615). ``routes/sessions.py``
+    ``_visible`` exempts rows whose project ``kind == "project"``, so a folder adopted by a
+    project entity keeps its sessions in the sidebar even while listed here; hiding those is
+    the project ARCHIVE's job, since a row must stay reachable in exactly one of the
+    active/archived views. This list withholds the folder as a LAUNCH location for every
+    folder, and additionally hides the sessions of UNADOPTED ones. Both halves hold under
+    `all` and `included` mode alike (`project_visible` is only consulted for unadopted rows);
+    pinned by ``tests/test_projects.py``.
+
+    It does NOT remove anything from the project FILTER, which lists project entities rather
+    than folder paths (#445): every non-archived entity is offered regardless, and an adopted
+    folder's sessions keep feeding its count. Hiding an unadopted folder only drops its
+    sessions from the synthetic "Default" catch-all's count.
 
     The legacy `overview_excluded` read-fallback is gone (#357 Phase 2): a one-time
     union-merge into `projects_hidden` runs at app startup instead (see

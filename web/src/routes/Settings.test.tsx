@@ -628,6 +628,43 @@ test("Session overview: folders are grouped under their owning entity + Unassign
   await flushFetches();
 });
 
+test("Session overview: the checkbox label states what unticking does, per row kind (#615)", async () => {
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
+      { cwd: "/home/u/alpha", label: "Alpha" },
+      { cwd: "/home/u/loose", label: "Loose" },
+    ],
+  });
+  vi.mocked(api.projectEntities).mockResolvedValue({
+    projects: [
+      {
+        id: "p-1",
+        name: "Alpha Project",
+        color: "#c02020",
+        folders: ["/home/u/alpha"],
+        default_folder: "/home/u/alpha",
+        archived: false,
+        created_at: 0,
+        session_count: 1,
+      },
+    ],
+  });
+  renderSettings("dark", "#ffb000", "/settings/projects");
+  // Adopted: unticking only withholds the folder as a launch location — the project's
+  // sessions are exempt server-side (`sessions.py` `_visible`), so the old "hide it
+  // everywhere" promise never held here.
+  expect(
+    await screen.findByRole("checkbox", { name: "Offer ~/alpha as a launch location" }),
+  ).toBeChecked();
+  // Unadopted: unticking really does drop it from the sidebar/filter/overview too.
+  expect(
+    screen.getByRole("checkbox", { name: "Show ~/loose in the sidebar, filter, and overview" }),
+  ).toBeChecked();
+  // And the card no longer claims a blanket "hide it everywhere".
+  expect(screen.queryByText(/hide it everywhere/i)).not.toBeInTheDocument();
+  await flushFetches();
+});
+
 // ---- Folder discovery card (#465) ----
 
 test("Folder discovery: shows configured roots/exclusions and removing a root persists (#465)", async () => {

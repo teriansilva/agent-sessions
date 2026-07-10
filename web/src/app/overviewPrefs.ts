@@ -6,10 +6,16 @@ import type { GroupBy } from "../lib/overviewGraph";
  *  the SAME state — a change in one is visible in the other immediately, without a reload. */
 export interface OverviewPrefs {
   expanded: Set<string>;
-  /** Cwds globally hidden from the UI (#174). Was named `excluded` and scoped to the
-   *  overview map (#144); the same set now also drops sessions from the sidebar list,
-   *  the filter dropdown, and the new-session picker. `excluded` is kept as a read-only
-   *  alias for back-compat in existing call sites that haven't been renamed. */
+  /** Hidden cwds (#174). Was named `excluded` and scoped to the overview map (#144); the set
+   *  now also withholds a folder as a launch location and, for an UNADOPTED folder, drops its
+   *  sessions from the sidebar list and filter dropdown.
+   *
+   *  A folder adopted by a project entity keeps its sessions in the sidebar, the project filter,
+   *  and the `project`-grouped map (#615, mirroring the server's `_visible` exemption) — archive
+   *  the project to hide those. It does NOT keep them everywhere: under `folder`/`agent` grouping
+   *  every cluster is cwd- or engine-keyed, so a hidden cwd hides its sessions there regardless of
+   *  adoption (#424, `keepsHiddenCwd`). `excluded` is kept as a read-only alias for back-compat in
+   *  call sites that haven't been renamed. */
   hiddenProjects: Set<string>;
   /** @deprecated Use `hiddenProjects` (the new name; same data). */
   excluded: Set<string>;

@@ -264,7 +264,10 @@ def register(
                 # Session Overview view-state (#144): expanded cluster cwds (default collapsed).
                 # Per-user.
                 "overview_expanded": prefs.get_overview_expanded(),
-                # Project cwds hidden globally (#174): sidebar list + filter + map + picker.
+                # Hidden project cwds (#174) — NOT a global hide (#615). Withholds every folder
+                # as a launch location (picker); additionally hides an UNADOPTED folder's
+                # sessions (sidebar + map). An adopted folder's sessions are exempt — archive
+                # the project instead. See `prefs.get_projects_hidden` for the full contract.
                 # The legacy `overview_excluded` alias is retired (#357 Phase 2) — old on-disk
                 # values are union-merged into `projects_hidden` once at startup.
                 "projects_hidden": prefs.get_projects_hidden(),
