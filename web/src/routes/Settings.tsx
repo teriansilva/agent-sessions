@@ -39,7 +39,6 @@ import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type {
   EngineInfo,
-  Folder,
   ProjectEntity,
   SystemInfo,
   TwoFactorEnrollment,
@@ -1273,72 +1272,6 @@ function OverviewCard() {
   );
 }
 
-/** Default project (#335 Phase 2; surfaced here in #357 Phase 2 — the pref existed but had
- *  no Settings UI, only the "set as default" shortcut on New Session). Picks the preferred
- *  new-session start directory; "" clears it. Mirrors the new-session picker's pickable set
- *  (visible projects only); a stored value that's no longer pickable is still shown — and
- *  clearable — rather than silently hidden. Optimistic write with rollback, like the
- *  compose-default control. */
-function DefaultProjectCard() {
-  const config = useConfig();
-  const { projectNames } = useOverviewPrefs();
-  // #470: re-run the pickable-set fetch when the discovery scope changes (see useDiscoveryKey).
-  const discoveryKey = useDiscoveryKey();
-  const [projects, setProjects] = useState<Folder[] | null>(null);
-  const configDefault = config?.default_project ?? "";
-  const [choice, setChoice] = useState(configDefault);
-  const [syncedDefault, setSyncedDefault] = useState(configDefault);
-  if (configDefault !== syncedDefault) {
-    setSyncedDefault(configDefault);
-    setChoice(configDefault);
-  }
-
-  useEffect(() => {
-    let alive = true;
-    api
-      // visible: mirror the new-session picker (#335) — hidden projects aren't offered.
-      .folders({ visible: true })
-      .then((d) => alive && setProjects(d.folders))
-      .catch(() => alive && setProjects([])); // discovery failed → empty, not a dead control
-    return () => {
-      alive = false;
-    };
-  }, [discoveryKey]);
-
-  const choose = (cwd: string) => {
-    const prev = choice;
-    setChoice(cwd);
-    api.setPrefs({ default_project: cwd }).catch(() => setChoice(prev));
-  };
-
-  const label = (cwd: string) => projectNames[cwd] ?? shortCwd(cwd);
-  const stale = choice !== "" && projects !== null && !projects.some((p) => p.cwd === choice);
-  return (
-    <section className={styles.section} aria-labelledby="default-project-h">
-      <h2 id="default-project-h">Default project</h2>
-      <p className={styles.hint}>
-        Pre-selected as the start directory when you open a new session. When it&rsquo;s no
-        longer available, the new-session picker silently falls back to the first project.
-      </p>
-      <select
-        className={styles.defaultProject}
-        aria-label="Default project"
-        value={choice}
-        disabled={projects === null}
-        onChange={(e) => choose(e.target.value)}
-      >
-        <option value="">No default — first project</option>
-        {(projects ?? []).map((p) => (
-          <option key={p.cwd} value={p.cwd}>
-            {label(p.cwd)}
-          </option>
-        ))}
-        {stale && <option value={choice}>{label(choice)} (not currently active)</option>}
-      </select>
-    </section>
-  );
-}
-
 /** Maintenance (#142): bulk-archive sessions older than N hours. Reversible (archived
  *  sessions can be unarchived); a two-step confirm guards the bulk action. */
 function CleanupCard() {
@@ -1778,7 +1711,6 @@ export function Settings() {
             {/* Folder discovery scope + exclusions (#465), above the (now entity-grouped) overview. */}
             <FolderDiscoveryCard />
             <OverviewCard />
-            <DefaultProjectCard />
           </>
         )}
 

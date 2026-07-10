@@ -178,3 +178,44 @@ test("no Project select when there are no entities, but New project is offered (
   expect(await screen.findByRole("button", { name: /new project/i })).toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
 });
+
+// ---- Starred default project (#615 Phase 2) -------------------------------------------
+//
+// Before this pref, the pre-selected project was `entities[0]` — alphabetically first (the
+// server sorts by name) and unsettable. `config.default_project_id` names it explicitly.
+// `api.projectEntities()` is filtered to unarchived here, so an archived starred project is
+// simply absent from `entities` — the same code path as a deleted one.
+
+test("the starred project is pre-selected, not the alphabetically-first one (#615)", async () => {
+  renderLanding(["claude"], { default_project_id: "p-b" });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-b");
+  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b");
+});
+
+test("a starred project that no longer exists falls back to the first project (#615)", async () => {
+  // Deleted, or archived — `projectEntities()` drops archived, so both look like this.
+  renderLanding(["claude"], { default_project_id: "p-gone" });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-a");
+  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/a");
+});
+
+test("an archived starred project falls back — it is absent from the entity list (#615)", async () => {
+  mockEntities.mockResolvedValue({ projects: [ENTITIES[1]] }); // only Beta survives the archive
+  renderLanding(["claude"], { default_project_id: "p-a" });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-b");
+});
+
+test("a starred project with no default folder falls through to the legacy cwd (#615)", async () => {
+  // `default_folder: ""` is the #448 back-compat shape for a folderless project. "" is a MISSING
+  // folder, not a chosen one — so `||`, not `??`, or the picker opens on nothing.
+  mockEntities.mockResolvedValue({
+    projects: [{ ...ENTITIES[0], default_folder: "" }, ENTITIES[1]],
+  });
+  renderLanding(["claude"], { default_project_id: "p-a", default_project: "/legacy" });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-a"); // still starred…
+  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/legacy");
+});

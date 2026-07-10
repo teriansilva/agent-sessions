@@ -259,7 +259,7 @@ test("the active panel is a labelled tabpanel wired to its tab", async () => {
 // zero-behavioural-change guarantee — components moved, not changed).
 test.each([
   ["appearance", ["Appearance"]],
-  ["projects", ["Projects", "Session overview", "Default project"]],
+  ["projects", ["Projects", "Session overview"]],
   ["ai-review", ["AI endpoint", "Session review", "Auto-sort projects"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["system", ["Connected agents", "System", "Updates"]],
@@ -768,34 +768,21 @@ function renderProjectsTab(config: Partial<AppConfig> = {}) {
   );
 }
 
-test("Default project: lists the pickable (visible) projects and persists a choice", async () => {
-  vi.mocked(api.folders).mockResolvedValue({
-    folders: [
-      { cwd: "/home/u/alpha", label: "Alpha" },
-      { cwd: "/home/u/beta", label: "Beta" },
-    ],
-  });
-  renderProjectsTab();
-  const select = await screen.findByRole("combobox", { name: "Default project" });
-  await waitFor(() => expect(select).toBeEnabled());
-  // The picker mirrors the new-session picker's pickable set (#335): visible projects only.
-  expect(api.folders).toHaveBeenCalledWith({ visible: true });
-  expect(select).toHaveValue(""); // no default stored → the "no default" option
-  await userEvent.selectOptions(select, "/home/u/beta");
-  expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "/home/u/beta" });
-  expect(select).toHaveValue("/home/u/beta");
-});
-
-test("Default project: seeds from config.default_project and '' clears it", async () => {
+test("Default project: the card is gone — the star in Projects owns it now (#615 Phase 2)", async () => {
   vi.mocked(api.folders).mockResolvedValue({
     folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
   });
   renderProjectsTab({ default_project: "/home/u/alpha" });
-  const select = await screen.findByRole("combobox", { name: "Default project" });
-  await waitFor(() => expect(select).toHaveValue("/home/u/alpha"));
-  await userEvent.selectOptions(select, "");
-  expect(api.setPrefs).toHaveBeenCalledWith({ default_project: "" });
-  expect(select).toHaveValue("");
+  await screen.findByRole("heading", { name: "Projects" });
+  // The cwd-valued picker is retired: `entity.default_folder` (#448) shadowed it, and the
+  // project it pre-selected was `entities[0]` — alphabetical and unsettable.
+  expect(screen.queryByRole("combobox", { name: "Default project" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Default project" })).not.toBeInTheDocument();
+  // Nothing writes the legacy pref from Settings any more.
+  expect(api.setPrefs).not.toHaveBeenCalledWith(
+    expect.objectContaining({ default_project: expect.anything() }),
+  );
+  await flushFetches();
 });
 
 // ---- Discovery-scope live refresh (#470) ----
@@ -826,17 +813,19 @@ const baseProjectsCfg: AppConfig = {
   two_factor_enabled: false,
 };
 
-test("Session overview + Default project refetch /api/folders when the discovery scope changes (#470)", async () => {
+test("Session overview refetches /api/folders when the discovery scope changes (#470)", async () => {
   const { rerender } = render(projectsTree({ ...baseProjectsCfg, project_roots: [] }));
   await screen.findByRole("heading", { name: /session overview/i });
   await flushFetches();
-  // Mount: OverviewCard fetches all folders, DefaultProjectCard the visible set, and the
-  // ProjectsManager card (out of scope for #470 — mount-only) its picker list.
+  // Mount: OverviewCard fetches all folders; the ProjectsManager card (out of scope for #470 —
+  // mount-only) fetches its adoption list. The DefaultProjectCard's visible-set fetch is gone
+  // with the card (#615 Phase 2), so this is 2, not 3.
   const before = vi.mocked(api.folders).mock.calls.length;
-  expect(before).toBe(3);
-  // A roots change lands in config (FolderDiscoveryCard save → config refresh) → both refetch.
+  expect(before).toBe(2);
+  // A roots change lands in config (FolderDiscoveryCard save → config refresh) → OverviewCard
+  // refetches. Only it keys on the discovery scope now.
   rerender(projectsTree({ ...baseProjectsCfg, project_roots: ["/home/u/code"] }));
-  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2));
+  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 1));
   // …and an exclusions change refetches again.
   rerender(
     projectsTree({
@@ -845,88 +834,8 @@ test("Session overview + Default project refetch /api/folders when the discovery
       folder_exclusions: ["/home/u/code/scratch"],
     }),
   );
-  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 4));
+  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2));
   await flushFetches();
-});
-
-test("unrelated config changes do NOT refetch /api/folders (#470)", async () => {
-  const { rerender } = render(projectsTree(baseProjectsCfg));
-  await screen.findByRole("heading", { name: /session overview/i });
-  await flushFetches();
-  const before = vi.mocked(api.folders).mock.calls.length;
-  // A non-discovery config update (e.g. a new default project) must not churn discovery.
-  rerender(projectsTree({ ...baseProjectsCfg, default_project: "/home/u/alpha" }));
-  await flushFetches();
-  expect(vi.mocked(api.folders).mock.calls.length).toBe(before);
-});
-
-test("Folder discovery: saving a root or exclusion refreshes /api/config (#470)", async () => {
-  const refresh = vi.fn();
-  render(
-    <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
-        <ConfigRefreshCtx.Provider value={refresh}>
-          <ConfigCtx.Provider
-            value={{
-              ...baseProjectsCfg,
-              project_roots: ["/home/u/code"],
-              folder_exclusions: ["/home/u/code/scratch"],
-            }}
-          >
-            <OverviewPrefsProvider>
-              <Routes>
-                <Route path="/settings/:tab" element={<Settings />} />
-              </Routes>
-            </OverviewPrefsProvider>
-          </ConfigCtx.Provider>
-        </ConfigRefreshCtx.Provider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>,
-  );
-  // Committing a roots change refreshes config once the save resolves…
-  await userEvent.click(await screen.findByRole("button", { name: /remove root ~\/code/i }));
-  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
-  // …and so does an exclusions change.
-  await userEvent.click(
-    screen.getByRole("button", { name: /remove exclusion ~\/code\/scratch/i }),
-  );
-  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
-  await flushFetches();
-});
-
-test("Folder discovery: a failed save does NOT refresh /api/config (#470)", async () => {
-  const refresh = vi.fn();
-  vi.mocked(api.setPrefs).mockRejectedValue(new Error("boom"));
-  render(
-    <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
-        <ConfigRefreshCtx.Provider value={refresh}>
-          <ConfigCtx.Provider value={{ ...baseProjectsCfg, project_roots: ["/home/u/code"] }}>
-            <OverviewPrefsProvider>
-              <Routes>
-                <Route path="/settings/:tab" element={<Settings />} />
-              </Routes>
-            </OverviewPrefsProvider>
-          </ConfigCtx.Provider>
-        </ConfigRefreshCtx.Provider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>,
-  );
-  await userEvent.click(await screen.findByRole("button", { name: /remove root ~\/code/i }));
-  // The optimistic removal rolls back and no config refresh fires.
-  await screen.findByRole("button", { name: /remove root ~\/code/i });
-  expect(refresh).not.toHaveBeenCalled();
-  await flushFetches();
-});
-
-test("Default project: a stale stored default stays visible (and clearable), never hidden", async () => {
-  // The new-session picker silently falls back for a gone dir; the Settings control instead
-  // SHOWS the stored value so the user can see + clear it.
-  vi.mocked(api.folders).mockResolvedValue({ folders: [] });
-  renderProjectsTab({ default_project: "/home/u/gone" });
-  const select = await screen.findByRole("combobox", { name: "Default project" });
-  await waitFor(() => expect(select).toHaveValue("/home/u/gone"));
-  expect(screen.getByRole("option", { name: /not currently active/i })).toBeInTheDocument();
 });
 
 // ---- Back link (#155) ----

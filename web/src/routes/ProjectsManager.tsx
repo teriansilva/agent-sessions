@@ -4,10 +4,12 @@ import {
   Check,
   Palette,
   Pencil,
+  Star,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { api, ApiError } from "../lib/api";
 import { shortCwd } from "../lib/format";
@@ -37,12 +39,15 @@ interface RowProps {
   entity: ProjectEntity;
   /** Folders not adopted by ANY project — the only legal adoption targets (409 otherwise). */
   adoptable: string[];
+  /** This project is the operator's default for a new session (#615 Phase 2). */
+  starred: boolean;
+  onStar: (id: string) => void;
   onChanged: () => Promise<void>;
   onArchive: (id: string) => Promise<void>;
   onDelete: (entity: ProjectEntity) => Promise<void>;
 }
 
-function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowProps) {
+function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, onDelete }: RowProps) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(entity.name);
   const [showColors, setShowColors] = useState(false);
@@ -144,6 +149,26 @@ function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowPro
           {entity.session_count} session{entity.session_count === 1 ? "" : "s"}
         </span>
         <span className={styles.actions}>
+          {/* Default project (#615 Phase 2): pre-selected on New Session, and its own
+              `default_folder` supplies the start directory. Clicking the starred project
+              again clears the preference — the picker then falls back to the first project,
+              which is exactly what happened before this pref existed. `aria-pressed` (not a
+              checkbox) because it's a one-of-many toggle rendered as an icon button. */}
+          <button
+            type="button"
+            className={starred ? `${styles.iconBtn} ${styles.starOn}` : styles.iconBtn}
+            aria-label={
+              starred
+                ? `${entity.name} is the default project — clear it`
+                : `Make ${entity.name} the default project`
+            }
+            aria-pressed={starred}
+            title={starred ? "Default project" : "Make default"}
+            disabled={busy}
+            onClick={() => onStar(starred ? "" : entity.id)}
+          >
+            <Star size={14} fill={starred ? "currentColor" : "none"} />
+          </button>
           <button
             type="button"
             className={styles.iconBtn}
@@ -301,7 +326,13 @@ function EntityRow({ entity, adoptable, onChanged, onArchive, onDelete }: RowPro
 /** Settings → Projects manager (#361 Phase 3): CRUD over project entities, folder
  *  adoption, and the bulk archive/unarchive flows with their per-member report.
  *  Every mutation refetches the entity list — the server is the source of truth
- *  (session_count and folder conflicts both resolve there). */
+ *  (session_count and folder conflicts both resolve there).
+ *
+ *  Also owns the DEFAULT PROJECT (#615 Phase 2), which absorbed the old "Default project"
+ *  card. That card set a bare cwd (`default_project`) which `entity.default_folder` had
+ *  shadowed since #448 — while the project New Session actually pre-selected was
+ *  `entities[0]`, alphabetically first and unsettable. The star sets `default_project_id`,
+ *  and the project's own default folder supplies the directory. */
 export function ProjectsManagerCard() {
   const [entities, setEntities] = useState<ProjectEntity[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -312,6 +343,31 @@ export function ProjectsManagerCard() {
   const [creating, setCreating] = useState(false);
   const [picking, setPicking] = useState(false);
   const [pickReturn, setPickReturn] = useState<HTMLElement | null>(null);
+
+  // Starred (default) project id. Optimistic with rollback + a config refresh on success, the
+  // same shape as the compose/list-order controls in Settings — New Session reads it from the
+  // shared config, so the refresh is what makes the change visible without a reload.
+  const config = useConfig();
+  const refreshConfig = useConfigRefresh();
+  const configStarred = config?.default_project_id ?? "";
+  const [starred, setStarred] = useState(configStarred);
+  const [syncedStarred, setSyncedStarred] = useState(configStarred);
+  if (configStarred !== syncedStarred) {
+    setSyncedStarred(configStarred);
+    setStarred(configStarred);
+  }
+  const chooseStarred = (id: string) => {
+    const prev = starred;
+    setStarred(id);
+    setError(null);
+    api
+      .setPrefs({ default_project_id: id })
+      .then(() => refreshConfig())
+      .catch(() => {
+        setStarred(prev);
+        setError("Couldn’t save the default project.");
+      });
+  };
 
   const refresh = useCallback(
     // includeArchived: this manager is the one surface that must show archived
@@ -398,6 +454,10 @@ export function ProjectsManagerCard() {
         per session. Projects are metadata — assigning or archiving never moves session
         files.
       </p>
+      <p className={settings.hint}>
+        Star a project to pre-select it for a new session; its default folder becomes the start
+        directory. With none starred, the first project is used.
+      </p>
 
       {error && <p className={settings.err}>{error}</p>}
 
@@ -412,6 +472,8 @@ export function ProjectsManagerCard() {
               key={e.id}
               entity={e}
               adoptable={adoptable}
+              starred={e.id === starred}
+              onStar={chooseStarred}
               onChanged={refresh}
               onArchive={(id) => runBulk(id, true)}
               onDelete={remove}

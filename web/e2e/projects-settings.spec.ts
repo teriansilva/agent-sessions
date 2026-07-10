@@ -88,6 +88,44 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await expect(page.getByText(/never moves session files/i)).toBeVisible();
   });
 
+  test("star: setting the default project persists default_project_id (#615)", async ({ page }) => {
+    // Real browser, not jsdom: this is a click on an icon button whose pressed state and
+    // persisted write are the whole feature.
+    let saved: unknown = null;
+    await page.route("**/api/prefs", async (r) => {
+      saved = r.request().postDataJSON();
+      await r.fulfill({ json: saved });
+    });
+    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [SAMPLEPROJECT] } }));
+    await page.goto("/settings/projects");
+
+    const star = page.getByRole("button", { name: "Make SampleProject the default project" });
+    await expect(star).toHaveAttribute("aria-pressed", "false");
+    await star.click();
+    await expect
+      .poll(() => saved)
+      .toEqual({ default_project_id: "p-1" });
+    // The row now reads as state, not as an available action.
+    await expect(
+      page.getByRole("button", { name: "SampleProject is the default project — clear it" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // Clicking the starred project clears it — New Session falls back to the first project.
+    await page.getByRole("button", { name: "SampleProject is the default project — clear it" }).click();
+    await expect.poll(() => saved).toEqual({ default_project_id: "" });
+    await expect(
+      page.getByRole("button", { name: "Make SampleProject the default project" }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("the retired Default project card is gone (#615)", async ({ page }) => {
+    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [SAMPLEPROJECT] } }));
+    await page.goto("/settings/projects");
+    await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Default project" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Default project" })).toHaveCount(0);
+  });
+
   test("create requires a default folder (picker), POSTs it, and refetches (#448)", async ({
     page,
   }) => {

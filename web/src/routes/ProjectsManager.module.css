@@ -74,6 +74,12 @@
   color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }
+/* The starred (default) project (#615): the only persistently-lit icon in the row, so it reads
+   as state rather than as another action. Hover/focus already paint --accent, so this just makes
+   the resting state match. */
+.starOn {
+  color: var(--accent);
+}
 .iconBtn:disabled {
   opacity: 0.4;
   cursor: default;

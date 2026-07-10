@@ -432,6 +432,80 @@ def set_default_project(cwd: object, path: Path | None = None) -> str:
     return _set("default_project", cwd if isinstance(cwd, str) else "", path)
 
 
+def get_default_project_id(path: Path | None = None) -> str:
+    """The preferred new-session PROJECT (#615 Phase 2) as an entity id, or "" when unset.
+
+    Supersedes `default_project`, which named a bare cwd and was shadowed the moment a project
+    carried a `default_folder` (required since #448): the new-session picker resolved
+    ``selectedProject.default_folder ?? config.default_project``, so with any project present the
+    cwd pref never fired — while the project actually pre-selected was just the alphabetically
+    first entity, and unsettable.
+
+    NOT validated against the store on read: an entity can be deleted or archived out from under
+    this pref, and the picker already falls back (first unarchived project, else no selection).
+    Validating here would mean loading `projects` from `prefs`, which the import direction forbids
+    (see `project_dirs`)."""
+    v = _load(path or _default_path()).get("default_project_id")
+    return v if isinstance(v, str) else ""
+
+
+def set_default_project_id(project_id: object, path: Path | None = None) -> str:
+    """Persist the preferred new-session project id (or "" to clear). Preserves other keys."""
+    return _set("default_project_id", project_id if isinstance(project_id, str) else "", path)
+
+
+def migrate_default_project_id(owner_id_for_cwd, path: Path | None = None) -> str | None:
+    """One-time migration seeding `default_project_id` from the legacy `default_project` cwd
+    (#615 Phase 2), on the `migrate_overview_excluded` precedent.
+
+    ``owner_id_for_cwd(cwd) -> str`` resolves a cwd to the id of the project that adopted it
+    ("" when none). It is injected rather than imported: `prefs` must not depend on `projects`
+    (same import-direction rule `project_dirs` documents), and the resolver needs the store.
+
+    Runs only when `default_project_id` is absent AND `default_project` is a non-empty cwd:
+
+    * cwd adopted by a project → write that project's id.
+    * cwd adopted by nobody    → write nothing. The cwd keeps working through the picker's
+      surviving ``?? config.default_project`` fallback, so an operator whose start directory
+      belongs to no project does not silently lose it.
+
+    The legacy `default_project` key is **never dropped** here — it is still the fallback for the
+    entity-less case. Draining it is a separate change once the fallback is provably unused.
+
+    Returns the id written, or ``None`` when nothing was migrated (steady state → no write, so
+    re-runs are idempotent). Runs at app startup (main.create_app); a missing/corrupt file is
+    tolerated like every read."""
+    path = path or _default_path()
+    if not path.exists():
+        return None
+    with path.open("r+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                data = json.load(fh)
+                if not isinstance(data, dict):
+                    return None
+            except json.JSONDecodeError:
+                return None
+            if "default_project_id" in data:
+                return None  # already migrated (or explicitly set) → never rewrite
+            cwd = data.get("default_project")
+            if not isinstance(cwd, str) or not cwd:
+                return None
+            owner = owner_id_for_cwd(cwd)
+            if not owner:
+                return None  # unadopted → keep the cwd fallback, write nothing
+            data["default_project_id"] = owner
+            fh.seek(0)
+            fh.truncate()
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+            return owner
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def get_project_names(path: Path | None = None) -> dict[str, str]:
     """Per-cwd custom display names for projects (#148). Normalized on read."""
     return coerce_str_map(_load(path or _default_path()).get("project_names"))

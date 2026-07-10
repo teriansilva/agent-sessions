@@ -26,13 +26,24 @@ export function NewSessionLanding() {
   // (use the default selection); "" = no project; else an entity id.
   const [entities, setEntities] = useState<ProjectEntity[]>([]);
   const [projectChoice, setProjectChoice] = useState<string | null>(null);
-  const defaultProjectId = entities[0]?.id ?? "";
+  // The operator's starred project (#615 Phase 2). `entities` is already archived-filtered, so an
+  // id naming an archived — or since-deleted — project simply isn't found, and we fall back to the
+  // first project rather than pre-selecting nothing. Before #615 there was no pref at all: the
+  // preselection was `entities[0]`, i.e. whichever project sorted first by name.
+  const starredId = config?.default_project_id ?? "";
+  const starredExists = entities.some((p) => p.id === starredId);
+  const defaultProjectId = (starredExists ? starredId : entities[0]?.id) ?? "";
   const projectSel = projectChoice ?? defaultProjectId;
   const selectedProject = entities.find((p) => p.id === projectSel);
 
   // Folder: the project's default unless overridden for this session via the picker.
   const [cwdOverride, setCwdOverride] = useState<string | null>(null);
-  const cwd = cwdOverride ?? selectedProject?.default_folder ?? config?.default_project ?? "";
+  // `||`, not `??`, between the project's folder and the legacy pref: a folderless project stores
+  // "" (#448 back-compat), and "" is a *missing* folder, not a chosen one — fall through to the
+  // legacy cwd rather than opening the picker on nothing (#615 Phase 2 edge case). `cwdOverride`
+  // keeps `??`: an explicit "" from the picker is a real choice.
+  const projectCwd = selectedProject?.default_folder || config?.default_project || "";
+  const cwd = cwdOverride ?? projectCwd;
   const isProjectDefault = !!selectedProject && cwd === selectedProject.default_folder && cwd !== "";
 
   // One folder picker serves two flows: overriding this session's folder, or choosing the

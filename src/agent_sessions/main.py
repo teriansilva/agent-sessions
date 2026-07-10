@@ -34,6 +34,7 @@ from . import (
     metadata,
     owner,
     prefs,
+    projects,
     pulse_loop,
     reaper,
     session_stream,
@@ -152,6 +153,18 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # (or on a fresh install); best-effort — a bad prefs file must not block startup.
     with contextlib.suppress(Exception):
         prefs.migrate_overview_excluded()
+
+    # One-time prefs migration (#615 Phase 2): seed `default_project_id` from the legacy
+    # `default_project` cwd when a project has adopted that folder. `prefs` can't import
+    # `projects` (import direction), so the owner resolver is injected here. Leaves the cwd
+    # in place — it is still the fallback when the start directory belongs to no project.
+    # No-op once migrated / when nothing to migrate; best-effort, like the one above.
+    def _owner_id_for_cwd(cwd: str) -> str:
+        owner_project = projects.owning_project(cwd, projects.load())
+        return owner_project.id if owner_project else ""
+
+    with contextlib.suppress(Exception):
+        prefs.migrate_default_project_id(_owner_id_for_cwd)
 
     # Slice 2 of the session-stability foundation (#183): the registry is the
     # process-wide source of truth for every live dtach session. The lifespan

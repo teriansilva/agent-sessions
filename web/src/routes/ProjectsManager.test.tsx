@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { ConfigCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
-import type { ProjectArchiveReport, ProjectEntity } from "../types/api";
+import type { AppConfig, ProjectArchiveReport, ProjectEntity } from "../types/api";
 import { ProjectsManagerCard } from "./ProjectsManager";
 
 vi.mock("../lib/api", async (orig) => {
@@ -17,6 +18,7 @@ vi.mock("../lib/api", async (orig) => {
       archiveProject: vi.fn(),
       unarchiveProject: vi.fn(),
       folders: vi.fn(),
+      setPrefs: vi.fn(),
     },
   };
 });
@@ -50,6 +52,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.folders).mockResolvedValue({ folders: [] });
   vi.mocked(api.projectEntities).mockResolvedValue({ projects: [ent()] });
+  // The star's write is a promise chain — a bare vi.fn() returns undefined and `.then` throws
+  // *after* the optimistic flip, so assertions pass while the click actually errored.
+  vi.mocked(api.setPrefs).mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -246,4 +251,85 @@ test("rename commits via patchProject and color swatches set/clear the color", a
   await user.click(screen.getByRole("button", { name: "Set color for SampleProject" }));
   await user.click(screen.getByRole("button", { name: "Color #ffb000" }));
   expect(api.patchProject).toHaveBeenCalledWith("p-1", { color: "#ffb000" });
+});
+
+// ---- Default project star (#615 Phase 2) ------------------------------------------------
+//
+// The star replaced the Settings "Default project" card, which stored a bare cwd
+// (`default_project`). That pref had been shadowed since #448 — New Session resolves
+// `selectedProject.default_folder ?? config.default_project`, so with any project present the
+// cwd never fired — while the project actually pre-selected was `entities[0]`: alphabetically
+// first, and unsettable. The star names the PROJECT.
+
+/** Mounts the card with a config value so the star can seed from `default_project_id`. */
+function renderWithConfig(config: Partial<AppConfig> = {}) {
+  const cfg = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auth_mode: "single-user",
+    two_factor_enabled: false,
+    ...config,
+  } as AppConfig;
+  return render(
+    <ConfigCtx.Provider value={cfg}>
+      <ProjectsManagerCard />
+    </ConfigCtx.Provider>,
+  );
+}
+
+test("star: unstarred by default, and starring persists default_project_id", async () => {
+  renderWithConfig();
+  const star = await screen.findByRole("button", { name: "Make SampleProject the default project" });
+  expect(star).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(star);
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "p-1" });
+  // Optimistic: the row flips before the config refresh lands.
+  expect(
+    await screen.findByRole("button", { name: "SampleProject is the default project — clear it" }),
+  ).toHaveAttribute("aria-pressed", "true");
+});
+
+test("star: seeds from config.default_project_id, and clicking the starred one clears it", async () => {
+  renderWithConfig({ default_project_id: "p-1" });
+  const star = await screen.findByRole("button", {
+    name: "SampleProject is the default project — clear it",
+  });
+  expect(star).toHaveAttribute("aria-pressed", "true");
+  // Clicking the starred project clears the preference — New Session falls back to the first
+  // project, exactly as it behaved before the pref existed.
+  await userEvent.click(star);
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "" });
+  expect(
+    await screen.findByRole("button", { name: "Make SampleProject the default project" }),
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
+test("star: exactly one project is starred at a time", async () => {
+  vi.mocked(api.projectEntities).mockResolvedValue({
+    projects: [ent(), ent({ id: "p-2", name: "BattleLab", folders: ["/home/u/bl"] })],
+  });
+  renderWithConfig({ default_project_id: "p-1" });
+  await screen.findByRole("button", { name: "SampleProject is the default project — clear it" });
+  const other = screen.getByRole("button", { name: "Make BattleLab the default project" });
+  await userEvent.click(other);
+  expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "p-2" });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Make SampleProject the default project" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    ),
+  );
+});
+
+test("star: a failed save rolls back and surfaces an error", async () => {
+  vi.mocked(api.setPrefs).mockRejectedValue(new Error("nope"));
+  renderWithConfig();
+  await userEvent.click(await screen.findByRole("button", { name: "Make SampleProject the default project" }));
+  expect(await screen.findByText(/couldn.t save the default project/i)).toBeInTheDocument();
+  // Rolled back to unstarred — never leave the UI asserting a default the server rejected.
+  expect(screen.getByRole("button", { name: "Make SampleProject the default project" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });

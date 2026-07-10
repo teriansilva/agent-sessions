@@ -276,8 +276,13 @@ def register(
                 # client applies the same mode-exclusive rule as the server's `project_visible`.
                 "projects_mode": prefs.get_projects_mode(),
                 "projects_included": prefs.get_projects_included(),
-                # Preferred new-session start dir (#335 Phase 2); the picker pre-selects it when
-                # still pickable, else falls back silently.
+                # Preferred new-session PROJECT (#615 Phase 2), by entity id. The picker
+                # pre-selects it; a deleted/archived id falls back to the first unarchived
+                # project. Supersedes `default_project` below.
+                "default_project_id": prefs.get_default_project_id(),
+                # Legacy preferred new-session start dir (#335 Phase 2). Retained only as the
+                # fallback for an operator whose start directory belongs to no project — with any
+                # project selected, its own `default_folder` (#448) wins. Also seeds Onboarding.
                 "default_project": prefs.get_default_project(),
                 # Base dirs under which the UI may create a new project folder (#335 Phase 3) AND
                 # the root scope for discovery (#465) — the merged effective list (prefs roots, else
@@ -349,6 +354,15 @@ def register(
             if not isinstance(v, str):
                 raise HTTPException(status_code=422, detail="default_project must be a string")
             out["default_project"] = prefs.set_default_project(v)
+        if "default_project_id" in payload:
+            # Preferred new-session project (#615 Phase 2); "" clears it. Stored verbatim, NOT
+            # checked against the store: an entity can be deleted or archived after the fact, and
+            # the picker already falls back to the first unarchived project. Validating here would
+            # only move that fallback earlier while adding a 422 the UI can't act on.
+            v = payload["default_project_id"]
+            if not isinstance(v, str):
+                raise HTTPException(status_code=422, detail="default_project_id must be a string")
+            out["default_project_id"] = prefs.set_default_project_id(v)
         for key, setter in (
             ("overview_expanded", prefs.set_overview_expanded),
             # `projects_hidden` is the only hide-list key (#174); the legacy

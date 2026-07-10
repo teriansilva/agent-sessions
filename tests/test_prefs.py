@@ -685,3 +685,96 @@ def test_set_discovery_prefs_reject_non_string_items(auth_cfg, tmp_home):
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     assert c.post("/api/prefs", json={"project_roots": ["/ok", 5]}, headers=hdr).status_code == 422
     assert c.post("/api/prefs", json={"folder_exclusions": [1]}, headers=hdr).status_code == 422
+
+
+# ---- default_project_id (#615 Phase 2) ------------------------------------------------
+#
+# `default_project` named a bare cwd and was shadowed the moment any project carried a
+# `default_folder` (required since #448): the picker resolves
+# `selectedProject.default_folder ?? config.default_project`. `default_project_id` names the
+# PROJECT instead. The migration seeds it from the legacy cwd — but ONLY when a project has
+# adopted that folder, because an unadopted cwd has no id to migrate to and must keep working
+# through the surviving fallback.
+
+
+def test_default_project_id_defaults_to_empty(tmp_path):
+    assert prefs.get_default_project_id(tmp_path / "prefs.json") == ""
+
+
+def test_set_and_get_default_project_id_roundtrip(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.set_default_project_id("p-1", p) == "p-1"
+    assert prefs.get_default_project_id(p) == "p-1"
+    assert prefs.set_default_project_id("", p) == ""  # "" clears
+    assert prefs.get_default_project_id(p) == ""
+
+
+def test_migrate_adopted_cwd_seeds_the_owning_projects_id(tmp_path):
+    """Arm 1: the legacy cwd IS adopted → write the owner's id, keep the cwd."""
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"default_project": "/home/u/alpha", "theme": "light"}))
+    assert prefs.migrate_default_project_id(lambda cwd: "p-1", p) == "p-1"
+    data = _json.loads(p.read_text())
+    assert data["default_project_id"] == "p-1"
+    # The cwd is NOT dropped — it still seeds Onboarding and the entity-less fallback.
+    assert data["default_project"] == "/home/u/alpha"
+    assert data["theme"] == "light"  # other keys preserved
+
+
+def test_migrate_unadopted_cwd_writes_nothing_and_keeps_the_fallback(tmp_path):
+    """Arm 2: no project owns the cwd → there is no id to migrate to. Write NOTHING, so the
+    picker's `?? config.default_project` fallback keeps the operator's start directory."""
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"default_project": "/home/u/loose"}))
+    assert prefs.migrate_default_project_id(lambda cwd: "", p) is None
+    data = _json.loads(p.read_text())
+    assert "default_project_id" not in data
+    assert data["default_project"] == "/home/u/loose"
+
+
+def test_migrate_is_a_no_op_when_already_set_and_never_clobbers(tmp_path):
+    """An explicit choice (or a prior migration) wins: never rewrite `default_project_id`."""
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"default_project": "/home/u/alpha", "default_project_id": "chosen"}))
+
+    def _boom(cwd):  # the resolver must not even be consulted
+        raise AssertionError("resolver called despite default_project_id already set")
+
+    assert prefs.migrate_default_project_id(_boom, p) is None
+    assert _json.loads(p.read_text())["default_project_id"] == "chosen"
+
+
+def test_migrate_no_op_without_a_legacy_cwd_and_rerun_is_idempotent(tmp_path):
+    import json as _json
+
+    p = tmp_path / "prefs.json"
+    p.write_text(_json.dumps({"theme": "light"}))
+    assert prefs.migrate_default_project_id(lambda cwd: "p-1", p) is None
+    assert "default_project_id" not in _json.loads(p.read_text())
+    # Fresh install / missing file → tolerated, like every other read.
+    assert prefs.migrate_default_project_id(lambda cwd: "p-1", tmp_path / "gone.json") is None
+    # Second run after a real migration writes nothing new.
+    p.write_text(_json.dumps({"default_project": "/a"}))
+    assert prefs.migrate_default_project_id(lambda cwd: "p-9", p) == "p-9"
+    assert prefs.migrate_default_project_id(lambda cwd: "p-OTHER", p) is None
+    assert _json.loads(p.read_text())["default_project_id"] == "p-9"
+
+
+def test_config_echoes_default_project_id_and_prefs_accepts_it(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.get("/api/config").json()["default_project_id"] == ""
+    assert c.post("/api/prefs", json={"default_project_id": "p-1"}, headers=hdr).json() == {
+        "default_project_id": "p-1"
+    }
+    assert c.get("/api/config").json()["default_project_id"] == "p-1"
+    # Stored verbatim — a since-deleted id is the picker's problem, not a 422.
+    assert c.post("/api/prefs", json={"default_project_id": "gone"}, headers=hdr).status_code == 200
+    assert c.post("/api/prefs", json={"default_project_id": 5}, headers=hdr).status_code == 422

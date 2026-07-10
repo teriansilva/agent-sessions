@@ -322,8 +322,15 @@ export interface AppConfig {
   projects_mode?: "all" | "included" | string;
   /** The "included"-mode allowlist of visible project cwds (#335). Ignored in "all" mode. */
   projects_included?: string[];
-  /** Preferred new-session start directory (#335 Phase 2). The picker pre-selects it when it's
-   *  still a pickable project, else falls back to the first option. "" / absent = no preference. */
+  /** Preferred new-session PROJECT, by entity id (#615 Phase 2). The picker pre-selects it; an
+   *  id that no longer names an unarchived project falls back to the first unarchived one, so a
+   *  deleted or archived default degrades silently rather than erroring. "" / absent = no
+   *  preference. Supersedes `default_project`. */
+  default_project_id?: string;
+  /** Legacy preferred new-session start directory (#335 Phase 2), superseded by
+   *  `default_project_id`. Retained as the fallback for a start directory no project has adopted
+   *  (the migration cannot map it to an id), and as Onboarding's seed. With a project selected
+   *  its own `default_folder` (#448) wins, so this never fires. "" / absent = no preference. */
   default_project?: string;
   /** Base dirs under which the UI may create a new project folder (#335 Phase 3) AND the root
    *  scope for discovery (#465) — the merged effective list (prefs roots, else env fallback).
