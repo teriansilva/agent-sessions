@@ -7,6 +7,11 @@ export default defineConfig({
   // Absolute base so /assets/* resolve correctly under deep client routes
   // (e.g. /s/claude/<uuid>) when FastAPI serves index.html as the SPA fallback.
   base: "/",
+  preview: {
+    // The connect-page E2E maps battlelab.superstatus.io to the local preview server so the
+    // public-host credential behavior is exercised in a real browser.
+    allowedHosts: ["battlelab.superstatus.io"],
+  },
   // A modern cssTarget so esbuild keeps `backdrop-filter` as authored. With the default
   // cssTarget (which includes old Safari) esbuild collapses a dual `backdrop-filter` +
   // `-webkit-backdrop-filter` declaration to the `-webkit-` form ONLY and DROPS the standard

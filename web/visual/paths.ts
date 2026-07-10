@@ -51,6 +51,14 @@ export const VISUAL_PATHS: VisualPath[] = [
     waitFor: LOGIN_FORM,
   },
   {
+    group: "public",
+    path: "/connect.html",
+    name: "connect",
+    description: "Home Free public connect page — centered sign-in + floating connected controls",
+    requireAuth: false,
+    waitFor: { selector: ".connect-card", timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS },
+  },
+  {
     group: "authed",
     path: "/",
     name: "app-home",

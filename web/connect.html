@@ -7,100 +7,376 @@
     <title>BattleLab — Remote Connect</title>
     <style>
       :root {
-        --bg: #0d0e10;
+        --bg-0: #0d0e10;
+        --bg-1: #131418;
+        --bg-2: #1a1c21;
+        --text-1: #e8e9ec;
+        --text-2: #a7abb3;
+        --text-3: #6f747d;
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
         --accent: #ffb000;
-        --line: rgba(255, 255, 255, 0.14);
-        --dim: rgba(255, 255, 255, 0.5);
-        --txt: rgba(255, 255, 255, 0.9);
-        --font: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --on-accent: #120c00;
+        --status-up: #3fbf6f;
+        --status-down: #c02020;
+        --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+          Menlo, Consolas, monospace;
       }
-      * { box-sizing: border-box; }
-      body {
+      * {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body.connect-page {
         margin: 0;
-        background: var(--bg);
-        color: var(--txt);
-        font-family: var(--font);
-        min-height: 100vh;
-        display: flex;
-        flex-direction: column;
+        min-height: 100dvh;
+        overflow: hidden;
+        background: var(--bg-0);
+        color: var(--text-1);
+        font-family: var(--font-mono);
       }
-      header {
+      button,
+      input {
+        font: inherit;
+      }
+      .connect-shell {
+        position: relative;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: clamp(18px, 4vw, 56px);
+        isolation: isolate;
+      }
+      .connect-shell::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.026) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+        background-size: 34px 34px;
+        opacity: 0.5;
+      }
+      .connect-card {
+        position: relative;
+        width: min(460px, calc(100vw - 32px));
+        padding: 30px;
+        border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+        background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+      }
+      .connect-card::before,
+      .connect-card::after {
+        content: "";
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        pointer-events: none;
+      }
+      .connect-card::before {
+        top: -1px;
+        left: -1px;
+        border-top: 2px solid var(--accent);
+        border-left: 2px solid var(--accent);
+      }
+      .connect-card::after {
+        right: -1px;
+        bottom: -1px;
+        border-right: 2px solid var(--accent);
+        border-bottom: 2px solid var(--accent);
+      }
+      .brand {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 14px 20px;
-        border-bottom: 1px solid var(--line);
-        flex-wrap: wrap;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .brand-mark {
+        width: 21px;
+        height: 21px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--accent);
+      }
+      .brand-mark::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        background: var(--accent);
+      }
+      .eyebrow {
+        margin: 28px 0 10px;
+        color: var(--text-3);
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
       }
       h1 {
-        font-size: 15px;
-        letter-spacing: 3px;
-        color: var(--accent);
-        margin: 0 16px 0 0;
+        margin: 0;
+        color: var(--text-1);
+        font-size: clamp(25px, 5vw, 34px);
+        line-height: 1.06;
+        letter-spacing: 0;
+      }
+      .lede {
+        margin: 12px 0 24px;
+        color: var(--text-2);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .connect-form {
+        display: grid;
+        gap: 15px;
+      }
+      .field {
+        display: grid;
+        gap: 7px;
+      }
+      .field-label,
+      .relay-options summary {
+        color: var(--text-3);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
       }
       input {
-        background: rgba(0, 0, 0, 0.4);
-        border: 1px solid var(--line);
-        color: var(--txt);
-        font-family: var(--font);
-        font-size: 13px;
-        padding: 8px 10px;
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        padding: 0 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 0;
+        background: var(--bg-0);
+        color: var(--text-1);
+        outline: none;
       }
-      #relay { width: 260px; }
-      #name { width: 150px; }
-      #key { width: 200px; }
-      button {
-        background: var(--accent);
-        color: #0d0e10;
-        border: 0;
-        font-family: var(--font);
-        font-weight: 700;
-        letter-spacing: 2px;
-        padding: 9px 18px;
+      input:focus-visible {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+      }
+      .relay-options {
+        border: 1px solid var(--line);
+        padding: 11px 12px 12px;
+      }
+      .relay-options summary {
         cursor: pointer;
       }
-      button:disabled { opacity: 0.5; cursor: default; }
-      #countdown {
-        margin-left: auto;
-        color: var(--accent);
-        border: 1px solid var(--accent);
-        border-radius: 13px;
-        padding: 3px 12px;
-        font-size: 13px;
+      .relay-options .field {
+        margin-top: 12px;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        margin-top: 4px;
+      }
+      .warning {
+        margin: 0;
+        color: color-mix(in srgb, var(--status-down) 42%, var(--text-1));
+        font-size: 11px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      .primary,
+      .ghost {
+        min-height: 44px;
+        border: 0;
+        border-radius: 0;
+        cursor: pointer;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      .primary {
+        padding: 0 18px;
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+      .ghost {
+        min-height: 34px;
+        padding: 0 11px;
+        border: 1px solid var(--line-strong);
+        background: var(--bg-0);
+        color: var(--text-1);
+        font-size: 10px;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.5;
       }
       #status {
-        padding: 8px 20px;
+        min-height: 18px;
+        color: var(--text-2);
         font-size: 12px;
-        color: var(--dim);
-        border-bottom: 1px solid var(--line);
+        line-height: 1.45;
       }
-      #status[data-kind="error"] { color: #e5484d; }
-      #status[data-kind="ok"] { color: #3fbf6f; }
-      .warn {
-        padding: 8px 20px;
+      #status[data-kind="error"] {
+        color: color-mix(in srgb, var(--status-down) 45%, var(--text-1));
+      }
+      #status[data-kind="ok"] {
+        color: var(--status-up);
+      }
+      #app-root {
+        position: fixed;
+        inset: 0;
+        display: none;
+        min-height: 100dvh;
+        background: var(--bg-0);
+      }
+      .session-box {
+        position: fixed;
+        top: max(10px, env(safe-area-inset-top));
+        left: 50%;
+        z-index: 10;
+        width: min(520px, calc(100vw - 18px));
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 52px;
+        padding: 9px 10px;
+        border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+        background: color-mix(in srgb, var(--bg-1) 94%, transparent);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.46);
+      }
+      .session-led {
+        width: 8px;
+        height: 8px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--status-up);
+        box-shadow: 0 0 14px color-mix(in srgb, var(--status-up) 70%, transparent);
+      }
+      .session-meta {
+        min-width: 0;
+        flex: 1;
+      }
+      .session-title {
+        display: block;
+        overflow: hidden;
+        color: var(--text-1);
         font-size: 11px;
-        color: #e5484d;
-        border-bottom: 1px solid var(--line);
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-overflow: ellipsis;
+        text-transform: uppercase;
+        white-space: nowrap;
       }
-      #app-root { display: block; flex: 1; min-height: 320px; }
+      .session-subtitle {
+        display: block;
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--text-2);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #countdown {
+        flex: 0 0 auto;
+        border: 1px solid var(--line-strong);
+        color: var(--accent);
+        padding: 5px 8px;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      body[data-state="connected"] .connect-card {
+        display: none;
+      }
+      body[data-state="connected"] #app-root {
+        display: block;
+      }
+      @media (max-width: 560px) {
+        .connect-shell {
+          align-items: center;
+          padding: 14px;
+        }
+        .connect-card {
+          width: 100%;
+          padding: 22px;
+        }
+        .actions {
+          grid-template-columns: 1fr;
+        }
+        .primary {
+          width: 100%;
+        }
+        .session-box {
+          gap: 8px;
+          padding: 8px;
+        }
+        .session-subtitle {
+          max-width: 100%;
+        }
+        #countdown {
+          display: none;
+        }
+        .ghost {
+          min-width: 72px;
+          padding: 0 8px;
+        }
+      }
     </style>
   </head>
-  <body>
-    <header>
-      <h1>Remote Connect</h1>
-      <input id="relay" placeholder="relay base URL (https://your-box:4443)" />
-      <input id="name" placeholder="console name" />
-      <input id="key" type="password" placeholder="access key" />
-      <button id="connect">CONNECT</button>
-      <span id="countdown">--:--</span>
-    </header>
-    <div id="status">Enter your box's relay URL, console name and access key.</div>
-    <div class="warn">
-      ⚠ The access key grants full control of that machine. Never enter a key given to you by
-      someone who contacted you.
-    </div>
-    <div id="app-root"></div>
+  <body class="connect-page" data-state="signed-out">
+    <main class="connect-shell">
+      <section class="connect-card" aria-labelledby="connect-title">
+        <div class="brand" aria-label="BattleLab Connect">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>BattleLab Connect</span>
+        </div>
+        <p class="eyebrow">Blind relay sign-in</p>
+        <h1 id="connect-title">Remote connect</h1>
+        <p class="lede">Use the console key and access password printed by your streaming install.</p>
+
+        <form id="connect-form" class="connect-form">
+          <label class="field" for="name">
+            <span class="field-label">Console key</span>
+            <input id="name" autocomplete="off" inputmode="text" placeholder="viper-8231" />
+          </label>
+          <label class="field" for="key">
+            <span class="field-label">Access password</span>
+            <input id="key" type="password" autocomplete="off" placeholder="access password" />
+          </label>
+          <details id="relay-options" class="relay-options">
+            <summary>Custom relay</summary>
+            <label class="field" for="relay">
+              <span class="field-label">Relay base URL</span>
+              <input id="relay" placeholder="https://relay.example" />
+            </label>
+          </details>
+          <div id="status" role="status" aria-live="polite">
+            Enter your console key and access password.
+          </div>
+          <div class="actions">
+            <p class="warning">
+              The access password grants full control of that machine. Never enter one given to
+              you by someone who contacted you.
+            </p>
+            <button id="connect" class="primary" type="submit">Connect</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="session-box" class="session-box" aria-label="Streaming session" hidden>
+        <span class="session-led" aria-hidden="true"></span>
+        <span class="session-meta">
+          <span id="session-name" class="session-title">Connected</span>
+          <span id="session-status" class="session-subtitle">Reload returns to the connect page.</span>
+        </span>
+        <span id="countdown">--:--</span>
+        <button id="signout" class="ghost" type="button">Sign out</button>
+      </section>
+
+      <div id="app-root"></div>
+    </main>
     <script type="module" src="/src/homefree/connect.main.ts"></script>
   </body>
 </html>
