@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0d0e10" />
+    <!-- interactive-widget=resizes-content: when the on-screen keyboard opens, shrink
+         the layout viewport (not just the visual one) so the terminal refits above the
+         keyboard instead of the input line being hidden behind it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
+    <title>BattleLab</title>
+    <!-- Social / Open Graph + Twitter card (#81). Relative og:image so it resolves under
+         whatever host serves the app (no hardcoded domain). -->
+    <meta property="og:title" content="BattleLab — Command & Code" />
+    <meta property="og:description" content="A self-hosted command deck for your AI-coding agents." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="BattleLab — Command & Code" />
+    <meta name="twitter:description" content="A self-hosted command deck for your AI-coding agents." />
+    <meta name="twitter:image" content="/og-image.png" />
+    <!-- Apply the device-cached theme before first paint so a light user doesn't see a dark
+         flash. Dark is the BattleLab default (#211); a legacy "royal" value is ignored here so
+         it falls back to dark. Mirrors web/src/theme/applyTheme.ts; inline + tiny so it runs
+         ahead of the bundle. -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        var t = "dark";
+        try {
+          var s = localStorage.getItem("tr-theme");
+          if (s === "dark" || s === "light") t = s;
+        } catch (e) {}
+        // Always pin a valid data-theme so <html> never renders attribute-less or with an
+        // unknown value; "dark" is the default (also matches the bare :root tokens).
+        root.setAttribute("data-theme", t);
+        // Brand accent (#211 Phase 2). A custom accent overrides --accent + --on-accent
+        // pre-paint so there's no amber flash; the default is left to index.css. Mirrors
+        // web/src/theme/applyAccent.ts + accent.ts (inline + tiny to run ahead of the bundle).
+        // on-accent picks near-black vs white by WCAG luminance of the accent.
+        try {
+          var a = (localStorage.getItem("tr-accent") || "").trim().toLowerCase();
+          var m = /^#?([0-9a-f]{6})$/.exec(a) || /^#?([0-9a-f]{3})$/.exec(a);
+          if (m) {
+            var hex = m[1];
+            if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+            if ("#" + hex !== "#ffb000") {
+              var lin = function (v) {
+                v /= 255;
+                return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+              };
+              var L =
+                0.2126 * lin(parseInt(hex.slice(0, 2), 16)) +
+                0.7152 * lin(parseInt(hex.slice(2, 4), 16)) +
+                0.0722 * lin(parseInt(hex.slice(4, 6), 16));
+              var cr = function (x, y) {
+                return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+              };
+              root.style.setProperty("--accent", "#" + hex);
+              // 0.0045 ≈ luminance of #0b0b0d (the near-black ink).
+              root.style.setProperty(
+                "--on-accent",
+                cr(L, 0.0045) >= cr(L, 1) ? "#0b0b0d" : "#ffffff",
+              );
+            }
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
