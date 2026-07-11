@@ -10,7 +10,7 @@ describe("PWA navigateFallbackDenylist", () => {
   // vitest runs with cwd = web/, where vite.config.ts lives.
   const cfg = readFileSync("vite.config.ts", "utf8");
 
-  it.each(["/api", "/ws", "/login", "/logout", "/change-password", "/healthz"])(
+  it.each(["/api", "/ws", "/login", "/logout", "/change-password", "/link", "/healthz"])(
     "denylists the server-owned route %s",
     (route) => {
       expect(cfg).toContain(`/^\\${route}/`);

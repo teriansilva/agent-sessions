@@ -49,9 +49,11 @@ from .auth import (
     require_session,
     session_uid,
 )
+from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
 from .routes import history as history_routes
+from .routes import link as link_routes
 from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
@@ -80,7 +82,8 @@ _WEB_DIST = Path(
     os.environ.get("AGENT_SESSIONS_WEB_DIST") or (_HERE.parent.parent / "web" / "dist")
 )
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
-_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets")
+# ``link`` = the device-link QR sign-in routes (#650), server-rendered / JSON, not the SPA.
+_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets", "link")
 
 # New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
 # ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``) may not write that id until the
@@ -369,6 +372,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         pw=_pw,
         must_change=_must_change,
     )
+
+    # QR cross-device sign-in (#650): a signed-in phone authorizes a new client. The
+    # in-process challenge store is the source of truth (the session cookie is HttpOnly and
+    # can't be encoded in a QR). No login in `none` mode → the routes 404 there. The session
+    # a new client is granted is ordinary, so the forced-change gate above still applies to it.
+    link_routes.register(app, cfg=cfg, store=DeviceLinkStore(), templates=_TEMPLATES)
 
     # Session-data routes (list/search + facets, projects, rename, favorite/unfavorite,
     # archive/unarchive, archive-older) live in routes/sessions.py; scrollback stats/clear in

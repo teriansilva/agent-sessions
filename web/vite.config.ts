@@ -52,6 +52,9 @@ export default defineConfig({
           /^\/login/,
           /^\/logout/,
           /^\/change-password/,
+          // Device-link QR sign-in (#650): server-rendered approval page + JSON routes the
+          // SPA index.html fallback must not shadow for SW-controlled browsers.
+          /^\/link/,
           /^\/healthz/,
           // The standalone Home Free connect page is its own precached shell — the
           // SPA index.html fallback must not shadow it for browsers already
