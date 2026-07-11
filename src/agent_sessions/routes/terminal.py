@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -40,10 +41,12 @@ from .. import (
     prefs,
     project_dirs,
     ptybridge,
+    relaunch,
     scanner,
     scopedspawn,
     session_stream,
     sessions,
+    transcript_owner,
     webterm,
 )
 from ..auth import AuthConfig, origin_matches, session_uid
@@ -239,6 +242,18 @@ def register(
         action, lock = sessions.open_action(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
+        # Bounded relaunch backstop (#631): if this key's launched agent has exited instantly
+        # several times in a row, stop relaunching and close on a TERMINAL code (4500) so the
+        # client's retry loop ends instead of hammering the backend forever. 4409 (busy) / 4502
+        # (transient) stay retryable — only this backstop emits a terminal code, and only after
+        # repeated instant exits. LAUNCH-only: ATTACH never relaunches, so it is never blocked.
+        if action == sessions.LAUNCH and relaunch.blocked(phys_key):
+            if lock is not None:
+                lock.release()
+            return await reject(4500)
+        # Set once we are actually about to run a fresh master (past every reject) so the finally
+        # can record whether that launch exited instantly (backstop bookkeeping, #631).
+        launch_started_at: float | None = None
         # New-session reconcile (#127 opencode / #315 codex): set when this connection
         # launches a mint-its-own-id placeholder; runs concurrently with the PTY bridge to
         # discover the engine's real id, persist the alias, and converge the client URL.
@@ -366,6 +381,14 @@ def register(
                     )
                 ):
                     return await reject(4404)
+                # Background-agent guard (#631): this id is resumable on disk, but action is
+                # LAUNCH (no master of ours) AND a live process already owns its transcript — a
+                # Claude background agent (``claude daemon`` fork). ``claude --resume`` would print
+                # "currently running as a background agent" and exit instantly, relaunch-looping.
+                # Refuse with a terminal code so the client shows "not attachable" instead of
+                # retrying. Claude-only (background agents are a Claude concept).
+                if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+                    return await reject(4404)
                 launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
                 cwd = match.cwd
             try:
@@ -431,6 +454,11 @@ def register(
             fp = ws.query_params.get("fp", "") or ""
             tab_id = ws.query_params.get("tab", "") or ""
             force = ws.query_params.get("force", "") == "1"
+            # Backstop timing (#631): mark when this fresh master started, so the finally can tell
+            # whether it exited instantly and feed the bounded-relaunch guard. Only on LAUNCH — an
+            # ATTACH runs no new master. Covers BOTH dispatch paths (take-over + #184) below.
+            if action == sessions.LAUNCH:
+                launch_started_at = time.monotonic()
             # Single-active-viewer + explicit take-over (#293), flag-gated (default OFF →
             # the #184 path below is byte-identical, so merging this is a prod no-op). The
             # flag-on path anchors ownership in a runtime-dir file so prod + staging — which
@@ -514,6 +542,15 @@ def register(
                 with contextlib.suppress(Exception):
                     await registry.on_detach(prov.engine_id, phys_native, viewer_id=ws)
         finally:
+            # Backstop bookkeeping (#631): if this connection launched a fresh master, record
+            # how it ended. A master still alive (a normal detach) or one that ran past the
+            # instant-exit window resets the key; a master gone within the window is an instant
+            # exit that counts toward the relaunch cap. Best-effort — never let it break teardown.
+            if launch_started_at is not None:
+                with contextlib.suppress(Exception):
+                    lived = time.monotonic() - launch_started_at
+                    master_alive = ptybridge.session_exists(prov.engine_id, phys_native)
+                    relaunch.note_exit(phys_key, lived, master_alive=master_alive)
             # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
             # not Exception) bypass the lock handoff below — nest it in its own try/finally
             # and suppress CancelledError too (#127 review).

@@ -171,3 +171,100 @@ def test_metadata_patch_still_validates_against_archived_projects(auth_cfg, fake
     c.post(f"/api/projects/{pid}/archive", headers=h)
     r = c.patch(f"/api/sessions/{_SID_1}/metadata", json={"project_id": pid}, headers=h)
     assert r.status_code == 200
+
+
+# ---- per-member runtime teardown on project archive (#631) --------------------
+
+
+def test_project_archive_reaps_each_member_runtime(auth_cfg, fake_jsonl, monkeypatch):
+    # #631 Phase B: project archive used to never call cleanup_runtime, so every member's
+    # dtach master + agent kept running. It must now reap each member BEFORE archiving it.
+    from agent_sessions.routes import sessions as sroutes
+
+    seen: list = []
+
+    async def rec_cleanup(engine, native, *, spare_if=None):
+        seen.append((engine, native))
+        return "gone"
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
+    r = c.post(f"/api/projects/{pid}/archive", headers=h)
+    assert r.status_code == 200
+    assert set(seen) == {
+        ("claude", "11111111-1111-1111-1111-111111111111"),
+        ("claude", "22222222-2222-2222-2222-222222222222"),
+    }
+
+
+def test_project_archive_cleanup_failure_does_not_abort_batch(auth_cfg, fake_jsonl, monkeypatch):
+    # #631 Phase B: per-member teardown is best-effort — one member's cleanup failure must not
+    # abort the batch, and every member still archives.
+    from agent_sessions.routes import sessions as sroutes
+
+    async def boom_cleanup(engine, native, *, spare_if=None):
+        raise RuntimeError("teardown failed")
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
+    d = c.post(f"/api/projects/{pid}/archive", headers=h).json()
+    res = _results(d)
+    assert res[_SID_1] == "archived" and res[_SID_2] == "archived"
+    assert d["counts"]["failed"] == 0
+
+
+def test_project_archive_skips_owned_background_agent_member(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    # #631 (Hermes): a Claude background-agent transcript swept into a PROJECT archive must NOT
+    # be moved out from under the live fork. It's reported `failed` and stays in the live tree,
+    # while the other members archive normally — the batch stays retryable.
+    from agent_sessions.routes import sessions as sroutes
+
+    owned = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(
+        sroutes.transcript_owner, "transcript_is_owned", lambda uuid, **kw: uuid == owned
+    )
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
+    d = c.post(f"/api/projects/{pid}/archive", headers=h).json()
+    res = _results(d)
+    assert res[_SID_1] == "failed"  # the owned bg-agent member is skipped, not moved
+    reason = next(r.get("reason", "") for r in d["sessions"] if r["id"] == _SID_1)
+    assert "background agent" in reason
+    assert res[_SID_2] == "archived"  # the normal member still archives
+    # the owned member's JSONL stays LIVE; only the normal member moved to the archive tree
+    assert list((tmp_home / ".claude" / "projects").glob(f"*/{owned}.jsonl"))
+    assert not list((tmp_home / ".claude" / "projects-archive").glob(f"*/{owned}.jsonl"))
+    assert list((tmp_home / ".claude" / "projects-archive").glob("*/22222222-*.jsonl"))
+
+
+def test_project_unarchive_never_reaps(auth_cfg, fake_jsonl, monkeypatch):
+    # #631 Phase B: archive reaps each member; unarchive restores them and must NEVER reap.
+    from agent_sessions.routes import sessions as sroutes
+
+    calls: list = []
+
+    async def rec_cleanup(engine, native, *, spare_if=None):
+        calls.append((engine, native))
+        return "gone"
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post("/api/projects", json={"name": "P", "folders": [_REPO_A]}, headers=h).json()["id"]
+    c.post(f"/api/projects/{pid}/archive", headers=h)
+    assert len(calls) == 2  # both members reaped on archive
+    calls.clear()
+    r = c.post(f"/api/projects/{pid}/unarchive", headers=h)
+    assert r.status_code == 200
+    assert calls == []  # unarchive never reaps

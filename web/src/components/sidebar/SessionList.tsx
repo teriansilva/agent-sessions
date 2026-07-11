@@ -21,7 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, NavLink, useMatch } from "react-router-dom";
+import { Link, NavLink, useMatch, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
@@ -597,6 +597,23 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
   // The currently open session (#551) — gates the per-row auto-scroll marquee so only the
   // selected row animates. Matches the row link route `/s/:engine/:id`.
   const openMatch = useMatch("/s/:engine/:id");
+  const navigate = useNavigate();
+
+  // Archiving the session you're currently viewing must leave its `/s/:engine/:id` route (#631):
+  // otherwise the terminal stays mounted, its socket keeps trying to reconnect to a session that
+  // is now archived (a background agent would relaunch-loop). navigate("/") unmounts SessionView →
+  // Terminal, whose cleanup disposes the socket (`sock.close()`). Only on ARCHIVE (not unarchive)
+  // and only when the archived id IS the open route.
+  const handleToggleArchive = useCallback(
+    async (id: string, currentlyArchived: boolean) => {
+      await setArchived(id, currentlyArchived);
+      const openId = openMatch
+        ? `${openMatch.params.engine}:${openMatch.params.id}`
+        : null;
+      if (!currentlyArchived && openId === id) navigate("/");
+    },
+    [setArchived, openMatch, navigate],
+  );
 
   // AI review controls (#356) only appear once the endpoint is configured — an
   // unconfigured install keeps the lean three-button row.
@@ -688,7 +705,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               }
               onRename={renameRow}
               onSetTag={setTag}
-              onToggleArchive={setArchived}
+              onToggleArchive={handleToggleArchive}
               onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}

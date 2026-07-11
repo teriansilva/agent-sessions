@@ -1108,6 +1108,32 @@ def test_archive_older_archives_only_old_sessions(auth_cfg, fake_jsonl):
     assert "22222222-2222-2222-2222-222222222222" in active  # fresh, untouched
 
 
+def test_archive_older_skips_owned_background_agent(auth_cfg, fake_jsonl, monkeypatch):
+    # #631: archive-older must not move a Claude transcript a live process owns (a background
+    # agent), even when it's old enough to sweep — it's skipped and stays in the live tree.
+    import os
+    import time
+
+    from agent_sessions.routes import sessions as sroutes
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    owned = "11111111-1111-1111-1111-111111111111"
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    old = time.time() - 10 * 3600
+    os.utime(proj / f"{owned}.jsonl", (old, old))
+    monkeypatch.setattr(
+        sroutes.transcript_owner, "transcript_is_owned", lambda uuid, **kw: uuid == owned
+    )
+
+    body = c.post("/api/sessions/archive-older", json={"hours": 5}, headers=hdr).json()
+    assert body["archived"] == 0 and body["skipped"] >= 1  # the owned bg agent was skipped
+    active = {s["uuid"] for s in c.get("/api/sessions?archived=0&limit=50").json()["sessions"]}
+    assert owned in active  # still live
+    assert list((fake_jsonl / ".claude" / "projects").glob(f"*/{owned}.jsonl"))  # JSONL not moved
+
+
 def test_archive_older_skips_engines_that_cannot_archive(auth_cfg, fake_jsonl, monkeypatch):
     # A provider whose archive() raises must be counted as skipped, never 500 the request.
     import os
@@ -1835,6 +1861,33 @@ def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_
     assert r.status_code == 200
     assert r.json()["archived"] == 1  # archived despite the cleanup error
     assert ("claude", "11111111-1111-1111-1111-111111111111") in seen
+
+
+# ---- background-agent archive guard (#631) ------------------------------------
+
+
+def test_archive_refuses_when_transcript_owned_by_bg_agent(auth_cfg, fake_jsonl, monkeypatch):
+    # #631: with our own master gone (cleanup returns "gone"), a live process STILL holding the
+    # transcript is a Claude background agent we don't manage. Archive must REFUSE (409) rather
+    # than shutil.move its open JSONL — moving it would diverge the file across the two trees.
+    from agent_sessions.routes import sessions as sroutes
+
+    async def gone_cleanup(engine, native, *, spare_if=None):
+        return "gone"  # a background agent has no dtach master → cleanup is a no-op
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", gone_cleanup)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    uuid = "11111111-1111-1111-1111-111111111111"
+    jsonl = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{uuid}.jsonl"
+    with jsonl.open("r"):  # a live process (this one) holds the transcript open
+        r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    assert r.status_code == 409
+    # The JSONL must NOT have moved — the live fork still owns it.
+    assert jsonl.exists()
+    assert not list((fake_jsonl / ".claude" / "projects-archive").glob(f"*/{uuid}.jsonl"))
 
 
 # --- Custom per-session tag (#551) ------------------------------------------------------

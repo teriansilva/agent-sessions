@@ -1545,3 +1545,62 @@ def test_webterm_run_teardown_reaps_sigterm_ignoring_client(tmp_path, monkeypatc
     pid = int(pidfile.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)  # reaped by the bridge — a leak would still answer signal 0
+
+
+# ---- background-agent launch guard + bounded relaunch backstop (#631) ---------
+
+
+def test_ws_resume_refuses_background_agent(fake_jsonl, auth_cfg):
+    # #631: resuming a session whose transcript a LIVE process still owns (a Claude background
+    # agent — no dtach master of ours, so open_action → LAUNCH) must refuse with a terminal
+    # code, not launch `claude --resume` and relaunch-loop when it exits instantly.
+    from agent_sessions import relaunch
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)  # module-level backstop state persists across tests
+    jsonl = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{uuid}.jsonl"
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    with jsonl.open("r"):  # a live process (this one) owns the transcript → background-agent signal
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+    assert code == 4404  # terminal reject → the client stops retrying
+
+
+def test_ws_relaunch_backstop_blocks_after_instant_exit_loop(fake_jsonl, auth_cfg):
+    # #631: once a key has hit the consecutive instant-exit cap, the LAUNCH path closes with a
+    # TERMINAL code (4500) so the client's reconnect loop ends instead of relaunching forever.
+    from agent_sessions import relaunch
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)
+    for _ in range(relaunch._MAX_INSTANT):
+        relaunch.note_exit(phys_key, lived_s=0.1, master_alive=False)
+    assert relaunch.blocked(phys_key)  # precondition: the backstop has tripped
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    try:
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+        assert code == 4500  # terminal — not a retryable code
+    finally:
+        relaunch.reset(phys_key)
+
+
+def test_ws_busy_still_returns_retryable_4409(fake_jsonl, auth_cfg):
+    # #631 must NOT weaken the close-code taxonomy: BUSY (another writer holds the single-writer
+    # lock) still returns the RETRYABLE 4409 — the backstop only ever affects the LAUNCH path.
+    from agent_sessions import relaunch, sessionlock
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    lk = sessionlock.acquire(phys_key)  # hold the lock elsewhere → open_action returns BUSY
+    assert lk is not None
+    try:
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+    finally:
+        lk.release()
+    assert code == 4409  # unchanged, still retryable

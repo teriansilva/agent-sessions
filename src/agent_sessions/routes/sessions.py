@@ -26,6 +26,7 @@ from .. import (
     projects,
     runtime_cleanup,
     scanner,
+    transcript_owner,
     webterm,
 )
 from . import upload
@@ -495,7 +496,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse(p.as_dict())
 
-    def _bulk_project_archive(pid: str, *, archive_members: bool) -> JSONResponse:
+    async def _bulk_project_archive(pid: str, *, archive_members: bool) -> JSONResponse:
         # Project archive/unarchive (#361 Phase 2). Membership = THE resolver's view at
         # call time: sessions explicitly assigned (`project_id == pid`) PLUS sessions
         # folder-resolved into the project; a dangling `project_id` (deleted project)
@@ -536,7 +537,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 continue
             try:
                 prov, native = engines.parse_key(key)
-                prov.archive(native) if archive_members else prov.unarchive(native)
+                if archive_members:
+                    # Free each member's live runtime footprint before recording the archive
+                    # (#523/#631) — project archive used to skip this, leaving every member's
+                    # dtach master + agent running. Best-effort per member (mirrors
+                    # ``archive_older``) so one teardown hiccup never aborts the batch; unarchive
+                    # NEVER reaps (it restores a session).
+                    with contextlib.suppress(Exception):
+                        await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                    # Background-agent guard (#631, Hermes): even inside a PROJECT archive, never
+                    # ``shutil.move`` a Claude transcript a live process still owns. cleanup can't
+                    # reap a background agent (it has no app-owned master), so the JSONL is still
+                    # open — report the member failed and leave it in the live tree (mirrors the
+                    # single-session archive's 409). The batch stays retryable; the rest archive.
+                    if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+                        results.append(
+                            {
+                                "id": key,
+                                "result": failed,
+                                "reason": "running background agent — not archivable",
+                            }
+                        )
+                        continue
+                    prov.archive(native)
+                else:
+                    prov.unarchive(native)
                 results.append({"id": key, "result": done})
             except (archive.ArchiveError, engines.EngineError, NotImplementedError) as e:
                 results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
@@ -556,13 +581,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     async def archive_project(
         pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
-        return _bulk_project_archive(pid, archive_members=True)
+        return await _bulk_project_archive(pid, archive_members=True)
 
     @app.post("/api/projects/{pid}/unarchive")
     async def unarchive_project(
         pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
-        return _bulk_project_archive(pid, archive_members=False)
+        return await _bulk_project_archive(pid, archive_members=False)
 
     @app.delete("/api/projects/{pid}")
     async def delete_project(
@@ -888,6 +913,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Best-effort — a teardown hiccup must never block the archive itself.
         with contextlib.suppress(Exception):
             await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+        # Background-agent guard (#631): with our own master now gone, a live process STILL
+        # holding this transcript is a Claude background agent (a ``claude daemon`` fork) we
+        # don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out from under it,
+        # so the file diverges between the live + archive trees — refuse instead. Claude-only:
+        # background agents (and the ``<uuid>.jsonl`` transcript) are a Claude concept.
+        if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+            raise HTTPException(
+                status_code=409, detail="session is a running background agent — not archivable"
+            )
         try:
             prov.archive(native)
         except archive.ArchiveError as e:
@@ -952,6 +986,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 # per session so one teardown hiccup never aborts the batch.
                 with contextlib.suppress(Exception):
                     await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                # Background-agent guard (#631): never move a Claude transcript a live process
+                # still owns (a background agent) — skip it, exactly as single/project archive do.
+                if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+                    skipped += 1
+                    continue
                 prov.archive(native)
                 archived += 1
             except (NotImplementedError, archive.ArchiveError, engines.EngineError):
