@@ -37,6 +37,7 @@ from . import (
     projects,
     pulse_loop,
     reaper,
+    security_headers,
     session_stream,
     update_loop,
 )
@@ -324,6 +325,24 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                     return JSONResponse({"detail": "password change required"}, status_code=403)
                 return RedirectResponse("/change-password", status_code=303)
         return await call_next(request)
+
+    # Browser containment headers (#612 P1). Registered LAST → outermost, so it stamps EVERY
+    # response, including the gate's redirect/403 above. CSP resolved once (reads the built
+    # index for the inline theme-init hash); ``setdefault`` lets a route override its own. WS
+    # upgrades run in the websocket scope, not here, so the terminal socket is untouched.
+    _headers = security_headers.base_headers(_WEB_DIST)
+
+    @app.middleware("http")
+    async def _containment_headers(request: Request, call_next):
+        response = await call_next(request)
+        for key, value in _headers.items():
+            response.headers.setdefault(key, value)
+        if security_headers.is_https(
+            forwarded_proto=request.headers.get("x-forwarded-proto"),
+            scheme=request.url.scheme,
+        ):
+            response.headers.setdefault("Strict-Transport-Security", security_headers.HSTS)
+        return response
 
     # Route groups register in the order FastAPI must match them (registration order is
     # significant; the SPA catch-all MUST be last). All live in routes/ (agent-sessions#265).
