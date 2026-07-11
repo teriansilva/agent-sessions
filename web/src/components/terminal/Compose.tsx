@@ -255,14 +255,28 @@ export const Compose = forwardRef<
     dictBaseRef.current = text;
     r.onresult = (e) => {
       if (recogRef.current !== r) return; // superseded recognizer — ignore late results
-      // Rebuild the WHOLE transcript from the cumulative results list every event, never accumulate
-      // per-event (#487): Chrome re-fires onresult many times for the same finalized utterance, so a
-      // `finalRef += segment` accumulator typed the phrase ~10×. `e.results` already holds the full
-      // session (finalized + current interim), so concatenating + assigning is idempotent.
-      let full = "";
-      for (let i = 0; i < e.results.length; i++) full += e.results[i][0].transcript;
+      // Rebuild the transcript from scratch on every event — never accumulate across events. Two
+      // engine quirks make anything else duplicate, and this one rule neutralizes both (#487):
+      //   • Chrome re-fires onresult repeatedly for the SAME finalized utterance. Because `finals`
+      //     is rebuilt each event from the cumulative `e.results`, a re-fire produces the same
+      //     string instead of appending it again ("said once, typed 10×").
+      //   • Some engines (Android Chrome) stack each growing interim snapshot as its own entry
+      //     rather than replacing the live one. Interim text is only a preview of the CURRENT
+      //     utterance, so the LAST interim simply wins — no "hey / hey Claude / hey Claude can you"
+      //     prefix chain.
+      // Finalized results are disjoint segments and concatenate; the interim tail is appended once.
+      const finals: string[] = [];
+      let interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const res = e.results[i];
+        // Only the LAST entry can be a live interim; any earlier non-final entry is a stale
+        // snapshot the engine stacked instead of replacing, so it's dropped (not the interim).
+        if (res.isFinal) finals.push(res[0].transcript);
+        else if (i === e.results.length - 1) interim = res[0].transcript;
+      }
+      const spoken = [...finals, interim].join(" ").replace(/\s+/g, " ").trim();
       dirtyRef.current = true; // dictation is draftable content, just like typing
-      setText(joinSpoken(dictBaseRef.current, full.replace(/\s+/g, " ").trim()));
+      setText(joinSpoken(dictBaseRef.current, spoken));
       grow();
     };
     r.onerror = (e) => {

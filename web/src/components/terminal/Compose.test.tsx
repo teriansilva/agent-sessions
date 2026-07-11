@@ -167,6 +167,54 @@ test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicate
   expect(ta.value).toBe("deploy the staging build"); // once — never repeated
 });
 
+test("stacked interim snapshots (Android Chrome) collapse to the last one, not a growing prefix chain", async () => {
+  // Android Chrome appends each interim snapshot as its OWN entry in `e.results` instead of
+  // replacing the live one in place, so the list grows "this" / "this is" / "this is a" / … .
+  // Concatenating the whole list types the prefix chain: "thisthis isthis is athis is a test".
+  // Per spec only the LAST entry may be non-final, so stale non-final entries are dropped.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "this", isFinal: false },
+      { transcript: "this is", isFinal: false },
+      { transcript: "this is a", isFinal: false },
+      { transcript: "this is a test", isFinal: false },
+    ]),
+  );
+  expect(ta.value).toBe("this is a test");
+  // …and when the engine finalizes it on top of the stale interim stack, same answer.
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "this", isFinal: false },
+      { transcript: "this is a", isFinal: false },
+      { transcript: "this is a test", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("this is a test");
+});
+
+test("multiple finalized utterances still concatenate in order (#487)", async () => {
+  // The stale-interim guard must not swallow genuine multi-utterance finals, which are disjoint
+  // segments rather than growing snapshots of one another.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "deploy the build", isFinal: true },
+      { transcript: " then run the tests", isFinal: true },
+      { transcript: " and rep", isFinal: false },
+    ]),
+  );
+  expect(ta.value).toBe("deploy the build then run the tests and rep");
+});
+
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {
   const user = userEvent.setup();
   renderCompose();
