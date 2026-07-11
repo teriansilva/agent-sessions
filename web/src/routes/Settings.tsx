@@ -1006,17 +1006,32 @@ function ProjectRow({
         }
       />
       <span className={styles.excludeMeta}>
-        {/* Click anywhere on the name to open the rename modal. Path is shown as a subtitle
-         *  only when a custom name is set — otherwise it would just repeat the name. */}
-        <button
-          type="button"
-          className={styles.nameButton}
-          onClick={(e) => onOpenRename(cwd, e.currentTarget)}
-          aria-label={`Rename ${shortCwd(cwd)}`}
-        >
-          {displayName || shortCwd(cwd)}
-        </button>
-        {displayName && <span className={styles.excludePath}>{shortCwd(cwd)}</span>}
+        {/* Rename is offered only for UNADOPTED folders (#615 Phase 3). An adopted folder is
+         *  grouped under — and labelled by — its PROJECT everywhere the app names a group (the
+         *  sidebar, the filter, and the overview map, which reads `project_names` only for
+         *  `kind === "folder"` groups in `overviewGraph.ts`), so a custom name typed on an adopted
+         *  row would be stored and shown nowhere. Rather than keep a control that no-ops, THIS
+         *  Settings row shows the folder's PATH as static text (no rename affordance) and points
+         *  the user at the project. */}
+        {adopted ? (
+          <span className={styles.nameStatic} title="Named by its project — rename the project instead">
+            {shortCwd(cwd)}
+          </span>
+        ) : (
+          <>
+            {/* Click anywhere on the name to open the rename modal. Path is a subtitle only when a
+             *  custom name is set — otherwise it would just repeat the name. */}
+            <button
+              type="button"
+              className={styles.nameButton}
+              onClick={(e) => onOpenRename(cwd, e.currentTarget)}
+              aria-label={`Rename ${shortCwd(cwd)}`}
+            >
+              {displayName || shortCwd(cwd)}
+            </button>
+            {displayName && <span className={styles.excludePath}>{shortCwd(cwd)}</span>}
+          </>
+        )}
       </span>
       {stale && <span className={styles.excludeStale}>not currently active</span>}
     </li>
@@ -1024,9 +1039,10 @@ function ProjectRow({
 }
 
 /** One owning-entity group in the reworked Session overview (#465): an entity header (color dot +
- *  name + folder count) over that entity's discovered folders, each still a `ProjectRow` (inverse-
- *  checkbox visibility toggle + rename), rendered as a folder sub-tree. The synthetic "Unassigned"
- *  group reuses this with a dashed dot and no entity. */
+ *  name + folder count) over that entity's discovered folders, each a `ProjectRow` (inverse-checkbox
+ *  visibility toggle; rename only when unadopted, #615 Phase 3), rendered as a folder sub-tree. The
+ *  synthetic "Unassigned" group reuses this with a dashed dot and no entity — its folders are the
+ *  renamable ones. */
 function OverviewGroup({
   name,
   color,
@@ -1231,8 +1247,9 @@ function OverviewCard() {
       </p>
       <p className={styles.hint}>
         A project&rsquo;s sessions stay in the sidebar and filter even with its folders unticked —
-        archive the project to hide those. Click a folder&rsquo;s name to give it a custom display
-        name.
+        archive the project to hide those. Click an <em>unassigned</em> folder&rsquo;s name to give
+        it a custom display name; an adopted folder takes its label from its project, so rename the
+        project (above) instead.
       </p>
       {projects === null ? (
         <p className={styles.hint}>Loading projects…</p>

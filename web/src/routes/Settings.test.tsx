@@ -619,12 +619,46 @@ test("Session overview: folders are grouped under their owning entity + Unassign
   // <name>") + an "Unassigned" group — distinct from the ProjectsManager's own entity list above.
   const alphaList = await screen.findByRole("list", { name: /folders in alpha project/i });
   const unassignedList = screen.getByRole("list", { name: /folders in unassigned/i });
-  // Each folder is still a ProjectRow with the inverse-checkbox + rename button.
+  // Both folders keep the inverse-checkbox.
   expect(screen.getByRole("checkbox", { name: /~\/alpha/i })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: /~\/loose/i })).toBeChecked();
-  // The owned folder is under its entity group; the loose folder under Unassigned — never crossed.
-  expect(alphaList).toContainElement(screen.getByRole("button", { name: /rename ~\/alpha/i }));
+  // Rename is only for the UNADOPTED folder (#615 Phase 3): ~/loose (under Unassigned) has the
+  // button; ~/alpha (adopted by Alpha Project) does not — its name comes from the project.
   expect(unassignedList).toContainElement(screen.getByRole("button", { name: /rename ~\/loose/i }));
+  expect(screen.queryByRole("button", { name: /rename ~\/alpha/i })).not.toBeInTheDocument();
+  // The adopted row still shows its path, just as static text.
+  expect(alphaList).toHaveTextContent("~/alpha");
+  await flushFetches();
+});
+
+test("Session overview: an adopted folder has no rename control; an unassigned one does (#615 Phase 3)", async () => {
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
+      { cwd: "/home/u/alpha", label: "Alpha" },
+      { cwd: "/home/u/loose", label: "Loose" },
+    ],
+  });
+  vi.mocked(api.projectEntities).mockResolvedValue({
+    projects: [
+      {
+        id: "p-1",
+        name: "Alpha Project",
+        color: "#c02020",
+        folders: ["/home/u/alpha"],
+        default_folder: "/home/u/alpha",
+        archived: false,
+        created_at: 0,
+        session_count: 1,
+      },
+    ],
+  });
+  renderSettings("dark", "#ffb000", "/settings/projects");
+  // Adopted: no rename button, and the static name carries the "rename the project" hint.
+  await screen.findByRole("checkbox", { name: "Offer ~/alpha as a launch location" });
+  expect(screen.queryByRole("button", { name: /rename ~\/alpha/i })).not.toBeInTheDocument();
+  expect(screen.getByTitle(/named by its project/i)).toHaveTextContent("~/alpha");
+  // Unadopted: the rename button is still offered.
+  expect(screen.getByRole("button", { name: /rename ~\/loose/i })).toBeInTheDocument();
   await flushFetches();
 });
 

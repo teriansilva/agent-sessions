@@ -665,6 +665,18 @@
   outline: 2px solid var(--focus, #ffe28a);
   outline-offset: 2px;
 }
+/* Adopted folders are named by their project (#615 Phase 3): the row shows the path as static
+   text, no rename affordance. Same metrics as .nameButton minus the button chrome, so the row
+   height doesn't jump between adopted and unadopted folders. */
+.nameStatic {
+  display: inline-block;
+  padding: 2px 0;
+  font-size: 13px;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .excludePath {
   font-size: 11px;
   color: var(--text-muted);
