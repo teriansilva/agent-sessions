@@ -509,6 +509,13 @@ AGENT_SESSIONS_HOST=$HOST
 AGENT_SESSIONS_PORT=$PORT
 AGENT_SESSIONS_ENV_FILE=$ENVF
 AGENT_SESSIONS_FORCE_PASSWORD_CHANGE=1
+# Cap glibc's per-thread malloc arenas (#630). The broker parks one blocking-read thread
+# per live session, and glibc binds each to its own arena (up to 8*nproc), each of which
+# grows to a high-water mark and never returns it to the OS — 7.7 GB RSS against a 145 MB
+# heap was observed. Two arenas is plenty (the threads block in os.read, they don't
+# allocate). Read by glibc at process start, so it must be in the environment before exec;
+# systemd's EnvironmentFile sets it before ExecStart. Delete this line to revert.
+MALLOC_ARENA_MAX=2
 EOF
   chmod 600 "$ENVF"
   printf '%s' "$password"
@@ -547,6 +554,9 @@ migrate_env() {
   umask 077
   _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
   _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
+  # Cap glibc malloc arenas on EXISTING installs too (#630) — appended only if absent, so an
+  # operator override is preserved. Takes effect on the next service (re)start.
+  _env_set_if_absent MALLOC_ARENA_MAX 2
   # Persist an explicitly-passed channel (#538) so the app (which reads the env file
   # live) and later re-runs (adopt_persisted_channel) follow it. UI changes rewrite the
   # same key; a defaulted run leaves whatever the operator/UI chose untouched.
@@ -579,6 +589,13 @@ OOMPolicy=continue
 # exhausted by session workloads (test runners), and at the ceiling fork fails → PTY spawns
 # die with EAGAIN. Generous explicit ceiling until #346 Phase B isolates sessions in scopes.
 TasksMax=8192
+# Memory guardrail (#630): a soft ceiling so runaway growth surfaces as reclaim pressure
+# instead of silent creep to OOM. A percentage (not a fixed GiB) so it scales across hosts
+# — 80% is well above legitimate multi-session use (the arena leak this backstops was fixed
+# by MALLOC_ARENA_MAX=2 in the env file). Soft: throttles/reclaims, never kills (that stays
+# OOMPolicy=continue). The whole unit shares one cgroup (app + session children), so keep it
+# generous — tune down only if this host should cap sessions harder.
+MemoryHigh=80%
 # Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini/agy,
 # which commonly live there) are on PATH — otherwise the claude CLI nags
 # "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile
