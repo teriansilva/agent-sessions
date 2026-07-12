@@ -46,6 +46,12 @@ HISTORY_TURN_CHARS_MAX = 2_000
 CATALOG_SLICE_MAX = 150
 TITLE_MAX = 80
 SUMMARY_MAX = 160
+# The per-entry cap on the fuller ``ai_recap`` (#481, ≤1500 chars) when it stands in for the
+# one-line ``ai_summary`` in a Stage-1 catalog entry (#653). Deliberately conservative: it is
+# paid up to ``CATALOG_SLICE_MAX`` times per ask, so the ceiling here — not the recap's own
+# length — is what bounds the Stage-1 prompt. Roomier than ``SUMMARY_MAX`` so the ranking model
+# sees the chronological brief, not a single distilled line.
+CATALOG_RECAP_MAX = 500
 CWD_TAIL_CHARS = 120
 PROJECT_MAX = 40
 STAGE2_CANDIDATES = 5
@@ -57,7 +63,8 @@ WHY_MAX = 160
 _STAGE1_SYSTEM_PROMPT = (
     "You help a developer find their past AI-coding sessions. You are given their question "
     "(and possibly prior conversation turns) plus a catalog of sessions: id, title, project, "
-    "working-directory tail, one-line summary, age in hours. Pick the sessions that best "
+    "working-directory tail, a summary (which may be a short chronological recap of what "
+    "happened, one step per line), age in hours. Pick the sessions that best "
     "answer the question, best match first, and answer in one short sentence. Only use ids "
     "that appear in the catalog; return an empty matches list when nothing fits. "
     'Reply with ONLY a JSON object: {"answer": "<one short sentence, max 500 chars>", '
@@ -105,6 +112,10 @@ def _card_haystack(card: dict) -> str:
         for v in (
             card.get("title"),
             card.get("ai_summary"),
+            # The fuller chronological recap (#481/#653): a topic that lives here but not in the
+            # one-line summary now registers as a keyword hit, so the prefilter keeps it ahead of
+            # recency noise. Internal (`_`-prefixed) — never leaves the server (see `_public_card`).
+            card.get("_ai_recap"),
             card.get("cwd"),
             project.get("name"),
         )
@@ -113,9 +124,11 @@ def _card_haystack(card: dict) -> str:
 
 
 def _prefilter(catalog: list[dict], query: str, cap: int = CATALOG_SLICE_MAX) -> list[dict]:
-    """Bound the catalog slice sent to the model: every keyword HIT is kept (never dropped
-    by the cap), most-recent-first recency fills the remainder. ``catalog`` arrives ranked
-    by state/recency from ``build_cards``, so "fill the rest" is a stable prefix walk."""
+    """Bound the catalog slice sent to the model: keyword HITS are taken first (so a match is
+    preferred over mere recency), then most-recent-first recency fills the remainder up to
+    ``cap``. Hits are still bounded by ``cap`` — when more than ``cap`` cards match (likelier now
+    the recap feeds the haystack, #653) the later hits are dropped in ``build_cards`` order.
+    ``catalog`` arrives ranked by state/recency, so "fill the rest" is a stable prefix walk."""
     keywords = _keywords(query)
     hits: list[dict] = []
     rest: list[dict] = []
@@ -130,14 +143,24 @@ def _prefilter(catalog: list[dict], query: str, cap: int = CATALOG_SLICE_MAX) ->
 
 def _catalog_entry(card: dict, now: float) -> dict:
     """The trimmed per-entry view the model sees — bounded fields only, never the internal
-    keys."""
+    keys.
+
+    ``summary`` prefers the fuller ``ai_recap`` (#481, capped at ``CATALOG_RECAP_MAX``) so the
+    ranking model sees the chronological brief; it falls back to the one-line ``ai_summary``
+    (capped at ``SUMMARY_MAX``, byte-for-byte as before) when a session has no recap yet (#653).
+    The recap arrives on the internal ``_ai_recap`` key — consumed here as retrieval input, never
+    echoed to the client (``_public_card`` strips every ``_``-prefixed field)."""
     project = card.get("project") or {}
+    recap = str(card.get("_ai_recap") or "").strip()
+    summary = (
+        recap[:CATALOG_RECAP_MAX] if recap else str(card.get("ai_summary") or "")[:SUMMARY_MAX]
+    )
     return {
         "id": card["id"],
         "title": str(card.get("title") or "")[:TITLE_MAX],
         "project": str(project.get("name") or "")[:PROJECT_MAX],
         "cwd": str(card.get("cwd") or "")[-CWD_TAIL_CHARS:],
-        "summary": str(card.get("ai_summary") or "")[:SUMMARY_MAX],
+        "summary": summary,
         "age_hours": round((now - float(card.get("last_activity") or now)) / 3600, 1),
     }
 

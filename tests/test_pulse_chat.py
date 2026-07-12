@@ -125,6 +125,112 @@ def test_prefilter_caps_slice_and_keeps_every_keyword_hit(monkeypatch):
     assert any(c["id"] == f"claude:{_uuid(999)}" for c in slice_)
 
 
+def test_prefilter_keeps_a_recap_only_keyword_hit(monkeypatch):
+    # The topic lives ONLY in the session's ai_recap — not its title, summary, cwd, or
+    # project (#653). Before the recap fed the haystack this session was a non-hit and, being
+    # the oldest, would have been dropped past the 150-cap by the 200 recent-noise sessions.
+    noise = _sessions(200)
+    hit = FakeSession("claude", _uuid(999), "/proj/generic", OLD)
+    meta = {
+        f"claude:{_uuid(999)}": metadata.SessionMeta(
+            title="refactor the stream layer",  # deliberately no "backpressure"
+            ai_recap="investigated the mux backpressure deadlock; fixed the writer",
+            review_fingerprint="fp",
+        )
+    }
+    _setup(monkeypatch, [*noise, hit], meta)
+    catalog = pulse_chat.build_catalog(now=NOW)
+    target = next(c for c in catalog if c["id"] == f"claude:{_uuid(999)}")
+    # Guard the premise: the keyword is ONLY in the recap, so a hit here is the recap's doing.
+    assert "backpressure" not in (
+        f"{target.get('title') or ''} {target.get('ai_summary') or ''} "
+        f"{target.get('cwd') or ''}".lower()
+    )
+    assert "backpressure" in pulse_chat._card_haystack(target)
+    slice_ = pulse_chat._prefilter(catalog, "which session had the backpressure deadlock?")
+    assert len(slice_) == pulse_chat.CATALOG_SLICE_MAX
+    assert any(c["id"] == f"claude:{_uuid(999)}" for c in slice_)
+
+
+def test_catalog_entry_prefers_bounded_recap_over_summary():
+    # A conservative cap, pinned so the Stage-1 prompt can't silently grow with recap length,
+    # and roomier than the one-line summary so the model sees the chronological brief (#653).
+    assert pulse_chat.CATALOG_RECAP_MAX == 500
+    assert pulse_chat.CATALOG_RECAP_MAX > pulse_chat.SUMMARY_MAX
+    entry = pulse_chat._catalog_entry(
+        {
+            "id": f"claude:{_uuid(1)}",
+            "_ai_recap": "R" * 2000,
+            "ai_summary": "one liner",
+            "last_activity": NOW,
+        },
+        NOW,
+    )
+    assert entry["summary"] == "R" * pulse_chat.CATALOG_RECAP_MAX
+    # A short recap passes through whole (never padded, never the summary).
+    short = pulse_chat._catalog_entry(
+        {
+            "id": f"claude:{_uuid(2)}",
+            "_ai_recap": "did the thing",
+            "ai_summary": "s",
+            "last_activity": NOW,
+        },
+        NOW,
+    )
+    assert short["summary"] == "did the thing"
+
+
+def test_catalog_entry_falls_back_to_summary_when_no_recap():
+    # No recap (older/un-recapped session) → byte-for-byte the pre-#653 behaviour: the
+    # ai_summary capped at SUMMARY_MAX, not CATALOG_RECAP_MAX.
+    for recap in (None, ""):
+        entry = pulse_chat._catalog_entry(
+            {
+                "id": f"claude:{_uuid(3)}",
+                "_ai_recap": recap,
+                "ai_summary": "S" * 300,
+                "last_activity": NOW,
+            },
+            NOW,
+        )
+        assert entry["summary"] == "S" * pulse_chat.SUMMARY_MAX
+
+
+def test_recap_is_retrieval_input_only_and_never_leaks(configured_ai, monkeypatch):
+    # The recap feeds the Stage-1 catalog the model ranks on, but the internal _ai_recap key
+    # (like every _-prefixed field) is stripped before any card reaches the client (#653).
+    assert "_ai_recap" not in pulse_chat._public_card(
+        {"id": "x", "title": "t", "_ai_recap": "secret", "_review_fingerprint": "fp"}
+    )
+    target = f"claude:{_uuid(1)}"
+    _setup(
+        monkeypatch,
+        _sessions(3),
+        {target: metadata.SessionMeta(ai_recap="secret chronological recap of the mux work")},
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {"answer": "cat", "matches": [{"id": target, "why": "recap mentions it"}]},
+                {"answer": "the mux session.", "matches": [{"id": target, "why": "confirmed"}]},
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: mux tail", "fp"))
+    result = asyncio.run(pulse_chat.ask("the mux work session?"))
+    # Stage 1 saw the recap as the target's summary (retrieval input)...
+    stage1_catalog = json.loads(calls[0]["messages"][-1]["content"])["catalog"]
+    target_entry = next(e for e in stage1_catalog if e["id"] == target)
+    assert target_entry["summary"] == "secret chronological recap of the mux work"
+    # ...but the returned card carries NO _-prefixed field (recap never leaves the server).
+    (match,) = result["matches"]
+    assert not any(k.startswith("_") for k in match)
+
+
 # ---- ask(): call counts, stages, validation -----------------------------------------
 
 
