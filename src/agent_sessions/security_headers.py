@@ -33,9 +33,11 @@ STATIC_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    # Turn off device/capability APIs the app never uses. Clipboard + fullscreen are left at
-    # their defaults on purpose — the terminal and Compose paste depend on them.
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    # Turn off device/capability APIs the app never uses. `microphone=(self)` (not `()`) keeps
+    # push-to-talk dictation (#483/#486) working — the Web Speech API needs the mic granted to the
+    # app's own origin, and an empty allowlist denies it to self too. Clipboard + fullscreen are
+    # left at their defaults on purpose — the terminal and Compose paste depend on them.
+    "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
 }
 
 # Only meaningful over HTTPS; the middleware sets it when the request arrived over TLS.

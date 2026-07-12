@@ -34,6 +34,9 @@ def test_containment_headers_on_api_response(auth_cfg, fake_jsonl):
     assert r.headers["X-Frame-Options"] == "DENY"
     assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert "camera=()" in r.headers["Permissions-Policy"]
+    # Mic stays granted to same-origin so push-to-talk dictation (#483/#486) works — an empty
+    # `microphone=()` allowlist would deny it to self and break voice input.
+    assert "microphone=(self)" in r.headers["Permissions-Policy"]
     csp = r.headers["Content-Security-Policy"]
     assert "default-src 'self'" in csp
     assert "frame-ancestors 'none'" in csp
