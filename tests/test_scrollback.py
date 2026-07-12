@@ -410,16 +410,19 @@ def test_concurrent_first_touch_preserves_persisted_tail(monkeypatch):
 
     class _RacingPath:
         """Proxies the real scrollback Path but injects an event-loop append the first time the
-        hydrate reads the file — i.e. while the worker's disk read is 'in flight'."""
+        hydrate opens the file for reading — i.e. while the worker's disk read is 'in flight'.
+        (#652 T4 reads the tail via ``open()``/``seek()`` rather than ``read_bytes()``, so the
+        injection hooks ``open``; ``state['raced']`` fires it exactly once, so the append's own
+        persist-``open`` and the re-entrant hydrate don't re-trigger it.)"""
 
         def __init__(self, p):
             self._p = p
 
-        def read_bytes(self):
+        def open(self, *args, **kwargs):
             if not state["raced"]:
                 state["raced"] = True
                 scrollback._buffer_append(key, b"new")
-            return self._p.read_bytes()
+            return self._p.open(*args, **kwargs)
 
         def __getattr__(self, name):
             return getattr(self._p, name)
@@ -547,3 +550,73 @@ def test_starts_inside_control_string_is_false_once_terminated():
     assert not scrollback.vtscreen.starts_inside_control_string(ring, len(ring) - 5)
     assert not scrollback.vtscreen.starts_inside_control_string(b"no escapes at all", 5)
     assert not scrollback.vtscreen.starts_inside_control_string(b"anything", 0)
+
+
+# --- #652 T1: amortized ring trim -------------------------------------------------------
+
+
+def test_ring_trim_is_amortized_overshoot_then_snaps_back(monkeypatch):
+    # The ring tolerates an overshoot of up to _MAX_BUF // _RING_TRIM_DIVISOR before trimming,
+    # then drops back to EXACTLY _MAX_BUF — so the O(cap) memmove runs once per slack bytes,
+    # not on every chunk. Offsets stay consistent throughout (readers use the actual length).
+    monkeypatch.setattr(scrollback, "_MAX_BUF", 100)  # slack = 100 // 8 = 12 → trim past 112
+    key = "claude:trim"
+    scrollback._buffer_append(key, b"a" * 100)
+    assert len(scrollback._BUFFERS[key]) == 100  # at cap, not over → no trim
+
+    scrollback._buffer_append(key, b"b" * 10)  # 110 ≤ 112 → overshoot tolerated
+    assert len(scrollback._BUFFERS[key]) == 110
+    # ring_start is derived from the ACTUAL length, so resume offsets are still consistent.
+    _, total = scrollback._resume_payload(key, 0)
+    assert total == 110
+
+    scrollback._buffer_append(key, b"c" * 5)  # 115 > 112 → trim back to the cap
+    buf = scrollback._BUFFERS[key]
+    assert len(buf) == 100
+    assert buf[-1:] == b"c"
+    assert scrollback._TOTALS[key] == 115  # monotonic byte count unaffected by trimming
+
+
+# --- #652 T6: _scan_modes fast-path -----------------------------------------------------
+
+
+def test_scan_modes_fast_path_skips_plain_chunks_but_still_tracks_and_carries():
+    scrollback._MODES.clear()
+    scrollback._MODE_CARRY.clear()
+    # Plain chunk, no ESC and no carry → early return, no _MODES entry materialized.
+    scrollback._scan_modes("k", b"just some plain output, no escapes")
+    assert "k" not in scrollback._MODES
+    # A real DECSET is still tracked (mouse mode 1000).
+    scrollback._scan_modes("k", b"\x1b[?1000h")
+    assert scrollback._MODES.get("k") == {1000}
+    # A sequence split across chunks: the carry means the 2nd (ESC-free) chunk is NOT skipped.
+    scrollback._scan_modes("k2", b"\x1b[?10")  # partial → carried
+    assert scrollback._MODE_CARRY.get("k2")
+    scrollback._scan_modes("k2", b"00h")  # completes despite having no ESC of its own
+    assert scrollback._MODES.get("k2") == {1000}
+    assert "k2" not in scrollback._MODE_CARRY  # carry consumed
+
+
+# --- #652 T2/T4: bounded tail read ------------------------------------------------------
+
+
+def test_read_file_tail_returns_bounded_tail(tmp_path):
+    p = tmp_path / "mirror.bin"
+    p.write_bytes(bytes(range(256)) * 10)  # 2560 bytes
+    # n < size → exactly the last n bytes, without loading the whole file.
+    assert scrollback._read_file_tail(p, 100) == (bytes(range(256)) * 10)[-100:]
+    # n >= size → the whole file.
+    assert scrollback._read_file_tail(p, 10_000) == bytes(range(256)) * 10
+
+
+def test_hydrate_reads_only_tail_of_oversized_mirror(monkeypatch):
+    # A mirror larger than _MAX_BUF hydrates to exactly the last _MAX_BUF bytes (T4),
+    # via the bounded tail read rather than loading the whole file.
+    monkeypatch.setattr(scrollback, "_MAX_BUF", 50)
+    key = "claude:big"
+    path = scrollback._scrollback_path(key)
+    scrollback._ensure_scrollback_dir()
+    path.write_bytes(b"x" * 30 + b"y" * 80)  # 110 bytes on disk, cap is 50
+    scrollback._LOADED_FROM_DISK.discard(key)
+    scrollback._ensure_loaded(key)
+    assert bytes(scrollback._BUFFERS[key]) == b"y" * 50  # last 50 bytes only

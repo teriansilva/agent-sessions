@@ -138,6 +138,11 @@ _SCROLLBACK_SUFFIX = ".scrollback"
 # Head-trim the file only once it grows a full `_MAX_BUF` past the cap, so trims are
 # amortized (≈ one rewrite per `_MAX_BUF` of output) rather than on every chunk.
 _DISK_TRIM_SLACK = _MAX_BUF
+# In-memory ring trim slack fraction (#652 T1): the ring is allowed to overshoot `_MAX_BUF` by
+# `_MAX_BUF // _RING_TRIM_DIVISOR` before trimming back — see `_buffer_append`. Computed from
+# the LIVE `_MAX_BUF` at trim time (not frozen here) so a test that monkeypatches `_MAX_BUF`
+# still exercises trimming. 8 ⇒ ~12.5 % RAM overshoot (~1 MB at the 8 MB default).
+_RING_TRIM_DIVISOR = 8
 # Keys hydrated from disk this process — so we read the file at most once per key.
 _LOADED_FROM_DISK: set[str] = set()
 
@@ -234,6 +239,13 @@ def _scan_modes(key: str, data: bytes) -> None:
     sequence (``CSI ? 1000;1006 h``) sets every listed mode. Persists to the sidecar only
     when the set actually changes."""
     carry = _MODE_CARRY.get(key, b"")
+    # Fast-path (#652 T6): a DECSET/DECRST needs an ESC, and a split one is only possible when
+    # a fragment was carried. With neither, `carry + data` has no ESC → no matches, no new
+    # carry, nothing to clear — so skip the allocation and the whole-chunk regex on the vast
+    # majority of plain-output chunks. (Lazy: not materializing an empty `_MODES[key]` here is
+    # fine — readers treat a missing set and an empty set identically.)
+    if not carry and b"\x1b" not in data:
+        return
     buf = carry + data
     active = _MODES.get(key)
     if active is None:
@@ -334,16 +346,44 @@ def _key_from_path(p: Path) -> str:
     return f"{engine}:{native}" if native else engine
 
 
+# mkdir the scrollback dir at most once per distinct dir (#652 T2): the per-chunk
+# `mkdir(exist_ok=True)` in `_persist_append` is a pure syscall tax after the first. A bare
+# "done" flag would be wrong — the test suite re-points `_SCROLLBACK_DIR` per case — so guard
+# on the CURRENT dir value: re-create only when the target actually changes.
+_DIR_READY_FOR: Path | None = None
+
+
+def _ensure_scrollback_dir() -> None:
+    global _DIR_READY_FOR
+    if _DIR_READY_FOR != _SCROLLBACK_DIR:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        _DIR_READY_FOR = _SCROLLBACK_DIR
+
+
+def _read_file_tail(path: Path, n: int) -> bytes:
+    """Read the last ``n`` bytes of ``path`` without loading the whole file (#652 T2/T4).
+
+    The mirror can be up to ``_MAX_BUF + _DISK_TRIM_SLACK`` on disk, so ``read_bytes()[-n:]``
+    allocates the ENTIRE file (up to ~2×`_MAX_BUF`) just to keep the tail — on the event loop.
+    Seek to ``size - n`` and read forward so only the retained window is touched."""
+    with path.open("rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        if size > n:
+            fh.seek(size - n)
+        return fh.read()
+
+
 def _persist_append(key: str, data: bytes) -> None:
     """Append observed output to the key's on-disk scrollback (best-effort), head-trimming
     to the last `_MAX_BUF` bytes once it grows past the cap + slack."""
     try:
-        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        _ensure_scrollback_dir()
         path = _scrollback_path(key)
         with path.open("ab") as fh:
             fh.write(data)
-        if path.stat().st_size > _MAX_BUF + _DISK_TRIM_SLACK:
-            tail = path.read_bytes()[-_MAX_BUF:]
+            size = fh.tell()  # append-mode offset after write == file size; no extra stat()
+        if size > _MAX_BUF + _DISK_TRIM_SLACK:
+            tail = _read_file_tail(path, _MAX_BUF)  # bounded tail, not a whole-file read
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_bytes(tail)
             tmp.replace(path)  # atomic swap so a reader never sees a half-written file
@@ -388,7 +428,10 @@ def _ensure_loaded(key: str) -> None:
                 if tok.strip().isdigit() and int(tok) in _MODE_TRACK
             }
     try:
-        data = _scrollback_path(key).read_bytes()[-_MAX_BUF:]
+        # #652 T4: bounded tail read — the on-disk mirror can be ~2×`_MAX_BUF`, and
+        # `read_bytes()[-_MAX_BUF:]` allocated the whole file (up to 16 MB) on the first
+        # touch of a key just to keep its tail. Seek to the tail instead.
+        data = _read_file_tail(_scrollback_path(key), _MAX_BUF)
     except OSError:
         data = b""
     # --- apply + mark-loaded atomically under the lock; marker set LAST ---
@@ -620,8 +663,13 @@ def _buffer_append(key: str, data: bytes) -> None:
     # alternate-scroll / bracketed-paste state stays current with or without a viewer.
     _scan_modes(key, data)
     _persist_append(key, data)  # mirror to disk so scrollback survives a restart (#206)
-    _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
-    _TOTALS.move_to_end(key)
+    # #652 T7: `_TOTALS` is also an OrderedDict shared with the worker-thread hydrate
+    # (`_ensure_loaded` writes it under `_RING_LOCK`), so serialize this mutation under the
+    # same lock — the cross-thread OrderedDict race `_RING_LOCK` exists to prevent. O(1) work,
+    # no expensive I/O held.
+    with _RING_LOCK:
+        _TOTALS[key] = _TOTALS.get(key, 0) + len(data)
+        _TOTALS.move_to_end(key)
     # Skip the working-signal stamp while inside the post-attach replay grace (#195):
     # the screen-redraw burst is not new agent activity. Scrollback (buf/_TOTALS) is
     # always updated so a reattach still resumes the full screen.
@@ -637,7 +685,12 @@ def _buffer_append(key: str, data: bytes) -> None:
             # eviction — so chatty output never re-wakes; keyless + gated downstream, so it can
             # never force an endpoint call the periodic loop wouldn't have made.
             _kick_review_on_first_output()
-    if len(buf) > _MAX_BUF:
+    # #652 T1: amortized front-trim. Overshoot `_MAX_BUF` by up to `_MAX_BUF // _RING_TRIM_DIVISOR`
+    # before dropping back, so the O(`_MAX_BUF`) memmove runs once per slack bytes instead of on
+    # every chunk once full. Readers derive `ring_start = total - len(ring)` from the ACTUAL
+    # length (nothing asserts `len == _MAX_BUF`), so an overshoot merely serves slightly more
+    # scrollback with byte offsets still consistent — mirrors the on-disk `_DISK_TRIM_SLACK`.
+    if len(buf) > _MAX_BUF + _MAX_BUF // _RING_TRIM_DIVISOR:
         del buf[: len(buf) - _MAX_BUF]
     _enforce_buffer_cap()
 

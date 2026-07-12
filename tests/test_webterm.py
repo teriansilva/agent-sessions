@@ -133,15 +133,19 @@ def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
 
 
 def test_webterm_scrollback_ring_caps():
-    # Per-session scrollback ring replays history on reattach; it must stay capped.
+    # Per-session scrollback ring replays history on reattach; it must stay bounded.
+    # #652 T1: the ring is trimmed AMORTIZED — it may overshoot _MAX_BUF by up to
+    # _MAX_BUF//_RING_TRIM_DIVISOR before dropping back to exactly _MAX_BUF. A big append
+    # (well past cap + slack) fires a trim, so the oldest bytes are dropped.
     from agent_sessions import webterm
 
     webterm._BUFFERS.clear()
     webterm._buffer_append("claude:x", b"a" * 100)
     assert len(webterm._BUFFERS["claude:x"]) == 100
-    webterm._buffer_append("claude:x", b"b" * (webterm._MAX_BUF + 5000))
+    # 2×_MAX_BUF is far past cap + slack → a trim fires and the ring drops back to the cap.
+    webterm._buffer_append("claude:x", b"b" * (2 * webterm._MAX_BUF))
     buf = webterm._BUFFERS["claude:x"]
-    assert len(buf) == webterm._MAX_BUF  # oldest trimmed
+    assert len(buf) == webterm._MAX_BUF  # trimmed back to exactly the cap
     assert buf[-1:] == b"b"
     webterm._BUFFERS.clear()
 
