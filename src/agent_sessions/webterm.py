@@ -215,6 +215,30 @@ async def _force_repaint(
         proc.send_signal(signal.SIGWINCH)
 
 
+def _nudge_plan(have: int, blank_attach: bool) -> float | None:
+    """Pre-nudge settle (seconds) for the fresh-attach repaint, or ``None`` to skip nudging.
+
+    #652 T-P1 — cut the blank-screen window on connect/reconnect for alt-screen agents
+    (claude/opencode), whose fresh attach delivers an EMPTY payload so the forced SIGWINCH repaint
+    is the ONLY thing that fills the screen (the client's own connect-time resize is usually the
+    SAME size the URL already carried → a no-op the TUI ignores).
+
+    - ``have > 0`` and NOT blank: a live continuation holds its own screen — nudging would flicker
+      it (#304), so skip entirely (``None``).
+    - ``have <= 0`` (fresh page load / launch): the screen is blank and nothing else will paint it,
+      so fire the repaint IMMEDIATELY — ``0.0`` settle. The #443 ``out_bytes`` wait inside
+      ``_force_repaint`` still holds the shrink until the agent has rendered it, so the shrink→
+      restore pair stays un-coalesceable WITHOUT the pre-settle. (Was a fixed ``_NUDGE_SETTLE_S``,
+      which added ~0.3 s of dead blank before every fresh attach.)
+    - ``have > 0`` but blank (a reconnect that delivered nothing visible, #349): keep the small
+      ``_NUDGE_SETTLE_S`` — its screen may still be mid-update from the continuation payload, so let
+      it quiesce before the shrink.
+    """
+    if have > 0 and not blank_attach:
+        return None
+    return 0.0 if have <= 0 else _NUDGE_SETTLE_S
+
+
 def _read(fd: int) -> bytes:
     try:
         return os.read(fd, 65536)
@@ -553,13 +577,13 @@ async def run(
                 _note_submit(buf_key, msg["bytes"])
 
     async def _nudge_repaint() -> None:
-        # A FRESH attach needs it (#304); a have>0 reconnect normally doesn't (it holds
-        # its screen, nudging would flicker) — EXCEPT when this attach delivered nothing
-        # visible (`blank_attach`, #349): an idle agent must still be forced to paint or
-        # the client sits on a cleared screen until its next input byte.
-        if have > 0 and not blank_attach:
+        # When and how long to wait before the forced repaint (#304/#349/#443, and #652 T-P1:
+        # fire immediately for a fresh attach) is decided by `_nudge_plan` — see its docstring.
+        settle = _nudge_plan(have, blank_attach)
+        if settle is None:
             return
-        await asyncio.sleep(_NUDGE_SETTLE_S)
+        if settle:
+            await asyncio.sleep(settle)
         await _force_repaint(master, proc, cur["rows"], cur["cols"], out_bytes=out_bytes)
 
     async def heartbeat() -> None:

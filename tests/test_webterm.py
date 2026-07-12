@@ -1121,6 +1121,23 @@ def test_drop_buffer_keeps_disk_then_rehydrates():
     assert total == len(b"persist me")
 
 
+def test_nudge_plan_fires_immediately_for_a_fresh_attach():
+    """#652 T-P1: the fresh-attach repaint must not sit behind the 0.3 s pre-settle — a blank
+    screen has nothing else to fill it, and the #443 out_bytes wait keeps the shrink→restore safe
+    without the settle. A live (have>0, non-blank) continuation still skips the nudge (no flicker);
+    a blank reconnect (have>0) keeps the settle to let the continuation payload quiesce first."""
+    from agent_sessions import webterm
+
+    # Fresh page load / launch (have<=0): fire immediately (0.0 settle), regardless of blank flag.
+    assert webterm._nudge_plan(0, True) == 0.0
+    assert webterm._nudge_plan(0, False) == 0.0
+    assert webterm._nudge_plan(-1, True) == 0.0
+    # Live continuation that holds its own screen: no nudge at all (would flicker, #304).
+    assert webterm._nudge_plan(5, False) is None
+    # Blank reconnect (have>0 but nothing visible, #349): keep the small settle.
+    assert webterm._nudge_plan(5, True) == webterm._NUDGE_SETTLE_S
+
+
 def test_force_repaint_shrinks_2d_then_restores(monkeypatch):
     """#304/#329: a fresh attach to a dtach session shows nothing (a same-size attach delivers no
     SIGWINCH, so a winch-only-repaint agent like claude never redraws → blank/fragments on switch).
