@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Pulse overview">
+  <rect width="640" height="360" fill="#131418"/>
+  <rect x="24" y="28" width="592" height="40" fill="#0d0e10" stroke="#ffb000"/>
+  <rect x="24" y="92" width="284" height="100" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="332" y="92" width="284" height="100" fill="#0d0e10" stroke="#25282e"/>
+  <circle cx="44" cy="112" r="4" fill="#ffb000"/><circle cx="352" cy="112" r="4" fill="#3fbf6f"/>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="320" y="240" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">PULSE // needs-you / in-flight / idle</text>
+</svg>
