@@ -433,3 +433,59 @@ def test_patch_color_placeholder_reconcile_survives_resolve_key(tmp_home, tmp_pa
     # Sanity: the alias resolution wires through the engines package.
     assert placeholder.startswith("opencode:")
     assert real.startswith("opencode:ses_")
+
+
+# --- #652 L2: single-parse sidecar cache ------------------------------------------------
+
+
+def test_load_and_load_aliases_share_a_single_parse(tmp_home, monkeypatch):
+    # The list route reads rows (load) AND the alias map (load_aliases) every request; #652 L2
+    # memoizes the parse so the multi-MB sidecar is read/parsed ONCE, not twice.
+    metadata.invalidate_raw_cache()
+    p = metadata._default_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(
+            {
+                "claude:11111111-1111-1111-1111-111111111111": {"title": "T"},
+                "__aliases__": {"opencode:new-x": "opencode:ses_x"},
+            }
+        )
+    )
+    calls = {"n": 0}
+    real_load = json.load
+
+    def counting(fh):
+        calls["n"] += 1
+        return real_load(fh)
+
+    monkeypatch.setattr(metadata.json, "load", counting)
+    rows = metadata.load()
+    aliases = metadata.load_aliases()
+    assert calls["n"] == 1  # one parse shared by both reads
+    assert "claude:11111111-1111-1111-1111-111111111111" in rows
+    assert aliases == {"opencode:new-x": "opencode:ses_x"}
+
+
+def test_raw_cache_refreshes_after_a_write(tmp_home):
+    # A write bumps the sidecar's (mtime, size) signature, so the cache re-parses — no stale reads.
+    metadata.invalidate_raw_cache()
+    key = "claude:22222222-2222-2222-2222-222222222222"
+    p = metadata._default_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({key: {"title": "first"}}))
+    assert metadata.load()[key].title == "first"  # parses + caches
+    # Rewrite with different content (different length → different size, and a real write bumps
+    # mtime too) — the next read must see the new value, not the cached one.
+    p.write_text(json.dumps({key: {"title": "second-and-longer"}}))
+    assert metadata.load()[key].title == "second-and-longer"
+
+
+def test_load_still_fail_soft_on_corrupt_sidecar(tmp_home):
+    # The cache path preserves the fail-soft contract: a corrupt file yields {} (never raises).
+    metadata.invalidate_raw_cache()
+    p = metadata._default_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{ not valid json …")
+    assert metadata.load() == {}
+    assert metadata.load_aliases() == {}

@@ -15,6 +15,7 @@ import fcntl
 import json
 import os
 import re
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -237,17 +238,59 @@ def _rewrite_in_place(fh, data: dict) -> None:
     os.fsync(fh.fileno())
 
 
-def load(path: Path | None = None) -> dict[str, SessionMeta]:
-    """Read sidecar; tolerate missing/empty/corrupt files by returning empty dict."""
-    path = path or _default_path()
-    if not path.exists():
+# Parsed-sidecar cache (#652 L2). The list route reads the sidecar on every keystroke-settle,
+# filter switch, and 15 s poll — and used to open + ``json.load`` the whole (multi-MB) file TWICE
+# per request: once for the session rows (``load``) and once for the alias map (``load_aliases``).
+# Memoize the parsed dict behind an (mtime_ns, size) signature so those two calls share one parse
+# and repeated requests between edits skip the read entirely. Every write goes through the flocked
+# read-modify-write below and ends in an atomic ``os.replace`` (new mtime), so a stale cache is
+# impossible; ``patch`` still reads the authoritative on-disk bytes under flock, never this cache.
+# Keyed on ``str(path)`` (tests use a per-case tmp path, prod has one file), single entry per path.
+_raw_cache_lock = threading.Lock()
+_raw_cache: dict[str, tuple[int, int, dict]] = {}
+
+
+def _load_raw(path: Path) -> dict:
+    """The sidecar's raw parsed JSON dict, memoized on (mtime_ns, size). ``{}`` (never raises) for
+    a missing / empty / corrupt / non-dict file. Callers treat the result as READ-ONLY — they
+    build fresh views (``_normalize_keys`` → new dict, the alias comprehension → new dict) and
+    never mutate it, so the one cached object is safe to share across threads and requests."""
+    try:
+        st = path.stat()
+    except OSError:
         return {}
+    key = str(path)
+    sig = (st.st_mtime_ns, st.st_size)
+    with _raw_cache_lock:
+        hit = _raw_cache.get(key)
+        if hit is not None and hit[0] == sig[0] and hit[1] == sig[1]:
+            return hit[2]
+    # Parse OUTSIDE the lock (a cold cache right after a write may parse twice concurrently —
+    # harmless, same bytes) so a multi-MB parse never serializes concurrent list requests.
     try:
         with path.open() as fh:
             raw = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):
+        return {}
+    with _raw_cache_lock:
+        _raw_cache[key] = (sig[0], sig[1], raw)
+    return raw
+
+
+def invalidate_raw_cache() -> None:
+    """Drop the parsed-sidecar cache. Not needed for correctness (the mtime signature invalidates
+    on every write), but exposed for tests and defensive callers."""
+    with _raw_cache_lock:
+        _raw_cache.clear()
+
+
+def load(path: Path | None = None) -> dict[str, SessionMeta]:
+    """Read sidecar; tolerate missing/empty/corrupt files by returning empty dict."""
+    path = path or _default_path()
+    raw = _load_raw(path)
+    if not raw:
         return {}
     raw, _ = _normalize_keys(raw)
     out: dict[str, SessionMeta] = {}
@@ -445,15 +488,9 @@ def load_aliases(path: Path | None = None) -> dict[str, str]:
     a wrong attach. Only well-formed ``str → str`` entries are returned.
     """
     path = path or _default_path()
-    if not path.exists():
-        return {}
-    try:
-        with path.open() as fh:
-            raw = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
+    # Shares the #652 L2 parse cache with ``load`` — within one list request the second call is a
+    # cache hit, so the sidecar is parsed once, not twice.
+    raw = _load_raw(path)
     aliases = raw.get(_ALIAS_KEY)
     if not isinstance(aliases, dict):
         return {}

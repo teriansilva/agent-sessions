@@ -49,6 +49,22 @@ def _counting_scan():
 # ---- Phase 3: TTL cache primitives --------------------------------------------
 
 
+def test_default_ttl_is_poll_friendly():
+    """#652 L1: the DEFAULT TTL must stay well above the old 1.5 s so the scan snapshot is warm
+    across the ~15 s poll window — otherwise a search-settle / project-switch between polls lands
+    on a cold walk of the whole live+archive tree. The autouse fixture forces the runtime TTL to
+    0, so assert the source default (a regression here silently reintroduces the cold-walk cost).
+    Freshness is unaffected: every mutating route still calls ``invalidate_scan_cache`` — proven by
+    the invalidate/archive/new-session tests below."""
+    import inspect
+    import re
+
+    from agent_sessions.engines import registry
+
+    m = re.search(r"^_SCAN_CACHE_TTL_S\s*=\s*([0-9.]+)", inspect.getsource(registry), re.M)
+    assert m is not None and float(m.group(1)) >= 10.0
+
+
 def test_second_call_within_ttl_does_no_disk_walk(monkeypatch):
     """Two calls within the TTL trigger exactly one real scan (the burst-collapse win)."""
     scan, calls = _counting_scan()

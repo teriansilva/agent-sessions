@@ -67,7 +67,15 @@ def scan_all() -> list[Session]:
 # global singleton would leak one test's sessions into another. A single lock makes the miss
 # single-flight: two concurrent requests within the TTL yield at most one real walk (the second
 # blocks on the lock, then reads the just-populated entry).
-_SCAN_CACHE_TTL_S = 1.5
+#
+# TTL (#652 L1): at 1.5 s the snapshot was warm for only ~1.5 s of each 15 s poll window, so a
+# deliberate search keystroke-settle or a project switch between polls almost always landed on a
+# COLD walk of the whole live+archive tree (~3 reads per JSONL). Raised to 10 s so those actions
+# hit a warm snapshot. Safe because every in-app write that changes what the scanner sees already
+# calls ``invalidate_scan_cache()`` (archive/unarchive/new-session), so the only staleness this
+# guards is a session created OUTSIDE the app (a CLI launch / a running agent writing a fresh
+# JSONL) — already bounded by the 15 s poll, which re-walks on cache expiry (10 s < 15 s).
+_SCAN_CACHE_TTL_S = 10.0
 _scan_cache_lock = threading.Lock()
 _scan_cache: dict[str, tuple[float, list[Session]]] = {}
 
