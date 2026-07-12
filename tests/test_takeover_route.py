@@ -55,7 +55,7 @@ class FakeRegistry:
         self.detached.append((engine, sid))
 
 
-def _serve(ws, registry, *, fp, tab_id, force=False, label=""):
+def _serve(ws, registry, *, fp, tab_id, force=False, label="", accept_at=None):
     return terminal._serve_takeover(
         ws,
         registry=registry,
@@ -73,6 +73,7 @@ def _serve(ws, registry, *, fp, tab_id, force=False, label=""):
         tab_id=tab_id,
         force=force,
         label=label,
+        accept_at=accept_at,
     )
 
 
@@ -175,3 +176,20 @@ def test_same_device_reconnect_reclaims_as_owner(monkeypatch):
     asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="Mac"))
     assert {"t": "role", "role": "owner"} in ws.sent  # reclaimed, not gated
     assert reg.attached == [(ENG, SID)]
+
+
+def test_takeover_path_records_attach_prep_metric(monkeypatch):
+    # #652 regression: the single-active-viewer attach model (AGENT_SESSIONS_TAKEOVER on)
+    # must NOT be a blind spot in /api/perf — the `attach_prep_ms` probe fires here too.
+    from agent_sessions import perfstats
+
+    perfstats.reset()
+    monkeypatch.setattr(terminal.webterm, "run", _noop_run)
+    # Deterministic clock: accept at 100.0, bridge dispatched at 100.0125 → 12.5 ms.
+    monkeypatch.setattr(terminal.time, "monotonic", lambda: 100.0125)
+    ws, reg = FakeWS(), FakeRegistry()
+    asyncio.run(_serve(ws, reg, fp="fpA", tab_id="t1", label="Mac", accept_at=100.0))
+    row = perfstats.snapshot().get("attach_prep_ms")
+    assert row is not None and row["count"] == 1
+    assert row["max"] == pytest.approx(12.5, abs=0.01)
+    perfstats.reset()

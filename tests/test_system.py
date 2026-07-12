@@ -111,6 +111,64 @@ def test_system_no_network_fields_and_disk(auth_cfg, fake_jsonl):
     assert d["disk_total"] >= d["disk_free"] >= 0
 
 
+# ---- /api/perf (#652 measurement scaffold) -------------------------------------
+
+
+def test_perf_requires_auth(auth_cfg):
+    c = _client(auth_cfg)
+    assert c.get("/api/perf").status_code == 401
+
+
+def test_perf_reports_recorded_metrics(auth_cfg):
+    from agent_sessions import perfstats
+
+    perfstats.reset()
+    for v in (10.0, 20.0, 30.0):
+        perfstats.record("api_sessions_ms", v)
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.get("/api/perf")
+    assert r.status_code == 200
+    d = r.json()
+    assert "api_sessions_ms" in d
+    row = d["api_sessions_ms"]
+    assert row["count"] == 3
+    assert set(row) == {"count", "p50", "p95", "p99", "max", "mean"}
+    assert row["max"] == 30.0
+    perfstats.reset()
+
+
+def test_perf_reset_query_clears_after_returning(auth_cfg):
+    from agent_sessions import perfstats
+
+    perfstats.reset()
+    perfstats.record("attach_prep_ms", 5.0)
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # ?reset=1 returns the current window THEN clears it.
+    first = c.get("/api/perf", params={"reset": 1})
+    assert first.status_code == 200
+    assert first.json()["attach_prep_ms"]["count"] == 1
+    # Second read is empty — the window was cleared.
+    assert c.get("/api/perf").json() == {}
+
+
+def test_perf_api_sessions_probe_fires_on_real_request(auth_cfg, fake_jsonl):
+    # End-to-end: a real /api/sessions request must record an `api_sessions_ms` sample
+    # via the `perfstats.timed(...)` wrapper on the actual handler — proving the probe
+    # measures the production path, not just direct record() calls.
+    from agent_sessions import perfstats
+
+    perfstats.reset()
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/sessions").status_code == 200
+    row = c.get("/api/perf").json().get("api_sessions_ms")
+    assert row is not None and row["count"] >= 1
+    assert row["p50"] >= 0.0
+    perfstats.reset()
+
+
 # ---- /api/system/sessions (#346 Phase C) ---------------------------------------
 
 

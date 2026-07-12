@@ -21,6 +21,7 @@ from .. import (
     engines,
     fsbrowse,
     metadata,
+    perfstats,
     prefs,
     project_dirs,
     projects,
@@ -236,7 +237,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 engine=engine,
             )
 
-        return JSONResponse(await asyncio.to_thread(_build))
+        # #652 measurement probe: time the whole request-serving pipeline (cached scan +
+        # metadata load + row build + facets + filter/sort). This is the number L1/L2/L3
+        # move; the `timed` block brackets the awaited worker-thread run.
+        with perfstats.timed("api_sessions_ms"):
+            return JSONResponse(await asyncio.to_thread(_build))
 
     def _list_sessions_sync(
         *,

@@ -17,6 +17,7 @@ from .. import (
     aitasks,
     discover,
     engines,
+    perfstats,
     prefs,
     project_dirs,
     ptybridge,
@@ -106,6 +107,19 @@ def register(
         # kind. Read-only; the Settings "AI activity" panel polls it. Cheap (in-process
         # registry, no I/O), GET so no CSRF.
         return JSONResponse(aitasks.snapshot())
+
+    @app.get("/api/perf")
+    async def perf_probes(reset: bool = False, _: str = Depends(logged_in)) -> JSONResponse:
+        # #652 measurement scaffold: p50/p95/p99 for the hot paths the perf umbrella
+        # optimizes — `attach_prep_ms` (accept→attach: open_action probe + scan_all),
+        # `attach_payload_build_ms` (replay/redraw payload build), and `api_sessions_ms`
+        # (the whole /api/sessions pipeline). Admin-gated, in-process, no persistence.
+        # `?reset=1` returns the current window THEN clears it, so a before/after run is
+        # reset → exercise → snapshot. GET (read + optional in-memory clear), so no CSRF.
+        snap = perfstats.snapshot()
+        if reset:
+            perfstats.reset()
+        return JSONResponse(snap)
 
     @app.get("/api/system")
     async def system_info(_: str = Depends(logged_in)) -> JSONResponse:

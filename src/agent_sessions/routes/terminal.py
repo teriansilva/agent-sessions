@@ -38,6 +38,7 @@ from .. import (
     engines,
     fsbrowse,
     owner,
+    perfstats,
     prefs,
     project_dirs,
     ptybridge,
@@ -114,6 +115,7 @@ async def _serve_takeover(
     tab_id: str,
     force: bool,
     label: str,
+    accept_at: float | None = None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -153,6 +155,10 @@ async def _serve_takeover(
         with contextlib.suppress(Exception):
             await registry.on_attach(engine, phys_native, viewer_id=ws)
         attached = True
+        # #652 measurement probe: same accept→attach latency as the #184 path, recorded
+        # here too so the single-active-viewer attach model isn't a blind spot in /api/perf.
+        if accept_at is not None:
+            perfstats.record("attach_prep_ms", (time.monotonic() - accept_at) * 1000.0)
         await webterm.run(
             ws,
             argv,
@@ -195,6 +201,9 @@ def register(
         # hammers forever. Accepting then closing delivers the real code to onclose.
         # No shell is ever streamed before the checks pass, so the auth gate holds.
         await ws.accept()
+        # #652 measurement probe: mark accept so we can record accept→attach latency
+        # (open_action socket-probe + scan_all + role setup) right before webterm.run.
+        accept_at = time.monotonic()
 
         async def reject(code: int) -> None:
             with contextlib.suppress(Exception):
@@ -483,6 +492,7 @@ def register(
                     tab_id=tab_id,
                     force=force,
                     label=label,
+                    accept_at=accept_at,
                 )
                 return
             # ---- #184 path (flag OFF): in-memory claim + read-only secondary stream ----
@@ -518,6 +528,10 @@ def register(
                         await ws.send_text(json.dumps({"t": "role", "role": "secondary"}))
 
                 demote_task = asyncio.create_task(_watch_demote())
+            # #652 measurement probe: accept→attach prep latency (all the blocking
+            # connect-path work before the bridge starts pumping — the open_action probe
+            # ladder and the uncached scan_all walk). This is what T3/T-P4/L1 move.
+            perfstats.record("attach_prep_ms", (time.monotonic() - accept_at) * 1000.0)
             try:
                 await webterm.run(
                     ws,

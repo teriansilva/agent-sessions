@@ -34,7 +34,7 @@ import struct
 import termios
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 
-from . import scrollback, sessionlock
+from . import perfstats, scrollback, sessionlock
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -324,6 +324,10 @@ async def run(
     # delivered. Sent to the client as {"t":"hist","cursor":N} right after the seq frame.
     hist_cursor: int | None = None
     if buf_key:
+        # #652 measurement probe: cost of building the replay/redraw payload — the raw-ring
+        # copy/scan (`_resume_payload`) or the width-correct transcript render
+        # (`_transcript_payload`). This is what T4/T5 (and the ring maintenance) move.
+        _build_at = time.monotonic()
         payload, total = scrollback._resume_payload(buf_key, have)
         # Scroll-up source (#262). The raw ring is authored at the agent's fixed pty width; replay
         # at a DIFFERENT client width mis-positions its absolute cursor moves and garbles. So replay
@@ -379,6 +383,7 @@ async def run(
                     scrollback._reset_ring(buf_key)
                     payload = clear
                     payload_is_clear = True
+        perfstats.record("attach_payload_build_ms", (time.monotonic() - _build_at) * 1000.0)
         # Track this client's width for the clean-load fallback / resize logic (every
         # connect) — attach-aware so the persisted sidecar only ever claims a width the
         # retained ring was actually authored at (Hermes #360 round 3).
