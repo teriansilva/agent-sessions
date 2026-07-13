@@ -12,6 +12,7 @@ import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
 import { isCopyShortcut, isPasteShortcut } from "../../lib/termKeys";
+import { urlAtCell } from "../../lib/linkHitTest";
 import { decideMouseDown, exceededSlop, forceSelectModifier } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
@@ -1086,8 +1087,7 @@ export function Terminal({
     const surfaceEl = touchLayer ?? host;
     // Tap → open a link under the finger, else (re)open the keyboard (#415). The overlay
     // sits above xterm, so xterm's own WebLinksAddon click never fires on touch; hit-test the
-    // tapped cell against the buffer line ourselves and open the same way the addon would.
-    const URL_RE = /\bhttps?:\/\/[^\s"'`<>]+/g;
+    // tapped cell against the buffer ourselves and open the same way the addon would.
     const focusKeyboardOnTap = () => {
       const ta = term.textarea;
       if (ta) {
@@ -1129,14 +1129,12 @@ export function Terminal({
       if (rect.width > 0 && rect.height > 0) {
         const col = Math.floor(((cx - rect.left) / rect.width) * cols);
         const vrow = Math.floor(((cy - rect.top) / rect.height) * rows);
-        const line = buf.getLine(buf.viewportY + vrow);
-        const text = line?.translateToString(true) ?? "";
-        for (const m of text.matchAll(URL_RE)) {
-          const start = m.index ?? 0;
-          if (col >= start && col < start + m[0].length) {
-            window.open(m[0], "_blank", "noopener,noreferrer");
-            return;
-          }
+        // #664: a long URL soft-wraps across buffer rows; hit-test the joined logical
+        // line (as WebLinksAddon does on desktop), never a single row's fragment.
+        const url = urlAtCell(buf, buf.viewportY + vrow, col, cols);
+        if (url) {
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
         }
       }
       focusKeyboardOnTap(); // not on a link → behave as before
