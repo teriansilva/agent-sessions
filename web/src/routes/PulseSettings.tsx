@@ -1,6 +1,6 @@
 import { Activity } from "lucide-react";
-import { useState } from "react";
-import { useConfig } from "../app/config";
+import { useRef, useState } from "react";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { PulseConfig, PulseDepth } from "../types/api";
 import styles from "./Settings.module.css";
@@ -21,9 +21,15 @@ const DEPTH_LABELS: Record<PulseDepth, string> = {
 
 /** Pulse settings (#441 Phase 6). Mirrors AutoSortSettings: opt-in background scan + the
  *  window/depth the manual ("Scan now") and background scans use. Synthesis (depth ≥ medium)
- *  reuses the AI review endpoint above; fast is always free. */
+ *  reuses the AI review endpoint above; fast is always free.
+ *
+ *  Every control saves on change/blur (no explicit Save button); a successful save flashes a
+ *  "Saved." note and refreshes the shared config context — without the refresh, ConfigCtx keeps
+ *  the values from app load, and remounting the panel (switching Settings tabs and back) shows
+ *  the pre-save values as if the save had been lost. */
 export function PulseSettings() {
   const cfgBlock = useConfig()?.pulse;
+  const refreshConfig = useConfigRefresh();
   const [block, setBlock] = useState<PulseConfig>(cfgBlock ?? FALLBACK);
   const [synced, setSynced] = useState(cfgBlock);
   if (cfgBlock !== synced) {
@@ -41,6 +47,8 @@ export function PulseSettings() {
   }
 
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
@@ -49,6 +57,10 @@ export function PulseSettings() {
     try {
       const r = (await api.setPrefs({ pulse: partial })) as { pulse?: PulseConfig };
       if (r.pulse) setBlock(r.pulse);
+      refreshConfig();
+      clearTimeout(savedTimer.current);
+      setSaved(true);
+      savedTimer.current = setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 422
@@ -58,22 +70,32 @@ export function PulseSettings() {
     }
   };
 
-  // Bounds mirror the server (interval 5–1440 min, window 1–30 days); out-of-range reverts.
+  // Bounds mirror the server (interval 5–1440 min, window 1–30 days); out-of-range reverts
+  // to the saved value, with a message saying why instead of a silent snap-back.
   const commitInterval = () => {
     const n = Number(intervalDraft);
     if (!Number.isInteger(n) || n < 5 || n > 1440) {
       setIntervalDraft(String(block.interval_minutes));
+      setError("The interval must be a whole number between 5 and 1440 minutes.");
       return;
     }
+    setError(null);
     if (n !== block.interval_minutes) void save({ interval_minutes: n });
   };
   const commitWindow = () => {
     const n = Number(windowDraft);
     if (!Number.isInteger(n) || n < 1 || n > 30) {
       setWindowDraft(String(block.window_days));
+      setError("The recent window must be a whole number between 1 and 30 days.");
       return;
     }
+    setError(null);
     if (n !== block.window_days) void save({ window_days: n });
+  };
+
+  // Enter commits a number field the same way leaving it does.
+  const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") e.currentTarget.blur();
   };
 
   const scanNow = async () => {
@@ -105,9 +127,14 @@ export function PulseSettings() {
         <strong>Pulse</strong> chip in the top bar). It scans on demand or on a background loop;
         results are cached so the page loads instantly. <strong>Fast</strong> depth is local and
         free; <strong>Medium</strong>/<strong>Slow</strong> add AI synthesis using the review
-        endpoint above.
+        endpoint above. Changes save automatically.
       </p>
       {error && <p className={styles.err}>{error}</p>}
+      {saved && (
+        <p className={styles.ok} role="status">
+          Saved.
+        </p>
+      )}
 
       <label className={styles.aiToggle}>
         <input
@@ -132,6 +159,7 @@ export function PulseSettings() {
             value={intervalDraft}
             onChange={(e) => setIntervalDraft(e.target.value)}
             onBlur={commitInterval}
+            onKeyDown={blurOnEnter}
           />
           <span>minutes</span>
         </div>
@@ -154,6 +182,7 @@ export function PulseSettings() {
             value={windowDraft}
             onChange={(e) => setWindowDraft(e.target.value)}
             onBlur={commitWindow}
+            onKeyDown={blurOnEnter}
           />
           <span>days</span>
         </div>

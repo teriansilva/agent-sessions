@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { ConfigCtx } from "../app/config";
+import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api } from "../lib/api";
 import type { AppConfig, PulseConfig } from "../types/api";
 import { PulseSettings } from "./PulseSettings";
@@ -22,12 +22,14 @@ function block(over: Partial<PulseConfig> = {}): PulseConfig {
   };
 }
 
-function renderPanel(b: PulseConfig | undefined = block()) {
+function renderPanel(b: PulseConfig | undefined = block(), refresh: () => void = () => {}) {
   const config = { csrf: "t", new_session_engines: [], terminal_backend: "ws", pulse: b } as AppConfig;
   return render(
-    <ConfigCtx.Provider value={config}>
-      <PulseSettings />
-    </ConfigCtx.Provider>,
+    <ConfigRefreshCtx.Provider value={refresh}>
+      <ConfigCtx.Provider value={config}>
+        <PulseSettings />
+      </ConfigCtx.Provider>
+    </ConfigRefreshCtx.Provider>,
   );
 }
 
@@ -56,6 +58,26 @@ test("the window commits on blur within bounds; out-of-range reverts (#441 P6)",
   await userEvent.tab();
   expect(api.setPrefs).not.toHaveBeenCalled();
   expect(input).toHaveValue(3);
+  // …and the revert says why instead of silently snapping back.
+  expect(screen.getByText(/between 1 and 30 days/i)).toBeInTheDocument();
+});
+
+test("a successful save flashes a Saved note and refreshes the config context", async () => {
+  const refresh = vi.fn();
+  renderPanel(block({ auto_enabled: false }), refresh);
+  await userEvent.click(screen.getByRole("checkbox", { name: /scan automatically/i }));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  // Without the refresh, ConfigCtx keeps the app-load values and a remount of the panel
+  // (switching Settings tabs and back) would show the pre-save state as if the save was lost.
+  expect(refresh).toHaveBeenCalled();
+});
+
+test("Enter commits a number field the same way blur does", async () => {
+  renderPanel(block({ interval_minutes: 30 }));
+  const input = screen.getByLabelText(/scan every/i);
+  await userEvent.clear(input);
+  await userEvent.type(input, "15{Enter}");
+  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { interval_minutes: 15 } });
 });
 
 test("changing the depth select persists pulse.scan_depth (#441 P6)", async () => {
