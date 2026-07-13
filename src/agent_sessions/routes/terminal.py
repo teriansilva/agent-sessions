@@ -46,6 +46,7 @@ from .. import (
     scanner,
     scopedspawn,
     session_stream,
+    sessionlock,
     sessions,
     transcript_owner,
     webterm,
@@ -68,6 +69,37 @@ def _holder_view(holder: dict | None) -> dict | None:
     if not holder:
         return None
     return {"label": str(holder.get("label", ""))[:80], "since": holder.get("since")}
+
+
+async def _open_action_offloop(
+    engine: str, native: str
+) -> tuple[str, sessionlock.SessionLock | None]:
+    """``sessions.open_action`` off the event loop (#652 T-P4), made cancellation-safe.
+
+    ``asyncio.to_thread``'s worker thread cannot be cancelled: if this coroutine is cancelled
+    (client vanished mid-connect — most likely during the very slow-probe case T-P4 targets) while
+    ``open_action`` is still running, the worker runs to completion and may return a ``LAUNCH``
+    ``SessionLock``. That lock owns a raw fd with NO finalizer, so a dropped one keeps its ``flock``
+    held → the session is wedged ``BUSY`` until the process restarts. So we ``shield`` the worker
+    and, on cancellation, reap it via a done-callback that releases any lock it produced before the
+    cancellation propagates. The callback (not a re-``await``) is used so a *second* cancellation —
+    e.g. loop shutdown — can't skip the release."""
+    fut = asyncio.ensure_future(asyncio.to_thread(sessions.open_action, engine, native))
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+
+        def _release_orphan(f: asyncio.Future) -> None:
+            with contextlib.suppress(Exception):
+                res = f.result()
+                if res is not None and res[1] is not None:
+                    res[1].release()
+
+        if fut.done():
+            _release_orphan(fut)
+        else:
+            fut.add_done_callback(_release_orphan)
+        raise
 
 
 async def _demotion_guard(
@@ -248,7 +280,15 @@ def register(
         # Single-writer policy: ATTACH to a live master, LAUNCH under the launch lock,
         # or BUSY (no local master but the lock is held elsewhere — never relaunch).
         # Keyed by the PHYSICAL id so an attach by the real id finds the placeholder master.
-        action, lock = sessions.open_action(prov.engine_id, phys_native)
+        # #652 T-P4: run it OFF the event loop — it does 1–3 blocking socket-probe ladders
+        # (up to ~1.7 s each under a slow/starved master) that would otherwise stall EVERY
+        # other session's stream. It's dispatched as ONE atomic to_thread call: the single-
+        # writer guarantee comes from the kernel flock (atomic across threads AND processes,
+        # not merely across coroutines), so concurrent launches still resolve to one LAUNCH +
+        # the rest BUSY. Never split the check/acquire across awaits — that would reopen the race.
+        # `_open_action_offloop` also makes the dispatch cancellation-safe: a client that vanishes
+        # mid-connect must not orphan a LAUNCH lock (its flock has no finalizer → session BUSY).
+        action, lock = await _open_action_offloop(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
         # Bounded relaunch backstop (#631): if this key's launched agent has exited instantly

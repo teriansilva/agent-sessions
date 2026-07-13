@@ -76,6 +76,85 @@ def test_open_action_launches_when_free(monkeypatch):
     lock.release()
 
 
+def test_open_action_single_writer_holds_across_threads(monkeypatch):
+    # #652 T-P4: the connect path now dispatches open_action via asyncio.to_thread, so concurrent
+    # connects for the same not-yet-running id run it on DIFFERENT worker threads (previously it
+    # ran inline on the single event-loop thread). The kernel flock — not the "no await points"
+    # property — is what admits exactly ONE launcher; prove that guarantee survives real thread
+    # concurrency, or two agents would write one session's history.
+    import threading
+
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)  # no live master
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list[str] = []
+    held: list = []
+
+    def worker() -> None:
+        barrier.wait()  # release all threads together → maximal contention on the flock
+        action, lock = sessions.open_action("claude", "concurrent")
+        results.append(action)  # list.append is atomic under the GIL
+        if lock is not None:
+            held.append(lock)  # keep the flock held, as a real launch hands it to its master
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count(sessions.LAUNCH) == 1  # exactly one winner across all threads
+    assert results.count(sessions.BUSY) == n - 1  # everyone else attaches — never a 2nd writer
+    for lock in held:
+        lock.release()
+
+
+def test_open_action_offloop_releases_lock_when_cancelled_mid_flight(monkeypatch):
+    # #652 T-P4 cancellation safety (Hermes #668): to_thread's worker CANNOT be cancelled, so if
+    # the ws handler is cancelled while open_action runs in the worker and it then LAUNCHes, the
+    # returned SessionLock (raw fd, NO finalizer) must be released — a dropped one keeps its flock
+    # held and wedges the session BUSY until process restart. `_open_action_offloop` reaps the
+    # worker via a done-callback and releases any lock it produced.
+    #
+    # The "worker" is a future we resolve on demand (not a real thread), so the cancel-BEFORE-finish
+    # ordering is deterministic — a real thread's start/finish timing raced the cancel.
+    import asyncio
+    import contextlib
+
+    from agent_sessions.routes import terminal
+
+    async def scenario():
+        controlled: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def fake_worker(_fn, *_args):  # stands in for open_action running in the thread pool
+            return await controlled
+
+        monkeypatch.setattr(terminal.asyncio, "to_thread", fake_worker)
+
+        # The LAUNCH lock the "worker" will hand back — really held, so a leak is observable.
+        launch_lock = sessionlock.acquire("claude:cancelme")
+        assert launch_lock is not None and sessionlock.is_locked("claude:cancelme")
+
+        task = asyncio.ensure_future(terminal._open_action_offloop("claude", "cancelme"))
+        await asyncio.sleep(0.01)
+        assert not task.done()  # parked at `await shield(fut)`, worker still "running"
+        task.cancel()  # client vanished mid-connect
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task.cancelled(), "helper did not propagate the cancellation"
+
+        # Only NOW does the un-cancellable worker finish and return its LAUNCH lock — the helper's
+        # done-callback must release it, or the flock leaks and the session is BUSY forever.
+        controlled.set_result((sessions.LAUNCH, launch_lock))
+        for _ in range(200):
+            if not sessionlock.is_locked("claude:cancelme"):
+                break
+            await asyncio.sleep(0)
+        assert not sessionlock.is_locked("claude:cancelme"), "LAUNCH lock leaked on cancellation"
+
+    asyncio.run(scenario())
+
+
 def test_open_action_busy_when_locked_elsewhere(monkeypatch):
     monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
     held = sessionlock.acquire("claude:held")  # another instance holds it, no local socket

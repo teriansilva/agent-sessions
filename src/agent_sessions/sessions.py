@@ -30,6 +30,14 @@ def open_action(engine: str, native_id: str) -> tuple[str, sessionlock.SessionLo
     other coroutines: two concurrent opens of the same not-yet-running id cannot both
     reach LAUNCH (the first holds the flock until the master inherits it; the second
     fails to acquire → BUSY).
+
+    The single-writer guarantee rests on the kernel ``flock`` in ``sessionlock.acquire``,
+    which is atomic across THREADS and PROCESSES — not merely across coroutines. So the
+    connect path may dispatch this whole function via ``asyncio.to_thread`` to keep its
+    blocking socket probes off the event loop (#652 T-P4): two concurrent launches on two
+    worker threads still resolve to exactly one LAUNCH and the rest BUSY. It must be
+    dispatched as ONE call, though — splitting the ``session_exists`` check from the
+    ``acquire`` across ``await`` points would reopen the very race the flock closes.
     """
     key = f"{engine}:{native_id}"
     # A live master already runs the agent → attach; its holder owns the lock.
