@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { applySWUpdate, onSWSwap, swHasSwapped } from "./swUpdate";
 
 /** How often to poll `/api/version` for a server-side version change (#169). 5 minutes is
  *  often enough to notice a deploy within a coffee break but not enough to be wasteful;
@@ -8,45 +9,45 @@ import { api } from "../lib/api";
 const POLL_MS = 5 * 60_000;
 
 interface State {
-  /** The first version we observed for this tab — what the loaded SPA bundle was built
-   *  against. Stays fixed for the lifetime of the tab. `null` until the first /api/version
-   *  call resolves. */
-  initial: string | null;
-  /** True if we've observed a version that differs from `initial` — the user is now running
-   *  a stale bundle and needs to reload. Latches: once true it stays true. */
-  hasNewVersion: boolean;
+  /** The version THIS bundle was built as — the compile-time stamp (`__APP_VERSION__`),
+   *  `"dev"` for unstamped dev/CI builds. Unlike the first `/api/version` response (the
+   *  pre-#661 baseline), this actually proves what the tab loaded. */
+  current: string;
+  /** The server's installed version — latest `/api/version` value, `null` until the first
+   *  poll resolves. */
+  server: string | null;
+  /** What the footer shows: the build stamp when real, else the server's version (a dev
+   *  build honestly reports what the server runs), else null (nothing to show yet). */
+  displayVersion: string | null;
+  /** True when a newer shell is ready: the server version differs from this bundle's stamp
+   *  (stamped builds only), or the SW already swapped a fresh shell in (#661). Drives the
+   *  footer's TAP TO RELOAD chip — never an auto-reload. */
+  updateReady: boolean;
+  /** Apply the update: refresh the SW so the reload lands on the NEW precached shell (a bare
+   *  `location.reload()` under a stale SW re-serves the stale shell), then reload once. */
+  applyUpdate: () => void;
 }
 
-/** Polls `/api/version` and reports when the running tab is stale. We don't auto-reload —
- *  that would yank the page out from under a user in the middle of a turn — we just surface
- *  the fact via `hasNewVersion`; a small banner offers an explicit "Reload" click.
- *
- *  Sibling to #160 (lazy chunks) and #165 (deploy keeps sessions alive). The deploy still
- *  produces a stale main bundle for any tab open across it — this is how the tab finds out. */
-export function useAppVersion(): State {
-  const [initial, setInitial] = useState<string | null>(null);
-  const [hasNewVersion, setHasNewVersion] = useState(false);
-  // Pin the initial version we saw in a ref too so the polling loop has it without a
-  // closure-captured stale read of the state. Set in lockstep with `initial`.
-  const initialRef = useRef<string | null>(null);
+/** One hook owns the whole update surface (#661, replacing the #169 banner): the build stamp,
+ *  the `/api/version` comparison, the SW-swap signal, and the apply action. Consumed by the
+ *  status-footer version tag + update chip; deliberately no auto-reload anywhere. */
+export function useAppVersion(current: string = __APP_VERSION__): State {
+  const [server, setServer] = useState<string | null>(null);
+  const [swSwapped, setSwSwapped] = useState(swHasSwapped);
+
+  useEffect(() => onSWSwap(() => setSwSwapped(true)), []);
 
   useEffect(() => {
     let alive = true;
     const check = async () => {
       try {
         const { version } = await api.version();
-        if (!alive) return;
-        if (initialRef.current == null) {
-          initialRef.current = version;
-          setInitial(version);
-          return;
-        }
-        if (version !== initialRef.current) setHasNewVersion(true);
+        if (alive) setServer(version);
       } catch {
         /* transient — ignore, try again on the next tick */
       }
     };
-    // First check is immediate so the tab learns its own version on load.
+    // First check is immediate so the footer learns the server version on load.
     void check();
     const id = window.setInterval(check, POLL_MS);
     // Visibility-change: poll the instant the tab is foregrounded. Catches the common
@@ -62,5 +63,14 @@ export function useAppVersion(): State {
     };
   }, []);
 
-  return { initial, hasNewVersion };
+  // `"dev"` disables the mismatch path: an unstamped build can't claim to know it's stale.
+  const mismatch = current !== "dev" && server !== null && server !== current;
+  const applyUpdate = useCallback(() => applySWUpdate(), []);
+  return {
+    current,
+    server,
+    displayVersion: current !== "dev" ? current : server,
+    updateReady: mismatch || swSwapped,
+    applyUpdate,
+  };
 }

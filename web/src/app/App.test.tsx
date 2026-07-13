@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import App from "./App";
+import { applySWUpdate } from "./swUpdate";
 
 // Mock the whole API surface the shell touches on load so render is deterministic.
 vi.mock("../lib/api", () => ({
@@ -22,8 +23,17 @@ vi.mock("../lib/api", () => ({
   gotoLogin: vi.fn(),
 }));
 
+// Footer version surface (#661): controllable SW state so the update-chip path is testable.
+let swSwapped = false;
+vi.mock("./swUpdate", () => ({
+  swHasSwapped: () => swSwapped,
+  onSWSwap: () => () => {},
+  applySWUpdate: vi.fn(),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
+  swSwapped = false;
   localStorage.clear();
   delete document.documentElement.dataset.theme;
   // App mounts a BrowserRouter on the real jsdom location — navigations leak across tests
@@ -205,4 +215,25 @@ test.each([
   await waitFor(() => expect(app).not.toHaveClass("navOpen"));
   // The desktop collapse flag must stay untouched (the two surfaces are independent, #128).
   expect(app).not.toHaveClass("collapsed");
+});
+
+// --- Footer version surface (#661) --------------------------------------------------------------
+
+test("the footer shows the running version as a hud tag (#661)", async () => {
+  const { container } = render(<App />);
+  // Test builds are unstamped ("dev"), so the tag mirrors the server's version — the honest
+  // report of what's installed. api.version is mocked to 0.0.0 above.
+  const tag = await screen.findByText("V0.0.0");
+  expect(tag).toHaveClass("hud-version");
+  expect(container.querySelector("footer.hud-classbar")).toContainElement(tag);
+  // In sync ⇒ no update chip.
+  expect(screen.queryByRole("button", { name: /tap to reload/i })).not.toBeInTheDocument();
+});
+
+test("a swapped-in SW shell surfaces the tap-to-reload chip; tap applies via the SW path (#661)", async () => {
+  swSwapped = true;
+  render(<App />);
+  const chip = await screen.findByRole("button", { name: /ready — tap to reload/i });
+  await userEvent.click(chip);
+  expect(vi.mocked(applySWUpdate)).toHaveBeenCalledTimes(1); // SW-aware reload, never bare
 });

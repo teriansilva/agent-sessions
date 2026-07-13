@@ -25,7 +25,7 @@ import { useConfig, useConfigRefresh } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
-import { NewVersionBanner } from "./NewVersionBanner";
+import { useAppVersion } from "./useAppVersion";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { useSessionsStore } from "./sessionsStore";
@@ -65,6 +65,8 @@ const LEGACY_VIEW_KEY = "tr-sidebar-view";
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing. */
 function Layout() {
   const [navOpen, setNavOpen] = useState(false);
+  // Footer version surface (#661): the running version + the tap-to-reload update chip.
+  const version = useAppVersion();
   // Desktop collapse, persisted. Mobile uses navOpen (off-canvas) and ignores this.
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
@@ -401,7 +403,17 @@ function Layout() {
         </ChunkErrorBoundary>
       </main>
       <footer className="hud-classbar">
-        <span className="hud-tag">{config?.hostname ? `HOST // ${config.hostname.toUpperCase()}` : ""}</span>
+        <span className="hud-footer-left">
+          <span className="hud-tag">{config?.hostname ? `HOST // ${config.hostname.toUpperCase()}` : ""}</span>
+          {version.displayVersion !== null && (
+            <span className="hud-tag hud-version">V{version.displayVersion}</span>
+          )}
+        </span>
+        {version.updateReady && (
+          <button type="button" className="hud-update-chip" onClick={version.applyUpdate}>
+            ⟳ {version.server !== null ? `V${version.server} ` : ""}READY — TAP TO RELOAD
+          </button>
+        )}
         <span className="hud-tag">
           <span className={`hud-led ${live > 0 ? "up" : "idle"}`} aria-hidden="true" />
           <b className="num">{live}</b> AGENTS LIVE
@@ -423,7 +435,6 @@ export default function App() {
             <SessionsProvider>
               <BrowserRouter>
                 <Layout />
-                <NewVersionBanner />
               </BrowserRouter>
             </SessionsProvider>
           </OverviewPrefsProvider>

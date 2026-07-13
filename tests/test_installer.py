@@ -372,6 +372,22 @@ def test_install_sh_builds_and_serves_react_ui():
     assert "AGENT_SESSIONS_RUNTIME_DIR" in s
 
 
+def test_install_sh_stamps_release_version_into_ui_build():
+    # #661: build_web() threads the just-installed package version into the Vite build as
+    # AGENT_SESSIONS_VERSION so the footer shows it and every release busts the PWA precache.
+    s = INSTALL_SH.read_text()
+    build_web = s[s.index("build_web()") :]
+    # The stamp comes from the release venv's own CLI (build_release pip-installs before
+    # build_web runs), tolerating failure (empty ⇒ vite falls back to "dev").
+    assert '/venv/bin/agent-sessions" version' in build_web
+    # Both npm invocations run with the env set — `npm ci` spawns no build, but the stamp on
+    # `npm run build` is the load-bearing one.
+    assert 'AGENT_SESSIONS_VERSION="$app_version" "$NPM" run build' in build_web
+    # And the web build config actually consumes it, with the documented "dev" fallback.
+    vite_cfg = (INSTALL_SH.parent / "web" / "vite.config.ts").read_text()
+    assert 'process.env.AGENT_SESSIONS_VERSION || "dev"' in vite_cfg
+
+
 def test_install_sh_never_seeds_takeover_flag():
     # #434: AGENT_SESSIONS_TAKEOVER is an EXPERIMENTAL, staging-only flag. The installer must
     # never write it (so a fresh OR migrated customer install defaults to OFF) — an accidental

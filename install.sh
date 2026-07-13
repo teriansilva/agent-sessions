@@ -484,7 +484,14 @@ build_web() {
   fi
   [ -f "$rel/src/web/package.json" ] || { log "no web/ in this release — skipping UI build"; return 0; }
   log "building the React UI (this can take a minute)…"
-  ( cd "$rel/src/web" && "$NPM" ci --no-audit --no-fund --silent && "$NPM" run build --silent ) \
+  # Stamp the release version into the bundle (#661): build_release() pip-installed the package
+  # before calling us, so the venv's CLI reports the exact version being installed. Vite bakes
+  # it in as __APP_VERSION__ — the footer shows it, and the changed dist content busts the PWA
+  # precache on EVERY release (even server-only ones). Empty/missing ⇒ vite falls back to "dev".
+  app_version="$("$rel/venv/bin/agent-sessions" version 2>/dev/null || echo '')"
+  ( cd "$rel/src/web" \
+      && AGENT_SESSIONS_VERSION="$app_version" "$NPM" ci --no-audit --no-fund --silent \
+      && AGENT_SESSIONS_VERSION="$app_version" "$NPM" run build --silent ) \
     || die "UI build failed — see the npm output above"
   [ -f "$rel/src/web/dist/index.html" ] || die "UI build produced no dist/index.html"
 }

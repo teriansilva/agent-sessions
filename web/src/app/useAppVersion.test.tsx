@@ -2,78 +2,101 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { useAppVersion } from "./useAppVersion";
+import { applySWUpdate, onSWSwap, swHasSwapped } from "./swUpdate";
 
 vi.mock("../lib/api", () => ({ api: { version: vi.fn() } }));
+vi.mock("./swUpdate", () => ({
+  swHasSwapped: vi.fn(() => false),
+  onSWSwap: vi.fn(() => () => {}),
+  applySWUpdate: vi.fn(),
+}));
 const mockVersion = vi.mocked(api.version);
+const mockSwapped = vi.mocked(swHasSwapped);
+const mockOnSwap = vi.mocked(onSWSwap);
 
 beforeEach(() => {
   mockVersion.mockReset();
+  mockSwapped.mockReset().mockReturnValue(false);
+  mockOnSwap.mockReset().mockReturnValue(() => {});
 });
 
-test("first poll pins the initial version and does not flag a new version (#169)", async () => {
-  mockVersion.mockResolvedValue({ version: "v1" });
-  const { result } = renderHook(() => useAppVersion());
-  await waitFor(() => expect(result.current.initial).toBe("v1"));
-  expect(result.current.hasNewVersion).toBe(false);
+test("a stamped build that matches the server shows the version and no update (#661)", async () => {
+  mockVersion.mockResolvedValue({ version: "1.0.0" });
+  const { result } = renderHook(() => useAppVersion("1.0.0"));
+  await waitFor(() => expect(result.current.server).toBe("1.0.0"));
+  expect(result.current.displayVersion).toBe("1.0.0");
+  expect(result.current.updateReady).toBe(false);
 });
 
-test("polling detects a version change and latches `hasNewVersion` (#169)", async () => {
-  mockVersion.mockResolvedValueOnce({ version: "v1" });
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  try {
-    const { result } = renderHook(() => useAppVersion());
-    await waitFor(() => expect(result.current.initial).toBe("v1"));
-    // Next poll returns a new version.
-    mockVersion.mockResolvedValue({ version: "v2" });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-    });
-    expect(result.current.hasNewVersion).toBe(true);
-    // Subsequent polls returning v1 again don't unset it — we know the bundle is stale.
-    mockVersion.mockResolvedValue({ version: "v1" });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-    });
-    expect(result.current.hasNewVersion).toBe(true); // latched
-  } finally {
-    vi.useRealTimers();
-  }
+test("server ahead of the build stamp flags the update (#661 — the honest baseline)", async () => {
+  // The pre-#661 baseline was the FIRST /api/version response, which can't prove what
+  // bundle this tab loaded. The stamp can: server 1.0.1 vs stamped 1.0.0 ⇒ stale tab.
+  mockVersion.mockResolvedValue({ version: "1.0.1" });
+  const { result } = renderHook(() => useAppVersion("1.0.0"));
+  await waitFor(() => expect(result.current.updateReady).toBe(true));
+  expect(result.current.displayVersion).toBe("1.0.0"); // what THIS tab runs, not the server
+  expect(result.current.server).toBe("1.0.1");
+});
+
+test("an unstamped (dev) build never claims to be stale — it shows the server's version (#661)", async () => {
+  mockVersion.mockResolvedValue({ version: "9.9.9" });
+  const { result } = renderHook(() => useAppVersion("dev"));
+  await waitFor(() => expect(result.current.server).toBe("9.9.9"));
+  expect(result.current.updateReady).toBe(false); // "dev" disables the mismatch path
+  expect(result.current.displayVersion).toBe("9.9.9"); // honest: report what the server runs
 });
 
 test("a transient /api/version failure is ignored, polling continues (#169)", async () => {
-  mockVersion.mockResolvedValueOnce({ version: "v1" });
+  mockVersion.mockRejectedValueOnce(new Error("network down"));
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
-    const { result } = renderHook(() => useAppVersion());
-    await waitFor(() => expect(result.current.initial).toBe("v1"));
-    mockVersion.mockRejectedValueOnce(new Error("network down"));
+    const { result } = renderHook(() => useAppVersion("1.0.0"));
+    expect(result.current.server).toBeNull(); // tolerated
+    mockVersion.mockResolvedValue({ version: "1.0.1" });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000);
     });
-    expect(result.current.hasNewVersion).toBe(false); // tolerated
-    mockVersion.mockResolvedValueOnce({ version: "v2" });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-    });
-    expect(result.current.hasNewVersion).toBe(true); // recovered + caught the change
+    expect(result.current.updateReady).toBe(true); // recovered + caught the change
   } finally {
     vi.useRealTimers();
   }
 });
 
 test("visibilitychange triggers an immediate version poll (#169)", async () => {
-  mockVersion.mockResolvedValueOnce({ version: "v1" });
+  mockVersion.mockResolvedValueOnce({ version: "1.0.0" });
   let hidden = false;
   Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
-  const { result } = renderHook(() => useAppVersion());
-  await waitFor(() => expect(result.current.initial).toBe("v1"));
+  const { result } = renderHook(() => useAppVersion("1.0.0"));
+  await waitFor(() => expect(result.current.server).toBe("1.0.0"));
 
-  // Tab hides + reappears with a new server version. The poll on visibility-change
-  // catches it WITHOUT waiting for the 5-minute interval to fire.
+  // Tab hides + reappears after a deploy. The visibility poll catches it WITHOUT
+  // waiting for the 5-minute interval to fire.
   hidden = true;
   document.dispatchEvent(new Event("visibilitychange"));
-  mockVersion.mockResolvedValueOnce({ version: "v2" });
+  mockVersion.mockResolvedValueOnce({ version: "1.0.1" });
   hidden = false;
   document.dispatchEvent(new Event("visibilitychange"));
-  await waitFor(() => expect(result.current.hasNewVersion).toBe(true));
+  await waitFor(() => expect(result.current.updateReady).toBe(true));
+});
+
+test("a service-worker shell swap flags the update even when versions agree (#661)", async () => {
+  mockVersion.mockResolvedValue({ version: "1.0.0" });
+  let fireSwap: (() => void) | undefined;
+  mockOnSwap.mockImplementation((cb) => {
+    fireSwap = cb;
+    return () => {};
+  });
+  const { result } = renderHook(() => useAppVersion("1.0.0"));
+  await waitFor(() => expect(result.current.server).toBe("1.0.0"));
+  expect(result.current.updateReady).toBe(false);
+  act(() => fireSwap?.());
+  expect(result.current.updateReady).toBe(true); // fresh shell already precached — offer it
+});
+
+test("applyUpdate delegates to the SW update path, not a bare reload (#661)", async () => {
+  mockVersion.mockResolvedValue({ version: "1.0.1" });
+  const { result } = renderHook(() => useAppVersion("1.0.0"));
+  await waitFor(() => expect(result.current.updateReady).toBe(true));
+  result.current.applyUpdate();
+  expect(vi.mocked(applySWUpdate)).toHaveBeenCalledTimes(1);
 });

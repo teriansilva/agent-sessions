@@ -5,6 +5,18 @@ import { defineConfig } from "vitest/config";
 // e2e/ are excluded — they run via `npm run test:e2e`, not here.
 export default defineConfig({
   plugins: [react()],
+  // Tests run as an unstamped build (#661) — the hook accepts an injected version where a
+  // test needs a stamped one. The PWA plugin's virtual module doesn't exist under vitest,
+  // so it resolves to a no-op stub.
+  define: {
+    __APP_VERSION__: JSON.stringify("dev"),
+  },
+  resolve: {
+    alias: {
+      "virtual:pwa-register": new URL("./src/test/pwa-register-stub.ts", import.meta.url)
+        .pathname,
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,

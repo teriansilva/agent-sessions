@@ -7,6 +7,14 @@ export default defineConfig({
   // Absolute base so /assets/* resolve correctly under deep client routes
   // (e.g. /s/claude/<uuid>) when FastAPI serves index.html as the SPA fallback.
   base: "/",
+  // Release version stamped into the bundle (#661). install.sh's build_web() sets
+  // AGENT_SESSIONS_VERSION from the just-installed package, so EVERY release changes dist
+  // content → new SW precache revisions → the cached PWA shell refreshes even for
+  // server-only releases. Unstamped (dev/CI) builds get "dev", which disables the
+  // footer's version-mismatch prompt.
+  define: {
+    __APP_VERSION__: JSON.stringify(process.env.AGENT_SESSIONS_VERSION || "dev"),
+  },
   preview: {
     // The connect-page E2E maps battlelab.superstatus.io to the local preview server so the
     // public-host credential behavior is exercised in a real browser.
@@ -36,6 +44,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      // Registration is explicit (initSWUpdates() in main.tsx via virtual:pwa-register) so a
+      // long-lived tab re-checks sw.js hourly + on foreground (#661) — don't ALSO inject the
+      // one-shot registerSW.js script.
+      injectRegister: null,
       // Precache the built static shell ONLY. Live data + the terminal stay
       // network-only: the SPA navigation fallback explicitly excludes the API,
       // websocket, terminal, auth, and upload paths so they're never served stale
