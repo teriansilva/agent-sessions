@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from agent_sessions import engines
+from agent_sessions import engines, metadata
 
 
 def _write_rollout(root, *, uuid, cwd, first_user, day="2026/05/15", ts="2026-05-15T15-33-57"):
@@ -217,3 +217,139 @@ def test_codex_present_gates_new_session_advertisement(codex_root, monkeypatch):
     assert prov.is_present() is False  # absent store + no bin → not advertised
     _write_rollout(codex_root, uuid=_U1, cwd="/work", first_user="hi")
     assert prov.is_present() is True and prov.supports_new is True  # present → advertised
+
+
+# --- first-user-message extraction (#670) ---------------------------------------------------
+
+_AGENTS_MD = (
+    "# AGENTS.md instructions for /home/u/proj\n\n<INSTRUCTIONS>\nWorkspace map — injected doc "
+    "text the sidebar must never show.\n</INSTRUCTIONS>"
+)
+
+
+def _write_records(root, uuid, records, ts="2026-05-15T15-33-57"):
+    d = root / "2026" / "05" / "15"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"rollout-{ts}-{uuid}.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in records) + "\n")
+    return f
+
+
+def _session_meta(uuid, cwd):
+    return {"timestamp": "t", "type": "session_meta", "payload": {"id": uuid, "cwd": cwd}}
+
+
+def _user_item(text):
+    return {
+        "timestamp": "t",
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        },
+    }
+
+
+def _user_event(message):
+    return {
+        "timestamp": "t",
+        "type": "event_msg",
+        "payload": {"type": "user_message", "message": message},
+    }
+
+
+def _scan_one(uuid):
+    return next(s for s in engines.CodexProvider().scan() if s.uuid == uuid)
+
+
+def test_codex_first_user_event_beats_earlier_fallback_candidate(codex_root):
+    # An injected AGENTS.md item AND an otherwise-valid response-item candidate both precede
+    # the user_message event — the event is authoritative; the candidate is EOF-fallback only,
+    # so it must not trip the early break before the event record is reached.
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_AGENTS_MD),
+            _user_item("a plausible but non-authoritative candidate"),
+            _user_event("the real prompt"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "the real prompt"
+
+
+def test_codex_first_user_fallback_when_no_event(codex_root):
+    # Old / truncated rollout with no user_message event: the first NON-injected user
+    # response_item is the title.
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_AGENTS_MD),
+            _user_item("real prompt from response item"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "real prompt from response item"
+
+
+def test_codex_first_user_skips_every_known_injection_marker(codex_root):
+    # All marker forms — old XML preambles and the ≥0.142.5 AGENTS.md block — are machine
+    # context. An injected-only rollout yields "" (→ "(untitled)"), never the boilerplate.
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item("<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"),
+            _user_item("<user_instructions>\ndo what AGENTS.md says\n</user_instructions>"),
+            _user_item(_AGENTS_MD),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == ""
+
+
+def test_codex_first_user_kept_raw_and_title_normalized_at_display(codex_root):
+    # The stored first_user_message stays RAW — it is the /api/sessions search haystack
+    # (Hermes on PR #672); only the DISPLAY title is one bounded line via display_title.
+    long_first_line = "fix the thing " + "x" * 200
+    raw = long_first_line + "\nsearchable-second-line-term"
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_event(raw),
+        ],
+    )
+    stored = _scan_one(_U1).first_user_message
+    assert stored == raw  # full raw text, both lines — search can hit line 2
+    title = metadata.display_title(metadata.SessionMeta(), stored)
+    assert title == long_first_line[:120]
+    assert "\n" not in title
+
+
+def test_codex_first_user_failsoft_on_malformed_payloads(codex_root):
+    # Non-string message, non-list content, non-dict payload: skipped, never a crash.
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            {
+                "timestamp": "t",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": 42},
+            },
+            {
+                "timestamp": "t",
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": 7},
+            },
+            {"timestamp": "t", "type": "response_item", "payload": ["not", "a", "dict"]},
+            _user_event("survived the garbage"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "survived the garbage"

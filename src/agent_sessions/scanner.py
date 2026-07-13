@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import project_dirs
+from .metadata import title_candidate
 
 # Session UUIDs that Claude Code writes are RFC4122-shaped.
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -198,6 +199,12 @@ def derive_last_activity(content_path: Path | None, st: os.stat_result) -> float
     return float(st.st_mtime)
 
 
+# Claude Code records local-command scaffolding as ordinary ``type:"user"`` messages; as a
+# title such a record is noise ("<local-command-caveat>Caveat: the messages below…"). Skip
+# them — possibly several in a row — when picking the fallback-title candidate (#670).
+_CLAUDE_WRAPPER_PREFIXES = ("<local-command-caveat", "<command-name", "<local-command-stdout")
+
+
 @dataclass(frozen=True)
 class Session:
     """One Claude Code session as the sidebar sees it."""
@@ -243,7 +250,8 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
 
     Claude Code records carry the true ``cwd`` (e.g. ``/home/u/claude/demoapp.io``),
     which is authoritative — unlike the lossy directory name. We grab the first
-    ``cwd`` we see and the first user message text, then stop.
+    ``cwd`` we see and the first user message text, then stop. Local-command wrapper
+    records (``_CLAUDE_WRAPPER_PREFIXES``) are skipped as title candidates (#670).
     """
     cwd: str | None = None
     first_msg = ""
@@ -261,15 +269,18 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
                     cwd = rec["cwd"]
                 if not first_msg and rec.get("type") == "user":
                     content = rec.get("message", {}).get("content")
+                    text = ""
                     if isinstance(content, str):
-                        first_msg = content.strip().splitlines()[0][:120] if content.strip() else ""
+                        text = content.strip()
                     elif isinstance(content, list):
                         for part in content:
                             if isinstance(part, dict) and part.get("type") == "text":
-                                text = part.get("text", "").strip()
-                                if text:
-                                    first_msg = text.splitlines()[0][:120]
+                                t = (part.get("text") or "").strip()
+                                if t:
+                                    text = t
                                     break
+                    if text and not text.startswith(_CLAUDE_WRAPPER_PREFIXES):
+                        first_msg = title_candidate(text)
                 if cwd is not None and first_msg:
                     break
     except OSError:

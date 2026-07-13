@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from agent_sessions import scanner
+from agent_sessions import metadata, scanner
 
 
 def _iso(s: str) -> float:
@@ -358,3 +358,65 @@ def test_is_ephemeral_cwd_is_lexical_no_fs(monkeypatch):
     assert (
         scanner.is_ephemeral_cwd("/home/user/.cache/act/../../realproj", home=_FAKE_HOME) is False
     )
+
+
+# ---- fallback-title normalization + wrapper skip (#670) -----------------------
+
+
+def test_title_candidate_first_line_capped():
+    # Canonical home is metadata (#670 / Hermes on PR #672): display-time-only normalization.
+    assert metadata.title_candidate("  hello\nworld  ") == "hello"
+    assert metadata.title_candidate("x" * 300) == "x" * metadata.TITLE_FALLBACK_MAX
+    assert metadata.title_candidate("   \n  ") == ""
+    assert metadata.title_candidate("") == ""
+
+
+def test_first_user_message_skips_local_command_wrappers(tmp_path):
+    # Claude records local-command scaffolding as ordinary user messages; consecutive
+    # wrapper records are skipped until the real prompt (#670).
+    p = tmp_path / "66666666-6666-6666-6666-666666666666.jsonl"
+    _write_jsonl(
+        p,
+        [
+            {
+                "type": "user",
+                "cwd": "/x",
+                "message": {
+                    "content": (
+                        "<local-command-caveat>Caveat: local commands below."
+                        "</local-command-caveat>"
+                    )
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": (
+                        "<command-name>/model</command-name>"
+                        "\n<command-message>model</command-message>"
+                    )
+                },
+            },
+            {"type": "user", "message": {"content": "the real question"}},
+        ],
+    )
+    cwd, first = scanner._read_session_meta(p)
+    assert cwd == "/x"
+    assert first == "the real question"
+
+
+def test_first_user_message_wrapper_only_yields_empty(tmp_path):
+    p = tmp_path / "77777777-7777-7777-7777-777777777777.jsonl"
+    _write_jsonl(
+        p,
+        [
+            {
+                "type": "user",
+                "cwd": "/x",
+                "message": {"content": "<command-name>/clear</command-name>"},
+            }
+        ],
+    )
+    cwd, first = scanner._read_session_meta(p)
+    assert cwd == "/x"
+    assert first == ""

@@ -16,6 +16,22 @@ _CODEX_ROLLOUT_RE = re.compile(
     r"rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
 )
 
+# Machine-context markers (#670): codex injects context as plain ``role:"user"``
+# response_items — ``<environment_context>`` / ``<user_instructions>`` (observed ≤ 0.128)
+# and the ``# AGENTS.md instructions for <cwd>`` preamble (≥ 0.142.5). ONE predicate,
+# shared with ``transcript._codex_turns_from_records``, so a future marker can never be
+# filtered from titles while still polluting the AI-review / recap input (or vice versa).
+_INJECTED_CONTEXT_PREFIXES = (
+    "<environment_context",
+    "<user_instructions",
+    "# AGENTS.md instructions",
+)
+
+
+def is_injected_context(text: str) -> bool:
+    """True when a codex user-message text is injected machine context, not a human prompt."""
+    return text.startswith(_INJECTED_CONTEXT_PREFIXES)
+
 
 def _codex_text(content) -> str:
     """First text chunk of a codex message ``content`` (str or list of parts)."""
@@ -51,8 +67,18 @@ class CodexProvider:
         return base._codex_sessions_dir().is_dir() or shutil.which("codex") is not None
 
     def _meta(self, path: Path) -> tuple[str, str] | None:
-        """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort."""
-        cwd = first_user = ""
+        """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort.
+
+        The prompt comes from the first ``user_message`` EVENT payload — the record codex
+        emits only for real user input (stable across every observed version, 0.128 →
+        0.144). Plain ``role:"user"`` response_items open with injected machine context
+        (#670: the AGENTS.md / environment preamble), so the first non-injected one is
+        only a FALLBACK candidate: it never stops the scan, and is used at EOF when the
+        rollout carries no user_message event. The message is returned RAW — it feeds the
+        ``/api/sessions`` search haystack; ``metadata.display_title`` normalizes it into
+        the bounded sidebar title (Hermes on PR #672).
+        """
+        cwd = first_user = fallback = ""
         try:
             with path.open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -67,8 +93,14 @@ class CodexProvider:
                         continue
                     if not cwd and payload.get("cwd"):
                         cwd = str(payload["cwd"])
-                    if not first_user and payload.get("role") == "user":
-                        first_user = _codex_text(payload.get("content"))
+                    if not first_user and payload.get("type") == "user_message":
+                        text = _codex_text(payload.get("message"))
+                        if text and not is_injected_context(text):
+                            first_user = text
+                    elif not fallback and payload.get("role") == "user":
+                        text = _codex_text(payload.get("content"))
+                        if text and not is_injected_context(text):
+                            fallback = text
                     if cwd and first_user:
                         break
         except OSError:
@@ -76,7 +108,7 @@ class CodexProvider:
         # cwd is the one required field: it's the launch dir + the open-path
         # allowlist key. A rollout with no usable cwd (corrupt-only, or not a real
         # session) yields no row rather than a bogus empty-cwd session.
-        return (cwd, first_user) if cwd else None
+        return (cwd, first_user or fallback) if cwd else None
 
     def scan(self) -> list[Session]:
         root = base._codex_sessions_dir()

@@ -182,6 +182,21 @@ def _is_meaningful(candidate: str) -> bool:
     return len(s) >= 2 and any(c.isalnum() for c in s)
 
 
+# Fallback-title normalization (#670): ONE rule for every engine's first-user-message
+# fallback — a single bounded line. Applied HERE, at display time, never to the stored
+# ``Session.first_user_message``, which stays raw because it doubles as the ``/api/sessions``
+# search haystack and diagnostic value (Hermes on PR #672): normalizing it at scan time made
+# any term after the first line / 120th character unsearchable.
+TITLE_FALLBACK_MAX = 120
+
+
+def title_candidate(text: str) -> str:
+    """Normalize a raw first-user-message into a fallback-title candidate: strip, keep the
+    first line, cap at ``TITLE_FALLBACK_MAX`` chars. ``""`` stays ``""`` (→ ``(untitled)``)."""
+    s = (text or "").strip()
+    return s.splitlines()[0][:TITLE_FALLBACK_MAX] if s else ""
+
+
 def display_title(meta: SessionMeta, first_user_message: str) -> str:
     """THE display-title precedence (#356, fixes #284): a manual rename always wins,
     the AI title fills the gap, the first user message is the legacy fallback — but the
@@ -189,12 +204,14 @@ def display_title(meta: SessionMeta, first_user_message: str) -> str:
     a freshly-created session whose first record is a stray ``"a"`` / ``"."`` resolves to
     ``""`` (an empty display title) instead of leaking that character as the name. A
     user-set ``meta.title`` is kept verbatim even at one char. Single helper so every
-    row-shaping / search / filter path agrees."""
+    row-shaping / search / filter path agrees. The fallback is title-normalized here
+    (``title_candidate``, #670) — the raw message stays searchable upstream."""
     if meta.title:
         return meta.title
     if meta.ai_title:
         return meta.ai_title
-    return first_user_message if _is_meaningful(first_user_message) else ""
+    candidate = title_candidate(first_user_message)
+    return candidate if _is_meaningful(candidate) else ""
 
 
 def _default_path() -> Path:

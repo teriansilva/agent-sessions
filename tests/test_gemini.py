@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from agent_sessions import engines
+from agent_sessions import engines, metadata
 
 _HASH = "8ad9da2d06678582e3bba0f92d01dd679572a5a60e707f588fc87045de2509ee"
 
@@ -112,3 +112,17 @@ def test_parse_key_routes_gemini():
 
 def test_gemini_in_registry():
     assert any(p.engine_id == "gemini" for p in engines.all_providers())
+
+
+def test_gemini_first_user_raw_and_title_normalized_at_display(gemini_tmp):
+    # Stored first_user_message stays RAW (search haystack, Hermes on PR #672); the sidebar
+    # fallback title is one bounded line via metadata.display_title (#670).
+    sid = "96fb77fc-9c1a-4453-b27b-d78d8012dd2c"
+    long_first = "investigate " + "y" * 200
+    raw = long_first + "\nsecond line"
+    _write_chat(gemini_tmp, sid=sid, project_hash=_HASH, first_user=raw)
+    s = engines.GeminiProvider().scan()[0]
+    assert s.first_user_message == raw
+    title = metadata.display_title(metadata.SessionMeta(), s.first_user_message)
+    assert title == long_first[:120]
+    assert "\n" not in title

@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from agent_sessions import engines
+from agent_sessions import engines, metadata
 from agent_sessions import transcript as T
 
 _UUID = "7f0ee6e0-1467-4f7d-843b-4e70e15e73f5"
@@ -273,3 +273,16 @@ def test_transcript_adapter_renders_user_and_assistant(agy, tmp_path):
     assert [(t.role, t.text) for t in turns] == [("user", "ping"), ("assistant", "pong")]
     # unknown id -> no turns (caller keeps the raw-byte fallback)
     assert T.adapter_for("antigravity")(_UUID2, tmp_path / "wrong-home") == []
+
+
+def test_scan_first_user_raw_and_title_normalized_at_display(agy):
+    # Stored first_user_message stays RAW (search haystack, Hermes on PR #672); the sidebar
+    # fallback title is one bounded line via metadata.display_title (#670).
+    long_first = "investigate " + "z" * 200
+    raw = long_first + "\nsecond line"
+    _make_conversation(agy, _UUID, "/home/u/proj", user=raw)
+    s = engines.AntigravityProvider().scan()[0]
+    assert s.first_user_message == raw
+    title = metadata.display_title(metadata.SessionMeta(), s.first_user_message)
+    assert title == long_first[:120]
+    assert "\n" not in title

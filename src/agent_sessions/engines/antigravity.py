@@ -64,7 +64,8 @@ def _transcript_path(root: Path, native_id: str) -> Path | None:
 
 
 def _first_user_message(root: Path, native_id: str) -> str:
-    """First human turn of a conversation, from its JSONL transcript (best-effort, fail-soft)."""
+    """First human turn of a conversation, from its JSONL transcript (best-effort, fail-soft).
+    Returned RAW (it feeds search); ``metadata.display_title`` bounds the sidebar title."""
     path = _transcript_path(root, native_id)
     if path is None:
         return ""

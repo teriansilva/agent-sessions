@@ -3,6 +3,7 @@ archive/unarchive, new-session — including CSRF/origin gating."""
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 from pathlib import Path
@@ -143,6 +144,39 @@ def test_meaningless_first_message_normalizes_title_but_stays_searchable(auth_cf
     # Still findable by the raw first message even though the display title is "" — the
     # OLD predicate (title-only) would have dropped it, so this guards the search fix.
     found = c.get("/api/sessions?q=a&limit=50").json()
+    assert uuid in {s["uuid"] for s in found["sessions"]}
+
+
+def test_codex_long_first_message_stays_searchable_beyond_title_cap(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):
+    """#670 (Hermes on PR #672): the stored first_user_message is the search haystack and
+    must stay RAW — title normalization (first line, 120 cap) happens at display time only.
+    A term that appears after the first line / 120th character must still find the session."""
+    croot = tmp_path / "codex-sessions" / "2026" / "05" / "15"
+    croot.mkdir(parents=True)
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "codex-sessions"))
+    uuid = "019e2ba1-1590-7003-8e4a-51ab62cec777"
+    prompt = "fix the widget " + "x" * 150 + "\nneedle-beyond-cap on the second line"
+    recs = [
+        {"timestamp": "t", "type": "session_meta", "payload": {"id": uuid, "cwd": "/home/u/p"}},
+        {
+            "timestamp": "t",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": prompt},
+        },
+    ]
+    (croot / f"rollout-2026-05-15T15-33-57-{uuid}.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in recs) + "\n"
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    row = next(s for s in c.get("/api/sessions?limit=50").json()["sessions"] if s["uuid"] == uuid)
+    assert row["first_user_message"] == prompt  # raw, both lines
+    assert row["title"] == ("fix the widget " + "x" * 150)[:120]  # bounded display title
+
+    found = c.get("/api/sessions?q=needle-beyond-cap&limit=50").json()
     assert uuid in {s["uuid"] for s in found["sessions"]}
 
 

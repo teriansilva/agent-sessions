@@ -464,6 +464,8 @@ def _codex_turns_from_records(recs: list[dict]) -> list[Turn]:
     """Flatten codex rollout ``response_item`` records into Turns (user/assistant messages, function
     calls + their output). ``reasoning`` (hidden thinking) and developer/system messages are
     skipped."""
+    from .engines.codex import is_injected_context
+
     turns: list[Turn] = []
     for o in recs:
         if o.get("type") != "response_item":
@@ -479,9 +481,11 @@ def _codex_turns_from_records(recs: list[dict]) -> list[Turn]:
                 for b in (p.get("content") or [])
                 if isinstance(b, dict) and b.get("text")
             ).strip()
-            # Codex injects an `<environment_context>` / `<user_instructions>` XML preamble as the
-            # first "user" message — machine context, not conversation. Skip it.
-            if text and not text.startswith(("<environment_context", "<user_instructions")):
+            # Codex injects machine context as plain "user" messages — the XML preamble
+            # (`<environment_context>` / `<user_instructions>`) and, since 0.142.5, the
+            # `# AGENTS.md instructions` block (#670). Shared predicate with the provider's
+            # title fallback so the two surfaces can't drift.
+            if text and not is_injected_context(text):
                 turns.append(Turn(role, text, "text"))
         elif pt == "function_call":
             arg = p.get("arguments") or p.get("name", "")

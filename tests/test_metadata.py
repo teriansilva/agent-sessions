@@ -185,8 +185,19 @@ def test_display_title_drops_meaningless_auto_derived_first_message(bad):
 
 @pytest.mark.parametrize("good", ["go", "ok", "hi", "  go  ", "a1", "fix bug"])
 def test_display_title_keeps_meaningful_auto_derived_first_message(good):
-    # A real short prompt is kept verbatim (NOT stripped — search/display use the raw value).
-    assert metadata.display_title(metadata.SessionMeta(), good) == good
+    # A real short prompt survives as the display title, normalized to a single bounded
+    # line (#670: strip → first line → cap). Search is unaffected — it reads the RAW
+    # first_user_message on the row, not this display value.
+    assert metadata.display_title(metadata.SessionMeta(), good) == metadata.title_candidate(good)
+
+
+def test_display_title_bounds_multiline_and_overlong_fallback():
+    # #670: the fallback title is one line, capped — a pasted document can't become the name.
+    long_line = "fix the thing " + "x" * 200
+    assert (
+        metadata.display_title(metadata.SessionMeta(), long_line + "\nsecond line")
+        == long_line[: metadata.TITLE_FALLBACK_MAX]
+    )
 
 
 def test_display_title_keeps_one_char_manual_rename_verbatim():

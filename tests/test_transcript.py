@@ -266,6 +266,21 @@ def test_codex_parser_decodes_messages_calls_and_output():
     assert any(t.kind == "result" and "total 0" in t.text for t in turns)
 
 
+def test_codex_parser_skips_agents_md_preamble_keeps_full_prompt():
+    # >=0.142.5 injects AGENTS.md as a plain user message (#670) - dropped via the predicate
+    # shared with the provider's title fallback, while the real prompt is kept FULL
+    # (multiline, >120 chars): only sidebar titles are capped, never transcript turns.
+    long_prompt = "please fix this\n" + "detail line\n" * 30
+    recs = [
+        _codex_msg("user", "# AGENTS.md instructions for /x\n\n<INSTRUCTIONS>doc</INSTRUCTIONS>"),
+        _codex_msg("user", long_prompt),
+    ]
+    turns = T._codex_turns_from_records(recs)
+    assert len(turns) == 1
+    assert turns[0].text == long_prompt.strip()
+    assert len(turns[0].text) > 120
+
+
 def test_codex_adapter_resolves_rollout_glob(tmp_path):
     assert T.adapter_for("codex") is not None
     d = tmp_path / ".codex" / "sessions" / "2026" / "06"
