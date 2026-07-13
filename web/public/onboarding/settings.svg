@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Settings and AI">
+  <rect width="640" height="360" fill="#131418"/>
+  <rect x="24" y="28" width="120" height="304" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="40" y="52" width="88" height="24" fill="#1a1c21"/>
+  <rect x="40" y="84" width="88" height="24" fill="#ffb000"/>
+  <rect x="168" y="56" width="448" height="36" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="168" y="108" width="448" height="36" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="168" y="160" width="200" height="32" fill="#0d0e10" stroke="#ffb000"/>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="392" y="260" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">SETTINGS // AI endpoint</text>
+</svg>

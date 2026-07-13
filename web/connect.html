@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>BattleLab — Remote Connect</title>
+    <style>
+      /* Standalone HUD shell for the public connect page. It cannot import the SPA's
+       * index.css/App.css (those stream in later with the app), so the tokens and the few
+       * primitives this page uses are mirrored here verbatim — same names, same values.
+       * Cross-check against docs/design.md when either side changes. */
+      :root {
+        --bg-0: #0d0e10;
+        --bg-1: #131418;
+        --bg-2: #1a1c21;
+        --text-1: #e8e9ec;
+        --text-2: #a7abb3;
+        --text-3: #6f747d;
+        --line: rgba(255, 255, 255, 0.08);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --accent: #ffb000;
+        --on-accent: #120c00;
+        --status-up: #3fbf6f;
+        --status-down: #c02020;
+        --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+          Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body.connect-page {
+        margin: 0;
+        min-height: 100dvh;
+        overflow: hidden;
+        background: var(--bg-0);
+        color: var(--text-1);
+        font-family: var(--font-mono);
+      }
+      button,
+      input {
+        font: inherit;
+      }
+
+      /* ---- Ambient backdrop (dataFlow.ts paints the grid + drifting trails) ------------- */
+      .hud-canvas {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .connect-shell {
+        position: relative;
+        z-index: 1;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: clamp(18px, 4vw, 56px);
+        isolation: isolate;
+      }
+      /* Reduced-motion / no-canvas fallback: the same 48px static grid the app falls back to. */
+      @media (prefers-reduced-motion: reduce) {
+        .hud-canvas {
+          display: none;
+        }
+        body.connect-page {
+          background-image:
+            linear-gradient(var(--line) 1px, transparent 1px),
+            linear-gradient(90deg, var(--line) 1px, transparent 1px);
+          background-size: 48px 48px;
+        }
+      }
+
+      /* ---- HUD primitives (mirrors App.css) --------------------------------------------- */
+      .hud-cnr {
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        border: 0 solid var(--accent);
+        pointer-events: none;
+        z-index: 3;
+      }
+      .hud-cnr.tl { top: -1px; left: -1px; border-top-width: 2px; border-left-width: 2px; }
+      .hud-cnr.tr { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
+      .hud-cnr.bl { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
+      .hud-cnr.br { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+
+      .hud-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--text-3);
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .hud-led {
+        width: 6px;
+        height: 6px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 7px var(--accent);
+        animation: hud-blink 1.6s ease-in-out infinite;
+      }
+      .hud-led.up { background: var(--status-up); box-shadow: 0 0 7px var(--status-up); }
+      .hud-led.idle { background: var(--text-3); box-shadow: none; animation: none; }
+      @keyframes hud-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.32; }
+      }
+      /* The link LED reads "no tunnel" until one is being opened, then it pulses. */
+      body[data-state="connecting"] .link-led {
+        background: var(--accent);
+        box-shadow: 0 0 7px var(--accent);
+        animation: hud-blink 1.6s ease-in-out infinite;
+      }
+
+      /* Button glitch (#211): cosmetic flicker only — never animate clip-path or box geometry,
+       * it removes the clipped slice from hit-testing and eats clicks. */
+      @keyframes hud-btn-glitch {
+        0% { transform: none; filter: none; }
+        25% { transform: translate(-1px, 0); filter: brightness(1.35) contrast(1.25); }
+        50% { transform: translate(1px, 0); filter: brightness(0.9) contrast(1.35); }
+        75% { transform: translate(-1px, 0); filter: brightness(1.2) contrast(1.15); }
+        100% { transform: none; filter: none; }
+      }
+      .shine.glitching { animation: hud-btn-glitch 280ms steps(1, end); }
+      .shine:active { animation: hud-btn-glitch 160ms steps(1, end); }
+      @media (prefers-reduced-motion: reduce) {
+        .hud-led { animation: none; }
+        body[data-state="connecting"] .link-led { animation: none; }
+        .shine.glitching,
+        .shine:active { animation: none !important; }
+      }
+
+      /* ---- Sign-in card ----------------------------------------------------------------- */
+      .connect-card {
+        position: relative;
+        width: min(460px, calc(100vw - 32px));
+        padding: 30px;
+        border: 1px solid var(--line-strong);
+        /* Frosted panel over the ambient field (docs/design.md §5). */
+        background: color-mix(in srgb, var(--bg-1) 72%, transparent);
+        backdrop-filter: blur(12px) saturate(115%);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+      }
+      .card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .brand-mark {
+        width: 21px;
+        height: 21px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--accent);
+      }
+      .brand-mark::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        background: var(--accent);
+      }
+      .eyebrow {
+        margin: 28px 0 10px;
+        color: var(--text-3);
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        color: var(--text-1);
+        font-size: clamp(25px, 5vw, 34px);
+        line-height: 1.06;
+        letter-spacing: 0;
+      }
+      .lede {
+        margin: 12px 0 14px;
+        color: var(--text-2);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .how-row {
+        margin: 0 0 22px;
+      }
+      .linklike {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 24px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .linklike:hover { text-decoration: underline; }
+      .linklike::before { content: "//"; color: var(--text-3); }
+      /* The modal's dismiss control is a real touch target (design.md §8), not a 34px chip. */
+      #how-close {
+        min-height: 44px;
+        padding: 0 16px;
+      }
+      .connect-form {
+        display: grid;
+        gap: 15px;
+      }
+      .field {
+        display: grid;
+        gap: 7px;
+      }
+      .field-label,
+      .relay-options summary {
+        color: var(--text-3);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      input {
+        width: 100%;
+        min-width: 0;
+        height: 44px;
+        padding: 0 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 0;
+        background: var(--bg-0);
+        color: var(--text-1);
+        outline: none;
+      }
+      input:focus-visible {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+      }
+      .relay-options {
+        border: 1px solid var(--line);
+        padding: 11px 12px 12px;
+      }
+      .relay-options summary {
+        cursor: pointer;
+      }
+      .relay-options .field {
+        margin-top: 12px;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        margin-top: 4px;
+      }
+      .warning {
+        margin: 0;
+        color: color-mix(in srgb, var(--status-down) 42%, var(--text-1));
+        font-size: 11px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      .primary,
+      .ghost {
+        min-height: 44px;
+        border: 0;
+        border-radius: 0;
+        cursor: pointer;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+      .primary {
+        padding: 0 18px;
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+      .ghost {
+        min-height: 34px;
+        padding: 0 11px;
+        border: 1px solid var(--line-strong);
+        background: var(--bg-0);
+        color: var(--text-1);
+        font-size: 10px;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      #status {
+        min-height: 18px;
+        color: var(--text-2);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      #status[data-kind="error"] {
+        color: color-mix(in srgb, var(--status-down) 45%, var(--text-1));
+      }
+      #status[data-kind="ok"] {
+        color: var(--status-up);
+      }
+
+      /* ---- "How does it work?" modal ----------------------------------------------------- */
+      #how-modal {
+        position: relative; /* anchors the corner brackets outside the scrolling body */
+        width: min(560px, calc(100vw - 24px));
+        max-height: min(88dvh, 940px);
+        padding: 0;
+        border: 1px solid var(--line-strong);
+        border-radius: 0;
+        background: var(--bg-1);
+        color: var(--text-1);
+        font-family: var(--font-mono);
+        box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+        /* The UA sheet gives <dialog> `overflow: auto`, and the corner brackets deliberately sit
+         * 1px OUTSIDE this box — so the dialog grew its own 1px scrollbars around the frame.
+         * The panel never scrolls; .modal-inner below is the one scroll container. */
+        overflow: visible;
+      }
+      /* Flex so .modal-inner fills the panel and owns the scrolling. `max-height: inherit` on the
+       * inner used to inherit this element's max-height, which is 2px taller than its own content
+       * box (1px border each side) — enough to overflow the dialog and raise a second scrollbar. */
+      #how-modal[open] {
+        display: flex;
+        flex-direction: column;
+      }
+      #how-modal::backdrop {
+        background: rgba(6, 7, 9, 0.72);
+        backdrop-filter: blur(3px);
+      }
+      .modal-inner {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: clip; /* never a horizontal bar (design.md §7); `clip` keeps overflow-y auto */
+        overscroll-behavior: contain;
+        scrollbar-width: none; /* Firefox: scroll, don't paint a bar over the HUD chrome */
+        padding: 26px;
+      }
+      .modal-inner::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
+      .modal-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      #how-title {
+        margin: 14px 0 0;
+        font-size: clamp(20px, 4vw, 25px);
+        line-height: 1.1;
+      }
+      .modal-lede {
+        margin: 12px 0 20px;
+        color: var(--text-2);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .spec-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 150px) minmax(0, 1fr);
+        gap: 10px 16px;
+        margin: 0 0 20px;
+        padding: 16px 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+      }
+      .spec-grid dt {
+        color: var(--text-3);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        line-height: 1.6;
+        text-transform: uppercase;
+      }
+      .spec-grid dd {
+        margin: 0;
+        color: var(--text-2);
+        line-height: 1.6;
+        overflow-wrap: break-word;
+      }
+      .spec-grid dd b {
+        color: var(--text-1);
+        font-weight: 600;
+        white-space: nowrap; /* never hyphenate a primitive name across lines */
+      }
+      .props {
+        display: grid;
+        gap: 12px;
+        margin: 0 0 20px;
+        padding: 0;
+        list-style: none;
+      }
+      .props li {
+        display: grid;
+        grid-template-columns: 6px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+        color: var(--text-2);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      /* A flat brand-accent bullet — deliberately NOT a .hud-led: these are protocol
+       * properties, not live statuses, and status colour stays load-bearing (design.md §3). */
+      .prop-mark {
+        width: 6px;
+        height: 6px;
+        margin-top: 7px;
+        background: var(--accent);
+      }
+      .props b {
+        display: block;
+        color: var(--text-1);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .modal-warning {
+        margin: 0 0 18px;
+        padding: 12px 14px;
+        border-left: 2px solid var(--status-down);
+        background: color-mix(in srgb, var(--status-down) 8%, transparent);
+        color: color-mix(in srgb, var(--status-down) 30%, var(--text-1));
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .modal-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .modal-foot a {
+        color: var(--accent);
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        overflow-wrap: anywhere;
+      }
+      #app-root {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        display: none;
+        min-height: 100dvh;
+        background: var(--bg-0);
+      }
+      .session-box {
+        position: fixed;
+        top: max(10px, env(safe-area-inset-top));
+        left: 50%;
+        z-index: 10;
+        width: min(520px, calc(100vw - 18px));
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 52px;
+        padding: 9px 10px;
+        border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+        background: color-mix(in srgb, var(--bg-1) 94%, transparent);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.46);
+      }
+      .session-led {
+        width: 8px;
+        height: 8px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--status-up);
+        box-shadow: 0 0 14px color-mix(in srgb, var(--status-up) 70%, transparent);
+      }
+      .session-meta {
+        min-width: 0;
+        flex: 1;
+      }
+      .session-title {
+        display: block;
+        overflow: hidden;
+        color: var(--text-1);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-overflow: ellipsis;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .session-subtitle {
+        display: block;
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--text-2);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #countdown {
+        flex: 0 0 auto;
+        border: 1px solid var(--line-strong);
+        color: var(--accent);
+        padding: 5px 8px;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      body[data-state="connected"] .connect-card {
+        display: none;
+      }
+      body[data-state="connected"] .hud-canvas {
+        display: none;
+      }
+      body[data-state="connected"] #app-root {
+        display: block;
+      }
+      @media (max-width: 800px) {
+        /* Mobile Chrome won't render backdrop-filter — degrade the panel to near-opaque. */
+        .connect-card {
+          background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+          backdrop-filter: none;
+        }
+        /* Thumb-sized trigger on touch (design.md §8); stays a tight inline link on desktop. */
+        .linklike {
+          min-height: 44px;
+        }
+        .how-row {
+          margin-bottom: 12px;
+        }
+      }
+      @media (max-width: 560px) {
+        .connect-shell {
+          align-items: center;
+          padding: 14px;
+        }
+        .connect-card {
+          width: 100%;
+          padding: 22px;
+        }
+        .card-head {
+          flex-wrap: wrap;
+        }
+        .actions {
+          grid-template-columns: 1fr;
+        }
+        .primary {
+          width: 100%;
+        }
+        .spec-grid {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 4px 0;
+        }
+        .spec-grid dd {
+          margin-bottom: 10px;
+        }
+        .modal-inner {
+          padding: 20px;
+        }
+        .session-box {
+          gap: 8px;
+          padding: 8px;
+        }
+        .session-subtitle {
+          max-width: 100%;
+        }
+        #countdown {
+          display: none;
+        }
+        .ghost {
+          min-width: 72px;
+          padding: 0 8px;
+        }
+      }
+    </style>
+  </head>
+  <body class="connect-page" data-state="signed-out">
+    <canvas id="bg" class="hud-canvas" aria-hidden="true"></canvas>
+    <main class="connect-shell">
+      <section class="connect-card" aria-labelledby="connect-title">
+        <span class="hud-cnr tl" aria-hidden="true"></span>
+        <span class="hud-cnr tr" aria-hidden="true"></span>
+        <span class="hud-cnr bl" aria-hidden="true"></span>
+        <span class="hud-cnr br" aria-hidden="true"></span>
+
+        <div class="card-head">
+          <div class="brand" aria-label="BattleLab Connect">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span>BattleLab Connect</span>
+          </div>
+          <span class="hud-tag" aria-hidden="true">
+            <span class="hud-led idle link-led"></span>
+            <span>Relay // Blind</span>
+          </span>
+        </div>
+        <p class="eyebrow">Blind relay sign-in</p>
+        <h1 id="connect-title">Remote connect</h1>
+        <p class="lede">Use the console key and access password printed by your streaming install.</p>
+        <p class="how-row">
+          <button id="how-it-works" class="linklike" type="button">How does it work?</button>
+        </p>
+
+        <form id="connect-form" class="connect-form">
+          <label class="field" for="name">
+            <span class="field-label">Console key</span>
+            <input id="name" autocomplete="off" inputmode="text" placeholder="viper-8231" />
+          </label>
+          <label class="field" for="key">
+            <span class="field-label">Access password</span>
+            <input id="key" type="password" autocomplete="off" placeholder="access password" />
+          </label>
+          <details id="relay-options" class="relay-options">
+            <summary>Custom relay</summary>
+            <label class="field" for="relay">
+              <span class="field-label">Relay base URL</span>
+              <input id="relay" placeholder="https://relay.example" />
+            </label>
+          </details>
+          <div id="status" role="status" aria-live="polite">
+            Enter your console key and access password.
+          </div>
+          <div class="actions">
+            <p class="warning">
+              The access password grants full control of that machine. Never enter one given to
+              you by someone who contacted you.
+            </p>
+            <button id="connect" class="primary shine" type="submit">Connect</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="session-box" class="session-box" aria-label="Streaming session" hidden>
+        <span class="session-led" aria-hidden="true"></span>
+        <span class="session-meta">
+          <span id="session-name" class="session-title">Connected</span>
+          <span id="session-status" class="session-subtitle">Reload returns to the connect page.</span>
+        </span>
+        <span id="countdown">--:--</span>
+        <button id="signout" class="ghost" type="button">Sign out</button>
+      </section>
+
+      <div id="app-root"></div>
+    </main>
+
+    <dialog id="how-modal" aria-labelledby="how-title">
+      <span class="hud-cnr tl" aria-hidden="true"></span>
+      <span class="hud-cnr tr" aria-hidden="true"></span>
+      <span class="hud-cnr bl" aria-hidden="true"></span>
+      <span class="hud-cnr br" aria-hidden="true"></span>
+
+      <div class="modal-inner">
+        <div class="modal-head">
+          <span class="hud-tag">Sec // End-to-end</span>
+          <button id="how-close" class="ghost" type="button">Close</button>
+        </div>
+        <h2 id="how-title">The relay is blind</h2>
+        <p class="modal-lede">
+          Your browser and your box run an authenticated key exchange <em>through</em> the relay.
+          The relay forwards frames it cannot read: it never receives your access password, so it
+          cannot derive the session keys.
+        </p>
+
+        <dl class="spec-grid">
+          <dt>Key exchange</dt>
+          <dd><b>X25519</b>, ephemeral — a fresh keypair on both sides, every session.</dd>
+          <dt>Authentication</dt>
+          <dd>
+            Your access password is stretched with <b>HKDF-SHA256</b> into a pre-shared key that
+            is mixed into the key schedule (an NNpsk0-style pattern).
+          </dd>
+          <dt>Transport</dt>
+          <dd><b>AES-256-GCM</b> — a separate key and counter for each direction.</dd>
+          <dt>Relay sees</dt>
+          <dd>Ciphertext and routing metadata. Nothing else.</dd>
+        </dl>
+
+        <ul class="props">
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Forward secrecy</b>
+              Session keys are ephemeral. Recorded traffic stays unreadable even if the access
+              password leaks later.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Mutual authentication</b>
+              Without the password neither side can produce a valid confirmation tag, so a
+              man-in-the-middle — the relay included — is rejected before any data flows.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Replay protection</b>
+              Every frame carries a strictly increasing counter. Repeated or reordered frames are
+              dropped.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Session cap</b>
+              A tunnel closes automatically after 60 minutes.
+            </span>
+          </li>
+        </ul>
+
+        <p class="modal-warning">
+          The access password grants full control of the machine you connect to. Never enter one
+          that someone else gave you — no legitimate operator will ask you for it.
+        </p>
+
+        <div class="modal-foot">
+          <span class="hud-tag"><span>Wire spec // Public</span></span>
+          <a
+            href="https://github.com/teriansilva/agent-sessions/blob/main/docs/home-free-handshake.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >docs/home-free-handshake.md</a
+          >
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/src/homefree/connect.main.ts"></script>
+  </body>
+</html>
