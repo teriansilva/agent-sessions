@@ -43,6 +43,11 @@ const SLIDES: { img: string; title: string; body: string }[] = [
     body: "Your projects and sessions as a flowchart — drag a session onto a project to reassign it.",
   },
   {
+    img: publicAsset("onboarding/homefree.svg"),
+    title: "Home Free — from anywhere",
+    body: "Your deck can stream through our blind relay — open battlelab.superstatus.io/connect in any browser and enter the console name + access key from your install. End-to-end encrypted; sessions run up to 4 hours.",
+  },
+  {
     img: publicAsset("onboarding/settings.svg"),
     title: "Settings → AI",
     body: "Tune your AI endpoint, auto-sort, themes and more. Re-open this tour any time from Help.",
@@ -267,6 +272,10 @@ export function Onboarding({
             <p className={styles.copy}>
               We'll check which agents are installed, let you wire up your AI, create a first
               project, and launch your first session — about a minute.
+            </p>
+            <p className={styles.copy}>
+              Installed with streaming (the default)? Your deck is also reachable from any
+              browser via the Connect page — end-to-end encrypted, sessions up to 4 hours.
             </p>
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>

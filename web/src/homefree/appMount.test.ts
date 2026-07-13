@@ -86,7 +86,7 @@ function agentChannel(ws: Sock) {
 async function fakeAppAgent(ws: Sock, accessKey: string, respBody: Uint8Array): Promise<void> {
   const chan = agentChannel(ws);
   await chan.recvText(); // hello
-  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 3600 }));
+  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }));
   const res = new Responder(await derivePsk(accessKey));
   chan.send(await res.respond(await chan.recvBinary())); // msg2
   const transport = await res.finish(await chan.recvBinary()); // msg3

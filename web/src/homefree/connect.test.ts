@@ -154,7 +154,7 @@ async function fakeAppRelay(
   const chan = makeChannel(ws);
   await chan.opened;
   await chan.recvText(); // hello
-  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 3600 }));
+  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }));
   const res = new Responder(await derivePsk(accessKey));
   const msg1 = await chan.recvBinary();
   chan.send(await res.respond(msg1));

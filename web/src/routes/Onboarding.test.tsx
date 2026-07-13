@@ -104,9 +104,11 @@ test("tour mode shows the slideshow and Done closes it", async () => {
     </MemoryRouter>,
   );
   expect(screen.getByText(/your sessions/i)).toBeInTheDocument();
-  // 4 slides: advance to the last, then Done.
+  // 5 slides (incl. Home Free, #662): advance to the last, then Done.
   await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
   await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  expect(screen.getByText(/home free — from anywhere/i)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
   await userEvent.click(screen.getByRole("button", { name: /^done$/i }));
   expect(onClose).toHaveBeenCalledTimes(1);

@@ -1,6 +1,6 @@
 // Browser entry for the Home Free connect page (loaded by connect.html). Thin DOM
 // glue over the app-mode session core in connect.ts. Owns the public-page UI state,
-// one-hour sessionStorage credential restore, sign-out cleanup, and connected URL
+// relay-deadline-derived sessionStorage credential restore (4-hour fallback), sign-out cleanup, and connected URL
 // canonicalization. This page is standalone and NOT linked from the app — it exists
 // for reaching a box through the relay.
 
@@ -13,6 +13,7 @@ import {
   solveAltcha,
 } from "./connect";
 import { type MountedApp, mountApp } from "./appMount";
+import { sessionExpiredMessage, sessionExpiryMs } from "./sessionWindow";
 
 type UiState = "signed-out" | "connecting" | "connected";
 
@@ -37,7 +38,6 @@ declare global {
 
 const PUBLIC_RELAY = "https://relay.battlelab.superstatus.io";
 const STORAGE_KEY = "battlelab.connect.session.v1";
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 const byId = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -165,12 +165,11 @@ function readSavedSession(): SavedConnectSession | null {
 function scheduleStorageExpiry(expiresAt: number): void {
   expiryTimer = stopTimer(expiryTimer);
   const delay = Math.max(0, expiresAt - nowMs());
-  expiryTimer = window.setTimeout(() => endSession("session expired (60-min limit)", "expired"), delay);
+  expiryTimer = window.setTimeout(() => endSession(sessionExpiredMessage(), "expired"), delay);
 }
 
 function saveSession(base: string, name: string, key: string, deadline?: number): void {
-  const deadlineMs = deadline && deadline > 0 ? deadline * 1000 : Number.POSITIVE_INFINITY;
-  const expiresAt = Math.min(nowMs() + ONE_HOUR_MS, deadlineMs);
+  const expiresAt = sessionExpiryMs(nowMs(), deadline);
   if (!Number.isFinite(expiresAt) || expiresAt <= nowMs()) return;
   const saved: SavedConnectSession = { relay: base, name, key, expiresAt };
   try {
@@ -202,7 +201,7 @@ function startCountdown(deadline: number): void {
     const m = String(Math.floor(left / 60)).padStart(2, "0");
     const s = String(left % 60).padStart(2, "0");
     countdownEl.textContent = `${m}:${s}`;
-    if (left <= 0) endSession("session expired (60-min limit)", "expired");
+    if (left <= 0) endSession(sessionExpiredMessage(), "expired");
   };
   tick();
   countdownTimer = window.setInterval(tick, 1000);
@@ -300,7 +299,7 @@ async function connectApp(base: string, name: string, key: string): Promise<Moun
       } else if (evt.type === "warn") {
         setStatus(`session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`);
       } else if (evt.type === "expired") {
-        endSession("session expired (60-min limit)", "expired");
+        endSession(sessionExpiredMessage(), "expired");
       } else if (evt.type === "closed") {
         endSession("disconnected", "closed");
       }

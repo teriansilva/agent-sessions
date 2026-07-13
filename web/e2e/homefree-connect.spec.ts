@@ -178,8 +178,8 @@ async function stubSuccessfulConnect(page: import("@playwright/test").Page): Pro
       mountApp: async (_ws, _key, _captcha, opts) => {
         opts?.onEvent?.({
           type: "paired",
-          deadline: Math.floor(Date.now() / 1000) + 3500,
-          ttl: 3600,
+          deadline: Math.floor(Date.now() / 1000) + 14400,
+          ttl: 14400,
         });
         const root = document.getElementById("app-root");
         if (root) {
@@ -226,7 +226,7 @@ test("connect sign-in is centered and keeps custom relay in advanced controls", 
   await expect(page.getByLabel("Relay base URL")).toBeVisible();
 });
 
-test("public connect signs in, canonicalizes the URL, stores credentials for the hour, and signs out", async ({
+test("public connect signs in, canonicalizes the URL, stores credentials for the relay-announced 4-hour window, and signs out", async ({
   page,
   baseURL,
 }) => {
@@ -245,8 +245,10 @@ test("public connect signs in, canonicalizes the URL, stores credentials for the
   expect(saved).toBeTruthy();
   const parsed = JSON.parse(saved!);
   expect(parsed).toMatchObject({ relay: PUBLIC_RELAY, name: "viper-8231", key: "stream-secret" });
-  expect(parsed.expiresAt).toBeGreaterThan(Date.now());
-  expect(parsed.expiresAt).toBeLessThanOrEqual(Date.now() + 3_600_000);
+  // The relay announced a 4-hour deadline — the saved window must follow it and
+  // must NOT be clamped back to the old one-hour cap (#662 regression).
+  expect(parsed.expiresAt).toBeGreaterThan(Date.now() + 3_600_000);
+  expect(parsed.expiresAt).toBeLessThanOrEqual(Date.now() + 14_400_000);
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.locator(".connect-card")).toBeVisible();
