@@ -13,8 +13,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "virtual:pwa-register": new URL("./src/test/pwa-register-stub.ts", import.meta.url)
-        .pathname,
+      "virtual:pwa-register": new URL("./src/lib/pwaRegisterStub.ts", import.meta.url).pathname,
     },
   },
   test: {
