@@ -35,6 +35,16 @@ window.SpeechRecognition = class {
 };
 `;
 
+// Dictation now acquires the mic via getUserMedia BEFORE building the recognizer (#659 follow-up:
+// the reliable Android grant path). Headless Chromium has no real audio device, so stub it to
+// resolve — otherwise the grant rejects and the stubbed recognizer never starts.
+const GUM_STUB = `
+Object.defineProperty(navigator, "mediaDevices", {
+  configurable: true,
+  value: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop() {} }] }) },
+});
+`;
+
 // No-op WebSocket so the terminal mounts without a backend (E2E serves the static SPA only).
 const NOOP_WS = `
 window.WebSocket = class {
@@ -49,6 +59,7 @@ test("push-to-talk streams the transcript into the compose box; tapping again st
 }) => {
   await page.addInitScript(NOOP_WS);
   await page.addInitScript(SPEECH_STUB);
+  await page.addInitScript(GUM_STUB);
   await page.goto("/s/claude/ptt-483");
   await expect(page.locator(".xterm")).toBeVisible();
 

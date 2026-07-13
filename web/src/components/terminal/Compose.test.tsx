@@ -67,14 +67,37 @@ class FakeRecognition {
   }
 }
 
+// getUserMedia is the reliable mic-grant path on Android (#659 follow-up): dictation now acquires
+// the mic through it before building the recognizer. Default: resolve with a dummy stream; set
+// `gumReject` to a DOMException name to model a denied / absent mic.
+let gumReject: string | null = null;
 const installSpeech = () => {
   window.SpeechRecognition = FakeRecognition as unknown as typeof window.SpeechRecognition;
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: vi.fn(() =>
+        gumReject
+          ? Promise.reject(Object.assign(new Error(gumReject), { name: gumReject }))
+          : Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream),
+      ),
+    },
+  });
 };
+
+// Tap the mic and wait for the async getUserMedia grant to spin up the recognizer. Uses the exact
+// aria-label (not the /start voice input/i regex the tests use) so it isn't itself rewritten.
+async function startVoice(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+  await waitFor(() => expect(lastRecog).not.toBeNull());
+}
 
 afterEach(() => {
   lastRecog = null;
+  gumReject = null;
   delete window.SpeechRecognition;
   delete window.webkitSpeechRecognition;
+  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
 });
 
 test("the mic chip is hidden when the browser has no SpeechRecognition (#483)", () => {
@@ -96,7 +119,7 @@ test("tapping the mic starts dictation, streams the transcript in, then tapping 
   installSpeech();
   const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   expect(lastRecog).not.toBeNull();
   expect(lastRecog!.start).toHaveBeenCalled();
   expect(lastRecog!.continuous).toBe(true);
@@ -117,7 +140,7 @@ test("dictation appends to already-typed text and streams interim then final (#4
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await user.type(ta, "hello");
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   act(() => lastRecog!.emit([{ transcript: "world", isFinal: false }]));
   expect(ta.value).toBe("hello world"); // interim shows live, appended after the typed text
   act(() => lastRecog!.emit([{ transcript: "world wide", isFinal: true }]));
@@ -128,9 +151,9 @@ test("a permission-denied error surfaces a note and leaves the mic idle (#483)",
   installSpeech();
   const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   act(() => lastRecog!.fail("not-allowed"));
-  expect(await screen.findByText(/microphone blocked/i)).toBeInTheDocument();
+  expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
 });
 
@@ -138,7 +161,7 @@ test("collapsing the compose box stops an active dictation (#483)", async () => 
   installSpeech();
   const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   expect(lastRecog!.start).toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: /collapse compose/i }));
   expect(lastRecog!.stop).toHaveBeenCalled();
@@ -148,7 +171,7 @@ test("unmounting aborts an active dictation so no recognizer outlives the box (#
   installSpeech();
   const user = userEvent.setup();
   const { unmount } = renderCompose();
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   unmount();
   expect(lastRecog!.abort).toHaveBeenCalled();
 });
@@ -160,7 +183,7 @@ test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicate
   const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   for (let i = 0; i < 6; i++) {
     act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
   }
@@ -176,7 +199,7 @@ test("stacked interim snapshots (Android Chrome) collapse to the last one, not a
   const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   act(() =>
     lastRecog!.emit([
       { transcript: "this", isFinal: false },
@@ -204,7 +227,7 @@ test("multiple finalized utterances still concatenate in order (#487)", async ()
   const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await user.click(screen.getByRole("button", { name: /start voice input/i }));
+  await startVoice(user);
   act(() =>
     lastRecog!.emit([
       { transcript: "deploy the build", isFinal: true },
@@ -213,6 +236,66 @@ test("multiple finalized utterances still concatenate in order (#487)", async ()
     ]),
   );
   expect(ta.value).toBe("deploy the build then run the tests and rep");
+});
+
+test("a denied getUserMedia grant names the reason and never builds a recognizer (#659 follow-up)", async () => {
+  // The reliable Android mic path: if getUserMedia is refused, we surface an actionable note and
+  // never start a recognizer (so there's nothing to leak) — instead of the old silent "blocked".
+  installSpeech();
+  gumReject = "NotAllowedError";
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+  expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
+  expect(lastRecog).toBeNull(); // grant refused up front — no recognizer created
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("Android Chrome's service-not-allowed on a continuous recognizer retries once, non-continuous", async () => {
+  // Android Chrome rejects a continuous recognizer with `service-not-allowed`; we fall back once to
+  // a single-utterance recognizer rather than surfacing an error.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  expect(first.continuous).toBe(true);
+  act(() => first.fail("service-not-allowed"));
+  expect(lastRecog).not.toBe(first); // a fresh recognizer took over synchronously
+  expect(lastRecog!.continuous).toBe(false);
+  expect(lastRecog!.start).toHaveBeenCalled();
+  expect(screen.queryByText(/unavailable|blocked|error/i)).not.toBeInTheDocument();
+});
+
+test("a getUserMedia grant resolving AFTER unmount builds no stale recognizer (#660 review)", async () => {
+  // The async twin of the stop guard: tap the mic, unmount before the grant resolves, then resolve
+  // it. The unmount cleanup must invalidate the pending grant so no recognizer is created after the
+  // Compose box is gone.
+  installSpeech();
+  let resolveGrant!: (s: unknown) => void;
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(() => new Promise((r) => (resolveGrant = r))) },
+  });
+  const user = userEvent.setup();
+  const { unmount } = renderCompose();
+  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+  expect(lastRecog).toBeNull(); // grant still pending — no recognizer yet
+  unmount();
+  await act(async () => {
+    resolveGrant({ getTracks: () => [{ stop: vi.fn() }] });
+  });
+  expect(lastRecog).toBeNull(); // the post-unmount grant must NOT spin up a recognizer
+});
+
+test("an unmapped speech error names itself instead of a generic 'microphone blocked' (#659 follow-up)", async () => {
+  // The whole point of the follow-up: never hide the real failure behind a generic string again.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  act(() => lastRecog!.fail("some-odd-code"));
+  expect(await screen.findByText(/voice input error: some-odd-code/i)).toBeInTheDocument();
 });
 
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {

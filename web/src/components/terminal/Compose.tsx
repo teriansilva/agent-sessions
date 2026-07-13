@@ -70,6 +70,39 @@ const joinSpoken = (base: string, spoken: string): string => {
   return /\s$/.test(base) ? base + spoken : `${base} ${spoken}`;
 };
 
+/** Human-readable note for a dictation failure. Maps the SpeechRecognition `error` codes AND the
+ *  DOMException `name`s that getUserMedia rejects with to something actionable — and, crucially,
+ *  the default arm echoes the raw code so an unmapped failure names itself instead of hiding behind
+ *  a generic "microphone blocked" (the string that made the #659 header bug so hard to pin down). */
+const micErrorNote = (code: string): string => {
+  switch (code) {
+    case "not-allowed":
+    case "NotAllowedError":
+    case "SecurityError":
+      return "mic blocked — allow microphone for this site in your browser settings";
+    case "service-not-allowed":
+      return "speech recognition unavailable on this device/browser";
+    case "audio-capture":
+    case "NotFoundError":
+      return "no microphone found";
+    case "network":
+      return "voice input needs a network connection";
+    case "language-not-supported":
+      return "dictation language not supported";
+    default:
+      return `voice input error: ${code}`;
+  }
+};
+
+/** The DOMException name (or a fallback) a getUserMedia rejection carries, for `micErrorNote`. */
+const gumErrorCode = (err: unknown): string => {
+  if (err && typeof err === "object" && "name" in err) {
+    const name = (err as { name?: unknown }).name;
+    if (typeof name === "string") return name;
+  }
+  return "NotAllowedError";
+};
+
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
  *  Terminal forwarding a captured image paste, #157). */
 export interface ComposeHandle {
@@ -128,6 +161,10 @@ export const Compose = forwardRef<
   const [listening, setListening] = useState(false);
   const recogRef = useRef<SpeechRecognition | null>(null);
   const dictBaseRef = useRef("");
+  // Guards the async mic-permission grant: bumped on every start AND stop, so a getUserMedia
+  // promise that resolves after the user already cancelled (or restarted) doesn't spin up a
+  // stale recognizer.
+  const dictTokenRef = useRef(0);
 
   // Server-side draft (#477) bookkeeping. `dirty` flips true on the first user edit, so a
   // late GET /draft can't clobber text the user already typed; `loadToken` discards a load
@@ -228,6 +265,7 @@ export const Compose = forwardRef<
   const stopDictation = useCallback(() => {
     const r = recogRef.current;
     recogRef.current = null;
+    dictTokenRef.current++; // invalidate any in-flight getUserMedia grant
     setListening(false);
     if (r) {
       r.onresult = null;
@@ -241,15 +279,13 @@ export const Compose = forwardRef<
     }
   }, []);
 
-  // Tap-to-talk start (#483): spin up a fresh recognizer, anchor the current draft, and stream
-  // interim + final results into the textarea via the SAME setText + grow + dirty path as typing,
-  // so dictated text auto-saves as a draft (#477) and behaves identically to typed text.
-  const startDictation = () => {
-    const SR = getSpeechRecognition();
-    if (!SR) return;
-    if (recogRef.current) stopDictation();
+  // Spin up a fresh recognizer, anchor the current draft, and stream interim + final results into
+  // the textarea via the SAME setText + grow + dirty path as typing (#483/#477). `continuousMode`
+  // is false on the Android-Chrome retry path (see startDictation): Android Chrome rejects a
+  // continuous recognizer with `service-not-allowed`, so we fall back to single-utterance mode.
+  const beginRecognition = (SR: SpeechRecognitionStatic, continuousMode: boolean) => {
     const r = new SR();
-    r.continuous = true;
+    r.continuous = continuousMode;
     r.interimResults = true;
     r.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
     dictBaseRef.current = text;
@@ -282,14 +318,17 @@ export const Compose = forwardRef<
     r.onerror = (e) => {
       if (recogRef.current !== r) return;
       recogRef.current = null;
+      // Android Chrome rejects a continuous recognizer with `service-not-allowed`; retry ONCE with
+      // a single-utterance recognizer before surfacing the error. `continuousMode` gates the retry
+      // so the fallback can't loop.
+      if (e.error === "service-not-allowed" && continuousMode) {
+        beginRecognition(SR, false);
+        return;
+      }
       setListening(false);
       if (e.error && e.error !== "aborted" && e.error !== "no-speech") {
-        setNote(
-          e.error === "not-allowed" || e.error === "service-not-allowed"
-            ? "microphone blocked"
-            : "voice input unavailable",
-        );
-        setTimeout(() => setNote(""), 3000);
+        setNote(micErrorNote(e.error));
+        setTimeout(() => setNote(""), 4000);
       }
     };
     r.onend = () => {
@@ -308,6 +347,38 @@ export const Compose = forwardRef<
     }
   };
 
+  // Tap-to-talk start (#483): FIRST acquire the mic explicitly via getUserMedia, THEN build the
+  // recognizer. Android Chrome's SpeechRecognition does not reliably obtain the mic on its own —
+  // start() fails with `not-allowed` even when the OS + site permission are granted — so we trigger
+  // the real grant with getUserMedia (which resolves silently when already allowed, or prompts once)
+  // and release the stream immediately, since the recognizer captures on its own. A rejected grant
+  // names the actual reason via micErrorNote instead of a generic "blocked".
+  const startDictation = () => {
+    const SR = getSpeechRecognition();
+    if (!SR) return;
+    if (recogRef.current) stopDictation();
+    const token = ++dictTokenRef.current;
+    setListening(true); // optimistic chip; cleared below if the grant/start fails
+    const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    if (!md?.getUserMedia) {
+      // Old / insecure context without mediaDevices — let the recognizer request the mic itself.
+      beginRecognition(SR, true);
+      return;
+    }
+    md.getUserMedia({ audio: true })
+      .then((stream) => {
+        stream.getTracks().forEach((t) => t.stop()); // release; the recognizer captures its own
+        if (dictTokenRef.current !== token) return; // cancelled / restarted during the async grant
+        beginRecognition(SR, true);
+      })
+      .catch((err: unknown) => {
+        if (dictTokenRef.current !== token) return;
+        setListening(false);
+        setNote(micErrorNote(gumErrorCode(err)));
+        setTimeout(() => setNote(""), 4000);
+      });
+  };
+
   const toggleDictation = () => (listening ? stopDictation() : startDictation());
 
   // Stop dictation when the box collapses (the mic chip only lives in the open state) and abort it
@@ -319,6 +390,8 @@ export const Compose = forwardRef<
     return () => {
       const r = recogRef.current;
       recogRef.current = null;
+      dictTokenRef.current++; // invalidate a still-pending getUserMedia grant so it can't build a
+      // recognizer after the box has unmounted (the async twin of stopDictation's guard).
       if (r) {
         r.onresult = null;
         r.onerror = null;
