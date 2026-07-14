@@ -1,0 +1,419 @@
+/* First-run onboarding overlay (#463) — tactical-HUD vocabulary (docs/design.md): near-black
+ * frosted scrim, corner-bracket frame, amber accent, mono `//` chrome, no rounded corners.
+ * All colours from the shared tokens (index.css) so theme + custom accent cascade. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  backdrop-filter: blur(6px);
+}
+.card {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+}
+.card.wide {
+  max-width: 900px;
+}
+
+/* Title bar — wordmark + step tag + close. */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-1) 70%, transparent);
+}
+.brand {
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--brand-soft);
+}
+.brand b {
+  color: var(--brand);
+  font-weight: 800;
+}
+.barTag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-3);
+}
+.x {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.x:hover {
+  color: var(--text-1);
+  border-color: var(--border);
+}
+.cardBody {
+  min-height: 0;
+  overflow: auto;
+}
+.wide .cardBody {
+  display: flex;
+}
+
+/* Step rail (wizard). */
+.rail {
+  flex: 0 0 188px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 0;
+  background: var(--surface-3);
+  border-right: 1px solid var(--line);
+}
+.railHead {
+  padding: 0 16px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--text-3);
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.step.done {
+  color: var(--text-1);
+}
+.step.cur {
+  color: var(--text-1);
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.stepDot {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  border: 1.5px solid var(--line-strong);
+  color: var(--text-3);
+}
+.step.done .stepDot {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.step.cur .stepDot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.pane {
+  flex: 1;
+  min-width: 0;
+}
+.stepPane {
+  padding: 20px 22px;
+}
+.h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.desc {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.copy {
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.stepBody {
+  margin-top: 16px;
+}
+
+/* Agent rows. */
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.skeleton {
+  padding: 16px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.eng {
+  width: 110px;
+  font-size: 13px;
+}
+.ok {
+  width: 74px;
+  font-size: 12px;
+  color: var(--status-up);
+}
+.na {
+  width: 74px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.badge {
+  flex: none;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.badgeGo {
+  color: var(--status-up);
+  border-color: color-mix(in srgb, var(--status-up) 45%, transparent);
+}
+
+/* Fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 13px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.field input,
+.field select {
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 13px;
+  color-scheme: inherit;
+}
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.newFolder {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: -2px 0 8px;
+}
+.newFolder input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  color: var(--accent);
+  border: 1px dashed var(--line-strong);
+  border-radius: 0;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.checkbox input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+.err {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--status-down);
+}
+.note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--status-up);
+}
+
+/* Footer button row. */
+.footRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.grow {
+  flex: 1;
+}
+.btn,
+.pri,
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  border-radius: 0;
+  padding: 8px 15px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+}
+.pri {
+  background: var(--cta-bg-1);
+  border-color: var(--accent);
+  color: var(--cta-text);
+  font-weight: 600;
+}
+.pri:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.ghost {
+  border-color: transparent;
+  color: var(--text-3);
+}
+.btn:disabled,
+.pri:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Slideshow tour. */
+.tour {
+  display: flex;
+  flex-direction: column;
+}
+.shot {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  display: block;
+}
+.tourTitle {
+  margin: 14px 0 4px;
+  font-size: 15px;
+}
+.tourBody {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.dots {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 0;
+}
+.dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.dots i.dotOn {
+  width: 18px;
+  border-radius: 0;
+  background: var(--accent);
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 800px) {
+  .wide .cardBody {
+    flex-direction: column;
+  }
+  .rail {
+    flex: none;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 8px;
+  }
+  .railHead {
+    display: none;
+  }
+  .step {
+    flex: none;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+}
+
+/* 2FA enrollment (Secure your deck step, #675). */
+.qr {
+  flex: none;
+  width: 104px;
+  height: 104px;
+  background: #fff;
+  padding: 4px;
+}
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.inline {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}

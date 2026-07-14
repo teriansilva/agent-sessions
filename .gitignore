@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets — never commit
+.env
+env
+*.creds
+*.pem
+*.key
+.venv-local/
+
+# local dev venv for Home Free work
+.venv-hf/
