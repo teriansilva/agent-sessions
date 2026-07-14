@@ -114,9 +114,14 @@ def _serializer(cfg: AuthConfig) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(cfg.secret_key, salt="agent-sessions:cookie")
 
 
-def issue_session(cfg: AuthConfig, response: Response) -> str:
-    """Mint a fresh signed session cookie. Returns the CSRF token."""
-    csrf = secrets.token_urlsafe(32)
+def issue_session(cfg: AuthConfig, response: Response, *, csrf: str | None = None) -> str:
+    """Mint a fresh signed session cookie. Returns the CSRF token.
+
+    ``csrf`` pins the embedded token instead of generating one — used by the none-mode
+    stable session (#673) so a TTL rotation re-signs the cookie WITHOUT changing the csrf
+    the SPA already cached from /api/config (a rotated csrf would 403 every mutation until
+    a reload). Login flows always omit it (fresh random token per login)."""
+    csrf = csrf or secrets.token_urlsafe(32)
     token = _serializer(cfg).dumps({"uid": cfg.username, "csrf": csrf})
     response.set_cookie(
         _SESSION_COOKIE,
@@ -177,14 +182,22 @@ def clear_preauth(response: Response) -> None:
     response.delete_cookie(_PREAUTH_COOKIE, path="/")
 
 
-def _decode_cookie(cfg: AuthConfig, request: Request) -> dict | None:
-    raw = request.cookies.get(_SESSION_COOKIE)
-    if not raw:
+def decode_session_token(cfg: AuthConfig, token: str) -> dict | None:
+    """The session payload for a bare signed cookie VALUE, or None when missing / invalid /
+    expired — the same serializer + ``session_ttl`` semantics as normal cookie decoding.
+    Used by the none-mode stable-session cache (#673) to re-validate its cached token
+    without synthesizing a Request."""
+    if not token:
         return None
     try:
-        return _serializer(cfg).loads(raw, max_age=cfg.session_ttl)
+        data = _serializer(cfg).loads(token, max_age=cfg.session_ttl)
     except (BadSignature, SignatureExpired):
         return None
+    return data if isinstance(data, dict) else None
+
+
+def _decode_cookie(cfg: AuthConfig, request: Request) -> dict | None:
+    return decode_session_token(cfg, request.cookies.get(_SESSION_COOKIE) or "")
 
 
 def session_uid(cfg: AuthConfig, conn) -> str | None:
@@ -258,6 +271,7 @@ __all__ = [
     "hash_password",
     "verify_password",
     "issue_session",
+    "decode_session_token",
     "clear_session",
     "issue_preauth",
     "decode_preauth",

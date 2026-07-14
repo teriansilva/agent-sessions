@@ -44,6 +44,7 @@ from . import (
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
+    decode_session_token,
     issue_session,
     require_csrf_and_origin,
     require_session,
@@ -289,17 +290,41 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # into the *request* cookies (so downstream deps decode a session this turn) and
     # set it on the *response* (so the browser keeps it). CSRF + Origin stay enforced:
     # they guard against cross-site requests, which matters even without auth.
+    #
+    # ONE stable session per app instance (#673): the SPA's boot wave is parallel and
+    # cookie-less, and minting per request handed every response a DIFFERENT cookie —
+    # each with its own embedded csrf. The browser / Home Free tunnel jar keeps whichever
+    # Set-Cookie landed last (in practice /api/sessions, the slowest call), while the SPA
+    # caches /api/config's csrf, so every mutation failed 403 "bad csrf" through the
+    # relay. The token is cached on app state and every cookie-less request gets the SAME
+    # cookie; the validate/mint/publish path is lock-serialized with a double-check so a
+    # concurrent first wave can never mint twice, and an expired/invalid cached token
+    # rotates under the same lock. A rotation RE-SIGNS the cookie but PINS the previous
+    # csrf (Hermes on PR #674): the SPA caches /api/config's csrf once, so a rotated csrf
+    # would re-create the 403s at every session_ttl expiry — the csrf is stable for the
+    # app instance's lifetime instead. Per-PROCESS by design: the CLI and the systemd unit
+    # run exactly one uvicorn worker — a multi-worker deployment would need a
+    # process-independent stable-session design before relying on this.
+    app.state.none_session = {"token": "", "set_cookie": "", "csrf": ""}
+    app.state.none_mint_lock = asyncio.Lock()
+
     @app.middleware("http")
     async def _none_mode_autosession(request: Request, call_next):
         if cfg.auth_mode != "none":
             return await call_next(request)
         if session_uid(cfg, request) is None:
-            stub = Response()
-            issue_session(cfg, stub)
-            set_cookie = stub.headers.get("set-cookie", "")
-            token = set_cookie.split(";", 1)[0].split("=", 1)[1] if "=" in set_cookie else ""
-            # Splice the freshly-minted cookie into this request so the route's
-            # session deps see a valid session on this very turn.
+            cached = app.state.none_session
+            if decode_session_token(cfg, cached["token"]) is None:
+                async with app.state.none_mint_lock:
+                    if decode_session_token(cfg, cached["token"]) is None:  # double-check
+                        stub = Response()
+                        cached["csrf"] = issue_session(cfg, stub, csrf=cached["csrf"] or None)
+                        sc = stub.headers.get("set-cookie", "")
+                        cached["token"] = sc.split(";", 1)[0].split("=", 1)[1] if "=" in sc else ""
+                        cached["set_cookie"] = sc
+            token, set_cookie = cached["token"], cached["set_cookie"]
+            # Splice the cached cookie into this request so the route's session deps
+            # see a valid session on this very turn.
             existing = request.headers.get("cookie", "")
             new_cookie = (
                 f"{existing}; {_SESSION_COOKIE}={token}"
