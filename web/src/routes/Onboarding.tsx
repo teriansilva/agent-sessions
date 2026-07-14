@@ -184,6 +184,12 @@ export function Onboarding({
   const newEngines = useMemo(() => config?.new_session_engines ?? [], [config]);
   const [engineChoice, setEngineChoice] = useState("");
   const engine = engineChoice || newEngines[0] || "";
+  // #681: the folder <select> visibly shows its first option, but raw `cwd` stays "" until the
+  // user picks (or a starred default_project seeds it). Derive an effective folder — the first
+  // discovered one as a fallback, exactly like `engine` — so the select value, the launch/create
+  // guards, and the launched payload all agree with what's on screen. An explicit selection
+  // (setCwd) still wins, since a non-empty `cwd` short-circuits the fallback.
+  const effectiveCwd = cwd || folders[0]?.cwd || "";
   const [bypass, setBypass] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -290,12 +296,12 @@ export function Onboarding({
   };
 
   const goPastProject = async () => {
-    if (projectName.trim() && cwd) {
+    if (projectName.trim() && effectiveCwd) {
       try {
         await api.createProject({
           name: projectName.trim(),
-          folders: [cwd],
-          default_folder: cwd,
+          folders: [effectiveCwd],
+          default_folder: effectiveCwd,
         });
       } catch {
         /* non-fatal: a name clash / adoption conflict shouldn't block onboarding */
@@ -305,7 +311,7 @@ export function Onboarding({
   };
 
   const launch = async () => {
-    if (!engine || !cwd) return;
+    if (!engine || !effectiveCwd) return;
     setBusy(true);
     try {
       await api.completeOnboarding();
@@ -314,7 +320,7 @@ export function Onboarding({
     }
     onClose();
     const id = mintNewSessionId(engine);
-    navigate(`/s/${engine}/${id}`, { state: { fresh: { cwd, bypass } } });
+    navigate(`/s/${engine}/${id}`, { state: { fresh: { cwd: effectiveCwd, bypass } } });
   };
 
   // Standalone slideshow replay (topbar Help) — no setup, no persistence.
@@ -590,7 +596,7 @@ export function Onboarding({
             </label>
             <label className={styles.field}>
               <span>Launch folder</span>
-              <select value={cwd} onChange={(e) => setCwd(e.target.value)}>
+              <select value={effectiveCwd} onChange={(e) => setCwd(e.target.value)}>
                 {folders.length === 0 && <option value="">no folders found</option>}
                 {folders.map((f) => (
                   <option key={f.cwd} value={f.cwd}>
@@ -650,7 +656,7 @@ export function Onboarding({
             )}
             <label className={styles.field}>
               <span>Folder</span>
-              <select value={cwd} onChange={(e) => setCwd(e.target.value)}>
+              <select value={effectiveCwd} onChange={(e) => setCwd(e.target.value)}>
                 {folders.length === 0 && <option value="">no folder selected</option>}
                 {folders.map((f) => (
                   <option key={f.cwd} value={f.cwd}>
@@ -675,7 +681,7 @@ export function Onboarding({
                 type="button"
                 className={`${styles.pri} shine`}
                 onClick={launch}
-                disabled={busy || !engine || !cwd}
+                disabled={busy || !engine || !effectiveCwd}
               >
                 ⮞ Launch session
               </button>

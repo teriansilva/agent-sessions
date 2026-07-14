@@ -775,6 +775,16 @@
   font-size: 13px;
   cursor: pointer;
 }
+/* Cap + brand the native radio so it matches the HUD (amber accent, square scale) and the
+ * folder-row checkboxes below — without a size cap the browser default renders oversized and
+ * the label drifts, especially on narrow/streamed viewports (#683). */
+.modeOpt input[type="radio"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
 
 /* AI session review (#356). */
 .aiField {
@@ -853,6 +863,15 @@
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+/* Same treatment as the mode radios / folder checkboxes: cap the native checkbox and brand it
+ * so it doesn't render oversized and shove the label out of line on narrow viewports (#683). */
+.aiToggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
 }
 .aiExcludedList {
   list-style: none;

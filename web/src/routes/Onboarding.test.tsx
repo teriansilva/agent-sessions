@@ -19,6 +19,31 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
+// #681: capture the launch navigation so we can assert the folder actually launched with.
+const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router-dom")>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
+// Walk the wizard from Welcome to the Launch step (single-user cfg; one new-session engine).
+async function gotoLaunchStep() {
+  await userEvent.click(screen.getByRole("button", { name: /get started/i })); // → security
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i })); // → agents
+  await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → ai
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → project
+}
+async function finishTourToLaunch() {
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → tour
+  for (let k = 0; k < 12; k++) {
+    const next = screen.queryByRole("button", { name: /^next$/i });
+    if (!next) break;
+    await userEvent.click(next);
+  }
+  await userEvent.click(screen.getByRole("button", { name: /finish tour/i })); // → launch
+}
+
 function cfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
     csrf: "t",
@@ -41,6 +66,7 @@ function renderWizard(onClose = vi.fn(), config = cfg()) {
 }
 
 beforeEach(() => {
+  mockNavigate.mockReset();
   vi.mocked(api.engines).mockReset().mockResolvedValue({
     engines: [
       { id: "claude", present: true, supports_new: true, bin: "/x/claude" },
@@ -102,6 +128,43 @@ test("Skip setup persists onboarded and closes the wizard", async () => {
   await userEvent.click(screen.getByRole("button", { name: /skip setup/i }));
   expect(api.completeOnboarding).toHaveBeenCalledTimes(1);
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("Launch is enabled and launches with the discovered folder as the fallback (no default_project) — #681", async () => {
+  // Regression: cwd stayed "" (no default_project) while the folder <select> visibly showed the
+  // first folder, so the `!cwd` guard kept "Launch session" disabled. The effective folder now
+  // falls back to the first discovered one, so the button is enabled and launch() uses it.
+  renderWizard();
+  await gotoLaunchStep();
+  // The fallback is already reflected in the project step's Launch-folder select.
+  expect(screen.getByRole("combobox")).toHaveValue("/home/u/battlelab");
+  await finishTourToLaunch();
+  const launchBtn = screen.getByRole("button", { name: /launch session/i });
+  expect(launchBtn).toBeEnabled();
+  await userEvent.click(launchBtn);
+  expect(mockNavigate).toHaveBeenCalledWith(
+    expect.stringMatching(/^\/s\/claude\//),
+    expect.objectContaining({ state: { fresh: { cwd: "/home/u/battlelab", bypass: true } } }),
+  );
+});
+
+test("an explicitly chosen folder wins over the discovered-folder fallback — #681", async () => {
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [
+      { cwd: "/home/u/battlelab", label: "battlelab" },
+      { cwd: "/home/u/other", label: "other" },
+    ],
+  });
+  renderWizard();
+  await gotoLaunchStep();
+  // Pick the second folder in the project step's Launch-folder select; it must survive to launch.
+  await userEvent.selectOptions(screen.getByRole("combobox"), "/home/u/other");
+  await finishTourToLaunch();
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  expect(mockNavigate).toHaveBeenCalledWith(
+    expect.stringMatching(/^\/s\/claude\//),
+    expect.objectContaining({ state: { fresh: { cwd: "/home/u/other", bypass: true } } }),
+  );
 });
 
 test("AI step saves via the ai_review prefs contract (key write-only)", async () => {
