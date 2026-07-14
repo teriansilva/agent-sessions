@@ -329,6 +329,9 @@ async def run(
     # working dot (#195). Genuine output after the grace window stamps normally.
     if buf_key:
         scrollback.note_attach(buf_key)
+        # Pin this session's ring for the sweep (#678): an attached viewer's scrollback is
+        # never a cap-eviction victim (delta-resume needs it); released in the finally below.
+        scrollback.note_viewer_attached(buf_key)
         # Track the agent's launch geometry so the headless SessionStream reader can size its pty
         # to the session's last-known rows on a detached attach (session_stream reads _LAST_ROWS).
         scrollback._LAST_ROWS[buf_key] = rows
@@ -485,6 +488,8 @@ async def run(
             if not data:
                 break
             out_bytes["n"] += len(data)  # #443: proof-of-repaint signal for _force_repaint
+            # #678 probe: the per-chunk event-loop cost (sanitize + ring append + WS send).
+            _chunk_at = time.monotonic()
             if buf_key is not None:
                 data = scrollback.sanitize_live_output(buf_key, data)
                 if not data:
@@ -500,6 +505,7 @@ async def run(
                 except Exception:
                     log.exception("scrollback append failed for %s; continuing", buf_key)
             await ws.send_bytes(data)  # awaited → natural backpressure
+            perfstats.record("pump_chunk_ms", (time.monotonic() - _chunk_at) * 1000.0)
 
     def _gated() -> bool:
         return read_only_gate is not None and read_only_gate.is_set()
@@ -636,6 +642,10 @@ async def run(
         if stop_event is None or not stop_event.is_set():
             with contextlib.suppress(Exception):
                 await ws.close()
+        # Unpin (#678): the post-detach grace keeps the ring safe from the cap sweep long
+        # enough for a transient-drop reconnect to delta-resume.
+        if buf_key:
+            scrollback.note_viewer_detached(buf_key)
         # Reclaim the scrollback for a session whose dtach master has exited — there's
         # nothing left to resume. Live sessions keep their buffer (master still alive).
         scrollback._maybe_evict_ended(buf_key)

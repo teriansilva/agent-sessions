@@ -12,6 +12,7 @@ names, so ``webterm.<name>`` keeps working for callers and tests.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -22,7 +23,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import ptybridge, transcript, vtscreen
+from . import perfstats, ptybridge, transcript, vtscreen
 
 log = logging.getLogger("agent_sessions.scrollback")
 
@@ -446,8 +447,16 @@ def _ensure_loaded(key: str) -> None:
         if data and key not in _BUFFERS:
             _BUFFERS[key] = bytearray(data)
             _BUFFERS.move_to_end(key)
-            _TOTALS[key] = len(data)
+            # Initialize the absolute total ONLY when unknown (#678): after a same-process
+            # live-ring eviction the preserved `_TOTALS` entry is the real byte sequence —
+            # overwriting it with the (head-trimmed) mirror length here would break a
+            # reconnect carrying a pre-eviction `have` on any session that ever exceeded
+            # `_MAX_BUF`. A fresh process (no entry) still seeds from the mirror tail.
+            if key not in _TOTALS:
+                _TOTALS[key] = len(data)
         _LOADED_FROM_DISK.add(key)
+        if len(_BUFFERS) > _MAX_BUFFERS:
+            _kick_cap_sweep()  # coalesced; hydrates burst over the cap between sweeps
 
 
 def scrollback_cache_stats() -> dict[str, int]:
@@ -537,6 +546,9 @@ def _drop_buffer(key: str) -> None:
     _SUBMITTED.discard(key)
     _SANITIZE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)
+    # A dropped key's probe verdict is from a dead generation — never let it speak for a
+    # relaunched session under the same id (Hermes on PR #679).
+    _PROBE_CACHE.pop(key, None)
 
 
 def _reset_ring(key: str) -> None:
@@ -575,26 +587,214 @@ def _session_alive(buf_key: str) -> bool:
         return False
 
 
+# --- buffer-cap enforcement, OFF the byte pump (#678) -----------------------------------
+#
+# `_enforce_buffer_cap` used to run inside `_buffer_append` — on the event loop, per output
+# chunk — and each pass did blocking dtach-socket probes (`_session_alive`, a connect with a
+# 0.2/0.5/1.0 s timeout ladder). With more live masters than `_MAX_BUFFERS` and "evict dead
+# only" semantics, no victim was ever found and the FULL probe sweep repeated on every chunk:
+# on the production box (200+ live sessions) the loop spent essentially all its time probing
+# (py-spy: 15/15 main-thread samples; /healthz p50 555 ms) — every keystroke of every terminal
+# queued behind it. Enforcement now runs in ONE coalesced periodic sweep whose probing happens
+# in a worker thread, and the cap is made satisfiable by LRU-evicting live-but-idle rings
+# (recoverable by design: the on-disk mirror rehydrates on next touch, exactly like after an
+# app restart, and the eviction path preserves `_TOTALS` so pre-eviction `have` offsets stay
+# valid). Rings with an attached viewer — plus a short post-detach grace so a transient WS
+# drop can't race the sweep — are never evicted.
+
+_SWEEP_INTERVAL_S = 30.0
+# Post-detach pin grace: a reconnect after a transient drop arrives well inside this window,
+# so its delta-resume `have` still finds the un-evicted ring.
+_PIN_GRACE_S = 60.0
+# Probe verdicts are cached briefly so a sweep over a large registry does not re-probe every
+# socket each pass. Staleness only delays reclaiming a dead session's ring — harmless; the
+# eager end-of-run reap (`_maybe_evict_ended`) is unaffected.
+_PROBE_TTL_S = 45.0
+
+# Attached-viewer refcounts + post-detach grace deadlines. Guarded by `_RING_LOCK` (they are
+# read by the sweep worker thread), written from the event loop by the webterm bridge.
+_PIN_COUNTS: dict[str, int] = {}
+_PIN_GRACE_UNTIL: dict[str, float] = {}
+
+# key -> (monotonic expiry, alive). Written/read only by the sweep worker (one at a time,
+# coalesced), so it needs no lock of its own.
+_PROBE_CACHE: dict[str, tuple[float, bool]] = {}
+
+# Armed by `run_cap_sweeper` on the event loop; `_kick_cap_sweep` is callable from any
+# thread (worker-thread hydrates included) and coalesces naturally — setting an already-set
+# event schedules nothing extra, so a hydrate burst wakes at most one sweep.
+_sweep_wake: asyncio.Event | None = None
+_sweep_loop: asyncio.AbstractEventLoop | None = None
+
+
+def note_viewer_attached(key: str) -> None:
+    """Pin ``key``'s ring while a viewer is attached (#678) — never a sweep victim."""
+    with _RING_LOCK:
+        _PIN_COUNTS[key] = _PIN_COUNTS.get(key, 0) + 1
+        _PIN_GRACE_UNTIL.pop(key, None)
+
+
+def note_viewer_detached(key: str) -> None:
+    """Drop one viewer pin; the last detach starts the post-detach grace window."""
+    with _RING_LOCK:
+        n = _PIN_COUNTS.get(key, 0) - 1
+        if n > 0:
+            _PIN_COUNTS[key] = n
+        else:
+            _PIN_COUNTS.pop(key, None)
+            _PIN_GRACE_UNTIL[key] = time.monotonic() + _PIN_GRACE_S
+
+
+def _is_pinned_locked(key: str, now: float) -> bool:
+    """Caller holds ``_RING_LOCK``. Attached, or inside the post-detach grace."""
+    if _PIN_COUNTS.get(key, 0) > 0:
+        return True
+    until = _PIN_GRACE_UNTIL.get(key)
+    if until is None:
+        return False
+    if until <= now:
+        _PIN_GRACE_UNTIL.pop(key, None)  # expired — drop the entry so the dict stays bounded
+        return False
+    return True
+
+
+def _kick_cap_sweep() -> None:
+    """Wake the cap sweeper ahead of its interval. Thread-safe + coalescing; a no-op until
+    the sweeper task is armed (tests driving the sync sweep directly, or startup order)."""
+    loop, evt = _sweep_loop, _sweep_wake
+    if loop is not None and evt is not None:
+        with contextlib.suppress(RuntimeError):  # loop already closed at shutdown
+            loop.call_soon_threadsafe(evt.set)
+
+
+def _session_verdict(buf_key: str) -> str:
+    """Tri-state master liveness for the cap sweep: ``ptybridge.ALIVE`` / ``DEAD`` /
+    ``UNKNOWN``. The boolean ``_session_alive`` maps UNKNOWN (probe timeouts on a loaded
+    host) to False — safe for its non-destructive callers, but the sweep's dead branch is
+    DESTRUCTIVE (``_drop_buffer`` erases ``_TOTALS``), so a timeout must never be read as
+    proven dead (Hermes on PR #679 round 2): only a decisive DEAD may take that branch,
+    while UNKNOWN is treated like live — at most the ring-only LRU path evicts it, which
+    the mirror + preserved total recover from. An unparseable key stays DEAD (evictable),
+    matching ``_session_alive``."""
+    try:
+        from . import engines
+
+        prov, native = engines.parse_key(buf_key)
+        sock = ptybridge.socket_path(prov.engine_id, native)
+    except Exception:
+        return ptybridge.DEAD
+    if not sock.is_socket():
+        return ptybridge.DEAD
+    return ptybridge.probe_master(sock)
+
+
+def _session_verdict_cached(buf_key: str) -> str:
+    """`_session_verdict` behind the sweep's TTL verdict cache, with perfstats counters
+    (`count` in the /api/perf snapshot is the event counter)."""
+    now = time.monotonic()
+    hit = _PROBE_CACHE.get(buf_key)
+    if hit is not None and hit[0] > now:
+        perfstats.record("cap_probe_cache_hit", 1.0)
+        return hit[1]
+    perfstats.record("cap_probe_attempt", 1.0)
+    verdict = _session_verdict(buf_key)
+    # Cache ALIVE only (Hermes on PR #679): a cached DEAD can outlive a rapid same-key
+    # relaunch and make the next sweep fully drop the NEW live session's ring and
+    # `_TOTALS` without ever probing it — and dead probes are an immediate errno anyway
+    # (no timeout ladder), so re-asking is cheap. UNKNOWN is a transient condition by
+    # definition and is counted separately for the production evidence.
+    if verdict is ptybridge.ALIVE:
+        _PROBE_CACHE[buf_key] = (now + _PROBE_TTL_S, verdict)
+    else:
+        _PROBE_CACHE.pop(buf_key, None)
+        if verdict is ptybridge.UNKNOWN:
+            perfstats.record("cap_probe_unknown", 1.0)
+    if len(_PROBE_CACHE) > 1024:  # prune expired entries so the cache stays bounded
+        for k in [k for k, (exp, _v) in _PROBE_CACHE.items() if exp <= now]:
+            _PROBE_CACHE.pop(k, None)
+    return verdict
+
+
+def _evict_live_ring_locked(key: str) -> None:
+    """Release a live-but-idle ring's BYTES only (caller holds ``_RING_LOCK``).
+
+    Unlike ``_drop_buffer`` this PRESERVES ``_TOTALS`` — the absolute byte sequence — and all
+    session-level state (modes, parser carries, output stamps): the on-disk mirror rehydrates
+    the bytes on the next touch, and the preserved total keeps ``ring_start = total − len(ring)``
+    and the reconnect ``have`` contract intact even for sessions that exceeded ``_MAX_BUF``
+    (where the mirror tail is SHORTER than the true sequence — `_drop_buffer` here would have
+    reset the total to that shorter length on rehydrate)."""
+    _BUFFERS.pop(key, None)
+    _LOADED_FROM_DISK.discard(key)  # next touch rehydrates from the mirror
+
+
 def _enforce_buffer_cap() -> None:
-    """Bound the number of retained buffers — but only by evicting buffers whose dtach
-    master is GONE. A live session's scrollback is never evicted (an idle/attached
-    session produces no output to refresh its LRU recency, yet still needs the buffer
-    for delta-resume — the bug Hermes caught). So the cap reclaims dead/orphan buffers
-    only; concurrent *live* sessions are all retained (their memory is legitimate and
-    bounded by real concurrency), and dead ones are normally reaped eagerly at
-    end-of-run via `_maybe_evict_ended`.
-    """
-    while len(_BUFFERS) > _MAX_BUFFERS:
-        # Snapshot the keys under the lock, THEN probe outside it. The snapshot makes the scan
-        # immune to a concurrent hydrate-insert from the AI-review worker thread (the
-        # `OrderedDict mutated during iteration` crash). `_session_alive` does a blocking socket
-        # probe, so it must NOT run while holding the lock — hence snapshot-then-probe.
+    """One cap-enforcement pass — the SYNC sweep body, run in a worker thread by
+    ``run_cap_sweeper`` (never on the event loop, never from ``_buffer_append``).
+
+    Dead/orphan rings are reclaimed fully first (their sessions can never resume); if the
+    registry is still over ``_MAX_BUFFERS``, live-but-idle rings are evicted oldest-LRU-first
+    via `_evict_live_ring_locked` — skipping pinned keys (attached viewers + post-detach
+    grace), with eligibility re-checked at victim-application time so an attach racing the
+    probe phase can never have its freshly pinned ring evicted."""
+    with perfstats.timed("buffer_cap_sweep_ms"):
+        # Snapshot under the lock, probe outside it — the discipline from commit
+        # `a4bbaea` (Hermes on PR #512) that keeps the worker-thread hydrate from
+        # racing the scan into `OrderedDict mutated during iteration`.
         with _RING_LOCK:
-            candidates = list(_BUFFERS)
-        victim = next((k for k in candidates if not _session_alive(k)), None)
-        if victim is None:
-            break  # everything retained is live — keep it all
-        _drop_buffer(victim)
+            if len(_BUFFERS) <= _MAX_BUFFERS:
+                return
+            now = time.monotonic()
+            candidates = [k for k in _BUFFERS if not _is_pinned_locked(k, now)]
+        if not candidates:
+            return  # everything retained is pinned — nothing safe to evict this pass
+        # Classify the snapshot ONCE, then evict as many victims as the cap needs from that
+        # single result (Hermes on PR #679 round 3): the previous evict-one-then-rescan loop
+        # re-probed every candidate per victim — O(N²) probes, and with UNKNOWN deliberately
+        # uncached an all-UNKNOWN registry at production scale (203 rings over a 64 cap)
+        # meant ~18.6k timeout-ladder probes ≈ hours of worker time per sweep, under exactly
+        # the host-load condition UNKNOWN represents. One probe per candidate per sweep,
+        # linear by construction. ``candidates`` is LRU-ordered (oldest first), so each
+        # eviction phase below consumes the stalest rings first.
+        dead_keys: list[str] = []
+        other_keys: list[str] = []  # ALIVE or UNKNOWN — never fully dropped
+        for k in candidates:
+            (dead_keys if _session_verdict_cached(k) is ptybridge.DEAD else other_keys).append(k)
+        # Dead rings first (full reclaim — no resume possible), then live/UNKNOWN rings
+        # oldest-LRU-first via the totals-preserving ring-only path, until the cap holds.
+        # Victim-time re-check under the lock for BOTH phases (Hermes on PR #679): an attach
+        # can pin a key while its probe was in flight; such a key is simply skipped.
+        for k in dead_keys:
+            with _RING_LOCK:
+                if len(_BUFFERS) <= _MAX_BUFFERS:
+                    return
+                if k in _BUFFERS and not _is_pinned_locked(k, time.monotonic()):
+                    _drop_buffer(k)
+        for k in other_keys:
+            with _RING_LOCK:
+                if len(_BUFFERS) <= _MAX_BUFFERS:
+                    return
+                if k in _BUFFERS and not _is_pinned_locked(k, time.monotonic()):
+                    _evict_live_ring_locked(k)
+
+
+async def run_cap_sweeper() -> None:
+    """Background buffer-cap sweeper (#678, reaper pattern; started from the app lifespan).
+
+    Wakes every ``_SWEEP_INTERVAL_S`` or immediately on a `_kick_cap_sweep` (over-cap append /
+    hydrate), and runs the sync sweep in a worker thread so its socket probes never touch the
+    event loop. Failures are logged and never fatal — the next tick retries."""
+    global _sweep_wake, _sweep_loop
+    _sweep_wake = asyncio.Event()
+    _sweep_loop = asyncio.get_running_loop()
+    while True:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(_sweep_wake.wait(), timeout=_SWEEP_INTERVAL_S)
+        _sweep_wake.clear()
+        try:
+            await asyncio.to_thread(_enforce_buffer_cap)
+        except Exception:
+            log.exception("buffer-cap sweep failed; retrying next tick")
 
 
 def _kick_review(reason: str) -> None:
@@ -692,7 +892,10 @@ def _buffer_append(key: str, data: bytes) -> None:
     # scrollback with byte offsets still consistent — mirrors the on-disk `_DISK_TRIM_SLACK`.
     if len(buf) > _MAX_BUF + _MAX_BUF // _RING_TRIM_DIVISOR:
         del buf[: len(buf) - _MAX_BUF]
-    _enforce_buffer_cap()
+    # Cap enforcement is OFF this path (#678): probing dtach sockets per chunk on the event
+    # loop was the typing-latency treadmill. Over-cap just wakes the coalesced sweeper.
+    if len(_BUFFERS) > _MAX_BUFFERS:
+        _kick_cap_sweep()
 
 
 # ANSI/VT escape stripper for the live-tail accessor (#356): CSI sequences, OSC strings

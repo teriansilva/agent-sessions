@@ -337,14 +337,15 @@ def test_enforce_buffer_cap_survives_concurrent_insert(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_alive(key: str) -> bool:
+    def fake_verdict(key: str) -> str:
         calls["n"] += 1
         if calls["n"] == 1:
             # The worker-thread hydrate landing mid-scan.
             scrollback._BUFFERS["claude:injected-mid-scan"] = bytearray(b"y")
-        return True  # every session looks alive → the scan walks the whole registry
+        return scrollback.ptybridge.ALIVE  # everything alive → the scan walks the registry
 
-    monkeypatch.setattr(scrollback, "_session_alive", fake_alive)
+    monkeypatch.setattr(scrollback, "_session_verdict", fake_verdict)
+    scrollback._PROBE_CACHE.clear()
 
     scrollback._enforce_buffer_cap()  # must not raise
 
@@ -620,3 +621,281 @@ def test_hydrate_reads_only_tail_of_oversized_mirror(monkeypatch):
     scrollback._LOADED_FROM_DISK.discard(key)
     scrollback._ensure_loaded(key)
     assert bytes(scrollback._BUFFERS[key]) == b"y" * 50  # last 50 bytes only
+
+
+# ---- buffer-cap sweep off the byte pump (#678) --------------------------------
+
+
+def test_buffer_append_never_probes_or_sweeps(monkeypatch):
+    """The typing-latency regression (#678): `_buffer_append` must perform ZERO dtach
+    liveness probes and never synchronously enforce the cap — over-cap it only kicks
+    the coalesced sweeper."""
+    probes = 0
+
+    def counting_verdict(_key):
+        nonlocal probes
+        probes += 1
+        return scrollback.ptybridge.DEAD
+
+    kicks = 0
+
+    def counting_kick():
+        nonlocal kicks
+        kicks += 1
+
+    monkeypatch.setattr(scrollback, "_session_verdict", counting_verdict)
+    monkeypatch.setattr(scrollback, "_kick_cap_sweep", counting_kick)
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 4)
+    for i in range(8):  # push well over the cap
+        scrollback._buffer_append(f"claude:np-{i}", b"x")
+    assert probes == 0  # the byte pump never touches a socket
+    assert kicks > 0  # over-cap wakes the sweeper instead
+    assert len(scrollback._BUFFERS) == 8  # nothing evicted synchronously
+
+
+def test_cap_sweep_evicts_dead_fully_then_live_idle_preserving_totals(monkeypatch):
+    """Over-cap enforcement order: dead rings reclaimed fully first; if still over cap,
+    live-but-idle rings are evicted oldest-LRU-first via the totals-preserving path."""
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 2)
+    alive = {"claude:live-a": True, "claude:live-b": True, "claude:dead-c": False}
+    monkeypatch.setattr(
+        scrollback,
+        "_session_verdict",
+        lambda k: scrollback.ptybridge.ALIVE if alive.get(k, False) else scrollback.ptybridge.DEAD,
+    )
+    scrollback._PROBE_CACHE.clear()
+    scrollback._buffer_append("claude:live-a", b"a" * 10)
+    scrollback._buffer_append("claude:dead-c", b"c" * 10)
+    scrollback._buffer_append("claude:live-b", b"b" * 10)
+    scrollback._enforce_buffer_cap()
+    # dead-c dropped fully (ring AND totals — no resume possible for a dead master)
+    assert "claude:dead-c" not in scrollback._BUFFERS
+    assert "claude:dead-c" not in scrollback._TOTALS
+    # cap satisfied at 2 with both live rings retained
+    assert set(scrollback._BUFFERS) == {"claude:live-a", "claude:live-b"}
+    # one more live ring pushes over again → oldest live-idle evicted, totals preserved
+    scrollback._buffer_append("claude:live-d", b"d" * 10)
+    alive["claude:live-d"] = True
+    scrollback._enforce_buffer_cap()
+    assert len(scrollback._BUFFERS) == 2
+    assert "claude:live-a" not in scrollback._BUFFERS  # oldest-LRU victim
+    assert scrollback._TOTALS.get("claude:live-a") == 10  # absolute total PRESERVED
+    assert "claude:live-a" not in scrollback._LOADED_FROM_DISK  # next touch rehydrates
+
+
+def test_live_eviction_preserves_have_contract_past_max_buf(monkeypatch):
+    """Hermes' acceptance gate (#678): a session whose output exceeded `_MAX_BUF` keeps a
+    valid pre-eviction `have` across evict → rehydrate. `_drop_buffer` (or a hydrate that
+    overwrites `_TOTALS`) would reset the total to the head-trimmed mirror length and break
+    the continuation; the dedicated path + conditional hydrate must not."""
+    key = "claude:bigring"
+    monkeypatch.setattr(scrollback, "_MAX_BUF", 1024)
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    monkeypatch.setattr(scrollback, "_session_verdict", lambda k: scrollback.ptybridge.ALIVE)
+    scrollback._PROBE_CACHE.clear()
+    # Write well past _MAX_BUF so the mirror tail is SHORTER than the true sequence.
+    for _ in range(6):
+        scrollback._buffer_append(key, b"z" * 512)
+    total_before = scrollback._TOTALS[key]
+    assert total_before == 6 * 512
+    have = total_before - 100  # a client offset taken before the eviction
+    # Evict the live-idle ring (cap forces it once another ring appears).
+    scrollback._buffer_append("claude:other", b"q")
+    scrollback._enforce_buffer_cap()
+    assert key not in scrollback._BUFFERS
+    assert scrollback._TOTALS.get(key) == total_before  # preserved by the eviction path
+    # Rehydrate via a resume: the conditional hydrate must NOT clobber the total.
+    payload, total = scrollback._resume_payload(key, have)
+    assert total == total_before  # NOT reset to len(mirror tail)
+    assert payload == b"z" * 100  # the exact byte delta the client was owed
+
+
+def test_cap_sweep_respects_pins_and_post_detach_grace(monkeypatch):
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    monkeypatch.setattr(scrollback, "_session_verdict", lambda k: scrollback.ptybridge.ALIVE)
+    scrollback._PROBE_CACHE.clear()
+    scrollback._buffer_append("claude:pinned", b"p")
+    scrollback.note_viewer_attached("claude:pinned")
+    scrollback._buffer_append("claude:loose", b"l")
+    try:
+        scrollback._enforce_buffer_cap()
+        # the pinned ring survives; the unpinned one is the victim
+        assert "claude:pinned" in scrollback._BUFFERS
+        assert "claude:loose" not in scrollback._BUFFERS
+        # detach starts the grace window — still not evictable
+        scrollback.note_viewer_detached("claude:pinned")
+        scrollback._buffer_append("claude:loose2", b"m")
+        scrollback.note_viewer_attached("claude:loose2")  # pin the newcomer too
+        scrollback._enforce_buffer_cap()
+        assert "claude:pinned" in scrollback._BUFFERS  # grace holds
+        # grace expiry → evictable again
+        scrollback._PIN_GRACE_UNTIL["claude:pinned"] = 0.0
+        scrollback._enforce_buffer_cap()
+        assert "claude:pinned" not in scrollback._BUFFERS
+    finally:
+        scrollback._PIN_COUNTS.clear()
+        scrollback._PIN_GRACE_UNTIL.clear()
+
+
+def test_probe_cache_ttl_and_counters(monkeypatch):
+    calls = 0
+
+    def counting_verdict(_key):
+        nonlocal calls
+        calls += 1
+        return scrollback.ptybridge.ALIVE
+
+    monkeypatch.setattr(scrollback, "_session_verdict", counting_verdict)
+    scrollback._PROBE_CACHE.clear()
+    assert scrollback._session_verdict_cached("claude:ttl-x") is scrollback.ptybridge.ALIVE
+    assert (  # served from cache
+        scrollback._session_verdict_cached("claude:ttl-x") is scrollback.ptybridge.ALIVE
+    )
+    assert calls == 1
+    # expire the entry → re-probed
+    exp, verdict = scrollback._PROBE_CACHE["claude:ttl-x"]
+    scrollback._PROBE_CACHE["claude:ttl-x"] = (0.0, verdict)
+    assert scrollback._session_verdict_cached("claude:ttl-x") is scrollback.ptybridge.ALIVE
+    assert calls == 2
+
+
+def test_hydrate_over_cap_kicks_sweeper_once_coalesced(monkeypatch):
+    """A hydrate burst over the cap wakes the sweeper via the coalescing kick — and the
+    kick itself is a no-op-safe call from any thread (no event loop armed here)."""
+    kicks = 0
+
+    def counting_kick():
+        nonlocal kicks
+        kicks += 1
+
+    monkeypatch.setattr(scrollback, "_kick_cap_sweep", counting_kick)
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    scrollback._SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        key = f"claude:hyd-{i}"
+        scrollback._scrollback_path(key).write_bytes(b"h" * 8)
+        scrollback._ensure_loaded(key)
+    assert len(scrollback._BUFFERS) == 3  # hydrates never evict inline
+    assert kicks >= 1  # but they do wake the sweeper
+
+
+def test_kick_without_armed_loop_is_noop():
+    # tests + early startup: no sweeper task armed → the kick must be a silent no-op
+    scrollback._sweep_wake = None
+    scrollback._sweep_loop = None
+    scrollback._kick_cap_sweep()  # must not raise
+
+
+def test_dead_branch_respects_pin_landed_during_probe(monkeypatch):
+    """Hermes on PR #679 (race 1): an attach that pins a candidate WHILE its probe is in
+    flight must not lose its ring — the dead branch re-checks pins at victim time, like
+    the live-idle branch."""
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    scrollback._PROBE_CACHE.clear()
+    key = "claude:pin-mid-probe"
+
+    def probe_that_races_an_attach(k):
+        if k == key:
+            scrollback.note_viewer_attached(key)  # the attach lands mid-probe
+            return scrollback.ptybridge.DEAD  # and the probe still reports dead
+        return scrollback.ptybridge.DEAD
+
+    monkeypatch.setattr(scrollback, "_session_verdict", probe_that_races_an_attach)
+    try:
+        scrollback._buffer_append(key, b"viewer history")
+        scrollback._buffer_append("claude:filler", b"f")
+        scrollback._enforce_buffer_cap()
+        assert key in scrollback._BUFFERS  # the freshly pinned ring survived
+        assert key in scrollback._TOTALS  # and its absolute total with it
+    finally:
+        scrollback._PIN_COUNTS.clear()
+        scrollback._PIN_GRACE_UNTIL.clear()
+
+
+def test_negative_probe_verdicts_are_never_cached(monkeypatch):
+    """Hermes on PR #679 (race 2): a cached False must not outlive a rapid same-key
+    relaunch — negative verdicts are re-probed every time, so a relaunched session's new
+    ring can never be dropped on a dead generation's verdict."""
+    calls = []
+    monkeypatch.setattr(
+        scrollback, "_session_verdict", lambda k: calls.append(k) or scrollback.ptybridge.DEAD
+    )
+    scrollback._PROBE_CACHE.clear()
+    assert scrollback._session_verdict_cached("claude:gen-x") is scrollback.ptybridge.DEAD
+    assert "claude:gen-x" not in scrollback._PROBE_CACHE  # DEAD not cached
+    # the "relaunch": the same key probes alive now — and is actually asked again
+    monkeypatch.setattr(
+        scrollback, "_session_verdict", lambda k: calls.append(k) or scrollback.ptybridge.ALIVE
+    )
+    assert scrollback._session_verdict_cached("claude:gen-x") is scrollback.ptybridge.ALIVE
+    assert len(calls) == 2  # fresh probe, no stale verdict served
+
+
+def test_relaunched_session_survives_sweep_after_stale_dead_verdict(monkeypatch):
+    """End-to-end for race 2: a key whose PRIOR generation was swept (dead) relaunches;
+    the next over-cap sweep must probe it fresh and keep the new live ring + totals."""
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    scrollback._PROBE_CACHE.clear()
+    key = "claude:relaunch"
+    monkeypatch.setattr(scrollback, "_session_verdict", lambda k: scrollback.ptybridge.DEAD)
+    scrollback._buffer_append(key, b"old generation")
+    scrollback._buffer_append("claude:other-a", b"a")
+    scrollback._enforce_buffer_cap()  # sweeps the dead generation (and probes False)
+    assert key not in scrollback._BUFFERS
+    # relaunch: same id, now alive; a second session appears pushing over cap again
+    monkeypatch.setattr(
+        scrollback,
+        "_session_verdict",
+        lambda k: scrollback.ptybridge.ALIVE if k == key else scrollback.ptybridge.DEAD,
+    )
+    scrollback._buffer_append("claude:other-b", b"b")
+    scrollback._buffer_append(key, b"new generation")
+    scrollback._enforce_buffer_cap()
+    assert key in scrollback._BUFFERS  # never dropped on the dead generation's verdict
+    # The durable mirror rehydrates the old bytes on first touch (drop reclaims memory,
+    # never history) — the new generation's output is appended after them.
+    assert bytes(scrollback._BUFFERS[key]).endswith(b"new generation")
+    assert key in scrollback._TOTALS
+
+
+def test_unknown_probe_verdict_never_drops_totals(monkeypatch):
+    """Hermes on PR #679 round 2: a probe TIMEOUT (UNKNOWN) under host load must never be
+    read as proven dead — only a decisive DEAD may take the `_drop_buffer` branch. An
+    UNKNOWN candidate is treated like live: at most the ring-only LRU path evicts it, and
+    its `_TOTALS` survives for delta-resume."""
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 1)
+    monkeypatch.setattr(scrollback, "_session_verdict", lambda k: scrollback.ptybridge.UNKNOWN)
+    scrollback._PROBE_CACHE.clear()
+    scrollback._buffer_append("claude:slow-live", b"important")
+    scrollback._buffer_append("claude:slow-live-2", b"also important")
+    scrollback._enforce_buffer_cap()
+    # cap enforced via ring-only eviction; NOBODY lost their absolute total
+    assert len(scrollback._BUFFERS) <= 1
+    assert "claude:slow-live" in scrollback._TOTALS
+    assert "claude:slow-live-2" in scrollback._TOTALS
+    # UNKNOWN is not cached (transient by definition)
+    assert "claude:slow-live" not in scrollback._PROBE_CACHE
+
+
+def test_sweep_probe_count_is_linear_for_unknown_candidates(monkeypatch):
+    """Hermes on PR #679 round 3: the sweep must classify the snapshot ONCE — one probe per
+    candidate — not re-probe the whole registry per victim (O(N²): ~18.6k ladder probes at
+    production scale for an all-UNKNOWN registry). Cap still converges via the
+    totals-preserving ring-only path."""
+    calls = {"n": 0}
+
+    def counting_unknown(_key):
+        calls["n"] += 1
+        return scrollback.ptybridge.UNKNOWN
+
+    monkeypatch.setattr(scrollback, "_session_verdict", counting_unknown)
+    monkeypatch.setattr(scrollback, "_MAX_BUFFERS", 5)
+    scrollback._PROBE_CACHE.clear()
+    keys = [f"claude:lin-{i}" for i in range(10)]
+    for k in keys:
+        scrollback._buffer_append(k, b"x")
+    scrollback._enforce_buffer_cap()
+    assert calls["n"] == 10  # exactly one probe per candidate — linear, not quadratic
+    assert len(scrollback._BUFFERS) <= 5  # cap converged in ONE sweep
+    for k in keys:
+        assert k in scrollback._TOTALS  # UNKNOWN never costs anyone their absolute total

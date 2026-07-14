@@ -699,16 +699,22 @@ def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp
 
 def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
     # Audit MEDIUM: the retained-buffer set stays bounded. When every retained session
-    # is dead (no surviving dtach master), exceeding the cap evicts the oldest first.
+    # is dead (no surviving dtach master), the cap sweep evicts the oldest first.
+    # (#678: enforcement moved OFF `_buffer_append` — the sweep is invoked explicitly
+    # here, as the background sweeper task does in production.)
     from agent_sessions import webterm
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
+    webterm.scrollback._PROBE_CACHE.clear()
     monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
-    monkeypatch.setattr(webterm.scrollback, "_session_alive", lambda k: False)  # all dead → evict
+    monkeypatch.setattr(  # all dead → evict
+        webterm.scrollback, "_session_verdict", lambda k: webterm.scrollback.ptybridge.DEAD
+    )
 
     for i in range(10):
         webterm._buffer_append(f"claude:s{i}", b"y")
+    webterm.scrollback._enforce_buffer_cap()
 
     assert len(webterm._BUFFERS) == 4  # bounded
     assert "claude:s0" not in webterm._BUFFERS  # oldest evicted
@@ -726,14 +732,22 @@ def test_idle_live_session_never_evicted(monkeypatch):
 
     webterm._BUFFERS.clear()
     webterm._TOTALS.clear()
+    webterm.scrollback._PROBE_CACHE.clear()
     monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
     live = "claude:live-idle"
     # Only `live` is alive; every other (churning) session is dead/evictable.
-    monkeypatch.setattr(webterm.scrollback, "_session_alive", lambda k: k == live)
+    monkeypatch.setattr(
+        webterm.scrollback,
+        "_session_verdict",
+        lambda k: webterm.scrollback.ptybridge.ALIVE
+        if k == live
+        else webterm.scrollback.ptybridge.DEAD,
+    )
 
     webterm._buffer_append(live, b"important history")  # written ONCE, then idle
     for i in range(20):  # heavy churn from other sessions, well past the cap
         webterm._buffer_append(f"claude:dead{i}", b"y")
+    webterm.scrollback._enforce_buffer_cap()  # #678: the sweep enforces, not the append
 
     assert live in webterm._BUFFERS  # live session preserved despite being the oldest + idle
     assert bytes(webterm._BUFFERS[live]) == b"important history"  # buffer intact for resume

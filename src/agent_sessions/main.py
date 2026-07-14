@@ -37,6 +37,7 @@ from . import (
     projects,
     pulse_loop,
     reaper,
+    scrollback,
     security_headers,
     session_stream,
     update_loop,
@@ -225,10 +226,20 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # per pass on the env-file AGENT_SESSIONS_AUTOUPDATE key, so the Settings → System
         # toggle governs it live without a restart.
         update_task = asyncio.create_task(update_loop.run())
+        # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
+        # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
+        cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
         try:
             yield
         finally:
-            for task in (reaper_task, review_task, autosort_task, pulse_task, update_task):
+            for task in (
+                reaper_task,
+                review_task,
+                autosort_task,
+                pulse_task,
+                update_task,
+                cap_sweep_task,
+            ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task

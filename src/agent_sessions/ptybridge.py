@@ -53,12 +53,23 @@ class PtyBridgeError(RuntimeError):
     """Raised when a session descriptor is malformed or unsafe."""
 
 
+# The last runtime dir we ensured exists (#678). `socket_path()` runs per probe candidate in
+# the cap sweep and used to `mkdir(parents=True, exist_ok=True)` every call — a syscall per
+# probe. Keyed by the CONFIGURED path (not cached forever): tests and deployments that change
+# `AGENT_SESSIONS_RUNTIME_DIR` still get the new dir ensured on first use.
+_DIR_READY_FOR: str | None = None
+
+
 def runtime_dir() -> Path:
     """Directory holding the per-session dtach sockets. Created on demand, 0700."""
-    d = Path(
-        os.environ.get("AGENT_SESSIONS_RUNTIME_DIR") or (Path.home() / ".agent-sessions" / "pty")
+    global _DIR_READY_FOR
+    raw = os.environ.get("AGENT_SESSIONS_RUNTIME_DIR") or str(
+        Path.home() / ".agent-sessions" / "pty"
     )
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    d = Path(raw)
+    if _DIR_READY_FOR != raw:
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _DIR_READY_FOR = raw
     return d
 
 
