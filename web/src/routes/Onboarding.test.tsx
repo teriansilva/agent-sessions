@@ -103,11 +103,16 @@ test("welcome → security → agents lists discovered engines from /api/engines
   expect(screen.getByText(/not found/i)).toBeInTheDocument();
 });
 
-test("security step: login-off (relay) shows the skip panel, not 2FA", async () => {
+test("security step: login-off (relay) shows the skip panel + how-to-enable-login, not 2FA", async () => {
   renderWizard(vi.fn(), cfg({ auth_mode: "none" }));
   await userEvent.click(screen.getByRole("button", { name: /get started/i }));
   expect(screen.getByText(/login is off/i)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /add two-factor/i })).not.toBeInTheDocument();
+  // #682: the login-off step now explains how to enable login, with the verified recipe.
+  expect(screen.getByText(/prefer a password login/i)).toBeInTheDocument();
+  expect(
+    screen.getByText((c, el) => el?.tagName === "CODE" && c.includes("reset-password --prompt")),
+  ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /skip — continue/i }));
   expect(await screen.findByText("claude")).toBeInTheDocument();
 });

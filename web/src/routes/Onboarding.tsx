@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
+import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
@@ -391,6 +392,7 @@ export function Onboarding({
                     </p>
                   </div>
                 </div>
+                <EnableLoginDetails />
                 <Foot>
                   <span className={styles.grow} />
                   <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>

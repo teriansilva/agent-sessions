@@ -22,6 +22,7 @@ import {
 } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
+import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
@@ -804,6 +805,38 @@ function AccountCard() {
         <LogOut size={16} /> {busy ? "Signing out…" : "Sign out"}
       </button>
     </section>
+  );
+}
+
+/** Login-off explainer (#682): in Home Free / `auth_mode=none` there's no password or 2FA to
+ *  manage, so the 2FA + Account cards hide and the Security tab would otherwise render empty.
+ *  Show what login-off means plus the (verified) recipe to turn a password login on instead. */
+function LoginOffCard() {
+  return (
+    <section className={styles.section} aria-labelledby="loginoff-h">
+      <h2 id="loginoff-h">Login</h2>
+      <p className={styles.blurb}>
+        Login is off — you’re running <strong>Home Free</strong>. The app is bound to loopback and
+        reached only through the blind relay with your access key, so there’s no in-app password or
+        two-factor to manage here.
+      </p>
+      <EnableLoginDetails />
+    </section>
+  );
+}
+
+/** Security tab body, driven by the shared config so it never flashes the single-user cards
+ *  before resolving to login-off (#682). `useConfig()` is `null` while loading — render nothing
+ *  then, never assume `single-user`. */
+function SecurityPanel() {
+  const config = useConfig();
+  if (!config) return null; // still loading — avoid a single-user flash
+  if (config.auth_mode === "none") return <LoginOffCard />;
+  return (
+    <>
+      <TwoFactorCard />
+      <AccountCard />
+    </>
   );
 }
 
@@ -1740,12 +1773,7 @@ export function Settings() {
           </>
         )}
 
-        {tab === "security" && (
-          <>
-            <TwoFactorCard />
-            <AccountCard />
-          </>
-        )}
+        {tab === "security" && <SecurityPanel />}
 
         {tab === "system" && (
           <>

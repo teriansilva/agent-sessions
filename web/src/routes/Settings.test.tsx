@@ -69,17 +69,32 @@ function renderSettings(theme: ThemeId = "dark", accent = "#ffb000", initialPath
   const setAccent = vi.fn();
   render(
     <MemoryRouter initialEntries={[initialPath]}>
-      <ThemeCtx.Provider value={{ theme, setTheme }}>
-        <AccentCtx.Provider value={{ accent, setAccent }}>
-          <OverviewPrefsProvider>
-            <Routes>
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/settings/:tab" element={<Settings />} />
-            </Routes>
-            <LocationProbe />
-          </OverviewPrefsProvider>
-        </AccentCtx.Provider>
-      </ThemeCtx.Provider>
+      {/* #682: the Security tab is now config-driven (useConfig gates the login-off vs 2FA/Account
+          cards), so the harness must provide a resolved config — single-user here, matching the
+          api.config mock — or the panel renders empty. */}
+      <ConfigCtx.Provider
+        value={
+          {
+            csrf: "t",
+            new_session_engines: [],
+            terminal_backend: "ws",
+            auth_mode: "single-user",
+            two_factor_enabled: false,
+          } as AppConfig
+        }
+      >
+        <ThemeCtx.Provider value={{ theme, setTheme }}>
+          <AccentCtx.Provider value={{ accent, setAccent }}>
+            <OverviewPrefsProvider>
+              <Routes>
+                <Route path="/settings" element={<Settings />} />
+                <Route path="/settings/:tab" element={<Settings />} />
+              </Routes>
+              <LocationProbe />
+            </OverviewPrefsProvider>
+          </AccentCtx.Provider>
+        </ThemeCtx.Provider>
+      </ConfigCtx.Provider>
     </MemoryRouter>,
   );
   return { setTheme, setAccent };
