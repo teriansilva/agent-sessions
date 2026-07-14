@@ -1,10 +1,11 @@
-import { ArrowLeft, ArrowRight, Check, FolderPlus, X } from "lucide-react";
+import encodeQR from "@paulmillr/qr";
+import { ArrowLeft, ArrowRight, Check, FolderPlus, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
-import type { EngineInfo, Folder } from "../types/api";
+import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
 
 /** Corner-bracket frame (the `.hud-cnr` primitive in App.css). Inlined here — the shared
@@ -29,18 +30,28 @@ const publicAsset = (path: string): string =>
 const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/sessions.svg"),
-    title: "Your sessions",
-    body: "Every agent session lives in the sidebar — search, filter by project or engine, favorite, archive.",
+    title: "Five engines, one deck",
+    body: "Claude Code, Codex, opencode, Gemini & Antigravity — each in its own persistent session in the sidebar, grouped by project, with per-engine badges. Search, filter, favorite, archive.",
   },
   {
     img: publicAsset("onboarding/pulse.svg"),
-    title: "Pulse",
-    body: "An AI-curated read on what needs you, what's in flight, and what's gone idle. Open it from the topbar.",
+    title: "Pulse — work at a glance",
+    body: "An AI-curated read on what needs you (⚠), what's in flight, and what's gone idle — each one click from jumping back in. Cached so it loads instantly; pick the depth, from free local curation to an AI synthesis banner.",
+  },
+  {
+    img: publicAsset("onboarding/aireview.svg"),
+    title: "AI session reviews",
+    body: "An AI reads every running session and posts a one-line summary on each row, flagging the ones that need you — triage the whole fleet without scrolling transcripts. Point it at any OpenAI-compatible endpoint, even a local model.",
   },
   {
     img: publicAsset("onboarding/overview.svg"),
-    title: "Overview map",
-    body: "Your projects and sessions as a flowchart — drag a session onto a project to reassign it.",
+    title: "Tactical map & auto-sort",
+    body: "A live flowchart of every session, grouped into projects — drag a session onto a project to reassign it. New sessions file themselves: AI auto-sort matches each one to the right project, or leaves it for you.",
+  },
+  {
+    img: publicAsset("onboarding/mobile.svg"),
+    title: "Touch-ready",
+    body: "A mobile-first terminal with a real compose bar, control keys and image paste, plus console-style scroll-up history that survives reboots and deploys. Drive your whole fleet from a phone.",
   },
   {
     img: publicAsset("onboarding/homefree.svg"),
@@ -48,16 +59,22 @@ const SLIDES: { img: string; title: string; body: string }[] = [
     body: "Your deck can stream through our blind relay — open battlelab.superstatus.io/connect in any browser and enter the console name + access key from your install. End-to-end encrypted; sessions run up to 4 hours.",
   },
   {
+    img: publicAsset("onboarding/qrsignin.svg"),
+    title: "Sign in by QR",
+    body: "Add a phone or tablet without retyping a password: scan a QR from a signed-in device to authorize the new one. Optional TOTP two-factor keeps the login yours.",
+  },
+  {
     img: publicAsset("onboarding/settings.svg"),
-    title: "Settings → AI",
-    body: "Tune your AI endpoint, auto-sort, themes and more. Re-open this tour any time from Help.",
+    title: "Tune it in Settings",
+    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. Re-open this tour, or re-run the full setup, any time from Help.",
   },
 ];
 
-const WIZARD_STEPS = ["welcome", "agents", "ai", "project", "tour", "launch"] as const;
+const WIZARD_STEPS = ["welcome", "security", "agents", "ai", "project", "tour", "launch"] as const;
 type Step = (typeof WIZARD_STEPS)[number];
 const STEP_LABEL: Record<Step, string> = {
   welcome: "Welcome",
+  security: "Secure your deck",
   agents: "Connected agents",
   ai: "Set up AI",
   project: "First project",
@@ -66,7 +83,15 @@ const STEP_LABEL: Record<Step, string> = {
 };
 
 /** Slideshow shared by the wizard's Tour step and the standalone replay (Help). */
-function Slideshow({ onDone, doneLabel }: { onDone: () => void; doneLabel: string }) {
+function Slideshow({
+  onDone,
+  doneLabel,
+  onRerun,
+}: {
+  onDone: () => void;
+  doneLabel: string;
+  onRerun?: () => void;
+}) {
   const [i, setI] = useState(0);
   const last = i >= SLIDES.length - 1;
   const s = SLIDES[i];
@@ -84,6 +109,11 @@ function Slideshow({ onDone, doneLabel }: { onDone: () => void; doneLabel: strin
         <button type="button" className={styles.ghost} onClick={onDone}>
           Skip
         </button>
+        {onRerun && (
+          <button type="button" className={styles.ghost} onClick={onRerun}>
+            Re-run full setup
+          </button>
+        )}
         <span className={styles.grow} />
         {i > 0 && (
           <button type="button" className={styles.btn} onClick={() => setI((n) => n - 1)}>
@@ -108,9 +138,11 @@ function Slideshow({ onDone, doneLabel }: { onDone: () => void; doneLabel: strin
 export function Onboarding({
   mode = "wizard",
   onClose,
+  onRerunSetup,
 }: {
   mode?: "wizard" | "tour";
   onClose: () => void;
+  onRerunSetup?: () => void;
 }) {
   const config = useConfig();
   const navigate = useNavigate();
@@ -118,6 +150,22 @@ export function Onboarding({
 
   // Agents (Connected agents step).
   const [engines, setEngines] = useState<EngineInfo[] | null>(null);
+  // Security step (#675) — optional TOTP 2FA, reusing the /api/2fa/* enroll→confirm flow.
+  // N/A when there is no login (auth_mode=none, e.g. Home Free stream mode).
+  const authMode = config?.auth_mode ?? "single-user";
+  const loginOff = authMode === "none";
+  const [twofaEnroll, setTwofaEnroll] = useState<TwoFactorEnrollment | null>(null);
+  const [twofaCode, setTwofaCode] = useState("");
+  // Seed from the live config so a re-run (Help → Re-run setup) by someone who already has 2FA
+  // enabled shows it as ON — never offers a re-enrollment the server rejects without fresh proof.
+  const [twofaOn, setTwofaOn] = useState(!!config?.two_factor_enabled);
+  const [twofaBusy, setTwofaBusy] = useState(false);
+  const [twofaErr, setTwofaErr] = useState<string | null>(null);
+  // Client-side QR from the otpauth:// URI (bundled lib, no CDN) — same as Settings' 2FA card.
+  const twofaQr = useMemo(
+    () => (twofaEnroll ? encodeQR(twofaEnroll.otpauth_uri, "svg", { border: 2 }) : null),
+    [twofaEnroll],
+  );
   // AI (Set up AI step) — a compact view over the existing /api/prefs → ai_review contract.
   const [aiBase, setAiBase] = useState("");
   const [aiKey, setAiKey] = useState("");
@@ -182,6 +230,35 @@ export function Onboarding({
     onClose();
   }, [onClose]);
 
+  const startTwofa = async () => {
+    setTwofaBusy(true);
+    setTwofaErr(null);
+    try {
+      setTwofaEnroll(await api.enroll2fa());
+    } catch {
+      setTwofaErr("Couldn't start enrollment.");
+    } finally {
+      setTwofaBusy(false);
+    }
+  };
+
+  const confirmTwofa = async () => {
+    const code = twofaCode.trim();
+    if (!code) return;
+    setTwofaBusy(true);
+    setTwofaErr(null);
+    try {
+      await api.confirm2fa(code);
+      setTwofaOn(true);
+      setTwofaEnroll(null);
+      setTwofaCode("");
+    } catch {
+      setTwofaErr("That code didn't match — check your authenticator and try again.");
+    } finally {
+      setTwofaBusy(false);
+    }
+  };
+
   const saveAi = async () => {
     setAiSaving(true);
     setAiErr(null);
@@ -244,7 +321,7 @@ export function Onboarding({
   if (mode === "tour") {
     return (
       <Overlay onClose={onClose} title="Tour">
-        <Slideshow onDone={onClose} doneLabel="Done" />
+        <Slideshow onDone={onClose} doneLabel="Done" onRerun={onRerunSetup} />
       </Overlay>
     );
   }
@@ -282,10 +359,124 @@ export function Onboarding({
                 Skip setup
               </button>
               <span className={styles.grow} />
-              <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("agents")}>
+              <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("security")}>
                 Get started <ArrowRight size={14} />
               </button>
             </Foot>
+          </Step>
+        )}
+
+        {step === "security" && (
+          <Step
+            title="Secure your deck"
+            desc="This box launches agents with permission bypass — treat it like SSH."
+          >
+            {loginOff ? (
+              <>
+                <div className={styles.row} style={{ alignItems: "flex-start" }}>
+                  <Brackets />
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  <div>
+                    <strong>Login is off — your access key is the gate</strong>
+                    <p className={styles.copy} style={{ margin: "4px 0 0" }}>
+                      You installed with streaming (Home Free), so the app is bound to loopback and
+                      reached only through the blind relay with the access key the installer printed.
+                      No in-app password is needed.
+                    </p>
+                  </div>
+                </div>
+                <Foot>
+                  <span className={styles.grow} />
+                  <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>
+                    <ArrowLeft size={14} /> Back
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.pri} shine`}
+                    onClick={() => setStep("agents")}
+                  >
+                    Skip — continue <ArrowRight size={14} />
+                  </button>
+                </Foot>
+              </>
+            ) : (
+              <>
+                <p className={styles.copy}>
+                  Your password is set. Add two-factor authentication (TOTP) for a second layer —
+                  optional, and changeable anytime in Settings.
+                </p>
+                {twofaOn ? (
+                  <p className={styles.note}>
+                    <Check size={13} /> Two-factor authentication is on.
+                  </p>
+                ) : !twofaEnroll ? (
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={startTwofa}
+                    disabled={twofaBusy}
+                  >
+                    <ShieldCheck size={14} /> Add two-factor authentication
+                  </button>
+                ) : (
+                  <div className={styles.row} style={{ alignItems: "flex-start" }}>
+                    <Brackets />
+                    {twofaQr && (
+                      <img
+                        className={styles.qr}
+                        src={`data:image/svg+xml,${encodeURIComponent(twofaQr)}`}
+                        alt="Scan this QR with your authenticator app"
+                      />
+                    )}
+                    <div style={{ flex: 1 }}>
+                      <p className={styles.copy} style={{ margin: "0 0 6px" }}>
+                        Scan with your authenticator, then enter a code to confirm.
+                      </p>
+                      <p className={styles.copy} style={{ margin: "0 0 6px", fontSize: 11 }}>
+                        Recovery codes (save these once):
+                        <br />
+                        <code>{twofaEnroll.recovery_codes.join("  ")}</code>
+                      </p>
+                      <div className={styles.inline}>
+                        <input
+                          className={styles.field}
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          placeholder="6-digit code"
+                          value={twofaCode}
+                          onChange={(e) => setTwofaCode(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className={styles.btn}
+                          onClick={confirmTwofa}
+                          disabled={twofaBusy || !twofaCode.trim()}
+                        >
+                          Confirm 2FA
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {twofaErr && <p className={styles.err}>{twofaErr}</p>}
+                <Foot>
+                  <button type="button" className={styles.ghost} onClick={() => setStep("agents")}>
+                    Skip for now
+                  </button>
+                  <span className={styles.grow} />
+                  <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>
+                    <ArrowLeft size={14} /> Back
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.pri} shine`}
+                    onClick={() => setStep("agents")}
+                  >
+                    Continue <ArrowRight size={14} />
+                  </button>
+                </Foot>
+              </>
+            )}
           </Step>
         )}
 
@@ -319,7 +510,7 @@ export function Onboarding({
                 Skip setup
               </button>
               <span className={styles.grow} />
-              <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>
+              <button type="button" className={styles.btn} onClick={() => setStep("security")}>
                 <ArrowLeft size={14} /> Back
               </button>
               <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("ai")}>

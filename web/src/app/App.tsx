@@ -89,6 +89,8 @@ function Layout() {
   // the install isn't already onboarded. `setupDismissed` hides it immediately on finish/skip
   // (no config refetch needed); the topbar Help entry re-opens the slideshow tour (`tourOpen`).
   const [tourOpen, setTourOpen] = useState(false);
+  // Re-run the full setup wizard on demand (#675) — from the Help → tour overlay.
+  const [wizardReplay, setWizardReplay] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
   const showSetup =
     config?.onboarded === false && !config?.must_change_password && !setupDismissed;
@@ -420,8 +422,25 @@ function Layout() {
         </span>
       </footer>
       </div>
-      {showSetup && <Onboarding mode="wizard" onClose={() => setSetupDismissed(true)} />}
-      {tourOpen && <Onboarding mode="tour" onClose={() => setTourOpen(false)} />}
+      {(showSetup || wizardReplay) && (
+        <Onboarding
+          mode="wizard"
+          onClose={() => {
+            setSetupDismissed(true);
+            setWizardReplay(false);
+          }}
+        />
+      )}
+      {tourOpen && (
+        <Onboarding
+          mode="tour"
+          onClose={() => setTourOpen(false)}
+          onRerunSetup={() => {
+            setTourOpen(false);
+            setWizardReplay(true);
+          }}
+        />
+      )}
     </>
   );
 }
