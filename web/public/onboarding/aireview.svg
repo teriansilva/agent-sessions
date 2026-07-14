@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="AI session reviews">
+  <rect width="640" height="360" fill="#131418"/>
+  <g font-family="monospace">
+    <rect x="24" y="30" width="592" height="58" fill="#0d0e10" stroke="#25282e"/>
+    <circle cx="44" cy="50" r="4" fill="#3fbf6f"/><text x="60" y="46" fill="#e8e9ec" font-size="13">fix the auth redirect loop</text>
+    <text x="60" y="72" fill="#a7abb3" font-size="11">AI: waiting on you — needs the missing next param</text>
+    <text x="592" y="52" fill="#ffb000" font-size="15" text-anchor="end">⚠</text>
+    <rect x="24" y="98" width="592" height="58" fill="#0d0e10" stroke="#25282e"/>
+    <circle cx="44" cy="118" r="4" fill="#3fbf6f"/><text x="60" y="114" fill="#e8e9ec" font-size="13">refactor the scanner</text>
+    <text x="60" y="140" fill="#a7abb3" font-size="11">AI: in flight — extracting the provider registry</text>
+    <rect x="24" y="166" width="592" height="58" fill="#0d0e10" stroke="#25282e"/>
+    <circle cx="44" cy="186" r="4" fill="#6f747d"/><text x="60" y="182" fill="#e8e9ec" font-size="13">tag the open issues</text>
+    <text x="60" y="208" fill="#a7abb3" font-size="11">AI: idle — last output 2h ago</text>
+  </g>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="320" y="300" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">AI REVIEWS // one line per session</text>
+</svg>

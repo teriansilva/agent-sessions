@@ -1,0 +1,390 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.newBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  margin: 8px;
+  padding: 9px 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border-radius: 0;
+  font-weight: 600;
+  text-decoration: none;
+}
+.newBtn:hover {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.newBtn:active {
+  background: var(--cta-bg-2);
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.more {
+  padding: 10px 12px;
+}
+.more button {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 0;
+  cursor: pointer;
+  font: inherit;
+}
+.more button:hover:not(:disabled) {
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+.more button:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.more button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rowWrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rowReordering {
+  z-index: 2;
+  will-change: transform;
+}
+.rowWrap:hover {
+  background: var(--row-hover);
+}
+.row {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  flex: 1;
+  min-width: 0;
+  border-left: 2px solid transparent;
+}
+/* The currently-open session (the row whose URL matches the route). A tinted ground +
+ * an accent rail so you can see which session you're in at a glance (#18). */
+.active {
+  background: var(--row-hover);
+  border-left-color: var(--accent);
+}
+/* Per-project rail (#285): coloured by the row's --proj var (explicit entity color, else
+ * the stable cwd/id hash). An inset absolute layer just right of the active-row border so
+ * the amber "open session" edge and the project accent never merge into one cue. */
+.projRail {
+  position: absolute;
+  left: 1px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: var(--proj);
+  opacity: 0.55;
+  pointer-events: none;
+}
+/* Action cluster: hidden until row hover on pointer devices; always shown on
+ * narrow viewports (<= 800px) so phone/tablet users can reach rename/archive
+ * regardless of reported hover support. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.rowWrap:hover .actions,
+.rowWrap:focus-within .actions,
+.actionsOpen {
+  opacity: 1;
+}
+@media (hover: none), (max-width: 800px) {
+  .actions {
+    opacity: 1;
+  }
+}
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+@media (max-width: 800px) {
+  .iconBtn {
+    width: 32px;
+    height: 32px;
+  }
+}
+.iconBtn:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--accent);
+}
+.iconBtn:focus-visible {
+  outline: none;
+  color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Favorite star prefix (#508): the favorite toggle moved into the ⋯ menu; a favorited
+ * row instead leads its meta line with a small amber ★ (decorative — the on/off state
+ * lives on the menu item). flex:none so it never shrinks; aligns with the engine tag. */
+.favStar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent, #ffb000);
+}
+.editRow {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 8px 6px 12px;
+  flex: 1;
+  min-width: 0;
+}
+.editInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+}
+.editInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.body {
+  min-width: 0;
+  flex: 1;
+}
+.title {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Leading per-row status LED (#211 4b, was the working-only dot of #156). Layout only —
+ * the dot's appearance (green glow + blink when .up, dim + steady when .idle) comes from
+ * the global .hud-led primitive so it matches the topbar/classbar indicators. margin-top
+ * nudges the 6px dot onto the title's first baseline. */
+.led {
+  flex: none;
+  margin-top: 6px;
+}
+/* Mono meta line: a demoted engine tag + project · relative-time, in the HUD mono voice. */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.metaText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Engine, demoted from a prominent colored badge to a faint mono tag (#211 4b): the live
+ * LED is now the primary row signal, so the engine just needs to be legible, not loud. */
+.engineTag {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+/* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
+ * engine tag · time — an entity name leads with its color dot. Inline (not flex) so the
+ * metaText ellipsis keeps truncating the whole line. */
+.projectChip {
+  color: var(--text-muted);
+}
+.projectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+  background: var(--proj);
+}
+.empty {
+  color: var(--text-muted);
+  padding: 14px 12px;
+  font-size: 12px;
+}
+
+/* AI review (#356): one-line summary under the title, the amber "needs a human" badge,
+ * and the reviewing-spinner on the row's Review-now action. */
+.summary {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-2, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.summaryExcluded {
+  font-style: italic;
+  color: var(--text-3, var(--text-muted));
+}
+.summaryStale {
+  color: var(--text-3, var(--text-muted));
+  font-style: italic;
+}
+/* Custom per-session tag (#551): a short user label leading the summary line, so it reads as a
+ * deliberate annotation distinct from the muted AI summary. Amber, but mixed toward --text so it
+ * stays readable in BOTH themes (lightens on the dark ground, darkens on the light panel) rather
+ * than a raw accent that would wash out on light — theme-adaptive and token-based (no hardcoded
+ * hex, so a custom accent still cascades). */
+.summaryTag {
+  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+  font-weight: 600;
+  white-space: pre; /* keep the tag's own spacing/emoji intact within the single-line summary */
+}
+/* Selected-row auto-scroll (#551): only the OPEN row's overflowing title/summary get this class
+ * (measured in JS), and it pauses at each end. Distance + duration come from the measured overflow
+ * via CSS vars. Fully disabled under reduced motion — the JS already gates on it, this is a belt-
+ * and-suspenders guard so the animation can never run against the user's preference (design §8). */
+.marqScroll {
+  display: inline-block;
+  will-change: transform;
+  animation: marq var(--marq-dur, 8s) ease-in-out infinite;
+}
+@keyframes marq {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+  44%,
+  56% {
+    transform: translateX(var(--marq-shift, 0));
+  }
+  88%,
+  100% {
+    transform: translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rowReordering {
+    transition: none !important;
+    transform: none !important;
+  }
+  .marqScroll {
+    animation: none;
+    transform: none;
+  }
+}
+.spin {
+  animation: reviewSpin 1.2s linear infinite;
+}
+@keyframes reviewSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Review-now outcome toast (#392): pinned to the sidebar foot — flex sibling of the
+   scrolling list, so it never overlays rows or the mobile bottom edge. Square HUD
+   panel; the status LED + left rule carry the ok/err semantics. The region itself is
+   always mounted (polite live region) and collapses to zero height when empty. */
+.toastRegion {
+  flex: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 8px 8px;
+  padding: 8px 10px;
+  background: var(--surface-2, var(--bg));
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.toastOk {
+  border-left-color: var(--status-up);
+}
+.toastErr {
+  border-left-color: var(--status-down);
+}
+.toastLed {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+}
+.toastOk .toastLed {
+  background: var(--status-up);
+}
+.toastErr .toastLed {
+  background: var(--status-down);
+}
+.toastText {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  /* A long summary stays bounded: clamp to a few lines rather than flooding the sidebar. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.toastClose {
+  flex: none;
+  display: inline-flex;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 2px;
+  cursor: pointer;
+}
+.toastClose:hover {
+  color: var(--text);
+}
