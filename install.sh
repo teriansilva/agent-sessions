@@ -817,7 +817,37 @@ migrate_legacy_autoupdate() {
   log "migrated the legacy autoupdate timer → in-app automatic updates (Settings → System)"
 }
 
+seed_onboarding() {
+  # First-run onboarding pref (#675). A genuine fresh install seeds onboarded=false so the
+  # setup wizard shows even when the engines' session history was preserved (uninstall keeps
+  # ~/.claude etc., so the app's session-scan fallback would otherwise infer "already
+  # onboarded"). An upgrade seeds onboarded=true so a returning user is never dragged back
+  # through setup (#463). Idempotent: only writes when the pref is currently unset, via the
+  # app's own prefs writer so the path (honoring AGENT_SESSIONS_PREFS) + atomic write match
+  # what the running app uses.
+  _py="$CURRENT/venv/bin/python"
+  [ -x "$_py" ] || return 0
+  _pref="$(sed -n 's/^AGENT_SESSIONS_PREFS=//p' "$ENVF" 2>/dev/null | tail -1)"
+  _pref="${_pref:-${AGENT_SESSIONS_PREFS:-}}"
+  _want=True; [ "${FRESH:-0}" = 1 ] && _want=False
+  if [ -n "$_pref" ]; then
+    AGENT_SESSIONS_PREFS="$_pref" "$_py" -c 'import sys
+from agent_sessions import prefs
+prefs.get_onboarded() is None and prefs.set_onboarded(sys.argv[1] == "True")' "$_want" 2>/dev/null || true
+  else
+    "$_py" -c 'import sys
+from agent_sessions import prefs
+prefs.get_onboarded() is None and prefs.set_onboarded(sys.argv[1] == "True")' "$_want" 2>/dev/null || true
+  fi
+}
+
 main() {
+  # Fresh vs upgrade (#675): key off a *completed* prior install — a valid `current`
+  # symlink whose target exists — not the mere presence of `releases/`. A failed first
+  # install can leave an empty `releases/` behind (the trap removes only the half-built
+  # release dir), and `current` is only ever created after a build succeeds, so this
+  # correctly treats a retry-after-failure as still-fresh.
+  FRESH=1; [ -L "$CURRENT" ] && [ -e "$CURRENT" ] && FRESH=0
   mkdir -p "$PREFIX"
   adopt_persisted_bind    # re-run: a persisted bind in the env file wins (no silent revert to localhost)
   adopt_persisted_channel # re-run: a persisted (UI-chosen) channel wins the same way (#538)
@@ -854,6 +884,7 @@ main() {
   # Discover installed agent CLIs and record their paths in the env (best-effort; also
   # re-runs on every upgrade so newly-installed engines are picked up).
   "$CURRENT/venv/bin/agent-sessions" doctor --env "$ENVF" >/dev/null 2>&1 || true
+  seed_onboarding            # #675: fresh install ⇒ show the setup wizard; upgrade ⇒ leave it
   migrate_legacy_autoupdate  # retire the systemd timer → in-app setting BEFORE the service (re)starts
   manage_service "$prev_target"
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"

@@ -229,11 +229,14 @@ def register(
     async def app_config(request: Request, _: str = Depends(logged_in)) -> JSONResponse:
         # SPA bootstrap (#64): the CSRF token for mutations + which engines can start a
         # new session (present + supports_new) + the terminal backend. Authed-only.
-        # First-run onboarding flag (#463): an explicit pref wins; otherwise infer — a fresh
-        # install (no prefs, no scanned sessions) shows the wizard, while an existing install
-        # (any pref already set, or ≥1 scanned session) is treated as already onboarded so an
-        # upgrade never regresses into onboarding. Fail-safe to onboarded on a scan error so a
-        # transient fault can't trap a returning user in the wizard.
+        # First-run onboarding flag (#463): an explicit pref wins. The installer now owns
+        # that pref (#675) — it seeds onboarded=false on a genuine fresh install and true on
+        # an upgrade — so the explicit branch is the normal path and the inference below is a
+        # fallback for hand-rolled states (manual install, restored config, older installs
+        # from before #675). Inference: a fresh state (no prefs, no scanned sessions) shows
+        # the wizard, while any pref already set or ≥1 scanned session is treated as onboarded
+        # so an upgrade never regresses into onboarding. Fail-safe to onboarded on a scan error
+        # so a transient fault can't trap a returning user in the wizard.
         onboarded_explicit = prefs.get_onboarded()
         if onboarded_explicit is not None:
             onboarded_val = onboarded_explicit

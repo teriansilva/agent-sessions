@@ -9,6 +9,7 @@ place while keeping the prior release for rollback.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -388,6 +389,20 @@ def test_install_sh_stamps_release_version_into_ui_build():
     assert 'process.env.AGENT_SESSIONS_VERSION || "dev"' in vite_cfg
 
 
+def test_install_sh_seeds_onboarding_pref():
+    # #675: a genuine fresh install seeds onboarded=false so the setup wizard shows even when
+    # the engines' session history was preserved; an upgrade seeds true / leaves it. The seed
+    # goes through the app's own prefs writer and honors a custom AGENT_SESSIONS_PREFS.
+    s = INSTALL_SH.read_text()
+    assert "seed_onboarding" in s
+    # Fresh vs upgrade keys off a *completed* prior install (a valid `current` symlink), not
+    # the mere presence of `releases/` — a failed first install can leave `releases/` behind.
+    assert "FRESH=1" in s and '[ -L "$CURRENT" ] && [ -e "$CURRENT" ]' in s
+    assert "set_onboarded" in s and "from agent_sessions import prefs" in s
+    # only writes when currently unset (idempotent — never clobbers an operator's choice)
+    assert "get_onboarded() is None" in s
+
+
 def test_install_sh_never_seeds_takeover_flag():
     # #434: AGENT_SESSIONS_TAKEOVER is an EXPERIMENTAL, staging-only flag. The installer must
     # never write it (so a fresh OR migrated customer install defaults to OFF) — an accidental
@@ -437,6 +452,9 @@ def test_installer_end_to_end(tmp_path):
         # Keep this test fast + Node-free; the real UI build is covered by the
         # Node-gated test below.
         "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
+        # #675: point the onboarding pref at a temp file so the seed never touches the real
+        # ~/.config/agent-sessions/prefs.json (per the "never touch real config" rule).
+        "AGENT_SESSIONS_PREFS": str(tmp_path / "prefs.json"),
     }
     r = subprocess.run(
         ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
@@ -454,6 +472,12 @@ def test_installer_end_to_end(tmp_path):
     assert run.stdout.strip()
     releases = sorted((home / "releases").iterdir())
     assert len(releases) == 1
+
+    # #675: a genuine fresh install seeds onboarded=false so the setup wizard shows even
+    # though this test's HOME may carry scanned sessions.
+    prefs_file = tmp_path / "prefs.json"
+    assert prefs_file.exists(), "installer did not seed the onboarding pref"
+    assert json.loads(prefs_file.read_text()).get("onboarded") is False
 
     # Env: 0600, holds the hash + secret, NO plaintext password persisted.
     envf = home / "env"
@@ -492,6 +516,40 @@ def test_installer_end_to_end(tmp_path):
     releases2 = sorted((home / "releases").iterdir())
     assert len(releases2) == 2  # prior kept for rollback
     assert current.resolve() == sorted(releases2)[-1].resolve()
+    # #675: the re-run is an upgrade — it must NOT flip the already-seeded pref (only writes
+    # when unset), so the fresh install's onboarded=false is preserved, not reset to true.
+    assert json.loads(prefs_file.read_text()).get("onboarded") is False
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git required")
+def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
+    # #675 (Hermes review): a failed first install can leave an empty `releases/` behind (the
+    # trap removes only the half-built release dir). A retry must still be treated as FRESH —
+    # fresh/upgrade keys off a completed install (`current` symlink), not `releases/` presence —
+    # so it seeds onboarded=false and the wizard shows.
+    home = tmp_path / "prefix"
+    (home / "releases").mkdir(parents=True)  # residue: dir exists, but no `current` was created
+    head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    prefs_file = tmp_path / "prefs.json"
+    env = {
+        **os.environ,
+        "AGENT_SESSIONS_REPO": str(REPO),
+        "AGENT_SESSIONS_REF": head,
+        "AGENT_SESSIONS_HOME": str(home),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_ASSUME_YES": "1",
+        "AGENT_SESSIONS_PORT": "8798",
+        "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
+        "AGENT_SESSIONS_PREFS": str(prefs_file),
+    }
+    r = subprocess.run(
+        ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
+    )
+    assert r.returncode == 0, r.stderr
+    assert (home / "current").is_symlink()  # this run is the one that completed the install
+    assert json.loads(prefs_file.read_text()).get("onboarded") is False
 
 
 @pytest.mark.skipif(
