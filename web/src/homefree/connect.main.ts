@@ -62,6 +62,8 @@ const sessionBox = byId("session-box");
 const sessionNameEl = byId("session-name");
 const sessionStatusEl = byId("session-status");
 const countdownEl = byId("countdown");
+const sessionToggle = byId("session-toggle") as HTMLButtonElement;
+const sessionLed = sessionBox.querySelector<HTMLElement>(".session-led");
 
 function harness(): ConnectHarness | undefined {
   return window.__battlelabConnectHarness;
@@ -102,6 +104,10 @@ function setState(state: UiState): void {
   connectBtn.disabled = state === "connecting";
   sessionBox.hidden = state !== "connected";
   setAmbient(state !== "connected");
+  if (state === "connected") {
+    setSessionLed("up");
+    applyBarDefault(); // pick collapsed/expanded for this viewport (unless the user chose)
+  }
 }
 
 function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
@@ -109,6 +115,83 @@ function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
   statusEl.dataset.kind = kind;
   sessionStatusEl.textContent = text;
 }
+
+// Collapsible connection bar (#684). On small screens the full bar overlaps the app toolbar, so
+// it collapses to just the status LED — a 44px toggle that lets toolbar taps pass through. A
+// manual choice is remembered for the session and wins over viewport changes; with no choice,
+// narrow viewports (≤800px) default to collapsed.
+const BAR_KEY = "battlelab.connect.bar.v1";
+let barCollapsed = false;
+// An explicit user choice this page view, tracked in memory independently of sessionStorage —
+// so the choice still wins over viewport changes even when storage is blocked (setItem throws).
+let barOverridden = false;
+
+// An explicit choice exists if the user toggled this view OR a prior choice is in storage.
+function hasBarOverride(): boolean {
+  return barOverridden || readBarOverride() !== null;
+}
+
+function readBarOverride(): boolean | null {
+  try {
+    const v = sessionStorage.getItem(BAR_KEY);
+    if (v === "collapsed") return true;
+    if (v === "expanded") return false;
+  } catch {
+    /* storage disabled — treat as no override */
+  }
+  return null; // no or unrecognised value → fall back to the viewport default
+}
+
+function updateToggleLabel(): void {
+  const cd = countdownEl.textContent;
+  const time = cd && cd !== "--:--" ? `, ${cd} left` : "";
+  const name = sessionNameEl.textContent || "session";
+  const label = `${barCollapsed ? "Expand" : "Collapse"} connection bar — ${name}${time}`;
+  sessionToggle.setAttribute("aria-label", label);
+  sessionToggle.title = label;
+}
+
+function renderBar(): void {
+  sessionBox.classList.toggle("collapsed", barCollapsed);
+  sessionToggle.setAttribute("aria-expanded", String(!barCollapsed));
+  updateToggleLabel();
+}
+
+function setBarCollapsed(collapsed: boolean, persist: boolean): void {
+  barCollapsed = collapsed;
+  if (persist) {
+    barOverridden = true; // an explicit choice — remembered in memory regardless of storage
+    try {
+      sessionStorage.setItem(BAR_KEY, collapsed ? "collapsed" : "expanded");
+    } catch {
+      /* storage disabled — the in-memory choice still applies for this view */
+    }
+  }
+  renderBar();
+}
+
+const barNarrowMq = window.matchMedia("(max-width: 800px)");
+function applyBarDefault(): void {
+  // The current view's explicit choice is authoritative — even over a stale-but-readable stored
+  // value (blocked writes leave old storage in place, so it must not overwrite the newer choice).
+  if (barOverridden) {
+    renderBar();
+    return;
+  }
+  const stored = readBarOverride();
+  setBarCollapsed(stored ?? barNarrowMq.matches, false); // else a stored choice, else viewport
+}
+// Follow viewport changes (resize / rotate across the 800px breakpoint) while there is no
+// explicit user choice — a stored OR in-memory collapsed/expanded stays authoritative.
+barNarrowMq.addEventListener("change", () => {
+  if (!hasBarOverride()) setBarCollapsed(barNarrowMq.matches, false);
+});
+
+function setSessionLed(kind: "up" | "warn" | "down"): void {
+  if (sessionLed) sessionLed.className = kind === "up" ? "session-led" : `session-led ${kind}`;
+}
+
+sessionToggle.addEventListener("click", () => setBarCollapsed(!barCollapsed, true));
 
 let countdownTimer: number | undefined;
 let expiryTimer: number | undefined;
@@ -201,6 +284,7 @@ function startCountdown(deadline: number): void {
     const m = String(Math.floor(left / 60)).padStart(2, "0");
     const s = String(left % 60).padStart(2, "0");
     countdownEl.textContent = `${m}:${s}`;
+    updateToggleLabel(); // keep the collapsed control's accessible name/tooltip current
     if (left <= 0) endSession(sessionExpiredMessage(), "expired");
   };
   tick();
@@ -298,6 +382,8 @@ async function connectApp(base: string, name: string, key: string): Promise<Moun
         if (evt.deadline) startCountdown(evt.deadline);
       } else if (evt.type === "warn") {
         setStatus(`session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`);
+        setSessionLed("warn"); // amber pulse so a collapsed bar still signals near-expiry
+        updateToggleLabel();
       } else if (evt.type === "expired") {
         endSession(sessionExpiredMessage(), "expired");
       } else if (evt.type === "closed") {

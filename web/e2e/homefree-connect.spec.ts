@@ -250,6 +250,10 @@ test("public connect signs in, canonicalizes the URL, stores credentials for the
   expect(parsed.expiresAt).toBeGreaterThan(Date.now() + 3_600_000);
   expect(parsed.expiresAt).toBeLessThanOrEqual(Date.now() + 14_400_000);
 
+  // #684: on narrow viewports the bar defaults collapsed, hiding Sign out — expand it first.
+  if (((await page.locator(".session-box").getAttribute("class")) ?? "").includes("collapsed")) {
+    await page.locator("#session-toggle").click();
+  }
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.locator(".connect-card")).toBeVisible();
   await expect(page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).resolves.toBeNull();
@@ -274,23 +278,189 @@ test("expired saved credentials are ignored", async ({ page, baseURL }) => {
   await expect(page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).resolves.toBeNull();
 });
 
-test("connected management floats at the upper center on mobile and desktop", async ({
-  page,
-  baseURL,
-}) => {
+async function streamConnected(
+  page: import("@playwright/test").Page,
+  baseURL: string | undefined,
+): Promise<void> {
   await stubSuccessfulConnect(page);
   await page.goto(publicConnectUrl(baseURL));
   await page.getByLabel("Console key").fill("nightjar-1010");
   await page.getByLabel("Access password").fill("stream-secret");
   await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page.locator(".session-box")).toBeVisible();
+}
 
-  const controls = page.locator(".session-box");
-  await expect(controls).toBeVisible();
-  const box = await controls.boundingBox();
-  const viewport = page.viewportSize();
-  expect(box).not.toBeNull();
-  expect(viewport).not.toBeNull();
-  expect(box!.y).toBeLessThan(28);
-  expect(Math.abs(box!.x + box!.width / 2 - viewport!.width / 2)).toBeLessThan(32);
-  expect(box!.width).toBeLessThanOrEqual(viewport!.width - 16);
+// #684: the connection bar collapses to a small status toggle so it doesn't block the app
+// toolbar on small screens. Default follows the viewport; a manual choice wins and persists.
+test("connection bar: collapses per viewport, the toggle flips it, expanded stays upper-center", async ({
+  page,
+  baseURL,
+}) => {
+  await streamConnected(page, baseURL);
+  const box = page.locator(".session-box");
+  const toggle = page.locator("#session-toggle");
+  const signout = page.getByRole("button", { name: /sign out/i });
+  const narrow = page.viewportSize()!.width <= 800;
+
+  // Default state follows the viewport when the user hasn't chosen.
+  if (narrow) {
+    await expect(box).toHaveClass(/collapsed/);
+    await expect(signout).toBeHidden();
+  } else {
+    await expect(box).not.toHaveClass(/collapsed/);
+    await expect(signout).toBeVisible();
+    const b = (await box.boundingBox())!;
+    const vw = page.viewportSize()!.width;
+    expect(b.y).toBeLessThan(28); // still floats at the upper center when expanded
+    expect(Math.abs(b.x + b.width / 2 - vw / 2)).toBeLessThan(32);
+  }
+
+  // The toggle is a real ≥44px touch target with a correct expanded state + accessible name.
+  const tb = (await toggle.boundingBox())!;
+  expect(tb.width).toBeGreaterThanOrEqual(40);
+  expect(tb.height).toBeGreaterThanOrEqual(40);
+  await expect(toggle).toHaveAttribute("aria-expanded", String(!narrow));
+  await expect(toggle).toHaveAttribute("aria-label", /connection bar/i);
+
+  // Toggling flips collapsed state and sign-out reachability.
+  await toggle.click();
+  if (narrow) {
+    await expect(box).not.toHaveClass(/collapsed/);
+    await expect(signout).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  } else {
+    await expect(box).toHaveClass(/collapsed/);
+    await expect(signout).toBeHidden();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  }
+});
+
+test("collapsed connection bar is click-through beside the toggle and persists the choice", async ({
+  page,
+  baseURL,
+}) => {
+  await streamConnected(page, baseURL);
+  const box = page.locator(".session-box");
+  const toggle = page.locator("#session-toggle");
+
+  // Deterministically make an explicit "collapsed" choice from either viewport default.
+  if (((await box.getAttribute("class")) ?? "").includes("collapsed")) await toggle.click();
+  await expect(box).not.toHaveClass(/collapsed/);
+  await toggle.click();
+  await expect(box).toHaveClass(/collapsed/);
+
+  // The collapsed footprint is a small chip, not the full-width bar…
+  const bb = (await box.boundingBox())!;
+  expect(bb.width).toBeLessThan(140);
+  // …and a point just beside it resolves to the app underneath, not the bar (chrome is
+  // pointer-events:none so toolbar controls stay clickable).
+  const hit = await page.evaluate(
+    ({ x, y }) => (document.elementFromPoint(x, y)?.closest(".session-box") ? "bar" : "through"),
+    { x: bb.x + bb.width + 40, y: bb.y + bb.height / 2 },
+  );
+  expect(hit).toBe("through");
+
+  // The explicit choice is persisted in its own key, so a later reconnect restores it via
+  // applyBarDefault() (which reads the override before falling back to the viewport default).
+  expect(await page.evaluate(() => sessionStorage.getItem("battlelab.connect.bar.v1"))).toBe(
+    "collapsed",
+  );
+});
+
+test("connection bar default tracks viewport resize while no explicit choice is set", async ({
+  page,
+  baseURL,
+}) => {
+  await streamConnected(page, baseURL);
+  const box = page.locator(".session-box");
+
+  // No explicit choice yet → the default follows the viewport across the 800px breakpoint
+  // (desktop→mobile resize/rotate must auto-collapse, per #684's contract).
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(box).not.toHaveClass(/collapsed/);
+  await page.setViewportSize({ width: 700, height: 900 });
+  await expect(box).toHaveClass(/collapsed/);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(box).not.toHaveClass(/collapsed/);
+
+  // An explicit choice wins over later viewport changes.
+  await page.locator("#session-toggle").click(); // explicitly collapse at desktop width
+  await expect(box).toHaveClass(/collapsed/);
+  await page.setViewportSize({ width: 1400, height: 900 }); // widen — the choice must stick
+  await expect(box).toHaveClass(/collapsed/);
+});
+
+test("a manual collapse choice survives a resize even when sessionStorage is blocked", async ({
+  page,
+  baseURL,
+}) => {
+  // #684: with the bar key's setItem throwing (storage blocked), the choice is only in memory —
+  // the resize listener must still treat it as an override and not revert to the viewport default.
+  await page.addInitScript(() => {
+    const orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === "battlelab.connect.bar.v1") throw new DOMException("blocked", "SecurityError");
+      return orig.call(this, k, v);
+    };
+  });
+  await streamConnected(page, baseURL);
+  const box = page.locator(".session-box");
+  const toggle = page.locator("#session-toggle");
+
+  // Make an explicit collapse choice at desktop width (nothing gets persisted — storage throws).
+  await page.setViewportSize({ width: 1280, height: 800 });
+  if (((await box.getAttribute("class")) ?? "").includes("collapsed")) await toggle.click();
+  await expect(box).not.toHaveClass(/collapsed/);
+  await toggle.click();
+  await expect(box).toHaveClass(/collapsed/);
+
+  // A breakpoint round-trip must NOT revert the in-memory choice.
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(box).toHaveClass(/collapsed/);
+});
+
+test("a newer in-memory choice beats a stale readable stored value on reconnect", async ({
+  page,
+  baseURL,
+}) => {
+  // #684: storage holds an old value ('collapsed') but writes are blocked; the user then makes the
+  // opposite explicit choice (expand) in-memory. On reconnect, applyBarDefault must honour the
+  // in-memory choice, not overwrite it with the stale stored value.
+  await page.addInitScript(() => {
+    const orig = Storage.prototype.setItem;
+    let seeded = false;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === "battlelab.connect.bar.v1") {
+        if (!seeded) {
+          seeded = true;
+          return orig.call(this, k, v); // allow the one seed write, block the rest
+        }
+        throw new DOMException("blocked", "SecurityError");
+      }
+      return orig.call(this, k, v);
+    };
+    sessionStorage.setItem("battlelab.connect.bar.v1", "collapsed"); // stale stored value
+  });
+  await streamConnected(page, baseURL);
+  const box = page.locator(".session-box");
+  const toggle = page.locator("#session-toggle");
+
+  // The stored 'collapsed' applies on connect; explicitly EXPAND (the write throws → memory only).
+  await expect(box).toHaveClass(/collapsed/);
+  await toggle.click();
+  await expect(box).not.toHaveClass(/collapsed/);
+  expect(await page.evaluate(() => sessionStorage.getItem("battlelab.connect.bar.v1"))).toBe(
+    "collapsed", // storage stayed stale — the write was blocked
+  );
+
+  // Sign out (reachable now it's expanded) and reconnect in the same page view.
+  await page.getByRole("button", { name: /sign out/i }).click();
+  await expect(page.locator(".connect-card")).toBeVisible();
+  await page.getByLabel("Console key").fill("nightjar-1010");
+  await page.getByLabel("Access password").fill("stream-secret");
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(box).toBeVisible();
+  // The newer in-memory 'expanded' must win over the stale stored 'collapsed'.
+  await expect(box).not.toHaveClass(/collapsed/);
 });
