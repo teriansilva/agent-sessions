@@ -11,7 +11,7 @@
 **One web app that organizes every session from Claude Code, Codex, opencode, Gemini, and Antigravity**, with a
 real terminal that survives reboots and deploys — drive your whole fleet from a laptop or a phone.
 
-![license: MIT](https://img.shields.io/badge/license-MIT-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity-ffb000)
+![license: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity-ffb000)
 
 ### Why
 
@@ -239,4 +239,10 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the full reference in [`docs/refere
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Business Source License 1.1 (BSL 1.1) — see [`LICENSE`](LICENSE). The source is
+available and auditable, and you may self-host it freely for your own use.
+What's **not** granted is offering the Licensed Work to third parties on a
+hosted, managed, or embedded basis that competes with the Licensor's products
+(such as BattleLab Cloud / Pro) — that requires a separate commercial license.
+Each released version converts to the Apache License 2.0 four years after its
+release (Change Date `2030-07-15` for the current version).

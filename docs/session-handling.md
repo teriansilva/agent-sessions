@@ -335,7 +335,7 @@ systemd-run --user --scope --collect --quiet \
 | `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=512` | Space-separated `Key=Value` systemd properties applied per scope. Strictly validated (`Key=Value` charset) so env contents can never inject argv tokens. Memory limits are deliberately not defaulted — opt in after verifying controller delegation on staging. |
 | `AGENT_SESSIONS_SYSTEMD_RUN_BIN` | `systemd-run` | Override for tests/unusual installs. |
 
-### Fallback ladder (OSS installs, non-systemd hosts)
+### Fallback ladder (self-hosted installs, non-systemd hosts)
 
 A session is never refused because isolation is unavailable:
 

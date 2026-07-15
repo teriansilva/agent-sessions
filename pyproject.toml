@@ -7,10 +7,10 @@ name = "agent-sessions"
 dynamic = ["version"]
 description = "BattleLab — a mobile-first, self-hostable web organizer for your AI-coding CLI sessions (Claude Code, opencode, Codex, Gemini, Antigravity)."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "BUSL-1.1" }
 requires-python = ">=3.11"
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Framework :: FastAPI",
     "Operating System :: POSIX",
