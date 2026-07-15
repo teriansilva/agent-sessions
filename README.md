@@ -8,24 +8,32 @@
   <img src="docs/banner.png" alt="BattleLab — Command &amp; Code: a self-hosted command deck for your AI-coding agents" width="900">
 </p>
 
-**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, and Antigravity**, with a
-real terminal that survives reboots and deploys — drive your whole fleet from a laptop or a phone.
+**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, Antigravity — plus plain shells**,
+with a real terminal that survives reboots and deploys, and an end-to-end-encrypted blind relay so you can drive your
+whole fleet from a laptop or your phone.
 
 ![license: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity-ffb000)
 
 ### Why
 
-- **Every agent, one place.** A live sidebar of all your sessions across four engines, grouped by
+- **Every agent, one place.** A live sidebar of all your sessions across every engine, grouped by
   project, newest-first, with per-row engine badges + filtering.
 - **Persistent terminals.** Each session runs under its own detached PTY (`dtach`) — reattach after
   a tab close, reboot, or app upgrade and the conversation is right where you left it.
 - **Console-style scroll-up.** Scroll back into clean, rendered history (markdown + `●` turn markers)
-  for *all four* engines — not a width-fragile byte replay.
+  for **every** engine — not a width-fragile byte replay.
 - **Pulse + Ask.** An AI-curated overview of recent work across every agent — and an embedded
   chat that finds past sessions from a plain-language question ("which session fixed the ws
   reconnect bug?") with a one-tap jump back in. Both reuse your own OpenAI-compatible endpoint
   (configured in Settings → AI Review); session content is sent nowhere else.
-- **Start new sessions** for Claude, Codex, and opencode straight from the picker.
+- **AI review + auto-sort.** An AI reviewer writes a one-line summary on each session and flags the
+  ones that need you; AI auto-sort files new sessions into the right project. Both reuse the same
+  self-hosted endpoint — nothing leaves your box you didn't send.
+- **Home Free — reach your box from anywhere.** Your box dials *out* to a blind relay; open the
+  Connect page in any browser and drive the full app from your phone. End-to-end encrypted
+  (X25519 → AES-256-GCM); the relay only ever sees ciphertext. No VPN, no port-forwarding.
+- **Start new sessions** for any installed engine straight from the picker — a first-run setup
+  wizard wires up your AI endpoint (model dropdown + live validation) and optional 2FA.
 - **Mobile-first.** A touch-ready terminal with a real compose bar, control keys, and image paste.
 - **One-line, rootless install.** No root, no system daemon; atomic releases with one-step rollback
   and an opt-in self-updater.
