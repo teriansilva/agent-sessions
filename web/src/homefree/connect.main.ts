@@ -1,5 +1,7 @@
 // Browser entry for the Home Free connect page (loaded by connect.html). Thin DOM
 // glue over the app-mode session core in connect.ts. Owns the public-page UI state,
+// the single-use human-verification gate (#690 — every attempt, including a reload with
+// restored credentials, requires a fresh press-and-hold before any network side effect),
 // relay-deadline-derived sessionStorage credential restore (4-hour fallback), sign-out cleanup, and connected URL
 // canonicalization. This page is standalone and NOT linked from the app — it exists
 // for reaching a box through the relay.
@@ -28,6 +30,8 @@ interface ConnectHarness {
   makeWebSocket?: (url: string) => SocketLike;
   mountApp?: typeof mountApp;
   now?: () => number;
+  /** Human-gate hold duration override (#690) — tests shorten it; production uses the default. */
+  holdMs?: number;
 }
 
 declare global {
@@ -64,6 +68,13 @@ const sessionStatusEl = byId("session-status");
 const countdownEl = byId("countdown");
 const sessionToggle = byId("session-toggle") as HTMLButtonElement;
 const sessionLed = sessionBox.querySelector<HTMLElement>(".session-led");
+const gateEl = byId("verify-gate");
+const gateHoldBtn = byId("gate-hold") as HTMLButtonElement;
+const gateHoldLabel = byId("gate-hold-label");
+const gateMeter = byId("gate-meter");
+const gateFill = byId("gate-fill");
+const gateStateLabel = byId("gate-state-label");
+const gatePct = byId("gate-pct");
 
 function harness(): ConnectHarness | undefined {
   return window.__battlelabConnectHarness;
@@ -101,7 +112,7 @@ function setAmbient(on: boolean): void {
 
 function setState(state: UiState): void {
   body.dataset.state = state;
-  connectBtn.disabled = state === "connecting";
+  syncConnectEnabled();
   sessionBox.hidden = state !== "connected";
   setAmbient(state !== "connected");
   if (state === "connected") {
@@ -109,6 +120,132 @@ function setState(state: UiState): void {
     applyBarDefault(); // pick collapsed/expanded for this viewport (unless the user chose)
   }
 }
+
+// ── Human-verification gate (#690) ─────────────────────────────────────────────
+// Connecting requires a deliberate press-and-hold gesture first. This is a browser-side
+// deterrent against scripted/agent use of the connect page, NOT server-verifiable proof of
+// humanity — the relay cannot tell the difference; a provider-backed check (e.g. Turnstile)
+// can replace this widget later via the same reset()/consume() seam. Verification is
+// single-use: consume() succeeds once, and every error/close/expiry re-gates the next attempt.
+
+const HOLD_MS_DEFAULT = 1500;
+
+type GateState = "idle" | "holding" | "verified";
+let gateState: GateState = "idle";
+let holdStartedAt = 0; // performance.now() timestamp — monotonic, independent of harness now()
+let holdTimer: number | undefined;
+let holdKeyDown = false; // a genuine sustained keydown; auto-repeat must not re-trigger
+
+function gateHoldMs(): number {
+  return harness()?.holdMs ?? HOLD_MS_DEFAULT;
+}
+
+function gateVerified(): boolean {
+  return gateState === "verified";
+}
+
+function syncConnectEnabled(): void {
+  connectBtn.disabled = body.dataset.state === "connecting" || !gateVerified();
+}
+
+function renderGate(pct: number): void {
+  gateEl.dataset.state = gateState;
+  gateFill.style.width = `${pct}%`;
+  gateMeter.setAttribute("aria-valuenow", String(Math.round(pct)));
+  gatePct.textContent = `${Math.round(pct)}%`;
+  // Not a toggle (activation is one-way), so no aria-pressed: completion is
+  // announced by the progressbar/status text, and a verified control is no
+  // longer actionable — disable it until the verification is consumed.
+  gateHoldBtn.disabled = gateState === "verified";
+  const label =
+    gateState === "verified" ? "Verified — human" : gateState === "holding" ? "Verifying…" : "Hold to verify";
+  gateStateLabel.textContent = label;
+  gateHoldLabel.textContent = gateState === "verified" ? "Verified — human" : "Hold to verify";
+  syncConnectEnabled();
+}
+
+function stopHoldTimer(): void {
+  if (holdTimer) window.clearInterval(holdTimer);
+  holdTimer = undefined;
+}
+
+function gateTick(): void {
+  const pct = Math.min(100, ((performance.now() - holdStartedAt) / gateHoldMs()) * 100);
+  if (pct >= 100) {
+    stopHoldTimer();
+    gateState = "verified";
+    renderGate(100);
+    setStatus("verified — press Connect to continue", "ok");
+    return;
+  }
+  renderGate(pct);
+}
+
+function startHold(): void {
+  if (gateState !== "idle") return;
+  gateState = "holding";
+  holdStartedAt = performance.now();
+  renderGate(0);
+  // An interval, not requestAnimationFrame: the meter is state, not decoration, so it must
+  // keep working under prefers-reduced-motion (where this page starts zero rAF loops).
+  holdTimer = window.setInterval(gateTick, 50);
+}
+
+// Any interruption of the sustained press is an explicit, honest transition back to idle.
+// The key latch is cleared unconditionally: a cancellation whose keyup lands elsewhere
+// (blur, hidden tab, focus transfer) must never leave future keyboard holds ignored.
+function cancelHold(): void {
+  holdKeyDown = false;
+  if (gateState !== "holding") return;
+  stopHoldTimer();
+  gateState = "idle";
+  renderGate(0);
+}
+
+function resetGate(): void {
+  stopHoldTimer();
+  holdKeyDown = false;
+  gateState = "idle";
+  renderGate(0);
+}
+
+/** Single-use: succeeds exactly once per completed hold, then re-gates. */
+function consumeVerification(): boolean {
+  if (gateState !== "verified") return false;
+  resetGate();
+  return true;
+}
+
+gateHoldBtn.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  startHold();
+});
+gateHoldBtn.addEventListener("pointerup", cancelHold);
+gateHoldBtn.addEventListener("pointercancel", cancelHold);
+gateHoldBtn.addEventListener("pointerleave", cancelHold);
+// Long-press on touch would otherwise open the context menu mid-hold.
+gateHoldBtn.addEventListener("contextmenu", (event) => event.preventDefault());
+gateHoldBtn.addEventListener("keydown", (event) => {
+  if (event.key !== " " && event.key !== "Enter") return;
+  event.preventDefault(); // no scroll-on-space, no implicit submit
+  if (event.repeat || holdKeyDown) return; // OS auto-repeat is not a sustained press
+  holdKeyDown = true;
+  startHold();
+});
+// The release can land anywhere (focus may have moved mid-hold), so a keyboard-initiated
+// hold listens for its keyup globally — the button-scoped listener would miss it and the
+// timer would run on to "verified" after the physical key was already released.
+window.addEventListener("keyup", (event) => {
+  if (event.key !== " " && event.key !== "Enter") return;
+  if (!holdKeyDown) return; // not a gate-initiated key hold — ignore typing elsewhere
+  cancelHold();
+});
+// Focus leaving the control mid-hold is an interruption too (Tab-away with the key down).
+gateHoldBtn.addEventListener("focusout", cancelHold);
+window.addEventListener("blur", cancelHold);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) cancelHold();
+});
 
 function setStatus(text: string, kind: "info" | "error" | "ok" = "info"): void {
   statusEl.textContent = text;
@@ -296,7 +433,7 @@ function resetForm(clearIdentity = false): void {
     nameInput.value = "";
     keyInput.value = "";
   }
-  connectBtn.disabled = false;
+  resetGate(); // every error/close/expiry/sign-out re-gates the next attempt (#690)
   setState("signed-out");
 }
 
@@ -344,10 +481,17 @@ async function connect(): Promise<void> {
     setStatus("console key and access password are required", "error");
     return;
   }
+  // Consume only after local validation, immediately before the first network side effect —
+  // an invalid form must not waste the single-use verification, and a double submit
+  // cannot reuse it. Nothing below may touch the network unless this succeeds.
+  if (!consumeVerification()) {
+    setStatus("hold to verify you're human, then press Connect", "error");
+    return;
+  }
 
   setState("connecting");
   sessionNameEl.textContent = `Connecting to ${name}`;
-  setStatus("solving human verification…");
+  setStatus("solving the relay challenge…");
 
   try {
     activeApp = await connectApp(base, name, key);
@@ -412,8 +556,10 @@ howModal.addEventListener("click", (event) => {
 
 setAmbient(true);
 applyPublicRelayDefault();
+renderGate(0); // Connect starts disabled until a human verifies (#690)
 const restored = restoreSavedSession();
 if (restored) {
-  setStatus("restoring saved connect session…");
-  void connect();
+  // Saved credentials prefill the form but never auto-connect: the gate is per-attempt, so
+  // a reload must stop at a fresh unverified gate — no ALTCHA fetch, no WebSocket.
+  setStatus("session restored — hold to verify you're human, then press Connect");
 }

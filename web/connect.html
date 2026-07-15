@@ -323,6 +323,93 @@
         color: var(--status-up);
       }
 
+      /* ---- Human-verification gate (#690) ------------------------------------------------ */
+      /* A deliberate-gesture gate: Connect stays disabled until the hold completes. The meter
+       * fill is state, not decoration — it must stay visible under reduced motion. */
+      .verify-gate {
+        position: relative;
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.022);
+        padding: 14px 14px 12px;
+      }
+      .gate-title {
+        margin: 0 0 3px;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--text-1);
+      }
+      .gate-hint {
+        margin: 0 0 12px;
+        color: var(--text-2); /* ≥4.5:1 on the card — --text-3 fails AA at this size */
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      .gate-hold {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        width: 100%;
+        min-height: 48px;
+        border: 1px solid var(--accent);
+        border-radius: 0;
+        background: transparent;
+        color: var(--accent);
+        font-family: inherit;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: none;
+      }
+      .gate-led {
+        width: 6px;
+        height: 6px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      .gate-meter {
+        position: relative;
+        margin-top: 10px;
+        height: 6px;
+        border: 1px solid var(--line);
+        background: rgba(0, 0, 0, 0.4);
+      }
+      .gate-fill {
+        position: absolute;
+        inset: 0;
+        width: 0%;
+        background: var(--accent);
+      }
+      .gate-meter-label {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 5px;
+        color: var(--text-2); /* ≥4.5:1 on the card — --text-3 fails AA at this size */
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .gate-meter-label b {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      /* Status colour is load-bearing: amber = verifying, green = verified (docs/design.md). */
+      .verify-gate[data-state="verified"] .gate-hold {
+        border-color: var(--status-up);
+        color: var(--status-up);
+        cursor: default;
+        opacity: 1; /* disabled-but-done: keep the green state fully legible */
+      }
+      .verify-gate[data-state="verified"] .gate-led { background: var(--status-up); }
+      .verify-gate[data-state="verified"] .gate-fill { background: var(--status-up); }
+      .verify-gate[data-state="verified"] .gate-meter-label b { color: var(--status-up); }
+
       /* ---- "How does it work?" modal ----------------------------------------------------- */
       #how-modal {
         position: relative; /* anchors the corner brackets outside the scrolling body */
@@ -701,14 +788,49 @@
             </label>
           </details>
           <div id="status" role="status" aria-live="polite">
-            Enter your console key and access password.
+            Enter your console key and access password, then hold to verify you're human.
+          </div>
+          <div class="verify-gate" id="verify-gate" data-state="idle">
+            <span class="hud-cnr tl" aria-hidden="true"></span>
+            <span class="hud-cnr tr" aria-hidden="true"></span>
+            <span class="hud-cnr bl" aria-hidden="true"></span>
+            <span class="hud-cnr br" aria-hidden="true"></span>
+            <h2 class="gate-title" id="gate-title">Are you human?</h2>
+            <p class="gate-hint" id="gate-hint">
+              Press and hold to verify — remote connect is for people, not scripts. Automated
+              clients are not allowed through the relay.
+            </p>
+            <button
+              id="gate-hold"
+              class="gate-hold"
+              type="button"
+              aria-describedby="gate-hint"
+            >
+              <span class="gate-led" aria-hidden="true"></span>
+              <span id="gate-hold-label">Hold to verify</span>
+            </button>
+            <div
+              id="gate-meter"
+              class="gate-meter"
+              role="progressbar"
+              aria-labelledby="gate-title"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div class="gate-fill" id="gate-fill"></div>
+            </div>
+            <div class="gate-meter-label">
+              <span id="gate-state-label" aria-live="polite">Hold to verify</span>
+              <b id="gate-pct">0%</b>
+            </div>
           </div>
           <div class="actions">
             <p class="warning">
               The access password grants full control of that machine. Never enter one given to
               you by someone who contacted you.
             </p>
-            <button id="connect" class="primary shine" type="submit">Connect</button>
+            <button id="connect" class="primary shine" type="submit" disabled>Connect</button>
           </div>
         </form>
       </section>

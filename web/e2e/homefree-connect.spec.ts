@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { verifyHuman } from "./connect-helpers";
+
 // #579 app-only connect: the public connect page no longer exposes the recovery terminal pane.
 // Real browser guard because this is page structure/layout, not a jsdom-only contract.
 test("Home Free connect page exposes the app root, not a recovery terminal pane", async ({ page }) => {
@@ -43,9 +45,12 @@ test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchab
     .poll(() => canvas.evaluate((c: HTMLCanvasElement) => c.width > 0 && c.height > 0))
     .toBe(true);
 
-  // Corner-bracket frame, not a rounded box.
-  await expect(page.locator(".connect-card .hud-cnr")).toHaveCount(4);
+  // Corner-bracket frame, not a rounded box. The card owns exactly four brackets of its own;
+  // the human-verification gate (#690) nested inside carries its own four.
+  await expect(page.locator(".connect-card > .hud-cnr")).toHaveCount(4);
+  await expect(page.locator("#verify-gate > .hud-cnr")).toHaveCount(4);
   await expect(page.locator(".connect-card")).toHaveCSS("border-radius", "0px");
+  await expect(page.locator("#verify-gate")).toHaveCSS("border-radius", "0px");
 
   // The CTA opts into the ambient glitch, and clicking it still hits the button.
   await expect(page.locator("#connect")).toHaveClass(/\bshine\b/);
@@ -165,6 +170,7 @@ function publicConnectUrl(baseURL: string | undefined): string {
 async function stubSuccessfulConnect(page: import("@playwright/test").Page): Promise<void> {
   await page.addInitScript(() => {
     window.__battlelabConnectHarness = {
+      holdMs: 250, // keep the human-gate hold short in tests
       makeWebSocket: () => ({
         binaryType: "arraybuffer",
         onopen: null,
@@ -236,6 +242,7 @@ test("public connect signs in, canonicalizes the URL, stores credentials for the
   await expect(page.getByLabel("Relay base URL")).toBeHidden();
   await page.getByLabel("Console key").fill("viper-8231");
   await page.getByLabel("Access password").fill("stream-secret");
+  await verifyHuman(page);
   await page.getByRole("button", { name: "Connect" }).click();
 
   await expect(page.locator(".session-box")).toBeVisible();
@@ -286,6 +293,7 @@ async function streamConnected(
   await page.goto(publicConnectUrl(baseURL));
   await page.getByLabel("Console key").fill("nightjar-1010");
   await page.getByLabel("Access password").fill("stream-secret");
+  await verifyHuman(page);
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.locator(".session-box")).toBeVisible();
 }
@@ -459,6 +467,7 @@ test("a newer in-memory choice beats a stale readable stored value on reconnect"
   await expect(page.locator(".connect-card")).toBeVisible();
   await page.getByLabel("Console key").fill("nightjar-1010");
   await page.getByLabel("Access password").fill("stream-secret");
+  await verifyHuman(page); // sign-out re-gated the next attempt
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(box).toBeVisible();
   // The newer in-memory 'expanded' must win over the stale stored 'collapsed'.
