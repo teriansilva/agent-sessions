@@ -397,6 +397,11 @@
     padding: 6px 10px;
     font-size: 11px;
   }
+  /* #692: the AI step's footer carries five controls (later / Back / Save & validate /
+     Next + spacer); let them wrap instead of forcing horizontal overflow at ≤800px. */
+  .footRow {
+    flex-wrap: wrap;
+  }
 }
 
 /* 2FA enrollment (Secure your deck step, #675). */

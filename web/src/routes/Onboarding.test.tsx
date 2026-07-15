@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-import { ConfigCtx } from "../app/config";
-import { api } from "../lib/api";
+import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
+import { api, ApiError } from "../lib/api";
 import type { AppConfig } from "../types/api";
 import { Onboarding } from "./Onboarding";
 
@@ -16,6 +16,14 @@ vi.mock("../lib/api", () => ({
     setPrefs: vi.fn(),
     completeOnboarding: vi.fn(),
     createProject: vi.fn(),
+    aiReviewModels: vi.fn(),
+  },
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(message: string, status = 0) {
+      super(message);
+      this.status = status;
+    }
   },
 }));
 
@@ -44,6 +52,14 @@ async function finishTourToLaunch() {
   await userEvent.click(screen.getByRole("button", { name: /finish tour/i })); // → launch
 }
 
+// Welcome → Security → Connected agents → Set up your AI.
+async function gotoAiStep() {
+  await userEvent.click(screen.getByRole("button", { name: /get started/i })); // → security
+  await userEvent.click(screen.getByRole("button", { name: /^continue$/i })); // → agents
+  await screen.findByText("claude");
+  await userEvent.click(screen.getByRole("button", { name: /^next$/i })); // → ai
+}
+
 function cfg(over: Partial<AppConfig> = {}): AppConfig {
   return {
     csrf: "t",
@@ -54,12 +70,14 @@ function cfg(over: Partial<AppConfig> = {}): AppConfig {
   } as AppConfig;
 }
 
-function renderWizard(onClose = vi.fn(), config = cfg()) {
+function renderWizard(onClose = vi.fn(), config = cfg(), refresh = vi.fn()) {
   render(
     <MemoryRouter>
-      <ConfigCtx.Provider value={config}>
-        <Onboarding mode="wizard" onClose={onClose} />
-      </ConfigCtx.Provider>
+      <ConfigRefreshCtx.Provider value={refresh}>
+        <ConfigCtx.Provider value={config}>
+          <Onboarding mode="wizard" onClose={onClose} />
+        </ConfigCtx.Provider>
+      </ConfigRefreshCtx.Provider>
     </MemoryRouter>,
   );
   return onClose;
@@ -78,6 +96,7 @@ beforeEach(() => {
   });
   vi.mocked(api.fsDirs).mockReset().mockResolvedValue({ path: "/home/u", home: "/home/u", dirs: [] });
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
+  vi.mocked(api.aiReviewModels).mockReset().mockResolvedValue({ models: [] });
   vi.mocked(api.completeOnboarding).mockReset().mockResolvedValue({});
   vi.mocked(api.createProject).mockReset().mockResolvedValue({
     id: "p1",
@@ -172,19 +191,134 @@ test("an explicitly chosen folder wins over the discovered-folder fallback — #
   );
 });
 
-test("AI step saves via the ai_review prefs contract (key write-only)", async () => {
-  renderWizard();
-  await userEvent.click(screen.getByRole("button", { name: /get started/i }));
-  await userEvent.click(screen.getByRole("button", { name: /^continue$/i })); // through Security
-  await screen.findByText("claude");
-  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
-  // AI step.
+test("AI step: Save & validate persists the endpoint (blank model omitted) then refreshes config (#692)", async () => {
+  const refresh = vi.fn();
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://api.openai.com/v1", model: "", configured: true },
+  });
+  renderWizard(vi.fn(), cfg(), refresh);
+  await gotoAiStep();
   await userEvent.type(screen.getByPlaceholderText(/api\.openai\.com/i), "https://api.openai.com/v1");
   await userEvent.type(screen.getByPlaceholderText(/never echoed/i), "sk-secret");
   await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  // Blank model is NOT sent; the key is (write-only). Then the config context is refreshed
+  // so Settings → AI reflects the wizard's save without a page reload (the reported bug).
   expect(api.setPrefs).toHaveBeenCalledWith({
-    ai_review: { base_url: "https://api.openai.com/v1", api_key: "sk-secret", model: "" },
+    ai_review: { base_url: "https://api.openai.com/v1", api_key: "sk-secret" },
   });
+  await waitFor(() => expect(refresh).toHaveBeenCalled());
+});
+
+test("AI step: a blank API key is omitted so a stored key is preserved (#692)", async () => {
+  // Re-run with an already-configured endpoint (api_key_set): leaving the key blank must NOT
+  // send api_key="" — that would risk clobbering the stored secret.
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://api.openai.com/v1", model: "", configured: true },
+  });
+  renderWizard(
+    vi.fn(),
+    cfg({ ai_review: { base_url: "https://api.openai.com/v1", model: "", api_key_set: true, configured: true } } as Partial<AppConfig>),
+  );
+  await gotoAiStep();
+  await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    ai_review: { base_url: "https://api.openai.com/v1" },
+  });
+});
+
+test("AI step: a successful /models probe turns the Model field into a dropdown (#692)", async () => {
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://api.openai.com/v1", model: "", configured: true },
+  });
+  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: ["gpt-4o", "o3-mini"] });
+  const refresh = vi.fn();
+  renderWizard(vi.fn(), cfg(), refresh);
+  await gotoAiStep();
+  await userEvent.type(screen.getByPlaceholderText(/api\.openai\.com/i), "https://api.openai.com/v1");
+  await userEvent.type(screen.getByPlaceholderText(/never echoed/i), "sk-secret");
+  await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  // The Model control becomes a combobox populated from the endpoint's /models.
+  const combo = await screen.findByRole("combobox", { name: /model/i });
+  expect(within(combo).getByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
+  expect(within(combo).getByRole("option", { name: "o3-mini" })).toBeInTheDocument();
+  expect(screen.getByText(/endpoint validated — 2 models/i)).toBeInTheDocument();
+  // Picking a model persists it as its own partial patch + refreshes config.
+  await userEvent.selectOptions(combo, "o3-mini");
+  expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { model: "o3-mini" } });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+});
+
+test("AI step: an empty model list keeps free-text entry and never blocks setup (#692)", async () => {
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://ollama.local/v1", model: "", configured: true },
+  });
+  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: [] });
+  renderWizard();
+  await gotoAiStep();
+  await userEvent.type(screen.getByPlaceholderText(/api\.openai\.com/i), "https://ollama.local/v1");
+  await userEvent.type(screen.getByPlaceholderText(/never echoed/i), "sk-x");
+  await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  expect(await screen.findByText(/doesn.t list models/i)).toBeInTheDocument();
+  // Still a free-text field (no combobox), and Next is available — setup isn't blocked.
+  expect(screen.getByRole("textbox", { name: /model/i })).toBeInTheDocument();
+  expect(screen.queryByRole("combobox", { name: /model/i })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^next$/i })).toBeEnabled();
+});
+
+test("AI step: a model typed in the free-text fallback persists on blur (#692 / PR #693)", async () => {
+  // Hermes-flagged regression: with no model list, a typed model must still be written. The blur
+  // handler compares against the PERSISTED model (not the live input, which onChange has synced),
+  // so committing the draft actually sends the { ai_review: { model } } patch.
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://ollama.local/v1", model: "", configured: true },
+  });
+  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: [] }); // no list → free-text fallback
+  renderWizard();
+  await gotoAiStep();
+  await userEvent.type(screen.getByPlaceholderText(/api\.openai\.com/i), "https://ollama.local/v1");
+  await userEvent.type(screen.getByPlaceholderText(/never echoed/i), "sk-x");
+  await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  const modelInput = await screen.findByRole("textbox", { name: /model/i });
+  await userEvent.type(modelInput, "llama-3.1-70b-instruct");
+  await userEvent.tab(); // blur commits the draft
+  expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { model: "llama-3.1-70b-instruct" } });
+});
+
+test("AI step: clearing a seeded free-text model persists the empty value (#692 / PR #693)", async () => {
+  // Hermes-flagged follow-up: on a re-run with an existing model, deleting it and blurring must
+  // write { model: "" } — not silently keep the old server-side model.
+  renderWizard(
+    vi.fn(),
+    cfg({
+      ai_review: {
+        base_url: "https://ollama.local/v1",
+        model: "llama-3",
+        api_key_set: true,
+        configured: true,
+      },
+    } as Partial<AppConfig>),
+  );
+  await gotoAiStep();
+  const modelInput = screen.getByRole("textbox", { name: /model/i });
+  expect(modelInput).toHaveValue("llama-3"); // seeded from config
+  await userEvent.clear(modelInput);
+  await userEvent.tab(); // blur commits the cleared value
+  expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { model: "" } });
+});
+
+test("AI step: a validation error surfaces the gateway message + keeps free-text (#692)", async () => {
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    ai_review: { base_url: "https://api.openai.com/v1", model: "", configured: true },
+  });
+  vi.mocked(api.aiReviewModels).mockRejectedValue(new ApiError("401 Unauthorized", 401));
+  renderWizard();
+  await gotoAiStep();
+  await userEvent.type(screen.getByPlaceholderText(/api\.openai\.com/i), "https://api.openai.com/v1");
+  await userEvent.type(screen.getByPlaceholderText(/never echoed/i), "sk-bad");
+  await userEvent.click(screen.getByRole("button", { name: /save & validate/i }));
+  expect(await screen.findByText(/401 Unauthorized/i)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: /model/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^next$/i })).toBeEnabled();
 });
 
 test("tour mode shows the slideshow and Done closes it", async () => {
