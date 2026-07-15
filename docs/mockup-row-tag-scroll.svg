@@ -1,0 +1,148 @@
+<svg width="1180" height="660" viewBox="0 0 1180 660" xmlns="http://www.w3.org/2000/svg"
+     font-family="-apple-system, 'Segoe UI', system-ui, sans-serif">
+  <!--
+    Session-list row: custom tag + auto-scroll on selection.
+    Feature 1 — a per-session custom tag (free text or emoji) renders in the accent
+      colour, before a "·" separator and the AI-generated one-line summary. Untagged
+      rows are unchanged. Stored in the metadata sidecar like rename/sticky.
+    Feature 2 — when a row is SELECTED, if the title and/or description overflow the
+      sidebar width they auto-scroll horizontally back and forth (ping-pong marquee)
+      so the full text is readable. Reduced-motion falls back to the native title
+      tooltip. Only the selected row animates.
+    Columns: DARK / LIGHT / DETAIL. Real index.css token hex.
+  -->
+  <rect width="1180" height="660" fill="#08090b"/>
+  <text x="40" y="38" fill="#e8e9ec" font-size="19" font-weight="700">agent-sessions — custom row tag + auto-scroll the selected row</text>
+  <text x="40" y="60" fill="#a7abb3" font-size="13">A per-session tag (text or emoji) sits before the AI description; the selected row marquees its title + description back and forth when they don't fit.</text>
+
+  <!-- column headers -->
+  <text x="200" y="98" fill="#a7abb3" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">DARK</text>
+  <text x="600" y="98" fill="#a7abb3" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">LIGHT</text>
+  <text x="970" y="98" fill="#a7abb3" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">DETAIL</text>
+
+  <!-- =================================================================== -->
+  <!-- BAND 1 — CUSTOM TAG                                                  -->
+  <!-- =================================================================== -->
+  <text x="40" y="128" fill="#ffb000" font-size="11" font-weight="700" letter-spacing="1.5">1 · CUSTOM TAG IN FRONT OF THE AI DESCRIPTION</text>
+
+  <!-- BAND 1 · DARK -->
+  <g>
+    <rect x="40" y="138" width="320" height="196" fill="#131418" stroke="#25282e"/>
+    <line x1="40" y1="203" x2="360" y2="203" stroke="#191b20"/>
+    <line x1="40" y1="268" x2="360" y2="268" stroke="#191b20"/>
+    <!-- row 1: emoji + text tag -->
+    <circle cx="56" cy="164" r="3.4" fill="#3fbf6f"/><circle cx="56" cy="164" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <text x="70" y="168" fill="#e8e9ec" font-size="13">auth refactor</text>
+    <text x="70" y="188" font-size="11" xml:space="preserve"><tspan fill="#ffb000" font-weight="600">🔥 hotpath</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#a7abb3">Wiring the pbkdf2 check into the login path</tspan></text>
+    <!-- row 2: plain-text tag -->
+    <circle cx="56" cy="229" r="3.4" fill="#33373d"/>
+    <text x="70" y="233" fill="#e8e9ec" font-size="13">landing page copy</text>
+    <text x="70" y="253" font-size="11" xml:space="preserve"><tspan fill="#ffb000" font-weight="600">review</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#a7abb3">Polishing the hero subhead wording</tspan></text>
+    <!-- row 3: NO tag (unchanged) -->
+    <circle cx="56" cy="294" r="3.4" fill="#3fbf6f"/><circle cx="56" cy="294" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <text x="70" y="298" fill="#e8e9ec" font-size="13">db migration</text>
+    <text x="70" y="318" fill="#a7abb3" font-size="11">Adding created_at to the sessions index</text>
+    <text x="330" y="322" fill="#6f747d" font-size="9" text-anchor="end" font-style="italic">no tag</text>
+  </g>
+
+  <!-- BAND 1 · LIGHT -->
+  <g>
+    <rect x="440" y="138" width="320" height="196" fill="#f2f3f5" stroke="#c9ccd2"/>
+    <line x1="440" y1="203" x2="760" y2="203" stroke="#d9dbe0"/>
+    <line x1="440" y1="268" x2="760" y2="268" stroke="#d9dbe0"/>
+    <circle cx="456" cy="164" r="3.4" fill="#3fbf6f"/><circle cx="456" cy="164" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <text x="470" y="168" fill="#14161a" font-size="13">auth refactor</text>
+    <text x="470" y="188" font-size="11" xml:space="preserve"><tspan fill="#8a5a00" font-weight="700">🔥 hotpath</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#41454d">Wiring the pbkdf2 check into the login path</tspan></text>
+    <circle cx="456" cy="229" r="3.4" fill="#b9bcc2"/>
+    <text x="470" y="233" fill="#14161a" font-size="13">landing page copy</text>
+    <text x="470" y="253" font-size="11" xml:space="preserve"><tspan fill="#8a5a00" font-weight="700">review</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#41454d">Polishing the hero subhead wording</tspan></text>
+    <circle cx="456" cy="294" r="3.4" fill="#3fbf6f"/><circle cx="456" cy="294" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <text x="470" y="298" fill="#14161a" font-size="13">db migration</text>
+    <text x="470" y="318" fill="#41454d" font-size="11">Adding created_at to the sessions index</text>
+    <text x="730" y="322" fill="#6f747d" font-size="9" text-anchor="end" font-style="italic">no tag</text>
+  </g>
+
+  <text x="40" y="356" fill="#6f747d" font-size="11">Tag = free text or emoji, in the accent colour before a "·" and the AI summary.</text>
+  <text x="40" y="372" fill="#6f747d" font-size="11">Separate sidecar field, so it survives re-review. No tag → row unchanged (row 3).</text>
+
+  <!-- =================================================================== -->
+  <!-- BAND 2 — AUTO-SCROLL ON SELECTION                                    -->
+  <!-- =================================================================== -->
+  <text x="40" y="410" fill="#ffb000" font-size="11" font-weight="700" letter-spacing="1.5">2 · SELECTED ROW AUTO-SCROLLS TITLE + DESCRIPTION WHEN THEY OVERFLOW</text>
+
+  <clipPath id="clipD"><rect x="60" y="424" width="292" height="66"/></clipPath>
+  <clipPath id="clipL"><rect x="460" y="424" width="292" height="66"/></clipPath>
+
+  <!-- BAND 2 · DARK (selected/active row) -->
+  <g>
+    <rect x="40" y="420" width="320" height="130" fill="#1c1f25" stroke="#25282e"/>
+    <rect x="40" y="420" width="3" height="130" fill="#ffb000"/>
+    <text x="352" y="437" fill="#ffb000" font-size="9" text-anchor="end" font-weight="700" letter-spacing="1">SELECTED</text>
+    <circle cx="60" cy="447" r="3.4" fill="#3fbf6f"/><circle cx="60" cy="447" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <g clip-path="url(#clipD)">
+      <text x="76" y="451" fill="#e8e9ec" font-size="13">refactor the entire pbkdf2 login verification path across every engine adapter</text>
+      <text x="76" y="475" font-size="11" xml:space="preserve"><tspan fill="#ffb000" font-weight="600">🐛 repro</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#a7abb3">the websocket reconnect race when the dtach master is SIGTERM-proof and buffers stall</tspan></text>
+    </g>
+    <!-- motion guide -->
+    <line x1="60" y1="507" x2="352" y2="507" stroke="#3a3d44" stroke-width="1"/>
+    <path d="M60 507 l7 -4 v8 z" fill="#ffb000"/>
+    <path d="M352 507 l-7 -4 v8 z" fill="#ffb000"/>
+    <text x="206" y="531" fill="#6f747d" font-size="10" text-anchor="middle">auto-scrolls ‹ › to reveal the full line</text>
+  </g>
+
+  <!-- BAND 2 · LIGHT (selected/active row) -->
+  <g>
+    <rect x="440" y="420" width="320" height="130" fill="#e3e5e8" stroke="#c9ccd2"/>
+    <rect x="440" y="420" width="3" height="130" fill="#ffb000"/>
+    <text x="752" y="437" fill="#8a5a00" font-size="9" text-anchor="end" font-weight="700" letter-spacing="1">SELECTED</text>
+    <circle cx="460" cy="447" r="3.4" fill="#3fbf6f"/><circle cx="460" cy="447" r="6" fill="#3fbf6f" fill-opacity="0.18"/>
+    <g clip-path="url(#clipL)">
+      <text x="476" y="451" fill="#14161a" font-size="13">refactor the entire pbkdf2 login verification path across every engine adapter</text>
+      <text x="476" y="475" font-size="11" xml:space="preserve"><tspan fill="#8a5a00" font-weight="700">🐛 repro</tspan><tspan fill="#6f747d">&#160;·&#160;</tspan><tspan fill="#41454d">the websocket reconnect race when the dtach master is SIGTERM-proof and buffers stall</tspan></text>
+    </g>
+    <line x1="460" y1="507" x2="752" y2="507" stroke="#c2c5cb" stroke-width="1"/>
+    <path d="M460 507 l7 -4 v8 z" fill="#8a5a00"/>
+    <path d="M752 507 l-7 -4 v8 z" fill="#8a5a00"/>
+    <text x="606" y="531" fill="#6f747d" font-size="10" text-anchor="middle">auto-scrolls ‹ › to reveal the full line</text>
+  </g>
+
+  <text x="40" y="576" fill="#6f747d" font-size="11">Only the selected row animates — the list stays calm. Honours prefers-reduced-motion:</text>
+  <text x="40" y="592" fill="#6f747d" font-size="11">no animation, full text still reachable via the title tooltip. Short lines never scroll.</text>
+
+  <!-- =================================================================== -->
+  <!-- DETAIL COLUMN                                                        -->
+  <!-- =================================================================== -->
+  <!-- per-row menu -->
+  <text x="800" y="128" fill="#6f747d" font-size="11" font-weight="700" letter-spacing="1">PER-ROW MENU (⋯)</text>
+  <rect x="800" y="138" width="340" height="196" fill="#16181c" stroke="#25282e"/>
+  <text x="818" y="166" fill="#a7abb3" font-size="12">Review now</text>
+  <text x="818" y="192" fill="#a7abb3" font-size="12">Exclude from AI review</text>
+  <line x1="800" y1="206" x2="1140" y2="206" stroke="#25282e"/>
+  <rect x="800" y="214" width="340" height="30" fill="#221a06"/>
+  <rect x="800" y="214" width="3" height="30" fill="#ffb000"/>
+  <text x="822" y="234" fill="#ffb000" font-size="13">🏷</text>
+  <text x="846" y="234" fill="#e8e9ec" font-size="12">Set tag…</text>
+  <text x="1126" y="234" fill="#ffb000" font-size="9" text-anchor="end" font-weight="700" letter-spacing="1">NEW</text>
+  <text x="818" y="268" fill="#a7abb3" font-size="12">Rename</text>
+  <text x="818" y="294" fill="#a7abb3" font-size="12">Move to project…</text>
+  <text x="818" y="320" fill="#a7abb3" font-size="12">Archive</text>
+
+  <!-- tag editor -->
+  <text x="800" y="372" fill="#6f747d" font-size="11" font-weight="700" letter-spacing="1">TAG EDITOR (inline, like Rename)</text>
+  <rect x="800" y="382" width="340" height="120" fill="#16181c" stroke="#25282e"/>
+  <text x="818" y="408" fill="#a7abb3" font-size="12">Session tag</text>
+  <rect x="818" y="416" width="304" height="30" fill="#131418" stroke="#ffb000"/>
+  <text x="830" y="436" font-size="12"><tspan fill="#ffb000" font-weight="600">🔥 hotpath</tspan></text>
+  <rect x="1104" y="422" width="1.5" height="18" fill="#e8e9ec"/>
+  <text x="818" y="466" fill="#6f747d" font-size="10.5">Any text or emoji · shown before the summary · empty to clear</text>
+  <rect x="986" y="474" width="66" height="24" fill="none" stroke="#25282e"/>
+  <text x="1019" y="490" fill="#a7abb3" font-size="12" text-anchor="middle">Cancel</text>
+  <rect x="1058" y="474" width="64" height="24" fill="#ffb000"/>
+  <text x="1090" y="490" fill="#120c00" font-size="12" font-weight="700" text-anchor="middle">Save</text>
+
+  <!-- notes -->
+  <text x="800" y="540" fill="#6f747d" font-size="11" font-weight="700" letter-spacing="1">WHAT CHANGES</text>
+  <text x="800" y="560" fill="#6f747d" font-size="11">• new per-session `tag` field in the sidecar (like rename)</text>
+  <text x="800" y="578" fill="#6f747d" font-size="11">• renders before the AI summary; untagged rows unchanged</text>
+  <text x="800" y="596" fill="#6f747d" font-size="11">• selected row marquees on overflow; reduced-motion safe</text>
+</svg>
