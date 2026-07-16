@@ -45,6 +45,29 @@ A React + Vite SPA. Sidebar: every session from each installed engine — Claude
 
 Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive works for **any** engine via the engine-agnostic **sidecar** flag (`metadata.json`): Claude additionally moves its JSONL between `projects/` and `projects-archive/`, while opencode/codex/gemini/antigravity record archive state in the sidecar only (never their own data). Title/sticky use the same sidecar overlay. Adding an engine = one new provider in the registry.
 
+## Per-engine support
+
+The engines handle their own conversation persistence — BattleLab reads each tool's own on-disk
+history (read-only) for the sidebar, and "resume" always means launching **that tool's own
+resume command** under the app's `dtach` PTY. What differs per engine:
+
+| Engine | Sessions read from | Resume command | New session from the app | Archive |
+|---|---|---|---|---|
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `claude --resume <uuid>` | ✓ | moves the JSONL to `projects-archive/` + sidecar flag |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl` | `codex resume <uuid>` | ✓ (launch, then adopt the id codex mints) | sidecar only |
+| opencode | `~/.local/share/opencode/opencode.db` (SQLite, **read-only**) | `opencode <dir> --session <ses_id>` | ✓ | sidecar only — the DB is never written |
+| Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `gemini --resume <uuid>` (in the session's cwd) | ✓ (pinned id via `--session-id`) | sidecar only |
+| Antigravity (`agy`) | `~/.gemini/antigravity-cli/` (SQLite + transcript JSONL, **read-only**) | `agy --conversation <uuid>` | ✓ | sidecar only |
+| Plain shell | the app's own tiny per-session record (no native store) | reattach to the live PTY | ✓ | sidecar |
+
+Common to every row: the session runs under a `dtach` PTY with a single-writer lock — close the
+tab and the process keeps running; reattach mid-stream. For the agent engines, a reboot is also
+survivable (the engine's own resume restores the conversation) and scroll-up combines the
+scrollback ring with a transcript renderer over the saved conversation. **Plain shells are the
+exception**: with no saved conversation there's nothing to resume after a reboot — they reattach
+only while the PTY lives, and scroll-up is the scrollback ring alone. AI review still works for
+shells (screen-based, from the live terminal).
+
 ## Install & operate
 
 Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx). An interactive install can instead bind a LAN address or all interfaces, behind a security warning — deriving the reachable origin and offering to open the port in the host firewall — see [Bind address](INSTALL.md#bind-address).

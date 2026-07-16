@@ -92,7 +92,7 @@ Each engine implements a small provider (`src/agent_sessions/engines/<engine>.py
 | **claude** | `~/.claude/projects/**/*.jsonl` | ✅ pins a caller id (`--session-id`) | ✅ JSONL |
 | **codex** | `~/.codex/sessions/**/rollout-*.jsonl` | ✅ launch-then-reconcile (`--cd`) | ✅ rollout JSONL |
 | **opencode** | `~/.local/share/opencode/opencode.db` (read-only) | ✅ launch-then-reconcile | ✅ SQLite `message`/`part` |
-| **gemini** | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` | ✗ (resume-only) | ✅ chat JSONL (text; gemini logs no tool calls) |
+| **gemini** | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` | ✅ pins a caller id (`--session-id`) | ✅ chat JSONL (text; gemini logs no tool calls) |
 
 All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_OPENCODE_DB`,
 `_GEMINI_TMP_DIR`) and the same path drives both the sidebar **and** the scroll-up transcript.
