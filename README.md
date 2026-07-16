@@ -16,27 +16,21 @@ whole fleet from a laptop or your phone.
 
 ### Why
 
-- **Every agent, one place.** A live sidebar of all your sessions across every engine, grouped by
-  project, newest-first, with per-row engine badges + filtering.
-- **Persistent terminals.** Each session runs under its own detached PTY (`dtach`) — reattach after
-  a tab close, reboot, or app upgrade and the conversation is right where you left it.
-- **Console-style scroll-up.** Scroll back into clean, rendered history (markdown + `●` turn markers)
-  for **every** engine — not a width-fragile byte replay.
-- **Pulse + Ask.** An AI-curated overview of recent work across every agent — and an embedded
-  chat that finds past sessions from a plain-language question ("which session fixed the ws
-  reconnect bug?") with a one-tap jump back in. Both reuse your own OpenAI-compatible endpoint
-  (configured in Settings → AI Review); session content is sent nowhere else.
-- **AI review + auto-sort.** An AI reviewer writes a one-line summary on each session and flags the
-  ones that need you; AI auto-sort files new sessions into the right project. Both reuse the same
-  self-hosted endpoint — nothing leaves your box you didn't send.
-- **Home Free — reach your box from anywhere.** Your box dials *out* to a blind relay; open the
-  Connect page in any browser and drive the full app from your phone. End-to-end encrypted
-  (X25519 → AES-256-GCM); the relay only ever sees ciphertext. No VPN, no port-forwarding.
-- **Start new sessions** for any installed engine straight from the picker — a first-run setup
-  wizard wires up your AI endpoint (model dropdown + live validation) and optional 2FA.
-- **Mobile-first.** A touch-ready terminal with a real compose bar, control keys, and image paste.
-- **One-line, rootless install.** No root, no system daemon; atomic releases with one-step rollback
-  and an opt-in self-updater.
+- **Every agent, one place.** A live sidebar of every session across every engine, grouped by
+  project, with per-row badges + filtering.
+- **Persistent terminals.** Each session runs under its own `dtach` PTY — close the tab, reboot, or
+  upgrade the app and reattach to the exact conversation, with clean console-style scroll-up.
+- **Pulse + Ask.** An AI-curated "state of your work" across every agent, plus a plain-language
+  finder for past sessions ("which session fixed the ws reconnect bug?") — one tap back in. Reuses
+  your own OpenAI-compatible endpoint; session content goes nowhere else.
+- **AI review + auto-sort.** A one-line AI summary on each session flags what needs you, and new
+  sessions file themselves into the right project.
+- **Home Free.** Your box dials *out* to a blind relay — open the Connect page in any browser and
+  drive the full app from your phone. End-to-end encrypted (X25519 → AES-256-GCM); the relay sees
+  only ciphertext. No VPN, no port-forwarding.
+- **Mobile-first, one-line install.** A touch-ready terminal (compose bar, control keys, image
+  paste); a first-run wizard wires up your AI endpoint + optional 2FA. Rootless install, atomic
+  releases with one-step rollback.
 
 ```sh
 curl -fsSL https://battlelab.superstatus.io/install.sh | sh
