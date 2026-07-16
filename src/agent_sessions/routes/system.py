@@ -17,6 +17,7 @@ from .. import (
     aitasks,
     discover,
     engines,
+    handoff,
     perfstats,
     prefs,
     project_dirs,
@@ -91,10 +92,17 @@ def register(
         def row(p: engines.EngineProvider) -> dict:
             bin_path = discover.resolve(p.engine_id)
             can_start = bool(bin_path and getattr(p, "supports_new", False))
+            # Handoff-target capability (#597): the ONE source both the modal's engine
+            # tiles and the server-side prepare rejection consume, so a disabled tile can
+            # never disagree with what the server would accept. `seed_reason` is the
+            # user-facing why-not (null when supported).
+            can_seed, seed_reason = handoff.seed_start_state(p, present=bin_path is not None)
             return {
                 "id": p.engine_id,
                 "present": bin_path is not None,
                 "supports_new": can_start,
+                "supports_seed_start": can_seed,
+                "seed_reason": seed_reason,
                 "bin": bin_path,
             }
 

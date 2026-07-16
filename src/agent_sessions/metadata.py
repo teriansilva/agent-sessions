@@ -154,6 +154,15 @@ class SessionMeta:
     # fail-soft normalizes invalid stored values to ``""`` so a hand-edited sidecar can
     # never 500 the sidebar).
     color: str = ""
+    # Cross-engine handoff provenance (#597) — engine-qualified ids + ISO-8601 timestamp,
+    # written by ``handoff.py`` only AFTER the target spawn passes the aliveness gate.
+    # PROVENANCE ONLY: the handoff seed text itself is never persisted anywhere. A stale
+    # half (target archived, source deleted) is tolerated at read time — the row just
+    # carries the string; nothing dereferences it blindly.
+    handoff_from: str = ""
+    handoff_to: str = ""
+    handoff_mode: str = ""
+    handoff_at: str = ""
 
 
 # Schema-known field names frozen at module-import time — used by ``patch()`` to
@@ -346,6 +355,12 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
             recap_fingerprint=str(val.get("recap_fingerprint", "") or ""),
             draft=(val["draft"] if isinstance(val.get("draft"), dict) else None),
             color=color,
+            # Handoff provenance (#597) — plain strings; read-time fail-soft like the
+            # rest (a hand-edited non-string normalizes to "" rather than raising).
+            handoff_from=str(val.get("handoff_from", "") or ""),
+            handoff_to=str(val.get("handoff_to", "") or ""),
+            handoff_mode=str(val.get("handoff_mode", "") or ""),
+            handoff_at=str(val.get("handoff_at", "") or ""),
         )
     return out
 
@@ -389,6 +404,12 @@ def patch(
         # ``metadata.validate_color`` upstream; the route layer translates
         # ``ValueError`` → 422 with the helper string.
         "color",
+        # Cross-engine handoff provenance (#597) — written by handoff.py's post-aliveness
+        # transitions only, never by any user-facing rename/tag path.
+        "handoff_from",
+        "handoff_to",
+        "handoff_mode",
+        "handoff_at",
     }
     bad = set(fields) - allowed
     if bad:

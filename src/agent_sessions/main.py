@@ -42,6 +42,9 @@ from . import (
     session_stream,
     update_loop,
 )
+from . import (
+    handoff as handoff_mod,
+)
 from .auth import (
     _SESSION_COOKIE,
     AuthConfig,
@@ -54,6 +57,7 @@ from .auth import (
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
+from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
 from .routes import pulse as pulse_routes
@@ -141,6 +145,13 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
         # lag (#561). The pinned-id path invalidates at launch in routes/terminal.py; reconciling
         # engines (opencode/codex/antigravity) only become discoverable here, after the alias write.
         engines.invalidate_scan_cache()
+        # Handoff backlink (#597): if this placeholder was a handoff target, the source's
+        # ``handoff_to`` can now point at the REAL id (never the placeholder). Inherits this
+        # coroutine's fail-safe by construction — an ambiguous/timed-out reconcile never
+        # reaches here, so the backlink is simply absent. Best-effort: a sidecar write
+        # failure must not break the id converge below.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(handoff_mod.note_reconciled, placeholder_key, real_key)
         # Then converge the client: it replaces /s/opencode/new-… → /s/opencode/ses_…
         # (history replace, no reload, keep the socket) and the sidebar shows one row.
         with contextlib.suppress(Exception):
@@ -426,6 +437,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     history_routes.register(app, logged_in=_logged_in)
     # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Cross-engine handoff (#597): prepare (seed preview + handle) / commit (mint + bind).
+    handoff_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Pulse — recent-work overview (#441 Phase 2): cached overview + manual scan. Needs the
     # registry for the live "in flight" overlay; the shared /api/ai/activity is in system.py.
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)

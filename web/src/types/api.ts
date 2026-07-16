@@ -48,6 +48,11 @@ export interface Session {
   /** #477: the session's compose box has an unsent draft (text and/or pasted images) →
    *  the blue status dot. The full draft body is fetched separately via api.getDraft. */
   has_draft?: boolean;
+  /** Cross-engine handoff provenance (#597): engine-qualified peer ids, "" when unset.
+   *  Written server-side only after the target spawn passes the aliveness gate; a stale
+   *  half (peer archived/deleted) is tolerated — display strings, never dereferenced. */
+  handoff_from?: string;
+  handoff_to?: string;
 }
 
 /** One pasted/uploaded attachment carried by a compose draft (#477) — the server-issued
@@ -373,6 +378,11 @@ export interface EngineInfo {
   id: EngineId | string;
   present: boolean;
   supports_new: boolean;
+  /** Handoff-target capability (#597) — THE capability source the handoff modal's engine
+   *  tiles render from (the server rejects from the same source, so they can't diverge). */
+  supports_seed_start: boolean;
+  /** Why the engine can't be a handoff target (null exactly when it can). */
+  seed_reason: string | null;
   bin: string | null;
 }
 
@@ -441,4 +451,21 @@ export interface SessionsQuery {
   q?: string;
   project?: string;
   engine?: string;
+}
+
+/** Cross-engine handoff (#597): the prepared Quick seed — preview + the opaque server-side
+ *  handle the commit step redeems. Nothing is spawned at prepare; cancel = let it expire. */
+export interface HandoffPrepared {
+  handle: string;
+  preview: string;
+  meta: { mode: string; turns: number; bytes: number; cap: number };
+}
+
+/** The committed handoff target: navigate to /s/{engine}/{native} with fresh={cwd,bypass}
+ *  and the normal launch path seeds the new session server-side (never via URL/argv). */
+export interface HandoffCommitted {
+  id: string;
+  engine: string;
+  native: string;
+  cwd: string;
 }

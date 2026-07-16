@@ -207,6 +207,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # surfaces consume ``resolveSessionColor(row)`` on the SPA side, which falls
             # through to the project color and engine accent when this is ``""``.
             "color": m.color,
+            # Cross-engine handoff provenance (#597): engine-qualified ids, "" when unset.
+            # Written by handoff.py only after the spawn's aliveness gate; the backlink is
+            # normalized to the REAL id at write time (reconcile hook), so rows never need
+            # alias resolution here. A stale half (peer archived/deleted) is tolerated —
+            # it's a display string, nothing dereferences it blindly.
+            "handoff_from": m.handoff_from,
+            "handoff_to": m.handoff_to,
         }
 
     @app.get("/api/sessions")

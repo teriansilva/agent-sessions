@@ -29,10 +29,13 @@ import fcntl
 import json
 import logging
 import os
+import select
 import signal
 import struct
 import termios
+import threading
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
+from concurrent.futures import ThreadPoolExecutor
 
 from . import perfstats, scrollback, sessionlock
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
@@ -137,6 +140,42 @@ SPAWN_TIMEOUT_S = 15.0
 # Bounded wait between SIGTERM and the SIGKILL escalation when tearing down an owned dtach
 # client (#532). Module-level so tests can shrink it.
 _TERMINATE_WAIT_S = 3.0
+
+# Handoff seed injection (#597). The seed is delivered as terminal input — a bracketed
+# paste written to the PTY, exactly like typed input, never argv — once the freshly
+# launched TUI is READY: arming bracketed paste (DECSET 2004, tracked by scrollback's
+# mode scan) is the readiness signal, since a TUI arms it exactly when its input
+# pipeline is up. If the agent never arms it inside the window we fail SAFE: the session
+# runs unseeded (logged) rather than spraying raw bytes into a half-booted TUI.
+_SEED_READY_TIMEOUT_S = 45.0
+_SEED_POLL_S = 0.25
+_SEED_SETTLE_S = 0.75  # after 2004 arms, let the first paint finish before pasting
+# Delivery bound (#701 review round 3): the whole paste+CR must land within this window or
+# the claim is settled (retry when nothing was written, abort after a partial write) — a
+# target that keeps the PTY open but stops draining input can never hold a claim forever.
+_SEED_WRITE_TIMEOUT_S = 10.0
+# Per-cycle write chunk. A BLOCKING pipe/pty write never returns short — it blocks until
+# every byte is accepted — so each under-lock write must be small enough that a positive
+# writability check guarantees full acceptance: pipes report writable only with ≥ PIPE_BUF
+# (4096) free, and the tty driver wakes/polls writers at ≥ 256 bytes of room. 256 is the
+# common floor.
+_SEED_WRITE_CHUNK = 256
+# Deliveries run on their OWN bounded pool (round-3 P1), never the loop's shared default
+# executor: pump_out's PTY reads and attach work live there, and a few wedged targets
+# could otherwise occupy every shared worker and stall unrelated sessions. Worst case
+# here: the two delivery workers block until their write deadline; later deliveries queue.
+_SEED_MAX_DELIVERY_WORKERS = 2
+_seed_pool: ThreadPoolExecutor | None = None
+
+
+def _seed_executor() -> ThreadPoolExecutor:
+    global _seed_pool
+    if _seed_pool is None:
+        _seed_pool = ThreadPoolExecutor(
+            max_workers=_SEED_MAX_DELIVERY_WORKERS, thread_name_prefix="handoff-seed"
+        )
+    return _seed_pool
+
 
 # A submit is Enter — CR (what a real terminal sends) or LF. Keystrokes that merely edit the
 # input box carry neither, so this distinguishes "the user typed" from "the user sent".
@@ -246,6 +285,131 @@ def _read(fd: int) -> bytes:
         return b""
 
 
+def _deliver_seed(
+    fd: int,
+    seed_key: str,
+    buf_key: str | None,
+    write_lock: threading.Lock | None = None,
+) -> bool:
+    """Claim + deliver the handoff seed, then acknowledge — the claim/ack protocol (#597
+    review round 2). Runs in a WORKER THREAD, never on the event loop: ``fd`` is a blocking
+    PTY fd, and a target that stops draining input must stall only this thread — a blocking
+    write on the loop would freeze every session this process serves (the #678 failure
+    mode). The protocol keeps the delivery invariant honest across every failure mode:
+
+    - the claim serializes claimants (a second viewer gets ``None`` while one is in flight);
+    - nothing written yet (dead fd / write-timeout before the first byte) → ack ``retry``:
+      the seed stays pending for the next attach;
+    - PARTIAL write (error or timeout mid-payload) → ack ``abort`` + log: an unterminated
+      bracketed paste already reached the TUI, so a blind replay would corrupt the prompt —
+      consume it explicitly rather than silently half-lose it;
+    - full ``paste + CR`` written → ack ``delivered``: consumed exactly once.
+
+    The write itself is BOUNDED (rounds 3+4 P1): ``select()`` writability alone is only a
+    snapshot — ``pump_in`` writes the same PTY, and an unserialized competitor could
+    consume the window between the select and a blocking write, wedging this worker past
+    its deadline. So every writer to this PTY is SERIALIZED through the bridge's
+    ``write_lock``: the (cheap) wait-for-writability select runs outside the lock, then
+    writability is re-checked under the lock — with the only other writer excluded, a
+    positive check cannot be consumed, and a PTY/pipe write with confirmed room accepts
+    at least one byte without blocking. The lock acquire itself is deadline-bounded, so a
+    target that stops draining input times out and settles the claim instead of pinning
+    this worker forever. (A pty-master reopen via /proc/self/fd is NOT an option here —
+    reopening /dev/ptmx mints a brand-new pty, so O_NONBLOCK-on-own-description is out.)
+
+    Returns True when the seed was fully delivered."""
+    from . import handoff  # late import: webterm is imported by handoff's route layer
+
+    seed = handoff.claim_seed(seed_key)
+    if seed is None:
+        return False  # consumed or claimed by another viewer — single delivery held
+    lock = write_lock if write_lock is not None else threading.Lock()
+    data = b"\x1b[200~" + seed.encode("utf-8", "replace") + b"\x1b[201~\r"
+    written = 0
+    failure = None  # "error" | "timeout"
+    deadline = time.monotonic() + _SEED_WRITE_TIMEOUT_S
+    view = memoryview(data)
+    while written < len(data):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failure = "timeout"
+            break
+        try:
+            # Cheap writability wait OUTSIDE the lock (never holds up pump_in while idle)…
+            select.select([], [fd], [], min(0.5, remaining))
+            if not lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                failure = "timeout"
+                break
+            try:
+                # …then the authoritative re-check UNDER the lock: the only other writer
+                # is excluded, so confirmed room can't vanish before our write. The chunk
+                # is capped at the writability-guarantee floor — a blocking write never
+                # returns short, so a larger write could still block past the deadline.
+                _, writable, _ = select.select([], [fd], [], 0)
+                if not writable:
+                    continue
+                written += os.write(fd, view[written : written + _SEED_WRITE_CHUNK])
+            finally:
+                lock.release()
+        except OSError:
+            failure = "error"
+            break
+    if failure is not None:
+        if written == 0:
+            handoff.ack_seed(seed_key, "retry")  # clean failure — next attach retries
+        else:
+            handoff.ack_seed(seed_key, "abort")
+            log.warning(
+                "handoff seed for %s aborted after a partial PTY write (%s, %d/%d bytes)",
+                seed_key,
+                failure,
+                written,
+                len(data),
+            )
+        return False
+    handoff.ack_seed(seed_key, "delivered")
+    _note_submit(buf_key, b"\r")
+    return True
+
+
+def _deliver_seed_owned_fd(
+    fd: int,
+    seed_key: str,
+    buf_key: str | None,
+    write_lock: threading.Lock | None = None,
+) -> bool:
+    """`_deliver_seed` wrapper that OWNS ``fd`` (a dup of the bridge's pty master) and
+    closes it when done — the delivery thread's fd lifetime is decoupled from the bridge
+    teardown, so a viewer disconnect mid-write can't yank the fd out from under it."""
+    try:
+        return _deliver_seed(fd, seed_key, buf_key, write_lock)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+async def _deliver_seed_via_pool(
+    fd: int,
+    seed_key: str,
+    buf_key: str | None,
+    write_lock: threading.Lock | None = None,
+) -> None:
+    """Run the owned-fd delivery on the dedicated pool, reclaiming ownership if the job is
+    cancelled while still QUEUED (#701 review round 4 P2): a saturated pool means the work
+    item may never start, so its ``finally``-close never runs — without this reclaim every
+    attach/disconnect cycle under saturation would leak one dup'd master fd. A job that
+    already STARTED cannot be cancelled (concurrent.futures semantics) and closes the fd
+    itself."""
+    cf = _seed_executor().submit(_deliver_seed_owned_fd, fd, seed_key, buf_key, write_lock)
+    try:
+        await asyncio.wrap_future(cf)
+    except asyncio.CancelledError:
+        if cf.cancelled() or cf.cancel():  # never ran → the fd is still ours to close
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        raise
+
+
 async def run(
     ws,
     argv: list[str],
@@ -259,6 +423,7 @@ async def run(
     have: int = 0,
     read_only_gate: asyncio.Event | None = None,
     stop_event: asyncio.Event | None = None,
+    seed_key: str | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -287,6 +452,13 @@ async def run(
     take-over route) sends the gate frame on the still-open socket and waits for
     the client to reconnect with ``force=1``. The dtach client is still detached
     (the agent keeps running); only this viewer's stream ends.
+
+    ``seed_key`` (cross-engine handoff, #597): the engine-qualified key a pending
+    handoff seed is bound to. The injector task waits for the TUI to arm bracketed
+    paste, then REDEEMS the seed from :mod:`handoff` at write time — the atomic
+    single-redemption there (not this task) is what guarantees a reconnect or a
+    second viewer can never paste it twice. The seed goes to the PTY as input,
+    never argv.
     """
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
@@ -324,6 +496,10 @@ async def run(
         return
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
+    # Every writer to this master is serialized (#701 round 4 P1): pump_in and the seed
+    # delivery worker share this lock, so delivery's under-lock writability check can't be
+    # invalidated by a concurrent keystroke write between its select and its write.
+    write_lock = threading.Lock()
 
     # This fresh dtach client will trigger a screen replay; don't let that burst flip the
     # working dot (#195). Genuine output after the grace window stamps normally.
@@ -528,7 +704,7 @@ async def run(
                 # is the source of truth — not the client.
                 if kind == "i" and not _gated():
                     data = obj.get("d", "").encode("utf-8", "replace")
-                    with contextlib.suppress(OSError):
+                    with contextlib.suppress(OSError), write_lock:
                         os.write(master, data)
                     _note_submit(buf_key, data)
                 elif kind == "r" and not _gated():
@@ -578,7 +754,7 @@ async def run(
                         if width_changed and time.monotonic() - attach_at <= _RENUDGE_WINDOW_S:
                             _schedule_trailing_nudge()
             elif msg.get("bytes") is not None and not _gated():
-                with contextlib.suppress(OSError):
+                with contextlib.suppress(OSError), write_lock:
                     os.write(master, msg["bytes"])
                 _note_submit(buf_key, msg["bytes"])
 
@@ -599,7 +775,42 @@ async def run(
             # Sending a small JSON frame. Unknown types are ignored by the client.
             await ws.send_text(json.dumps({"t": "p"}))
 
+    async def _inject_seed() -> None:
+        # Handoff seed delivery (#597). Readiness gate: the freshly launched TUI arming
+        # bracketed paste (DECSET 2004 — all Phase-1 target engines arm it at startup) is the
+        # signal its input pipeline is up. Fail-safe on timeout: an unseeded session beats
+        # raw bytes sprayed into a half-booted TUI. Every await sits BEFORE the claim, so a
+        # viewer that drops (this task is cancelled) leaves the seed for the next attach.
+        deadline = time.monotonic() + _SEED_READY_TIMEOUT_S
+        armed = False
+        while time.monotonic() < deadline:
+            if buf_key and scrollback.has_mode(buf_key, 2004):
+                armed = True
+                break
+            await asyncio.sleep(_SEED_POLL_S)
+        if not armed:
+            log.warning(
+                "handoff seed for %s not injected: TUI never armed bracketed paste", seed_key
+            )
+            return
+        await asyncio.sleep(_SEED_SETTLE_S)
+        if not seed_key:
+            return
+        # Delivery runs on the DEDICATED bounded pool on a dup'd fd (review rounds 2–4):
+        # never the event loop, never the loop's shared default executor (pump_out and
+        # attach work live there), non-cancellable once RUNNING (asyncio cancellation
+        # interrupts the await, not the thread — the claim is always acked, and the write
+        # has a hard deadline), and ownership-safe when cancelled while still QUEUED
+        # (the dup is reclaimed — see _deliver_seed_via_pool).
+        try:
+            fd = os.dup(master)
+        except OSError:
+            return
+        with contextlib.suppress(asyncio.CancelledError):
+            await _deliver_seed_via_pool(fd, seed_key, buf_key, write_lock)
+
     nudge_task = asyncio.create_task(_nudge_repaint())
+    seed_task = asyncio.create_task(_inject_seed()) if seed_key else None
     tasks = [
         asyncio.create_task(pump_out()),
         asyncio.create_task(pump_in()),
@@ -614,6 +825,9 @@ async def run(
         for t in tasks:
             t.cancel()
         nudge_task.cancel()  # short-lived; cancel in case we tore down mid-nudge
+        if seed_task is not None:
+            # A viewer dropping pre-injection leaves the seed unredeemed for the next attach.
+            seed_task.cancel()
         if renudge["task"] is not None:
             renudge["task"].cancel()  # stale trailing repaint must not fire post-disconnect
         if stop_waiter is not None:
@@ -629,7 +843,10 @@ async def run(
 
         with contextlib.suppress(Exception):
             renudge_tasks = [renudge["task"]] if renudge["task"] is not None else []
-            await asyncio.gather(*tasks, nudge_task, *renudge_tasks, return_exceptions=True)
+            seed_tasks = [seed_task] if seed_task is not None else []
+            await asyncio.gather(
+                *tasks, nudge_task, *renudge_tasks, *seed_tasks, return_exceptions=True
+            )
         if stop_waiter is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stop_waiter

@@ -286,6 +286,15 @@ def _scan_modes(key: str, data: bytes) -> None:
         _persist_modes(key)
 
 
+def has_mode(key: str, mode: int) -> bool:
+    """True when the agent behind ``key`` currently has private mode ``mode`` set (tracked
+    from its live output — see ``_MODE_TRACK``). The handoff seed injector (#597) gates on
+    bracketed paste (2004): a TUI arming it is the reliable "input pipeline is up" signal."""
+    _ensure_loaded(key)
+    active = _MODES.get(key)
+    return bool(active and mode in active)
+
+
 def attach_modes_payload(key: str) -> bytes:
     r"""The active private-mode DECSET sequences to replay on attach (#397), e.g.
     ``b"\x1b[?1000h\x1b[?1006h"``. Empty when no tracked mode is active. Prepended to the

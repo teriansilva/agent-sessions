@@ -49,9 +49,19 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
     # every registered provider is reported, present or not
     assert ids == {p.engine_id for p in engines.all_providers()}
     for e in d["engines"]:
-        assert set(e) == {"id", "present", "supports_new", "bin"}
+        assert set(e) == {
+            "id",
+            "present",
+            "supports_new",
+            "supports_seed_start",
+            "seed_reason",
+            "bin",
+        }
         assert isinstance(e["present"], bool)
         assert isinstance(e["supports_new"], bool)
+        # Handoff-target capability (#597): bool + a reason exactly when unsupported.
+        assert isinstance(e["supports_seed_start"], bool)
+        assert (e["seed_reason"] is None) == e["supports_seed_start"]
         assert e["bin"] is None or isinstance(e["bin"], str)
     # claude is installed in the isolated HOME, so it can launch new sessions
     claude = next(e for e in d["engines"] if e["id"] == "claude")
@@ -75,6 +85,8 @@ def test_engines_marks_binary_only_opencode_installed(auth_cfg, tmp_home, monkey
         "id": "opencode",
         "present": True,
         "supports_new": True,
+        "supports_seed_start": True,
+        "seed_reason": None,
         "bin": str(oc_bin),
     }
 

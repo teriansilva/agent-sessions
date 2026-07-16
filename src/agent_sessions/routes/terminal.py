@@ -37,6 +37,7 @@ from .. import (
     ai_review_loop,
     engines,
     fsbrowse,
+    handoff,
     owner,
     perfstats,
     prefs,
@@ -61,6 +62,48 @@ log = logging.getLogger("agent_sessions.terminal")
 # runtime dir) has taken the owner file, at which point we flip this viewer to read-only
 # in place (gate input/resize + a fresh role frame) without dropping its stream (#434).
 _HEARTBEAT_S = 2.0
+
+# Handoff spawn-watch tasks (#597) — strong refs so the fire-and-forget aliveness gates
+# aren't garbage-collected mid-sleep (asyncio only keeps weak refs to tasks).
+_HANDOFF_WATCHES: set[asyncio.Task] = set()
+# Provenance publication retry (#701 review round 3 P2): the watch is armed exactly once per
+# target (reconnects never re-arm), so IT is the production retry vehicle for a transient
+# sidecar-write failure — handoff.mark_spawned keeps retryable state and performs exactly
+# the missing writes on each attempt.
+_PUBLISH_ATTEMPTS = 3
+_PUBLISH_RETRY_DELAY_S = 2.0
+
+
+async def _handoff_spawn_watch(engine: str, phys_native: str) -> None:
+    """The one explicit spawn-success transition for a handoff target (#597): sleep out the
+    same instant-exit window the relaunch backstop uses, then either commit provenance
+    (master alive → ``handoff.mark_spawned``, retried on transient sidecar-write failures)
+    or abort without any sidecar write (master died → ``handoff.abort_spawn``). Armed at
+    most once per target via ``handoff.arm_watch`` — a WS reconnect can never replay it."""
+    await asyncio.sleep(relaunch._INSTANT_EXIT_S)
+    key = f"{engine}:{phys_native}"
+    try:
+        alive = await asyncio.to_thread(ptybridge.session_exists, engine, phys_native)
+    except Exception:
+        log.exception("handoff spawn-watch aliveness probe failed for %s", key)
+        return
+    if not alive:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(handoff.abort_spawn, key)
+        return
+    for attempt in range(1, _PUBLISH_ATTEMPTS + 1):
+        try:
+            await asyncio.to_thread(handoff.mark_spawned, key)
+            return
+        except Exception:
+            if attempt == _PUBLISH_ATTEMPTS:
+                log.exception(
+                    "handoff provenance publication failed for %s after %d attempts",
+                    key,
+                    _PUBLISH_ATTEMPTS,
+                )
+            else:
+                await asyncio.sleep(_PUBLISH_RETRY_DELAY_S)
 
 
 def _holder_view(holder: dict | None) -> dict | None:
@@ -148,6 +191,7 @@ async def _serve_takeover(
     force: bool,
     label: str,
     accept_at: float | None = None,
+    seed_key: str | None = None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -202,6 +246,7 @@ async def _serve_takeover(
             lock=lock,
             have=have,
             read_only_gate=read_only_gate,
+            seed_key=seed_key,
         )
     finally:
         if guard is not None:
@@ -508,6 +553,17 @@ def register(
             # ATTACH runs no new master. Covers BOTH dispatch paths (take-over + #184) below.
             if action == sessions.LAUNCH:
                 launch_started_at = time.monotonic()
+            # Cross-engine handoff (#597): a committed handoff bound to this physical key
+            # delivers its seed via webterm's PTY injector (input, never argv). ATTACH also
+            # carries the key: if the launching viewer dropped before the TUI was ready, the
+            # unredeemed seed is injected by the next attach — redemption stays atomic in
+            # handoff.py either way. The spawn watch (the aliveness gate that later writes
+            # provenance) arms at most once, on the connection that actually LAUNCHed.
+            seed_key = phys_key if handoff.has_pending_seed(phys_key) else None
+            if action == sessions.LAUNCH and handoff.arm_watch(phys_key):
+                watch = asyncio.create_task(_handoff_spawn_watch(prov.engine_id, phys_native))
+                _HANDOFF_WATCHES.add(watch)
+                watch.add_done_callback(_HANDOFF_WATCHES.discard)
             # Single-active-viewer + explicit take-over (#293), flag-gated (default OFF →
             # the #184 path below is byte-identical, so merging this is a prod no-op). The
             # flag-on path anchors ownership in a runtime-dir file so prod + staging — which
@@ -533,6 +589,7 @@ def register(
                     force=force,
                     label=label,
                     accept_at=accept_at,
+                    seed_key=seed_key,
                 )
                 return
             # ---- #184 path (flag OFF): in-memory claim + read-only secondary stream ----
@@ -584,6 +641,7 @@ def register(
                     lock=lock,
                     have=have,
                     read_only_gate=read_only_gate,
+                    seed_key=seed_key,
                 )
             finally:
                 if demote_task is not None:

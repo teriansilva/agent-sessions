@@ -23,6 +23,9 @@ class ClaudeProvider:
     engine_id = "claude"
     id_pattern = base._CLAUDE_UUID_RE
     supports_new = True  # ws new-session via new_launch_argv
+    # Cross-engine handoff target (#597): a fresh claude TUI accepts the seed as a bracketed
+    # paste on its PTY input (never argv — the shell-free/no-argv-seed contract).
+    supports_seed_start = True
 
     def is_present(self) -> bool:
         return (Path.home() / ".claude" / "projects").is_dir() or shutil.which("claude") is not None

@@ -62,6 +62,9 @@ class CodexProvider:
     # ``--session-id`` flag — so new-session launches under a ``new-<uuid>`` placeholder and
     # reconciles to the real rollout uuid afterwards, rather than pinning the id like claude.
     new_session_reconciles = True
+    # Cross-engine handoff target (#597): the fresh codex TUI accepts the seed as a bracketed
+    # paste on its PTY input (never argv).
+    supports_seed_start = True
 
     def is_present(self) -> bool:
         return base._codex_sessions_dir().is_dir() or shutil.which("codex") is not None

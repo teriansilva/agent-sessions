@@ -7,6 +7,8 @@ import type {
   EnginesResponse,
   Folder,
   FsDir,
+  HandoffCommitted,
+  HandoffPrepared,
   HistoryPage,
   DraftAttachment,
   ProjectArchiveReport,
@@ -195,6 +197,21 @@ export const api = {
   version: () => getJson<{ version: string }>("/api/version"),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
+  /** Cross-engine handoff prepare (#597): build the Quick seed for a source session and
+   *  return {handle, preview, meta}. Side-effect-free — cancel by letting the short-TTL
+   *  handle expire. 409 = empty source transcript; 422 = unsupported target/mode —
+   *  `mutateJson` surfaces the server detail either way. CSRF-guarded. */
+  prepareHandoff: (sourceId: string, targetEngine: string) =>
+    mutateJson<HandoffPrepared>("POST", "/api/handoff/prepare", {
+      source_id: sourceId,
+      target_engine: targetEngine,
+      mode: "quick",
+    }),
+  /** Cross-engine handoff commit (#597): bind the prepared handle to a freshly minted
+   *  target session id. The caller then navigates to /s/{engine}/{native} (fresh launch)
+   *  and the server redeems the seed at spawn time — never through the URL. */
+  commitHandoff: (handle: string) =>
+    mutateJson<HandoffCommitted>("POST", "/api/handoff", { handle }),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
   /** Self-update: compare the running version to the channel's latest. */

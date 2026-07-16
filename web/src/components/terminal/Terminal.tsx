@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ScrollText } from "lucide-react";
+import { ArrowDown, ArrowLeftRight, ScrollText } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { createBootReadyGate } from "../../lib/bootReady";
@@ -28,6 +28,7 @@ import { useAccent } from "../../theme/accentStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
+import { HandoffModal } from "./HandoffModal";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 
@@ -1307,6 +1308,12 @@ export function Terminal({
   // captured at click time so focus returns to it on close (no ref read during render).
   const [recapOpen, setRecapOpen] = useState(false);
   const [recapTrigger, setRecapTrigger] = useState<HTMLElement | null>(null);
+  // Hand-off modal (#597): same trigger-capture pattern as the recap. Hidden for the
+  // non-agent shell engine and for a still-unreconciled placeholder id (no transcript
+  // under that id yet — the source of a handoff is its real, scanned identity).
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(null);
+  const canHandoff = engine !== "shell" && !id.startsWith("new-");
   const scrollToTail = useCallback(() => {
     // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
     // scroll-up fling is still decaying scrolls to the tail for one frame and is then dragged
@@ -1420,6 +1427,22 @@ export function Terminal({
           <ScrollText size={13} aria-hidden="true" />
           Recap
         </button>
+        {canHandoff && (
+          <button
+            type="button"
+            className={styles.restartBtn}
+            onClick={(e) => {
+              setHandoffTrigger(e.currentTarget);
+              setHandoffOpen(true);
+            }}
+            title="Hand off: start a new session in another engine, seeded with this session's context"
+            aria-label="Hand off session to another engine"
+            aria-haspopup="dialog"
+          >
+            <ArrowLeftRight size={13} aria-hidden="true" />
+            Hand off
+          </button>
+        )}
       </div>
       {recapOpen && (
         <SessionRecapModal
@@ -1435,6 +1458,15 @@ export function Terminal({
           reviewExcluded={row?.review_excluded}
           onClose={() => setRecapOpen(false)}
           returnFocusTo={recapTrigger}
+        />
+      )}
+      {handoffOpen && (
+        <HandoffModal
+          sessionId={`${engine}:${id}`}
+          engine={engine}
+          title={title}
+          onClose={() => setHandoffOpen(false)}
+          returnFocusTo={handoffTrigger}
         />
       )}
       <div className={styles.termArea}>

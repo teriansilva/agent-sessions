@@ -47,6 +47,9 @@ class OpenCodeProvider:
     # provider only supplies the snapshot/diff primitives and the new-launch argv.
     supports_new = True
     new_session_reconciles = True  # mints its own id → placeholder/reconcile flow (#127/#315)
+    # Cross-engine handoff target (#597): the fresh opencode TUI accepts the seed as a
+    # bracketed paste on its PTY input (never argv).
+    supports_seed_start = True
 
     def _query_rows(self) -> list:
         """Read top-level opencode sessions, RAISING ``sqlite3.Error`` on a real read
