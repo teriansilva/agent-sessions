@@ -60,7 +60,12 @@ agent_sessions = ["templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
+markers = [
+    # Full install.sh end-to-end runs (venv build + real pip install; the multi-minute tests).
+    # CI runs everything; deselect locally while iterating: pytest -m "not e2e_install"
+    "e2e_install: full install.sh end-to-end run (slow; local opt-out only, CI always runs)",
+]
 
 [tool.ruff]
 line-length = 100

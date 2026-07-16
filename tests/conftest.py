@@ -11,7 +11,48 @@ from pathlib import Path
 
 import pytest
 
+from agent_sessions import auth
 from agent_sessions.auth import AuthConfig, hash_password
+
+# The production work factor, captured at conftest import — i.e. before ANY fixture (in
+# particular _fast_pbkdf2 below) can patch the module constant. The dedicated guard test
+# (test_password.py::test_production_kdf_iteration_count_is_not_silently_downgraded) pins
+# this against the shipped 600k.
+_PROD_PBKDF2_ITERS = auth._PBKDF2_ITERS
+
+
+@pytest.fixture(scope="session")
+def prod_pbkdf2_iters() -> int:
+    return _PROD_PBKDF2_ITERS
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _fast_pbkdf2():
+    """Shrink the PBKDF2 work factor to 1,000 iterations for the test session (#699).
+
+    At the production 600k (``auth._PBKDF2_ITERS``) every ``hash_password``/``verify_password``
+    costs ~0.4–0.6 s — and the auth/2FA tests hash and verify *in-test* constantly (a single 2FA
+    enrollment mints a full recovery-code set; recovery login scans every stored hash), which
+    dominated the suite's wall clock. The patch is safe because the encoded hash is
+    self-describing (``pbkdf2_sha256$<iters>$<salt>$<key>``) and ``verify_password`` derives with
+    the iteration count parsed FROM the string, never the module constant — so test-minted
+    ``$1000$`` hashes verify at 1,000 rounds while parsing, scheme rejection, the real PBKDF2
+    derivation, and the constant-time compare all still execute unchanged. Production is
+    structurally out of reach: only ``hash_password`` reads the constant at mint time, every real
+    mint site (install.sh, change-password, recovery codes) runs in the server process, and
+    ``tests/`` is never packaged into the wheel.
+
+    The assertion below fails the WHOLE suite the moment the production work factor is
+    weakened at the source; the dedicated #395 guard test in test_password.py additionally
+    pins the exact value and round-trips one real 600k hash per suite."""
+    assert auth._PBKDF2_ITERS >= 600_000, (
+        f"production PBKDF2 work factor weakened: auth._PBKDF2_ITERS "
+        f"is {auth._PBKDF2_ITERS}, expected >= 600_000"
+    )
+    orig = auth._PBKDF2_ITERS
+    auth._PBKDF2_ITERS = 1_000
+    yield
+    auth._PBKDF2_ITERS = orig
 
 
 @pytest.fixture(autouse=True)

@@ -230,6 +230,7 @@ def test_installer_origin_falls_back_to_first_addr_without_default_route(tmp_pat
     assert "RESULT URL=http://0.0.0.0" not in out
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_no_tty_keeps_localhost(tmp_path):
     # #487: with no AGENT_SESSIONS_HOST, no ASSUME_YES, and detached from any controlling
@@ -265,6 +266,7 @@ def test_installer_no_tty_keeps_localhost(tmp_path):
     assert "AGENT_SESSIONS_ORIGIN=http://127.0.0.1:8796" in text
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_explicit_host_persists_and_is_adopted_on_rerun(tmp_path):
     # #487: an explicit AGENT_SESSIONS_HOST is persisted, and a re-run WITHOUT the env var still
@@ -431,6 +433,7 @@ def test_install_sh_self_contained_toolchain():
     assert "preflight_report" in s  # up-front validation summary
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_end_to_end(tmp_path):
     home = tmp_path / "prefix"
@@ -521,6 +524,7 @@ def test_installer_end_to_end(tmp_path):
     assert json.loads(prefs_file.read_text()).get("onboarded") is False
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
     # #675 (Hermes review): a failed first install can leave an empty `releases/` behind (the
@@ -552,6 +556,7 @@ def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
     assert json.loads(prefs_file.read_text()).get("onboarded") is False
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(
     os.environ.get("AGENT_SESSIONS_TEST_UI_BUILD") != "1" or not shutil.which("npm"),
     reason="opt-in real npm ci + Vite build; set AGENT_SESSIONS_TEST_UI_BUILD=1",
@@ -586,6 +591,7 @@ def test_installer_builds_the_react_ui(tmp_path):
     assert (home / "pty").is_dir()  # ws-PTY runtime dir created
 
 
+@pytest.mark.e2e_install
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_migrates_existing_env_to_react(tmp_path):
     # An upgrade of a pre-existing (older) env must gain the serving + runtime flags

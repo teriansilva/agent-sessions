@@ -143,13 +143,16 @@ def test_must_change_gate_and_change_page(auth_cfg, tmp_path, monkeypatch):
     assert "FORCE_PASSWORD_CHANGE" not in envf.read_text()
 
 
-def test_production_kdf_iteration_count_is_not_silently_downgraded():
-    """Guard for #395: the test suite reuses a session-scoped hash to skip the KDF cost, so
-    a silent drop in the *production* iteration count would no longer be caught by fixture
-    timing. Pin it here — the shipped hash must encode 600k PBKDF2 iterations and round-trip."""
+def test_production_kdf_iteration_count_is_not_silently_downgraded(prod_pbkdf2_iters, monkeypatch):
+    """Guard for #395/#699: the suite runs at a test-scoped work factor (conftest
+    ``_fast_pbkdf2`` patches ``auth._PBKDF2_ITERS`` for speed), so a silent drop in the
+    *production* iteration count would not surface anywhere else. Pin it here against the
+    value captured at conftest import — before any fixture patching — and mint + round-trip
+    the suite's one real production-strength hash."""
     from agent_sessions import auth
 
-    assert auth._PBKDF2_ITERS == 600_000
+    assert prod_pbkdf2_iters == 600_000
+    monkeypatch.setattr(auth, "_PBKDF2_ITERS", prod_pbkdf2_iters)
     encoded = auth.hash_password("hunter2")
     scheme, iters, _salt, _key = encoded.split("$")
     assert scheme == "pbkdf2_sha256" and int(iters) == 600_000

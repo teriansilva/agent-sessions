@@ -24,6 +24,7 @@ cd web && npm ci
 ruff check src tests          # lint
 ruff format --check src tests # formatting
 pytest                        # unit + integration
+pytest -m "not e2e_install"   # same, minus the multi-minute install.sh end-to-end tests
 
 # Web
 cd web
@@ -33,7 +34,19 @@ npm run build     # tsc + Vite production build
 npm run test:e2e  # Playwright (desktop + emulated mobile); installs chromium on first run
 ```
 
-Run all of the above locally before opening a PR — CI runs the same checks.
+Run all of the above locally before opening a PR — CI runs the same checks. The `e2e_install`
+deselect is a local-iteration convenience only; CI always runs the full suite, so land nothing
+that hasn't passed a plain `pytest` at least once.
+
+Two test-suite policies worth knowing (#699):
+
+- **PBKDF2 runs at a test-scoped work factor.** An autouse session fixture in `tests/conftest.py`
+  drops `auth._PBKDF2_ITERS` from 600k to 1,000 for the test session — `verify_password` reads
+  the iteration count from the hash string itself, so the full parse/derive/compare path is still
+  exercised and production code is untouched. The fixture *asserts the production constant is
+  ≥ 600k before patching*: weakening the real work factor fails the whole suite.
+- **Markers are strict** (`--strict-markers`): a typo'd `@pytest.mark.…` is a collection error,
+  not a silent no-op. Register new markers in `pyproject.toml`.
 
 `install.sh` / `uninstall.sh` are smoke-tested on **every PR** (`installer-smoke.yml`): a pristine
 container (no usable Python/Node — the vendored-toolchain path) installs from your checkout, the
