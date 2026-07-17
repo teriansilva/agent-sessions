@@ -65,6 +65,10 @@ markers = [
     # Full install.sh end-to-end runs (venv build + real pip install; the multi-minute tests).
     # CI runs everything; deselect locally while iterating: pytest -m "not e2e_install"
     "e2e_install: full install.sh end-to-end run (slow; local opt-out only, CI always runs)",
+    # Covers a resource read relative to the INSTALLED package (main.py resolves
+    # _TEMPLATES/_STATIC off __file__), so it can only fail in a non-editable install.
+    # pr-validate's wheel pass re-runs exactly these against site-packages (#704).
+    "deploy_shape: exercises a packaged resource through the installed package (wheel pass)",
 ]
 
 [tool.ruff]

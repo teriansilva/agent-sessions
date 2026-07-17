@@ -3,9 +3,13 @@ Origin/Referer match, /api/auth-check shape used by nginx auth_request."""
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions.main import create_app
+
+# Renders login.html from the installed package — see the deploy_shape marker in pyproject.
+pytestmark = pytest.mark.deploy_shape
 
 
 def _client(auth_cfg):

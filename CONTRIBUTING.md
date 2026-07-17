@@ -38,15 +38,26 @@ Run all of the above locally before opening a PR — CI runs the same checks. Th
 deselect is a local-iteration convenience only; CI always runs the full suite, so land nothing
 that hasn't passed a plain `pytest` at least once.
 
-Two test-suite policies worth knowing (#699):
+Test-suite policies worth knowing:
 
-- **PBKDF2 runs at a test-scoped work factor.** An autouse session fixture in `tests/conftest.py`
-  drops `auth._PBKDF2_ITERS` from 600k to 1,000 for the test session — `verify_password` reads
-  the iteration count from the hash string itself, so the full parse/derive/compare path is still
-  exercised and production code is untouched. The fixture *asserts the production constant is
-  ≥ 600k before patching*: weakening the real work factor fails the whole suite.
+- **PBKDF2 runs at a test-scoped work factor** (#699). An autouse session fixture in
+  `tests/conftest.py` drops `auth._PBKDF2_ITERS` from 600k to 1,000 for the test session —
+  `verify_password` reads the iteration count from the hash string itself, so the full
+  parse/derive/compare path is still exercised and production code is untouched. The fixture
+  *asserts the production constant is ≥ 600k before patching*: weakening the real work factor
+  fails the whole suite.
 - **Markers are strict** (`--strict-markers`): a typo'd `@pytest.mark.…` is a collection error,
   not a silent no-op. Register new markers in `pyproject.toml`.
+- **`deploy_shape` marks the tests `pr-validate`'s wheel pass re-runs** (#704). The app resolves
+  its Jinja templates and `/static` assets *relative to the installed module* (`main.py`'s
+  `_HERE = Path(__file__).parent`), so those reads can only break in a non-editable install —
+  which is why that pass installs with `pip install .` and re-runs `-m deploy_shape` from
+  outside the repo. **Mark a new test `deploy_shape` when it covers a resource read off the
+  installed package** (a new template, a new `/static` asset). Presence of every packaged
+  resource is checked separately in that job and derives from the source tree, so it can't
+  drift; the marker is what proves the app can still *resolve* them. The rest of the suite runs
+  once, in the editable pass — re-running it against the wheel catches nothing (a wheel built
+  with no templates at all still passes 283 of the non-rendering tests).
 
 `install.sh` / `uninstall.sh` are smoke-tested on **every PR** (`installer-smoke.yml`): a pristine
 container (no usable Python/Node — the vendored-toolchain path) installs from your checkout, the

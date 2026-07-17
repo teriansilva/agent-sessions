@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions.auth import verify_password
 from agent_sessions.main import create_app
+
+# Renders change_password.html from the installed package — see pyproject's deploy_shape marker.
+pytestmark = pytest.mark.deploy_shape
 
 
 def _client(cfg):

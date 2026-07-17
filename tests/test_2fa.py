@@ -16,6 +16,9 @@ from agent_sessions import twofactor
 from agent_sessions.auth import AuthConfig
 from agent_sessions.main import create_app
 
+# Renders login_totp.html from the installed package — see pyproject's deploy_shape marker.
+pytestmark = pytest.mark.deploy_shape
+
 
 def _client(cfg) -> TestClient:
     return TestClient(create_app(cfg), base_url="https://testserver")

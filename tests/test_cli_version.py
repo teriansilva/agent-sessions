@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 import agent_sessions
 from agent_sessions import cli, version
+
+# version._git_sha resolves off __file__ — only a real install exercises that path.
+pytestmark = pytest.mark.deploy_shape
 
 
 def test_get_version_returns_a_nonempty_string():

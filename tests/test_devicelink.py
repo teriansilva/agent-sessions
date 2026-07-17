@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions.auth import AuthConfig
 from agent_sessions.devicelink import DeviceLinkStore
 from agent_sessions.main import create_app
+
+# Renders link_approve.html AND serves /static/link.js from the installed package — the only
+# coverage of the _STATIC mount. See pyproject's deploy_shape marker.
+pytestmark = pytest.mark.deploy_shape
 
 # ---- store: the atomic single-use core --------------------------------------------------
 
