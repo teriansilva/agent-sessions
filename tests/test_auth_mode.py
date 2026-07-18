@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions import main
-from agent_sessions.auth import AuthConfig
+from agent_sessions.auth import AuthConfig, decode_session_token
 from agent_sessions.main import create_app
 
 
@@ -230,7 +230,6 @@ def test_rotation_preserves_csrf_so_cached_client_token_survives(none_cfg):
     app = create_app(none_cfg)
     c = TestClient(app, base_url="https://testserver")
     csrf = c.get("/api/config").json()["csrf"]  # the SPA's one-time cached token
-    old_cookie = app.state.none_session["set_cookie"]
     # Invalidate the cached token (what TTL expiry / secret rotation looks like to the
     # validator), then let a background GET from a fresh cookie-less client rotate it.
     app.state.none_session["token"] = "expired-or-garbage"
@@ -239,7 +238,14 @@ def test_rotation_preserves_csrf_so_cached_client_token_survives(none_cfg):
     r_bg = c2.get("/api/auth-check")  # triggers the rotation
     assert r_bg.status_code == 204
     rotated = app.state.none_session["set_cookie"]
-    assert rotated and rotated != old_cookie  # the cookie really rotated
+    # The garbage was replaced by a freshly-signed, VALID session. Do NOT assert the cookie
+    # STRING changed: rotation pins {uid, csrf}, so a re-sign inside the same itsdangerous
+    # 1-second timestamp is byte-identical — asserting inequality was a clock race (#706).
+    # Assert the properties rotation actually promises instead.
+    assert rotated and "expired-or-garbage" not in rotated
+    assert decode_session_token(none_cfg, app.state.none_session["token"]) is not None
+    # …and the csrf was PINNED across the re-mint (the #674 invariant this test guards).
+    assert app.state.none_session["csrf"] == csrf
     # The mutation still carries the ORIGINAL cached csrf, now with the rotated cookie.
     r = c2.post(
         "/api/prefs",
