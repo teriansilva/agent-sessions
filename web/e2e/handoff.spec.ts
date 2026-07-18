@@ -13,6 +13,7 @@ const UUID = "aaaaaaaa-1111-2222-3333-444444444444";
 const TITLE = "Fix the auth token refresh-rotation race";
 const PREVIEW =
   "# Handoff — continued from a claude session\n\n## Recent turns\n\n[user] run the auth tests again\n[agent] 4 passed — pushed the fix";
+const AI_PREVIEW = "# Handoff — continued from a claude session\n\n## State\n\nAuth refresh race fixed.";
 const TARGET_NATIVE = "new-bbbbbbbb-1111-2222-3333-444444444444";
 
 const ENGINES = [
@@ -70,12 +71,17 @@ test("hand-off control opens the modal; picker + preview render; confirm lands o
   await expect(gemini).toContainText(/no seed-capable start yet/i);
   await expect(dialog.getByRole("radio", { name: /shell/i })).toHaveCount(0);
 
-  // Quick-mode seed preview is shown read-only; AI summary is visibly Phase 2.
+  // Phase 2: the seed preview is EDITABLE and both seed modes are offered.
   const preview = dialog.getByLabel(/seed preview/i);
   await expect(preview).toHaveValue(PREVIEW);
-  await expect(preview).toHaveAttribute("readonly", "");
-  await expect(dialog.getByRole("button", { name: /ai summary/i })).toBeDisabled();
-  await expect(dialog).toContainText(/never argv or url/i);
+  await expect(preview).not.toHaveAttribute("readonly", "");
+  await expect(dialog.getByRole("radio", { name: /ai summary/i })).toBeEnabled();
+  await expect(dialog.getByRole("radio", { name: /quick tail/i })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  // The privacy line is accurate about where the seed actually goes (Hermes on #701).
+  await expect(dialog).toContainText(/that engine's model provider sees it/i);
 
   // Confirm → navigate to the freshly minted target session (normal fresh-launch route).
   await dialog.getByRole("button", { name: /^hand off$/i }).click();
@@ -103,4 +109,76 @@ test("backdrop click closes the hand-off modal (#597)", async ({ page }) => {
   await expect(dialog).toBeVisible();
   await page.mouse.click(5, 5);
   await expect(dialog).toBeHidden();
+});
+
+test("AI summary mode prepares an AI seed, and an edit is what gets handed off (#597 P2)", async ({
+  page,
+}) => {
+  await page.route("**/api/handoff/prepare", async (route) => {
+    const body = route.request().postDataJSON() as { mode?: string };
+    await route.fulfill({
+      json:
+        body.mode === "ai"
+          ? {
+              handle: "h-ai",
+              preview: AI_PREVIEW,
+              meta: { mode: "ai", turns: 9, bytes: AI_PREVIEW.length, cap: 8192 },
+            }
+          : {
+              handle: "h-e2e-1",
+              preview: PREVIEW,
+              meta: { mode: "quick", turns: 2, bytes: PREVIEW.length, cap: 8192 },
+            },
+    });
+  });
+  let committed: { handle?: string; seed?: string } = {};
+  await page.route(/\/api\/handoff$/, async (route) => {
+    committed = route.request().postDataJSON();
+    await route.fulfill({
+      json: { id: `codex:${TARGET_NATIVE}`, engine: "codex", native: TARGET_NATIVE, cwd: "/home/u/proj" },
+    });
+  });
+
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  await page.getByRole("button", { name: /hand off session/i }).click();
+  const dialog = page.getByRole("dialog", { name: /hand off/i });
+
+  // Switching to AI mode re-prepares and shows the AI brief.
+  await dialog.getByRole("radio", { name: /ai summary/i }).click();
+  const preview = dialog.getByLabel(/seed preview/i);
+  await expect(preview).toHaveValue(AI_PREVIEW);
+
+  // The user edits the brief; the edit — not the prepared text — is what is committed.
+  await preview.fill("my own handoff brief");
+  await dialog.getByRole("button", { name: /^hand off$/i }).click();
+  await page.waitForURL(`**/s/codex/${TARGET_NATIVE}`);
+  expect(committed.handle).toBe("h-ai");
+  expect(committed.seed).toBe("my own handoff brief");
+});
+
+test("a degraded AI handoff tells the user it fell back to the quick tail (#597 P2)", async ({
+  page,
+}) => {
+  await page.route("**/api/handoff/prepare", (r) =>
+    r.fulfill({
+      json: {
+        handle: "h-deg",
+        preview: PREVIEW,
+        meta: {
+          mode: "quick",
+          turns: 2,
+          bytes: PREVIEW.length,
+          cap: 8192,
+          requested_mode: "ai",
+          degraded: true,
+          notice: "AI review isn't configured — using the local quick tail.",
+        },
+      },
+    }),
+  );
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  await page.getByRole("button", { name: /hand off session/i }).click();
+  const dialog = page.getByRole("dialog", { name: /hand off/i });
+  await dialog.getByRole("radio", { name: /ai summary/i }).click();
+  await expect(dialog).toContainText(/isn't configured — using the local quick tail/i);
 });

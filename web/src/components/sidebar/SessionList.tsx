@@ -1,6 +1,7 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowLeftRight,
   Check,
   Eye,
   EyeOff,
@@ -26,7 +27,14 @@ import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
-import { engineBadge, projectColor, relTime } from "../../lib/format";
+import {
+  engineBadge,
+  engineName,
+  parseSessionKey,
+  projectColor,
+  relTime,
+  sessionPathFromKey,
+} from "../../lib/format";
 import type { ProjectRef, Session } from "../../types/api";
 import { FiltersBar } from "./Filters";
 import { MoveToProjectModal } from "./MoveToProjectModal";
@@ -158,6 +166,9 @@ function Row({
   // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
   const [moving, setMoving] = useState(false);
   const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(null);
+  // Imperative route to a handoff peer from the ⋯ menu (#597 Phase 2) — the row itself is
+  // a NavLink, so the peer link can't be nested inside it.
+  const navigate = useNavigate();
 
   const handleMove = async (ref: ProjectRef | null) => {
     setMoving(false);
@@ -289,12 +300,41 @@ function Row({
     );
   }
 
+  // Handoff provenance (#597 Phase 2). A row can be the TARGET of one handoff and the
+  // SOURCE of another — a chained session carries BOTH, so both are rendered and both get
+  // a menu entry (Hermes on #703: `from || to` hid the outbound half of a chain). Peer ids
+  // are display strings: a peer may be archived/deleted, so the menu item just routes there
+  // and lets that route render its own empty state.
+  const peers = (
+    [
+      { key: s.handoff_from ?? "", inbound: true },
+      { key: s.handoff_to ?? "", inbound: false },
+    ] as const
+  )
+    .filter((p) => p.key)
+    .map((p) => ({ ...p, parsed: parseSessionKey(p.key), path: sessionPathFromKey(p.key) }))
+    .filter((p) => p.parsed !== null);
+
   // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Same
   // actions, same gating: Review-now / exclude items exist only when the AI-review
   // handlers were passed down (ai_review.configured), the exclude item flips label
   // for an excluded row, archive flips for an archived one. Busy items are disabled
   // in place (aria-disabled) rather than removed, so the menu doesn't reflow.
   const menuItems: RowMenuEntry[] = [];
+  for (const p of peers) {
+    const path = p.path;
+    if (!path || !p.parsed) continue;
+    menuItems.push({
+      key: p.inbound ? "handoff-source" : "handoff-target",
+      label: p.inbound ? "Open source session" : "Open handoff target",
+      ariaLabel: p.inbound
+        ? `Open the session this was handed off from (${engineName(p.parsed.engine)})`
+        : `Open the session this was handed off to (${engineName(p.parsed.engine)})`,
+      icon: <ArrowLeftRight size={15} />,
+      onSelect: () => navigate(path),
+    });
+  }
+  if (menuItems.length > 0) menuItems.push("separator");
   if (onReviewNow && !s.review_excluded) {
     menuItems.push({
       key: "review",
@@ -468,6 +508,24 @@ function Row({
               </span>
             )}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
+            {/* Handoff provenance (#597): where this session came from (accent) or where
+                it was handed to (muted). Non-interactive by construction — the row IS a
+                NavLink, and an anchor may not contain interactive content, so the
+                tap-through to the peer lives in the ⋯ menu (same reason RowMenu is a
+                sibling of the link, not a child). */}
+            {peers.map((p) => (
+              <span
+                key={p.key}
+                className={p.inbound ? styles.handoffBadge : styles.handoffBadgeOut}
+                title={
+                  p.inbound
+                    ? `Handed off from ${engineName(p.parsed!.engine)} · ${p.key}`
+                    : `Handed off to ${engineName(p.parsed!.engine)} · ${p.key}`
+                }
+              >
+                ⇄ {p.inbound ? "from" : "to"} {engineBadge(p.parsed!.engine)}
+              </span>
+            ))}
             <span className={styles.metaText}>
               {" · "}
               {/* #508: the launch-folder chip was dropped to declutter the narrow sidebar; an

@@ -240,6 +240,33 @@
 /* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
  * engine tag · time — an entity name leads with its color dot. Inline (not flex) so the
  * metaText ellipsis keeps truncating the whole line. */
+/* Handoff provenance (#597 Phase 2). Same bordered mono pill as .engineTag so the meta
+   line reads as one vocabulary; the INBOUND badge carries the brand accent (this row came
+   from somewhere), the OUTBOUND marker stays muted (this row was handed on — secondary
+   information). Amber is the brand accent, never a status colour: status stays
+   load-bearing (docs/design.md), and provenance is not a status. */
+.handoffBadge,
+.handoffBadgeOut {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.handoffBadge {
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.handoffBadgeOut {
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+}
+
 .projectChip {
   color: var(--text-muted);
 }

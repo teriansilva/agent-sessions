@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../../app/config";
 import { api, ApiError } from "../../lib/api";
@@ -67,6 +67,11 @@ beforeEach(() => {
   vi.mocked(api.projectEntities).mockReset();
   vi.mocked(api.setSessionProject).mockReset();
 });
+
+/** Renders the current route so an imperative navigate() is assertable (#597). */
+function LocationProbe() {
+  return <span data-testid="loc">{useLocation().pathname}</span>;
+}
 
 /** #384: row actions live behind a single ⋯ trigger now — open it first. */
 async function openRowMenu(user: ReturnType<typeof userEvent.setup>) {
@@ -731,4 +736,102 @@ test("Move to project: Escape closes the picker without assigning (#424 Phase 5b
     expect(screen.queryByRole("dialog", { name: /move to project/i })).not.toBeInTheDocument(),
   );
   expect(api.setSessionProject).not.toHaveBeenCalled();
+});
+
+// --- handoff provenance (#597 Phase 2) --------------------------------------------------
+
+test("a handed-off-to row shows the inbound provenance badge", async () => {
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([{ ...sess("codex:t1", "Fix auth race", "codex"), handoff_from: "claude:s1" }]),
+  );
+  render(
+    <MemoryRouter initialEntries={["/s/codex/t1"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  const badge = await screen.findByTitle(/handed off from claude · claude:s1/i);
+  expect(badge).toHaveTextContent(/⇄ from cc/i);
+});
+
+test("a source row shows the muted outbound marker", async () => {
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([{ ...sess("claude:s1", "Fix auth race"), handoff_to: "codex:t1" }]),
+  );
+  render(
+    <MemoryRouter initialEntries={["/s/claude/s1"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  const badge = await screen.findByTitle(/handed off to codex · codex:t1/i);
+  expect(badge).toHaveTextContent(/⇄ to cx/i);
+});
+
+test("a row with no handoff shows no provenance badge", async () => {
+  vi.mocked(api.sessions).mockResolvedValue(pageOf([sess("claude:a", "Plain session")]));
+  render(
+    <MemoryRouter initialEntries={["/s/claude/a"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Plain session");
+  expect(screen.queryByTitle(/handed off/i)).toBeNull();
+});
+
+test("the row menu routes to the handoff peer", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([{ ...sess("codex:t1", "Fix auth race", "codex"), handoff_from: "claude:s1" }]),
+  );
+  render(
+    <MemoryRouter initialEntries={["/s/codex/t1"]}>
+      <SessionList />
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Fix auth race");
+  const menu = await openRowMenu(user);
+  // The backlink lives in the ⋯ menu, not nested in the row's NavLink (an anchor may not
+  // contain interactive content) — tap-through per the issue's provenance goal.
+  await user.click(within(menu).getByRole("menuitem", { name: /open the session this was handed off from/i }));
+  expect(screen.getByTestId("loc")).toHaveTextContent("/s/claude/s1");
+});
+
+test("a row with no handoff has no peer menu item", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.sessions).mockResolvedValue(pageOf([sess("claude:a", "Plain session")]));
+  render(
+    <MemoryRouter initialEntries={["/s/claude/a"]}>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Plain session");
+  const menu = await openRowMenu(user);
+  expect(within(menu).queryByRole("menuitem", { name: /handed off/i })).toBeNull();
+});
+
+test("a chained session shows BOTH provenance relationships (#703 review)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([
+      {
+        ...sess("codex:mid", "Middle of a chain", "codex"),
+        handoff_from: "claude:s1",
+        handoff_to: "opencode:t2",
+      },
+    ]),
+  );
+  render(
+    <MemoryRouter initialEntries={["/s/codex/mid"]}>
+      <SessionList />
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+  // `from || to` used to hide the outbound half of a chain — both must show.
+  expect(await screen.findByTitle(/handed off from claude · claude:s1/i)).toBeVisible();
+  expect(screen.getByTitle(/handed off to opencode · opencode:t2/i)).toBeVisible();
+  // …and both peers are reachable.
+  const menu = await openRowMenu(user);
+  expect(within(menu).getByRole("menuitem", { name: /handed off from/i })).toBeVisible();
+  await user.click(within(menu).getByRole("menuitem", { name: /handed off to/i }));
+  expect(screen.getByTestId("loc")).toHaveTextContent("/s/opencode/t2");
 });

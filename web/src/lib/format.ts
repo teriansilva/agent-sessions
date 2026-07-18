@@ -112,3 +112,20 @@ export function humanDuration(seconds: number): string {
   if (m > 0) return `${m}m`;
   return `${s}s`;
 }
+
+/** Split an engine-qualified session id (`<engine>:<native_id>`) into its parts, or null
+ *  when it isn't one (#597 handoff provenance). `indexOf` — not `split` — because a native
+ *  id may itself contain a colon; only the FIRST separator delimits the engine. */
+export function parseSessionKey(key: string): { engine: string; uuid: string } | null {
+  const i = key.indexOf(":");
+  if (i <= 0 || i === key.length - 1) return null;
+  return { engine: key.slice(0, i), uuid: key.slice(i + 1) };
+}
+
+/** Route to a session from its engine-qualified id, or null when the id is malformed.
+ *  The peer of a handoff may be archived/deleted — callers must tolerate a dead link
+ *  (the route renders its own empty state); nothing here dereferences the session. */
+export function sessionPathFromKey(key: string): string | null {
+  const p = parseSessionKey(key);
+  return p ? `/s/${encodeURIComponent(p.engine)}/${encodeURIComponent(p.uuid)}` : null;
+}

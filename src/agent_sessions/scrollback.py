@@ -191,6 +191,14 @@ def ring_cols(key: str) -> int | None:
 _MODE_TRACK = frozenset({1000, 1002, 1003, 1005, 1006, 1015, 1007, 2004})
 # Per-key CURRENT active private-mode set — in-memory mirror of the `.modes` sidecar.
 _MODES: dict[str, set[int]] = {}
+# Handoff readiness (#597 / PR #703 review round 4): keys whose TUI has been OBSERVED to
+# paint a full screen at least once. In-memory mirror of the `.ready` sidecar, hydrated by
+# `_ensure_loaded` exactly like `_MODES`. The handoff seed injector counts `out_bytes` per
+# `run()` (live bytes only — scrollback REPLAY on a reconnect doesn't advance it), so a seed
+# left pending because the first viewer dropped before the quiet window would otherwise see
+# `painted == False` forever on the next attach even though the TUI is fully up. This flag
+# preserves the first-paint evidence across attachments so the pending seed can be delivered.
+_READY: set[str] = set()
 # Per-key trailing partial private-mode sequence carried across chunk boundaries, so a
 # DECSET/DECRST split between two reads is still recognized. The scan must be incremental
 # (not derived from the retained ring like `_in_alt_screen`'s whole-ring rfind): the
@@ -293,6 +301,32 @@ def has_mode(key: str, mode: int) -> bool:
     _ensure_loaded(key)
     active = _MODES.get(key)
     return bool(active and mode in active)
+
+
+def _ready_path(key: str) -> Path:
+    return _SCROLLBACK_DIR / (key.replace(":", "__") + ".ready")
+
+
+def note_first_paint(key: str) -> None:
+    """Record — durably — that ``key``'s TUI has painted a full screen at least once
+    (#597 / PR #703 review round 4). Idempotent + best-effort; persisted so a later attach
+    inherits the readiness evidence that the live ``out_bytes`` counter can't carry across
+    a reconnect."""
+    if key in _READY:
+        return
+    _READY.add(key)
+    try:
+        _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        _ready_path(key).write_text("1")
+    except OSError:
+        pass  # best-effort, like the mirror + `.modes` sidecar
+
+
+def first_paint_seen(key: str) -> bool:
+    """True when ``key``'s TUI has been observed to paint a full screen (persisted, so it
+    survives the viewer disconnect the injector's per-``run()`` byte counter cannot)."""
+    _ensure_loaded(key)
+    return key in _READY
 
 
 def attach_modes_payload(key: str) -> bytes:
@@ -437,6 +471,9 @@ def _ensure_loaded(key: str) -> None:
                 for tok in raw.split(",")
                 if tok.strip().isdigit() and int(tok) in _MODE_TRACK
             }
+    # Restore the handoff first-paint-readiness flag (#597 / PR #703 r4) so a reconnect can
+    # deliver a still-pending seed to an already-painted, now-idle TUI.
+    ready_seen = key not in _READY and _ready_path(key).exists()
     try:
         # #652 T4: bounded tail read — the on-disk mirror can be ~2×`_MAX_BUF`, and
         # `read_bytes()[-_MAX_BUF:]` allocated the whole file (up to 16 MB) on the first
@@ -452,6 +489,8 @@ def _ensure_loaded(key: str) -> None:
             _LAST_COLS[key] = cols
         if modes is not None and key not in _MODES:
             _MODES[key] = modes
+        if ready_seen:
+            _READY.add(key)
         # Only seed the ring if nothing live already holds it (the loop's ring is authoritative).
         if data and key not in _BUFFERS:
             _BUFFERS[key] = bytearray(data)
@@ -526,7 +565,7 @@ def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
             cleared = True
         except OSError:
             pass  # mirror absent (e.g. already reset by `_reset_ring`) — sidecars may remain
-        for sidecar in (_cols_path(key), _modes_path(key)):
+        for sidecar in (_cols_path(key), _modes_path(key), _ready_path(key)):
             try:
                 sidecar.unlink()
                 cleared = True
@@ -552,6 +591,10 @@ def _drop_buffer(key: str) -> None:
     # `_ensure_loaded` — exactly like the ring itself.
     _MODES.pop(key, None)
     _MODE_CARRY.pop(key, None)
+    # Handoff readiness (#597 / PR #703 r4) is in-memory only here; the `.ready` sidecar is
+    # durable (removed solely by `clear_scrollback`), so a later touch re-hydrates it via
+    # `_ensure_loaded` — exactly like `_MODES`.
+    _READY.discard(key)
     _SUBMITTED.discard(key)
     _SANITIZE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)

@@ -142,14 +142,36 @@ SPAWN_TIMEOUT_S = 15.0
 _TERMINATE_WAIT_S = 3.0
 
 # Handoff seed injection (#597). The seed is delivered as terminal input — a bracketed
-# paste written to the PTY, exactly like typed input, never argv — once the freshly
-# launched TUI is READY: arming bracketed paste (DECSET 2004, tracked by scrollback's
-# mode scan) is the readiness signal, since a TUI arms it exactly when its input
-# pipeline is up. If the agent never arms it inside the window we fail SAFE: the session
-# runs unseeded (logged) rather than spraying raw bytes into a half-booted TUI.
+# paste written to the PTY, exactly like typed input, never argv — but ONLY once the
+# freshly launched TUI is genuinely ready to read input. Readiness needs all three of:
+#
+#   1. bracketed paste armed (DECSET 2004, tracked by scrollback's mode scan) — the
+#      agent speaks the paste protocol at all;
+#   2. FIRST PAINT — at least `_SEED_FIRST_PAINT_BYTES` of output since attach, i.e. the
+#      TUI has actually drawn its UI;
+#   3. QUIET — no output for `_SEED_QUIET_S`, i.e. that paint finished and it's idle.
+#
+# (2) is the one measured empirically (#597 Phase 2): a cold `codex` arms 2004 in its
+# terminal-init PREAMBLE ~0.3 s in — long before its input pipeline exists — then emits
+# ~91 bytes over the next 12 s while it initialises, DISCARDING anything written to its
+# stdin. Gating on 2004 alone therefore pasted the seed into the void and reported
+# success; a fresh-install codex silently produced an unseeded session. A TUI that has
+# rendered a full screen and gone quiet is one that has started its event loop, and that
+# is engine-agnostic — no per-engine probes, no timing guess.
+#
+# All three are bounded by `_SEED_READY_TIMEOUT_S`; on timeout we fail SAFE (no injection,
+# logged) rather than spraying bytes at a half-booted TUI.
 _SEED_READY_TIMEOUT_S = 45.0
 _SEED_POLL_S = 0.25
-_SEED_SETTLE_S = 0.75  # after 2004 arms, let the first paint finish before pasting
+# A booted TUI's first full-screen render is kilobytes; a not-yet-ready preamble is a few
+# hundred. Measured for codex (#597 Phase 2, at 120x40 with the attach SIGWINCH nudge): a
+# genuinely COLD first-run home paints ~1.4 KB then stalls in first-run setup (not ready),
+# while a WARM home paints ~4 KB of full UI (ready). 2 KB sits cleanly between: it delivers
+# to a ready TUI and fails safe on a cold one mid-first-run-setup (the documented first-run
+# limitation), rather than pasting into a TUI that is still initialising.
+_SEED_FIRST_PAINT_BYTES = 2048
+_SEED_QUIET_S = 1.0
+_SEED_SETTLE_S = 0.75  # final beat after the gate opens, before pasting
 # Delivery bound (#701 review round 3): the whole paste+CR must land within this window or
 # the claim is settled (retry when nothing was written, abort after a partial write) — a
 # target that keeps the PTY open but stops draining input can never hold a claim forever.
@@ -393,16 +415,16 @@ async def _deliver_seed_via_pool(
     seed_key: str,
     buf_key: str | None,
     write_lock: threading.Lock | None = None,
-) -> None:
+) -> bool:
     """Run the owned-fd delivery on the dedicated pool, reclaiming ownership if the job is
     cancelled while still QUEUED (#701 review round 4 P2): a saturated pool means the work
     item may never start, so its ``finally``-close never runs — without this reclaim every
     attach/disconnect cycle under saturation would leak one dup'd master fd. A job that
     already STARTED cannot be cancelled (concurrent.futures semantics) and closes the fd
-    itself."""
+    itself. Returns True when the seed was fully delivered."""
     cf = _seed_executor().submit(_deliver_seed_owned_fd, fd, seed_key, buf_key, write_lock)
     try:
-        await asyncio.wrap_future(cf)
+        return await asyncio.wrap_future(cf)
     except asyncio.CancelledError:
         if cf.cancelled() or cf.cancel():  # never ran → the fd is still ours to close
             with contextlib.suppress(OSError):
@@ -644,6 +666,37 @@ async def run(
     # directly, so an idle agent's counter stays put until the shrink actually forces a repaint.
     out_bytes = {"n": 0}
 
+    # Owner-input hold during handoff seed delivery (#703 review follow-up). While a seed is
+    # pending injection, owner keystrokes are QUEUED rather than written, so the seed is
+    # guaranteed to be the target's first prompt and no user bytes can split the
+    # bracketed-paste frame (pump_in and the delivery worker share `write_lock`, but the
+    # per-chunk release meant a keystroke could still land mid-paste). The queue is flushed
+    # after the seed lands; if the seed is NOT delivered this run (TUI never ready, or the
+    # viewer dropped), the queued bytes are discarded — the TUI wasn't accepting input
+    # anyway, and the still-pending seed must stay first for the next attach.
+    seed_hold = {"active": seed_key is not None}
+    seed_queue: list[bytes] = []
+
+    def _release_seed_hold(*, delivered: bool) -> None:
+        if not seed_hold["active"]:
+            return
+        seed_hold["active"] = False
+        queued = b"".join(seed_queue)
+        seed_queue.clear()
+        if delivered and queued:
+            with contextlib.suppress(OSError), write_lock:
+                os.write(master, queued)
+            _note_submit(buf_key, queued)
+
+    def _write_owner_input(data: bytes) -> None:
+        # Queue while a seed is pending; otherwise write straight through under the lock.
+        if seed_hold["active"]:
+            seed_queue.append(data)
+            return
+        with contextlib.suppress(OSError), write_lock:
+            os.write(master, data)
+        _note_submit(buf_key, data)
+
     def _schedule_trailing_nudge() -> None:
         # Debounce: a mobile resize burst (keyboard + address-bar animation) collapses
         # to exactly one trailing repaint after the geometry quiets. Cancelled (with the
@@ -704,9 +757,7 @@ async def run(
                 # is the source of truth — not the client.
                 if kind == "i" and not _gated():
                     data = obj.get("d", "").encode("utf-8", "replace")
-                    with contextlib.suppress(OSError), write_lock:
-                        os.write(master, data)
-                    _note_submit(buf_key, data)
+                    _write_owner_input(data)
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
                         new_cols = int(obj.get("cols", cols))
@@ -754,9 +805,7 @@ async def run(
                         if width_changed and time.monotonic() - attach_at <= _RENUDGE_WINDOW_S:
                             _schedule_trailing_nudge()
             elif msg.get("bytes") is not None and not _gated():
-                with contextlib.suppress(OSError), write_lock:
-                    os.write(master, msg["bytes"])
-                _note_submit(buf_key, msg["bytes"])
+                _write_owner_input(msg["bytes"])
 
     async def _nudge_repaint() -> None:
         # When and how long to wait before the forced repaint (#304/#349/#443, and #652 T-P1:
@@ -776,38 +825,83 @@ async def run(
             await ws.send_text(json.dumps({"t": "p"}))
 
     async def _inject_seed() -> None:
-        # Handoff seed delivery (#597). Readiness gate: the freshly launched TUI arming
-        # bracketed paste (DECSET 2004 — all Phase-1 target engines arm it at startup) is the
-        # signal its input pipeline is up. Fail-safe on timeout: an unseeded session beats
-        # raw bytes sprayed into a half-booted TUI. Every await sits BEFORE the claim, so a
-        # viewer that drops (this task is cancelled) leaves the seed for the next attach.
-        deadline = time.monotonic() + _SEED_READY_TIMEOUT_S
-        armed = False
-        while time.monotonic() < deadline:
-            if buf_key and scrollback.has_mode(buf_key, 2004):
-                armed = True
-                break
-            await asyncio.sleep(_SEED_POLL_S)
-        if not armed:
-            log.warning(
-                "handoff seed for %s not injected: TUI never armed bracketed paste", seed_key
-            )
-            return
-        await asyncio.sleep(_SEED_SETTLE_S)
-        if not seed_key:
-            return
-        # Delivery runs on the DEDICATED bounded pool on a dup'd fd (review rounds 2–4):
-        # never the event loop, never the loop's shared default executor (pump_out and
-        # attach work live there), non-cancellable once RUNNING (asyncio cancellation
-        # interrupts the await, not the thread — the claim is always acked, and the write
-        # has a hard deadline), and ownership-safe when cancelled while still QUEUED
-        # (the dup is reclaimed — see _deliver_seed_via_pool).
+        # Handoff seed delivery (#597). Readiness = bracketed paste armed AND the TUI has
+        # actually painted AND that paint has gone quiet — see the _SEED_* block above for
+        # why 2004 alone is not readiness (a cold codex arms it in its preamble and then
+        # discards stdin for many seconds). Fail-safe on timeout: an unseeded session with
+        # a loud log beats bytes pasted into the void and reported as delivered. Every
+        # await sits BEFORE the claim, so a viewer that drops leaves the seed pending.
+        #
+        # First-paint is DURABLE (PR #703 review round 4): `out_bytes` counts only this
+        # `run()`'s live bytes — a reconnect REPLAYS the ring rather than re-emitting it, so
+        # a seed left pending because the first viewer dropped before the quiet window would
+        # otherwise see `painted == False` forever. We persist the first-paint observation
+        # (`scrollback.note_first_paint`) the moment we see it, and honour a prior
+        # observation (`first_paint_seen`) on the next attach, so the documented
+        # "delivered on the next attach" path actually succeeds for an already-idle TUI.
+        # Owner input is HELD (queued) for the whole readiness+delivery window and released
+        # in the finally: flushed after a successful delivery (so the seed was first, then
+        # the user's queued keystrokes), discarded otherwise (a not-ready TUI wasn't taking
+        # input, and a still-pending seed must stay first for the next attach). #703 review.
+        delivered = False
         try:
-            fd = os.dup(master)
-        except OSError:
-            return
-        with contextlib.suppress(asyncio.CancelledError):
-            await _deliver_seed_via_pool(fd, seed_key, buf_key, write_lock)
+            deadline = time.monotonic() + _SEED_READY_TIMEOUT_S
+            last_n, last_change = -1, time.monotonic()
+            ready = False
+            while time.monotonic() < deadline:
+                now = time.monotonic()
+                n = out_bytes["n"]
+                if n != last_n:
+                    last_n, last_change = n, now
+                armed = bool(buf_key) and scrollback.has_mode(buf_key, 2004)
+                if buf_key and n >= _SEED_FIRST_PAINT_BYTES:
+                    scrollback.note_first_paint(buf_key)  # durable across the next attach
+                painted = (n >= _SEED_FIRST_PAINT_BYTES) or (
+                    bool(buf_key) and scrollback.first_paint_seen(buf_key)
+                )
+                quiet = (now - last_change) >= _SEED_QUIET_S
+                if armed and painted and quiet:
+                    ready = True
+                    break
+                log.debug(
+                    "handoff readiness %s: armed=%s painted=%s quiet=%s (n=%d, idle=%.2fs)",
+                    seed_key,
+                    armed,
+                    painted,
+                    quiet,
+                    n,
+                    now - last_change,
+                )
+                await asyncio.sleep(_SEED_POLL_S)
+            if not ready:
+                log.warning(
+                    "handoff seed for %s not injected: TUI never became ready "
+                    "(bracketed-paste armed=%s, output=%dB of %dB first-paint, prior-paint=%s) "
+                    "— session runs unseeded",
+                    seed_key,
+                    bool(buf_key) and scrollback.has_mode(buf_key, 2004),
+                    out_bytes["n"],
+                    _SEED_FIRST_PAINT_BYTES,
+                    bool(buf_key) and scrollback.first_paint_seen(buf_key),
+                )
+                return
+            await asyncio.sleep(_SEED_SETTLE_S)
+            if not seed_key:
+                return
+            # Delivery runs on the DEDICATED bounded pool on a dup'd fd (review rounds 2-4):
+            # never the event loop, never the loop's shared default executor (pump_out and
+            # attach work live there), non-cancellable once RUNNING (asyncio cancellation
+            # interrupts the await, not the thread — the claim is always acked, and the write
+            # has a hard deadline), and ownership-safe when cancelled while still QUEUED
+            # (the dup is reclaimed — see _deliver_seed_via_pool).
+            try:
+                fd = os.dup(master)
+            except OSError:
+                return
+            with contextlib.suppress(asyncio.CancelledError):
+                delivered = await _deliver_seed_via_pool(fd, seed_key, buf_key, write_lock)
+        finally:
+            _release_seed_hold(delivered=bool(delivered))
 
     nudge_task = asyncio.create_task(_nudge_repaint())
     seed_task = asyncio.create_task(_inject_seed()) if seed_key else None

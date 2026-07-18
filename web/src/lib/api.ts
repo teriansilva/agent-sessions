@@ -8,6 +8,7 @@ import type {
   Folder,
   FsDir,
   HandoffCommitted,
+  HandoffMode,
   HandoffPrepared,
   HistoryPage,
   DraftAttachment,
@@ -197,21 +198,25 @@ export const api = {
   version: () => getJson<{ version: string }>("/api/version"),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
-  /** Cross-engine handoff prepare (#597): build the Quick seed for a source session and
-   *  return {handle, preview, meta}. Side-effect-free — cancel by letting the short-TTL
-   *  handle expire. 409 = empty source transcript; 422 = unsupported target/mode —
-   *  `mutateJson` surfaces the server detail either way. CSRF-guarded. */
-  prepareHandoff: (sourceId: string, targetEngine: string) =>
+  /** Cross-engine handoff prepare (#597): build the seed for a source session in `mode`
+   *  and return {handle, preview, meta}. Side-effect-free — cancel by letting the
+   *  short-TTL handle expire. An "ai" request degrades to the quick tail server-side when
+   *  the endpoint is unconfigured/failing (`meta.notice` explains). 409 = empty source
+   *  transcript; 422 = unsupported target/mode — `mutateJson` surfaces the server detail
+   *  either way. CSRF-guarded. */
+  prepareHandoff: (sourceId: string, targetEngine: string, mode: HandoffMode = "quick") =>
     mutateJson<HandoffPrepared>("POST", "/api/handoff/prepare", {
       source_id: sourceId,
       target_engine: targetEngine,
-      mode: "quick",
+      mode,
     }),
   /** Cross-engine handoff commit (#597): bind the prepared handle to a freshly minted
-   *  target session id. The caller then navigates to /s/{engine}/{native} (fresh launch)
-   *  and the server redeems the seed at spawn time — never through the URL. */
-  commitHandoff: (handle: string) =>
-    mutateJson<HandoffCommitted>("POST", "/api/handoff", { handle }),
+   *  target session id. `seed` carries the user's EDITED preview (Phase 2) — the server
+   *  re-sanitizes it. The caller then navigates to /s/{engine}/{native} (fresh launch) and
+   *  the server redeems the seed at spawn time — never through the URL. 404/409 = the
+   *  handle expired or was already committed; the modal re-prepares. */
+  commitHandoff: (handle: string, seed?: string) =>
+    mutateJson<HandoffCommitted>("POST", "/api/handoff", seed === undefined ? { handle } : { handle, seed }),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
   /** Self-update: compare the running version to the channel's latest. */

@@ -72,16 +72,46 @@ _HANDOFF_WATCHES: set[asyncio.Task] = set()
 # the missing writes on each attempt.
 _PUBLISH_ATTEMPTS = 3
 _PUBLISH_RETRY_DELAY_S = 2.0
+# Spawn-appearance wait (#703 review follow-up): the watch is armed at connection-accept
+# time, BEFORE webterm spawns the dtach master — and that spawn can take up to
+# webterm.SPAWN_TIMEOUT_S under load. So the instant-exit aliveness window must start only
+# once the master has actually APPEARED; starting an 8 s timer from arm-time would abort a
+# valid 8–15 s launch and delete its committed seed. Poll for the master up to the spawn
+# timeout plus a margin, then apply the instant-exit check on top.
+_SPAWN_APPEAR_MARGIN_S = 3.0
+_SPAWN_APPEAR_POLL_S = 0.25
 
 
 async def _handoff_spawn_watch(engine: str, phys_native: str) -> None:
-    """The one explicit spawn-success transition for a handoff target (#597): sleep out the
-    same instant-exit window the relaunch backstop uses, then either commit provenance
-    (master alive → ``handoff.mark_spawned``, retried on transient sidecar-write failures)
-    or abort without any sidecar write (master died → ``handoff.abort_spawn``). Armed at
-    most once per target via ``handoff.arm_watch`` — a WS reconnect can never replay it."""
-    await asyncio.sleep(relaunch._INSTANT_EXIT_S)
+    """The one explicit spawn-success transition for a handoff target (#597): wait for the
+    dtach master to APPEAR (bounded by the spawn timeout), then sleep out the same
+    instant-exit window the relaunch backstop uses and either commit provenance (master
+    still alive → ``handoff.mark_spawned``, retried on transient sidecar-write failures) or
+    abort without any sidecar write (never appeared / died in the window →
+    ``handoff.abort_spawn``). Armed at most once per target via ``handoff.arm_watch`` — a WS
+    reconnect can never replay it."""
     key = f"{engine}:{phys_native}"
+    # Phase 1 — wait for spawn success (the master coming up), not a fixed timer from
+    # arm-time, so a slow launch isn't aborted mid-flight (#703 review follow-up).
+    appear_deadline = time.monotonic() + webterm.SPAWN_TIMEOUT_S + _SPAWN_APPEAR_MARGIN_S
+    appeared = False
+    while time.monotonic() < appear_deadline:
+        try:
+            if await asyncio.to_thread(ptybridge.session_exists, engine, phys_native):
+                appeared = True
+                break
+        except Exception:
+            log.exception("handoff spawn-watch appearance probe failed for %s", key)
+            return
+        await asyncio.sleep(_SPAWN_APPEAR_POLL_S)
+    if not appeared:
+        # The master never came up within the spawn window → the launch genuinely failed.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(handoff.abort_spawn, key)
+        return
+    # Phase 2 — the master is up; hold the instant-exit window and confirm it STAYS up
+    # (catches an agent that comes up then exits instantly, e.g. a misconfigured launch).
+    await asyncio.sleep(relaunch._INSTANT_EXIT_S)
     try:
         alive = await asyncio.to_thread(ptybridge.session_exists, engine, phys_native)
     except Exception:

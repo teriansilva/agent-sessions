@@ -1,12 +1,16 @@
-"""Cross-engine session handoff (#597, Phase 1 — Quick mode).
+"""Cross-engine session handoff (#597, Phases 1–2).
 
 Hands an open session's context to a *new* session in another engine. Three cooperating
 pieces, all server-owned so seed text never travels through URLs, WebSocket query params,
 or argv (the transport contract shares the shell-free guarantee's rationale):
 
-- **Quick seed builder** — an engine-neutral markdown handoff document built from the tail
-  of the source session's parsed transcript (the same per-engine adapters the scroll-up
-  renderer uses). Local only; sent nowhere.
+- **Seed builders** — an engine-neutral markdown handoff document built from the source
+  session's parsed transcript (the same per-engine adapters the scroll-up renderer uses):
+  *Quick* is the last-N-turns tail, built locally and sent nowhere; *AI* (Phase 2) asks the
+  **already-configured AI-review endpoint** for a structured state/open-items/next-steps
+  brief and renders it into the same doc shape (the model's output is DATA — server-owned
+  shape guard + caps, exactly like ``review._shape_guard``). An unconfigured/failing
+  endpoint DEGRADES to Quick with a visible notice rather than failing the handoff.
 - **Handle store** — ``prepare`` mints an opaque, short-TTL handle referencing the seed
   (stored here, server-side only); ``commit`` binds the handle to a freshly minted target
   session id; the ws launch path *redeems* the seed atomically at injection time. A handle
@@ -25,6 +29,7 @@ to the session's PTY — the process's stdin), never argv: see ``webterm.run``'s
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import secrets
@@ -48,13 +53,38 @@ def _env_int(name: str, default: int) -> int:
 
 
 # How many trailing user/assistant text turns the Quick seed carries.
-SEED_MAX_TURNS = _env_int("AGENT_SESSIONS_HANDOFF_TURNS", 6)
+SEED_MAX_TURNS = max(1, _env_int("AGENT_SESSIONS_HANDOFF_TURNS", 6))
 # Hard byte cap on the seed document (long transcripts must never blow the target's first
-# prompt); oldest turns drop first, and a single oversized turn is truncated.
-SEED_CAP_BYTES = _env_int("AGENT_SESSIONS_HANDOFF_CAP_BYTES", 8192)
+# prompt); oldest turns drop first, and the document is truncated to fit. Floored at
+# ``MIN_CAP_BYTES``: the env knob is an operator tuning dial, and a 0/negative/absurd value
+# would configure a handoff that can carry no handoff (#703 review round 3). ``_cap`` is
+# still correct for ANY non-negative cap — the floor stops a nonsense deployment, the
+# function keeps the invariant.
+MIN_CAP_BYTES = 256
+SEED_CAP_BYTES = max(MIN_CAP_BYTES, _env_int("AGENT_SESSIONS_HANDOFF_CAP_BYTES", 8192))
 # Handle lifetime. Refreshed at commit so a committed handoff has the full window again to
 # reach its ws launch; an abandoned preview simply expires (nothing was spawned).
 HANDLE_TTL_S = float(_env_int("AGENT_SESSIONS_HANDOFF_TTL_S", 600))
+# AI mode (#597 Phase 2). How much of the source transcript's tail is offered to the
+# endpoint, and the caps applied to what it returns. The model's output is DATA: every
+# field is length-capped and re-rendered by us — the endpoint never authors the document.
+AI_INPUT_CHARS = _env_int("AGENT_SESSIONS_HANDOFF_AI_INPUT_CHARS", 24000)
+AI_STATE_MAX = 800
+AI_ITEM_MAX = 200
+AI_ITEMS_MAX = 8
+
+AI_SYSTEM_PROMPT = (
+    "You write handoff briefs between AI coding-agent sessions. You are given the tail of a "
+    "transcript from one agent session. Summarize it so a DIFFERENT agent, with no other "
+    "context, can take the work over.\n"
+    "Reply with ONLY a JSON object of this exact shape:\n"
+    '{"state": "<what has been done so far and where the work stands, 2-5 sentences>", '
+    '"open_items": ["<unresolved item>", ...], '
+    '"next_steps": ["<concrete next action>", ...]}\n'
+    "Be concrete and factual: name files, commands, errors, and decisions from the transcript. "
+    "Never invent work that is not in the transcript. Use at most 8 items per list; use an "
+    "empty list when there are none."
+)
 
 
 class HandoffError(RuntimeError):
@@ -101,6 +131,51 @@ def _clean(text: str) -> str:
     return _CTRL_RE.sub("", text)
 
 
+def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
+    """The source session's user/assistant text turns as engine-neutral ``(role, text)``
+    pairs, control-bytes stripped. Empty when the transcript can't be read/parsed — the
+    callers turn that into the 409 "nothing to hand off"."""
+    adapter = transcript.adapter_for(engine)
+    turns: list[transcript.Turn] = []
+    if adapter is not None:
+        try:
+            turns = adapter(native, Path.home())
+        except Exception:
+            turns = []
+    return [
+        (("user" if t.role == "user" else "agent"), _clean(t.text).strip())
+        for t in turns
+        if t.kind == "text" and t.role in ("user", "assistant") and t.text.strip()
+    ]
+
+
+# The header's task line is a one-line label, not content: `first_user_message` can be
+# arbitrarily long, and an unbounded one crowds the actual handoff out of the cap (it made
+# `_cap` return a document that was ALL title — #703 review round 2).
+HEAD_TITLE_MAX = 200
+
+
+def _head_lines(engine: str, title: str, cwd: str) -> list[str]:
+    """The shared handoff-document header — identical for Quick and AI, so a target agent
+    reads the same provenance framing either way. The title is bounded; `_cap` is the
+    backstop for the document as a whole."""
+    head = [
+        f"# Handoff — continued from a {engine} session",
+        "",
+        "You are taking over an in-progress task from another agent session.",
+        "Read the brief below, then continue the work.",
+        "",
+        "## Source",
+        f"- engine: {engine}",
+    ]
+    if title:
+        one_line = " ".join(_clean(title).split())[:HEAD_TITLE_MAX]
+        head.append(f"- task: {one_line}")
+    if cwd:
+        head.append(f"- workdir: {_clean(cwd)}")
+    return head
+
+
 def build_quick_seed(
     engine: str, native: str, *, title: str = "", cwd: str = ""
 ) -> tuple[str, dict]:
@@ -110,50 +185,27 @@ def build_quick_seed(
     Raises ``HandoffError(409)`` when the transcript yields no usable turns (a brand-new
     or unreadable session has nothing to hand off).
     """
-    adapter = transcript.adapter_for(engine)
-    turns: list[transcript.Turn] = []
-    if adapter is not None:
-        try:
-            turns = adapter(native, Path.home())
-        except Exception:
-            turns = []
-    texts = [
-        (("user" if t.role == "user" else "agent"), _clean(t.text).strip())
-        for t in turns
-        if t.kind == "text" and t.role in ("user", "assistant") and t.text.strip()
-    ]
+    texts = _source_texts(engine, native)
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
     tail = texts[-SEED_MAX_TURNS:]
 
     def _doc(rows: list[tuple[str, str]]) -> str:
-        head = [
-            f"# Handoff — continued from a {engine} session",
-            "",
-            "You are taking over an in-progress task from another agent session.",
-            "Read the recent turns below, then continue the work.",
-            "",
-            "## Source",
-            f"- engine: {engine}",
-        ]
-        if title:
-            head.append(f"- task: {_clean(title)}")
-        if cwd:
-            head.append(f"- workdir: {_clean(cwd)}")
-        head += ["", "## Recent turns", ""]
+        head = _head_lines(engine, title, cwd) + ["", "## Recent turns", ""]
         body = [f"[{role}] {text}" for role, text in rows]
         return "\n".join(head + body) + "\n"
 
     doc = _doc(tail)
-    # Cap: drop oldest turns first; if even one turn overflows, truncate its text.
+    # Drop OLDEST turns first — the tail is what a taking-over agent needs most.
     while len(doc.encode("utf-8")) > SEED_CAP_BYTES and len(tail) > 1:
         tail = tail[1:]
         doc = _doc(tail)
-    if len(doc.encode("utf-8")) > SEED_CAP_BYTES:
-        role, text = tail[0]
-        overhead = len(_doc([(role, "")]).encode("utf-8"))
-        keep = max(200, SEED_CAP_BYTES - overhead)
-        doc = _doc([(role, text.encode("utf-8")[:keep].decode("utf-8", "ignore") + " …")])
+    # …then hand the result to the ONE capper. This used to be a bespoke truncation whose
+    # arithmetic overshot (`max(200, …)` plus an appended " …"), and which never bounded the
+    # HEADER at all — an oversized first_user_message title produced a 20 KB "capped" doc
+    # (PR #703 review round 2). Every generated document now exits through `_cap`, so the
+    # advertised cap is the real one whatever the input shape.
+    doc = _cap(doc)
     meta = {
         "mode": "quick",
         "turns": len(tail),
@@ -161,6 +213,142 @@ def build_quick_seed(
         "cap": SEED_CAP_BYTES,
     }
     return doc, meta
+
+
+def _ai_input(texts: list[tuple[str, str]]) -> str:
+    """The transcript tail offered to the endpoint, budgeted by characters (oldest turns
+    drop first). Same engine-neutral labelling as the Quick doc.
+
+    A single newest turn LARGER than the whole budget is truncated rather than admitted
+    whole (PR #703 review): dropping it would send nothing, but letting it through blew
+    the budget it exists to enforce. The final slice makes the cap unconditional — the
+    per-line accounting excludes the join's separators, so it alone is not a guarantee.
+    """
+    rows: list[str] = []
+    total = 0
+    for role, text in reversed(texts):
+        line = f"[{role}] {text}"
+        if total + len(line) > AI_INPUT_CHARS:
+            if rows:
+                break
+            line = line[:AI_INPUT_CHARS]  # singleton oversized turn → truncate, don't skip
+            rows.append(line)
+            break
+        rows.append(line)
+        total += len(line)
+    return "\n".join(reversed(rows))[:AI_INPUT_CHARS]
+
+
+def _ai_shape_guard(obj: dict) -> tuple[str, list[str], list[str]]:
+    """Server-owned shape guard for the AI brief — the model's output is DATA (same
+    discipline as ``review._shape_guard``): required non-empty ``state``, list fields
+    coerced + item/count capped, everything whitespace-collapsed and control-stripped.
+    A missing/garbage ``state`` raises so the caller degrades to Quick rather than
+    seeding the target with junk."""
+    state = obj.get("state")
+    if not isinstance(state, str) or not state.strip():
+        raise HandoffError(502, "AI handoff response missing a usable state")
+    state = _clean(" ".join(state.split()))[:AI_STATE_MAX]
+
+    def _items(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value[:AI_ITEMS_MAX]:
+            if isinstance(item, str) and item.strip():
+                out.append(_clean(" ".join(item.split()))[:AI_ITEM_MAX])
+        return out
+
+    return state, _items(obj.get("open_items")), _items(obj.get("next_steps"))
+
+
+async def build_ai_seed(
+    engine: str, native: str, *, title: str = "", cwd: str = ""
+) -> tuple[str, dict]:
+    """The AI-summarized handoff document + its meta (#597 Phase 2), via the
+    already-configured AI-review endpoint (no new endpoint — the issue's constraint).
+
+    Raises ``HandoffError(409)`` for an empty source transcript (same as Quick), and
+    ``review.NotConfiguredError`` / ``review.ReviewError`` / ``HandoffError(502)`` when
+    the endpoint is absent or its answer is unusable — the route turns those into the
+    documented degrade-to-Quick-with-a-notice path.
+    """
+    from . import review  # late import: review pulls httpx + prefs; keep handoff import-light
+
+    texts = await asyncio.to_thread(_source_texts, engine, native)
+    if not texts:
+        raise HandoffError(409, "source transcript is empty — nothing to hand off")
+    obj = await review.complete_json(
+        [
+            {"role": "system", "content": AI_SYSTEM_PROMPT},
+            {"role": "user", "content": _ai_input(texts)},
+        ]
+    )
+    state, open_items, next_steps = _ai_shape_guard(obj)
+    lines = _head_lines(engine, title, cwd) + ["", "## State", "", state]
+    if open_items:
+        lines += ["", "## Open items", ""] + [f"- {i}" for i in open_items]
+    if next_steps:
+        lines += ["", "## Next steps", ""] + [f"- {i}" for i in next_steps]
+    doc = "\n".join(lines) + "\n"
+    doc = _cap(doc)
+    return doc, {
+        "mode": "ai",
+        "turns": len(texts),
+        "bytes": len(doc.encode("utf-8")),
+        "cap": SEED_CAP_BYTES,
+    }
+
+
+# Appended when a rendered document is truncated. Its bytes are RESERVED out of the cap
+# before slicing (PR #703 review): appending it after slicing to the full cap overshot the
+# very limit the function documents.
+_CAP_MARKER = "\n…\n"
+
+
+def _cap(doc: str) -> str:
+    """Byte-cap a rendered document. The result is ALWAYS <= ``SEED_CAP_BYTES`` bytes, for
+    EVERY non-negative cap: the truncation marker is reserved before slicing, and dropped
+    entirely when the cap is too small to hold it (it is a courtesy, never a reason to
+    exceed the limit — #703 review round 3: a cap below the marker's 5 bytes still emitted
+    the 5-byte marker). The slice decodes with ``errors="ignore"`` so a multibyte character
+    split by the cut is dropped rather than mojibaked."""
+    cap = max(0, SEED_CAP_BYTES)
+    raw = doc.encode("utf-8")
+    if len(raw) <= cap:
+        return doc
+    marker = _CAP_MARKER.encode("utf-8")
+    if cap <= len(marker):
+        # No room for both content and the marker — content wins; the cap is absolute.
+        return raw[:cap].decode("utf-8", "ignore")
+    return raw[: cap - len(marker)].decode("utf-8", "ignore").rstrip() + _CAP_MARKER
+
+
+def sanitize_seed(text: str) -> str:
+    """Normalize a CLIENT-SUPPLIED seed (the Phase-2 editable preview) to exactly the
+    guarantees the builders provide: control bytes stripped (the bracketed-paste breakout
+    guard — an ESC could otherwise end the paste early and smuggle key input) and the hard
+    byte cap enforced.
+
+    Over-cap text is REJECTED, not truncated (PR #703 review): silently shortening
+    user-authored prose and reporting success would hand the target a brief the author
+    never wrote. The builders truncate their own generated output (``_cap``) because
+    there is no author to tell; here there is. Raises ``HandoffError(422)`` on empty or
+    over-cap input — ``meta.cap`` tells the client the limit up front.
+    """
+    cleaned = _clean(text).strip()
+    if not cleaned:
+        raise HandoffError(422, "handoff seed cannot be empty")
+    # The seed is stored EXACTLY as validated — no trailing newline is appended. Appending
+    # one made a brief whose visible size equalled ``meta.cap`` weigh cap+1 server-side, so
+    # the modal enabled a handoff the server then rejected (#703 review round 2). The only
+    # transforms left are strip-controls and trim, and both SHRINK: a client counting its
+    # raw textarea bytes against ``meta.cap`` can therefore never invite a 422. The paste is
+    # submitted by the delivery's own CR, so the newline was cosmetic anyway.
+    size = len(cleaned.encode("utf-8"))
+    if size > SEED_CAP_BYTES:
+        raise HandoffError(422, f"handoff seed is too large: {size} bytes (cap {SEED_CAP_BYTES})")
+    return cleaned
 
 
 # --- handle store + provenance state machine ------------------------------------------------
@@ -248,9 +436,14 @@ def create_handle(source_key: str, target_engine: str, mode: str, seed: str, *, 
     return handle
 
 
-def commit(handle: str) -> dict:
+def commit(handle: str, seed: str | None = None) -> dict:
     """Bind ``handle`` to a freshly minted target session id (the client then navigates to
     the normal ``/s/:engine/:id`` launch route, which redeems the seed at spawn time).
+
+    ``seed`` (#597 Phase 2 — the editable preview) replaces the prepared text with the
+    user's edit. It is re-sanitized here through the SAME guarantees the builders give
+    (control-strip + byte cap): a client-supplied seed is untrusted input, and this is the
+    only place it can enter the store. Omit it to commit the prepared text unchanged.
 
     The id shape follows the engine's launch model, exactly like the picker's new-session
     flow: engines that mint their own id (codex/opencode) get a ``new-<uuid>`` placeholder
@@ -258,6 +451,7 @@ def commit(handle: str) -> dict:
     """
     from . import engines  # late import: engines never imports handoff, but keep startup lean
 
+    edited = sanitize_seed(seed) if seed is not None else None
     with _lock:
         _sweep_locked()
         h = _HANDLES.get(handle)
@@ -265,6 +459,9 @@ def commit(handle: str) -> dict:
             raise HandoffError(404, "unknown or expired handoff handle")
         if h.target_key is not None:
             raise HandoffError(409, "handoff already committed")
+        if edited is not None:
+            h.seed = edited
+            h.mode = f"{h.mode}+edited" if not h.mode.endswith("+edited") else h.mode
         prov = engines.get(h.target_engine)
         if prov is None:  # provider vanished since prepare — fail closed
             raise HandoffError(404, "unknown engine")

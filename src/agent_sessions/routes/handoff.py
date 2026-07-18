@@ -1,14 +1,19 @@
-"""Cross-engine handoff routes (#597, Phase 1 — Quick mode).
+"""Cross-engine handoff routes (#597, Phases 1–2).
 
 Two-step prepare / commit so the modal can preview (and cancel) without side effects:
 
 - ``POST /api/handoff/prepare`` — validates the source session (same identity gate +
   root/visibility scope as the resume path, BEFORE any transcript read) and the target
-  engine's seed-start capability, builds the Quick seed, and returns
-  ``{handle, preview, meta}``. Nothing is spawned; an abandoned handle just expires.
+  engine's seed-start capability, builds the seed in the requested ``mode`` (``quick`` or
+  Phase 2's ``ai``), and returns ``{handle, preview, meta}``. Nothing is spawned; an
+  abandoned handle just expires. An ``ai`` request whose endpoint is unconfigured or
+  failing DEGRADES to ``quick`` — ``meta.degraded`` + ``meta.notice`` say so, and the
+  modal surfaces it, rather than the handoff failing outright (issue #597 Phase 2).
 - ``POST /api/handoff`` — binds the handle to a freshly minted target session id and
   returns it; the client then navigates to the normal ``/s/:engine/:id`` launch route,
-  which redeems the seed atomically at spawn time (see ``routes/terminal.py``).
+  which redeems the seed atomically at spawn time (see ``routes/terminal.py``). An
+  optional ``seed`` carries the user's EDITED preview; the server re-sanitizes it (it is
+  untrusted input) before it can reach a PTY.
 
 Seed text lives only in the server-side handle store and the authed prepare response —
 never in URLs, WS query params, argv, or the sidecar.
@@ -21,9 +26,9 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import discover, engines, handoff, prefs, project_dirs
+from .. import discover, engines, handoff, prefs, project_dirs, review
 
-_MODES = {"quick"}  # "ai" is Phase 2 — the UI shows it disabled, the server rejects it
+_MODES = {"quick", "ai"}  # "ai" (Phase 2) degrades to "quick" when the endpoint is absent
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
@@ -38,9 +43,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         target_engine = str(payload.get("target_engine", ""))
         mode = str(payload.get("mode", "quick") or "quick")
         if mode not in _MODES:
-            raise HTTPException(
-                status_code=422, detail="only quick mode is available (AI summary is Phase 2)"
-            )
+            raise HTTPException(status_code=422, detail=f"unknown handoff mode: {mode!r}")
         # Source identity gate FIRST — the same parse_key validation every session route
         # uses, before anything touches the transcript. Placeholders resolve to their
         # real id where an alias exists (a reconciled source hands off its real history).
@@ -75,17 +78,50 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # REAL id (#611) — resolve through the alias map like every transcript consumer.
         logical = engines.logical_key(source_key)
         _eng, _, logical_native = logical.partition(":")
-        try:
-            seed, meta = await asyncio.to_thread(
-                handoff.build_quick_seed,
+
+        def _quick() -> tuple[str, dict]:
+            return handoff.build_quick_seed(
                 prov.engine_id,
                 logical_native,
                 title=match.first_user_message,
                 cwd=match.cwd,
             )
+
+        try:
+            if mode == "ai":
+                # Degrade, never fail (issue #597 Phase 2): an unconfigured endpoint, an
+                # unreachable/erroring one, or an unusable answer all fall back to the
+                # local Quick tail with a notice the modal shows. An EMPTY-transcript
+                # HandoffError(409) is NOT a degrade — Quick would raise it too, so it
+                # propagates as the same clean 409 either way.
+                try:
+                    seed, meta = await handoff.build_ai_seed(
+                        prov.engine_id,
+                        logical_native,
+                        title=match.first_user_message,
+                        cwd=match.cwd,
+                    )
+                except (review.ReviewError, handoff.HandoffError) as e:
+                    if isinstance(e, handoff.HandoffError) and e.status == 409:
+                        raise
+                    seed, meta = await asyncio.to_thread(_quick)
+                    meta = {
+                        **meta,
+                        "requested_mode": "ai",
+                        "degraded": True,
+                        "notice": (
+                            "AI review isn't configured — using the local quick tail."
+                            if isinstance(e, review.NotConfiguredError)
+                            else "AI summary failed — using the local quick tail."
+                        ),
+                    }
+            else:
+                seed, meta = await asyncio.to_thread(_quick)
         except handoff.HandoffError as e:
             raise HTTPException(status_code=e.status, detail=e.detail) from None
-        handle = handoff.create_handle(source_key, target_engine, mode, seed, cwd=match.cwd)
+        handle = handoff.create_handle(
+            source_key, target_engine, str(meta["mode"]), seed, cwd=match.cwd
+        )
         return JSONResponse({"handle": handle, "preview": seed, "meta": meta})
 
     @app.post("/api/handoff")
@@ -96,8 +132,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         payload = await request.json()
         handle = str(payload.get("handle", ""))
+        # The edited preview (#597 Phase 2). Untrusted input: handoff.commit re-sanitizes
+        # it (control-strip + byte cap) before it can ever reach a PTY.
+        raw_seed = payload.get("seed")
+        seed = str(raw_seed) if isinstance(raw_seed, str) else None
         try:
-            res = handoff.commit(handle)
+            res = handoff.commit(handle, seed)
         except handoff.HandoffError as e:
             raise HTTPException(status_code=e.status, detail=e.detail) from None
         return JSONResponse(res)

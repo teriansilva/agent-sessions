@@ -1,4 +1,4 @@
-"""Cross-engine handoff (#597, Phase 1 — Quick mode).
+"""Cross-engine handoff (#597, Phases 1–2).
 
 Pins the issue's acceptance contract: seed transport (never argv; PTY bracketed paste,
 atomic single redemption), the prepare/commit lifecycle (side-effect-free prepare,
@@ -12,6 +12,7 @@ id; reconcile fail-safe preserved).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -378,11 +379,13 @@ def test_prepare_rejects_uninstalled_target(auth_cfg, fake_jsonl, monkeypatch):
     assert "not installed" in r.json()["detail"]
 
 
-def test_prepare_rejects_ai_mode_as_phase_2(auth_cfg, fake_jsonl, monkeypatch):
+def test_prepare_rejects_an_unknown_mode(auth_cfg, fake_jsonl, monkeypatch):
     _present_all(monkeypatch)
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
-    assert _prepare(c, csrf, auth_cfg, mode="ai").status_code == 422
+    r = _prepare(c, csrf, auth_cfg, mode="telepathy")
+    assert r.status_code == 422
+    assert "unknown handoff mode" in r.json()["detail"]
 
 
 def test_prepare_rejects_unscanned_source(auth_cfg, fake_jsonl, monkeypatch):
@@ -523,10 +526,13 @@ def test_ws_new_session_redeems_the_handoff_seed(auth_cfg, fake_jsonl, monkeypat
 
 # ---- PTY injection ------------------------------------------------------------------------------
 
+# A READY TUI: arms bracketed paste, paints a full screen (the first-paint evidence the
+# injector waits for), goes quiet, then reads input — the shape of a booted codex/claude.
 _CHILD = r"""
 import os, sys, time, tty
 tty.setraw(0)
-os.write(1, b"\x1b[?2004h")   # arm bracketed paste = the readiness signal
+os.write(1, b"\x1b[?2004h")            # 1. speaks the paste protocol
+os.write(1, b"." * 4096)               # 2. first paint (> _SEED_FIRST_PAINT_BYTES)
 buf = b""
 end = time.time() + 8
 while time.time() < end and b"\r" not in buf:
@@ -535,6 +541,18 @@ while time.time() < end and b"\r" not in buf:
     except OSError:
         break
 os.write(1, b"GOT[" + buf + b"]")
+"""
+
+# A COLD TUI (#597 Phase 2, empirically observed from a fresh-install `codex`): arms
+# bracketed paste in its terminal-init preamble ~immediately, then emits almost nothing
+# for many seconds while it initialises — and DISCARDS anything written to stdin in that
+# window. Gating on 2004 alone pasted the seed into the void and called it delivered.
+_CHILD_PREAMBLE_ONLY = r"""
+import os, time, tty
+tty.setraw(0)
+os.write(1, b"\x1b[?2004h")            # armed — but the input pipeline is NOT up
+os.write(1, b"warning: still starting up\r\n")   # ~91-byte-scale preamble, no paint
+time.sleep(6)                          # ...initialising; stdin is not being read
 """
 
 
@@ -968,3 +986,806 @@ def test_stale_handoff_link_is_tolerated(auth_cfg, fake_jsonl):
     assert r.status_code == 200
     rows = {row["id"]: row for row in r.json()["sessions"]}
     assert rows[src]["handoff_to"].startswith("codex:")
+
+
+# ---- Phase 2: AI mode ---------------------------------------------------------------------
+
+_AI_OBJ = {
+    "state": "Refactored the token-refresh path; single-flight lock added and tests pass.",
+    "open_items": ["PR #482 awaiting review"],
+    "next_steps": ["Address review comments", "Re-run the auth suite"],
+}
+
+
+def _fake_complete(obj):
+    async def _c(messages, *, model=None):
+        _fake_complete.seen = messages
+        return obj
+
+    return _c
+
+
+def test_ai_seed_renders_the_guarded_brief(fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    seed, meta = asyncio.run(
+        handoff.build_ai_seed("claude", _SRC, title="t", cwd="/home/user/claude/repo-a")
+    )
+    assert meta["mode"] == "ai"
+    assert "## State" in seed and "single-flight lock" in seed
+    assert "- PR #482 awaiting review" in seed
+    assert "- Re-run the auth suite" in seed
+    assert "# Handoff — continued from a claude session" in seed  # shared header w/ Quick
+    # The transcript tail is what we sent — and only that.
+    sent = _fake_complete.seen[1]["content"]
+    assert "[user] first message on repo-a" in sent
+
+
+def test_ai_seed_shape_guard_caps_and_strips(fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    evil = {
+        "state": "ok \x1b[201~ escape " + "s" * 5000,
+        "open_items": ["fine", 42, "", "x" * 900] + [f"extra{i}" for i in range(20)],
+        "next_steps": "not a list",
+    }
+    monkeypatch.setattr(review, "complete_json", _fake_complete(evil))
+    seed, _ = asyncio.run(handoff.build_ai_seed("claude", _SRC))
+    assert "\x1b" not in seed  # paste-breakout guard holds on model output too
+    body = seed.split("## State")[1]
+    assert len(body) < handoff.AI_STATE_MAX + 400  # state capped
+    assert seed.count("\n- ") <= handoff.AI_ITEMS_MAX  # item count capped
+    assert "- 42" not in seed  # non-string items dropped
+    assert "## Next steps" not in seed  # a non-list becomes no section
+
+
+def test_ai_seed_missing_state_raises(fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete({"open_items": ["x"]}))
+    with pytest.raises(handoff.HandoffError) as ei:
+        asyncio.run(handoff.build_ai_seed("claude", _SRC))
+    assert ei.value.status == 502
+
+
+def test_ai_seed_empty_transcript_raises_409_like_quick(fake_jsonl, monkeypatch):
+    from agent_sessions import review, transcript
+
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: []))
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    with pytest.raises(handoff.HandoffError) as ei:
+        asyncio.run(handoff.build_ai_seed("claude", _SRC))
+    assert ei.value.status == 409
+
+
+def test_prepare_ai_mode_returns_the_ai_seed(auth_cfg, fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    _present_all(monkeypatch)
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, mode="ai")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["meta"]["mode"] == "ai"
+    assert not body["meta"].get("degraded")
+    assert "## State" in body["preview"]
+
+
+def test_prepare_ai_degrades_to_quick_when_unconfigured(auth_cfg, fake_jsonl, monkeypatch):
+    # The documented Phase-2 contract: an unconfigured endpoint must NOT fail the handoff —
+    # it falls back to the local quick tail and says so.
+    from agent_sessions import review
+
+    _present_all(monkeypatch)
+
+    async def _boom(messages, *, model=None):
+        raise review.NotConfiguredError("AI review endpoint is not configured")
+
+    monkeypatch.setattr(review, "complete_json", _boom)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, mode="ai")
+    assert r.status_code == 200
+    meta = r.json()["meta"]
+    assert meta["mode"] == "quick" and meta["requested_mode"] == "ai"
+    assert meta["degraded"] is True
+    assert "isn't configured" in meta["notice"]
+    assert "[user] first message on repo-a" in r.json()["preview"]  # the quick tail
+
+
+def test_prepare_ai_degrades_when_the_endpoint_fails(auth_cfg, fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    _present_all(monkeypatch)
+
+    async def _boom(messages, *, model=None):
+        raise review.ReviewError("endpoint returned HTTP 500")
+
+    monkeypatch.setattr(review, "complete_json", _boom)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    meta = _prepare(c, csrf, auth_cfg, mode="ai").json()["meta"]
+    assert meta["mode"] == "quick" and meta["degraded"] is True
+    assert "AI summary failed" in meta["notice"]
+
+
+def test_prepare_ai_degrades_on_an_unusable_answer(auth_cfg, fake_jsonl, monkeypatch):
+    # A 502-shaped HandoffError (garbage model output) degrades; only the 409
+    # empty-transcript case propagates (Quick can't do better).
+    from agent_sessions import review
+
+    _present_all(monkeypatch)
+    monkeypatch.setattr(review, "complete_json", _fake_complete({"state": "   "}))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    meta = _prepare(c, csrf, auth_cfg, mode="ai").json()["meta"]
+    assert meta["mode"] == "quick" and meta["degraded"] is True
+
+
+def test_prepare_ai_empty_transcript_still_409(auth_cfg, fake_jsonl, monkeypatch):
+    from agent_sessions import review, transcript
+
+    _present_all(monkeypatch)
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: []))
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    assert _prepare(c, csrf, auth_cfg, mode="ai").status_code == 409
+
+
+# ---- Phase 2: editable preview ------------------------------------------------------------
+
+
+def test_sanitize_seed_strips_control_bytes():
+    # Only the CONTROL BYTES go (ESC, BEL): that alone disarms the paste breakout — the
+    # residual "[201~" is inert literal text once its ESC is gone.
+    assert handoff.sanitize_seed("  hi \x1b[201~there\x07  ") == "hi [201~there"
+    for bad in ("", "   ", "\x1b\x07"):
+        with pytest.raises(handoff.HandoffError) as ei:
+            handoff.sanitize_seed(bad)
+        assert ei.value.status == 422
+
+
+def test_sanitize_seed_rejects_over_cap_rather_than_truncating(monkeypatch):
+    # #703 review: silently shortening USER-AUTHORED prose and reporting success would hand
+    # the target a brief its author never wrote. Reject; the client knows the cap (meta.cap).
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 64)
+    assert len(handoff.sanitize_seed("z" * 60).encode()) <= 64  # at the limit: fine
+    with pytest.raises(handoff.HandoffError) as ei:
+        handoff.sanitize_seed("z" * 200)
+    assert ei.value.status == 422
+    assert "too large" in ei.value.detail
+
+
+def test_commit_with_edited_seed_replaces_the_prepared_text(tmp_home):
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "ORIGINAL", cwd="/tmp")
+    key = handoff.commit(h, "MY EDIT")["id"]
+    assert handoff.claim_seed(key) == "MY EDIT"
+
+
+def test_commit_sanitizes_an_edited_seed(tmp_home):
+    # The edited seed is UNTRUSTED input — it gets the same control-strip as a built one,
+    # so a hand-crafted ESC can't break out of the bracketed paste at delivery.
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "ORIGINAL", cwd="/tmp")
+    key = handoff.commit(h, "safe \x1b[201~\x1b[5;5H rm -rf / \x07 tail")["id"]
+    seed = handoff.claim_seed(key)
+    assert "\x1b" not in seed and "\x07" not in seed
+    assert "safe" in seed and "tail" in seed
+
+
+def test_commit_rejects_an_empty_edited_seed(tmp_home):
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "ORIGINAL", cwd="/tmp")
+    with pytest.raises(handoff.HandoffError) as ei:
+        handoff.commit(h, "   ")
+    assert ei.value.status == 422
+    # The handle is NOT consumed by a rejected edit — the modal can retry.
+    assert handoff.commit(h, "second try")["id"]
+
+
+def test_commit_route_passes_the_edited_seed(auth_cfg, fake_jsonl, monkeypatch):
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    handle = _prepare(c, csrf, auth_cfg).json()["handle"]
+    r = c.post(
+        "/api/handoff",
+        json={"handle": handle, "seed": "EDITED BY HAND"},
+        headers=_hdr(csrf, auth_cfg),
+    )
+    assert r.status_code == 200
+    assert handoff.claim_seed(r.json()["id"]) == "EDITED BY HAND"
+
+
+def test_commit_route_without_a_seed_keeps_the_prepared_text(auth_cfg, fake_jsonl, monkeypatch):
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    prep = _prepare(c, csrf, auth_cfg).json()
+    r = c.post("/api/handoff", json={"handle": prep["handle"]}, headers=_hdr(csrf, auth_cfg))
+    assert handoff.claim_seed(r.json()["id"]) == prep["preview"]
+
+
+def test_commit_route_rejects_an_empty_edited_seed(auth_cfg, fake_jsonl, monkeypatch):
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    handle = _prepare(c, csrf, auth_cfg).json()["handle"]
+    r = c.post("/api/handoff", json={"handle": handle, "seed": " "}, headers=_hdr(csrf, auth_cfg))
+    assert r.status_code == 422
+
+
+def test_abandoned_preview_spawns_nothing_and_expires(auth_cfg, fake_jsonl, monkeypatch):
+    # "Cancellation after preview leaves no session, no sidecar entry, no temp file" —
+    # prepare is side-effect-free, so cancelling is literally doing nothing.
+    _present_all(monkeypatch)
+    monkeypatch.setattr(handoff, "HANDLE_TTL_S", 0.05)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    handle = _prepare(c, csrf, auth_cfg).json()["handle"]
+    assert metadata.load() == {}  # nothing persisted at prepare
+    time.sleep(0.1)
+    r = c.post("/api/handoff", json={"handle": handle}, headers=_hdr(csrf, auth_cfg))
+    assert r.status_code == 404  # the abandoned handle simply expired
+    assert metadata.load() == {}
+
+
+def test_seed_is_not_injected_into_a_tui_that_armed_paste_but_never_painted(tmp_path, monkeypatch):
+    """#597 Phase 2 regression — the bug the empirical handoff caught.
+
+    A fresh-install `codex` arms DECSET 2004 in its terminal-init preamble (~0.3 s), then
+    initialises for many seconds while DISCARDING stdin. Phase 1 treated 2004 alone as
+    readiness, so it pasted the seed into the void, acked it "delivered", and silently
+    produced an unseeded session. Readiness now also requires first-paint evidence + a
+    quiet window, so this TUI never opens the gate: no injection, seed still pending for
+    the next attach, and a warning explains why.
+    """
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SEED_POLL_S", 0.05)
+    monkeypatch.setattr(webterm, "_SEED_READY_TIMEOUT_S", 1.5)
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "NOT-INTO-THE-VOID", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    out: list[bytes] = []
+    asyncio.run(
+        webterm.run(
+            _fake_ws(out),
+            [sys.executable, "-c", _CHILD_PREAMBLE_ONLY],
+            cwd=str(tmp_path),
+            buf_key=key,
+            seed_key=key,
+        )
+    )
+    blob = b"".join(out)
+    assert b"\x1b[?2004h" in blob  # it DID arm paste — the old gate would have fired
+    assert b"NOT-INTO-THE-VOID" not in blob  # …but we did not paste into a booting TUI
+    assert handoff.has_pending_seed(key) is True  # unconsumed — the next attach can deliver
+
+
+def test_seed_waits_for_quiet_before_pasting(tmp_path, monkeypatch):
+    # Readiness also needs the paint to SETTLE: a TUI still streaming output is mid-boot.
+    # This child paints continuously for ~1s, then goes quiet — delivery must land after
+    # the quiet window, never during the noisy stretch.
+    from agent_sessions import webterm
+
+    noisy = (
+        "import os, time, tty\n"
+        "tty.setraw(0)\n"
+        'os.write(1, b"\\x1b[?2004h")\n'
+        "end = time.time() + 1.0\n"
+        "while time.time() < end:\n"
+        '    os.write(1, b"x" * 512); time.sleep(0.05)\n'
+        "buf = b''\n"
+        "t = time.time() + 8\n"
+        "while time.time() < t and b'\\r' not in buf:\n"
+        "    try: buf += os.read(0, 65536)\n"
+        "    except OSError: break\n"
+        'os.write(1, b"GOT[" + buf + b"]")\n'
+    )
+    monkeypatch.setattr(webterm, "_SEED_POLL_S", 0.05)
+    monkeypatch.setattr(webterm, "_SEED_QUIET_S", 0.4)
+    monkeypatch.setattr(webterm, "_SEED_SETTLE_S", 0.05)
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "AFTER-QUIET", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    out: list[bytes] = []
+    asyncio.run(
+        webterm.run(
+            _fake_ws(out),
+            [sys.executable, "-c", noisy],
+            cwd=str(tmp_path),
+            buf_key=key,
+            seed_key=key,
+        )
+    )
+    blob = b"".join(out)
+    got = blob[blob.find(b"GOT[") :]
+    assert b"\x1b[200~AFTER-QUIET\x1b[201~" in got  # delivered once the paint settled
+    assert handoff.has_pending_seed(key) is False
+
+
+# ---- #703 review: boundary fixes ------------------------------------------------------
+
+
+def test_ai_input_budget_holds_for_a_single_oversized_turn(monkeypatch):
+    # #703 review: the overflow branch only broke when `rows` was non-empty, so a single
+    # newest turn larger than the whole budget sailed through whole.
+    monkeypatch.setattr(handoff, "AI_INPUT_CHARS", 40)
+    out = handoff._ai_input([("user", "x" * 500)])
+    assert len(out) <= 40
+    # …and the budget still holds across many turns (oldest dropped first).
+    out = handoff._ai_input([("user", "a" * 30), ("agent", "b" * 30), ("user", "c" * 30)])
+    assert len(out) <= 40
+    assert "c" in out  # the NEWEST turn is the one kept
+
+
+def test_ai_request_content_respects_the_cap(fake_jsonl, monkeypatch):
+    # The cap is enforced on what actually leaves the process, not just on a local count.
+    from agent_sessions import review, transcript
+
+    monkeypatch.setattr(handoff, "AI_INPUT_CHARS", 120)
+    turns = [transcript.Turn(role="user", text="q" * 4000, kind="text")]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    seen = {}
+
+    async def _c(messages, *, model=None):
+        seen["user"] = messages[1]["content"]
+        return _AI_OBJ
+
+    monkeypatch.setattr(review, "complete_json", _c)
+    asyncio.run(handoff.build_ai_seed("claude", _SRC))
+    assert len(seen["user"]) <= 120
+
+
+def test_cap_never_exceeds_the_byte_limit(monkeypatch):
+    # #703 review: `_cap` sliced to the FULL cap and then appended the "…" marker, so the
+    # documented hard cap was overshot by the marker's bytes.
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 32)
+    out = handoff._cap("y" * 200)
+    assert len(out.encode()) <= 32
+    assert out.endswith("…\n")  # still marked as truncated
+    # A multibyte char split by the cut is dropped, never mojibaked.
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 20)
+    out = handoff._cap("é" * 50)
+    assert len(out.encode()) <= 20
+    out.encode().decode("utf-8")  # round-trips → no broken sequence
+
+
+def test_builders_still_truncate_their_own_output(fake_jsonl, monkeypatch):
+    # The builders truncate (there is no author to ask); only USER text is rejected.
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 400)
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    seed, meta = asyncio.run(handoff.build_ai_seed("claude", _SRC, title="t", cwd="/c"))
+    assert len(seed.encode()) <= 400
+    assert meta["bytes"] <= 400
+
+
+def test_commit_route_rejects_an_over_cap_edited_seed(auth_cfg, fake_jsonl, monkeypatch):
+    _present_all(monkeypatch)
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 128)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    handle = _prepare(c, csrf, auth_cfg).json()["handle"]
+    r = c.post(
+        "/api/handoff",
+        json={"handle": handle, "seed": "z" * 500},
+        headers=_hdr(csrf, auth_cfg),
+    )
+    assert r.status_code == 422
+    assert "too large" in r.json()["detail"]
+    # The rejected edit did not consume the handle — the user can trim and retry.
+    r2 = c.post(
+        "/api/handoff", json={"handle": handle, "seed": "trimmed"}, headers=_hdr(csrf, auth_cfg)
+    )
+    assert r2.status_code == 200
+
+
+def test_prepare_meta_carries_the_cap_the_server_enforces(auth_cfg, fake_jsonl, monkeypatch):
+    # The modal gates its CTA on meta.cap, so it must be the same number commit enforces.
+    _present_all(monkeypatch)
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 256)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    assert _prepare(c, csrf, auth_cfg).json()["meta"]["cap"] == 256
+
+
+# ---- #703 review round 2: the cap is exact, for every path ----------------------------
+
+
+def test_quick_seed_cap_holds_for_an_oversized_single_turn(fake_jsonl, monkeypatch):
+    # Round 2: the bespoke truncation overshot by the marker+arithmetic — 8196 bytes at the
+    # 8192 default. Every generated doc exits through `_cap` now.
+    from agent_sessions import transcript
+
+    turns = [transcript.Turn(role="user", text="q" * 50_000, kind="text")]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    seed, meta = handoff.build_quick_seed("claude", _SRC)
+    assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
+    assert meta["bytes"] == len(seed.encode()) <= meta["cap"]
+
+
+def test_quick_seed_cap_holds_for_an_oversized_title(fake_jsonl):
+    # Round 2: an oversized first_user_message went into the header unbounded → a 20 KB
+    # "capped" doc. The title is bounded AND the doc is capped.
+    seed, meta = handoff.build_quick_seed("claude", _SRC, title="T" * 40_000, cwd="/c")
+    assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
+    assert meta["bytes"] <= meta["cap"]
+    assert "## Recent turns" in seed  # the title didn't crowd out the actual handoff
+    assert len("T" * 40_000) > handoff.HEAD_TITLE_MAX  # …because the title is bounded
+
+
+def test_ai_seed_cap_holds_for_an_oversized_title(fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    seed, meta = asyncio.run(handoff.build_ai_seed("claude", _SRC, title="T" * 40_000))
+    assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
+    assert meta["bytes"] <= meta["cap"]
+
+
+def test_generated_seeds_never_exceed_the_cap_at_any_size(fake_jsonl, monkeypatch):
+    # Sweep the boundary: whatever the turn sizes, the advertised cap is the real one.
+    from agent_sessions import transcript
+
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 512)
+    for n in (1, 100, 400, 511, 512, 513, 900, 5000):
+        turns = [transcript.Turn(role="user", text="z" * n, kind="text")]
+        monkeypatch.setattr(transcript, "adapter_for", lambda e, t=turns: (lambda native, home: t))
+        seed, meta = handoff.build_quick_seed("claude", _SRC, title="t", cwd="/c")
+        assert len(seed.encode()) <= 512, f"n={n} produced {len(seed.encode())} bytes"
+        assert meta["bytes"] == len(seed.encode())
+
+
+def test_edited_seed_at_exactly_the_cap_is_accepted(tmp_home, monkeypatch):
+    # Round 2: the server appended "\n" before validating, so a brief whose visible size
+    # equalled meta.cap was rejected as cap+1 — while the modal (counting the same visible
+    # bytes) had enabled the button. The stored seed is now exactly what was validated.
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 64)
+    exact = "e" * 64
+    assert handoff.sanitize_seed(exact) == exact
+    assert len(handoff.sanitize_seed(exact).encode()) == 64
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "orig", cwd="/tmp")
+    key = handoff.commit(h, exact)["id"]
+    assert handoff.claim_seed(key) == exact
+    with pytest.raises(handoff.HandoffError) as ei:
+        handoff.sanitize_seed("e" * 65)
+    assert ei.value.status == 422
+
+
+def test_client_visible_bytes_never_undercount_the_server(monkeypatch):
+    # The modal gates on the RAW textarea bytes vs meta.cap; the server only ever strips or
+    # trims (both shrink), so a client-accepted brief is always server-accepted. Pin that
+    # direction — it is what makes the two enforcement points agree at the boundary.
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 64)
+    for raw in ("x" * 64, "  " + "x" * 62 + "  ", "\x1b" * 10 + "y" * 54, "é" * 32):
+        if len(raw.encode()) > 64:
+            continue  # the modal would have blocked it
+        assert len(handoff.sanitize_seed(raw).encode()) <= 64
+
+
+def test_cap_holds_for_caps_smaller_than_the_truncation_marker(monkeypatch):
+    # #703 review round 3: `_cap` always appended the 5-byte "\n…\n" marker, so a cap below
+    # 5 produced 5 bytes. The marker is a courtesy — never a reason to exceed the cap.
+    for cap in (0, 1, 2, 3, 4, 5, 6, 10):
+        monkeypatch.setattr(handoff, "SEED_CAP_BYTES", cap)
+        out = handoff._cap("x" * 200)
+        assert len(out.encode()) <= cap, f"cap={cap} produced {len(out.encode())} bytes"
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", -5)  # defensive: never negative-slice
+    assert handoff._cap("x" * 50) == ""
+
+
+def test_configured_cap_is_floored_to_a_usable_minimum(monkeypatch):
+    # The env knob is an operator dial; 0 / negative / absurd would configure a handoff that
+    # can carry no handoff. The floor is applied at load.
+    import importlib
+
+    for raw in ("0", "-1", "3", "not-a-number"):
+        monkeypatch.setenv("AGENT_SESSIONS_HANDOFF_CAP_BYTES", raw)
+        mod = importlib.reload(handoff)
+        assert mod.SEED_CAP_BYTES >= mod.MIN_CAP_BYTES
+    monkeypatch.setenv("AGENT_SESSIONS_HANDOFF_CAP_BYTES", "4096")
+    mod = importlib.reload(handoff)
+    assert mod.SEED_CAP_BYTES == 4096  # a sane operator value is honoured
+    monkeypatch.delenv("AGENT_SESSIONS_HANDOFF_CAP_BYTES", raising=False)
+    importlib.reload(handoff)  # restore the module for the rest of the session
+
+
+# ---- #703 review round 4: readiness survives a reconnect ------------------------------
+
+
+def test_first_paint_flag_survives_scrollback_state_loss(tmp_path, monkeypatch):
+    # SCOPE: this pins the FIRST-PAINT READINESS FLAG's durability only (the `.ready`
+    # sidecar, re-hydrated after the in-memory scrollback caches are dropped) — which is
+    # what the round-4 reconnect fix needs. It deliberately does NOT claim the SEED itself
+    # survives a broker restart: the handoff store is in-memory and its durable-outbox work
+    # is tracked in #709 (a fresh process after commit() would still find no pending seed).
+    from agent_sessions import scrollback
+
+    monkeypatch.setattr(scrollback, "_SCROLLBACK_DIR", tmp_path / "sb")
+    key = "codex:new-abc"
+    assert scrollback.first_paint_seen(key) is False
+    scrollback.note_first_paint(key)
+    assert scrollback.first_paint_seen(key) is True
+    # Simulate the process losing its in-memory state (eviction / restart): the flag is
+    # re-hydrated from the durable sidecar on the next touch.
+    scrollback._drop_buffer(key)
+    scrollback._READY.discard(key)
+    scrollback._LOADED_FROM_DISK.discard(key)
+    assert scrollback.first_paint_seen(key) is True  # from the .ready sidecar
+    # clear_scrollback removes it (a wiped session isn't "ready" anymore).
+    scrollback.clear_scrollback([key])
+    scrollback._READY.discard(key)
+    scrollback._LOADED_FROM_DISK.discard(key)
+    assert scrollback.first_paint_seen(key) is False
+
+
+def test_pending_seed_is_delivered_on_the_next_attach_to_an_idle_tui(tmp_path, monkeypatch):
+    """#703 review round 4 — the documented "delivered on the next attach" path.
+
+    Attach 1: the TUI arms 2004 and paints a full screen but the viewer disconnects before
+    the quiet window, so the seed stays pending. Attach 2: an ALREADY-painted, now-idle TUI
+    produces almost no live output — under the old gate `painted` (from this run's
+    `out_bytes`) is false forever and the seed is never delivered. With durable first-paint
+    it is delivered on attach 2.
+    """
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SEED_POLL_S", 0.05)
+    monkeypatch.setattr(webterm, "_SEED_SETTLE_S", 0.05)
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "DELIVER-LATER", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+
+    # --- Attach 1: paints, but the viewer leaves before the quiet window ---
+    class DropAfterPaint:
+        def __init__(self):
+            self.seen = 0
+
+        async def receive(self):
+            await asyncio.sleep(10)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            self.seen += len(b)
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    painter = (
+        "import os, time, tty\n"
+        "tty.setraw(0)\n"
+        'os.write(1, b"\\x1b[?2004h")\n'
+        'os.write(1, b"." * 4096)\n'  # a full first paint
+        "time.sleep(30)\n"  # stays 'alive'; the ws is torn down before quiet
+    )
+    monkeypatch.setattr(webterm, "_SEED_QUIET_S", 10.0)  # quiet never satisfies in attach 1
+    monkeypatch.setattr(webterm, "_SEED_READY_TIMEOUT_S", 1.0)
+
+    async def _attach1() -> None:
+        await asyncio.wait_for(
+            webterm.run(
+                DropAfterPaint(),
+                [sys.executable, "-c", painter],
+                cwd=str(tmp_path),
+                buf_key=key,
+                seed_key=key,
+            ),
+            timeout=3,
+        )
+
+    with contextlib.suppress(TimeoutError, Exception):
+        asyncio.run(_attach1())
+    assert webterm.scrollback.first_paint_seen(key) is True  # attach 1 recorded the paint
+    assert handoff.has_pending_seed(key) is True  # …but didn't deliver (dropped pre-quiet)
+
+    # --- Attach 2: an idle, already-painted TUI — barely any live output ---
+    idle = (
+        "import os, time, tty\n"
+        "tty.setraw(0)\n"
+        'os.write(1, b"\\x1b[?2004h")\n'
+        'os.write(1, b"x")\n'  # < first-paint threshold: only the persisted flag can help
+        "buf = b''\n"
+        "end = time.time() + 8\n"
+        "while time.time() < end and b'\\r' not in buf:\n"
+        "    try: buf += os.read(0, 65536)\n"
+        "    except OSError: break\n"
+        'os.write(1, b"GOT[" + buf + b"]")\n'
+    )
+    monkeypatch.setattr(webterm, "_SEED_QUIET_S", 0.3)
+    monkeypatch.setattr(webterm, "_SEED_READY_TIMEOUT_S", 6.0)
+    out: list[bytes] = []
+    asyncio.run(
+        webterm.run(
+            _fake_ws(out),
+            [sys.executable, "-c", idle],
+            cwd=str(tmp_path),
+            buf_key=key,
+            seed_key=key,
+        )
+    )
+    blob = b"".join(out)
+    got = blob[blob.find(b"GOT[") :]
+    assert b"\x1b[200~DELIVER-LATER\x1b[201~" in got  # delivered on the SECOND attach
+    assert handoff.has_pending_seed(key) is False
+
+
+# ---- #703 review follow-up: owner input is held until the seed lands ------------------
+
+# A child that arms paste, paints, then accumulates ALL stdin for a fixed window and echoes
+# it — so a test can assert the ORDER bytes arrived in (unlike _CHILD, which stops at CR).
+_CHILD_RECORD = r"""
+import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b"\x1b[?2004h")
+os.write(1, b"." * 4096)
+buf = b""
+end = time.time() + 2.5
+os.set_blocking(0, False)
+while time.time() < end:
+    try:
+        d = os.read(0, 65536)
+        if d: buf += d
+    except (BlockingIOError, OSError):
+        pass
+    time.sleep(0.02)
+os.write(1, b"REC[" + buf + b"]")
+"""
+
+
+def _ws_sends_then_waits(collected, frames):
+    """A fake WS that yields the given input frames (in order) on successive receive()
+    calls, then blocks until the run ends. Records all output bytes into `collected`."""
+
+    class FakeWS:
+        def __init__(self):
+            self._pending = list(frames)
+
+        async def receive(self):
+            if self._pending:
+                await asyncio.sleep(0.05)
+                return self._pending.pop(0)
+            await asyncio.sleep(10)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            collected.append(b)
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    return FakeWS()
+
+
+def test_owner_input_is_queued_until_the_seed_lands_and_never_splits_it(tmp_path, monkeypatch):
+    # #703 review follow-up: a keystroke typed while the seed is still pending must not beat
+    # the seed to the prompt, nor land mid-paste. It is queued and flushed AFTER the seed.
+    import json as _json
+
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SEED_POLL_S", 0.05)
+    monkeypatch.setattr(webterm, "_SEED_QUIET_S", 0.3)
+    monkeypatch.setattr(webterm, "_SEED_SETTLE_S", 0.05)
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "THE-SEED", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    out: list[bytes] = []
+    # The user types "USERKEY" ~immediately, while the TUI is still booting (seed pending).
+    frames = [{"text": _json.dumps({"t": "i", "d": "USERKEY"})}]
+    asyncio.run(
+        webterm.run(
+            _ws_sends_then_waits(out, frames),
+            [sys.executable, "-c", _CHILD_RECORD],
+            cwd=str(tmp_path),
+            buf_key=key,
+            seed_key=key,
+        )
+    )
+    blob = b"".join(out)
+    rec = blob[blob.find(b"REC[") :]
+    paste = rec.find(b"\x1b[200~THE-SEED\x1b[201~")
+    userkey = rec.find(b"USERKEY")
+    assert paste != -1, "the seed paste never reached the child"
+    assert userkey != -1, "the queued keystroke was lost"
+    assert paste < userkey, "owner input must come AFTER the seed, never before/into it"
+    # The bracketed-paste frame is intact (USERKEY didn't split it).
+    assert b"\x1b[200~THE-SEED\x1b[201~\r" in rec
+
+
+def test_owner_input_is_discarded_when_the_seed_is_not_delivered(tmp_path, monkeypatch):
+    # If the TUI never becomes ready (seed stays pending for the next attach), queued owner
+    # input is dropped rather than written ahead of the still-pending seed.
+    import json as _json
+
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_SEED_POLL_S", 0.05)
+    monkeypatch.setattr(webterm, "_SEED_READY_TIMEOUT_S", 0.4)
+    h = handoff.create_handle("claude:" + _SRC, "claude", "quick", "PENDING", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    out: list[bytes] = []
+    frames = [{"text": _json.dumps({"t": "i", "d": "TYPED-WHILE-BOOTING"})}]
+    asyncio.run(
+        webterm.run(
+            _ws_sends_then_waits(out, frames),
+            [sys.executable, "-c", _CHILD_PREAMBLE_ONLY],  # never arms paste → never ready
+            cwd=str(tmp_path),
+            buf_key=key,
+            seed_key=key,
+        )
+    )
+    blob = b"".join(out)
+    assert b"TYPED-WHILE-BOOTING" not in blob  # not written ahead of the pending seed
+    assert handoff.has_pending_seed(key) is True  # seed still pending for the next attach
+
+
+def test_spawn_watch_waits_for_a_slow_master_instead_of_aborting_it(tmp_home, monkeypatch):
+    # #703 review follow-up: the watch is armed at connection-accept time, but spawning the
+    # dtach master can take up to webterm.SPAWN_TIMEOUT_S. The instant-exit window must start
+    # only once the master APPEARS — a fixed timer from arm-time would abort a valid 8-15 s
+    # launch and delete its committed seed.
+    from agent_sessions import ptybridge, relaunch, webterm
+    from agent_sessions.routes import terminal as terminal_routes
+
+    src = "claude:" + _SRC
+    h = handoff.create_handle(src, "claude", "quick", "slow-seed", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    native = key.partition(":")[2]
+    monkeypatch.setattr(relaunch, "_INSTANT_EXIT_S", 0.05)
+    monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 2.0)
+    monkeypatch.setattr(terminal_routes, "_SPAWN_APPEAR_POLL_S", 0.02)
+    # The master is NOT up for the first ~0.5 s (a slow launch), then appears and stays.
+    t0 = time.monotonic()
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: (time.monotonic() - t0) > 0.5)
+    asyncio.run(terminal_routes._handoff_spawn_watch("claude", native))
+    # The slow launch was NOT aborted — provenance was published once it came up.
+    assert metadata.get(key).handoff_from == src  # marked spawned, not aborted
+    assert handoff.has_pending_seed(key) is True  # seed intact (never abort_spawn'd)
+
+
+def test_spawn_watch_aborts_a_master_that_never_appears(tmp_home, monkeypatch):
+    # …but a master that never comes up within the spawn window IS a genuine failure → abort
+    # (no dangling provenance, seed dropped).
+    from agent_sessions import ptybridge, relaunch, webterm
+    from agent_sessions.routes import terminal as terminal_routes
+
+    src = "claude:" + _SRC
+    h = handoff.create_handle(src, "claude", "quick", "never", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    native = key.partition(":")[2]
+    monkeypatch.setattr(relaunch, "_INSTANT_EXIT_S", 0.05)
+    monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(terminal_routes, "_SPAWN_APPEAR_MARGIN_S", 0.1)
+    monkeypatch.setattr(terminal_routes, "_SPAWN_APPEAR_POLL_S", 0.02)
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)  # never comes up
+    asyncio.run(terminal_routes._handoff_spawn_watch("claude", native))
+    assert metadata.get(key).handoff_from == ""  # no provenance
+    assert handoff.has_pending_seed(key) is False  # aborted
+
+
+def test_spawn_watch_aborts_a_master_that_dies_in_the_instant_exit_window(tmp_home, monkeypatch):
+    # The instant-exit check still applies AFTER the master appears: a master that comes up
+    # then exits instantly (misconfigured launch) is aborted, not marked spawned.
+    from agent_sessions import ptybridge, relaunch, webterm
+    from agent_sessions.routes import terminal as terminal_routes
+
+    src = "claude:" + _SRC
+    h = handoff.create_handle(src, "claude", "quick", "flash", cwd="/tmp")
+    key = handoff.commit(h)["id"]
+    native = key.partition(":")[2]
+    monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(relaunch, "_INSTANT_EXIT_S", 0.3)
+    monkeypatch.setattr(terminal_routes, "_SPAWN_APPEAR_POLL_S", 0.02)
+    # Alive briefly (so it "appears"), then gone before the instant-exit window closes.
+    t0 = time.monotonic()
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: (time.monotonic() - t0) < 0.15)
+    asyncio.run(terminal_routes._handoff_spawn_watch("claude", native))
+    assert metadata.get(key).handoff_from == ""  # came up then died → aborted
+    assert handoff.has_pending_seed(key) is False

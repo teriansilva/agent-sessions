@@ -453,12 +453,27 @@ export interface SessionsQuery {
   engine?: string;
 }
 
-/** Cross-engine handoff (#597): the prepared Quick seed — preview + the opaque server-side
- *  handle the commit step redeems. Nothing is spawned at prepare; cancel = let it expire. */
+/** Seed-generation mode (#597): "quick" builds the tail locally; "ai" (Phase 2) asks the
+ *  configured AI-review endpoint for a structured brief and degrades to "quick" when that
+ *  endpoint is unconfigured or failing. */
+export type HandoffMode = "quick" | "ai";
+
+/** Cross-engine handoff (#597): the prepared seed — preview + the opaque server-side
+ *  handle the commit step redeems. Nothing is spawned at prepare; cancel = let it expire.
+ *  `meta.mode` is what was actually BUILT: an "ai" request that degraded reports "quick"
+ *  with `degraded` + a human `notice` the modal shows. */
 export interface HandoffPrepared {
   handle: string;
   preview: string;
-  meta: { mode: string; turns: number; bytes: number; cap: number };
+  meta: {
+    mode: string;
+    turns: number;
+    bytes: number;
+    cap: number;
+    requested_mode?: string;
+    degraded?: boolean;
+    notice?: string;
+  };
 }
 
 /** The committed handoff target: navigate to /s/{engine}/{native} with fresh={cwd,bypass}
