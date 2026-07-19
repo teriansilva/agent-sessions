@@ -28,6 +28,29 @@ vi.mock("../../lib/api", async (importOriginal) => {
   };
 });
 
+// The ⋯ menu's "Session brief" + "Hand off…" mount the terminal-header modals, keyed to the
+// row's session (#597 follow-up). Those modals own their own API-driven internals and have
+// their own suites; here we stub them with a sentinel dialog so we can assert SessionList's
+// wiring — that the menu item mounts the right modal with the row's engine-qualified id.
+vi.mock("../terminal/HandoffModal", () => ({
+  HandoffModal: ({ sessionId, onClose }: { sessionId: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="handoff-mock" data-session={sessionId}>
+      <button type="button" onClick={onClose}>
+        close-handoff
+      </button>
+    </div>
+  ),
+}));
+vi.mock("../terminal/SessionRecapModal", () => ({
+  SessionRecapModal: ({ sessionId, onClose }: { sessionId: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="recap-mock" data-session={sessionId}>
+      <button type="button" onClick={onClose}>
+        close-recap
+      </button>
+    </div>
+  ),
+}));
+
 const mockSessions = vi.mocked(api.sessions);
 const mockRename = vi.mocked(api.rename);
 const mockArchive = vi.mocked(api.archive);
@@ -661,7 +684,8 @@ test("opening the row menu does not navigate or close the drawer (#384)", async 
 });
 
 // #384: configured install — the full action set renders inside one menu, grouped
-// by a separator between AI-review actions and row management.
+// by separators between primary actions, AI-review actions, and row management. The
+// leading "Session brief" + "Hand off…" mirror the terminal header (#597 follow-up).
 test("the configured menu lists all actions behind one trigger (#384/#424)", async () => {
   const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
@@ -674,6 +698,8 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   const menu = await openRowMenu(user);
   const items = screen.getAllByRole("menuitem");
   expect(items.map((el) => el.textContent)).toEqual([
+    "Session brief",
+    "Hand off…",
     "Review now",
     "Exclude from AI review",
     "Favorite",
@@ -685,6 +711,55 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   expect(menu.querySelector('[role="separator"]')).not.toBeNull();
   // Exactly one trigger per row — the old four-button cluster is gone.
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
+});
+
+// #597 follow-up: the header's "Session brief" + "Hand off…" are mirrored into the ⋯ menu so
+// both are reachable from the sidebar without opening the session first. Each opens the same
+// modal the header uses, keyed to the row's engine-qualified id.
+test("the ⋯ menu opens the session brief for the row (#597 follow-up)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Open session brief" }));
+  const dlg = await screen.findByRole("dialog", { name: "recap-mock" });
+  expect(dlg).toHaveAttribute("data-session", "claude:a");
+});
+
+test("the ⋯ menu hands off the row's session to another engine (#597 follow-up)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("First");
+  await openRowMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Hand off session to another engine" }));
+  const dlg = await screen.findByRole("dialog", { name: "handoff-mock" });
+  expect(dlg).toHaveAttribute("data-session", "claude:a");
+});
+
+test("a shell session offers the brief but not Hand off (#597 follow-up)", async () => {
+  const user = userEvent.setup();
+  mockSessions.mockResolvedValue(pageOf([sess("shell:x", "Term", "shell")]));
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Term");
+  await openRowMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Open session brief" })).toBeInTheDocument();
+  expect(
+    screen.queryByRole("menuitem", { name: "Hand off session to another engine" }),
+  ).toBeNull();
 });
 
 // #424 Phase 5b: the keyboard path for reassignment — "Move to project…" opens a picker that

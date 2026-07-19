@@ -8,6 +8,7 @@ import {
   FolderInput,
   Pencil,
   Plus,
+  ScrollText,
   Sparkles,
   Star,
   Tag,
@@ -36,6 +37,8 @@ import {
   sessionPathFromKey,
 } from "../../lib/format";
 import type { ProjectRef, Session } from "../../types/api";
+import { HandoffModal } from "../terminal/HandoffModal";
+import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { FiltersBar } from "./Filters";
 import { MoveToProjectModal } from "./MoveToProjectModal";
 import { RowMenu, type RowMenuEntry } from "./RowMenu";
@@ -166,6 +169,12 @@ function Row({
   // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
   const [moving, setMoving] = useState(false);
   const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(null);
+  // Session brief (Recap) + Hand off, mirrored from the terminal header into the ⋯ menu so
+  // both are reachable from the sidebar without opening the session first (#597 follow-up).
+  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapReturnFocus, setRecapReturnFocus] = useState<HTMLElement | null>(null);
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [handoffReturnFocus, setHandoffReturnFocus] = useState<HTMLElement | null>(null);
   // Imperative route to a handoff peer from the ⋯ menu (#597 Phase 2) — the row itself is
   // a NavLink, so the peer link can't be nested inside it.
   const navigate = useNavigate();
@@ -315,16 +324,59 @@ function Row({
     .map((p) => ({ ...p, parsed: parseSessionKey(p.key), path: sessionPathFromKey(p.key) }))
     .filter((p) => p.parsed !== null);
 
-  // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Same
-  // actions, same gating: Review-now / exclude items exist only when the AI-review
-  // handlers were passed down (ai_review.configured), the exclude item flips label
-  // for an excluded row, archive flips for an archived one. Busy items are disabled
-  // in place (aria-disabled) rather than removed, so the menu doesn't reflow.
+  // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Items are
+  // assembled as logical groups joined by `pushGroup`, which inserts a separator only
+  // *between* non-empty groups, so an absent group (no peers, AI-review not configured)
+  // never leaves a doubled or leading rule. Group order: primary session actions (mirrored
+  // from the terminal header) → handoff provenance backlinks → AI-review → row management.
+  // Busy items stay in place (aria-disabled) rather than being removed, so the menu doesn't
+  // reflow.
   const menuItems: RowMenuEntry[] = [];
+  const pushGroup = (group: RowMenuEntry[]) => {
+    if (group.length === 0) return;
+    if (menuItems.length > 0) menuItems.push("separator");
+    menuItems.push(...group);
+  };
+
+  // Primary actions, mirrored from the terminal header (#597 follow-up) so they're reachable
+  // from the sidebar without opening the session first: the session brief (Recap) and Hand
+  // off. Handoff is offered for every engine except `shell` — the same `canHandoff` gate the
+  // header uses (no agent transcript to seed). Each stashes the focused element so focus
+  // returns to the ⋯ trigger when the modal closes.
+  const primary: RowMenuEntry[] = [
+    {
+      key: "brief",
+      label: "Session brief",
+      ariaLabel: "Open session brief",
+      icon: <ScrollText size={15} />,
+      onSelect: () => {
+        setRecapReturnFocus(document.activeElement as HTMLElement | null);
+        setRecapOpen(true);
+      },
+    },
+  ];
+  if (s.engine !== "shell") {
+    primary.push({
+      key: "handoff",
+      label: "Hand off…",
+      ariaLabel: "Hand off session to another engine",
+      icon: <ArrowLeftRight size={15} />,
+      onSelect: () => {
+        setHandoffReturnFocus(document.activeElement as HTMLElement | null);
+        setHandoffOpen(true);
+      },
+    });
+  }
+  pushGroup(primary);
+
+  // Handoff provenance backlinks (#597 Phase 2): route to a peer session. Peer ids are
+  // display strings — a peer may be archived/deleted, so this just navigates and lets that
+  // route render its own empty state.
+  const peerItems: RowMenuEntry[] = [];
   for (const p of peers) {
     const path = p.path;
     if (!path || !p.parsed) continue;
-    menuItems.push({
+    peerItems.push({
       key: p.inbound ? "handoff-source" : "handoff-target",
       label: p.inbound ? "Open source session" : "Open handoff target",
       ariaLabel: p.inbound
@@ -334,9 +386,13 @@ function Row({
       onSelect: () => navigate(path),
     });
   }
-  if (menuItems.length > 0) menuItems.push("separator");
+  pushGroup(peerItems);
+
+  // AI-review actions — present only when the review handlers were passed down
+  // (ai_review.configured); the exclude item flips its label for an excluded row.
+  const reviewItems: RowMenuEntry[] = [];
   if (onReviewNow && !s.review_excluded) {
-    menuItems.push({
+    reviewItems.push({
       key: "review",
       label: "Review now",
       ariaLabel: "Review session now",
@@ -346,7 +402,7 @@ function Row({
     });
   }
   if (onToggleReviewExcluded) {
-    menuItems.push({
+    reviewItems.push({
       key: "exclude",
       label: s.review_excluded ? "Include in AI review" : "Exclude from AI review",
       icon: s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />,
@@ -354,8 +410,10 @@ function Row({
       onSelect: () => void toggleExcluded(),
     });
   }
-  if (menuItems.length > 0) menuItems.push("separator");
-  menuItems.push(
+  pushGroup(reviewItems);
+
+  // Row management: favorite / rename / tag / move / archive.
+  pushGroup([
     {
       // Favorite toggle (#508): relocated off the row surface into the menu. The visible
       // ★ now lives as a small prefix on the meta line (favorited rows only); this item
@@ -410,7 +468,7 @@ function Row({
       disabled: busy,
       onSelect: () => void toggleArchive(),
     },
-  );
+  ]);
 
   // #477: one leading status dot carries the whole row state — colour is the only signal,
   // no extra glyph or row width. Precedence (highest first): intervention (orange, never
@@ -454,6 +512,33 @@ function Row({
           onCancel={() => setMoving(false)}
           onMove={(ref) => void handleMove(ref)}
           returnFocusTo={moveReturnFocus}
+        />
+      )}
+      {/* Session brief + Hand off from the ⋯ menu (#597 follow-up): the same modals the
+          terminal header mounts, keyed to this row's session — no need to open it first. */}
+      {recapOpen && (
+        <SessionRecapModal
+          sessionId={s.id}
+          engine={s.engine}
+          title={s.title}
+          project={s.project.name}
+          summary={s.ai_summary}
+          recap={s.ai_recap}
+          interventionRequired={s.intervention_required}
+          interventionReason={s.intervention_reason}
+          reviewedAt={s.reviewed_at}
+          reviewExcluded={s.review_excluded}
+          onClose={() => setRecapOpen(false)}
+          returnFocusTo={recapReturnFocus}
+        />
+      )}
+      {handoffOpen && (
+        <HandoffModal
+          sessionId={s.id}
+          engine={s.engine}
+          title={s.title}
+          onClose={() => setHandoffOpen(false)}
+          returnFocusTo={handoffReturnFocus}
         />
       )}
       <NavLink
