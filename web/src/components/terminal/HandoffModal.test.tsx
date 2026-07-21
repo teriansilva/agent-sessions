@@ -76,6 +76,7 @@ test("renders capability-driven tiles, defaults to a non-source engine, shows th
     "claude:11111111-1111-1111-1111-111111111111",
     "codex",
     "quick",
+    false,
   );
   const preview = await screen.findByLabelText(/seed preview/i);
   expect(preview).toHaveValue(PREPARED.preview);
@@ -92,6 +93,7 @@ test("switching tiles re-prepares against the new target", async () => {
       "claude:11111111-1111-1111-1111-111111111111",
       "claude",
       "quick",
+      false,
     ),
   );
 });
@@ -147,6 +149,7 @@ test("AI mode re-prepares in ai mode and surfaces a degrade notice", async () =>
       "claude:11111111-1111-1111-1111-111111111111",
       "codex",
       "ai",
+      false,
     ),
   );
   // The server degraded to quick — the modal says so rather than pretending it's an AI brief.
@@ -195,6 +198,7 @@ test("a clean preview switches target with no confirmation", async () => {
       "claude:11111111-1111-1111-1111-111111111111",
       "claude",
       "quick",
+      false,
     ),
   );
 });
@@ -465,4 +469,68 @@ test("a commit that resolves after the modal unmounts does not navigate (#703 re
   await Promise.resolve();
   // The stale continuation must NOT override the user's newer location.
   expect(mockNavigate).not.toHaveBeenCalled();
+});
+
+// --- source reference (#716) ---------------------------------------------------------------
+// The transcript locator is opt-in. Because it changes the GENERATED seed, the flag has to key
+// the prepared result and the edit exactly like target/mode do — otherwise a toggle can leave a
+// stale handle on screen or silently discard typed prose.
+
+test("toggling the source reference re-prepares with the flag set", async () => {
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  const opt = screen.getByRole("checkbox", { name: /reference the source session/i });
+  expect(opt).not.toBeChecked(); // opt-in: off by default
+  await userEvent.click(opt);
+  await waitFor(() =>
+    expect(api.prepareHandoff).toHaveBeenLastCalledWith(
+      "claude:11111111-1111-1111-1111-111111111111",
+      "codex",
+      "quick",
+      true,
+    ),
+  );
+  expect(opt).toBeChecked();
+});
+
+test("the extra privacy disclosure appears only while the source reference is on", async () => {
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  expect(screen.queryByText(/a local path that can reveal/i)).toBeNull();
+  await userEvent.click(screen.getByRole("checkbox", { name: /reference the source session/i }));
+  expect(await screen.findByText(/a local path that can reveal/i)).toBeVisible();
+  expect(screen.getByText(/no transcript contents are included/i)).toBeVisible();
+});
+
+test("a late prepare for the previous flag value cannot overwrite the current preview", async () => {
+  // Rapid toggle: the OFF request resolves after the ON one. Keyed results mean the stale
+  // response is dropped rather than repainting the preview with the wrong seed.
+  let resolveOff!: (v: unknown) => void;
+  vi.mocked(api.prepareHandoff).mockImplementation((_s, _t, _m, ref) =>
+    ref
+      ? (Promise.resolve({ ...PREPARED, handle: "h-on", preview: "WITH LOCATOR" }) as never)
+      : (new Promise((res) => {
+          resolveOff = res;
+        }) as never),
+  );
+  renderModal();
+  const opt = await screen.findByRole("checkbox", { name: /reference the source session/i });
+  await userEvent.click(opt); // → ON, resolves immediately
+  await waitFor(() => expect(screen.getByLabelText(/seed preview/i)).toHaveValue("WITH LOCATOR"));
+  // The earlier OFF request lands late; it belongs to a key nobody is showing any more.
+  resolveOff({ ...PREPARED, handle: "h-off", preview: "STALE NO LOCATOR" });
+  await waitFor(() => expect(screen.getByLabelText(/seed preview/i)).toHaveValue("WITH LOCATOR"));
+});
+
+test("toggling the source reference asks before discarding a dirty edit", async () => {
+  renderModal();
+  const preview = await screen.findByLabelText(/seed preview/i);
+  await userEvent.clear(preview);
+  await userEvent.type(preview, "hand-written brief");
+  await userEvent.click(screen.getByRole("checkbox", { name: /reference the source session/i }));
+  expect(await screen.findByRole("alertdialog", { name: /discard your edits/i })).toBeVisible();
+  // Keeping the edit also keeps the toggle where it was — the switch never happened.
+  await userEvent.click(screen.getByRole("button", { name: /keep editing/i }));
+  expect(screen.getByLabelText(/seed preview/i)).toHaveValue("hand-written brief");
+  expect(screen.getByRole("checkbox", { name: /reference the source session/i })).not.toBeChecked();
 });

@@ -39,6 +39,11 @@ export function HandoffModal({
   const [tiles, setTiles] = useState<EngineInfo[] | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [mode, setMode] = useState<HandoffMode>("quick");
+  // Source reference (#716): adds the source transcript's LOCATION to the seed so the target
+  // agent can read past the cap. Opt-in — following it is what costs tokens — and it keys the
+  // prepared result + the edit exactly like `mode` does, so toggling can never leave a stale
+  // handle on screen or silently drop typed prose.
+  const [srcRef, setSrcRef] = useState(false);
   // Forces a re-prepare of the SAME target+mode (expired-handle recovery).
   const [nonce, setNonce] = useState(0);
   // The prepare result is keyed by what it was built FOR: a tile/mode switch instantly
@@ -56,7 +61,7 @@ export function HandoffModal({
   const [editState, setEditState] = useState<{ for: string; text: string } | null>(null);
   // A target/mode switch the user must confirm because it would discard a dirty edit.
   const [pendingSwitch, setPendingSwitch] = useState<
-    { target: string; mode: HandoffMode } | null
+    { target: string; mode: HandoffMode; srcRef: boolean } | null
   >(null);
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,8 +82,8 @@ export function HandoffModal({
     };
   }, []);
 
-  const prepKey = target ? `${target}|${mode}|${nonce}` : "";
-  const editKey = target ? `${target}|${mode}` : "";
+  const prepKey = target ? `${target}|${mode}|${srcRef ? 1 : 0}|${nonce}` : "";
+  const editKey = target ? `${target}|${mode}|${srcRef ? 1 : 0}` : "";
   const prep = prepRes?.for === prepKey ? (prepRes.prep ?? null) : null;
   const prepError = prepRes?.for === prepKey ? (prepRes.error ?? null) : null;
   const preparing = target !== null && prepRes?.for !== prepKey;
@@ -166,9 +171,9 @@ export function HandoffModal({
   useEffect(() => {
     if (!target) return;
     let alive = true;
-    const forKey = `${target}|${mode}|${nonce}`;
+    const forKey = `${target}|${mode}|${srcRef ? 1 : 0}|${nonce}`;
     api
-      .prepareHandoff(sessionId, target, mode)
+      .prepareHandoff(sessionId, target, mode, srcRef)
       .then((r) => {
         if (alive)
           setPrepRes({
@@ -192,22 +197,24 @@ export function HandoffModal({
     return () => {
       alive = false;
     };
-  }, [sessionId, target, mode, nonce]);
+  }, [sessionId, target, mode, srcRef, nonce]);
 
   // A switch that would throw away typed prose asks first; a clean preview switches
   // immediately (nothing to lose).
-  const requestSwitch = (next: { target?: string; mode?: HandoffMode }) => {
+  const requestSwitch = (next: { target?: string; mode?: HandoffMode; srcRef?: boolean }) => {
     const t = next.target ?? target ?? "";
     const m = next.mode ?? mode;
-    if (t === target && m === mode) return;
+    const s = next.srcRef ?? srcRef;
+    if (t === target && m === mode && s === srcRef) return;
     if (dirty) {
-      setPendingSwitch({ target: t, mode: m });
+      setPendingSwitch({ target: t, mode: m, srcRef: s });
       return;
     }
     setError(null);
     setRenewalNotice(null);
     setTarget(t);
     setMode(m);
+    setSrcRef(s);
   };
 
   const applyPendingSwitch = () => {
@@ -217,6 +224,7 @@ export function HandoffModal({
     setRenewalNotice(null);
     setTarget(pendingSwitch.target);
     setMode(pendingSwitch.mode);
+    setSrcRef(pendingSwitch.srcRef);
     setPendingSwitch(null);
   };
 
@@ -360,6 +368,31 @@ export function HandoffModal({
           </p>
         </div>
 
+        {/* Source reference (#716). The session id is ALWAYS in the seed (free provenance);
+            this opts in to the transcript's LOCATION, which is what lets the target agent read
+            past the cap — and what can spend tokens, so the cost is stated on the control
+            itself rather than buried in the privacy note. Routed through `requestSwitch` so a
+            dirty edit gets the same discard confirmation a target/mode switch gets. */}
+        <div className={styles.section}>
+          <span className={styles.label}>Source reference //</span>
+          <label className={`${styles.optRow} ${srcRef ? styles.optRowOn : ""}`}>
+            <input
+              type="checkbox"
+              className={styles.optBox}
+              checked={srcRef}
+              disabled={committing}
+              onChange={(e) => requestSwitch({ srcRef: e.target.checked })}
+            />
+            <span className={styles.optText}>
+              Reference the source session
+              <span className={styles.optHint}>
+                Adds where the transcript lives so the new agent can read the full history. Uses
+                extra tokens.
+              </span>
+            </span>
+          </label>
+        </div>
+
         <div className={styles.section}>
           <div className={styles.previewHead}>
             <span className={styles.label}>Seed preview // editable</span>
@@ -461,6 +494,12 @@ export function HandoffModal({
           <span className={styles.foot}>
             The seed is pasted into the new session as its first prompt — that engine's model
             provider sees it.
+            {srcRef && (
+              <span className={styles.privacyMore}>
+                Also sends the transcript's <b>location</b> — a local path that can reveal your
+                username and project name. No transcript contents are included.
+              </span>
+            )}
           </span>
           <div className={styles.buttons}>
             <button

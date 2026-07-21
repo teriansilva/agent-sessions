@@ -44,6 +44,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         mode = str(payload.get("mode", "quick") or "quick")
         if mode not in _MODES:
             raise HTTPException(status_code=422, detail=f"unknown handoff mode: {mode!r}")
+        # Optional source reference (#716): adds the source transcript's LOCATION to the seed
+        # so the target agent can read past the cap when the brief is not enough. Opt-in,
+        # because *following* it is what spends tokens. Resolved from the canonical logical id
+        # below (never a placeholder), and silently omitted when it does not resolve.
+        #
+        # Validated as a REAL boolean, never coerced: this flag gates a privacy disclosure, and
+        # `bool("false")` / `bool("0")` are both True — a client sending the string "false"
+        # would silently opt IN and embed a local path in the seed. Unknown shapes are a 422,
+        # matching how `routes/system.py` validates its booleans.
+        raw_source_ref = payload.get("include_source_ref", False)
+        if not isinstance(raw_source_ref, bool):
+            raise HTTPException(status_code=422, detail="include_source_ref must be a boolean")
+        include_source_ref = raw_source_ref
         # Source identity gate FIRST — the same parse_key validation every session route
         # uses, before anything touches the transcript. Placeholders resolve to their
         # real id where an alias exists (a reconciled source hands off its real history).
@@ -85,6 +98,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 logical_native,
                 title=match.first_user_message,
                 cwd=match.cwd,
+                include_source_ref=include_source_ref,
             )
 
         try:
@@ -100,6 +114,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                         logical_native,
                         title=match.first_user_message,
                         cwd=match.cwd,
+                        include_source_ref=include_source_ref,
                     )
                 except (review.ReviewError, handoff.HandoffError) as e:
                     if isinstance(e, handoff.HandoffError) and e.status == 409:

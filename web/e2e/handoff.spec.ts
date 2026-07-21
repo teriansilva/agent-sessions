@@ -182,3 +182,45 @@ test("a degraded AI handoff tells the user it fell back to the quick tail (#597 
   await dialog.getByRole("radio", { name: /ai summary/i }).click();
   await expect(dialog).toContainText(/isn't configured — using the local quick tail/i);
 });
+
+test("the source-reference toggle re-prepares and adds the transcript locator (#716)", async ({
+  page,
+}) => {
+  // The server decides what the seed says; the flag is what it keys on. Vary the preview by
+  // `include_source_ref` so the assertion proves the flag actually reached the server.
+  const LOCATOR = "/home/u/.claude/projects/-home-u-proj/aaaaaaaa-1111-2222-3333-444444444444.jsonl";
+  await page.route("**/api/handoff/prepare", async (route) => {
+    const body = route.request().postDataJSON() as { include_source_ref?: boolean };
+    const preview = body.include_source_ref
+      ? `${PREVIEW}\n- transcript: ${LOCATOR}`
+      : PREVIEW;
+    await route.fulfill({
+      json: {
+        handle: body.include_source_ref ? "h-ref-on" : "h-ref-off",
+        preview,
+        meta: { mode: "quick", turns: 2, bytes: preview.length, cap: 8192 },
+      },
+    });
+  });
+
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  await page.getByRole("button", { name: /hand off session/i }).click();
+  const dialog = page.getByRole("dialog", { name: /hand off/i });
+  const preview = dialog.getByLabel(/seed preview/i);
+
+  // Opt-in: off by default, so no locator and no extra disclosure.
+  const opt = dialog.getByRole("checkbox", { name: /reference the source session/i });
+  await expect(opt).not.toBeChecked();
+  await expect(preview).not.toHaveValue(new RegExp(LOCATOR));
+  await expect(dialog.getByText(/a local path that can reveal/i)).toHaveCount(0);
+
+  // Turning it on re-prepares; the locator lands in the preview and the disclosure appears.
+  await opt.check();
+  await expect(preview).toHaveValue(new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")));
+  await expect(dialog.getByText(/a local path that can reveal/i)).toBeVisible();
+  await expect(dialog.getByText(/no transcript contents are included/i)).toBeVisible();
+
+  // And back off — the locator goes away again (the flag keys the prepared result).
+  await opt.uncheck();
+  await expect(preview).not.toHaveValue(new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")));
+});

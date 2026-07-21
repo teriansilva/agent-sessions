@@ -332,6 +332,54 @@ def adapter_for(engine_id: str) -> TranscriptAdapter | None:
     return _ADAPTERS.get(engine_id)
 
 
+# Where an engine keeps a session's FULL transcript, as an agent-readable location string (#716).
+# Deliberately separate from the adapters: an adapter *parses* a transcript, a locator only
+# *names where it lives*, so a handoff seed can point the receiving agent at the history the
+# capped seed had to drop.
+#
+# Signature ``(native_id, home) -> str | None``. ``None`` means **the session did not resolve** —
+# not merely that the store is missing. A store shared by many sessions (opencode's SQLite DB)
+# must confirm rows for *this* id, and glob-backed engines must match the id EXACTLY: a
+# same-prefix neighbour is a different session, and naming it would point the target agent at
+# someone else's history. Callers omit the reference entirely on ``None`` — never a guess.
+SourceLocator = Callable[[str, Path], str | None]
+_LOCATORS: dict[str, SourceLocator] = {}
+
+
+def register_locator(engine_id: str, locator: SourceLocator) -> None:
+    """Register an engine's transcript locator (keyed by the engines.py engine id)."""
+    _LOCATORS[engine_id] = locator
+
+
+def locator_for(engine_id: str) -> SourceLocator | None:
+    """The registered locator for ``engine_id``, or ``None`` (engine can't be located)."""
+    return _LOCATORS.get(engine_id)
+
+
+def source_location(engine_id: str, native_id: str, home: Path) -> str | None:
+    """Where ``engine_id``'s session ``native_id`` keeps its full transcript, or ``None`` when the
+    session doesn't resolve / the engine has no locator. Fail-soft by construction: a locator that
+    raises yields ``None``, so an unreadable or corrupt store can never break a handoff."""
+    fn = _LOCATORS.get(engine_id)
+    if fn is None:
+        return None
+    try:
+        return fn(native_id, home)
+    except Exception:
+        return None
+
+
+def _path_locator(resolve: Callable[[str, Path], Path | None]) -> SourceLocator:
+    """Adapt a ``(native_id, home) -> Path | None`` resolver into a locator. Used for the
+    file-backed engines, whose resolvers already enforce exact-id matching."""
+
+    def locate(native_id: str, home: Path) -> str | None:
+        path = resolve(native_id, home)
+        return str(path) if path is not None else None
+
+    return locate
+
+
 # Read at most this many bytes from the END of a transcript. We only need the last
 # `max_messages`, and even a few hundred KB of JSONL holds far more than that — so a multi-MB
 # transcript parses in ~the same time as a small one (keeps the parse well under budget, #242).
@@ -395,22 +443,29 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
     return turns
 
 
-def _claude_adapter(native_id: str, home: Path) -> list[Turn]:
-    """Resolve a Claude session id to its JSONL under ``home/.claude/projects/*/`` and parse it.
-    (The cwd-encoded project dir isn't known from the id alone, so glob for ``<id>.jsonl``;
-    also check ``projects-archive`` for archived sessions.)"""
-    roots = [home / ".claude" / "projects", home / ".claude" / "projects-archive"]
-    for root in roots:
+def claude_jsonl_path(native_id: str, home: Path) -> Path | None:
+    """Resolve a Claude session id to its JSONL under ``home/.claude/projects/*/`` (or
+    ``projects-archive`` for archived sessions), or ``None``. The cwd-encoded project dir isn't
+    known from the id alone, so glob — but for the EXACT ``<id>.jsonl`` filename, so the match is
+    always that one session and never a same-prefix neighbour."""
+    for root in (home / ".claude" / "projects", home / ".claude" / "projects-archive"):
         try:
             match = next(root.glob(f"*/{native_id}.jsonl"), None)
         except OSError:
             match = None
         if match is not None:
-            return claude_turns_from_jsonl(match)
-    return []
+            return match
+    return None
+
+
+def _claude_adapter(native_id: str, home: Path) -> list[Turn]:
+    """Resolve a Claude session id to its JSONL and parse it (``[]`` when it doesn't resolve)."""
+    path = claude_jsonl_path(native_id, home)
+    return claude_turns_from_jsonl(path) if path is not None else []
 
 
 register_adapter("claude", _claude_adapter)
+register_locator("claude", _path_locator(claude_jsonl_path))
 
 
 def _read_tail(path: Path) -> bytes:
@@ -505,6 +560,7 @@ def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
 
 
 register_adapter("codex", _codex_adapter)
+register_locator("codex", _path_locator(codex_rollout_path))
 
 
 # --- opencode -----------------------------------------------------------------------------
@@ -567,7 +623,39 @@ def _opencode_adapter(native_id: str, home: Path) -> list[Turn]:
         conn.close()
 
 
+def _opencode_locator(native_id: str, home: Path) -> str | None:
+    """opencode has **no per-session file** — a conversation is rows in one shared SQLite DB. So
+    the location is the DB plus the id to query, and it resolves ONLY when rows for *this* session
+    actually exist: the DB existing says nothing about this id, and naming a DB that doesn't hold
+    the session would point the target agent at other people's sessions. Phrased as a query, never
+    as a file to read. Read-only + fail-soft (any sqlite error → ``None``)."""
+    from .engines import base
+
+    db = Path(base._opencode_db(home))
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM message WHERE session_id=? LIMIT 1", (native_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return (
+        f"{db} — SQLite database (no per-session file); "
+        f"query rows where message.session_id = '{native_id}'"
+    )
+
+
 register_adapter("opencode", _opencode_adapter)
+register_locator("opencode", _opencode_locator)
 
 
 # --- gemini -------------------------------------------------------------------------------
@@ -636,6 +724,7 @@ def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
 
 
 register_adapter("gemini", _gemini_adapter)
+register_locator("gemini", _path_locator(gemini_chat_path))
 
 
 # --- antigravity (agy) --------------------------------------------------------------------
@@ -676,4 +765,13 @@ def _antigravity_adapter(native_id: str, home: Path) -> list[Turn]:
     return _antigravity_turns_from_jsonl(path) if path is not None else []
 
 
+def _antigravity_locator(native_id: str, home: Path) -> str | None:
+    """antigravity's transcript path, resolved through the provider's own exact-id lookup."""
+    from .engines import antigravity, base
+
+    path = antigravity._transcript_path(base._antigravity_dir(home), native_id)
+    return str(path) if path is not None else None
+
+
 register_adapter("antigravity", _antigravity_adapter)
+register_locator("antigravity", _antigravity_locator)

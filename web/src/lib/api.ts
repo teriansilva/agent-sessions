@@ -204,11 +204,19 @@ export const api = {
    *  the endpoint is unconfigured/failing (`meta.notice` explains). 409 = empty source
    *  transcript; 422 = unsupported target/mode — `mutateJson` surfaces the server detail
    *  either way. CSRF-guarded. */
-  prepareHandoff: (sourceId: string, targetEngine: string, mode: HandoffMode = "quick") =>
+  prepareHandoff: (
+    sourceId: string,
+    targetEngine: string,
+    mode: HandoffMode = "quick",
+    includeSourceRef = false,
+  ) =>
     mutateJson<HandoffPrepared>("POST", "/api/handoff/prepare", {
       source_id: sourceId,
       target_engine: targetEngine,
       mode,
+      // #716: opt-in pointer to where the source transcript lives, so the target agent can
+      // read past the seed cap. Default false — following it costs tokens.
+      include_source_ref: includeSourceRef,
     }),
   /** Cross-engine handoff commit (#597): bind the prepared handle to a freshly minted
    *  target session id. `seed` carries the user's EDITED preview (Phase 2) — the server

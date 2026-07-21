@@ -1789,3 +1789,216 @@ def test_spawn_watch_aborts_a_master_that_dies_in_the_instant_exit_window(tmp_ho
     asyncio.run(terminal_routes._handoff_spawn_watch("claude", native))
     assert metadata.get(key).handoff_from == ""  # came up then died → aborted
     assert handoff.has_pending_seed(key) is False
+
+
+# --- source reference: session id + transcript location (#716) ------------------------------
+# The seed is byte-capped, so a taking-over agent can't reach anything the cap dropped. The
+# session id is ALWAYS named (free provenance); the transcript LOCATION is opt-in, because
+# following it is what spends tokens. A location is emitted only when it resolves *this*
+# session — never a guess, never a same-prefix neighbour, never a store that lacks the rows.
+
+
+def test_claude_locator_resolves_the_exact_session_jsonl(fake_jsonl, tmp_home):
+    from pathlib import Path
+
+    from agent_sessions import transcript
+
+    loc = transcript.source_location("claude", _SRC, tmp_home)
+    assert loc is not None
+    assert loc.endswith(f"{_SRC}.jsonl")
+    assert Path(loc).is_file()
+
+
+def test_locator_is_none_for_an_unresolvable_session_or_engine(fake_jsonl, tmp_home):
+    from agent_sessions import transcript
+
+    assert (
+        transcript.source_location("claude", "99999999-9999-9999-9999-999999999999", tmp_home)
+        is None
+    )
+    assert transcript.source_location("nosuchengine", _SRC, tmp_home) is None
+
+
+def test_claude_locator_never_matches_a_prefix_neighbour(tmp_home):
+    """A short id that PREFIXES a real filename must not resolve to that file: it is a
+    different session, and naming it would point the target agent at someone else's history."""
+    from agent_sessions import transcript
+
+    proj = tmp_home / ".claude" / "projects" / "-p"
+    proj.mkdir(parents=True)
+    (proj / "abcdefff-1111-1111-1111-111111111111.jsonl").write_text("{}\n")
+    assert transcript.source_location("claude", "abcdefff", tmp_home) is None
+
+
+def test_opencode_locator_requires_rows_for_this_session(tmp_home, monkeypatch):
+    """opencode has no per-session file — the DB existing says nothing about THIS session,
+    so the locator resolves only when the session's rows are actually there, and it reads as
+    a query rather than a file to cat."""
+    import sqlite3
+
+    from agent_sessions import transcript
+    from agent_sessions.engines import base
+
+    db = tmp_home / "opencode.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE message (id TEXT, session_id TEXT, data TEXT)")
+    conn.execute("INSERT INTO message VALUES ('m1','ses_real','{}')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(base, "_opencode_db", lambda home: str(db))
+
+    loc = transcript.source_location("opencode", "ses_real", tmp_home)
+    assert loc is not None
+    assert "ses_real" in loc and "no per-session file" in loc
+    # Same DB, a session with no rows: must NOT resolve.
+    assert transcript.source_location("opencode", "ses_absent", tmp_home) is None
+
+
+def test_source_location_is_fail_soft_when_a_locator_raises(fake_jsonl, tmp_home, monkeypatch):
+    from agent_sessions import transcript
+
+    def boom(native, home):
+        raise OSError("store on fire")
+
+    monkeypatch.setitem(transcript._LOCATORS, "claude", boom)
+    assert transcript.source_location("claude", _SRC, tmp_home) is None
+
+
+def test_seed_always_names_the_source_session_and_omits_the_location_by_default(fake_jsonl):
+    seed, _ = handoff.build_quick_seed("claude", _SRC)
+    assert f"- session: claude:{_SRC}" in seed
+    assert "- transcript:" not in seed
+
+
+def test_seed_carries_the_transcript_location_when_enabled(fake_jsonl):
+    seed, _ = handoff.build_quick_seed("claude", _SRC, include_source_ref=True)
+    assert f"- session: claude:{_SRC}" in seed
+    assert "- transcript:" in seed and f"{_SRC}.jsonl" in seed
+    assert "read it only if you need more context" in seed
+
+
+def test_seed_omits_the_location_when_it_cannot_resolve(fake_jsonl, monkeypatch):
+    """Option on but the session doesn't resolve ⇒ the line is dropped entirely; the id
+    (which needs no lookup) still stands."""
+    from agent_sessions import transcript
+
+    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda n, h: None)
+    seed, _ = handoff.build_quick_seed("claude", _SRC, include_source_ref=True)
+    assert f"- session: claude:{_SRC}" in seed
+    assert "- transcript:" not in seed
+
+
+def test_seed_stays_within_the_cap_with_the_source_reference_on(fake_jsonl, monkeypatch):
+    from agent_sessions import transcript
+
+    turns = [transcript.Turn("user", "x" * 5000, "text") for _ in range(20)]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    seed, meta = handoff.build_quick_seed("claude", _SRC, include_source_ref=True)
+    assert len(seed.encode("utf-8")) <= handoff.SEED_CAP_BYTES
+    assert meta["bytes"] <= handoff.SEED_CAP_BYTES
+
+
+def test_ai_seed_carries_the_source_reference_too(fake_jsonl, monkeypatch):
+    from agent_sessions import review
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    seed, _ = asyncio.run(handoff.build_ai_seed("claude", _SRC, include_source_ref=True))
+    assert f"- session: claude:{_SRC}" in seed
+    assert "- transcript:" in seed and f"{_SRC}.jsonl" in seed
+
+
+def test_ai_review_payload_never_carries_the_transcript_location(fake_jsonl, monkeypatch):
+    """The locator is for the TARGET engine only. The AI-review endpoint summarizes the
+    transcript tail and must never be told where that transcript lives — which is why the
+    source header is composed only AFTER the endpoint call returns."""
+    from agent_sessions import review, transcript
+
+    loc = transcript.source_location("claude", _SRC, __import__("pathlib").Path.home())
+    assert loc  # precondition: it really does resolve, so absence below is meaningful
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    seed, _ = asyncio.run(handoff.build_ai_seed("claude", _SRC, include_source_ref=True))
+    assert loc in seed  # the target does get it
+    sent = "".join(m["content"] for m in _fake_complete.seen)
+    assert loc not in sent
+    assert "- transcript:" not in sent
+
+
+def test_prepare_round_trips_the_source_ref_flag(auth_cfg, fake_jsonl, monkeypatch):
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+
+    off = _prepare(c, csrf, auth_cfg)
+    assert off.status_code == 200, off.text
+    assert f"- session: claude:{_SRC}" in off.json()["preview"]
+    assert "- transcript:" not in off.json()["preview"]  # default off
+
+    on = _prepare(c, csrf, auth_cfg, include_source_ref=True)
+    assert on.status_code == 200, on.text
+    assert "- transcript:" in on.json()["preview"]
+    assert f"{_SRC}.jsonl" in on.json()["preview"]
+
+
+def test_source_reference_uses_the_same_logical_id_the_transcript_was_read_from(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """The id in the header and the locator must be derived from the SAME alias-resolved
+    logical key the transcript read uses (#611/#716).
+
+    `parse_key` rejects a raw `new-<uuid>` placeholder, so a placeholder never reaches this
+    route as a source — but the route still resolves `logical_key` before reading history, and
+    the danger is *divergence*: building `- session:`/`- transcript:` from the raw `source_id`
+    while the turns come from the logical one would hand the target agent a pointer to a
+    different session than the brief it just read. Forcing the two apart proves they agree."""
+    from agent_sessions import transcript
+
+    real = "77777777-7777-7777-7777-777777777777"
+    monkeypatch.setattr(engines, "logical_key", lambda key, aliases=None: f"claude:{real}")
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda e: (
+            lambda native, home: (
+                [transcript.Turn("user", "real upstream history", "text")] if native == real else []
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        transcript._LOCATORS,
+        "claude",
+        lambda native, home: f"/store/{native}.jsonl" if native == real else None,
+    )
+
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, include_source_ref=True)
+    assert r.status_code == 200, r.text
+    preview = r.json()["preview"]
+    # Brief, id and locator all describe the SAME session — the logical one.
+    assert "real upstream history" in preview
+    assert f"- session: claude:{real}" in preview
+    assert f"/store/{real}.jsonl" in preview
+    assert _SRC not in preview
+
+
+def test_prepare_rejects_a_non_boolean_source_ref_instead_of_coercing_it(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """The flag gates a privacy disclosure, so it is validated, never coerced: `bool("false")`
+    is True, and a client sending the STRING "false" must not silently opt in and embed a local
+    path in the seed (Hermes on #717)."""
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    for bad in ("false", "0", 1, [], {}):
+        r = _prepare(c, csrf, auth_cfg, include_source_ref=bad)
+        assert r.status_code == 422, f"{bad!r} should be rejected, got {r.status_code}"
+        assert "boolean" in r.json()["detail"]
+    # A real boolean still works, both ways.
+    assert (
+        "- transcript:"
+        not in _prepare(c, csrf, auth_cfg, include_source_ref=False).json()["preview"]
+    )
+    assert "- transcript:" in _prepare(c, csrf, auth_cfg, include_source_ref=True).json()["preview"]

@@ -348,3 +348,57 @@
 .retry:focus-visible {
   background: color-mix(in srgb, var(--accent) 90%, white);
 }
+
+/* Source reference (#716): one square, tokenized checkbox row in its own section — same
+ * chrome language as the tiles above it (no radius, no gradient, ≥44px target), so it reads
+ * as part of the picker rather than a new nested card. Checked borrows the tile's accent
+ * treatment; the accent fill + --on-accent tick keep the state legible in both themes. */
+.optRow {
+  min-height: 44px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.optRow:hover,
+.optRow:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.optRowOn {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+}
+.optBox {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  margin: 2px 0 0;
+  border-radius: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.optText {
+  font-size: 12px;
+  color: var(--text-1);
+  line-height: 1.4;
+}
+.optHint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+/* The extra disclosure that exists only while the option is on — set off by the semantic
+ * "degraded" rule so it reads as a heads-up, never as the brand accent. */
+.privacyMore {
+  display: block;
+  margin-top: 5px;
+  padding-left: 8px;
+  border-left: 2px solid var(--status-degraded);
+  color: var(--text-2);
+}

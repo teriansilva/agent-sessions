@@ -155,10 +155,33 @@ def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
 HEAD_TITLE_MAX = 200
 
 
-def _head_lines(engine: str, title: str, cwd: str) -> list[str]:
+def resolve_source_location(engine: str, native: str, *, include: bool) -> str | None:
+    """Where the source session keeps its full transcript, or ``None`` (#716).
+
+    Resolved ONCE per document build and passed into the header: the Quick builder re-renders
+    its header while trimming turns, and a filesystem glob / sqlite probe per iteration would be
+    pure waste. ``None`` whenever the option is off OR the locator can't resolve *this* session,
+    and the header then omits the line entirely — never a guessed location.
+
+    AI mode must call this only AFTER its summarization request returns, so the location is
+    never part of the payload sent to the review endpoint (only the target engine sees it).
+    """
+    if not include:
+        return None
+    return transcript.source_location(engine, native, Path.home())
+
+
+def _head_lines(
+    engine: str, native: str, title: str, cwd: str, *, transcript_loc: str | None = None
+) -> list[str]:
     """The shared handoff-document header — identical for Quick and AI, so a target agent
     reads the same provenance framing either way. The title is bounded; `_cap` is the
-    backstop for the document as a whole."""
+    backstop for the document as a whole.
+
+    ``- session:`` is ALWAYS present — the engine-qualified id is pure provenance and costs the
+    receiving agent nothing. ``- transcript:`` is opt-in (#716), because *following* it is what
+    spends tokens, and it appears only when the locator resolved this exact session.
+    """
     head = [
         f"# Handoff — continued from a {engine} session",
         "",
@@ -167,17 +190,30 @@ def _head_lines(engine: str, title: str, cwd: str) -> list[str]:
         "",
         "## Source",
         f"- engine: {engine}",
+        f"- session: {engine}:{_clean(native)}",
     ]
     if title:
         one_line = " ".join(_clean(title).split())[:HEAD_TITLE_MAX]
         head.append(f"- task: {one_line}")
     if cwd:
         head.append(f"- workdir: {_clean(cwd)}")
+    if transcript_loc:
+        head += [
+            f"- transcript: {_clean(transcript_loc)}",
+            "",
+            "The brief below is capped. The full transcript is at the location above — read it"
+            " only if you need more context than the brief gives you.",
+        ]
     return head
 
 
 def build_quick_seed(
-    engine: str, native: str, *, title: str = "", cwd: str = ""
+    engine: str,
+    native: str,
+    *,
+    title: str = "",
+    cwd: str = "",
+    include_source_ref: bool = False,
 ) -> tuple[str, dict]:
     """The Quick (last-N-turns) handoff document + its meta, from the source session's
     parsed transcript. Engine-neutral ``[user]``/``[agent]`` labels; hard byte cap.
@@ -189,9 +225,15 @@ def build_quick_seed(
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
     tail = texts[-SEED_MAX_TURNS:]
+    # Resolved once — `_doc` re-renders the header on every trim iteration below.
+    loc = resolve_source_location(engine, native, include=include_source_ref)
 
     def _doc(rows: list[tuple[str, str]]) -> str:
-        head = _head_lines(engine, title, cwd) + ["", "## Recent turns", ""]
+        head = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
+            "",
+            "## Recent turns",
+            "",
+        ]
         body = [f"[{role}] {text}" for role, text in rows]
         return "\n".join(head + body) + "\n"
 
@@ -263,7 +305,12 @@ def _ai_shape_guard(obj: dict) -> tuple[str, list[str], list[str]]:
 
 
 async def build_ai_seed(
-    engine: str, native: str, *, title: str = "", cwd: str = ""
+    engine: str,
+    native: str,
+    *,
+    title: str = "",
+    cwd: str = "",
+    include_source_ref: bool = False,
 ) -> tuple[str, dict]:
     """The AI-summarized handoff document + its meta (#597 Phase 2), via the
     already-configured AI-review endpoint (no new endpoint — the issue's constraint).
@@ -285,7 +332,15 @@ async def build_ai_seed(
         ]
     )
     state, open_items, next_steps = _ai_shape_guard(obj)
-    lines = _head_lines(engine, title, cwd) + ["", "## State", "", state]
+    # AFTER the endpoint call, deliberately (#716): the transcript location must never appear in
+    # the payload sent to the review endpoint — only the target engine is meant to receive it.
+    loc = resolve_source_location(engine, native, include=include_source_ref)
+    lines = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
+        "",
+        "## State",
+        "",
+        state,
+    ]
     if open_items:
         lines += ["", "## Open items", ""] + [f"- {i}" for i in open_items]
     if next_steps:
