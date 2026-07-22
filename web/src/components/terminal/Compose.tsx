@@ -23,6 +23,7 @@ import { api } from "../../lib/api";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
 import { type SentMessage, appendSent, confirmSent, readSent } from "../../lib/sentHistory";
 import { SentMessagesModal } from "./SentMessagesModal";
+import { assembleSpoken, isSpaceDelimitedLang, type SpokenSegment } from "../../lib/dictation";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
@@ -161,6 +162,16 @@ export const Compose = forwardRef<
   const [listening, setListening] = useState(false);
   const recogRef = useRef<SpeechRecognition | null>(null);
   const dictBaseRef = useRef("");
+  // #711: per-entry evidence for the snapshot collapse — what each results-list entry last said,
+  // when (and in which onresult event) it last changed, and whether it was already final when it
+  // first appeared. Indexed like e.results; reset per recognizer (the service-not-allowed fallback
+  // builds a fresh engine whose entries must earn their own history). See lib/dictation.ts for how
+  // the evidence is weighed.
+  const entryTextRef = useRef<string[]>([]);
+  const entryAtRef = useRef<number[]>([]);
+  const entryEventRef = useRef<number[]>([]);
+  const entryFinalBornRef = useRef<boolean[]>([]);
+  const dictEventSeqRef = useRef(0);
   // Guards the async mic-permission grant: bumped on every start AND stop, so a getUserMedia
   // promise that resolves after the user already cancelled (or restarted) doesn't spin up a
   // stale recognizer.
@@ -287,30 +298,53 @@ export const Compose = forwardRef<
     const r = new SR();
     r.continuous = continuousMode;
     r.interimResults = true;
-    r.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    const lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    r.lang = lang;
+    // Selects the transcript-comparison mode for the snapshot collapse (#711 finding 3): whole
+    // words where spaces delimit them, codepoint prefixes where they don't (CJK etc.).
+    const spaceDelimited = isSpaceDelimitedLang(lang);
     dictBaseRef.current = text;
+    entryTextRef.current = [];
+    entryAtRef.current = [];
+    entryEventRef.current = [];
+    entryFinalBornRef.current = [];
     r.onresult = (e) => {
       if (recogRef.current !== r) return; // superseded recognizer — ignore late results
-      // Rebuild the transcript from scratch on every event — never accumulate across events. Two
-      // engine quirks make anything else duplicate, and this one rule neutralizes both (#487):
-      //   • Chrome re-fires onresult repeatedly for the SAME finalized utterance. Because `finals`
-      //     is rebuilt each event from the cumulative `e.results`, a re-fire produces the same
-      //     string instead of appending it again ("said once, typed 10×").
-      //   • Some engines (Android Chrome) stack each growing interim snapshot as its own entry
-      //     rather than replacing the live one. Interim text is only a preview of the CURRENT
-      //     utterance, so the LAST interim simply wins — no "hey / hey Claude / hey Claude can you"
-      //     prefix chain.
-      // Finalized results are disjoint segments and concatenate; the interim tail is appended once.
-      const finals: string[] = [];
-      let interim = "";
+      // Rebuild the transcript from scratch on every event — never accumulate across events, so
+      // Chrome re-firing onresult for the SAME finalized utterance is idempotent rather than
+      // typing the phrase 10× (#487). Two layers then clean up the engine's own duplication:
+      //   • Only the LAST entry can be a live interim. An earlier non-final entry is a stale
+      //     snapshot the engine stacked instead of replacing, so it's dropped (#649) — this also
+      //     covers an engine that revises a phrase between interim snapshots.
+      //   • assembleSpoken drops a finalized entry that merely restates its neighbour — but ONLY
+      //     on an engine that positively identified itself as snapshot-stacking by finalizing an
+      //     empty entry (#711 finding 3, a spec violation no compliant engine produces), and then
+      //     only with per-pair evidence (birth-final + later-event + burst arrival + the text
+      //     itself). Finals from any other engine are concatenated verbatim, whatever their
+      //     shape or timing.
+      const now = performance.now();
+      const eventSeq = ++dictEventSeqRef.current;
+      const segs: SpokenSegment[] = [];
       for (let i = 0; i < e.results.length; i++) {
         const res = e.results[i];
-        // Only the LAST entry can be a live interim; any earlier non-final entry is a stale
-        // snapshot the engine stacked instead of replacing, so it's dropped (not the interim).
-        if (res.isFinal) finals.push(res[0].transcript);
-        else if (i === e.results.length - 1) interim = res[0].transcript;
+        const transcript = res[0].transcript;
+        if (entryTextRef.current[i] === undefined) entryFinalBornRef.current[i] = !!res.isFinal;
+        if (entryTextRef.current[i] !== transcript) {
+          entryTextRef.current[i] = transcript;
+          entryAtRef.current[i] = now;
+          entryEventRef.current[i] = eventSeq;
+        }
+        if (res.isFinal || i === e.results.length - 1) {
+          segs.push({
+            text: transcript,
+            atMs: entryAtRef.current[i],
+            eventSeq: entryEventRef.current[i],
+            isFinal: !!res.isFinal,
+            finalBorn: entryFinalBornRef.current[i],
+          });
+        }
       }
-      const spoken = [...finals, interim].join(" ").replace(/\s+/g, " ").trim();
+      const spoken = assembleSpoken(segs, spaceDelimited);
       dirtyRef.current = true; // dictation is draftable content, just like typing
       setText(joinSpoken(dictBaseRef.current, spoken));
       grow();

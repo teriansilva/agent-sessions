@@ -92,9 +92,21 @@ async function startVoice(user: ReturnType<typeof userEvent.setup>) {
   await waitFor(() => expect(lastRecog).not.toBeNull());
 }
 
+// #711: the snapshot collapse weighs per-entry arrival times read from performance.now(). Tests
+// that model timing ("arrived at interim cadence" vs "spoken seconds later") drive this virtual
+// clock; tests that don't call it use the real clock, where same-tick events land in-burst.
+let perfSpy: { mockRestore(): void } | null = null;
+const mockClock = () => {
+  const clock = { now: 0 };
+  perfSpy = vi.spyOn(performance, "now").mockImplementation(() => clock.now);
+  return clock;
+};
+
 afterEach(() => {
   lastRecog = null;
   gumReject = null;
+  perfSpy?.mockRestore();
+  perfSpy = null;
   delete window.SpeechRecognition;
   delete window.webkitSpeechRecognition;
   Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
@@ -236,6 +248,197 @@ test("multiple finalized utterances still concatenate in order (#487)", async ()
     ]),
   );
   expect(ta.value).toBe("deploy the build then run the tests and rep");
+});
+
+test("replays the captured Android Chrome 150 session — types the sentence once (#711)", async () => {
+  // The real device capture behind #711: 8 events, EVERY entry isFinal, not one interim, plus two
+  // finalized empty strings. On v0.13.0 this typed
+  // "this this is this is this is this is a this is a test" into the compose box.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  const captured = ["", "", "this", "this is", "this is", "this is", "this is a", "this is a test"];
+  const capturedAtMs = [1931, 2192, 2519, 2733, 3059, 3459, 3620, 4107];
+  const clock = mockClock();
+  // Replay it the way the engine did: one appended entry per event, cumulative results each time,
+  // at the timestamps the device actually delivered them.
+  for (let n = 1; n <= captured.length; n++) {
+    clock.now = capturedAtMs[n - 1];
+    const slice = captured.slice(0, n).map((transcript) => ({ transcript, isFinal: true }));
+    act(() => lastRecog!.emit(slice, n - 1));
+  }
+  expect(ta.value).toBe("this is a test");
+});
+
+test("a compliant engine's repeated utterance survives — 'yes' twice stays 'yes yes' (#711)", async () => {
+  // The regression that blocked the first attempt at this fix. Modelled the way a compliant engine
+  // actually behaves: each utterance is narrated through an interim entry first, so neither final
+  // materialized pre-finalized — and an interim-born entry never supersedes its neighbour.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: false }]));
+  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }]));
+  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }, { transcript: "yes", isFinal: false }]));
+  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }, { transcript: "yes", isFinal: true }]));
+  expect(ta.value).toBe("yes yes"); // both utterances kept
+});
+
+test("a compliant engine's 'go' then 'go now' keeps both utterances (#711)", async () => {
+  // The second final here is born-final (no interim of its own), so what protects it is timing:
+  // a real follow-up utterance needs new speech + endpointing silence, which puts its final well
+  // outside the snapshot burst window of the first.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 1000;
+  act(() => lastRecog!.emit([{ transcript: "go", isFinal: false }]));
+  clock.now = 1600;
+  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }]));
+  clock.now = 3600;
+  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }, { transcript: "go now", isFinal: true }]));
+  expect(ta.value).toBe("go go now");
+});
+
+test("a final-only engine's separate utterances survive when spoken apart (#711 round 4)", async () => {
+  // No interim ever appears, yet nothing may be deleted: each utterance's final lands seconds
+  // after the previous one (speech + endpointing), which is the evidence that it is real speech —
+  // three genuine prefix-extending utterances, all kept.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 1000;
+  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }]));
+  clock.now = 3200;
+  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }, { transcript: "go now", isFinal: true }]));
+  clock.now = 5600;
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "go", isFinal: true },
+      { transcript: "go now", isFinal: true },
+      { transcript: "go now please", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("go go now go now please");
+});
+
+test("one interim does not exempt later stacked all-final snapshots (#711 follow-up)", async () => {
+  // The latch counterexample: a stacker that identified itself (finalized empty entry), emitted a
+  // single interim, then keeps appending pre-finalized snapshots at interim cadence (one per
+  // event, as the captured device does), must still collapse — the decision is per entry pair,
+  // never a session-wide classification.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 700;
+  act(() => lastRecog!.emit([{ transcript: "", isFinal: true }]));
+  clock.now = 1000;
+  act(() => lastRecog!.emit([{ transcript: "", isFinal: true }, { transcript: "this", isFinal: false }]));
+  clock.now = 1300;
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "", isFinal: true },
+      { transcript: "this", isFinal: true },
+      { transcript: "this is", isFinal: true },
+    ]),
+  );
+  clock.now = 1600;
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "", isFinal: true },
+      { transcript: "this", isFinal: true },
+      { transcript: "this is", isFinal: true },
+      { transcript: "this is a test", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("this is a test");
+});
+
+test("two finals first exposed by ONE event both survive — batched delivery (#711 round 5)", async () => {
+  // A service may buffer and deliver two genuine finals in a single onresult. They share one
+  // sampled timestamp, which is no evidence of snapshot cadence — both must be typed, even though
+  // their texts are prefix-related.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 1000;
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "go", isFinal: true },
+      { transcript: "go now", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("go go now");
+});
+
+test("an interim-tracked utterance followed by a real second one keeps both (#711)", async () => {
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 1000;
+  act(() => lastRecog!.emit([{ transcript: "ship", isFinal: false }]));
+  clock.now = 1600;
+  act(() => lastRecog!.emit([{ transcript: "ship", isFinal: true }]));
+  clock.now = 3600;
+  act(() => lastRecog!.emit([{ transcript: "ship", isFinal: true }, { transcript: "ship it", isFinal: true }]));
+  expect(ta.value).toBe("ship ship it"); // two real utterances, seconds apart
+});
+
+test("a re-punctuated snapshot supersedes its predecessor on a stacking engine (#711)", async () => {
+  // Drip shape as captured: the stacker finalizes an empty entry (its fingerprint), then appends
+  // one pre-finalized snapshot per event at interim cadence.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  const snapshots = ["", "hey claude", "Hey, Claude — can you", "Hey, Claude, can you deploy?"];
+  for (let n = 1; n <= snapshots.length; n++) {
+    clock.now = 1000 + n * 300;
+    act(() => lastRecog!.emit(snapshots.slice(0, n).map((transcript) => ({ transcript, isFinal: true }))));
+  }
+  expect(ta.value).toBe("Hey, Claude, can you deploy?");
+});
+
+test("a distinct utterance spoken after a pause is never swallowed by the collapse (#711)", async () => {
+  // "and" then "android studio" as two real utterances: the second final arrives well outside the
+  // burst window, so the trailing-word revision rule ("and" → "android") does not apply.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  clock.now = 1000;
+  act(() => lastRecog!.emit([{ transcript: "and", isFinal: true }]));
+  clock.now = 3000;
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "and", isFinal: true },
+      { transcript: "android studio", isFinal: true },
+    ]),
+  );
+  expect(ta.value).toBe("and android studio");
 });
 
 test("a denied getUserMedia grant names the reason and never builds a recognizer (#659 follow-up)", async () => {
