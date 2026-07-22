@@ -40,9 +40,11 @@ export function engineBadge(engine: string): string {
         ? "gm"
         : engine === "antigravity"
           ? "ag" // agy
-          : engine === "shell"
-            ? "sh" // plain terminal, no agent (#636)
-            : "cc";
+          : engine === "kimi"
+            ? "ki" // Kimi Code (#714)
+            : engine === "shell"
+              ? "sh" // plain terminal, no agent (#636)
+              : "cc";
 }
 
 /** Per-engine accent for the overview chips (tuned for the dark HUD canvas). */
@@ -55,9 +57,11 @@ export function engineColor(engine: string): string {
         ? "#7aa2ff" // blue
         : engine === "antigravity"
           ? "#a78bfa" // violet — agy
-          : engine === "shell"
-            ? "#8b98a5" // neutral slate — a plain terminal, deliberately NOT a vivid "agent" hue
-            : "#d98a5c"; // claude — amber
+          : engine === "kimi"
+            ? "#f472b6" // magenta — Kimi Code (#714); the remaining gap between violet and amber
+            : engine === "shell"
+              ? "#8b98a5" // neutral slate — a plain terminal, deliberately NOT a vivid "agent" hue
+              : "#d98a5c"; // claude — amber
 }
 
 /** Deterministic per-project accent (#285): FNV-1a over the project key (entity id, or the

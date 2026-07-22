@@ -2,7 +2,7 @@
 """Seed a deterministic, throwaway fake HOME for the visual-review capture (#96, Phase 2).
 
 Populates one project per engine so the sidebar renders every engine badge
-(claude/opencode/codex/gemini/antigravity) + the new-session project picker has entries —
+(claude/opencode/codex/gemini/antigravity/kimi) + the new-session project picker has entries —
 without ever touching the operator's real ~/.claude. Every state store the app reads lives under
 the target HOME (so running `agent-sessions serve` with HOME=<this dir> is fully isolated):
 
@@ -13,6 +13,8 @@ the target HOME (so running `agent-sessions serve` with HOME=<this dir> is fully
   <home>/.gemini/antigravity-cli/conversations/<uuid>.db   (antigravity — AntigravityProvider)
   <home>/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl
   <home>/.local/share/opencode/opencode.db             (opencode — engines.OpenCodeProvider)
+  <home>/.kimi-code/session_index.jsonl                 (kimi   — engines.KimiProvider)
+  <home>/.kimi-code/sessions/wd_*/session_<uuid>/state.json
 
 Usage:  python web/visual/seed.py <home-dir>
 Refuses to run if <home-dir> is (or contains) the real ~/.claude.
@@ -25,6 +27,7 @@ import json
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Deterministic ids so reruns + screenshots are stable.
@@ -36,6 +39,7 @@ _CODEX = ("019e2ba1-1590-7003-8e4a-51ab62cec902", "/seed/alpha", "Wire up the de
 _GEMINI = ("96fb77fc-9c1a-4453-b27b-d78d8012dd2c", "/seed/beta", "Tag the open issues")
 _OPENCODE = ("ses_seed00000001", "/seed/alpha", "Port the scanner")
 _ANTIGRAVITY = ("019e2ba1-1590-7003-8e4a-51ab62cec903", "/seed/gamma", "Port the deploy script")
+_KIMI = ("session_019e2ba1-1590-7003-8e4a-51ab62cec904", "/seed/delta", "Trim the bundle size")
 
 
 def _refuse_real_home(home: Path) -> None:
@@ -165,6 +169,43 @@ def seed_antigravity(home: Path) -> None:
         },
     ]
     (logs / "transcript.jsonl").write_text("\n".join(json.dumps(x) for x in recs) + "\n")
+
+
+def seed_kimi(home: Path) -> None:
+    """Kimi Code's nested store: the top-level index plus one
+    ``sessions/wd_<bucket>/session_<uuid>/state.json``. Mirrors the real 0.27.0 layout so the
+    provider's index fast-path AND its dir-walk fallback both resolve this row."""
+    sid, cwd, msg = _KIMI
+    cwd = _real_cwd(home, cwd)
+    root = home / ".kimi-code"
+    sdir = root / "sessions" / "wd_delta_5eed0001" / sid
+    (sdir / "agents" / "main").mkdir(parents=True, exist_ok=True)
+    # KimiProvider prefers state.json's own ISO timestamps over the fs mtime, so these must be
+    # run-relative — a fixed date would render "65 days ago" next to every other seeded row's
+    # "just now" and sort the Kimi session to the bottom.
+    now = time.time()
+    iso = lambda offset: (  # noqa: E731 — local formatting shorthand
+        datetime.fromtimestamp(now - offset, tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    (sdir / "state.json").write_text(
+        json.dumps(
+            {
+                "createdAt": iso(3600),
+                "updatedAt": iso(60),
+                "title": msg,
+                "isCustomTitle": True,
+                "agents": {"main": {"homedir": str(sdir / "agents" / "main")}},
+                "custom": {},
+                "workDir": cwd,
+            }
+        )
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "session_index.jsonl").write_text(
+        json.dumps({"sessionId": sid, "sessionDir": str(sdir), "workDir": cwd}) + "\n"
+    )
 
 
 def seed_opencode(home: Path) -> None:
@@ -299,6 +340,7 @@ def seed(home: Path) -> None:
     seed_codex(home)
     seed_gemini(home)
     seed_antigravity(home)
+    seed_kimi(home)
     seed_opencode(home)
     seed_pulse(home)
     seed_projects(home)
@@ -310,6 +352,6 @@ if __name__ == "__main__":
     target = Path(sys.argv[1])
     seed(target)
     print(
-        f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) + opencode(1) "
+        f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) + kimi(1) + opencode(1) "
         "+ pulse-cache + 1 project entity"
     )

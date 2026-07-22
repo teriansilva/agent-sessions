@@ -603,7 +603,7 @@ TasksMax=8192
 # OOMPolicy=continue). The whole unit shares one cgroup (app + session children), so keep it
 # generous — tune down only if this host should cap sessions harder.
 MemoryHigh=80%
-# Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini/agy,
+# Put ~/.local/bin first so sessions spawned by the app (claude/opencode/codex/gemini/agy/kimi,
 # which commonly live there) are on PATH — otherwise the claude CLI nags
 # "Native installation exists but ~/.local/bin is not in your PATH". Before EnvironmentFile
 # so an explicit PATH in the env file still wins. %h = the service user's home dir.

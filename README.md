@@ -8,11 +8,11 @@
   <img src="docs/banner.png" alt="BattleLab — Command &amp; Code: a self-hosted command deck for your AI-coding agents" width="900">
 </p>
 
-**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, Antigravity — plus plain shells**,
+**One web app that organizes every session from Claude Code, Codex, opencode, Gemini, Antigravity, Kimi Code — plus plain shells**,
 with a real terminal that survives reboots and deploys, and an end-to-end-encrypted blind relay so you can drive your
 whole fleet from a laptop or your phone.
 
-![license: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity-ffb000)
+![license: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity%20·%20kimi-ffb000)
 
 ### Why
 
@@ -41,9 +41,9 @@ curl -fsSL https://battlelab.superstatus.io/install.sh | sh
 
 ---
 
-A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, gemini, and antigravity (`agy`, SQLite + JSONL under `~/.gemini/antigravity-cli/`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / `agy --conversation <uuid>` / …). No ttyd, no Zellij.
+A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, gemini, antigravity (`agy`, SQLite + JSONL under `~/.gemini/antigravity-cli/`, read-only), and Kimi Code (nested session dirs under `~/.kimi-code/`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / `agy --conversation <uuid>` / …). No ttyd, no Zellij.
 
-Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive works for **any** engine via the engine-agnostic **sidecar** flag (`metadata.json`): Claude additionally moves its JSONL between `projects/` and `projects-archive/`, while opencode/codex/gemini/antigravity record archive state in the sidecar only (never their own data). Title/sticky use the same sidecar overlay. Adding an engine = one new provider in the registry.
+Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive works for **any** engine via the engine-agnostic **sidecar** flag (`metadata.json`): Claude additionally moves its JSONL between `projects/` and `projects-archive/`, while opencode/codex/gemini/antigravity/kimi record archive state in the sidecar only (never their own data). Title/sticky use the same sidecar overlay. Adding an engine = one new provider in the registry.
 
 ## Per-engine support
 
@@ -58,6 +58,7 @@ resume command** under the app's `dtach` PTY. What differs per engine:
 | opencode | `~/.local/share/opencode/opencode.db` (SQLite, **read-only**) | `opencode <dir> --session <ses_id>` | ✓ | sidecar only — the DB is never written |
 | Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `gemini --resume <uuid>` (in the session's cwd) | ✓ (pinned id via `--session-id`) | sidecar only |
 | Antigravity (`agy`) | `~/.gemini/antigravity-cli/` (SQLite + transcript JSONL, **read-only**) | `agy --conversation <uuid>` | ✓ | sidecar only |
+| Kimi Code | `~/.kimi-code/` (`session_index.jsonl` + nested `sessions/wd_*/session_<uuid>/`, **read-only**) | `kimi -S session_<uuid>` | ✓ (launch, then adopt the id kimi mints) | sidecar only |
 | Plain shell | the app's own tiny per-session record (no native store) | reattach to the live PTY | ✓ | sidecar |
 
 Common to every row: the session runs under a `dtach` PTY with a single-writer lock — close the
@@ -190,7 +191,7 @@ agent-sessions/
 │   ├── scanner.py     read ~/.claude/projects/ (live + archive)
 │   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/project_alias
 │   ├── engines/       per-engine providers (scan + launch_argv): base.py (contract +
-│   │                  patterns + binaries), claude/opencode/codex/gemini/antigravity.py, registry.py
+│   │                  patterns + binaries), claude/opencode/codex/gemini/antigravity/kimi.py, registry.py
 │   │                  (parse_key/scan_all/…); __init__ re-exports the public surface
 │   ├── webterm.py     the ws↔PTY bridge run loop (xterm.js over /ws/term, dtach-backed)
 │   ├── scrollback.py  per-session scrollback ring + on-disk mirror + resume/scroll-up

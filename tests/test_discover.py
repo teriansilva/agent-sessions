@@ -85,6 +85,38 @@ def test_antigravity_known_dir_and_not_npm_global(tmp_path, monkeypatch):
     assert "antigravity" not in discover._NPM_GLOBAL_ENGINES
 
 
+def test_kimi_env_knob_and_install_dir(tmp_path, monkeypatch):
+    # kimi's binary name matches its engine id, so the knob is the plain AGENT_SESSIONS_KIMI_BIN
+    # (no _BIN_NAME entry needed) and the PATH probe looks up `kimi`.
+    assert discover.envvar("kimi") == "AGENT_SESSIONS_KIMI_BIN"
+    # The installer's own dir must be probed — a service started before the shell rc was
+    # re-sourced won't see ~/.kimi-code/bin on PATH.
+    assert "~/.kimi-code/bin" in discover._DIRS["kimi"]
+    explicit = _make_exec(tmp_path / "kimi")
+    assert discover.resolve("kimi", {"AGENT_SESSIONS_KIMI_BIN": explicit}) == explicit
+    monkeypatch.setattr(
+        discover.shutil, "which", lambda n: "/usr/bin/kimi" if n == "kimi" else None
+    )
+    assert discover.resolve("kimi", {}) == "/usr/bin/kimi"
+
+
+def test_kimi_known_dir_and_not_npm_global(tmp_path, monkeypatch):
+    # The curl installer drops a single native binary in ~/.kimi-code/bin and only appends that dir
+    # to the shell rc, so the dir probe is what usually resolves it when PATH is stale. kimi is NOT
+    # npm-global: upstream ships an npm fallback for musl, but its path is unverified (#714), so
+    # the npm prefix must never be consulted.
+    monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "kimi": [str(tmp_path)]})
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("npm prefix must not be consulted for kimi")
+
+    monkeypatch.setattr(discover, "_npm_global_bin", _boom)
+    found = _make_exec(tmp_path / "kimi")
+    assert discover.resolve("kimi", {}) == found
+    assert "kimi" not in discover._NPM_GLOBAL_ENGINES
+
+
 def test_write_env_bins_preserves_others_and_is_0600(tmp_path):
     env = tmp_path / "env"
     env.write_text("AGENT_SESSIONS_USERNAME=admin\nAGENT_SESSIONS_CLAUDE_BIN=/old/claude\n")
@@ -112,6 +144,7 @@ def test_doctor_cli_writes_bins(tmp_path, monkeypatch):
             "codex": None,
             "gemini": None,
             "antigravity": None,
+            "kimi": None,
             "shell": None,
         },
     )
@@ -136,6 +169,7 @@ def test_doctor_cli_dry_run_does_not_write(tmp_path, monkeypatch):
             "codex": None,
             "gemini": None,
             "antigravity": None,
+            "kimi": None,
             "shell": None,
         },
     )

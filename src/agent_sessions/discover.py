@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import envfile
 
-ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity", "shell")
+ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell")
 
 # Engines whose CLI binary name differs from the engine id. antigravity's binary is ``agy`` and the
 # shell engine's binary is ``bash`` (#636); every other engine's binary matches its id. The
@@ -33,6 +33,11 @@ _DIRS: dict[str, list[str]] = {
     "gemini": ["~/.local/bin"],
     # agy is a single Go binary from the curl installer (not npm); it lands in ~/.local/bin.
     "antigravity": ["~/.local/bin"],
+    # kimi's curl installer drops a single native binary in ~/.kimi-code/bin and only appends that
+    # dir to the shell rc — so a service started before the rc was re-sourced won't see it on PATH,
+    # making this dir probe the one that usually resolves it. NOT in _NPM_GLOBAL_ENGINES: upstream
+    # ships an npm fallback for musl hosts, but its executable path is unverified here (#714).
+    "kimi": ["~/.kimi-code/bin", "~/.local/bin"],
     # bash is a base system binary — PATH resolves it; the extra dirs cover a non-PATH shell.
     "shell": ["/bin", "/usr/bin"],
 }

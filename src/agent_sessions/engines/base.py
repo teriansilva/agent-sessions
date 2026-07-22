@@ -36,6 +36,12 @@ _ANTIGRAVITY_UUID_RE = _CLAUDE_UUID_RE
 # shell (terminal-as-agent, #636): a plain login shell has no engine store and no native id of its
 # own, so we mint our own UUID (same shape as Claude's) as the permanent bookkeeping key.
 _SHELL_UUID_RE = _CLAUDE_UUID_RE
+# Kimi Code (#714) ids are UUIDs with a literal ``session_`` prefix — verified against the live
+# store (``session_index.jsonl`` rows + the on-disk session dir names), NOT bare UUIDs. Reusing
+# ``_CLAUDE_UUID_RE`` here would make ``parse_key`` reject every real Kimi session.
+_KIMI_SESSION_RE = re.compile(
+    r"^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 # --- engine binaries ------------------------------------------------------------------------
 # Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
@@ -54,6 +60,10 @@ AGY_BIN = os.environ.get("AGENT_SESSIONS_AGY_BIN") or shutil.which("agy") or "ag
 # discover's binary-name convention lines up) and resolved to a concrete path so the pty bridge
 # gets a real argv[0], never a bare name that ptybridge would reject.
 BASH_BIN = os.environ.get("AGENT_SESSIONS_BASH_BIN") or shutil.which("bash") or "/bin/bash"
+# Kimi Code (#714). The native installer drops a single binary at ``~/.kimi-code/bin/kimi``, which
+# is off the login PATH until the shell rc is re-sourced — so the env override matters more here
+# than for npm-global engines. Binary name == engine id, so no ``discover._BIN_NAME`` entry.
+KIMI_BIN = os.environ.get("AGENT_SESSIONS_KIMI_BIN") or shutil.which("kimi") or "kimi"
 
 
 # --- per-engine store locations (env-overridable) -------------------------------------------
@@ -78,6 +88,18 @@ def _antigravity_dir(home: Path | None = None) -> Path:
         os.environ.get("AGENT_SESSIONS_ANTIGRAVITY_DIR")
         or ((home or Path.home()) / ".gemini" / "antigravity-cli")
     )
+
+
+def _kimi_dir(home: Path | None = None) -> Path:
+    """Kimi Code's state root (#714) — ``~/.kimi-code``.
+
+    Everything the provider reads hangs off this one root: the ``session_index.jsonl`` fast path
+    at the top level, and the nested session dirs at ``sessions/wd_<slug>_<hash>/session_<uuid>/``
+    (a per-workdir bucket, *then* the session — one level deeper than a flat store). Single source
+    of truth for the path contract, so a future transcript adapter resolves the same store under a
+    test home.
+    """
+    return Path(os.environ.get("AGENT_SESSIONS_KIMI_DIR") or ((home or Path.home()) / ".kimi-code"))
 
 
 def _codex_sessions_dir(home: Path | None = None) -> Path:

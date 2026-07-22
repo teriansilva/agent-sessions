@@ -37,6 +37,7 @@ from .base import (  # noqa: F401 — public re-exports
     CLAUDE_BIN,
     CODEX_BIN,
     GEMINI_BIN,
+    KIMI_BIN,
     OPENCODE_BIN,
     EngineError,
     EngineProvider,
@@ -44,6 +45,7 @@ from .base import (  # noqa: F401 — public re-exports
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .gemini import GeminiProvider
+from .kimi import KimiProvider
 from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
 from .registry import (  # noqa: F401 — public re-exports
     all_providers,
@@ -71,6 +73,7 @@ __all__ = [
     "CodexProvider",
     "GeminiProvider",
     "AntigravityProvider",
+    "KimiProvider",
     "all_providers",
     "present_providers",
     "get",
@@ -91,6 +94,7 @@ __all__ = [
     "GEMINI_BIN",
     "AGY_BIN",
     "BASH_BIN",
+    "KIMI_BIN",
     "ShellProvider",
     "OPENCODE_SCHEMA",
 ]

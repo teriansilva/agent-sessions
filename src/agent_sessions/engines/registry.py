@@ -18,6 +18,7 @@ from .antigravity import AntigravityProvider
 from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .gemini import GeminiProvider
+from .kimi import KimiProvider
 from .opencode import OpenCodeProvider
 from .shell import ShellProvider
 
@@ -29,6 +30,7 @@ _PROVIDERS: list[base.EngineProvider] = [
     CodexProvider(),
     GeminiProvider(),
     AntigravityProvider(),
+    KimiProvider(),
     ShellProvider(),
 ]
 _BY_ID: dict[str, base.EngineProvider] = {p.engine_id: p for p in _PROVIDERS}

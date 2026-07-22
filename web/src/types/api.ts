@@ -1,6 +1,13 @@
 // Types mirroring the existing FastAPI `/api/*` contract (backend is unchanged).
 
-export type EngineId = "claude" | "opencode" | "codex" | "gemini" | "antigravity" | "shell";
+export type EngineId =
+  | "claude"
+  | "opencode"
+  | "codex"
+  | "gemini"
+  | "antigravity"
+  | "kimi"
+  | "shell";
 
 export interface Session {
   /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
