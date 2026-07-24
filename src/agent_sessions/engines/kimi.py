@@ -13,14 +13,13 @@ Two consequences shape this provider:
 - **The index is a fast path, not the truth.** ``scan`` reads ``session_index.jsonl`` when it's
   there and falls back to walking ``sessions/*/session_*/`` when it's missing or corrupt, so a
   truncated index degrades to a slower scan rather than an empty sidebar. Rows are merged by id
-  with the walk, because an index row can outlive the dir it points at (and vice versa).
-- **No transcript adapter — deliberately.** ``wire.jsonl`` exists, but only the login-preamble
-  record types (``metadata`` / ``config.update`` / ``tools.set_active_tools``) could be observed:
-  Kimi subscriptions were sold out, so no authenticated turn could be captured on this host.
-  Rather than guess at user/assistant/tool record semantics, no adapter is registered, exactly
-  like ``shell.py`` — ``transcript.adapter_for`` returns ``None`` and callers fall back to the
-  raw-byte scrollback. Sidebar title / recency come from ``state.json``, which needs no parsing.
-  Registering the adapter is a follow-up gated on a real account.
+  with the walk, because an index row can outlive the dir it points at (and vice versa). The one
+  exact-session resolution seam is :func:`session_dir_for` — the provider *and* the transcript
+  adapter/locator (``transcript.kimi_wire_path``) go through it, so there is never a second,
+  subtly-different resolver (#720).
+- **Transcript lives in ``agents/main/wire.jsonl``** — a loop-event stream parsed by
+  ``transcript._kimi_turns_from_wire`` (#720). ``state.json`` still supplies the sidebar title /
+  recency without touching the transcript.
 
 **Read-only + fail-soft**, like every non-Claude engine: a parse/IO error skips one row and never
 the whole list, and nothing here ever writes Kimi's store — archive rides the engine-agnostic
@@ -58,6 +57,135 @@ def _iso_to_epoch(value: object) -> float:
         return 0.0
 
 
+# --- store reading (module-level + home-injectable) -----------------------------------------
+#
+# These are module functions, not provider methods, so the transcript adapter/locator resolve the
+# SAME store under a test home without instantiating the provider — one path contract (#720). Every
+# one takes ``home`` and threads it into ``base._kimi_dir(home)`` (env override still wins there).
+
+
+def _index_rows(home: Path | None = None) -> dict[str, tuple[str, Path]]:
+    """``{session_id: (work_dir, session_dir)}`` from ``session_index.jsonl``.
+
+    Fail-soft per line: a truncated tail or a junk row is skipped, the rest still load. A
+    missing/unreadable index is an empty mapping, not an error — the caller falls back to walking
+    the session dirs.
+    """
+    out: dict[str, tuple[str, Path]] = {}
+    path = base._kimi_dir(home) / "session_index.jsonl"
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                sid, work, sdir = row.get("sessionId"), row.get("workDir"), row.get("sessionDir")
+                # An id we can't validate must never key a session or build a path.
+                if not isinstance(sid, str) or not base._KIMI_SESSION_RE.match(sid):
+                    continue
+                if not isinstance(work, str) or not work:
+                    continue
+                if not isinstance(sdir, str) or not sdir:
+                    continue
+                out[sid] = (work, Path(sdir))
+    except OSError:
+        return out
+    return out
+
+
+def _walk_session_dirs(home: Path | None = None) -> dict[str, Path]:
+    """``{session_id: session_dir}`` by walking ``sessions/wd_*/session_*``.
+
+    The fallback when the index is missing or lost rows, and the ground truth for whether a dir
+    still exists on disk. Kept to the known two-level shape rather than an unbounded ``rglob`` so a
+    large store stays cheap to scan.
+    """
+    out: dict[str, Path] = {}
+    root = base._kimi_dir(home) / "sessions"
+    try:
+        buckets = list(root.iterdir())
+    except OSError:
+        return out
+    for bucket in buckets:
+        try:
+            if not bucket.is_dir():
+                continue
+            entries = list(bucket.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if base._KIMI_SESSION_RE.match(entry.name):
+                out[entry.name] = entry
+    return out
+
+
+def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
+    """``(work_dir, title, updated_at, created_at)`` from one session's ``state.json``.
+
+    Returns ``None`` when the session has no usable ``workDir``: cwd is both the launch dir and the
+    open-path allowlist key, so a session we can't place yields **no row** rather than a bogus
+    empty-cwd one (the rule codex/gemini/antigravity already follow).
+
+    Timestamps come from Kimi's own ``createdAt``/``updatedAt`` rather than file mtimes — they
+    survive a copy of the store and don't get bumped by unrelated writes. Both degrade to the
+    filesystem when absent or malformed.
+    """
+    state_path = session_dir / "state.json"
+    try:
+        with state_path.open(encoding="utf-8", errors="replace") as fh:
+            state = json.load(fh)
+        st = state_path.stat()
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    work = state.get("workDir")
+    if not isinstance(work, str) or not work:
+        return None
+    raw_title = state.get("title")
+    # Kimi seeds every session with "New Session" and only replaces it once it has something to
+    # name; surfacing that verbatim would fill the sidebar with identical rows.
+    title = (
+        raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() != _UNTITLED else ""
+    )
+    updated = _iso_to_epoch(state.get("updatedAt")) or st.st_mtime
+    created = _iso_to_epoch(state.get("createdAt")) or fs_created_at(st)
+    return work, title, updated, created
+
+
+def session_dir_for(native_id: str, home: Path | None = None) -> Path | None:
+    """The on-disk session dir for exactly ``native_id``, or ``None`` — the single resolution seam
+    shared by the provider and the transcript locator (#720).
+
+    - Validates the ``session_<uuid>`` shape first, so a path is never built from junk and a
+      same-prefix neighbour (``session_<A>`` vs ``session_<A>x``) can never match (exact dict-key
+      lookup, no globbing).
+    - **The walk wins over a stale index path**: the walk enumerates dirs that actually exist, so
+      if it has the id its path is real; only when the walk lacks it do we trust the index, and
+      then only if that path is still a directory (a stale index row → ``None``).
+    """
+    if not base._KIMI_SESSION_RE.match(native_id):
+        return None
+    walk = _walk_session_dirs(home)
+    if native_id in walk:
+        return walk[native_id]
+    idx = _index_rows(home)
+    if native_id in idx:
+        sdir = idx[native_id][1]
+        try:
+            if sdir.is_dir():
+                return sdir
+        except OSError:
+            return None
+    return None
+
+
 class KimiProvider:
     """Kimi Code: nested session dirs under ``~/.kimi-code``, resumed via ``kimi -S <id>``.
 
@@ -81,112 +209,17 @@ class KimiProvider:
         return base._kimi_dir().is_dir() or shutil.which("kimi") is not None
 
     # --- store reading ----------------------------------------------------------------------
-
-    def _index_rows(self) -> dict[str, tuple[str, Path]]:
-        """``{session_id: (work_dir, session_dir)}`` from ``session_index.jsonl``.
-
-        Fail-soft per line: a truncated tail or a junk row is skipped, the rest still load. A
-        missing/unreadable index is an empty mapping, not an error — the caller falls back to
-        walking the session dirs.
-        """
-        out: dict[str, tuple[str, Path]] = {}
-        path = base._kimi_dir() / "session_index.jsonl"
-        try:
-            with path.open(encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    sid, work, sdir = (
-                        row.get("sessionId"),
-                        row.get("workDir"),
-                        row.get("sessionDir"),
-                    )
-                    # An id we can't validate must never key a session or build a path.
-                    if not isinstance(sid, str) or not self.id_pattern.match(sid):
-                        continue
-                    if not isinstance(work, str) or not work:
-                        continue
-                    if not isinstance(sdir, str) or not sdir:
-                        continue
-                    out[sid] = (work, Path(sdir))
-        except OSError:
-            return out
-        return out
-
-    def _walk_session_dirs(self) -> dict[str, Path]:
-        """``{session_id: session_dir}`` by walking ``sessions/wd_*/session_*``.
-
-        The fallback when the index is missing or lost rows. Kept to the known two-level shape
-        rather than an unbounded ``rglob`` so a large store stays cheap to scan.
-        """
-        out: dict[str, Path] = {}
-        root = base._kimi_dir() / "sessions"
-        try:
-            buckets = list(root.iterdir())
-        except OSError:
-            return out
-        for bucket in buckets:
-            try:
-                if not bucket.is_dir():
-                    continue
-                entries = list(bucket.iterdir())
-            except OSError:
-                continue
-            for entry in entries:
-                if self.id_pattern.match(entry.name):
-                    out[entry.name] = entry
-        return out
-
-    def _meta(self, session_dir: Path) -> tuple[str, str, float, float] | None:
-        """``(work_dir, title, updated_at, created_at)`` from one session's ``state.json``.
-
-        Returns ``None`` when the session has no usable ``workDir``: cwd is both the launch dir
-        and the open-path allowlist key, so a session we can't place yields **no row** rather than
-        a bogus empty-cwd one (the rule codex/gemini/antigravity already follow).
-
-        Timestamps come from Kimi's own ``createdAt``/``updatedAt`` rather than file mtimes — they
-        survive a copy of the store and don't get bumped by unrelated writes. Both degrade to the
-        filesystem when absent or malformed.
-        """
-        state_path = session_dir / "state.json"
-        try:
-            with state_path.open(encoding="utf-8", errors="replace") as fh:
-                state = json.load(fh)
-            st = state_path.stat()
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(state, dict):
-            return None
-        work = state.get("workDir")
-        if not isinstance(work, str) or not work:
-            return None
-        raw_title = state.get("title")
-        # Kimi seeds every session with "New Session" and only replaces it once it has something
-        # to name; surfacing that verbatim would fill the sidebar with identical rows.
-        title = (
-            raw_title.strip()
-            if isinstance(raw_title, str) and raw_title.strip() != _UNTITLED
-            else ""
-        )
-        updated = _iso_to_epoch(state.get("updatedAt")) or st.st_mtime
-        created = _iso_to_epoch(state.get("createdAt")) or fs_created_at(st)
-        return work, title, updated, created
+    # Resolution lives in the module-level `_index_rows` / `_walk_session_dirs` / `_meta` /
+    # `session_dir_for` helpers so the transcript adapter shares the exact-session seam (#720).
 
     def scan(self) -> list[Session]:
         # Index first, then the walk — union by id so neither a stale index row nor a dir the
         # index forgot can drop a session. The walk wins on path, since it is the ground truth.
-        dirs: dict[str, Path] = {sid: sdir for sid, (_, sdir) in self._index_rows().items()}
-        dirs.update(self._walk_session_dirs())
+        dirs: dict[str, Path] = {sid: sdir for sid, (_, sdir) in _index_rows().items()}
+        dirs.update(_walk_session_dirs())
         out: list[Session] = []
         for sid, session_dir in dirs.items():
-            meta = self._meta(session_dir)
+            meta = _meta(session_dir)
             if meta is None:
                 continue
             work, title, updated, created = meta
@@ -237,14 +270,14 @@ class KimiProvider:
         if not root.is_dir():
             return set()
         out: set[str] = set()
-        index = self._index_rows()
+        index = _index_rows()
         for sid, (work, _sdir) in index.items():
             if work == cwd:
                 out.add(sid)
-        for sid, sdir in self._walk_session_dirs().items():
+        for sid, sdir in _walk_session_dirs().items():
             if sid in index:
                 continue  # already classified by the index
-            meta = self._meta(sdir)
+            meta = _meta(sdir)
             if meta is None:
                 continue  # workDir not written yet → excluded (stays pending)
             if meta[0] == cwd:

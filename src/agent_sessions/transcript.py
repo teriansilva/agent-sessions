@@ -563,6 +563,173 @@ register_adapter("codex", _codex_adapter)
 register_locator("codex", _path_locator(codex_rollout_path))
 
 
+# --- kimi ---------------------------------------------------------------------------------
+
+
+def kimi_wire_path(native_id: str, home: Path) -> Path | None:
+    """Resolve a Kimi session id to its ``agents/main/wire.jsonl`` transcript, or ``None`` (#720).
+
+    Goes through the provider's single exact-session seam (``engines.kimi.session_dir_for``) — the
+    SAME resolver ``scan``/reconcile use — so the adapter, the locator, and the sidebar can never
+    disagree about which dir a session lives in. ``session_dir_for`` already validates the
+    ``session_<uuid>`` shape and rejects same-prefix neighbours, so a bare/junk id yields ``None``
+    rather than a bogus path. v1 reads the ``main`` agent only (Swarm sub-agents are out of scope).
+    """
+    from .engines.kimi import session_dir_for
+
+    sdir = session_dir_for(native_id, home)
+    if sdir is None:
+        return None
+    wire = sdir / "agents" / "main" / "wire.jsonl"
+    try:
+        return wire if wire.is_file() else None
+    except OSError:
+        return None
+
+
+def _kimi_input_text(parts: object) -> str:
+    """Join the ``text`` chunks of a Kimi ``turn.prompt`` ``input`` (``[{type:"text", text}]``)."""
+    if not isinstance(parts, list):
+        return ""
+    return "".join(
+        p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)
+    ).strip()
+
+
+def _kimi_turns_from_wire(recs: list[dict]) -> list[Turn]:
+    """Flatten Kimi's ``wire.jsonl`` loop-event stream into Turns (#720).
+
+    Kimi's transcript is NOT a flat message list — it's a stream of records keyed by turn/step:
+
+    * ``turn.prompt`` — the **only** source of user Turns. ``context.append_message`` re-appends the
+      same prompt (and the injected permission-mode reminders), so parsing it too would double-count
+      the user's message; we take ``turn.prompt`` and ignore ``append_message`` entirely. Records
+      whose ``origin.kind == "injection"`` are machine context (codex #670 class) and are skipped.
+    * ``context.append_loop_event`` carries the assistant + tools: inner ``content.part`` of
+      ``part.type == "text"`` is the visible answer (``"think"`` is hidden reasoning — excluded),
+      ``tool.call`` is a one-line call summary, ``tool.result`` is the (truncated) output.
+
+    Assistant ``text`` parts are buffered and flushed as ONE assistant Turn at each boundary (a tool
+    call/result or the next user prompt), so a multi-step answer renders as a single message rather
+    than fragments — and the ``DEFAULT_MAX_MESSAGES`` tail can never split one mid-way. Fail-soft:
+    an unparseable line was already dropped by ``_jsonl_dicts``; a malformed record is ignored here.
+    """
+    turns: list[Turn] = []
+    pending: list[str] = []  # assistant text chunks awaiting a flush
+
+    def flush() -> None:
+        if pending:
+            text = "".join(pending).strip()
+            pending.clear()
+            if text:
+                turns.append(Turn("assistant", text, "text"))
+
+    for o in recs:
+        # Per-record fail-soft (#720): a schema-drift record with a wrong-shaped nested value
+        # (``origin``/``event``/``part``/``result`` a string/list instead of an object) must skip
+        # only THAT record, never blank the whole transcript. isinstance-guard each nested access,
+        # with a belt-and-suspenders ``except`` so no unforeseen shape can propagate out.
+        try:
+            rtype = o.get("type")
+            if rtype == "turn.prompt":
+                origin = o.get("origin")
+                # A wrong-shaped ``origin`` (present but not a mapping) can't be checked against the
+                # injection filter, so we can't prove the prompt ISN'T machine context — skip it
+                # rather than promote malformed context to a user turn (per-record fail-soft). A
+                # missing ``origin`` is fine (defaults to a real user prompt).
+                if origin is not None and not isinstance(origin, dict):
+                    continue
+                if isinstance(origin, dict) and origin.get("kind") == "injection":
+                    continue
+                text = _kimi_input_text(o.get("input"))
+                if text:
+                    flush()  # close the previous assistant turn before the new user turn
+                    turns.append(Turn("user", text, "text"))
+            elif rtype == "context.append_loop_event":
+                event = o.get("event")
+                if not isinstance(event, dict):
+                    continue
+                etype = event.get("type")
+                if etype == "content.part":
+                    part = event.get("part")
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    ):
+                        pending.append(part["text"])
+                    # part.type == "think" → hidden reasoning, excluded
+                elif etype == "tool.call":
+                    flush()
+                    name = event.get("name") or "tool"
+                    args = event.get("args")
+                    turns.append(
+                        Turn(
+                            "assistant",
+                            f"{name}({_short(args if args is not None else name)})",
+                            "tool",
+                        )
+                    )
+                elif etype == "tool.result":
+                    flush()
+                    result = event.get("result")
+                    output = result.get("output") if isinstance(result, dict) else None
+                    txt = _result_text(output)
+                    if txt.strip():
+                        turns.append(Turn("tool", txt, "result"))
+            # every other record type (metadata, config.update, llm.*, usage.*, permission.*, …)
+            # is framing/telemetry, not transcript content — ignored.
+        except (AttributeError, TypeError, KeyError, ValueError, IndexError):
+            # Any residual data-shape error past the isinstance guards → skip this record only.
+            continue
+    flush()
+    return turns
+
+
+def _kimi_cap(turns: list[Turn]) -> list[Turn]:
+    """Cap to the last ``DEFAULT_MAX_MESSAGES`` **reconstructed Turns** (not raw records — Kimi
+    emits many records per turn), then drop any leading ``result`` Turns whose ``tool.call`` was
+    truncated off the top, so a tail read never opens on an orphaned tool result (#720)."""
+    tail = turns[-DEFAULT_MAX_MESSAGES:]
+    start = 0
+    while start < len(tail) and tail[start].kind == "result":
+        start += 1
+    return tail[start:]
+
+
+def _kimi_drop_partial_head(recs: list[dict]) -> list[dict]:
+    """After a **truncated** tail read, drop every record before the first ``turn.prompt`` (#720).
+
+    ``_read_tail`` only discards the partial first *line*; the surviving records can still open in
+    the MIDDLE of a logical turn — e.g. the ``turn.prompt`` was cut off but its later
+    ``content.part`` chunks remain. Reconstructing those would emit a headless, partial assistant
+    message. A ``turn.prompt`` is the one safe boundary, so we resume from the first one; if the
+    window contains none, there is no clean turn in it → drop the lot rather than show a fragment
+    (the caller then falls back to raw-byte scrollback)."""
+    for i, o in enumerate(recs):
+        if o.get("type") == "turn.prompt":
+            return recs[i:]
+    return []
+
+
+def _kimi_adapter(native_id: str, home: Path) -> list[Turn]:
+    path = kimi_wire_path(native_id, home)
+    if path is None:
+        return []
+    recs = _jsonl_dicts(_read_tail(path))
+    try:
+        truncated = path.stat().st_size > _TAIL_BYTES
+    except OSError:
+        truncated = False
+    if truncated:
+        recs = _kimi_drop_partial_head(recs)
+    return _kimi_cap(_kimi_turns_from_wire(recs))
+
+
+register_adapter("kimi", _kimi_adapter)
+register_locator("kimi", _path_locator(kimi_wire_path))
+
+
 # --- opencode -----------------------------------------------------------------------------
 
 

@@ -93,7 +93,7 @@ Each engine implements a small provider (`src/agent_sessions/engines/<engine>.py
 | **codex** | `~/.codex/sessions/**/rollout-*.jsonl` | ✅ launch-then-reconcile (`--cd`) | ✅ rollout JSONL |
 | **opencode** | `~/.local/share/opencode/opencode.db` (read-only) | ✅ launch-then-reconcile | ✅ SQLite `message`/`part` |
 | **gemini** | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` | ✅ pins a caller id (`--session-id`) | ✅ chat JSONL (text; gemini logs no tool calls) |
-| **kimi** | `~/.kimi-code/` — `session_index.jsonl` + nested `sessions/wd_*/session_<uuid>/state.json` (read-only) | ✅ launch-then-reconcile | ❌ none yet — `wire.jsonl` turn semantics need an authenticated capture (#714), so callers fall back to raw scrollback |
+| **kimi** | `~/.kimi-code/` — `session_index.jsonl` + nested `sessions/wd_*/session_<uuid>/state.json` (read-only) | ✅ launch-then-reconcile | ✅ `agents/main/wire.jsonl` loop-event stream (#720) |
 
 All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_OPENCODE_DB`,
 `_GEMINI_TMP_DIR`, `_KIMI_DIR`) and the same path drives both the sidebar **and** the scroll-up transcript.

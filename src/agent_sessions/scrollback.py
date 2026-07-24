@@ -1188,7 +1188,13 @@ def _in_alt_screen(buf: bytes) -> bool:
 # AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK=0 falls back to raw-byte clean-load everywhere.
 _TRANSCRIPT_SCROLLBACK = (os.environ.get("AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK", "1") or "1") != "0"
 # Engine id → display label for the "⏺ <label>" assistant marker.
-_ENGINE_LABEL = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "opencode": "opencode"}
+_ENGINE_LABEL = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "gemini": "Gemini",
+    "opencode": "opencode",
+    "kimi": "Kimi",
+}
 
 
 def _transcript_payload(buf_key: str, cols: int, rows: int = 24) -> tuple[bytes, int] | None:

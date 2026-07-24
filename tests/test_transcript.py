@@ -483,3 +483,263 @@ def test_user_turn_carries_amber_gutter_marker():
     user_line = next(ln for ln in out.split("\r\n") if "hello there" in ln)
     assert transcript._SGR_USER_BG in user_line  # band kept
     assert "●" in out  # assistant dot unchanged
+
+
+# --- kimi (#720) ---------------------------------------------------------------------------
+#
+# Kimi's transcript is a loop-event stream in `agents/main/wire.jsonl`, not a flat message list.
+# Record builders below mirror the shapes captured from a real authenticated session.
+
+
+def _k_prompt(text, origin="user"):
+    return {
+        "type": "turn.prompt",
+        "input": [{"type": "text", "text": text}],
+        "origin": {"kind": origin},
+    }
+
+
+def _k_msg(role, text, origin="user"):
+    return {
+        "type": "context.append_message",
+        "message": {
+            "role": role,
+            "content": [{"type": "text", "text": text}],
+            "origin": {"kind": origin},
+        },
+    }
+
+
+def _k_part(ptype, text, step=1):
+    return {
+        "type": "context.append_loop_event",
+        "event": {"type": "content.part", "step": step, "part": {"type": ptype, "text": text}},
+    }
+
+
+def _k_toolcall(name, args, tid="tool_1"):
+    return {
+        "type": "context.append_loop_event",
+        "event": {"type": "tool.call", "name": name, "args": args, "toolCallId": tid},
+    }
+
+
+def _k_toolresult(output, tid="tool_1"):
+    return {
+        "type": "context.append_loop_event",
+        "event": {"type": "tool.result", "toolCallId": tid, "result": {"output": output}},
+    }
+
+
+def _kimi_store(home, sid, records, *, work="/w/proj", via_index=True, via_walk=True):
+    """Lay down a Kimi session under ``home`` and return the wire path. ``via_walk`` writes the real
+    session dir (walk-discoverable); ``via_index`` adds the index row (index-discoverable)."""
+    root = home / ".kimi-code"
+    sdir = root / "sessions" / "wd_proj_deadbeef" / sid
+    if via_walk:
+        (sdir / "agents" / "main").mkdir(parents=True, exist_ok=True)
+        (sdir / "agents" / "main" / "wire.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in records), encoding="utf-8"
+        )
+        (sdir / "state.json").write_text(
+            json.dumps({"workDir": work, "title": "t"}), encoding="utf-8"
+        )
+    if via_index:
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / "session_index.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps({"sessionId": sid, "sessionDir": str(sdir), "workDir": work}) + "\n"
+            )
+    return sdir / "agents" / "main" / "wire.jsonl"
+
+
+_KSID = "session_25f66293-9603-46af-bbf3-bd79ef84ca54"
+_KSID2 = "session_aaaabbbb-cccc-dddd-eeee-ffff00001111"
+
+
+def test_kimi_parser_reconstructs_user_assistant_tool():
+    recs = [
+        _k_prompt("read note.txt"),
+        _k_msg("user", "read note.txt"),  # re-append of the same prompt — must NOT double-count
+        _k_msg(
+            "user", "<system-reminder>auto mode</system-reminder>", origin="injection"
+        ),  # filtered
+        _k_part("think", "I should use Read"),  # hidden reasoning — excluded
+        _k_toolcall("Read", {"path": "note.txt"}),
+        _k_toolresult("1\thello"),
+        _k_part("text", "The file says "),  # multi-chunk assistant text …
+        _k_part("text", "hello."),  # … folded into ONE turn
+    ]
+    turns = T._kimi_turns_from_wire(recs)
+    assert [(t.role, t.kind) for t in turns] == [
+        ("user", "text"),
+        ("assistant", "tool"),
+        ("tool", "result"),
+        ("assistant", "text"),
+    ]
+    assert turns[0].text == "read note.txt"
+    assert turns[1].text == 'Read({"path": "note.txt"})'
+    assert turns[2].text == "1\thello"
+    assert turns[3].text == "The file says hello."  # chunks joined, not split
+
+
+def test_kimi_user_turns_from_prompt_only_no_double_count():
+    # Hermes #1: same prompt via turn.prompt AND append_message → exactly one user Turn …
+    one = T._kimi_turns_from_wire([_k_prompt("hi"), _k_msg("user", "hi")])
+    assert [t.role for t in one] == ["user"]
+    # … but two identical prompts are two distinct turns (turnId identity, not text de-dup).
+    two = T._kimi_turns_from_wire([_k_prompt("test"), _k_prompt("test")])
+    assert [t.text for t in two] == ["test", "test"]
+
+
+def test_kimi_adapter_resolves_index_only_and_walk_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_KIMI_DIR", raising=False)
+    assert T.adapter_for("kimi") is not None
+    # walk-only (no index row)
+    _kimi_store(tmp_path, _KSID, [_k_prompt("hello kimi")], via_index=False)
+    assert [t.text for t in T.adapter_for("kimi")(_KSID, tmp_path)] == ["hello kimi"]
+    # index-only path still resolves (dir exists, index points at it)
+    home2 = tmp_path / "h2"
+    _kimi_store(home2, _KSID2, [_k_prompt("via index")], via_index=True)
+    assert [t.text for t in T.adapter_for("kimi")(_KSID2, home2)] == ["via index"]
+    # unknown id / missing store → []
+    assert T.adapter_for("kimi")("session_ffffffff-0000-0000-0000-000000000000", tmp_path) == []
+    assert T.adapter_for("kimi")(_KSID, tmp_path / "nohome") == []
+
+
+def test_kimi_session_dir_for_resolution(tmp_path, monkeypatch):
+    # Hermes #2: the one shared resolver, exercised via both the locator and the adapter.
+    from agent_sessions.engines.kimi import session_dir_for
+
+    monkeypatch.delenv("AGENT_SESSIONS_KIMI_DIR", raising=False)
+    # walk wins over a STALE index path: index points at a bogus dir, the real dir is on disk.
+    root = tmp_path / ".kimi-code"
+    real = _kimi_store(tmp_path, _KSID, [_k_prompt("real")], via_index=False).parent.parent.parent
+    (root).mkdir(parents=True, exist_ok=True)
+    (root / "session_index.jsonl").write_text(
+        json.dumps(
+            {"sessionId": _KSID, "sessionDir": str(tmp_path / "gone" / _KSID), "workDir": "/w"}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert session_dir_for(_KSID, tmp_path) == real  # walk wins
+
+    # prefix-neighbour must NOT match: session_<A> vs session_<A>-ish is a different id.
+    assert session_dir_for(_KSID + "x", tmp_path) is None
+    # bare UUID (no session_ prefix) rejected before any path is built.
+    assert session_dir_for("25f66293-9603-46af-bbf3-bd79ef84ca54", tmp_path) is None
+    # malformed index alone (no walk dir) → None; missing wire → locator None.
+    home3 = tmp_path / "h3"
+    (home3 / ".kimi-code").mkdir(parents=True)
+    (home3 / ".kimi-code" / "session_index.jsonl").write_text("{ broken", encoding="utf-8")
+    assert session_dir_for(_KSID, home3) is None
+    assert T.source_location("kimi", _KSID, home3) is None
+    # index-only but the dir was removed (stale) → None.
+    home4 = tmp_path / "h4"
+    (home4 / ".kimi-code").mkdir(parents=True)
+    (home4 / ".kimi-code" / "session_index.jsonl").write_text(
+        json.dumps({"sessionId": _KSID, "sessionDir": str(home4 / "gone" / _KSID), "workDir": "/w"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert session_dir_for(_KSID, home4) is None
+
+
+def test_kimi_locator_points_at_wire_and_is_exact(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_KIMI_DIR", raising=False)
+    wire = _kimi_store(tmp_path, _KSID, [_k_prompt("x")], via_index=False)
+    loc = T.source_location("kimi", _KSID, tmp_path)
+    assert loc == str(wire)
+    # a same-prefix neighbour must not resolve to this session's wire.
+    assert T.source_location("kimi", _KSID + "0", tmp_path) is None
+
+
+def test_kimi_cap_counts_turns_not_records_and_trims_orphan(tmp_path, monkeypatch):
+    # Hermes #3: the bound is on reconstructed Turns, not raw records; a multi-chunk assistant
+    # answer is atomic (never split by the cap); a truncated leading tool-result is dropped.
+    monkeypatch.setattr(T, "DEFAULT_MAX_MESSAGES", 3)
+    recs = []
+    for i in range(6):
+        recs += [_k_prompt(f"q{i}"), _k_part("text", f"a{i}-p1 "), _k_part("text", f"a{i}-p2")]
+    capped = T._kimi_cap(T._kimi_turns_from_wire(recs))
+    assert len(capped) <= 3
+    assert capped[0].kind != "result"  # no orphaned leading tool result
+    # each assistant turn is whole (both chunks present) — the cap never split one.
+    for t in capped:
+        if t.role == "assistant" and t.kind == "text":
+            assert "p1" in t.text and "p2" in t.text
+
+    # explicit orphan-trim: a stream whose tail begins with a tool.result loses that leading result.
+    monkeypatch.setattr(T, "DEFAULT_MAX_MESSAGES", 2)
+    recs2 = [
+        _k_prompt("go"),
+        _k_toolcall("Bash", {"c": "ls"}),
+        _k_toolresult("out"),
+        _k_part("text", "done"),
+    ]
+    capped2 = T._kimi_cap(T._kimi_turns_from_wire(recs2))
+    assert capped2[0].kind != "result"
+
+
+def test_kimi_adapter_failsoft_on_corrupt_lines(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_KIMI_DIR", raising=False)
+    root = tmp_path / ".kimi-code"
+    sdir = root / "sessions" / "wd_proj_deadbeef" / _KSID
+    (sdir / "agents" / "main").mkdir(parents=True)
+    (sdir / "agents" / "main" / "wire.jsonl").write_text(
+        "{ not json\n" + json.dumps(_k_prompt("survived")) + "\n{ also broken", encoding="utf-8"
+    )
+    assert [t.text for t in T.adapter_for("kimi")(_KSID, tmp_path)] == ["survived"]
+
+
+def test_kimi_parser_failsoft_on_wrong_shaped_nested_fields():
+    # #720 Hermes P2/P3: a schema-drift record (valid JSON, wrong-shaped nested value) must skip
+    # only that record — never raise and blank the transcript, and never PROMOTE malformed machine
+    # context to a user turn (a non-mapping `origin` can't be injection-filtered, so it's dropped).
+    injected = {
+        "type": "turn.prompt",
+        "input": [{"type": "text", "text": "MACHINE-INJECTION"}],
+        "origin": "injection",  # wrong-shaped origin (string, not {"kind": ...})
+    }
+    recs = [
+        _k_prompt("first"),
+        injected,
+        {"type": "context.append_loop_event", "event": "oops"},  # event str
+        {
+            "type": "context.append_loop_event",
+            "event": {"type": "content.part", "part": "nope"},
+        },  # part str
+        {
+            "type": "context.append_loop_event",
+            "event": {"type": "tool.result", "result": "flat"},
+        },  # result str
+        _k_part("text", "survived"),
+        _k_prompt("second"),
+    ]
+    turns = T._kimi_turns_from_wire(recs)  # must not raise
+    texts = [t.text for t in turns]
+    assert "first" in texts and "second" in texts and "survived" in texts  # valid records survive
+    assert "MACHINE-INJECTION" not in texts  # malformed machine context not promoted to a user turn
+
+
+def test_kimi_adapter_truncated_tail_never_opens_mid_turn(tmp_path, monkeypatch):
+    # #720 Hermes P1: exercise the real byte-tail cutoff (not just _kimi_cap on a complete list).
+    monkeypatch.delenv("AGENT_SESSIONS_KIMI_DIR", raising=False)
+    monkeypatch.setattr(T, "_TAIL_BYTES", 600)  # tiny window forces truncation
+    # A prompt followed by many text parts: the prompt sits far above the 600B tail, so the window
+    # holds only orphaned content.part chunks. Pre-fix this emitted a headless assistant fragment.
+    recs = [_k_prompt("the original question")]
+    recs += [_k_part("text", f"chunk-{i} ") for i in range(80)]
+    _kimi_store(tmp_path, _KSID, recs, via_index=False)
+    turns = T.adapter_for("kimi")(_KSID, tmp_path)
+    # No turn.prompt survived in the window → no fragment presented (falls back to raw scrollback).
+    assert turns == []
+
+    # When a turn.prompt DOES survive in the window, reconstruction resumes cleanly from it.
+    recs2 = [_k_part("text", f"old-{i} ") for i in range(80)]  # truncated-away tail of a prior turn
+    recs2 += [_k_prompt("kept question"), _k_part("text", "kept answer")]
+    _kimi_store(tmp_path / "h2", _KSID2, recs2, via_index=False)
+    turns2 = T.adapter_for("kimi")(_KSID2, tmp_path / "h2")
+    assert turns2 and turns2[0].role == "user" and turns2[0].text == "kept question"
+    assert not any(t.text.startswith("old-") for t in turns2)  # headless fragment dropped
