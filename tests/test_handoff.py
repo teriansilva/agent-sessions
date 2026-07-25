@@ -141,6 +141,9 @@ def test_api_engines_carries_the_capability_and_reason(auth_cfg, tmp_home, monke
     rows = {r["id"]: r for r in c.get("/api/engines").json()["engines"]}
     assert rows["claude"]["supports_seed_start"] is True
     assert rows["claude"]["seed_reason"] is None
+    # kimi is a seed-capable target since #720 Phase 3 (bracketed-paste readiness proven).
+    assert rows["kimi"]["supports_seed_start"] is True
+    assert rows["kimi"]["seed_reason"] is None
     assert rows["gemini"]["supports_seed_start"] is False
     assert rows["gemini"]["seed_reason"] == "no seed-capable start yet"
     assert rows["shell"]["supports_seed_start"] is False
@@ -185,6 +188,15 @@ def test_handle_commit_mints_placeholder_for_reconciling_engines():
     h = handoff.create_handle("claude:" + _SRC, "codex", "quick", "seed body", cwd="/tmp")
     res = handoff.commit(h)
     assert res["native"].startswith("new-")  # codex mints its own id → placeholder launch
+
+
+def test_handle_commit_mints_placeholder_for_kimi_target():
+    # kimi has no id-pinning flag (new_session_reconciles), so a handoff to it launches under a
+    # ``new-<uuid>`` placeholder and reconciles — same as codex (#720 Phase 3).
+    h = handoff.create_handle("claude:" + _SRC, "kimi", "quick", "seed body", cwd="/tmp")
+    res = handoff.commit(h)
+    assert res["engine"] == "kimi"
+    assert res["native"].startswith("new-")
 
 
 def test_seed_claim_ack_is_single_delivery():
@@ -328,6 +340,25 @@ def test_prepare_returns_handle_preview_meta(auth_cfg, fake_jsonl, monkeypatch):
     assert body["handle"]
     assert "[user] first message on repo-a" in body["preview"]
     assert body["meta"]["turns"] == 1 and body["meta"]["mode"] == "quick"
+
+
+def test_prepare_and_commit_accept_kimi_target(auth_cfg, fake_jsonl, monkeypatch):
+    # Hermes #4 (#720): the target-capability lockstep — /api/engines advertising kimi as
+    # seed-capable must agree with the server actually accepting a kimi handoff target, so a tile
+    # the modal shows can never be one the prepare/commit path refuses.
+    _present_all(monkeypatch)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    rows = {r["id"]: r for r in c.get("/api/engines").json()["engines"]}
+    assert rows["kimi"]["supports_seed_start"] is True  # advertised seed-capable …
+    r = _prepare(c, csrf, auth_cfg, target_engine="kimi")  # … and the route accepts it
+    assert r.status_code == 200, r.text
+    handle = r.json()["handle"]
+    commit = c.post("/api/handoff", json={"handle": handle}, headers=_hdr(csrf, auth_cfg))
+    assert commit.status_code == 200, commit.text
+    body = commit.json()
+    assert body["engine"] == "kimi"
+    assert body["native"].startswith("new-")  # reconciling engine → placeholder launch
 
 
 def test_prepare_requires_csrf(auth_cfg, fake_jsonl, monkeypatch):

@@ -200,10 +200,13 @@ class KimiProvider:
     # no caller-supplied id flag — so new-session launches under a ``new-<uuid>`` placeholder and
     # reconciles to the real id afterwards (same shape as codex/antigravity).
     new_session_reconciles = True
-    # NOT a handoff target yet: seeding a fresh TUI by bracketed paste needs the authenticated
-    # readiness check (a TUI can arm ?2004 in its preamble and still swallow early stdin), which
-    # can't be run without an account. Left falsey so the handoff modal simply omits the tile.
-    supports_seed_start = False
+    # Cross-engine handoff target (#720 Phase 3): a fresh Kimi TUI accepts the seed as a bracketed
+    # paste on its PTY input (never argv). PROVEN against a real authenticated session — replicating
+    # webterm's readiness gate (DECSET 2004 armed + a ≥2KB first paint + a quiet window), a
+    # multi-line ``ESC[200~ … ESC[201~ CR`` paste was consumed as ONE submitted ``turn.prompt``
+    # with newlines intact. So the codex "arms 2004 then eats stdin" race (which the gate exists to
+    # catch) can't strand a Kimi seed. Delivery + timing stay the engine-agnostic webterm.py gate.
+    supports_seed_start = True
 
     def is_present(self) -> bool:
         return base._kimi_dir().is_dir() or shutil.which("kimi") is not None
