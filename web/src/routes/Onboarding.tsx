@@ -31,8 +31,8 @@ const publicAsset = (path: string): string =>
 const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/sessions.svg"),
-    title: "Five engines, one deck",
-    body: "Claude Code, Codex, opencode, Gemini & Antigravity — each in its own persistent session in the sidebar, grouped by project, with per-engine badges. Search, filter, favorite, archive.",
+    title: "Six engines, one deck",
+    body: "Claude Code, Codex, opencode, Gemini, Antigravity & Kimi Code — each in its own persistent session in the sidebar, grouped by project, with per-engine badges. Search, filter, favorite, archive.",
   },
   {
     img: publicAsset("onboarding/pulse.svg"),

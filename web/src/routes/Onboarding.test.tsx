@@ -330,7 +330,7 @@ test("tour mode shows the slideshow and Done closes it", async () => {
       </ConfigCtx.Provider>
     </MemoryRouter>,
   );
-  expect(screen.getByText(/five engines, one deck/i)).toBeInTheDocument();
+  expect(screen.getByText(/six engines, one deck/i)).toBeInTheDocument();
   // 8 slides (#675 refresh): advance to the last, then Done.
   for (let k = 0; k < 5; k++) {
     await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
