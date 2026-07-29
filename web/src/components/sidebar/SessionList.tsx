@@ -2,6 +2,8 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeftRight,
+  Bot,
+  BotOff,
   Check,
   Eye,
   EyeOff,
@@ -134,6 +136,7 @@ interface RowProps {
    *  the feature is unconfigured (the controls are hidden). */
   onReviewNow?: (id: string) => Promise<void>;
   onToggleReviewExcluded?: (id: string, excluded: boolean) => Promise<void>;
+  onToggleOrchestratorExcluded?: (id: string, excluded: boolean) => Promise<void>;
   /** Reassign the session to a project entity (or `null` to unassign) — the keyboard path
    *  for the map's drag-to-reassign (#424 Phase 5). */
   onSetProject: (id: string, ref: ProjectRef | null) => Promise<void>;
@@ -153,6 +156,7 @@ function Row({
   onToggleFavorite,
   onReviewNow,
   onToggleReviewExcluded,
+  onToggleOrchestratorExcluded,
   onSetProject,
   onNavigate,
   rowRef,
@@ -201,6 +205,16 @@ function Row({
       /* fail-soft (#356): the last good result + its stale age keep showing */
     } finally {
       setReviewing(false);
+    }
+  };
+
+  const toggleOrchestrated = async () => {
+    if (!onToggleOrchestratorExcluded) return;
+    setBusy(true);
+    try {
+      await onToggleOrchestratorExcluded(s.id, !s.orchestrator_excluded);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -408,6 +422,17 @@ function Row({
       icon: s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />,
       disabled: busy || reviewing,
       onSelect: () => void toggleExcluded(),
+    });
+  }
+  if (onToggleOrchestratorExcluded) {
+    // Separate entry from "Exclude from AI review" on purpose: this withdraws only the
+    // orchestrator's agency. The session keeps its summary and its needs-you flag.
+    reviewItems.push({
+      key: "orchestrate",
+      label: s.orchestrator_excluded ? "Let Pulse manage this" : "Stop Pulse managing this",
+      icon: s.orchestrator_excluded ? <Bot size={15} /> : <BotOff size={15} />,
+      disabled: busy,
+      onSelect: () => void toggleOrchestrated(),
     });
   }
   pushGroup(reviewItems);
@@ -669,6 +694,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     setSticky,
     reviewRow,
     setReviewExcluded,
+    setOrchestratorExcluded,
     setProject,
   } = useSessionsList();
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
@@ -852,6 +878,9 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
               onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
+              onToggleOrchestratorExcluded={
+                aiConfigured ? setOrchestratorExcluded : undefined
+              }
               onSetProject={setProject}
               onNavigate={onNavigate}
               rowRef={setRowRef(s.id)}

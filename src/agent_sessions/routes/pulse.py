@@ -23,12 +23,28 @@ The shared ``GET /api/ai/activity`` surface lives in ``routes/system.py``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import aitasks, prefs, pulse, pulse_chat, review
+from .. import (
+    aitasks,
+    engines,
+    metadata,
+    orchestrator,
+    orchestrator_ledger,
+    prefs,
+    pulse,
+    pulse_chat,
+    review,
+)
+
+# How many ledger rows the activity feed carries. Bounded so a long-lived install's
+# history can't make the Pulse page payload grow without limit.
+FEED_LIMIT = 100
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -127,3 +143,129 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except review.ReviewError as e:
             return JSONResponse({"detail": str(e)}, status_code=502)
         return JSONResponse(result)
+
+    # --- orchestrator (#726 Phase 1) ---------------------------------------------------
+    # Pulse gains agency. These join the `/api/pulse/*` family on purpose rather than opening
+    # an `/api/orchestrator/*` namespace: the operator-facing name is Pulse, and the existing
+    # `/^\/api/` service-worker denylist entry already covers everything here.
+
+    @app.get("/api/pulse/orchestrator")
+    async def get_orchestrator_state(_: str = Depends(logged_in)) -> JSONResponse:
+        """Cached state: config, pending actions, and the activity feed. NEVER runs a pass —
+        same contract as `GET /api/pulse` (cache-only, instant)."""
+        cfg = prefs.public_orchestrator()
+        expired = await asyncio.to_thread(orchestrator_ledger.expire_due)
+        pending, feed = await asyncio.to_thread(_pending_and_feed)
+        return JSONResponse(
+            {
+                "config": cfg,
+                "pending": pending,
+                "feed": feed,
+                "expired_now": len(expired),
+                **aitasks.snapshot(),
+            }
+        )
+
+    def _pending_and_feed() -> tuple[list[dict], list[dict]]:
+        live = orchestrator_ledger.live_actions()
+        pending = [r for r in live if r.get("state") in ("proposed", "approved", "escalated")]
+        return pending, orchestrator_ledger.feed(FEED_LIMIT)
+
+    @app.post("/api/pulse/orchestrate")
+    async def run_orchestrator(
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Run one pass now. Its own single-flight kind so a pass never blocks a Pulse scan or
+        an Ask (or vice-versa); only concurrent passes serialize.
+
+        Deliberately contrasts with `/scan`, matching `/ask`: an unconfigured endpoint is a
+        **409** and an endpoint failure a **502**. A scan degrades to fast curation because the
+        page must still render; a *decision* has no useful non-LLM fallback, so it says so
+        rather than returning an empty action list that reads as "nothing needs you".
+        """
+        try:
+            async with aitasks.single_flight("orchestrator", "manual"):
+                report = await orchestrator.run_pass(working_keys=_working_keys())
+        except aitasks.AlreadyRunning:
+            return JSONResponse(
+                {"detail": "an orchestrator pass is already running", **aitasks.snapshot()},
+                status_code=409,
+            )
+        except review.NotConfiguredError:
+            return JSONResponse(
+                {"detail": "AI endpoint is not configured", "configured": False},
+                status_code=409,
+            )
+        except review.ReviewError as e:
+            return JSONResponse({"detail": str(e)}, status_code=502)
+        pending, feed = await asyncio.to_thread(_pending_and_feed)
+        return JSONResponse({**report, "pending": pending, "feed": feed})
+
+    @app.post("/api/sessions/{sid}/orchestrator-exclude")
+    async def toggle_orchestrator_exclude(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Withdraw (or restore) the orchestrator's agency over ONE session (#726).
+
+        A dedicated toggle mirroring `POST /api/sessions/{sid}/review-exclude` rather than a
+        `PATCH …/metadata` write: that route is project_id-only by contract (it 422s without
+        one), and widening it would change a shared surface for an unrelated concern.
+
+        This is NOT `review_excluded`. An unmanaged session stays listed, stays summarised,
+        stays flagged needs-you — it only stops being something the orchestrator may act on.
+        """
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        # Optional body {"excluded": bool}; absent/invalid → toggle the stored state.
+        desired: bool | None = None
+        with contextlib.suppress(ValueError, json.JSONDecodeError):
+            body = await request.json()
+            if isinstance(body, dict) and isinstance(body.get("excluded"), bool):
+                desired = body["excluded"]
+        # Write against the RESOLVED sidecar key, like review-exclude: for a reconciled
+        # opencode session the sidecar lives under the placeholder physical key.
+        mkey = metadata.resolve_key(key)
+        if desired is None:
+            desired = not metadata.get(mkey).orchestrator_excluded
+        m = metadata.patch(mkey, orchestrator_excluded=desired)
+        return JSONResponse({"id": key, "orchestrator_excluded": m.orchestrator_excluded})
+
+    @app.get("/api/pulse/evidence/{session_id:path}")
+    async def get_evidence(
+        session_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+    ) -> JSONResponse:
+        """Server-pulled evidence for one session: the live screen, a transcript tail, or the
+        recap. The model only ever names a *kind*; every byte here comes from the real session,
+        fetched now — a model that can quote a screen can invent one.
+
+        Never cached and never persisted into the ledger, so the operator always reads the
+        current screen rather than a frozen one.
+        """
+        try:
+            engines.parse_key(session_id)
+        except Exception:
+            return JSONResponse({"detail": "unknown session id"}, status_code=404)
+        kind = request.query_params.get("kind", "screen")
+        if kind not in orchestrator.EVIDENCE_KINDS:
+            return JSONResponse(
+                {"detail": f"kind must be one of {list(orchestrator.EVIDENCE_KINDS)}"},
+                status_code=422,
+            )
+        # Blocking: the ring replay + FS reads must never run on the event loop (#678).
+        result = await asyncio.to_thread(orchestrator.evidence_for, session_id, kind)
+        # This response carries live terminal / transcript content, and its whole contract is
+        # "what the session shows RIGHT NOW". A cached copy is both a stale-evidence hazard
+        # (approving against a screen that has moved) and a data-exposure one (session content
+        # sitting in a disk cache). Deny caching explicitly rather than relying on defaults.
+        return JSONResponse(
+            result,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        )

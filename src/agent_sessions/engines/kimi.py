@@ -196,6 +196,7 @@ class KimiProvider:
     engine_id = "kimi"
     id_pattern = base._KIMI_SESSION_RE
     supports_new = True
+    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
     # Kimi mints its own ``session_<uuid>`` at launch — ``-S/--session`` only *resumes*, there is
     # no caller-supplied id flag — so new-session launches under a ``new-<uuid>`` placeholder and
     # reconciles to the real id afterwards (same shape as codex/antigravity).

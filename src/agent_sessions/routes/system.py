@@ -332,6 +332,11 @@ def register(
                 # window/depth; holds no secret of its own, `configured` mirrors the reused
                 # ai_review endpoint readiness (depth ≥ medium synthesis needs it).
                 "pulse": prefs.public_pulse(),
+                # Pulse orchestrator config (#726) — opt-in; holds no secret of its own,
+                # `configured` mirrors the reused ai_review endpoint readiness. Carries
+                # `auto_verbs_ceiling` so the UI can SHOW that choose/answer/dispatch always
+                # need a tap, rather than implying the tier alone decides.
+                "orchestrator": prefs.public_orchestrator(),
             }
         )
 
@@ -436,6 +441,16 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_pulse(payload["pulse"])
             out["pulse"] = prefs.public_pulse()
+        if "orchestrator" in payload:
+            # Pulse orchestrator config (#726): tier + threshold + cadence + prompts,
+            # server-validated. `allowed_verbs` is checked against the AUTO_VERBS_V1 ceiling
+            # — a patch naming `answer`/`choose`/`dispatch` is a 422, because a shipped
+            # setting that can add them means they ARE autonomous whatever the docs say.
+            err = prefs.validate_orchestrator_patch(payload["orchestrator"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_orchestrator(payload["orchestrator"])
+            out["orchestrator"] = prefs.public_orchestrator()
         if "project_names" in payload:
             v = payload["project_names"]
             if not isinstance(v, dict) or not all(

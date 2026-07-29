@@ -287,6 +287,18 @@ export function useSessionsList() {
     );
   }, []);
 
+  // Per-session Pulse-orchestration opt-out (#726). Managed-by-default, so this withdraws
+  // agency for ONE session. Deliberately independent of review_excluded: the session stays
+  // listed, stays summarised, stays flagged needs-you — it just stops being acted on.
+  const setOrchestratorExcluded = useCallback(async (id: string, excluded: boolean) => {
+    const r = await api.setOrchestratorExcluded(id, excluded);
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === id ? { ...s, orchestrator_excluded: r.orchestrator_excluded } : s,
+      ),
+    );
+  }, []);
+
   // Reassign a session to a project entity — the keyboard-accessible equivalent of the map's
   // drag-to-reassign (#424 Phase 5). `ref` is the target entity, or `null` to unassign (back to
   // the folder fallback). Writes the explicit project_id via the metadata seam, then folds the
@@ -324,6 +336,7 @@ export function useSessionsList() {
     setSticky,
     reviewRow,
     setReviewExcluded,
+    setOrchestratorExcluded,
     setProject,
   };
 }

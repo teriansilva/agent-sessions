@@ -43,6 +43,10 @@ class ShellProvider:
     engine_id = "shell"
     id_pattern = base._SHELL_UUID_RE
     supports_new = True  # ws new-session via new_launch_argv; pinned id (no reconcile)
+    # NEVER orchestrator-actuable (#726): this is a bare `bash -l` with no agent, so a
+    # server-authored "continue" nudge would be EXECUTED as a shell command. The registry
+    # predicate already default-denies; this is explicit so the reason is at the site.
+    supports_orchestrator_input = False
 
     def is_present(self) -> bool:
         # Always usable where bash exists (effectively every Linux host); also present when the

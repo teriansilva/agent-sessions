@@ -49,6 +49,11 @@ export interface Session {
   reviewed_at?: number | null;
   /** Per-session opt-out from AI review. */
   review_excluded?: boolean;
+  /** #726: per-session opt-out from Pulse orchestration. Managed-by-default, so this is
+   *  false until the operator withdraws agency for this session. DISTINCT from
+   *  review_excluded: an unmanaged session is still listed, still summarised, still
+   *  flagged needs-you — it just stops being something the orchestrator may act on. */
+  orchestrator_excluded?: boolean;
   /** #481: chronological "what happened in this session" recap over the whole transcript,
    *  shown in the session-brief modal. "" / absent until the first review produces one. */
   ai_recap?: string;
@@ -192,6 +197,94 @@ export interface PulseOverview {
 
 /** A Pulse "Ask" match (#522): the full Pulse card plus the model's one-line reason —
  *  rendered by the same Card component, so "Jump in" works unchanged. */
+/** #726: the operator's autonomy tier. `off` observes and proposes only; `suggest`
+ *  (the default) queues every action for one tap; `yolo` delivers autonomously — but ONLY
+ *  the verbs inside the server-owned ceiling, which is `continue` alone in this release. */
+export type OrchestratorTier = "off" | "suggest" | "yolo";
+
+/** #726: what the orchestrator proposed. `observe`/`escalate` never reach a session. */
+export type OrchestratorVerb =
+  | "observe"
+  | "continue"
+  | "choose"
+  | "answer"
+  | "dispatch"
+  | "escalate";
+
+/** #726: the lifecycle of one action. `indeterminate` is deliberate: if the process dies
+ *  between the PTY write and the durable record, nothing on disk can prove whether the bytes
+ *  landed, so it is parked for the operator rather than retried (which could double-deliver)
+ *  or assumed delivered (which could silently drop). At-most-once, stated honestly. */
+export type OrchestratorState =
+  | "proposed"
+  | "approved"
+  | "claimed"
+  | "delivered"
+  | "escalated"
+  | "observed"
+  | "rejected"
+  | "stale"
+  | "failed"
+  | "expired"
+  | "indeterminate";
+
+export type EvidenceKind = "screen" | "transcript_tail" | "recap" | "none";
+
+export interface OrchestratorAction {
+  id: string;
+  state: OrchestratorState;
+  ts: number;
+  expires_at?: number;
+  tier: OrchestratorTier;
+  session_id: string;
+  engine: string;
+  title: string;
+  /** Resolved project name — from the same projects.resolve the sidebar uses, so a feed row
+   *  and its sidebar row always agree. */
+  project: string;
+  project_id: string;
+  verb: OrchestratorVerb;
+  confidence: number;
+  rationale: string;
+  evidence: EvidenceKind;
+  option?: number;
+  answer?: string;
+}
+
+export interface OrchestratorConfig {
+  enabled: boolean;
+  autonomy: OrchestratorTier;
+  allowed_verbs: string[];
+  /** The server-owned ceiling. Surfaced so the UI can SHOW that choose/answer/dispatch always
+   *  need a tap, rather than implying the tier alone decides. */
+  auto_verbs_ceiling: string[];
+  confidence_min: number;
+  interval_minutes: number;
+  max_actions_per_pass: number;
+  proposal_ttl_minutes: number;
+  nudge_template: string;
+  prompt: string;
+  notify: "none" | "escalations" | "all";
+  configured: boolean;
+  default_prompt: string;
+  default_nudge_template: string;
+}
+
+export interface OrchestratorState_ {
+  config: OrchestratorConfig;
+  pending: OrchestratorAction[];
+  feed: OrchestratorAction[];
+  expired_now: number;
+}
+
+/** Server-pulled evidence. The model only ever names a `kind`; every byte here comes from the
+ *  real session, fetched at render time — a model that can quote a screen can invent one. */
+export interface Evidence {
+  kind: EvidenceKind;
+  text: string;
+  available: boolean;
+}
+
 export interface PulseAskMatch extends PulseCard {
   why: string;
 }
@@ -367,6 +460,7 @@ export interface AppConfig {
   /** Pulse recent-work overview (#441 Phase 3): opt-in background scan + window/depth;
    *  reuses the ai_review endpoint for synthesis (no secret). */
   pulse?: PulseConfig;
+  orchestrator?: OrchestratorConfig;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never

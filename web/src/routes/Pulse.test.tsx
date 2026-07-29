@@ -9,7 +9,19 @@ import Pulse from "./Pulse";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { pulse: vi.fn(), pulseScan: vi.fn(), pulseAsk: vi.fn(), setPrefs: vi.fn() } };
+  return {
+    ...actual,
+    api: {
+      pulse: vi.fn(),
+      pulseScan: vi.fn(),
+      pulseAsk: vi.fn(),
+      setPrefs: vi.fn(),
+      // #726: the page mounts the orchestrator strip, which reads this on mount.
+      orchestrator: vi.fn(),
+      orchestrate: vi.fn(),
+      evidence: vi.fn(),
+    },
+  };
 });
 
 function card(over: Partial<PulseCard> & { id: string; state: PulseState }): PulseCard {
@@ -58,6 +70,7 @@ beforeEach(() => {
   vi.mocked(api.pulse).mockReset().mockResolvedValue(overview());
   vi.mocked(api.pulseScan).mockReset();
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
+  vi.mocked(api.orchestrator).mockReset().mockRejectedValue(new Error("off"));
 });
 
 test("renders the empty state with the window when nothing was scanned (#441 P5)", async () => {

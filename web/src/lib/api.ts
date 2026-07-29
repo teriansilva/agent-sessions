@@ -14,6 +14,9 @@ import type {
   DraftAttachment,
   ProjectArchiveReport,
   ProjectEntity,
+  Evidence,
+  EvidenceKind,
+  OrchestratorState_,
   PulseAskResult,
   PulseDepth,
   PulseOverview,
@@ -92,8 +95,8 @@ async function authGate(r: Response): Promise<never> {
   throw new ApiError(403, "forbidden");
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const r = await apiFetch(path, { credentials: "same-origin" });
+async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await apiFetch(path, { credentials: "same-origin", ...init });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
   return (await r.json()) as T;
@@ -404,6 +407,33 @@ export const api = {
    *  surfaces the server `detail` either way. CSRF-guarded. */
   pulseAsk: (query: string, history: { role: "user" | "assistant"; content: string }[]) =>
     mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
+  /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
+   *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
+  orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),
+  /** Run one orchestrator pass now (#726). 409 = unconfigured endpoint or a pass already
+   *  running; 502 = endpoint failure. Deliberately unlike `pulseScan`, which degrades to a
+   *  200: a decision has no useful non-LLM fallback, so it says so rather than returning an
+   *  empty action list that reads as "nothing needs you". CSRF-guarded. */
+  orchestrate: () => mutateJson<OrchestratorState_ & { assessment: string }>(
+    "POST",
+    "/api/pulse/orchestrate",
+    {},
+  ),
+  /** Server-pulled evidence for one session (#726). Fetched at render time, never cached and
+   *  never stored in the ledger, so the operator always reads the CURRENT screen. */
+  evidence: (sessionId: string, kind: EvidenceKind) =>
+    getJson<Evidence>(`/api/pulse/evidence/${enc(sessionId)}?kind=${encodeURIComponent(kind)}`, {
+      // "Live" must mean live: never let the HTTP cache answer this one.
+      cache: "no-store",
+    }),
+  /** Per-session Pulse-orchestration opt-out (#726). Managed-by-default; this withdraws (or
+   *  restores) agency for ONE session without touching its AI review. CSRF-guarded. */
+  setOrchestratorExcluded: (id: string, excluded?: boolean) =>
+    mutateJson<{ id: string; orchestrator_excluded: boolean }>(
+      "POST",
+      `/api/sessions/${enc(id)}/orchestrator-exclude`,
+      excluded === undefined ? undefined : { excluded },
+    ),
   /** Shared AI-activity surface (#441): AI tasks running now + the last run per kind. The
    *  Settings panel polls it; read-only, no CSRF. */
   aiActivity: () => getJson<AiActivity>("/api/ai/activity"),

@@ -160,6 +160,7 @@ class AntigravityProvider:
     # fresh under a ``new-<uuid>`` placeholder and reconcile to the real id afterwards, exactly like
     # codex/opencode (#315 / #449). Resume still pins the existing id via ``--conversation``.
     supports_new = True
+    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
     new_session_reconciles = True
 
     def is_present(self) -> bool:

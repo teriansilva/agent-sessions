@@ -55,6 +55,7 @@ from .registry import (  # noqa: F401 — public re-exports
     is_new_session_placeholder,
     is_opencode_new_placeholder,
     logical_key,
+    orchestrator_input_engines,
     parse_key,
     physical_key,
     present_providers,
@@ -62,6 +63,7 @@ from .registry import (  # noqa: F401 — public re-exports
     scan_all_cached,
     session_key,
     set_scan_cache_ttl,
+    supports_orchestrator_input,
 )
 from .shell import ShellProvider
 
@@ -79,6 +81,8 @@ __all__ = [
     "get",
     "scan_all",
     "scan_all_cached",
+    "supports_orchestrator_input",
+    "orchestrator_input_engines",
     "invalidate_scan_cache",
     "set_scan_cache_ttl",
     "session_key",

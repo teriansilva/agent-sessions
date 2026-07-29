@@ -49,6 +49,32 @@ def get(engine_id: str) -> base.EngineProvider | None:
     return _BY_ID.get(engine_id)
 
 
+def supports_orchestrator_input(prov: base.EngineProvider | None) -> bool:
+    """May the Pulse orchestrator write server-authored input into this engine's sessions?
+    (#726)
+
+    **Default-deny.** A provider that does not declare ``supports_orchestrator_input = True``
+    is not actuable. That default is the point, not an implementation detail: ``shell`` is a
+    bare ``bash -l`` with no agent behind it (#636), so a "continue" nudge typed into one would
+    be *executed as a shell command* — and ``parse_key`` cannot catch that, because a
+    ``shell:<uuid>`` key is perfectly well-formed. If the flag defaulted on, the next agentless
+    engine added to the registry would silently re-open that hole. The failure mode has to be
+    "a new engine can't be driven until someone says it can", never the reverse.
+
+    This gates the *delivery* boundary. ``dispatch`` (starting a NEW session and seeding it) is a
+    different question with an existing answer — ``handoff.seed_start_state`` — and must use that
+    rather than this, so the orchestrator's spawn targets can never drift from the handoff
+    picker's.
+    """
+    return bool(getattr(prov, "supports_orchestrator_input", False))
+
+
+def orchestrator_input_engines() -> set[str]:
+    """Engine ids the orchestrator may write to — the default-deny set above, resolved once so
+    callers can filter a card list without touching providers per row."""
+    return {p.engine_id for p in _PROVIDERS if supports_orchestrator_input(p)}
+
+
 def scan_all() -> list[Session]:
     """Every session from every present provider, merged."""
     out: list[Session] = []

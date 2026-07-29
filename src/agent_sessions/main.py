@@ -32,6 +32,7 @@ from . import (
     autosort_loop,
     engines,
     metadata,
+    orchestrator_loop,
     owner,
     prefs,
     projects,
@@ -233,6 +234,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # `pulse.auto_enabled` opt-in + the env kill-switch + change-detection, re-read per
         # sweep. Skips when a manual scan holds the single-flight; an unchanged set is a no-op.
         pulse_task = asyncio.create_task(pulse_loop.run(registry))
+        # Periodic Pulse orchestrator pass (#726 Phase 1): same reaper pattern, gated on the
+        # `orchestrator.enabled` opt-in + the env kill-switch + change-detection, re-read per
+        # sweep. Also performs one startup recovery of any action left mid-delivery by a
+        # restart — moved to `indeterminate`, never auto-retried.
+        orchestrator_task = asyncio.create_task(orchestrator_loop.run(registry))
         # Daily in-app auto-update (#538): replaces the installer's systemd timer. Gated
         # per pass on the env-file AGENT_SESSIONS_AUTOUPDATE key, so the Settings → System
         # toggle governs it live without a restart.
@@ -248,6 +254,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 review_task,
                 autosort_task,
                 pulse_task,
+                orchestrator_task,
                 update_task,
                 cap_sweep_task,
             ):

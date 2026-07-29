@@ -31,6 +31,7 @@ import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
+import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
@@ -1770,6 +1771,7 @@ export function Settings() {
             <AiReviewSettings />
             <AutoSortSettings />
             <PulseSettings />
+            <OrchestratorSettings />
           </>
         )}
 

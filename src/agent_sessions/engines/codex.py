@@ -58,6 +58,7 @@ class CodexProvider:
     engine_id = "codex"
     id_pattern = base._CODEX_UUID_RE
     supports_new = True  # new-session via launch-then-reconcile (#315)
+    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
     # codex (like opencode) mints its OWN session id at launch — there is no caller-chosen
     # ``--session-id`` flag — so new-session launches under a ``new-<uuid>`` placeholder and
     # reconciles to the real rollout uuid afterwards, rather than pinning the id like claude.

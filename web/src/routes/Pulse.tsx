@@ -1,8 +1,9 @@
 import { ArrowRight, MessageSquare, RefreshCw, Send, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { useConfig } from "../app/config";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { HudFrame } from "../components/hud/HudFrame";
+import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, relTime, shortCwd } from "../lib/format";
 import type {
@@ -231,6 +232,7 @@ function AskPanel({ configured }: { configured: boolean }) {
  *  scans. Default export so it can be React.lazy-loaded from the route. */
 export default function Pulse() {
   const cfg = useConfig()?.pulse;
+  const refreshConfig = useConfigRefresh();
   const [overview, setOverview] = useState<PulseOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -344,6 +346,10 @@ export default function Pulse() {
 
       {note && <p className={styles.note}>{note}</p>}
       {error && <p className={styles.err}>{error}</p>}
+
+      {/* Pulse gains agency (#726): the AUTONOMY strip + proposal feed sit above Ask,
+          under the page's existing PULSE header. No new route, no new name. */}
+      <Orchestrator onTierChange={refreshConfig} />
 
       <AskPanel configured={cfg?.configured ?? false} />
 
