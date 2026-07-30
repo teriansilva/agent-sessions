@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import math
 import re
 import time
@@ -53,6 +54,8 @@ from . import (
 from . import (
     orchestrator_ledger as ledger,
 )
+
+log = logging.getLogger("agent_sessions.orchestrator")
 
 # --- bounds (server-owned; the model's output is DATA) ---------------------------------
 DIGEST_MAX = 40  # sessions offered to the model in one pass
@@ -408,7 +411,7 @@ async def run_pass(
     # stalls every HTTP/WS client this process serves — the #678 lesson, which this module
     # otherwise preaches. Batch it into ONE worker-thread hop.
     if recorded:
-        await asyncio.to_thread(_persist, recorded)
+        recorded = await asyncio.to_thread(_persist, recorded)
     return {
         "assessment": assessment,
         "actions": recorded,
@@ -428,27 +431,44 @@ async def run_pass(
     }
 
 
-def _persist(records: list[dict]) -> None:
-    """Write a pass's records, raise notifications, and compact if needed.
+def _persist(records: list[dict]) -> list[dict]:
+    """Write a pass's records, raise notifications, and compact if needed. Returns what was
+    actually written.
 
     Blocking — call under ``to_thread``.
 
-    The notification is raised HERE, immediately after the ledger append, because the ledger
-    is the durable record: notifying before it would announce something that might not exist,
-    and notifying from the caller would mean every call site had to remember to. An escalation
-    the operator is never told about is the one failure this whole feature exists to remove.
+    The append is a CHECK-AND-APPEND under one ledger lock, not a plain append. "At most one
+    live action per session" cannot be enforced by deciding eligibility and then writing: the
+    scheduled pass and the chat run under different single-flights, so both can see a session
+    as free and both append. Two live actions for one session can both reach the actuator, and
+    if the first write has not yet changed the screen the second precondition passes too —
+    duplicate input into a real session.
+
+    Records dropped by that check are returned to the caller as "not written", so a response
+    can never claim to have queued something the ledger refused.
+
+    Notifications are raised HERE, after the ledger append, because the ledger is the durable
+    record: notifying before it would announce something that might not exist, and notifying
+    from the caller would mean every call site had to remember to. An escalation the operator
+    is never told about is the one failure this whole feature exists to remove.
+
+    Crucially they are raised for KEPT records only. A dropped one was never persisted, so
+    notifying about it would announce exactly the thing that does not exist — the same rule,
+    applied to the case where the ledger refuses the slot.
     """
-    notify = str(prefs.get_orchestrator().get("notify") or "escalations")
-    fresh: list[dict] = []
-    for rec in records:
-        ledger.append(rec)
-        # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
-        # actions taken autonomously, so a yolo operator still gets a record of what was done.
-        if notify == "all" or (notify == "escalations" and rec.get("state") == "escalated"):
-            fresh.append(rec)
+    kept, dropped = ledger.append_batch_for_free_sessions(records)
+    if dropped:
+        log.info(
+            "orchestrator: dropped %d action(s) whose session already had a live one", len(dropped)
+        )
     ledger.compact_if_needed()
 
-    for rec in fresh:
+    notify = str(prefs.get_orchestrator().get("notify") or "escalations")
+    for rec in kept:
+        # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
+        # actions taken autonomously, so a yolo operator still gets a record of what was done.
+        if not (notify == "all" or (notify == "escalations" and rec.get("state") == "escalated")):
+            continue
         with contextlib.suppress(Exception):
             # Best-effort by design: a notification store or push failure must never lose the
             # ledger write that already succeeded, nor break the pass.
@@ -461,6 +481,7 @@ def _persist(records: list[dict]) -> None:
                 action_id=str(rec.get("id") or ""),
             )
             notifications.fanout(note)
+    return kept
 
 
 def evidence_for(session_id: str, kind: str) -> dict:

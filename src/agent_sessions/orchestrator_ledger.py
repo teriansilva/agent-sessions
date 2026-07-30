@@ -199,6 +199,45 @@ def _latest_by_id_locked(p: Path) -> dict[str, dict]:
     return out
 
 
+def append_batch_for_free_sessions(
+    records: list[dict], path: Path | None = None
+) -> tuple[list[dict], list[dict]]:
+    """Append only those ``records`` whose session has no live action. Returns ``(kept, dropped)``.
+
+    The dedupe rule — "at most one live action per session" — was being enforced by checking
+    eligibility and then appending, which is a read and a write across two lock holds. The
+    orchestrator's scheduled pass and the chat run under DIFFERENT single-flights, so both can
+    observe a session as free, both mint an `approved` action, and both append. The session
+    then carries two live actions, both can reach the actuator, and if the first write has not
+    yet changed the screen the second precondition check passes too — duplicate input into a
+    real session, which is the exact failure the ledger exists to prevent.
+
+    Combining the check and the append under ONE exclusive hold is the only thing that closes
+    it, because the losing writer must see the winner's record before deciding.
+    """
+    p = _path(path)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    with _locked(p):
+        latest = _latest_by_id_locked(p)
+        busy = {
+            r.get("session_id")
+            for r in latest.values()
+            if r.get("state") in LIVE_STATES and r.get("session_id")
+        }
+        for rec in records:
+            sid = rec.get("session_id")
+            if sid and sid in busy:
+                dropped.append(rec)
+                continue
+            _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
+            kept.append(rec)
+            if sid:
+                # A batch can itself name one session twice; the first append makes it busy.
+                busy.add(sid)
+    return kept, dropped
+
+
 def live_actions(path: Path | None = None) -> list[dict]:
     """Actions still awaiting something, newest first."""
     rows = [r for r in latest_by_id(path).values() if r.get("state") in LIVE_STATES]

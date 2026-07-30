@@ -37,6 +37,7 @@ from .. import (
     metadata,
     notifications,
     orchestrator,
+    orchestrator_chat,
     orchestrator_ledger,
     prefs,
     pulse,
@@ -285,6 +286,85 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             },
             status_code=409,
         )
+
+    @app.post("/api/pulse/chat")
+    async def orchestrator_chat_route(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The Pulse chat that can act (#726 Phase 4) — retrieval, instructions, and "what did
+        you do". Its own single-flight kind so a chat turn never blocks a scheduled pass.
+
+        An instruction here produces PROPOSALS through the same verb path a scheduled pass
+        uses; it is not a privileged write channel. Two paths to a PTY would mean two sets of
+        guards, and the newer one would be the weaker.
+        """
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        query = body.get("query") if isinstance(body, dict) else None
+        if not isinstance(query, str) or not query.strip():
+            return JSONResponse({"detail": "query (string) is required"}, status_code=422)
+        query = query.strip()
+        if len(query) > orchestrator_chat.QUERY_MAX:
+            return JSONResponse(
+                {"detail": f"query too long (max {orchestrator_chat.QUERY_MAX} chars)"},
+                status_code=422,
+            )
+        history = body.get("history") if isinstance(body, dict) else None
+        try:
+            async with aitasks.single_flight("pulse-chat", "orchestrate"):
+                result = await orchestrator_chat.ask(query, history, working_keys=_working_keys())
+                # A chat instruction under `yolo` produces `approved` records exactly as a pass
+                # does, so it must DELIVER them exactly as a pass does. Without this the "chat
+                # that can act" hands back an approved action that nothing ever picks up: the
+                # scheduled and manual sweeps only deliver the records their own `run_pass()`
+                # produced, and the chat's live action makes that session ineligible for them —
+                # so it sits until a manual tap or expiry. That is the inert-`yolo` condition
+                # `deliver_pass_actions` exists to remove for the other two entry points.
+                #
+                # Inside the single-flight, so a concurrent pass cannot interleave with the
+                # delivery of what this turn just approved.
+                # ONLY an instruction dispatches. `ask()` overloads `actions`: for `instruct`
+                # it holds what this turn created, but for `history` it holds recent LEDGER
+                # ROWS shown for audit. Dispatching unconditionally meant a read-only question
+                # ("what did you do?") could hand an old `approved` row to the actuator and,
+                # under `yolo`, type it into the session. A question must never cause a write.
+                if result.get("intent") == "instruct":
+                    await actuator.deliver_pass_actions(
+                        result.get("actions") or [], registry=registry
+                    )
+                # Re-read each action from the LEDGER, not from what the helper returned.
+                # `deliver_pass_actions` deliberately omits an action another caller already
+                # claimed or settled (`deliver_auto` returns None, or `deliver` raises
+                # NotDeliverable), and this route persists the record BEFORE awaiting delivery
+                # while approve/delivery callers are not fenced by the chat single-flight. So a
+                # racing winner can settle the action while its id is absent from the helper's
+                # list — and reporting the pre-delivery row would tell the operator a tap is
+                # still needed for something already delivered.
+                #
+                # The ledger is the authority on state; the helper only reports what IT did.
+                actions = result.get("actions") or []
+                if result.get("intent") == "instruct" and actions:
+                    latest = await asyncio.to_thread(
+                        lambda ids: {i: orchestrator_ledger.get(i) for i in ids},
+                        [a["id"] for a in actions if a.get("id")],
+                    )
+                    result["actions"] = [latest.get(a.get("id")) or a for a in actions]
+        except aitasks.AlreadyRunning:
+            return JSONResponse(
+                {"detail": "a question is already running", **aitasks.snapshot()},
+                status_code=409,
+            )
+        except review.NotConfiguredError:
+            return JSONResponse(
+                {"detail": "AI endpoint is not configured", "configured": False},
+                status_code=409,
+            )
+        except review.ReviewError as e:
+            return JSONResponse({"detail": str(e)}, status_code=502)
+        return JSONResponse(result)
 
     # --- notifications + Web Push (#726 Phase 3) --------------------------------------
     # In-app first: the bell always works. Push is the extra that wakes the operator when the

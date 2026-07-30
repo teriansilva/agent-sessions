@@ -1059,3 +1059,176 @@ def test_the_exclude_route_writes_INSIDE_the_write_fence(auth_cfg, fake_jsonl, m
         "the opt-out was written WITHOUT the registry lock — it can land between the final "
         "guard and byte one, and the session still receives input"
     )
+
+
+def test_the_chat_route_delivers_its_own_yolo_approvals(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Route-level proof, because the chat function alone cannot show this.
+
+    Phase 2 added `deliver_pass_actions` and wired it into the scheduled and manual passes; the
+    chat ROUTE predated it. So a `yolo` instruction produced an `approved` record that nothing
+    delivered — those sweeps only deliver what their own `run_pass()` produced, and the chat's
+    live action makes that session ineligible for them. It sat until a tap or expiry.
+
+    Asserting on `orchestrator_chat.ask()` would prove only that the record is approved. What
+    matters is that the ROUTE hands it to the actuator, so that is what this drives.
+    """
+    from agent_sessions import actuator
+
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    sid = c.get("/api/sessions").json()["sessions"][0]["id"]
+
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "x")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport(
+            {
+                "intent": "instruct",
+                "answer": "On it.",
+                "actions": [
+                    {"session_id": sid, "verb": "continue", "confidence": 0.99, "rationale": "go"}
+                ],
+            }
+        ),
+    )
+
+    handed_to_actuator: list = []
+
+    async def spy_deliver(records, *, registry=None):
+        # Behaves like the real helper: it SETTLES the ledger. A spy that merely returns
+        # "delivered" without persisting would let the route's ledger re-read report the stale
+        # `approved` row and the test would pass for the wrong reason — the ledger is the
+        # authority on state, which is the whole point of the re-read.
+        handed_to_actuator.extend(records)
+        out = []
+        for r in records:
+            ledger.compare_and_set(r["id"], frozenset({"approved"}), "delivered")
+            out.append({**r, "state": "delivered"})
+        return out
+
+    monkeypatch.setattr(actuator, "deliver_pass_actions", spy_deliver)
+
+    r = c.post("/api/pulse/chat", json={"query": "keep it going"}, headers=hdr)
+    assert r.status_code == 200, r.text
+
+    assert handed_to_actuator, (
+        "the chat route never handed its approved action to the actuator — a yolo instruction "
+        "returns an approved record that nothing delivers, and it sits until a tap or expiry"
+    )
+    # And the response must report the settled state, not the pre-delivery `approved` row.
+    states = [a.get("state") for a in r.json().get("actions", [])]
+    assert "approved" not in states, f"the reply still showed a pre-delivery state: {states}"
+
+
+def test_the_chat_response_matches_the_ledger_when_another_caller_wins(  # noqa: PLR0913
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """`deliver_pass_actions` deliberately omits an action another caller already claimed —
+    `deliver_auto` returns None, or `deliver` raises NotDeliverable. Refreshing the response
+    from that sparse list therefore leaves the ORIGINAL `approved` row in place while the
+    ledger already says `delivered`, telling the operator a tap is still needed for something
+    that has been sent.
+
+    Reachable because this route persists the record BEFORE awaiting delivery, and
+    approve/delivery callers are not fenced by the chat single-flight. So the ledger — not the
+    helper's return value — is the authority on state.
+    """
+    from agent_sessions import actuator
+
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    sid = c.get("/api/sessions").json()["sessions"][0]["id"]
+
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "x")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport(
+            {
+                "intent": "instruct",
+                "answer": "On it.",
+                "actions": [
+                    {"session_id": sid, "verb": "continue", "confidence": 0.99, "rationale": "go"}
+                ],
+            }
+        ),
+    )
+
+    async def another_caller_wins(records, *, registry=None):
+        # Somebody else claimed and delivered it first, so this helper reports NOTHING —
+        # exactly the sparse-list case. The ledger still moves.
+        for r in records:
+            ledger.compare_and_set(r["id"], frozenset({"approved"}), "delivered")
+        return []
+
+    monkeypatch.setattr(actuator, "deliver_pass_actions", another_caller_wins)
+
+    r = c.post("/api/pulse/chat", json={"query": "keep it going"}, headers=hdr)
+    assert r.status_code == 200, r.text
+
+    reported = r.json()["actions"]
+    assert reported, "the chat returned no actions"
+    for a in reported:
+        in_ledger = ledger.get(a["id"])
+        assert a["state"] == in_ledger["state"], (
+            f"the response said {a['state']!r} while the ledger says {in_ledger['state']!r} — "
+            "the operator is told a tap is still needed for an action already settled"
+        )
+
+
+def test_a_history_question_never_reaches_the_actuator(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """A read-only question must never cause a write.
+
+    `ask()` overloads `actions`: for `instruct` it holds what the turn created, but for
+    `history` it holds recent LEDGER ROWS shown for audit. Dispatching unconditionally meant
+    asking "what did you do?" could hand an old `approved` row to the actuator and — under
+    `yolo`, where approved means send — type it into a live session.
+    """
+    from agent_sessions import actuator
+
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})  # the dangerous tier
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    sid = c.get("/api/sessions").json()["sessions"][0]["id"]
+
+    # An APPROVED row already in the ledger — exactly what a history answer surfaces.
+    ledger.append(
+        {
+            "id": "old1",
+            "state": "approved",
+            "verb": "continue",
+            "confidence": 0.99,
+            "session_id": sid,
+            "engine": "claude",
+            "ts": time.time(),
+        }
+    )
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "x")
+    monkeypatch.setattr(review, "_TRANSPORT", _transport({"intent": "history"}))
+
+    reached_actuator: list = []
+
+    async def spy(records, *, registry=None):
+        reached_actuator.extend(records)
+        return []
+
+    monkeypatch.setattr(actuator, "deliver_pass_actions", spy)
+
+    r = c.post("/api/pulse/chat", json={"query": "what did you do?"}, headers=hdr)
+    assert r.status_code == 200, r.text
+
+    assert not reached_actuator, (
+        "read-only history rows were passed to the actuator — asking a question can type into "
+        f"a live session under yolo: {reached_actuator}"
+    )
+    # The history rows must still come back for display.
+    assert r.json().get("intent") == "history"
