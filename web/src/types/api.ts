@@ -270,6 +270,33 @@ export interface OrchestratorConfig {
   default_nudge_template: string;
 }
 
+export interface PulseNotification {
+  id: string;
+  ts: number;
+  read: boolean;
+  title: string;
+  /** Resolved project name — the same one the sidebar and the feed show. */
+  project: string;
+  /** Why it was raised. Rendered in-app ONLY; never travels in a push payload (#726). */
+  reason: string;
+  session_id: string;
+  engine: string;
+  action_id: string;
+}
+
+export interface NotificationList {
+  notifications: PulseNotification[];
+  unread: number;
+}
+
+/** A registered browser. `origin` only — the endpoint is a per-device capability URL and
+ *  never leaves the server. */
+export interface PushSubscriptionInfo {
+  id: string;
+  origin: string;
+  created_at: number;
+}
+
 export interface OrchestratorState_ {
   config: OrchestratorConfig;
   pending: OrchestratorAction[];

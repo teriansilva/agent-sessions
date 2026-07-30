@@ -10,6 +10,9 @@ vi.mock("../lib/api", () => ({
   api: {
     config: vi.fn().mockResolvedValue({ csrf: "x", new_session_engines: [], terminal_backend: "ws" }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
+    // #726 Phase 3: the topbar mounts the notification bell, which polls on mount.
+    notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
+    markNotificationsRead: vi.fn().mockResolvedValue({ notifications: [], unread: 0, marked: 0 }),
     setTheme: vi.fn().mockResolvedValue({ theme: "dark" }),
     setPrefs: vi.fn().mockResolvedValue({ session_list_order: "created_at" }),
     sessions: vi

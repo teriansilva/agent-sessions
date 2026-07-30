@@ -44,6 +44,15 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      // injectManifest, not generateSW (#726 Phase 3): Web Push needs a `push` listener, and
+      // generateSW offers no seam to add one. The hand-written worker in src/sw.ts reproduces
+      // the previous behaviour exactly — precache the shell, navigation-fallback to
+      // index.html, deny that fallback for every server-rendered route. The denylist moved to
+      // src/sw-denylist.ts so the SW and its test share one source of truth; dropping an entry
+      // there is silent at build AND runtime, and shows up only as someone locked out.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       // Registration is explicit (initSWUpdates() in main.tsx via virtual:pwa-register) so a
       // long-lived tab re-checks sw.js hourly + on foreground (#661) — don't ALSO inject the
       // one-shot registerSW.js script.
@@ -52,27 +61,7 @@ export default defineConfig({
       // network-only: the SPA navigation fallback explicitly excludes the API,
       // websocket, terminal, auth, and upload paths so they're never served stale
       // from cache (per #64 PWA rule). No runtimeCaching entries for them on purpose.
-      workbox: {
-        navigateFallback: "index.html",
-        // Server-rendered (Jinja) routes the SPA must NOT shadow with its index.html
-        // fallback — incl. /change-password (the forced first-login change has no SPA
-        // route; without this the SW serves the React shell there and login dead-ends).
-        navigateFallbackDenylist: [
-          /^\/api/,
-          /^\/ws/,
-          /^\/term/,
-          /^\/login/,
-          /^\/logout/,
-          /^\/change-password/,
-          // Device-link QR sign-in (#650): server-rendered approval page + JSON routes the
-          // SPA index.html fallback must not shadow for SW-controlled browsers.
-          /^\/link/,
-          /^\/healthz/,
-          // The standalone Home Free connect page is its own precached shell — the
-          // SPA index.html fallback must not shadow it for browsers already
-          // controlled by the app's service worker (#27 / #558 review).
-          /^\/connect\.html$/,
-        ],
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
       },
       manifest: {

@@ -33,6 +33,7 @@ a no-op rather than a crash.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import math
@@ -43,6 +44,7 @@ import uuid
 from . import (
     engines,
     metadata,
+    notifications,
     prefs,
     pulse,
     review,
@@ -427,10 +429,38 @@ async def run_pass(
 
 
 def _persist(records: list[dict]) -> None:
-    """Write a pass's records and compact if needed. Blocking — call under to_thread."""
+    """Write a pass's records, raise notifications, and compact if needed.
+
+    Blocking — call under ``to_thread``.
+
+    The notification is raised HERE, immediately after the ledger append, because the ledger
+    is the durable record: notifying before it would announce something that might not exist,
+    and notifying from the caller would mean every call site had to remember to. An escalation
+    the operator is never told about is the one failure this whole feature exists to remove.
+    """
+    notify = str(prefs.get_orchestrator().get("notify") or "escalations")
+    fresh: list[dict] = []
     for rec in records:
         ledger.append(rec)
+        # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
+        # actions taken autonomously, so a yolo operator still gets a record of what was done.
+        if notify == "all" or (notify == "escalations" and rec.get("state") == "escalated"):
+            fresh.append(rec)
     ledger.compact_if_needed()
+
+    for rec in fresh:
+        with contextlib.suppress(Exception):
+            # Best-effort by design: a notification store or push failure must never lose the
+            # ledger write that already succeeded, nor break the pass.
+            note = notifications.add(
+                title=str(rec.get("title") or "A session needs you"),
+                project=str(rec.get("project") or ""),
+                reason=str(rec.get("rationale") or ""),
+                session_id=str(rec.get("session_id") or ""),
+                engine=str(rec.get("engine") or ""),
+                action_id=str(rec.get("id") or ""),
+            )
+            notifications.fanout(note)
 
 
 def evidence_for(session_id: str, kind: str) -> dict:

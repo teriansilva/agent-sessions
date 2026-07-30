@@ -7,7 +7,15 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
+import { NotificationBell } from "../components/pulse/NotificationBell";
 import { SessionList } from "../components/sidebar/SessionList";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
@@ -93,7 +101,9 @@ function Layout() {
   const [wizardReplay, setWizardReplay] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
   const showSetup =
-    config?.onboarded === false && !config?.must_change_password && !setupDismissed;
+    config?.onboarded === false &&
+    !config?.must_change_password &&
+    !setupDismissed;
   // Close the mobile drawer whenever the route changes (e.g. a row was tapped).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -204,223 +214,255 @@ function Layout() {
       .catch(() => setOrderPending(null));
   };
 
-  const cls = ["app", navOpen ? "navOpen" : "", collapsed ? "collapsed" : "", resizing ? "resizing" : ""]
+  const cls = [
+    "app",
+    navOpen ? "navOpen" : "",
+    collapsed ? "collapsed" : "",
+    resizing ? "resizing" : "",
+  ]
     .filter(Boolean)
     .join(" ");
 
   return (
     <>
       <ButtonGlitch />
-      <div className={cls} style={{ "--sidebar-w": `${sidebarW}px` } as React.CSSProperties}>
-      {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
+      <div
+        className={cls}
+        style={{ "--sidebar-w": `${sidebarW}px` } as React.CSSProperties}
+      >
+        {/* Canvas lives INSIDE .app so it's within the panels' backdrop scope: .app is a
           backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
           blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
-      <DataFlowCanvas />
-      <header className="hud-topbar">
-        <button
-          type="button"
-          className="navToggle"
-          aria-label={surfaceOpen ? "Collapse session list" : "Open session list"}
-          aria-expanded={surfaceOpen}
-          onClick={toggle}
-        >
-          {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
-        </button>
-        <span className="hud-brand">
-          <span className="mk" aria-hidden="true">
-            ◢
-          </span>
-          BATTLE<b>LAB</b>
-        </span>
-        <span className="hud-telemetry">
-          <SysClock />
-          <MissionTimer />
-        </span>
-        <span className="hud-topbar-actions">
+        <DataFlowCanvas />
+        <header className="hud-topbar">
           <button
             type="button"
-            className="gear"
-            aria-label="Help — replay the tour"
-            onClick={() => setTourOpen(true)}
+            className="navToggle"
+            aria-label={
+              surfaceOpen ? "Collapse session list" : "Open session list"
+            }
+            aria-expanded={surfaceOpen}
+            onClick={toggle}
           >
-            <HelpCircle size={18} />
+            {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
           </button>
-          <Link
-            to="/pulse"
-            className="gear"
-            aria-label="Open Pulse — recent-work overview"
-            onClick={closeMobileDrawer}
-          >
-            <Activity size={18} />
-          </Link>
-          <Link
-            to="/overview"
-            className="gear"
-            aria-label="Open session overview"
-            onClick={closeMobileDrawer}
-          >
-            <Network size={18} />
-          </Link>
-          <Link
-            to="/settings"
-            state={{ returnTo: location.pathname }}
-            className="gear"
-            aria-label="Settings"
-            onClick={closeMobileDrawer}
-          >
-            <SettingsIcon size={18} />
-          </Link>
-        </span>
-      </header>
-      <aside className="sidebar">
-        <span className="hud-cnr tl" />
-        <span className="hud-cnr tr" />
-        <span className="hud-cnr bl" />
-        <span className="hud-cnr br" />
-        {/* Header row (#548): the decorative "Sessions / SEC // 01" label gave way to the
-            sort-order toggle — same chrome, functional content. The heading stays for the
-            <aside> landmark's accessible name, visually hidden. */}
-        <header className="sidebar-head">
-          <h2 className="hud-h sr-only">Sessions</h2>
-          <span className="hud-tag" id="list-order-label">
-            Order
+          <span className="hud-brand">
+            <span className="mk" aria-hidden="true">
+              ◢
+            </span>
+            BATTLE<b>LAB</b>
           </span>
-          <span className="hud-seg" role="radiogroup" aria-labelledby="list-order-label">
+          <span className="hud-telemetry">
+            <SysClock />
+            <MissionTimer />
+          </span>
+          <span className="hud-topbar-actions">
             <button
               type="button"
-              role="radio"
-              aria-checked={listOrder === "recent_activity"}
-              onClick={() => chooseOrder("recent_activity")}
-              title="Newest update first"
+              className="gear"
+              aria-label="Help — replay the tour"
+              onClick={() => setTourOpen(true)}
             >
-              Recent
+              <HelpCircle size={18} />
             </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={listOrder === "created_at"}
-              onClick={() => chooseOrder("created_at")}
-              title="Newest-created first — order stays put as sessions update"
+            <Link
+              to="/pulse"
+              className="gear"
+              aria-label="Open Pulse — recent-work overview"
+              onClick={closeMobileDrawer}
             >
-              Created
-            </button>
+              <Activity size={18} />
+            </Link>
+            <NotificationBell />
+            <Link
+              to="/overview"
+              className="gear"
+              aria-label="Open session overview"
+              onClick={closeMobileDrawer}
+            >
+              <Network size={18} />
+            </Link>
+            <Link
+              to="/settings"
+              state={{ returnTo: location.pathname }}
+              className="gear"
+              aria-label="Settings"
+              onClick={closeMobileDrawer}
+            >
+              <SettingsIcon size={18} />
+            </Link>
           </span>
         </header>
-        {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
-        <div className="sidebar-actions">
-          <button
-            type="button"
-            className="gear"
-            aria-label="Help — replay the tour"
-            onClick={() => {
-              setTourOpen(true);
-              closeMobileDrawer();
-            }}
-          >
-            <HelpCircle size={18} />
-          </button>
-          <Link
-            to="/pulse"
-            className="gear"
-            aria-label="Open Pulse — recent-work overview"
-            onClick={closeMobileDrawer}
-          >
-            <Activity size={18} />
-          </Link>
-          <Link
-            to="/overview"
-            className="gear"
-            aria-label="Open session overview"
-            onClick={closeMobileDrawer}
-          >
-            <Network size={18} />
-          </Link>
-          <Link
-            to="/settings"
-            state={{ returnTo: location.pathname }}
-            className="gear"
-            aria-label="Settings"
-            onClick={closeMobileDrawer}
-          >
-            <SettingsIcon size={18} />
-          </Link>
-        </div>
-        <div className="sidebarBody">
-          <SessionList onNavigate={closeMobileDrawer} />
-        </div>
-        <footer className="sidebar-foot">
-          <span className="hud-tag">
-            <b className="num">{engaged}</b> ENGAGED · <b className="num">{live}</b> LIVE
-          </span>
-        </footer>
-      </aside>
-      {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the
+        <aside className="sidebar">
+          <span className="hud-cnr tl" />
+          <span className="hud-cnr tr" />
+          <span className="hud-cnr bl" />
+          <span className="hud-cnr br" />
+          {/* Header row (#548): the decorative "Sessions / SEC // 01" label gave way to the
+            sort-order toggle — same chrome, functional content. The heading stays for the
+            <aside> landmark's accessible name, visually hidden. */}
+          <header className="sidebar-head">
+            <h2 className="hud-h sr-only">Sessions</h2>
+            <span className="hud-tag" id="list-order-label">
+              Order
+            </span>
+            <span
+              className="hud-seg"
+              role="radiogroup"
+              aria-labelledby="list-order-label"
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={listOrder === "recent_activity"}
+                onClick={() => chooseOrder("recent_activity")}
+                title="Newest update first"
+              >
+                Recent
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={listOrder === "created_at"}
+                onClick={() => chooseOrder("created_at")}
+                title="Newest-created first — order stays put as sessions update"
+              >
+                Created
+              </button>
+            </span>
+          </header>
+          {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
+          <div className="sidebar-actions">
+            <button
+              type="button"
+              className="gear"
+              aria-label="Help — replay the tour"
+              onClick={() => {
+                setTourOpen(true);
+                closeMobileDrawer();
+              }}
+            >
+              <HelpCircle size={18} />
+            </button>
+            <Link
+              to="/pulse"
+              className="gear"
+              aria-label="Open Pulse — recent-work overview"
+              onClick={closeMobileDrawer}
+            >
+              <Activity size={18} />
+            </Link>
+            <Link
+              to="/overview"
+              className="gear"
+              aria-label="Open session overview"
+              onClick={closeMobileDrawer}
+            >
+              <Network size={18} />
+            </Link>
+            <Link
+              to="/settings"
+              state={{ returnTo: location.pathname }}
+              className="gear"
+              aria-label="Settings"
+              onClick={closeMobileDrawer}
+            >
+              <SettingsIcon size={18} />
+            </Link>
+          </div>
+          <div className="sidebarBody">
+            <SessionList onNavigate={closeMobileDrawer} />
+          </div>
+          <footer className="sidebar-foot">
+            <span className="hud-tag">
+              <b className="num">{engaged}</b> ENGAGED ·{" "}
+              <b className="num">{live}</b> LIVE
+            </span>
+          </footer>
+        </aside>
+        {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the
           sidebar and pane panels. Not rendered on mobile (the drawer is fixed-width) or while
           collapsed (no sidebar to size). */}
-      {!isMobile && !collapsed && (
-        <div
-          className="sidebar-resize"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize session list"
-          aria-valuenow={sidebarW}
-          aria-valuemin={MIN_W}
-          aria-valuemax={maxSidebarW()}
-          tabIndex={0}
-          onPointerDown={onResizeDown}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeUp}
-          onDoubleClick={() => setSidebarW(DEFAULT_W)}
-          onKeyDown={onResizeKey}
-        >
-          <span className="sidebar-resize-grip" aria-hidden="true" />
-        </div>
-      )}
-      <button
-        type="button"
-        className="backdrop"
-        aria-label="Close session list"
-        tabIndex={-1}
-        onClick={() => setNavOpen(false)}
-      />
-      <main className="terminal-pane">
-        <span className="hud-cnr hero tl" />
-        <span className="hud-cnr hero tr" />
-        <span className="hud-cnr hero bl" />
-        <span className="hud-cnr hero br" />
-        <ChunkErrorBoundary>
-          <Suspense fallback={<div className="tr-overview tr-ov-state">Loading…</div>}>
-            <Routes>
-              <Route path="/" element={<NewSessionLanding />} />
-              {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
-                  same component, which replace-redirects to the first tab (state preserved). */}
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/settings/:tab" element={<Settings />} />
-              <Route path="/overview" element={<Overview />} />
-              <Route path="/pulse" element={<Pulse />} />
-              <Route path="/s/:engine/:id" element={<SessionView />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        </ChunkErrorBoundary>
-      </main>
-      <footer className="hud-classbar">
-        <span className="hud-footer-left">
-          <span className="hud-tag">{config?.hostname ? `HOST // ${config.hostname.toUpperCase()}` : ""}</span>
-          {version.displayVersion !== null && (
-            <span className="hud-tag hud-version">V{version.displayVersion}</span>
-          )}
-        </span>
-        {version.updateReady && (
-          <button type="button" className="hud-update-chip" onClick={version.applyUpdate}>
-            ⟳ {version.server !== null ? `V${version.server} ` : ""}READY — TAP TO RELOAD
-          </button>
+        {!isMobile && !collapsed && (
+          <div
+            className="sidebar-resize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize session list"
+            aria-valuenow={sidebarW}
+            aria-valuemin={MIN_W}
+            aria-valuemax={maxSidebarW()}
+            tabIndex={0}
+            onPointerDown={onResizeDown}
+            onPointerMove={onResizeMove}
+            onPointerUp={onResizeUp}
+            onDoubleClick={() => setSidebarW(DEFAULT_W)}
+            onKeyDown={onResizeKey}
+          >
+            <span className="sidebar-resize-grip" aria-hidden="true" />
+          </div>
         )}
-        <span className="hud-tag">
-          <span className={`hud-led ${live > 0 ? "up" : "idle"}`} aria-hidden="true" />
-          <b className="num">{live}</b> AGENTS LIVE
-        </span>
-      </footer>
+        <button
+          type="button"
+          className="backdrop"
+          aria-label="Close session list"
+          tabIndex={-1}
+          onClick={() => setNavOpen(false)}
+        />
+        <main className="terminal-pane">
+          <span className="hud-cnr hero tl" />
+          <span className="hud-cnr hero tr" />
+          <span className="hud-cnr hero bl" />
+          <span className="hud-cnr hero br" />
+          <ChunkErrorBoundary>
+            <Suspense
+              fallback={<div className="tr-overview tr-ov-state">Loading…</div>}
+            >
+              <Routes>
+                <Route path="/" element={<NewSessionLanding />} />
+                {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
+                  same component, which replace-redirects to the first tab (state preserved). */}
+                <Route path="/settings" element={<Settings />} />
+                <Route path="/settings/:tab" element={<Settings />} />
+                <Route path="/overview" element={<Overview />} />
+                <Route path="/pulse" element={<Pulse />} />
+                <Route path="/s/:engine/:id" element={<SessionView />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Suspense>
+          </ChunkErrorBoundary>
+        </main>
+        <footer className="hud-classbar">
+          <span className="hud-footer-left">
+            <span className="hud-tag">
+              {config?.hostname
+                ? `HOST // ${config.hostname.toUpperCase()}`
+                : ""}
+            </span>
+            {version.displayVersion !== null && (
+              <span className="hud-tag hud-version">
+                V{version.displayVersion}
+              </span>
+            )}
+          </span>
+          {version.updateReady && (
+            <button
+              type="button"
+              className="hud-update-chip"
+              onClick={version.applyUpdate}
+            >
+              ⟳ {version.server !== null ? `V${version.server} ` : ""}READY —
+              TAP TO RELOAD
+            </button>
+          )}
+          <span className="hud-tag">
+            <span
+              className={`hud-led ${live > 0 ? "up" : "idle"}`}
+              aria-hidden="true"
+            />
+            <b className="num">{live}</b> AGENTS LIVE
+          </span>
+        </footer>
       </div>
       {(showSetup || wizardReplay) && (
         <Onboarding

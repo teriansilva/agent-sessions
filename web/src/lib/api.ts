@@ -16,7 +16,9 @@ import type {
   ProjectEntity,
   Evidence,
   EvidenceKind,
+  NotificationList,
   OrchestratorState_,
+  PushSubscriptionInfo,
   PulseAskResult,
   PulseDepth,
   PulseOverview,
@@ -419,6 +421,29 @@ export const api = {
     "/api/pulse/orchestrate",
     {},
   ),
+  /** In-app notifications (#726 Phase 3) — the channel that always works, regardless of push
+   *  permission or platform. */
+  notifications: () => getJson<NotificationList>("/api/pulse/notifications"),
+  /** Mark notifications read; omit `ids` to mark all. CSRF-guarded. */
+  markNotificationsRead: (ids?: string[]) =>
+    mutateJson<NotificationList & { marked: number }>(
+      "POST",
+      "/api/pulse/notifications/read",
+      ids ? { ids } : {},
+    ),
+  /** The VAPID PUBLIC key + registered devices. The private half never leaves the server, and
+   *  a device is identified by an opaque id + origin — never its endpoint URL, which is a
+   *  capability anyone holding it could push with. */
+  pushKey: () =>
+    getJson<{ public_key: string; subscriptions: PushSubscriptionInfo[] }>("/api/pulse/push/key"),
+  pushSubscribe: (subscription: unknown) =>
+    mutateJson<PushSubscriptionInfo>("POST", "/api/pulse/push/subscribe", { subscription }),
+  pushUnsubscribe: (id: string) =>
+    mutateJson<{ removed: boolean; subscriptions: PushSubscriptionInfo[] }>(
+      "POST",
+      "/api/pulse/push/unsubscribe",
+      { id },
+    ),
   /** Server-pulled evidence for one session (#726). Fetched at render time, never cached and
    *  never stored in the ledger, so the operator always reads the CURRENT screen. */
   evidence: (sessionId: string, kind: EvidenceKind) =>

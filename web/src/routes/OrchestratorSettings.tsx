@@ -1,3 +1,4 @@
+import { PushDevices } from "../components/pulse/PushDevices";
 import { useRef, useState } from "react";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
@@ -41,7 +42,9 @@ export function OrchestratorSettings() {
     if (cfgBlock) setBlock(cfgBlock);
   }
 
-  const [intervalDraft, setIntervalDraft] = useState(String(block.interval_minutes));
+  const [intervalDraft, setIntervalDraft] = useState(
+    String(block.interval_minutes),
+  );
   const [nudgeDraft, setNudgeDraft] = useState(block.nudge_template);
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
@@ -52,7 +55,9 @@ export function OrchestratorSettings() {
 
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
 
   const save = async (partial: Record<string, unknown>) => {
     setError(null);
@@ -78,7 +83,9 @@ export function OrchestratorSettings() {
     const n = Number(intervalDraft);
     if (!Number.isInteger(n) || n < 5 || n > 1440) {
       setIntervalDraft(String(block.interval_minutes));
-      setError("The interval must be a whole number between 5 and 1440 minutes.");
+      setError(
+        "The interval must be a whole number between 5 and 1440 minutes.",
+      );
       return;
     }
     setError(null);
@@ -86,7 +93,8 @@ export function OrchestratorSettings() {
   };
 
   const commitNudge = () => {
-    if (nudgeDraft !== block.nudge_template) void save({ nudge_template: nudgeDraft });
+    if (nudgeDraft !== block.nudge_template)
+      void save({ nudge_template: nudgeDraft });
   };
 
   const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -99,14 +107,16 @@ export function OrchestratorSettings() {
     <section className={styles.section} aria-labelledby="orch-h">
       <h2 id="orch-h">Pulse orchestrator</h2>
       <p className={styles.hint}>
-        Lets Pulse <strong>act</strong> on what it sees: nudging a session that stopped mid-task,
-        or raising one that needs your decision. It reuses the AI review endpoint above. Every
-        session is managed by default — use <strong>Stop Pulse managing this</strong> in a
-        session&rsquo;s row menu to withdraw one. Changes save automatically.
+        Lets Pulse <strong>act</strong> on what it sees: nudging a session that
+        stopped mid-task, or raising one that needs your decision. It reuses the
+        AI review endpoint above. Every session is managed by default — use{" "}
+        <strong>Stop Pulse managing this</strong> in a session&rsquo;s row menu
+        to withdraw one. Changes save automatically.
       </p>
       {!block.configured && (
         <p className={styles.hint}>
-          The AI endpoint isn&rsquo;t configured yet, so the orchestrator can&rsquo;t run.
+          The AI endpoint isn&rsquo;t configured yet, so the orchestrator
+          can&rsquo;t run.
         </p>
       )}
       {error && <p className={styles.err}>{error}</p>}
@@ -144,9 +154,10 @@ export function OrchestratorSettings() {
         {/* The tier alone doesn't tell the whole story, and implying it does would be the
             dangerous reading. Say plainly which verbs YOLO can actually deliver. */}
         <p className={styles.hint}>
-          Even on <strong>YOLO</strong>, Pulse only ever sends <strong>{ceiling}</strong> on its
-          own — the fixed nudge you write below, which the AI cannot alter. Picking an option,
-          answering a question, or starting a new session always waits for your approval.
+          Even on <strong>YOLO</strong>, Pulse only ever sends{" "}
+          <strong>{ceiling}</strong> on its own — the fixed nudge you write
+          below, which the AI cannot alter. Picking an option, answering a
+          question, or starting a new session always waits for your approval.
         </p>
       </div>
 
@@ -162,12 +173,15 @@ export function OrchestratorSettings() {
             max={0.95}
             step={0.05}
             value={block.confidence_min}
-            onChange={(e) => void save({ confidence_min: Number(e.target.value) })}
+            onChange={(e) =>
+              void save({ confidence_min: Number(e.target.value) })
+            }
           />
           <span>{block.confidence_min.toFixed(2)}</span>
         </div>
         <p className={styles.hint}>
-          Below this, Pulse asks you instead of acting. Unsure means ask — never guess.
+          Below this, Pulse asks you instead of acting. Unsure means ask — never
+          guess.
         </p>
       </div>
 
@@ -190,7 +204,8 @@ export function OrchestratorSettings() {
           <span>minutes</span>
         </div>
         <p className={styles.hint}>
-          A pass is skipped entirely when nothing about your sessions changed (5–1440).
+          A pass is skipped entirely when nothing about your sessions changed
+          (5–1440).
         </p>
       </div>
 
@@ -210,6 +225,8 @@ export function OrchestratorSettings() {
         </select>
       </div>
 
+      <PushDevices />
+
       <div className={styles.aiField}>
         <label className={styles.aiFieldLabel} htmlFor="orch-nudge">
           Nudge text
@@ -224,8 +241,8 @@ export function OrchestratorSettings() {
           onBlur={commitNudge}
         />
         <p className={styles.hint}>
-          The exact text sent to a stalled session. Written by you, never by the AI — that is
-          what makes this the one action safe to automate.
+          The exact text sent to a stalled session. Written by you, never by the
+          AI — that is what makes this the one action safe to automate.
         </p>
         <div className={styles.aiActions}>
           <button

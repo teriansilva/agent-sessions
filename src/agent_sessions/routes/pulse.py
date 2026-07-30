@@ -34,12 +34,14 @@ from .. import (
     aitasks,
     engines,
     metadata,
+    notifications,
     orchestrator,
     orchestrator_ledger,
     prefs,
     pulse,
     pulse_chat,
     review,
+    webpush,
 )
 
 # How many ledger rows the activity feed carries. Bounded so a long-lived install's
@@ -201,6 +203,76 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": str(e)}, status_code=502)
         pending, feed = await asyncio.to_thread(_pending_and_feed)
         return JSONResponse({**report, "pending": pending, "feed": feed})
+
+    # --- notifications + Web Push (#726 Phase 3) --------------------------------------
+    # In-app first: the bell always works. Push is the extra that wakes the operator when the
+    # tab is closed, and its absence must never mean an escalation goes unheard.
+
+    @app.get("/api/pulse/notifications")
+    async def get_notifications(_: str = Depends(logged_in)) -> JSONResponse:
+        return JSONResponse(await asyncio.to_thread(notifications.listing))
+
+    @app.post("/api/pulse/notifications/read")
+    async def mark_notifications_read(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        ids: list[str] | None = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+            if isinstance(body, dict) and isinstance(body.get("ids"), list):
+                ids = [i for i in body["ids"] if isinstance(i, str)]
+        n = await asyncio.to_thread(notifications.mark_read, ids)
+        return JSONResponse({"marked": n, **await asyncio.to_thread(notifications.listing)})
+
+    @app.get("/api/pulse/push/key")
+    async def get_push_key(_: str = Depends(logged_in)) -> JSONResponse:
+        """The VAPID PUBLIC key. The private half never leaves the server."""
+        return JSONResponse(
+            {
+                "public_key": await asyncio.to_thread(webpush.public_key),
+                "subscriptions": await asyncio.to_thread(notifications.list_subscriptions),
+            }
+        )
+
+    @app.post("/api/pulse/push/subscribe")
+    async def push_subscribe(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"detail": "invalid JSON"}, status_code=422)
+        sub = body.get("subscription") if isinstance(body, dict) else None
+        try:
+            public = await asyncio.to_thread(notifications.subscribe, sub or {})
+        except ValueError as e:
+            return JSONResponse({"detail": str(e)}, status_code=422)
+        # The echo is the PUBLIC view: an opaque id and the endpoint's ORIGIN. The endpoint
+        # itself is a per-device capability and never travels back to a client.
+        return JSONResponse(public)
+
+    @app.post("/api/pulse/push/unsubscribe")
+    async def push_unsubscribe(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        sub_id = ""
+        with contextlib.suppress(Exception):
+            body = await request.json()
+            if isinstance(body, dict):
+                sub_id = str(body.get("id") or "")
+        removed = await asyncio.to_thread(notifications.unsubscribe, sub_id)
+        return JSONResponse(
+            {
+                "removed": removed,
+                "subscriptions": await asyncio.to_thread(notifications.list_subscriptions),
+            }
+        )
 
     @app.post("/api/sessions/{sid}/orchestrator-exclude")
     async def toggle_orchestrator_exclude(
