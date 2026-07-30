@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -425,27 +426,27 @@ test("#181 text paste over the terminal forwards to term.paste + prevents defaul
   expect(xterms[0].paste).toHaveBeenCalledWith("hello agent");
 });
 
-// #284: the panel header resolves its title from the shared sessions store. When that
-// row's server-resolved `title` is "" (a meaningless first message normalized away), the
-// header must drop to the short id — NEVER fall back to the raw first message, or a stray
-// "a" / "." would leak into the header.
-test("the panel header uses the server display title only — a one-char first message never leaks (#284)", () => {
-  const sessions = [
+function headerRow(over: Record<string, unknown> = {}): Session[] {
+  return [
     {
       id: "claude:abc",
       engine: "claude",
       uuid: "abc",
       short_uuid: "abc",
-      cwd: "/p",
-      project: { kind: "folder", id: "/p", name: "p" },
-      last_mtime: 0,
+      cwd: "/home/u/proj/api",
+      project: { kind: "folder", id: "/home/u/proj/api", name: "/home/u/proj/api" },
+      last_mtime: Math.floor(Date.now() / 1000) - 172_800,
       first_user_message: "a",
       title: "",
       sticky: false,
       archived: false,
+      ...over,
     },
   ] as unknown as Session[];
-  render(
+}
+
+function renderTerminal(sessions: Session[]) {
+  return render(
     <MemoryRouter>
       <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
         <SessionsCtx.Provider value={{ sessions, setSessions: () => {} }}>
@@ -454,7 +455,39 @@ test("the panel header uses the server display title only — a one-char first m
       </ThemeCtx.Provider>
     </MemoryRouter>,
   );
-  // id.slice(0,8) + ellipsis — never the raw "a".
-  expect(screen.getByText("abc…")).toBeInTheDocument();
-  expect(screen.queryByText("a")).not.toBeInTheDocument();
+}
+
+// #744: the header is a meta run — LED, engine box, project, update time. The engine word and
+// the truncated UUID that used to lead the bar are gone; so is the "STATUS //" label, whose job
+// the LED beside it was already doing.
+test("the panel header shows the engine box, project and update time (#744)", () => {
+  renderTerminal(headerRow());
+  expect(screen.getByTitle("claude")).toHaveTextContent("cc");
+  expect(screen.getByText("~/proj/api")).toBeInTheDocument();
+  expect(screen.getByText(/2 days ago/)).toBeInTheDocument();
+  // The retired chrome.
+  expect(screen.queryByText(/CLAUDE \/\//)).not.toBeInTheDocument();
+  expect(screen.queryByText(/STATUS/)).not.toBeInTheDocument();
+  expect(screen.queryByText("abc…")).not.toBeInTheDocument();
+});
+
+// The LED replaced a text readout, so its meaning must not become colour-only.
+test("the header LED keeps an accessible name for the link state (#744)", () => {
+  renderTerminal(headerRow());
+  expect(screen.getByRole("img", { name: /^status: /i })).toBeInTheDocument();
+});
+
+// #284 (re-homed by #744): the resolved display title no longer renders in the header, but the
+// same rule still holds where it DOES render — a meaningless one-char first message must never
+// leak; the title drops to the short id instead.
+test("the display title falls back to the short id — a one-char first message never leaks (#284)", async () => {
+  renderTerminal(headerRow());
+  await userEvent.click(screen.getByRole("button", { name: /open session brief/i }));
+  expect(screen.getByRole("dialog", { name: "abc…" })).toBeInTheDocument();
+});
+
+// An adopted project shows its entity name, not the launch folder (sidebar parity).
+test("an adopted project shows its entity name in the header (#744)", () => {
+  renderTerminal(headerRow({ project: { kind: "project", id: "p-1", name: "BattleLab" } }));
+  expect(screen.getByText("BattleLab")).toBeInTheDocument();
 });

@@ -22,24 +22,108 @@
   padding: 0 10px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg-2) 40%, transparent);
+  /* Query container for the meta collapse ladder below (#744). The header must react to ITS OWN
+     width, not the viewport's: a desktop viewport can be 1400px wide while this pane is 400px
+     (sidebar open, narrow split), and a viewport media query would leave the meta run overflowing
+     exactly where it needed to yield. `inline-size` contains the inline axis only, so the 26px
+     row height and the flex layout are untouched. */
+  container-type: inline-size;
+  container-name: panelhead;
 }
-/* Left side of the header: "<ENGINE> // <session title>" — the engine prefix is fixed, the
- * title takes the remaining width and ellipsises so it can't push the STATUS readout off (#232). */
+/* Left side of the header (#744): a HUD meta run — status LED, engine box, project, relative
+ * update time — replacing the old "<ENGINE> // <title>" + "STATUS // LIVE" pair. The LED already
+ * declares the link state, so the word STATUS was redundant; the session title lives in the
+ * sidebar row and the session brief.
+ *
+ * COLLAPSE CONTRACT: this cluster may shrink to nothing (`min-width: 0` + `overflow: hidden`)
+ * while .headActions is `flex: none`. That makes it structurally impossible for the buttons to be
+ * pushed off the bar at ANY width — the media query below only decides WHICH meta facts are worth
+ * the room, it is not what keeps the buttons reachable. */
 .headLeft {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
 }
-.headEng {
+/* The shared .hud-led primitive is a plain 6px box with no flex hint, so as a flex child under
+ * shrink pressure it collapses to zero width and vanishes — exactly where it matters most (the
+ * narrowest panes). Pin it: the LED is the one thing that never yields. */
+.headLed {
   flex: none;
 }
-.headTitle {
-  flex: 1 1 auto;
+/* Engine box — deliberately the sidebar's .engineTag metrics, so one session reads identically
+ * in the list and in the pane header. */
+.headEng {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.headMeta {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+/* The one elastic member of the run: it ellipsises before anything is clipped. */
+.headProject {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-2);
-  font-weight: 600;
+}
+.headProjectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+  background: var(--proj);
+}
+.headUpdated {
+  flex: none;
+  /* `pre` so the " · " separator survives — it is part of this span precisely so that hiding the
+     timestamp hides its separator too. */
+  white-space: pre;
+}
+.headActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The collapse ladder, keyed on the HEADER's own width (see .panelHead's container above).
+ *
+ * The thresholds are measured, not round numbers: the three action buttons plus padding occupy
+ * ~240px, and the full meta run wants ~250px more — so below ~520px of header the update time is
+ * the first fact to go (the project answers "where am I", which matters more), and below ~360px
+ * the meta run drops entirely, leaving the LED + engine box.
+ *
+ * Button LABELS are never hidden. An icon-only chip in a 26px bar is a worse touch target than a
+ * labelled one, and once the meta run has yielded the labelled buttons still fit a 320px pane —
+ * so there is nothing to buy by shrinking them. */
+@container panelhead (max-width: 520px) {
+  .headUpdated {
+    display: none;
+  }
+}
+@container panelhead (max-width: 360px) {
+  .headMeta {
+    display: none;
+  }
 }
 /* Terminal area: the xterm host + the touch-capture overlay + status sit here, so the
  * overlay covers only the terminal and not the compose bar below it. */

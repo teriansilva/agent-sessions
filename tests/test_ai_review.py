@@ -610,6 +610,54 @@ def test_run_review_generates_recap(ai_prefs, fake_jsonl, monkeypatch):
     assert m.recap_fingerprint
 
 
+# ---- #744: the recap is rendered as a numbered <ol>, so the SERVER strips any ordinal the
+# model prepends — otherwise the brief reads "1. 1. Cloned the repo."
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        ("1. Cloned the repo.\n2. Fixed the bug.", "Cloned the repo.\nFixed the bug."),
+        ("1) Cloned the repo.\n2) Fixed the bug.", "Cloned the repo.\nFixed the bug."),
+        ("(1) Cloned the repo.", "Cloned the repo."),
+        ("- Cloned the repo.\n* Fixed the bug.", "Cloned the repo.\nFixed the bug."),
+        ("• Cloned the repo.\n▪ Fixed the bug.", "Cloned the repo.\nFixed the bug."),
+        ("+ Cloned the repo.", "Cloned the repo."),
+    ],
+)
+def test_recap_shape_guard_strips_leading_ordinals(raw, want):
+    assert review._recap_shape_guard({"recap": raw}) == want
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Made it 3.5x faster.",  # a decimal mid-sentence is not an ordinal
+        "-Wall was already set.",  # a bullet glyph with no following space is not a bullet
+        "Ran 2 tests.",
+        "1.Cloned the repo.",  # no space → not the numbered-list shape the prompt forbids
+    ],
+)
+def test_recap_shape_guard_leaves_prose_alone(raw):
+    assert review._recap_shape_guard({"recap": raw}) == raw
+
+
+def test_recap_shape_guard_keeps_the_inline_emphasis_subset():
+    # `**bold**` + backticks are what the client's inlineMarkup renders; the guard must not eat
+    # them while collapsing whitespace.
+    raw = "**Root-caused**  the   race in `auth/refresh.ts`."
+    assert review._recap_shape_guard({"recap": raw}) == (
+        "**Root-caused** the race in `auth/refresh.ts`."
+    )
+
+
+def test_recap_shape_guard_strip_can_never_blank_a_recap():
+    # The strip runs AFTER whitespace collapse, and the marker pattern needs a space after the
+    # glyph — so a content-free "- " has already become "-" and survives. That ordering is what
+    # keeps the guard from writing "" over a previously good recap.
+    assert review._recap_shape_guard({"recap": "- \n* \n1. "}) == "-\n*\n1."
+
+
 def test_run_review_recap_failure_is_fail_soft(ai_prefs, fake_jsonl, monkeypatch):
     # Seed a prior good recap, then make ONLY the recap call fail (the summary still succeeds).
     rk = metadata.resolve_key(SID)

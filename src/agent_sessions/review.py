@@ -83,11 +83,19 @@ RECAP_SYSTEM_PROMPT = (
     "You write a brief for a developer returning to a coding-agent session. From the session "
     "transcript (you may see the beginning and the most recent part, with the middle elided) "
     "plus any live terminal tail, write a SHORT CHRONOLOGICAL recap of what happened: 3 to 6 "
-    "terse past-tense steps in the order they occurred, each on its own line, ending with the "
-    "current state or what is pending. No preamble, no headings, no markdown bullets. Reply "
-    'with ONLY a JSON object: {"recap": "<chronological recap, max ~900 chars, one step per '
-    'line>"}.'
+    "terse past-tense steps in the order they occurred, each on its own line, with the LAST "
+    "line stating the current state or what is pending. The client renders the lines as a "
+    "numbered timeline, so do NOT number or bullet them yourself, and write no preamble and no "
+    "headings. Inside a line you may use **bold** for the leading action verb and backticks for "
+    "file names, commands and identifiers — no other markdown. Reply with ONLY a JSON object: "
+    '{"recap": "<chronological recap, max ~900 chars, one step per line>"}.'
 )
+
+# Leading ordinal/bullet glyphs to strip from a recap line (#744). The <ol> in the session brief
+# supplies the ordinal, so a model that numbers its steps anyway would render "1. 1. …". Matches
+# only a glyph that OPENS the line and is followed by space, so prose like "3.5x faster" or a
+# step starting with "-Wall" survives untouched.
+_RECAP_LEADING_MARK = re.compile(r"^(?:[-*+•‣▪–—]|\(?\d{1,2}[.)])\s+")
 
 
 # Hard request timeout for the review completion call. Sized for SLOW LOCAL MODELS
@@ -536,13 +544,18 @@ def _shape_guard(obj: dict) -> dict:
 def _recap_shape_guard(obj: dict) -> str:
     """Server-owned guard for the recap response (#481): the model output is DATA. Requires a
     non-empty ``recap`` string; collapses intra-line whitespace but KEEPS newlines (the recap
-    is a short newline-separated timeline), drops blank lines, and caps total length to
-    ``RECAP_MAX``. A missing / empty recap raises ``ReviewError`` (drop → keep the last good
-    value)."""
+    is a short newline-separated timeline), strips any leading bullet / number the model added
+    despite the prompt (#744 — the client's ``<ol>`` owns the ordinal), drops blank lines, and
+    caps total length to ``RECAP_MAX``. A missing / empty recap raises ``ReviewError``
+    (drop → keep the last good value)."""
     recap = obj.get("recap")
     if not isinstance(recap, str) or not recap.strip():
         raise ReviewError("recap response missing usable text")
-    lines = [" ".join(ln.split()) for ln in recap.splitlines()]
+    # Order matters: collapsing whitespace FIRST is what makes the strip safe. The marker pattern
+    # requires a space after the glyph, so once a line is collapsed a bare "- " has become "-"
+    # and no longer matches — the strip can therefore never empty a line that had content, and
+    # never blanks a previously good recap.
+    lines = [_RECAP_LEADING_MARK.sub("", " ".join(ln.split())) for ln in recap.splitlines()]
     cleaned = "\n".join(ln for ln in lines if ln)
     return cleaned[:RECAP_MAX]
 

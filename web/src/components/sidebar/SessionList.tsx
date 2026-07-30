@@ -38,6 +38,7 @@ import {
   relTime,
   sessionPathFromKey,
 } from "../../lib/format";
+import { sessionStatus } from "../../lib/sessionStatus";
 import type { ProjectRef, Session } from "../../types/api";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
@@ -495,23 +496,10 @@ function Row({
     },
   ]);
 
-  // #477: one leading status dot carries the whole row state — colour is the only signal,
-  // no extra glyph or row width. Precedence (highest first): intervention (orange, never
-  // masked by a draft) > working (green) > unsent draft (blue) > idle (grey). Every non-idle
-  // state keeps a role + accessible name, so meaning is never colour-only (design §8).
-  const dot =
-    s.intervention_required && !s.review_excluded
-      ? {
-          variant: "attention",
-          role: "img" as const,
-          label: `intervention required: ${s.intervention_reason || "see session"}`,
-          title: s.intervention_reason || "Intervention required",
-        }
-      : s.working
-        ? { variant: "up", role: "status" as const, label: "agent working", title: "agent working" }
-        : s.has_draft
-          ? { variant: "draft", role: "img" as const, label: "unsent draft", title: "Unsent draft" }
-          : { variant: "idle", role: undefined, label: undefined, title: "idle" };
+  // #477: one leading status dot carries the whole row state — colour is the only signal, no
+  // extra glyph or row width. The precedence lives in `sessionStatus` (#744) so the session brief
+  // resolves the identical state from the identical row, wherever it is opened from.
+  const dot = sessionStatus(s);
 
   // Per-project accent (#285): the explicit entity color (Settings, #361) wins; otherwise a
   // stable hash of the ref key (entity id / folder cwd). One CSS var feeds the rail + dot.
@@ -546,7 +534,11 @@ function Row({
           sessionId={s.id}
           engine={s.engine}
           title={s.title}
-          project={s.project.name}
+          project={s.project}
+          lastMtime={s.last_mtime}
+          // The same resolver the row's own dot uses (#744) — one session, one status, whichever
+          // surface you open the brief from.
+          statusRow={s}
           summary={s.ai_summary}
           recap={s.ai_recap}
           interventionRequired={s.intervention_required}

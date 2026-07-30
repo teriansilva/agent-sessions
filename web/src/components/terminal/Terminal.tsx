@@ -2,9 +2,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ArrowLeftRight, ScrollText } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowLeftRight, RotateCw, ScrollText } from "lucide-react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
+import { engineBadge, engineName, projectColor, relTime, shortCwd } from "../../lib/format";
 import { createBootReadyGate } from "../../lib/bootReady";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
@@ -51,9 +52,13 @@ function statusText(s: TermStatus): string {
   }
 }
 
-/** Persistent HUD panel-header readout (#211 4c): a mono STATUS tag + LED class for the
- *  reusable .hud-led primitive. Distinct from statusText (the transient corner overlay) — this
- *  one is always present so the terminal panel always declares its link state. */
+/** Persistent HUD panel-header readout (#211 4c): the LED class for the reusable .hud-led
+ *  primitive plus its label. Distinct from statusText (the transient corner overlay) — this one
+ *  is always present so the terminal panel always declares its link state.
+ *
+ *  #744: the label is no longer PRINTED beside the LED (the old "STATUS // LIVE" run spent seven
+ *  characters restating the dot). It moved to the LED's accessible name + tooltip instead of
+ *  being deleted — link state must never be carried by colour alone. */
 function headStatus(s: TermStatus): { label: string; led: string } {
   switch (s.kind) {
     case "connected":
@@ -1304,6 +1309,18 @@ export function Terminal({
   // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
   // leaks into the panel header — drop straight to the short id.
   const title = row?.title || `${id.slice(0, 8)}…`;
+  // Header meta run (#744): the same facts the sidebar row carries — project and how stale the
+  // session is. A folder ref's `name` is the FULL cwd by server contract (projects.resolve), so
+  // clients shorten it themselves; an adopted project keeps its entity name + colour dot.
+  const projectLabel = row
+    ? row.project.kind === "project"
+      ? row.project.name
+      : shortCwd(row.project.name)
+    : "";
+  const projectStyle =
+    row?.project.kind === "project"
+      ? ({ "--proj": row.project.color || projectColor(row.project.id) } as CSSProperties)
+      : undefined;
   // Session-brief modal (#481): the recap icon in the header opens it; the trigger element is
   // captured at click time so focus returns to it on close (no ref read during render).
   const [recapOpen, setRecapOpen] = useState(false);
@@ -1385,71 +1402,104 @@ export function Terminal({
   }, []);
   return (
     <div className={styles.wrap}>
-      {/* Panel header (#211 4c): mono channel id + a persistent STATUS // LIVE readout with a
-          semantic LED, so the terminal panel always declares which agent + link state it is. */}
+      {/* Panel header (#211 4c, re-cut in #744): a HUD meta run — semantic LED, engine box,
+          project, relative update time — mirroring what the sidebar row shows for this session,
+          then the action buttons. The session title is deliberately absent: it is the sidebar's
+          job and the session brief's, and the 26px bar reads better carrying facts the sidebar
+          can't repeat next to the live pane (which project, how stale). */}
       <div className={styles.panelHead}>
-        <span className={`hud-tag ${styles.headLeft}`}>
-          <span className={styles.headEng}>{engine.toUpperCase()} //</span>
-          <b className={styles.headTitle} title={title}>
-            {title}
-          </b>
+        <span className={styles.headLeft}>
+          <span
+            className={`${styles.headLed} hud-led ${head.led}`}
+            role="img"
+            aria-label={`status: ${head.label.toLowerCase()}`}
+            title={head.label}
+          />
+          <span className={styles.headEng} title={engineName(engine)}>
+            {engineBadge(engine)}
+          </span>
+          {row && (
+            <span className={styles.headMeta}>
+              {projectLabel && (
+                <span className={styles.headProject} style={projectStyle} title={projectLabel}>
+                  {row.project.kind === "project" && (
+                    <span className={styles.headProjectDot} aria-hidden="true" />
+                  )}
+                  {projectLabel}
+                </span>
+              )}
+              {/* Drops first as the pane narrows (see .headUpdated) — it carries the separator
+                  with it, so the project never trails a dangling "·". */}
+              <span className={styles.headUpdated}>
+                {projectLabel ? " · " : ""}
+                {relTime(row.last_mtime)}
+              </span>
+            </span>
+          )}
         </span>
-        <span className="hud-tag">
-          <span className={`hud-led ${head.led}`} aria-hidden="true" />
-          STATUS // <b className="num">{head.label}</b>
-        </span>
-        {/* Repaint (#485): owner-only, non-destructive recovery for a mid-session blank/fragment —
-            nudges the agent to redraw without killing it. Hidden for read-only secondaries (the
-            server drops their resize frames anyway); disabled until the socket is connected. */}
-        {role === "owner" && (
-          <button
-            type="button"
-            className={styles.restartBtn}
-            onClick={repaint}
-            disabled={status.kind !== "connected"}
-            title="Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent"
-            aria-label="Repaint screen"
-          >
-            REPAINT
-          </button>
-        )}
-        <button
-          type="button"
-          className={styles.restartBtn}
-          onClick={(e) => {
-            setRecapTrigger(e.currentTarget);
-            setRecapOpen(true);
-          }}
-          title="Session brief: full title, summary, and a chronological recap of this session"
-          aria-label="Open session brief"
-          aria-haspopup="dialog"
-        >
-          <ScrollText size={13} aria-hidden="true" />
-          Recap
-        </button>
-        {canHandoff && (
+        {/* flex:none — the buttons are the last thing standing when the pane narrows; the meta
+            run above absorbs every pixel of shrink (#744). */}
+        <div className={styles.headActions}>
+          {/* Repaint (#485): owner-only, non-destructive recovery for a mid-session blank/fragment —
+              nudges the agent to redraw without killing it. Hidden for read-only secondaries (the
+              server drops their resize frames anyway); disabled until the socket is connected. */}
+          {role === "owner" && (
+            <button
+              type="button"
+              className={styles.restartBtn}
+              onClick={repaint}
+              disabled={status.kind !== "connected"}
+              title="Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent"
+              aria-label="Repaint screen"
+            >
+              <RotateCw size={13} aria-hidden="true" />
+              Repaint
+            </button>
+          )}
           <button
             type="button"
             className={styles.restartBtn}
             onClick={(e) => {
-              setHandoffTrigger(e.currentTarget);
-              setHandoffOpen(true);
+              setRecapTrigger(e.currentTarget);
+              setRecapOpen(true);
             }}
-            title="Hand off: start a new session in another engine, seeded with this session's context"
-            aria-label="Hand off session to another engine"
+            title="Session brief: full title, summary, and a chronological recap of this session"
+            aria-label="Open session brief"
             aria-haspopup="dialog"
           >
-            <ArrowLeftRight size={13} aria-hidden="true" />
-            Hand off
+            <ScrollText size={13} aria-hidden="true" />
+            Recap
           </button>
-        )}
+          {canHandoff && (
+            <button
+              type="button"
+              className={styles.restartBtn}
+              onClick={(e) => {
+                setHandoffTrigger(e.currentTarget);
+                setHandoffOpen(true);
+              }}
+              title="Hand off: start a new session in another engine, seeded with this session's context"
+              aria-label="Hand off session to another engine"
+              aria-haspopup="dialog"
+            >
+              <ArrowLeftRight size={13} aria-hidden="true" />
+              Hand off
+            </button>
+          )}
+        </div>
       </div>
       {recapOpen && (
         <SessionRecapModal
           sessionId={`${engine}:${id}`}
           engine={engine}
           title={title}
-          project={row?.project?.name}
+          project={row?.project}
+          lastMtime={row?.last_mtime}
+          // The SESSION's status (#744) — the brief resolves it from the row with the SAME
+          // resolver the sidebar dot uses, not this pane's socket state. The header LED above
+          // answers a different question (is THIS browser attached), so the two are deliberately
+          // different signals.
+          statusRow={row}
           summary={row?.ai_summary}
           recap={row?.ai_recap}
           interventionRequired={row?.intervention_required}
