@@ -375,3 +375,64 @@
     min-height: 44px;
   }
 }
+
+/* --- approve / reject (#726 Phase 2) -------------------------------------------- */
+.btns {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.approve {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  min-height: 32px;
+  border: 1px solid var(--accent);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  min-height: 32px;
+  min-width: 34px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.approve:disabled,
+.reject:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.reject:hover:not(:disabled) {
+  color: var(--text-1);
+  background: var(--glass-strong);
+}
+/* A stale verdict is information, not an incident — degraded, never `--status-down`. */
+.stale {
+  margin: 7px 0 0;
+  font-size: 0.72rem;
+  color: var(--status-degraded);
+}
+
+@media (max-width: 800px) {
+  .approve {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .reject {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

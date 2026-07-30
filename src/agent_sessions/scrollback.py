@@ -23,7 +23,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import perfstats, ptybridge, transcript, vtscreen
+from . import perfstats, ptybridge, session_input, transcript, vtscreen
 
 log = logging.getLogger("agent_sessions.scrollback")
 
@@ -903,13 +903,20 @@ def _buffer_append(key: str, data: bytes) -> None:
     _ensure_loaded(key)  # hydrate prior scrollback from disk before the first append (#206)
     # Guard only the registry structure (get-or-create + LRU touch); the `extend` below mutates
     # the ring VALUE in place, which doesn't change the dict shape and so needs no lock.
-    with _RING_LOCK:
-        buf = _BUFFERS.get(key)
-        if buf is None:
-            buf = bytearray()
-            _BUFFERS[key] = buf
-        _BUFFERS.move_to_end(key)  # most-recently-used
-    buf.extend(data)
+    # The ring mutation is published as a SEQLOCK interval (#726), not as a single bump.
+    # The orchestrator's write fence compares this so a proposal approved against one prompt
+    # can never be typed into the next one — and neither single-bump ordering is sufficient:
+    # bumping after leaves the bytes visible with a stale counter, bumping before lets the
+    # sender capture the new value and still authorise against the old screen. Odd means a
+    # change is in flight; even means stable.
+    with session_input.screen_change(key):
+        with _RING_LOCK:
+            buf = _BUFFERS.get(key)
+            if buf is None:
+                buf = bytearray()
+                _BUFFERS[key] = buf
+            _BUFFERS.move_to_end(key)  # most-recently-used
+        buf.extend(data)
     # Track DECSET/DECRST private modes off the SAME single chokepoint (#397) — both the
     # attached WS pump and the detached SessionStream land here, so mouse-reporting /
     # alternate-scroll / bracketed-paste state stays current with or without a viewer.

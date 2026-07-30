@@ -1,24 +1,33 @@
-/** Pulse orchestrator strip (#726 Phase 1).
+/** Pulse orchestrator strip (#726 Phases 1–2).
  *
- * Pinned: the ceiling is SHOWN (the tier alone must never imply more than it grants), a
- * deliverable proposal is labelled "would send" while Phase 1 has no write path, evidence is
- * fetched from the server on expand rather than rendered from anything the model said, the feed
- * groups by project, and a failing orchestrator endpoint degrades to no strip rather than a
- * blank page.
+ * Pinned: the ceiling is SHOWN (the tier alone must never imply more than it grants); only a
+ * DELIVERING verb offers approve/reject, so the UI never implies an escalation would be sent;
+ * a 409 from compare-and-execute reads as "nothing was sent", distinguishable from an error;
+ * evidence is fetched from the server on expand rather than rendered from anything the model
+ * said; the feed groups by project; and a failing endpoint degrades to no strip, not a blank
+ * page.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import type { OrchestratorAction, OrchestratorConfig } from "../../types/api";
 import { Orchestrator } from "./Orchestrator";
 
 vi.mock("../../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
-    api: { orchestrator: vi.fn(), orchestrate: vi.fn(), evidence: vi.fn(), setPrefs: vi.fn() },
+    api: {
+      orchestrator: vi.fn(),
+      orchestrate: vi.fn(),
+      evidence: vi.fn(),
+      setPrefs: vi.fn(),
+      approveAction: vi.fn(),
+      rejectAction: vi.fn(),
+    },
   };
 });
 
@@ -74,6 +83,8 @@ beforeEach(() => {
   vi.mocked(api.orchestrate).mockReset();
   vi.mocked(api.evidence).mockReset();
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
+  vi.mocked(api.approveAction).mockReset();
+  vi.mocked(api.rejectAction).mockReset();
 });
 
 test("shows the server-owned autonomy ceiling, not just the tier (#726)", async () => {
@@ -91,19 +102,132 @@ test("shows the server-owned autonomy ceiling, not just the tier (#726)", async 
     "true",
   );
   expect(screen.getByText(/acts on its own:/i)).toHaveTextContent("continue");
-  expect(screen.getByText(/everything else always waits for you/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/everything else always waits for you/i),
+  ).toBeInTheDocument();
 });
 
-test("a deliverable proposal is labelled 'would send' while Phase 1 cannot write", async () => {
+test("a deliverable proposal offers approve/reject; a decision-only one does not", async () => {
   vi.mocked(api.orchestrator).mockResolvedValue({
     config: config(),
-    pending: [action()],
-    feed: [action()],
+    pending: [
+      action(),
+      action({ id: "a2", verb: "escalate", state: "escalated" }),
+    ],
+    feed: [],
     expired_now: 0,
   });
   renderIt();
-  expect(await screen.findByText(/needs a decision · 1/i)).toBeInTheDocument();
-  expect(screen.getAllByText(/would send/i).length).toBeGreaterThan(0);
+  expect(await screen.findByText(/needs a decision · 2/i)).toBeInTheDocument();
+  // `continue` delivers, so it can be approved; `escalate` never reaches a session, so it
+  // must NOT offer a button that implies it would.
+  expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
+});
+
+test("approving delivers and folds the settled record back in place", async () => {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+  });
+  vi.mocked(api.approveAction).mockResolvedValue(
+    action({ state: "delivered" }),
+  );
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  );
+  expect(api.approveAction).toHaveBeenCalledWith("a1");
+  // Settled → it leaves the pending block rather than lingering as still-actionable.
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: /^approve$/i }),
+    ).not.toBeInTheDocument(),
+  );
+  // ...and ARRIVES in Activity. `pending` and `feed` are disjoint by server contract (#726),
+  // so a settled row is absent from feed and a `map` had nothing to update — the action
+  // vanished from both lists and only reappeared on a refresh, which reads as work lost.
+  await waitFor(() =>
+    expect(screen.getByText(/delivered/i)).toBeInTheDocument(),
+  );
+});
+
+test("a rejected action also lands in Activity rather than vanishing", async () => {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+  });
+  vi.mocked(api.rejectAction).mockResolvedValue(action({ state: "rejected" }));
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /reject this action/i }),
+  );
+  await waitFor(() =>
+    expect(screen.getByText(/rejected/i)).toBeInTheDocument(),
+  );
+});
+
+test("dismissing an escalation lands it in Activity too", async () => {
+  // An escalation has no delivering verb, so it is dismissable but not approvable.
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action({ state: "escalated", verb: "escalate" })],
+    feed: [],
+    expired_now: 0,
+  });
+  vi.mocked(api.rejectAction).mockResolvedValue(
+    action({ state: "rejected", verb: "escalate" }),
+  );
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /dismiss this escalation/i }),
+  );
+  await waitFor(() =>
+    expect(screen.getByText(/rejected/i)).toBeInTheDocument(),
+  );
+});
+
+test("a 409 from compare-and-execute says nothing was sent, and is not an error", async () => {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+  });
+  const err = new ApiError(
+    409,
+    "the session's screen changed since this was proposed",
+  );
+  vi.mocked(api.approveAction).mockRejectedValue(err);
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  );
+  // The operator must be able to tell "nothing happened" from "something went wrong".
+  await waitFor(() =>
+    expect(
+      screen.getByText(/not sent — the session's screen changed/i),
+    ).toBeInTheDocument(),
+  );
+});
+
+test("rejecting settles the action without delivering anything", async () => {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+  });
+  vi.mocked(api.rejectAction).mockResolvedValue(action({ state: "rejected" }));
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /reject this action/i }),
+  );
+  expect(api.rejectAction).toHaveBeenCalledWith("a1");
+  expect(api.approveAction).not.toHaveBeenCalled();
 });
 
 test("evidence is fetched from the server on expand, never rendered from the model", async () => {
@@ -119,11 +243,15 @@ test("evidence is fetched from the server on expand, never rendered from the mod
     available: true,
   });
   renderIt();
-  const toggle = await screen.findByRole("button", { name: /show live screen/i });
+  const toggle = await screen.findByRole("button", {
+    name: /show live screen/i,
+  });
   // Nothing is fetched until the operator asks for it.
   expect(api.evidence).not.toHaveBeenCalled();
   await userEvent.click(toggle);
-  await waitFor(() => expect(screen.getByText(/waiting for input/)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/waiting for input/)).toBeInTheDocument(),
+  );
   expect(api.evidence).toHaveBeenCalledWith(
     "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     "screen",
@@ -136,8 +264,16 @@ test("the feed groups by project so 'which project needs me' is one glance", asy
     pending: [],
     feed: [
       action({ id: "a1", project: "agent-sessions" }),
-      action({ id: "a2", project: "battlelab-cloud", session_id: "codex:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
-      action({ id: "a3", project: "agent-sessions", session_id: "kimi:session_cccccccc" }),
+      action({
+        id: "a2",
+        project: "battlelab-cloud",
+        session_id: "codex:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+      action({
+        id: "a3",
+        project: "agent-sessions",
+        session_id: "kimi:session_cccccccc",
+      }),
     ],
     expired_now: 0,
   });
@@ -168,7 +304,9 @@ test("changing the tier persists it and refreshes the shared config", async () =
     </MemoryRouter>,
   );
   await userEvent.click(await screen.findByRole("button", { name: "OFF" }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ orchestrator: { autonomy: "off" } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    orchestrator: { autonomy: "off" },
+  });
   // Without the refresh the Settings panel would show pre-save values on remount (#667).
   await waitFor(() => expect(onTierChange).toHaveBeenCalled());
 });
@@ -184,14 +322,83 @@ test("evidence is re-fetched on every open — 'live' must not mean 'cached once
     expired_now: 0,
   });
   vi.mocked(api.evidence)
-    .mockResolvedValueOnce({ kind: "screen", text: "first screen", available: true })
-    .mockResolvedValueOnce({ kind: "screen", text: "second screen", available: true });
+    .mockResolvedValueOnce({
+      kind: "screen",
+      text: "first screen",
+      available: true,
+    })
+    .mockResolvedValueOnce({
+      kind: "screen",
+      text: "second screen",
+      available: true,
+    });
   renderIt();
   const toggle = await screen.findByRole("button", { name: /live screen/i });
   await userEvent.click(toggle);
-  await waitFor(() => expect(screen.getByText(/first screen/)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/first screen/)).toBeInTheDocument(),
+  );
   await userEvent.click(toggle); // collapse
   await userEvent.click(toggle); // re-open
-  await waitFor(() => expect(screen.getByText(/second screen/)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/second screen/)).toBeInTheDocument(),
+  );
   expect(api.evidence).toHaveBeenCalledTimes(2);
+});
+
+test("a verb the actuator cannot render offers no Approve", async () => {
+  // `dispatch` is a legal verb the model may emit, but `render()` cannot turn it into bytes,
+  // so approving it always 409'd. The client used to keep its own DELIVERING set that included
+  // it; the server now ships the renderable set so the two cannot drift.
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action({ verb: "dispatch" })],
+    feed: [],
+    expired_now: 0,
+    delivering_verbs: ["continue", "choose", "answer"],
+  });
+  renderIt();
+  // The row renders and stays dismissable...
+  expect(
+    await screen.findByRole("button", { name: /reject this action/i }),
+  ).toBeInTheDocument();
+  // ...but Approve is not offered for something the server would refuse.
+  expect(
+    screen.queryByRole("button", { name: /^approve$/i }),
+  ).not.toBeInTheDocument();
+});
+
+test("a 409 moves the row out of pending instead of leaving it re-clickable", async () => {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+    delivering_verbs: ["continue", "choose", "answer"],
+  });
+  // The server settles the record and returns it WITH the 409 — the client must consume it.
+  const settled = action({ state: "stale" });
+  vi.mocked(api.approveAction).mockRejectedValue(
+    new ApiError(
+      409,
+      "the session's screen changed since this was proposed",
+      settled,
+    ),
+  );
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  );
+
+  await waitFor(() =>
+    expect(screen.getByText(/not sent/i)).toBeInTheDocument(),
+  );
+  // The row must leave "Needs a decision" — otherwise every retry 409s again until a refresh.
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: /^approve$/i }),
+    ).not.toBeInTheDocument(),
+  );
+  // ...and the server's settled verdict shows up in Activity.
+  await waitFor(() => expect(screen.getByText(/stale/i)).toBeInTheDocument());
 });

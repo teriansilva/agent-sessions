@@ -1021,3 +1021,41 @@ def test_an_idle_world_still_skips(monkeypatch, configured_ai):
     assert asyncio.run(orchestrator_loop.sweep()).get("ran") is True
     assert asyncio.run(orchestrator_loop.sweep())["skipped"] == "unchanged"
     assert asyncio.run(orchestrator_loop.sweep())["skipped"] == "unchanged"
+
+
+def test_the_exclude_route_writes_INSIDE_the_write_fence(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """A behavioural proof, through the real route, that the opt-out participates in the fence.
+
+    `check_precondition` reads `orchestrator_excluded` in the final guard, which runs BEFORE
+    `_write_all` takes the lock — so an opt-out committing in that window used to be invisible
+    to the fence and the session still received input. Announcing AFTER the write is not
+    enough either: between the write and the bump the stored state has already changed while
+    the epoch still reads old.
+
+    So the assertion is specifically that the metadata write happens WITH the registry lock
+    held, which is what makes it un-interleavable with a send.
+    """
+    from agent_sessions import session_input
+
+    observed: list[bool] = []
+    real_patch = metadata.patch
+
+    def watched_patch(*a, **k):
+        if "orchestrator_excluded" in k:
+            observed.append(session_input._lock.locked())
+        return real_patch(*a, **k)
+
+    monkeypatch.setattr(metadata, "patch", watched_patch)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    sid = c.get("/api/sessions").json()["sessions"][0]["id"]
+    r = c.post(f"/api/sessions/{sid}/orchestrator-exclude", json={"excluded": True}, headers=hdr)
+
+    assert r.status_code == 200 and r.json()["orchestrator_excluded"] is True
+    assert observed, "the exclude route never wrote orchestrator_excluded"
+    assert all(observed), (
+        "the opt-out was written WITHOUT the registry lock — it can land between the final "
+        "guard and byte one, and the session still receives input"
+    )

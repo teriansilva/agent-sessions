@@ -1198,4 +1198,13 @@ def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
             cur["nudge_template"] = DEFAULT_ORCH_NUDGE
         return cur
 
-    return _mutate("orchestrator", merge, path)
+    # Deferred import: `session_input` is a runtime concern and importing it at module scope
+    # would tie prefs to the terminal stack.
+    from . import session_input
+
+    # The persist and the announcement are ONE transaction under the write fence (#726).
+    # Persisting first and announcing after leaves a gap in which the stored policy has already
+    # changed but the fence still sees the old epoch — a delivery in that gap passes the check
+    # and writes under policy the operator has withdrawn.
+    with session_input.policy_transaction():
+        return _mutate("orchestrator", merge, path)

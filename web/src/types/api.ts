@@ -1,13 +1,7 @@
 // Types mirroring the existing FastAPI `/api/*` contract (backend is unchanged).
 
 export type EngineId =
-  | "claude"
-  | "opencode"
-  | "codex"
-  | "gemini"
-  | "antigravity"
-  | "kimi"
-  | "shell";
+  "claude" | "opencode" | "codex" | "gemini" | "antigravity" | "kimi" | "shell";
 
 export interface Session {
   /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
@@ -204,12 +198,7 @@ export type OrchestratorTier = "off" | "suggest" | "yolo";
 
 /** #726: what the orchestrator proposed. `observe`/`escalate` never reach a session. */
 export type OrchestratorVerb =
-  | "observe"
-  | "continue"
-  | "choose"
-  | "answer"
-  | "dispatch"
-  | "escalate";
+  "observe" | "continue" | "choose" | "answer" | "dispatch" | "escalate";
 
 /** #726: the lifecycle of one action. `indeterminate` is deliberate: if the process dies
  *  between the PTY write and the durable record, nothing on disk can prove whether the bytes
@@ -302,6 +291,9 @@ export interface OrchestratorState_ {
   pending: OrchestratorAction[];
   feed: OrchestratorAction[];
   expired_now: number;
+  /** Verbs the actuator can actually render and deliver. Server-owned so the UI cannot offer
+   *  Approve on something every delivery would 409 (the client used to keep its own copy). */
+  delivering_verbs?: string[];
 }
 
 /** Server-pulled evidence. The model only ever names a `kind`; every byte here comes from the

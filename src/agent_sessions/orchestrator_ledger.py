@@ -53,6 +53,16 @@ TERMINAL_STATES: frozenset[str] = frozenset(
 LIVE_STATES: frozenset[str] = frozenset({"proposed", "approved", "claimed", "escalated"})
 ALL_STATES: frozenset[str] = TERMINAL_STATES | LIVE_STATES
 
+# The only states a reject may move FROM. Deliberately excludes `claimed`: once a delivery has
+# claimed an action the bytes are already going out, so "rejected" would be a lie the operator
+# acts on. It also excludes every terminal state — rejecting a `delivered` action would rewrite
+# history into something that never happened.
+REJECTABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+
+# States expiry may act on. Excludes `claimed` for the same reason as reject: once a delivery
+# has claimed an action, the bytes are on their way and "expired" would be a lie.
+EXPIRABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+
 # Compaction bounds. The live set is kept in full (it is small by construction — bounded by
 # `max_actions_per_pass` per pass), plus a bounded tail of terminal actions for the feed.
 HISTORY_MAX = 500
@@ -112,9 +122,27 @@ def append(record: dict, path: Path | None = None) -> dict:
 def _append_locked(p: Path, rec: dict, line: str) -> dict:
     # 0600 from creation, not chmod-after: the ledger carries rationales about the operator's
     # work, and a widened-then-narrowed window is still a window.
+    payload = line.encode("utf-8")
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(fd, line.encode("utf-8"))
+        # POSIX permits a SHORT write, and a single `os.write` that returns fewer bytes leaves
+        # a torn record — `{"id": "a1", "state": "claime` — which reads back as nothing. That
+        # matters most for `claim()`: the caller is told the claim succeeded, delivery
+        # proceeds, and after a restart the ledger has no durable record of it, which defeats
+        # the at-most-once guarantee this file exists to provide. Loop to completion.
+        written = 0
+        try:
+            while written < len(payload):
+                n = os.write(fd, payload[written:])
+                if n <= 0:
+                    raise OSError("short write to the ledger made no progress")
+                written += n
+        except BaseException:
+            # A partial record is worse than none: truncate back to the last good boundary so
+            # the file stays parseable rather than ending mid-JSON.
+            with contextlib.suppress(OSError):
+                os.ftruncate(fd, os.lseek(fd, 0, os.SEEK_END) - written)
+            raise
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -204,12 +232,65 @@ def transition(action_id: str, state: str, path: Path | None = None, **extra) ->
         return {**cur, **rec}
 
 
+def compare_and_set(
+    action_id: str,
+    from_states: frozenset[str],
+    to_state: str,
+    path: Path | None = None,
+    **fields: object,
+) -> dict | None:
+    """Atomically move an action to ``to_state`` iff it is currently in ``from_states``.
+
+    The general form of :func:`claim`. Any caller that decides "this action is in state X, so
+    I may move it to Y" needs the read and the write under ONE lock hold — otherwise two
+    callers both observe X and both write, and the ledger's whole purpose (a single agreed
+    history per action) is gone. Reject needs exactly this: without it a stale tap can
+    overwrite ``delivered`` with ``rejected``, and a reject racing a claimed delivery produces
+    ``claimed → rejected → delivered`` — the operator is told nothing was sent while the bytes
+    are on their way.
+
+    Returns the updated record, or ``None`` when the action is absent or not in ``from_states``.
+    """
+    p = _path(path)
+    with _locked(p):
+        cur = _latest_by_id_locked(p).get(action_id)
+        if cur is None or cur.get("state") not in from_states:
+            return None
+        rec = {"id": action_id, "state": to_state, "ts": time.time()}
+        # Carry the same optional fields `transition` records (detail, outcome), so a CAS
+        # settlement keeps the WHY that the operator sees in the feed.
+        rec.update({k: v for k, v in fields.items() if v is not None})
+        _append_locked(p, rec, json.dumps(rec, sort_keys=True, default=str) + "\n")
+        return {**cur, **rec}
+
+
+def claim(action_id: str, from_states: frozenset[str], path: Path | None = None) -> dict | None:
+    """Atomically move an action to ``claimed`` iff it is currently in ``from_states``.
+
+    ``get()`` then ``transition()`` is a read and a write across TWO lock holds, so two callers
+    can both observe ``proposed`` and both append ``claimed`` — and then both write to the PTY.
+    That silently breaks the at-most-once guarantee the whole ledger exists to provide, and it
+    breaks it in the one direction that matters: a duplicate `choose` answers a prompt twice.
+
+    Compare-and-swap under a single exclusive hold. Returns the claimed record, or ``None``
+    when another caller got there first (or the action is not claimable).
+    """
+    return compare_and_set(action_id, from_states, "claimed", path)
+
+
 def expire_due(now: float | None = None, path: Path | None = None) -> list[str]:
     """Move every live action past its ``expires_at`` to ``expired``. Returns the ids moved.
 
     An expired proposal is one whose screen the operator never acted on in time; delivering it
     later would be delivering against a screen nobody has looked at recently, which is exactly
     what the precondition check exists to prevent.
+
+    The snapshot below is read outside the lock, so an action can be CLAIMED between being
+    listed and being expired. Skipping `claimed` in the loop is therefore not enough — the
+    check and the write must be one atomic step, or expiry lands on top of a live delivery and
+    the ledger records `approved -> claimed -> expired -> delivered`: an action that was
+    expired and then delivered anyway, which is both a lie about what happened and an ordering
+    no reader can make sense of.
     """
     now = time.time() if now is None else now
     moved: list[str] = []
@@ -218,8 +299,10 @@ def expire_due(now: float | None = None, path: Path | None = None) -> list[str]:
             continue  # mid-delivery; recover_claimed owns this one
         exp = rec.get("expires_at")
         if isinstance(exp, int | float) and not isinstance(exp, bool) and now >= exp:
-            transition(rec["id"], "expired", path)
-            moved.append(rec["id"])
+            # CAS from the states expiry may legitimately act on. A claim that landed since the
+            # snapshot wins, and this quietly does nothing.
+            if compare_and_set(rec["id"], EXPIRABLE_STATES, "expired", path) is not None:
+                moved.append(rec["id"])
     return moved
 
 
@@ -270,7 +353,15 @@ def _compact_locked(p: Path, history_max: int) -> int:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         for rec in keep:
-            os.write(fd, (json.dumps(rec, sort_keys=True) + "\n").encode("utf-8"))
+            # Same short-write rule as _append_locked. Compaction REPLACES the ledger, so a
+            # torn line here loses history rather than just one record.
+            buf = (json.dumps(rec, sort_keys=True) + "\n").encode("utf-8")
+            off = 0
+            while off < len(buf):
+                n = os.write(fd, buf[off:])
+                if n <= 0:
+                    raise OSError("short write while compacting the ledger")
+                off += n
         os.fsync(fd)
     finally:
         os.close(fd)

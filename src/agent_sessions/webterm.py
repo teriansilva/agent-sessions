@@ -37,7 +37,7 @@ import threading
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 from concurrent.futures import ThreadPoolExecutor
 
-from . import perfstats, scrollback, sessionlock
+from . import perfstats, scrollback, session_input, sessionlock
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -903,6 +903,15 @@ async def run(
         finally:
             _release_seed_hold(delivered=bool(delivered))
 
+    # Declare this bridge the current byte-owner for the session (#726), sharing the SAME
+    # `write_lock` pump_in and the seed injector already serialise on — so the orchestrator's
+    # send_input seam is a third participant in one lock, not a second lock nobody knows about.
+    # Registered only while a viewer actually owns the bytes; released in the finally below,
+    # after which the registry's headless SessionStream re-registers itself.
+    input_writer_token = (
+        session_input.register_writer(buf_key, master, write_lock, "attached") if buf_key else None
+    )
+
     nudge_task = asyncio.create_task(_nudge_repaint())
     seed_task = asyncio.create_task(_inject_seed()) if seed_key else None
     tasks = [
@@ -916,6 +925,10 @@ async def run(
     try:
         await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        # FIRST: stop advertising this fd. A write racing teardown must find no writer rather
+        # than a master that is about to be closed under it.
+        if input_writer_token is not None and buf_key:
+            session_input.unregister_writer(buf_key, input_writer_token)
         for t in tasks:
             t.cancel()
         nudge_task.cancel()  # short-lived; cancel in case we tore down mid-nudge

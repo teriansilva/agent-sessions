@@ -16,6 +16,7 @@ import type {
   ProjectEntity,
   Evidence,
   EvidenceKind,
+  OrchestratorAction,
   NotificationList,
   OrchestratorState_,
   PushSubscriptionInfo,
@@ -34,10 +35,17 @@ import { clearSent } from "./sentHistory";
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** The parsed response body, when the server sent one.
+   *
+   *  A 409 from compare-and-execute carries the SETTLED record — the server has already moved
+   *  the action to stale/expired. Reducing the response to a message threw that away, so the
+   *  client kept showing the row as actionable and every retry 409'd again until a refresh. */
+  readonly record?: unknown;
+  constructor(status: number, message: string, record?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.record = record;
   }
 }
 
@@ -55,7 +63,9 @@ export function setApiFetch(fn: ApiFetch | null): void {
 
 /** Where to send an unauthenticated user: the server login form, carrying the
  *  current location so it can bounce back after sign-in (server open-redirect guards). */
-export function loginRedirectUrl(loc: { pathname: string; search: string } = location): string {
+export function loginRedirectUrl(
+  loc: { pathname: string; search: string } = location,
+): string {
   return `/login?next=${encodeURIComponent(loc.pathname + loc.search)}`;
 }
 
@@ -140,12 +150,21 @@ async function mutateJson<T>(
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
     let detail = "";
+    let parsed: unknown;
     try {
-      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
     } catch {
       /* non-JSON body */
     }
-    throw new ApiError(r.status, detail || `${method} ${path} → ${r.status}`);
+    // Carry the whole body, not just `detail`. A compare-and-execute 409 ships the SETTLED
+    // record alongside its explanation, and a caller that can fold that back in place saves
+    // the operator a refresh (#726).
+    throw new ApiError(
+      r.status,
+      detail || `${method} ${path} → ${r.status}`,
+      parsed,
+    );
   }
   return (await r.json()) as T;
 }
@@ -153,9 +172,11 @@ async function mutateJson<T>(
 const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
   mutateJson<T>("PATCH", path, body);
 
-const putJson = <T>(path: string, body?: unknown): Promise<T> => mutateJson<T>("PUT", path, body);
+const putJson = <T>(path: string, body?: unknown): Promise<T> =>
+  mutateJson<T>("PUT", path, body);
 
-const deleteJson = <T>(path: string): Promise<T> => mutateJson<T>("DELETE", path);
+const deleteJson = <T>(path: string): Promise<T> =>
+  mutateJson<T>("DELETE", path);
 
 /** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
 async function postVoid(path: string, body?: unknown): Promise<void> {
@@ -229,7 +250,11 @@ export const api = {
    *  the server redeems the seed at spawn time — never through the URL. 404/409 = the
    *  handle expired or was already committed; the modal re-prepares. */
   commitHandoff: (handle: string, seed?: string) =>
-    mutateJson<HandoffCommitted>("POST", "/api/handoff", seed === undefined ? { handle } : { handle, seed }),
+    mutateJson<HandoffCommitted>(
+      "POST",
+      "/api/handoff",
+      seed === undefined ? { handle } : { handle, seed },
+    ),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
   /** Self-update: compare the running version to the channel's latest. */
@@ -242,9 +267,11 @@ export const api = {
   setUpdateSettings: (body: { auto_update?: boolean; channel?: string }) =>
     postJson<UpdateSettings>("/api/update/settings", body),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
-  setTheme: (theme: string) => postJson<{ theme: string }>("/api/prefs", { theme }),
+  setTheme: (theme: string) =>
+    postJson<{ theme: string }>("/api/prefs", { theme }),
   /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
-  setAccent: (accent: string) => postJson<{ accent: string }>("/api/prefs", { accent }),
+  setAccent: (accent: string) =>
+    postJson<{ accent: string }>("/api/prefs", { accent }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   setPrefs: (partial: Record<string, unknown>) =>
     postJson<Record<string, unknown>>("/api/prefs", partial),
@@ -267,7 +294,9 @@ export const api = {
    *  picker uses it so the dropdown mirrors the curated sidebar; Settings omits it to
    *  get the full discovered set for curation. */
   folders: (opts?: { visible?: boolean }) =>
-    getJson<{ folders: Folder[] }>(`/api/folders${opts?.visible ? "?visible=1" : ""}`),
+    getJson<{ folders: Folder[] }>(
+      `/api/folders${opts?.visible ? "?visible=1" : ""}`,
+    ),
   /** Create a new project directory under a configured base root (#335 Phase 3). CSRF-guarded;
    *  returns the new absolute cwd. 404 if the feature is disabled, 403/422 on a rejected
    *  root/name. */
@@ -287,17 +316,32 @@ export const api = {
     color?: string;
     folders?: string[];
     default_folder?: string;
-  }) => mutateJson<Omit<ProjectEntity, "session_count">>("POST", "/api/projects", body),
+  }) =>
+    mutateJson<Omit<ProjectEntity, "session_count">>(
+      "POST",
+      "/api/projects",
+      body,
+    ),
   /** On-demand AI auto-sort (#424 Phase 6): one bounded pass assigning unassigned sessions to
    *  existing projects. 409 unless auto_sort is enabled AND the reused ai_review endpoint is
    *  configured. CSRF-guarded. */
-  autoSortNow: () => mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
+  autoSortNow: () =>
+    mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
   /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
    *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
   patchProject: (
     id: string,
-    body: { name?: string; color?: string; folders?: string[]; default_folder?: string },
-  ) => patchJson<Omit<ProjectEntity, "session_count">>(`/api/projects/${enc(id)}`, body),
+    body: {
+      name?: string;
+      color?: string;
+      folders?: string[];
+      default_folder?: string;
+    },
+  ) =>
+    patchJson<Omit<ProjectEntity, "session_count">>(
+      `/api/projects/${enc(id)}`,
+      body,
+    ),
   /** Folder picker (#448): immediate subdirectories of `path` (default ~), bounded to ~/.
    *  Returns the resolved path, the home root, and the child dirs. */
   fsDirs: (path?: string) =>
@@ -314,60 +358,98 @@ export const api = {
   /** Bulk archive/unarchive every member session (#361 Phase 2). Idempotent + blindly
    *  retryable — after a partial failure, re-calling retries only the failed set. */
   archiveProject: (id: string) =>
-    mutateJson<ProjectArchiveReport>("POST", `/api/projects/${enc(id)}/archive`),
+    mutateJson<ProjectArchiveReport>(
+      "POST",
+      `/api/projects/${enc(id)}/archive`,
+    ),
   unarchiveProject: (id: string) =>
-    mutateJson<ProjectArchiveReport>("POST", `/api/projects/${enc(id)}/unarchive`),
+    mutateJson<ProjectArchiveReport>(
+      "POST",
+      `/api/projects/${enc(id)}/unarchive`,
+    ),
   /** Session → project assignment (#361): one sidecar metadata write. `null`/"" clears;
    *  an unknown project id is a 422. Engine stores stay read-only. */
   setSessionProject: (sid: string, projectId: string | null) =>
-    patchJson<{ id: string; project_id: string }>(`/api/sessions/${enc(sid)}/metadata`, {
-      project_id: projectId,
-    }),
+    patchJson<{ id: string; project_id: string }>(
+      `/api/sessions/${enc(sid)}/metadata`,
+      {
+        project_id: projectId,
+      },
+    ),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
   rename: (id: string, title: string) =>
-    postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, { title }),
+    postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, {
+      title,
+    }),
   /** Set (or clear, with "") a session's custom tag (#551): a short label shown before the
    *  AI summary in the sidebar row. Trimmed + length-capped server-side. */
   setTag: (id: string, tag: string) =>
-    postJson<{ id: string; tag: string }>(`/api/sessions/${enc(id)}/tag`, { tag }),
+    postJson<{ id: string; tag: string }>(`/api/sessions/${enc(id)}/tag`, {
+      tag,
+    }),
   /** Favorite/unfavorite a session (#122): flips the sidecar `sticky` flag so the row
    *  pins to the top of the sidebar. Engine-agnostic; CSRF-guarded. Returns `{id, sticky}`. */
   favorite: (id: string) =>
-    postJson<{ id: string; sticky: boolean }>(`/api/sessions/${enc(id)}/favorite`),
+    postJson<{ id: string; sticky: boolean }>(
+      `/api/sessions/${enc(id)}/favorite`,
+    ),
   unfavorite: (id: string) =>
-    postJson<{ id: string; sticky: boolean }>(`/api/sessions/${enc(id)}/unfavorite`),
+    postJson<{ id: string; sticky: boolean }>(
+      `/api/sessions/${enc(id)}/unfavorite`,
+    ),
   /** Compose draft (#477): fetch the saved draft (text + attachment pills) to restore the
    *  box when a session is reopened. Returns an empty draft when there is none. */
-  getDraft: (id: string) => getJson<SessionDraft>(`/api/sessions/${enc(id)}/draft`),
+  getDraft: (id: string) =>
+    getJson<SessionDraft>(`/api/sessions/${enc(id)}/draft`),
   /** Save (or clear) the compose draft for a session (#477). Empty text + no attachments
    *  clears it. CSRF-guarded sidecar write; returns whether a draft now exists (the dot). */
-  saveDraft: (id: string, draft: { text: string; attachments: DraftAttachment[] }) =>
-    putJson<{ id: string; has_draft: boolean }>(`/api/sessions/${enc(id)}/draft`, draft),
+  saveDraft: (
+    id: string,
+    draft: { text: string; attachments: DraftAttachment[] },
+  ) =>
+    putJson<{ id: string; has_draft: boolean }>(
+      `/api/sessions/${enc(id)}/draft`,
+      draft,
+    ),
   archive: (id: string) =>
-    postJson<{ id: string; archived: boolean }>(`/api/sessions/${enc(id)}/archive`),
+    postJson<{ id: string; archived: boolean }>(
+      `/api/sessions/${enc(id)}/archive`,
+    ),
   unarchive: (id: string) =>
-    postJson<{ id: string; archived: boolean }>(`/api/sessions/${enc(id)}/unarchive`),
+    postJson<{ id: string; archived: boolean }>(
+      `/api/sessions/${enc(id)}/unarchive`,
+    ),
   /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
   archiveOlder: (hours: number) =>
-    postJson<{ archived: number; skipped: number }>("/api/sessions/archive-older", { hours }),
+    postJson<{ archived: number; skipped: number }>(
+      "/api/sessions/archive-older",
+      { hours },
+    ),
   /** One page of older transcript history for scroll-up lazy-load (#348 Phase 3). GET —
    *  no CSRF. `before` is the exact turn boundary: seeded from the attach's {"t":"hist"}
    *  frame for the first page, then the returned `cursor` for each next-older page.
    *  Omitting it (no hist frame received) gets the server's width-independent
    *  APPROXIMATE fallback — everything older than the newest page-sized turn window. */
-  history: (id: string, q: { before?: number; lines?: number; cols?: number } = {}) => {
+  history: (
+    id: string,
+    q: { before?: number; lines?: number; cols?: number } = {},
+  ) => {
     const p = new URLSearchParams();
     if (q.before !== undefined) p.set("before", String(q.before));
     if (q.lines !== undefined) p.set("lines", String(q.lines));
     if (q.cols !== undefined) p.set("cols", String(q.cols));
     const qs = p.toString();
-    return getJson<HistoryPage>(`/api/sessions/${enc(id)}/history${qs ? `?${qs}` : ""}`);
+    return getJson<HistoryPage>(
+      `/api/sessions/${enc(id)}/history${qs ? `?${qs}` : ""}`,
+    );
   },
   /** AI review (#356): server-proxied model listing from the configured endpoint — the
    *  API key never reaches the browser. 400 = not configured, 502 = endpoint can't list
    *  (the Settings dropdown falls back to free-text entry). */
   aiReviewModels: (opts?: { refresh?: boolean }) =>
-    getJson<{ models: string[] }>(`/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`),
+    getJson<{ models: string[] }>(
+      `/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`,
+    ),
   /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
    *  endpoint isn't configured; 502 when the review failed (last good result stays).
    *  `mutateJson` so the server's error `detail` (gateway timeout, endpoint HTTP status)
@@ -407,8 +489,10 @@ export const api = {
    *  the replayed conversation tail (the server clamps it again). 409 = endpoint
    *  unconfigured or a question already running; 502 = endpoint failure — `mutateJson`
    *  surfaces the server `detail` either way. CSRF-guarded. */
-  pulseAsk: (query: string, history: { role: "user" | "assistant"; content: string }[]) =>
-    mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
+  pulseAsk: (
+    query: string,
+    history: { role: "user" | "assistant"; content: string }[],
+  ) => mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
   /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
    *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
   orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),
@@ -416,11 +500,28 @@ export const api = {
    *  running; 502 = endpoint failure. Deliberately unlike `pulseScan`, which degrades to a
    *  200: a decision has no useful non-LLM fallback, so it says so rather than returning an
    *  empty action list that reads as "nothing needs you". CSRF-guarded. */
-  orchestrate: () => mutateJson<OrchestratorState_ & { assessment: string }>(
-    "POST",
-    "/api/pulse/orchestrate",
-    {},
-  ),
+  orchestrate: () =>
+    mutateJson<OrchestratorState_ & { assessment: string }>(
+      "POST",
+      "/api/pulse/orchestrate",
+      {},
+    ),
+  /** Approve one orchestrator action and deliver it (#726 Phase 2). Compare-and-execute: the
+   *  server re-verifies the screen immediately before writing, so a session that moved on comes
+   *  back 409 rather than receiving input meant for a different prompt. CSRF-guarded. */
+  approveAction: (id: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/approve`,
+      {},
+    ),
+  /** Decline an action (#726 Phase 2). Terminal — the ledger keeps it as history. */
+  rejectAction: (id: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/reject`,
+      {},
+    ),
   /** In-app notifications (#726 Phase 3) — the channel that always works, regardless of push
    *  permission or platform. */
   notifications: () => getJson<NotificationList>("/api/pulse/notifications"),
@@ -435,9 +536,13 @@ export const api = {
    *  a device is identified by an opaque id + origin — never its endpoint URL, which is a
    *  capability anyone holding it could push with. */
   pushKey: () =>
-    getJson<{ public_key: string; subscriptions: PushSubscriptionInfo[] }>("/api/pulse/push/key"),
+    getJson<{ public_key: string; subscriptions: PushSubscriptionInfo[] }>(
+      "/api/pulse/push/key",
+    ),
   pushSubscribe: (subscription: unknown) =>
-    mutateJson<PushSubscriptionInfo>("POST", "/api/pulse/push/subscribe", { subscription }),
+    mutateJson<PushSubscriptionInfo>("POST", "/api/pulse/push/subscribe", {
+      subscription,
+    }),
   pushUnsubscribe: (id: string) =>
     mutateJson<{ removed: boolean; subscriptions: PushSubscriptionInfo[] }>(
       "POST",
@@ -447,10 +552,13 @@ export const api = {
   /** Server-pulled evidence for one session (#726). Fetched at render time, never cached and
    *  never stored in the ledger, so the operator always reads the CURRENT screen. */
   evidence: (sessionId: string, kind: EvidenceKind) =>
-    getJson<Evidence>(`/api/pulse/evidence/${enc(sessionId)}?kind=${encodeURIComponent(kind)}`, {
-      // "Live" must mean live: never let the HTTP cache answer this one.
-      cache: "no-store",
-    }),
+    getJson<Evidence>(
+      `/api/pulse/evidence/${enc(sessionId)}?kind=${encodeURIComponent(kind)}`,
+      {
+        // "Live" must mean live: never let the HTTP cache answer this one.
+        cache: "no-store",
+      },
+    ),
   /** Per-session Pulse-orchestration opt-out (#726). Managed-by-default; this withdraws (or
    *  restores) agency for ONE session without touching its AI review. CSRF-guarded. */
   setOrchestratorExcluded: (id: string, excluded?: boolean) =>
@@ -463,12 +571,16 @@ export const api = {
    *  Settings panel polls it; read-only, no CSRF. */
   aiActivity: () => getJson<AiActivity>("/api/ai/activity"),
   /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
-  scrollbackInfo: () => getJson<{ bytes: number; files: number }>("/api/scrollback"),
+  scrollbackInfo: () =>
+    getJson<{ bytes: number; files: number }>("/api/scrollback"),
   /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */
   clearScrollback: (scope: "all" | "archived") =>
-    postJson<{ scope: string; removed: number; bytes_freed: number }>("/api/scrollback/clear", {
-      scope,
-    }),
+    postJson<{ scope: string; removed: number; bytes_freed: number }>(
+      "/api/scrollback/clear",
+      {
+        scope,
+      },
+    ),
   /** Sign out: clear the session server-side, then hard-navigate to the login page (#141). */
   logout,
 };

@@ -31,6 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .. import (
+    actuator,
     aitasks,
     engines,
     metadata,
@@ -41,6 +42,7 @@ from .. import (
     pulse,
     pulse_chat,
     review,
+    session_input,
     webpush,
 )
 
@@ -164,14 +166,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "pending": pending,
                 "feed": feed,
                 "expired_now": len(expired),
+                # The verbs the actuator can actually RENDER and deliver. Shipped rather than
+                # duplicated client-side: the UI had its own hardcoded set that included
+                # `dispatch`, which `render()` does not implement, so Approve was offered on
+                # an action the server would always 409. One owner for the set, no drift.
+                "delivering_verbs": sorted(actuator.RENDERABLE_VERBS),
                 **aitasks.snapshot(),
             }
         )
 
     def _pending_and_feed() -> tuple[list[dict], list[dict]]:
+        """`pending` (needs the operator) and `feed` (history) must be DISJOINT.
+
+        The UI renders both lists, so a row appearing in each is shown twice — the same action
+        under "Needs a decision" and again in the activity feed. Filtering the feed here rather
+        than deduplicating in the client keeps the contract in one place; the previous shape
+        only looked right because the e2e helper defaulted `feed` to empty, which hid it.
+        """
         live = orchestrator_ledger.live_actions()
         pending = [r for r in live if r.get("state") in ("proposed", "approved", "escalated")]
-        return pending, orchestrator_ledger.feed(FEED_LIMIT)
+        pending_ids = {r.get("id") for r in pending}
+        feed = [r for r in orchestrator_ledger.feed(FEED_LIMIT) if r.get("id") not in pending_ids]
+        return pending, feed
 
     @app.post("/api/pulse/orchestrate")
     async def run_orchestrator(
@@ -189,6 +205,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             async with aitasks.single_flight("orchestrator", "manual"):
                 report = await orchestrator.run_pass(working_keys=_working_keys())
+                # A manual pass in `yolo` must deliver what it approved too — otherwise
+                # "Run now" behaves differently from the scheduled sweep for no stated reason.
+                await actuator.deliver_pass_actions(report["actions"], registry=registry)
         except aitasks.AlreadyRunning:
             return JSONResponse(
                 {"detail": "an orchestrator pass is already running", **aitasks.snapshot()},
@@ -203,6 +222,69 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": str(e)}, status_code=502)
         pending, feed = await asyncio.to_thread(_pending_and_feed)
         return JSONResponse({**report, "pending": pending, "feed": feed})
+
+    @app.post("/api/pulse/actions/{action_id}/approve")
+    async def approve_action(
+        action_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Approve one action and deliver it — compare-and-execute (#726 Phase 2).
+
+        The precondition is re-verified INSIDE the delivery, immediately before the first byte,
+        not here: a check that runs at approve time and a write that happens milliseconds later
+        are two different moments, and `choose 1` into a screen that moved is exactly the
+        failure this design exists to stop. A moved screen comes back `409 stale`.
+        """
+        try:
+            rec = await actuator.deliver(action_id, registry=registry)
+        except actuator.NotDeliverable as e:
+            return JSONResponse({"detail": str(e)}, status_code=409)
+        if rec.get("state") in ("stale", "expired"):
+            return JSONResponse(
+                {"detail": rec.get("detail") or "the session moved on", **rec}, status_code=409
+            )
+        return JSONResponse(rec)
+
+    @app.post("/api/pulse/actions/{action_id}/reject")
+    async def reject_action(
+        action_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Decline an action. Terminal — the ledger keeps it as history, and the next pass is
+        free to propose something else for that session.
+
+        Compare-and-swap, not a blind write. A plain `transition(..., "rejected")` accepted ANY
+        current state, which broke in two directions: a stale tab could overwrite `delivered`
+        with `rejected`, so the feed claimed nothing was sent when it had been; and a reject
+        racing an in-flight delivery produced `claimed -> rejected -> delivered`, returning 200
+        "rejected" while the bytes were already on their way to the PTY. Rejection is only
+        meaningful while the action is still WAITING, so that is the only thing it may move.
+        """
+        rec = await asyncio.to_thread(
+            orchestrator_ledger.compare_and_set,
+            action_id,
+            orchestrator_ledger.REJECTABLE_STATES,
+            "rejected",
+        )
+        if rec is not None:
+            return JSONResponse(rec)
+        # Distinguish "never existed" from "too late" — the operator needs to know which.
+        cur = await asyncio.to_thread(orchestrator_ledger.get, action_id)
+        if cur is None:
+            return JSONResponse({"detail": "unknown action"}, status_code=404)
+        return JSONResponse(
+            {
+                "detail": (
+                    "that action is already being delivered"
+                    if cur.get("state") == "claimed"
+                    else f"that action is already {cur.get('state')}"
+                ),
+                **cur,
+            },
+            status_code=409,
+        )
 
     # --- notifications + Web Push (#726 Phase 3) --------------------------------------
     # In-app first: the bell always works. Push is the extra that wakes the operator when the
@@ -303,9 +385,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Write against the RESOLVED sidecar key, like review-exclude: for a reconciled
         # opencode session the sidecar lives under the placeholder physical key.
         mkey = metadata.resolve_key(key)
-        if desired is None:
-            desired = not metadata.get(mkey).orchestrator_excluded
-        m = metadata.patch(mkey, orchestrator_excluded=desired)
+        # Under the write fence (#726): `check_precondition` reads this field in the final
+        # guard, which runs BEFORE the write lock is taken, so an opt-out landing in that
+        # window used to be invisible to the fence and the session still received input.
+        # Transacting the read-modify-write here means an in-flight send either finishes
+        # first or sees the bumped session epoch and refuses. Keyed on the PHYSICAL session
+        # key, which is what the fence compares.
+        phys = engines.physical_key(key)
+        with session_input.session_transaction(phys):
+            if desired is None:
+                desired = not metadata.get(mkey).orchestrator_excluded
+            m = metadata.patch(mkey, orchestrator_excluded=desired)
         return JSONResponse({"id": key, "orchestrator_excluded": m.orchestrator_excluded})
 
     @app.get("/api/pulse/evidence/{session_id:path}")

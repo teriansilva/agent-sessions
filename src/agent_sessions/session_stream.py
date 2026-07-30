@@ -29,10 +29,11 @@ import asyncio
 import contextlib
 import logging
 import os
+import threading
 import time
 from typing import TYPE_CHECKING
 
-from . import engines, ptybridge, webterm
+from . import engines, ptybridge, session_input, webterm
 
 log = logging.getLogger("agent_sessions.session_stream")
 
@@ -96,6 +97,8 @@ class SessionStream:
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task[None] | None = None
         self._subs: set[asyncio.Queue[bytes]] = set()
+        self._write_lock: threading.Lock | None = None
+        self._writer_token: int | None = None
         self.ended = asyncio.Event()
 
     async def start(self) -> None:
@@ -129,6 +132,14 @@ class SessionStream:
             return
         os.close(slave)
         self._master = master
+        # Declare this stream the current byte-owner so the orchestrator's `send_input` seam
+        # can reach a HEADLESS session (#726). Released in `stop()`. The registry hands
+        # ownership to the WS bridge on attach, which registers itself the same way — so a
+        # caller never has to know (or guess) which of the two is current.
+        self._write_lock = threading.Lock()
+        self._writer_token = session_input.register_writer(
+            self.key, master, self._write_lock, "headless"
+        )
         # This headless attach also triggers a dtach screen replay; suppress that burst
         # from the working signal (#195) — otherwise startup discovery would light every
         # session's dot for the grace window. Real output after it stamps normally.
@@ -194,6 +205,11 @@ class SessionStream:
             # helper as the viewer bridge so the two paths cannot drift.
             await webterm.terminate_then_kill(self._proc, timeout=2.0)
             self._proc = None
+        if self._writer_token is not None:
+            # Unregister BEFORE the fd is closed: a write racing teardown must find no writer
+            # rather than a closed fd.
+            session_input.unregister_writer(self.key, self._writer_token)
+            self._writer_token = None
         if self._master is not None:
             with contextlib.suppress(OSError):
                 os.close(self._master)
@@ -284,6 +300,12 @@ class SessionRegistry:
         False when the LAST viewer detaches.
         """
         async with self._lock:
+            # Invalidate any orchestrator write authorized against the previous
+            # viewer state (#726). The write path lives in a worker thread and
+            # cannot take this asyncio lock, so the epoch is the only thing that
+            # lets an attach here fence a send already in flight.
+            phys = self._resolve_phys(engine, sid)[2]
+            session_input.bump_epoch(phys)
             if self._closed:
                 return
             phys_engine, phys_sid, key = self._resolve_phys(engine, sid)
@@ -317,6 +339,12 @@ class SessionRegistry:
         master is still alive, hand byte ownership back to a fresh
         server-owned SessionStream; else drop the entry."""
         async with self._lock:
+            # Invalidate any orchestrator write authorized against the previous
+            # viewer state (#726). The write path lives in a worker thread and
+            # cannot take this asyncio lock, so the epoch is the only thing that
+            # lets an attach here fence a send already in flight.
+            phys = self._resolve_phys(engine, sid)[2]
+            session_input.bump_epoch(phys)
             if self._closed:
                 return
             phys_engine, phys_sid, key = self._resolve_phys(engine, sid)

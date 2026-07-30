@@ -36,7 +36,7 @@ import logging
 import os
 import time
 
-from . import aitasks, orchestrator, prefs, review
+from . import actuator, aitasks, orchestrator, prefs, review
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger("agent_sessions.orchestrator_loop")
@@ -192,6 +192,10 @@ async def sweep(registry=None) -> dict:
 
     async with aitasks.single_flight("orchestrator", "auto"):
         report = await orchestrator.run_pass(working_keys=working, offset=_next_offset)
+        # Deliver what the pass auto-approved. Without this the `yolo` tier is inert: the pass
+        # records `approved` and nothing ever sends it, so the operator is told the orchestrator
+        # acts on its own while it waits for a tap it was never supposed to need.
+        delivered = await actuator.deliver_pass_actions(report["actions"], registry=registry)
     _next_offset = int(report.get("next_offset") or 0)
 
     # Only advance the fingerprint on a pass that actually completed, so a failed call
@@ -220,6 +224,7 @@ async def sweep(registry=None) -> dict:
     return {
         "ran": True,
         "actions": len(report["actions"]),
+        "delivered": len(delivered),
         "expired": len(expired),
         "truncated": bool(report.get("truncated")),
     }
