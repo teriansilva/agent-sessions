@@ -944,9 +944,23 @@ test("the #155 returnTo survives the bare-/settings redirect and tab switches", 
 
 // ---- About tab ----
 
-test("About: version, creator link, and a safe coffee link", async () => {
+test("About: version, license, creator link, and a safe coffee link", async () => {
   renderSettings("dark", "#ffb000", "/settings/about");
   await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+
+  // AGPL-3.0 §13 makes the license + source offer load-bearing for a network-served build,
+  // so both links are asserted rather than left to drift with a copy edit.
+  const license = screen.getByRole("link", { name: "AGPL-3.0-or-later" });
+  expect(license).toHaveAttribute(
+    "href",
+    "https://github.com/teriansilva/agent-sessions/blob/main/LICENSE",
+  );
+  expect(license).toHaveAttribute("target", "_blank");
+  expect(license).toHaveAttribute("rel", "noopener noreferrer");
+
+  const source = screen.getByRole("link", { name: /source code/i });
+  expect(source).toHaveAttribute("href", "https://github.com/teriansilva/agent-sessions");
+  expect(source).toHaveAttribute("rel", "noopener noreferrer");
 
   const link = screen.getByRole("link", { name: "Marcus Braun" });
   expect(link).toHaveAttribute("href", "https://superstatus.io");

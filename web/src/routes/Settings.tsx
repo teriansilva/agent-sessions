@@ -57,6 +57,12 @@ import styles from "./Settings.module.css";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 const SOURCE_URL = "https://github.com/teriansilva/agent-sessions";
+// AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
+// About panel already links SOURCE_URL; naming the license next to it makes the offer legible
+// rather than implied — and tells an operator running a *modified* build what they owe their
+// own users (repoint both at your fork).
+const LICENSE = "AGPL-3.0-or-later";
+const LICENSE_URL = `${SOURCE_URL}/blob/main/LICENSE`;
 // Contact address kept out of the markup as a literal string (basic spam-scraper
 // defence): assembled from the user + domain parts at runtime, so neither the served
 // HTML nor a naive grep for the joined address finds it.
@@ -1822,6 +1828,17 @@ export function Settings() {
               <dl className={styles.meta}>
                 <dt>Version</dt>
                 <dd>{version ?? "…"}</dd>
+                <dt>License</dt>
+                <dd>
+                  <a
+                    className={styles.nameLink}
+                    href={LICENSE_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {LICENSE}
+                  </a>
+                </dd>
                 <dt>Created by</dt>
                 <dd>
                   <a

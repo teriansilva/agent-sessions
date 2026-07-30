@@ -91,6 +91,23 @@ model).
 - Update the docs (`README.md` / `CLAUDE.md` / `docs/`) when you change behavior.
 - For UI changes, include before/after screenshots — see [`docs/visual-review.md`](docs/visual-review.md).
 
+## Licensing of contributions
+
+BattleLab is licensed **AGPL-3.0-or-later** (see [`LICENSE`](LICENSE)).
+
+Contributions are **inbound=outbound**: by opening a pull request you agree that your
+contribution is licensed under the same AGPL-3.0-or-later terms as the project, and you confirm
+you have the right to license it that way (it's your own work, or you have permission from
+whoever owns it). No copyright assignment is requested and no CLA needs signing — you keep the
+copyright in what you wrote.
+
+Please don't paste in code under an incompatible license. Permissive licenses (MIT, ISC, BSD,
+Apache-2.0) are fine to vendor with their notices intact; GPL-2.0-**only** or proprietary code
+is not, because it can't be redistributed under AGPL-3.0.
+
+The **BattleLab** name and logo are not covered by the code license — see
+[`TRADEMARK.md`](TRADEMARK.md).
+
 ## Code of conduct
 
 Be respectful and constructive. We follow the spirit of the

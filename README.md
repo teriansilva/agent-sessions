@@ -12,7 +12,7 @@
 with a real terminal that survives reboots and deploys, and an end-to-end-encrypted blind relay so you can drive your
 whole fleet from a laptop or your phone.
 
-![license: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity%20·%20kimi-ffb000)
+![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity%20·%20kimi-ffb000)
 
 ### Why
 
@@ -265,10 +265,38 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the full reference in [`docs/refere
 
 ## License
 
-Business Source License 1.1 (BSL 1.1) — see [`LICENSE`](LICENSE). The source is
-available and auditable, and you may self-host it freely for your own use.
-What's **not** granted is offering the Licensed Work to third parties on a
-hosted, managed, or embedded basis that competes with the Licensor's products
-(such as BattleLab Cloud / Pro) — that requires a separate commercial license.
-Each released version converts to the Apache License 2.0 four years after its
-release (Change Date `2030-07-15` for the current version).
+**GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)** — see
+[`LICENSE`](LICENSE). Copyright © 2026 Marcus Braun.
+
+BattleLab is free and open source. You may use, study, modify, self-host, and
+redistribute it. Self-hosting for yourself, your team, or your company — the
+overwhelmingly common case — carries no additional obligation beyond keeping the
+license and copyright notices intact.
+
+**If you modify BattleLab and let other people use it over a network**, AGPL
+section 13 requires you to offer those users the Corresponding Source of *your*
+modified version. Settings → About links the source for exactly this reason; if
+you run a modified build, point that link at your own fork. This is the only
+obligation most operators will ever encounter, and it is what keeps
+improvements flowing back to everyone rather than into a closed fork.
+
+**Trademarks are not licensed with the code.** The AGPL grants no rights in the
+**BattleLab** name, wordmark, or logo — see [`TRADEMARK.md`](TRADEMARK.md). Fork
+the code freely; give your fork its own name.
+
+**Commercial licensing** is available for cases AGPL doesn't fit — embedding
+BattleLab in a proprietary product, or an organisation whose policy bars AGPL
+dependencies. BattleLab Cloud and BattleLab Pro are separate, separately
+licensed products. Enquiries: [battlelab.superstatus.io](https://battlelab.superstatus.io).
+
+### Relicensed from BSL 1.1
+
+BattleLab was previously distributed under the Business Source License 1.1,
+which is source-available but [not an open-source
+license](https://mariadb.com/bsl11/). It is now AGPL-3.0-or-later.
+
+To be unambiguous about what that does **not** take away: if you received a
+version under BSL 1.1, your rights in **that version** are unchanged, including
+its stated conversion to the Apache License 2.0 on its Change Date
+(`2030-07-15`). Relicensing applies going forward and revokes nothing already
+granted.
