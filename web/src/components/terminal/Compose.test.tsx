@@ -5,7 +5,12 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { appendSent, readSent } from "../../lib/sentHistory";
-import { Compose, DICTATION_IDLE_STOP_MS, type ComposeHandle } from "./Compose";
+import {
+  Compose,
+  DICTATION_FINALIZE_MS,
+  DICTATION_IDLE_STOP_MS,
+  type ComposeHandle,
+} from "./Compose";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -48,7 +53,13 @@ class FakeRecognition {
   onend: ((ev: Event) => void) | null = null;
   onstart: ((ev: Event) => void) | null = null;
   start = vi.fn();
-  stop = vi.fn(() => this.onend?.(new Event("end")));
+  // #738: a real engine does NOT end the moment you call stop() — it stops capturing and then
+  // delivers what it already heard. Set `deferEnd` to model that gap and drive `endSession()` by
+  // hand; the default (end immediately) keeps every pre-#738 test behaving as before.
+  deferEnd = false;
+  stop = vi.fn(() => {
+    if (!this.deferEnd) this.onend?.(new Event("end"));
+  });
   abort = vi.fn();
   constructor() {
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- test double exposes its instance
@@ -94,11 +105,21 @@ const installSpeech = () => {
   });
 };
 
-// Tap the mic and wait for the async getUserMedia grant to spin up the recognizer. Uses the exact
-// aria-label (not the /start voice input/i regex the tests use) so it isn't itself rewritten.
-async function startVoice(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+// #738: the mic is a HOLD, not a toggle — every test that used to "tap the mic" now presses and
+// keeps holding, and releases explicitly via `releaseVoice`. `user.click` would press AND release,
+// which is a complete dictation rather than a started one.
+const micChip = () => screen.getByRole("button", { name: /voice input/i });
+const HOLD = { pointerId: 1, pointerType: "mouse", button: 0 };
+
+/** Press and HOLD the mic, then wait for the async getUserMedia grant to spin up the recognizer. */
+async function startVoice() {
+  fireEvent.pointerDown(micChip(), HOLD);
   await waitFor(() => expect(lastRecog).not.toBeNull());
+}
+
+/** Let go. Capture ends but the engine still delivers its tail — see the finalizing tests. */
+function releaseVoice(pointerId = 1) {
+  fireEvent.pointerUp(micChip(), { ...HOLD, pointerId });
 }
 
 // #711: the snapshot collapse weighs per-entry arrival times read from performance.now(). Tests
@@ -136,21 +157,24 @@ test("the mic chip is hidden when the browser has no SpeechRecognition (#483)", 
   expect(screen.queryByRole("button", { name: /voice input/i })).not.toBeInTheDocument();
 });
 
-test("the mic chip renders when SpeechRecognition is available and is icon-only (#483)", () => {
+test("the mic chip carries the icon AND a 'Push to talk' label (#483/#738)", () => {
+  // Was an icon-only invariant (#483). Deliberately inverted in #738: a bare icon cannot say "hold
+  // me", so the label is now part of the contract — this test exists to stop it drifting back or
+  // changing wording by accident.
   installSpeech();
   renderCompose();
   const mic = screen.getByRole("button", { name: /start voice input/i });
-  expect(mic.textContent ?? "").toBe(""); // icon-only invariant: aria-label + title are the affordance
+  expect(mic.textContent).toMatch(/push to talk/i);
+  expect(mic.querySelector("svg")).not.toBeNull(); // icon kept alongside the label
   expect(mic).toHaveAttribute("aria-label", expect.stringMatching(/voice input/i));
-  expect(mic).toHaveAttribute("title", expect.stringMatching(/dictate/i));
+  expect(mic).toHaveAttribute("title", expect.stringMatching(/hold/i));
   expect(mic).toHaveAttribute("aria-pressed", "false");
 });
 
-test("tapping the mic starts dictation, streams the transcript in, then tapping again stops (#483)", async () => {
+test("holding the mic starts dictation, streams the transcript in, then releasing stops (#483/#738)", async () => {
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   expect(lastRecog).not.toBeNull();
   expect(lastRecog!.start).toHaveBeenCalled();
   expect(lastRecog!.continuous).toBe(true);
@@ -160,7 +184,7 @@ test("tapping the mic starts dictation, streams the transcript in, then tapping 
   act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("deploy the staging build");
 
-  await user.click(screen.getByRole("button", { name: /stop voice input/i }));
+  releaseVoice();
   expect(lastRecog!.stop).toHaveBeenCalled();
   expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
 });
@@ -171,7 +195,7 @@ test("dictation appends to already-typed text and streams interim then final (#4
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await user.type(ta, "hello");
-  await startVoice(user);
+  await startVoice();
   act(() => lastRecog!.emit([{ transcript: "world", isFinal: false }]));
   expect(ta.value).toBe("hello world"); // interim shows live, appended after the typed text
   act(() => lastRecog!.emit([{ transcript: "world wide", isFinal: true }]));
@@ -180,9 +204,8 @@ test("dictation appends to already-typed text and streams interim then final (#4
 
 test("a permission-denied error surfaces a note and leaves the mic idle (#483)", async () => {
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   act(() => lastRecog!.fail("not-allowed"));
   expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
@@ -192,7 +215,7 @@ test("collapsing the compose box stops an active dictation (#483)", async () => 
   installSpeech();
   const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   expect(lastRecog!.start).toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: /collapse compose/i }));
   expect(lastRecog!.stop).toHaveBeenCalled();
@@ -200,9 +223,8 @@ test("collapsing the compose box stops an active dictation (#483)", async () => 
 
 test("unmounting aborts an active dictation so no recognizer outlives the box (#483)", async () => {
   installSpeech();
-  const user = userEvent.setup();
   const { unmount } = renderCompose();
-  await startVoice(user);
+  await startVoice();
   unmount();
   expect(lastRecog!.abort).toHaveBeenCalled();
 });
@@ -211,10 +233,9 @@ test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicate
   // Chrome re-fires onresult repeatedly for the SAME finalized utterance; the handler must be
   // idempotent (rebuild from the cumulative results list), not accumulate → "said once, typed 10×".
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   for (let i = 0; i < 6; i++) {
     act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
   }
@@ -227,10 +248,9 @@ test("stacked interim snapshots (Android Chrome) collapse to the last one, not a
   // Concatenating the whole list types the prefix chain: "thisthis isthis is athis is a test".
   // Per spec only the LAST entry may be non-final, so stale non-final entries are dropped.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   act(() =>
     lastRecog!.emit([
       { transcript: "this", isFinal: false },
@@ -255,10 +275,9 @@ test("multiple finalized utterances still concatenate in order (#487)", async ()
   // The stale-interim guard must not swallow genuine multi-utterance finals, which are disjoint
   // segments rather than growing snapshots of one another.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   act(() =>
     lastRecog!.emit([
       { transcript: "deploy the build", isFinal: true },
@@ -274,10 +293,9 @@ test("replays the captured Android Chrome 150 session — types the sentence onc
   // finalized empty strings. On v0.13.0 this typed
   // "this this is this is this is this is a this is a test" into the compose box.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   const captured = ["", "", "this", "this is", "this is", "this is", "this is a", "this is a test"];
   const capturedAtMs = [1931, 2192, 2519, 2733, 3059, 3459, 3620, 4107];
   const clock = mockClock();
@@ -296,10 +314,9 @@ test("a compliant engine's repeated utterance survives — 'yes' twice stays 'ye
   // actually behaves: each utterance is narrated through an interim entry first, so neither final
   // materialized pre-finalized — and an interim-born entry never supersedes its neighbour.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   act(() => lastRecog!.emit([{ transcript: "yes", isFinal: false }]));
   act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }]));
   act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }, { transcript: "yes", isFinal: false }]));
@@ -313,10 +330,9 @@ test("a compliant engine's 'go' then 'go now' keeps both utterances (#711)", asy
   // outside the snapshot burst window of the first.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 1000;
   act(() => lastRecog!.emit([{ transcript: "go", isFinal: false }]));
   clock.now = 1600;
@@ -332,10 +348,9 @@ test("a final-only engine's separate utterances survive when spoken apart (#711 
   // three genuine prefix-extending utterances, all kept.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 1000;
   act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }]));
   clock.now = 3200;
@@ -358,10 +373,9 @@ test("one interim does not exempt later stacked all-final snapshots (#711 follow
   // never a session-wide classification.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 700;
   act(() => lastRecog!.emit([{ transcript: "", isFinal: true }]));
   clock.now = 1000;
@@ -392,10 +406,9 @@ test("two finals first exposed by ONE event both survive — batched delivery (#
   // their texts are prefix-related.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 1000;
   act(() =>
     lastRecog!.emit([
@@ -409,10 +422,9 @@ test("two finals first exposed by ONE event both survive — batched delivery (#
 test("an interim-tracked utterance followed by a real second one keeps both (#711)", async () => {
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 1000;
   act(() => lastRecog!.emit([{ transcript: "ship", isFinal: false }]));
   clock.now = 1600;
@@ -427,10 +439,9 @@ test("a re-punctuated snapshot supersedes its predecessor on a stacking engine (
   // one pre-finalized snapshot per event at interim cadence.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   const snapshots = ["", "hey claude", "Hey, Claude — can you", "Hey, Claude, can you deploy?"];
   for (let n = 1; n <= snapshots.length; n++) {
     clock.now = 1000 + n * 300;
@@ -444,10 +455,9 @@ test("a distinct utterance spoken after a pause is never swallowed by the collap
   // burst window, so the trailing-word revision rule ("and" → "android") does not apply.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   clock.now = 1000;
   act(() => lastRecog!.emit([{ transcript: "and", isFinal: true }]));
   clock.now = 3000;
@@ -465,9 +475,8 @@ test("a denied getUserMedia grant names the reason and never builds a recognizer
   // never start a recognizer (so there's nothing to leak) — instead of the old silent "blocked".
   installSpeech();
   gumReject = "NotAllowedError";
-  const user = userEvent.setup();
   renderCompose();
-  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.pointerDown(micChip(), HOLD);
   expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
   expect(lastRecog).toBeNull(); // grant refused up front — no recognizer created
   expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
@@ -477,9 +486,8 @@ test("Android Chrome's service-not-allowed on a continuous recognizer retries on
   // Android Chrome rejects a continuous recognizer with `service-not-allowed`; we fall back once to
   // a single-utterance recognizer rather than surfacing an error.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   expect(first.continuous).toBe(true);
   act(() => first.fail("service-not-allowed"));
@@ -499,9 +507,8 @@ test("a getUserMedia grant resolving AFTER unmount builds no stale recognizer (#
     configurable: true,
     value: { getUserMedia: vi.fn(() => new Promise((r) => (resolveGrant = r))) },
   });
-  const user = userEvent.setup();
   const { unmount } = renderCompose();
-  await user.click(screen.getByRole("button", { name: "Start voice input" }));
+  fireEvent.pointerDown(micChip(), HOLD);
   expect(lastRecog).toBeNull(); // grant still pending — no recognizer yet
   unmount();
   await act(async () => {
@@ -513,9 +520,8 @@ test("a getUserMedia grant resolving AFTER unmount builds no stale recognizer (#
 test("an unmapped speech error names itself instead of a generic 'microphone blocked' (#659 follow-up)", async () => {
   // The whole point of the follow-up: never hide the real failure behind a generic string again.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   act(() => lastRecog!.fail("some-odd-code"));
   expect(await screen.findByText(/voice input error: some-odd-code/i)).toBeInTheDocument();
 });
@@ -528,10 +534,9 @@ test("an unmapped speech error names itself instead of a generic 'microphone blo
 
 test("the engine ending its own session re-arms dictation instead of stopping it (#736)", async () => {
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   act(() => first.emit([{ transcript: "deploy the staging build", isFinal: true }]));
   expect(ta.value).toBe("deploy the staging build");
@@ -554,10 +559,9 @@ test("a no-speech pause is survivable, not terminal, and shows no error (#736)",
   // Chrome's endpointer reports `no-speech` and ends the session when the user stops to think.
   // That is a pause in a dictation, not a failed one.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   act(() => first.emit([{ transcript: "first sentence", isFinal: true }]));
   act(() => first.fail("no-speech"));
@@ -574,9 +578,8 @@ test("a fatal speech error still ends dictation — it is not re-armed (#736)", 
   // The re-arm must not resurrect a dictation the engine genuinely refused: `not-allowed` and its
   // siblings clear intent, so the following `end` event stops for good.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   act(() => first.fail("not-allowed"));
   act(() => first.endSession());
@@ -590,9 +593,8 @@ test("dictation gives up (and says so) after repeated dead starts instead of spi
   // An engine that ends every session immediately without hearing a word would otherwise be
   // re-armed in a hot loop. Bounded, and the give-up is announced rather than silent.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   for (let i = 0; i < 3; i++) {
     const r = lastRecog!;
     act(() => r.endSession());
@@ -612,9 +614,8 @@ test("an open, silent recognizer that never fires `end` still releases the mic (
   // `shouldAdvanceTime` keeps RTL's waitFor / userEvent polling alive while the clock is faked;
   // without it `startVoice`'s waitFor never ticks and the test hangs rather than testing anything.
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   act(() => first.emit([{ transcript: "hello", isFinal: true }])); // pushes the deadline out
   await act(async () => {
@@ -636,9 +637,8 @@ test("speech keeps pushing the idle deadline out — a long dictation is never c
   // `shouldAdvanceTime` keeps RTL's waitFor / userEvent polling alive while the clock is faked;
   // without it `startVoice`'s waitFor never ticks and the test hangs rather than testing anything.
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   for (let i = 0; i < 4; i++) {
     act(() => first.emit([{ transcript: `sentence ${i}`, isFinal: true }]));
@@ -655,9 +655,8 @@ test("a long silence releases the mic rather than re-arming forever (#736)", asy
   // Tapping the mic and walking away must not hold the microphone behind an indefinitely lit chip.
   installSpeech();
   const clock = mockClock();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   clock.now = 1000;
   act(() => first.emit([{ transcript: "hello", isFinal: true }]));
@@ -672,15 +671,14 @@ test("stopping while a session end is in flight cancels the queued re-arm (#736)
   // The re-arm is deferred a tick (Chrome can still be tearing the old session down). A stop
   // landing inside that window must win — otherwise tapping stop reopens the mic.
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   const first = lastRecog!;
   act(() => first.emit([{ transcript: "hello", isFinal: true }]));
   act(() => first.endSession()); // queues the re-arm
   // Synchronous click: `user.click` awaits internally, which would flush the queued tick first and
   // test nothing. This lands the stop while the re-arm is genuinely still pending.
-  fireEvent.click(screen.getByRole("button", { name: "Stop voice input" }));
+  releaseVoice();
   await flushRearm();
   expect(recogCount).toBe(1);
   expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
@@ -688,13 +686,226 @@ test("stopping while a session end is in flight cancels the queued re-arm (#736)
 
 test("collapsing the compose box during a session end cancels the re-arm too (#736)", async () => {
   installSpeech();
-  const user = userEvent.setup();
   renderCompose();
-  await startVoice(user);
+  await startVoice();
   act(() => lastRecog!.endSession());
   fireEvent.click(screen.getByRole("button", { name: /collapse compose/i })); // sync, see above
   await flushRearm();
   expect(recogCount).toBe(1);
+});
+
+// --- #738: press-and-hold, and a release that FINISHES the transcription ------------------------
+
+test("releasing stops capture but the trailing final still lands in the box (#738)", async () => {
+  // The defect this fixes: the old teardown detached `onresult` before `stop()`, so the phrase the
+  // engine was still finalizing landed nowhere. Release must keep listening for exactly that.
+  installSpeech();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice();
+  lastRecog!.deferEnd = true; // the engine has not finished yet
+  act(() => lastRecog!.emit([{ transcript: "deploy the staging", isFinal: false }]));
+
+  releaseVoice();
+  expect(lastRecog!.stop).toHaveBeenCalled();
+  expect(lastRecog!.abort).not.toHaveBeenCalled(); // stop() keeps the tail; abort() would bin it
+  expect(micChip()).toHaveAttribute("aria-disabled", "true"); // finalizing
+  expect(micChip()).toHaveAttribute("aria-pressed", "false"); // the mic itself is off
+
+  // …and now the engine delivers what it heard before the release.
+  act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  expect(ta.value).toBe("deploy the staging build");
+
+  act(() => lastRecog!.endSession()); // engine confirms it is done
+  expect(micChip()).toHaveAttribute("aria-disabled", "false");
+  expect(recogCount).toBe(1); // the release never re-armed (#736's loop must not fight #738)
+});
+
+test("a hold arriving during the finishing window is ignored, not queued (#738, Hermes)", async () => {
+  // Starting inside the window would take the discard path on a recognizer that still owes us its
+  // last result — dropping exactly the phrase the release is waiting for.
+  installSpeech();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice();
+  lastRecog!.deferEnd = true;
+  const first = lastRecog!;
+  act(() => first.emit([{ transcript: "hello wor", isFinal: false }]));
+  releaseVoice();
+
+  fireEvent.pointerDown(micChip(), HOLD); // impatient re-press, mid-finalize
+  expect(recogCount).toBe(1); // no second recognizer
+  expect(first.abort).not.toHaveBeenCalled();
+  expect(first.onresult).not.toBeNull(); // the handler that still owes us the tail is intact
+
+  act(() => first.emit([{ transcript: "hello world", isFinal: true }]));
+  expect(ta.value).toBe("hello world"); // exactly once, not dropped and not doubled
+  act(() => first.endSession());
+  expect(micChip()).toHaveAttribute("aria-disabled", "false"); // next hold is free to start
+});
+
+test("an engine that never ends after stop() still frees the chip (#738)", async () => {
+  installSpeech();
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  renderCompose();
+  await startVoice();
+  lastRecog!.deferEnd = true; // …and never sends `end` at all
+  releaseVoice();
+  expect(micChip()).toHaveAttribute("aria-disabled", "true");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DICTATION_FINALIZE_MS + 50);
+  });
+  expect(micChip()).toHaveAttribute("aria-disabled", "false"); // fallback tore it down
+  expect(micChip()).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a second finger neither restarts nor releases an active hold (#738, Hermes)", async () => {
+  installSpeech();
+  renderCompose();
+  await startVoice(); // pointerId 1 owns the hold
+  fireEvent.pointerDown(micChip(), { ...HOLD, pointerId: 2 }); // a stray thumb
+  expect(recogCount).toBe(1);
+  releaseVoice(2); // …and its release is not ours either
+  expect(lastRecog!.stop).not.toHaveBeenCalled();
+  expect(micChip()).toHaveAttribute("aria-pressed", "true"); // still recording
+  releaseVoice(1); // the owning pointer does end it
+  expect(lastRecog!.stop).toHaveBeenCalled();
+});
+
+test("sliding off the chip mid-sentence does NOT cut the recording (#738)", async () => {
+  // The deliberate divergence from the connect-page hold gate (#690), which cancels on pointerleave:
+  // leaving a 34px chip is not letting go, and truncating there is the original complaint.
+  installSpeech();
+  renderCompose();
+  await startVoice();
+  fireEvent.pointerLeave(micChip(), HOLD);
+  fireEvent.pointerOut(micChip(), HOLD);
+  expect(lastRecog!.stop).not.toHaveBeenCalled();
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+});
+
+test("holding Space outside a text field is push-to-talk; releasing it stops (#738)", async () => {
+  installSpeech();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  fireEvent.keyDown(document.body, { key: " " });
+  await waitFor(() => expect(lastRecog).not.toBeNull());
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+  act(() => lastRecog!.emit([{ transcript: "spoken with the keyboard", isFinal: true }]));
+  fireEvent.keyUp(document.body, { key: " " });
+  expect(lastRecog!.stop).toHaveBeenCalled();
+  expect(ta.value).toBe("spoken with the keyboard");
+});
+
+test("Space auto-repeat while held does not restart dictation (#738)", async () => {
+  installSpeech();
+  renderCompose();
+  fireEvent.keyDown(document.body, { key: " " });
+  await waitFor(() => expect(lastRecog).not.toBeNull());
+  fireEvent.keyDown(document.body, { key: " ", repeat: true });
+  fireEvent.keyDown(document.body, { key: " ", repeat: true });
+  expect(recogCount).toBe(1); // OS auto-repeat is one sustained press, not three
+});
+
+test("Space stays a space in the compose box, the terminal, and on other controls (#738)", async () => {
+  // The failure mode this guards: a global hotkey swallowing a keystroke meant for the agent.
+  installSpeech();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  fireEvent.keyDown(ta, { key: " " }); // the compose textarea
+  expect(lastRecog).toBeNull();
+
+  // xterm focuses a hidden textarea, so a Space meant for the PTY looks exactly like this.
+  const term = document.createElement("textarea");
+  term.className = "xterm-helper-textarea";
+  document.body.appendChild(term);
+  fireEvent.keyDown(term, { key: " " });
+  expect(lastRecog).toBeNull();
+
+  // Space is the native activation key of a button — it must keep activating it.
+  fireEvent.keyDown(screen.getByRole("button", { name: /^send/i }), { key: " " });
+  expect(lastRecog).toBeNull();
+
+  // A modifier combo is somebody's shortcut, not a hold.
+  fireEvent.keyDown(document.body, { key: " ", ctrlKey: true });
+  expect(lastRecog).toBeNull();
+  term.remove();
+});
+
+test("Space does nothing while a dialog owns the keyboard (#738)", async () => {
+  installSpeech();
+  renderCompose();
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  document.body.appendChild(dialog);
+  fireEvent.keyDown(document.body, { key: " " });
+  expect(lastRecog).toBeNull();
+  dialog.remove();
+});
+
+test("Space during a POINTER-owned hold cannot steal it or bin the tail (#738, Hermes)", async () => {
+  // Hermes reproduced this in a browser: ownership was enforced among pointers but not ACROSS input
+  // kinds, so a Space press while the chip was held reached startDictation(), which saw a live
+  // recognizer and took the DISCARD path — killing the held session and the phrase it was
+  // finalizing. The first input to take the hold keeps it.
+  installSpeech();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(); // pointer owns the hold
+  const held = lastRecog!;
+  held.deferEnd = true;
+  act(() => held.emit([{ transcript: "mid sentence", isFinal: false }]));
+
+  fireEvent.keyDown(document.body, { key: " " }); // …and someone leans on Space
+  expect(held.stop).not.toHaveBeenCalled(); // the exact symptom Hermes measured (stopped 0 → 1)
+  expect(held.abort).not.toHaveBeenCalled();
+  expect(recogCount).toBe(1); // no replacement session
+  expect(micChip()).toHaveAttribute("aria-pressed", "true"); // still the pointer's hold
+
+  fireEvent.keyUp(document.body, { key: " " }); // a key that never owned it cannot release it either
+  expect(held.stop).not.toHaveBeenCalled();
+
+  releaseVoice(); // only the owning pointer ends it — and the tail still lands
+  act(() => held.emit([{ transcript: "mid sentence complete", isFinal: true }]));
+  expect(ta.value).toBe("mid sentence complete");
+});
+
+test("a pointer press during a KEY-owned hold is ignored too (#738, Hermes)", async () => {
+  installSpeech();
+  renderCompose();
+  fireEvent.keyDown(document.body, { key: " " });
+  await waitFor(() => expect(lastRecog).not.toBeNull());
+  const held = lastRecog!;
+  fireEvent.pointerDown(micChip(), HOLD); // the mirror case
+  expect(recogCount).toBe(1);
+  expect(held.stop).not.toHaveBeenCalled();
+  releaseVoice(); // …and that pointer's release is not the owner's either
+  expect(held.stop).not.toHaveBeenCalled();
+  fireEvent.keyUp(document.body, { key: " " }); // the owning key does end it
+  expect(held.stop).toHaveBeenCalled();
+});
+
+test("releasing a DIFFERENT key does not end a key-owned hold (#738, Hermes)", async () => {
+  // `keyHoldRef` records which key owns the hold, so an Enter keyup can't end a Space hold.
+  installSpeech();
+  renderCompose();
+  fireEvent.keyDown(document.body, { key: " " });
+  await waitFor(() => expect(lastRecog).not.toBeNull());
+  fireEvent.keyUp(document.body, { key: "Enter" });
+  expect(lastRecog!.stop).not.toHaveBeenCalled();
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+  fireEvent.keyUp(document.body, { key: " " });
+  expect(lastRecog!.stop).toHaveBeenCalled();
+});
+
+test("the window losing focus mid-hold releases the mic (#738)", async () => {
+  installSpeech();
+  renderCompose();
+  await startVoice();
+  fireEvent.blur(window); // alt-tab with the button still held
+  expect(lastRecog!.stop).toHaveBeenCalled();
+  expect(micChip()).toHaveAttribute("aria-pressed", "false");
 });
 
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {

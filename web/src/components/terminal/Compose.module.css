@@ -210,8 +210,27 @@
    doesn't flex. Idle inherits the amber hover/active; recording (.micOn) switches to the recording-
    red LED with a slow pulse ring. --rec is a local recording-red (NOT the brand accent or a status
    LED), darkened on the light theme for contrast. */
+/* #738: no longer the 34px icon-only chip — it carries "Push to talk", because a bare icon can't
+   say "hold me". `touch-action`/`user-select`/`-webkit-touch-callout` keep a long press a HOLD
+   rather than a text-selection drag or an iOS callout. Width is intrinsic and the label text never
+   changes between states: a control being physically held must not resize under the finger. */
 .mic {
-  width: 34px;
+  gap: 6px;
+  padding: 0 10px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.micLabel {
+  white-space: nowrap;
+}
+/* Released, engine still delivering: the mic is OFF (so never the recording red), and the chip
+   refuses the next hold until the tail lands — dashed + muted says "not yours yet". */
+.micFinalizing {
+  color: var(--text-3);
+  border-style: dashed;
+  cursor: default;
 }
 .micOn {
   --rec: #ff5a5a;

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   type ClipboardEvent as ReactClipboardEvent,
+  type PointerEvent as ReactPointerEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -57,7 +58,8 @@ const DRAFT_SAVE_DEBOUNCE_MS = 700;
 const draftSignature = (text: string, attachments: Attachment[]): string =>
   JSON.stringify({ t: text, a: attachments.map((x) => x.path) });
 
-/** Push-to-talk dictation (#483): the browser's own speech engine, vendor-prefixed on Chromium.
+/** Push-to-talk dictation (#483, a real press-and-hold since #738): the browser's own speech
+ *  engine, vendor-prefixed on Chromium.
  *  Read lazily (not a module constant) so tests can install a stub on `window` before render and
  *  so an unsupported browser (e.g. Firefox) simply yields `undefined` → the mic chip isn't shown. */
 const getSpeechRecognition = (): SpeechRecognitionStatic | undefined =>
@@ -71,7 +73,7 @@ const joinSpoken = (base: string, spoken: string): string => {
   return /\s$/.test(base) ? base + spoken : `${base} ${spoken}`;
 };
 
-/** Dictation outlives the ENGINE's session, not just the user's tap (#736).
+/** Dictation outlives the ENGINE's session, not just the user's hold (#736).
  *
  *  A `SpeechRecognition` session is not a recording the user controls — the engine ends it on its
  *  own: Chrome's endpointer gives up on a silent stretch (`no-speech` → `end`), the service caps a
@@ -82,8 +84,8 @@ const joinSpoken = (base: string, spoken: string): string => {
  *  unbounded mic hold or a hot restart loop:
  *
  *    • `DICTATION_IDLE_STOP_MS` — silence, measured from the last words actually heard, after which
- *      re-arming stops. Someone who tapped the mic and walked away gets the mic released rather
- *      than an indefinitely lit chip.
+ *      re-arming stops. A hold that goes silent (a wedged pointer, a stuck key) gets the mic
+ *      released rather than an indefinitely lit chip.
  *    • `DICTATION_DEAD_START_LIMIT` consecutive sessions that end within `DICTATION_DEAD_START_MS`
  *      of starting WITHOUT hearing a word — an engine refusing to run, which a plain re-arm would
  *      spin on. Any session that hears speech clears the count, so ordinary use never approaches it.
@@ -92,6 +94,13 @@ const joinSpoken = (base: string, spoken: string): string => {
 export const DICTATION_IDLE_STOP_MS = 60_000;
 const DICTATION_DEAD_START_MS = 400;
 const DICTATION_DEAD_START_LIMIT = 3;
+
+/** How long a RELEASE waits for the engine to deliver its last result before tearing down anyway
+ *  (#738). Releasing calls `stop()`, which ends capture but still owes us what was already heard —
+ *  so the recognizer is kept alive, and its `onend` normally completes the teardown well inside this
+ *  window. The timer only matters for an engine that never reports the end: without it the chip
+ *  would sit in `finalizing` forever, refusing the next hold. */
+export const DICTATION_FINALIZE_MS = 3_000;
 
 /** Human-readable note for a dictation failure. Maps the SpeechRecognition `error` codes AND the
  *  DOMException `name`s that getUserMedia rejects with to something actionable — and, crucially,
@@ -178,10 +187,13 @@ export const Compose = forwardRef<
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyBtnRef = useRef<HTMLElement | null>(null);
 
-  // Push-to-talk dictation (#483). At most one active recognizer (`recogRef`); `dictBaseRef` is
-  // the draft text present when dictation began. Each result event rebuilds the transcript from the
-  // engine's cumulative results list (#487 — no per-event accumulation). `listening` drives the chip.
+  // Push-to-talk dictation (#483, made a REAL hold in #738). At most one active recognizer
+  // (`recogRef`); `dictBaseRef` is the draft text present when dictation began. Each result event
+  // rebuilds the transcript from the engine's cumulative results list (#487 — no per-event
+  // accumulation). `listening` drives the chip while the control is held; `finalizing` covers the
+  // window after release where the mic is off but the engine still owes us the tail (#738).
   const [listening, setListening] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
   const recogRef = useRef<SpeechRecognition | null>(null);
   const dictBaseRef = useRef("");
   // #711: per-entry evidence for the snapshot collapse — what each results-list entry last said,
@@ -199,7 +211,7 @@ export const Compose = forwardRef<
   // restarted doesn't spin up a stale recognizer.
   const dictTokenRef = useRef(0);
   // #736: dictation spans MANY engine sessions. `dictWanted` is the user's intent — true from the
-  // mic tap until stop / a fatal error / a bound firing — and is what an ended session consults
+  // press until release / a fatal error / a bound firing — and is what an ended session consults
   // before re-arming. `dictText` is the full textarea text as dictation last wrote it: the anchor a
   // re-armed recognizer picks up from, so utterance 2 appends to utterance 1 instead of re-anchoring
   // on the pre-dictation draft captured in the previous session's closure. `dictLastSpeechAt` /
@@ -207,6 +219,16 @@ export const Compose = forwardRef<
   const dictWantedRef = useRef(false);
   const dictTextRef = useRef("");
   const dictLastSpeechRef = useRef(0);
+  // #738 hold bookkeeping. `heldPointer` is the pointerId that OWNS the gesture — a second contact's
+  // events are ignored, so a stray thumb can neither restart nor release an active hold. `keyHold`
+  // is the same ownership for a key-initiated hold (the keyup is listened for on `window`, since the
+  // release lands wherever focus went by then). `finalizingRef` mirrors the `finalizing` state for
+  // the event handlers, and `finalizeTimer` bounds the wait for an `onend` that may never come.
+  const heldPointerRef = useRef<number | null>(null);
+  const keyHoldRef = useRef<string | null>(null);
+  const finalizingRef = useRef(false);
+  const finalizeTimerRef = useRef<number | undefined>(undefined);
+  const micBtnRef = useRef<HTMLButtonElement | null>(null);
   const dictDeadStartsRef = useRef(0);
   // The idle deadline is a real TIMER, not a check on the way out of a session (Hermes on #736):
   // a recognizer can stay open and silent forever — the engine is under no obligation to hang up —
@@ -309,15 +331,22 @@ export const Compose = forwardRef<
 
   const clearIdleStop = () => window.clearTimeout(dictIdleTimerRef.current);
 
-  // Stop the active recognizer (tap-to-stop, compose collapse, or teardown). Mark it superseded
-  // BEFORE stopping and drop its handlers, so any late callback from this instance is ignored (#483).
+  // DISCARD the active recognizer — unmount, session switch, or a bound that ends dictation outright.
+  // Marks it superseded BEFORE stopping and drops its handlers, so any late callback from this
+  // instance is ignored (#483). Nothing is waiting on the result, so `stop()`'s trailing delivery is
+  // deliberately thrown away; `releaseDictation` is the path that keeps it (#738).
   const stopDictation = useCallback(() => {
     const r = recogRef.current;
     recogRef.current = null;
     window.clearTimeout(dictIdleTimerRef.current); // the deadline dies with the dictation
+    window.clearTimeout(finalizeTimerRef.current);
     dictWantedRef.current = false; // the user is done: an in-flight session end must not re-arm
+    finalizingRef.current = false;
+    heldPointerRef.current = null;
+    keyHoldRef.current = null;
     dictTokenRef.current++; // invalidate any in-flight getUserMedia grant / queued re-arm
     setListening(false);
+    setFinalizing(false);
     if (r) {
       r.onresult = null;
       r.onerror = null;
@@ -330,7 +359,42 @@ export const Compose = forwardRef<
     }
   }, []);
 
-  // (Re)start the idle deadline: from the mic tap, and again on every word actually heard. It fires
+  // RELEASE — the user let go (#738). This is NOT the discard path: `stop()` ends capture but the
+  // engine still delivers what it already heard, so `onresult` stays attached and `recogRef` stays
+  // set, and that trailing final lands in the textarea like any other. What ends is the user's
+  // intent, cleared BEFORE `stop()` so the `onend` that follows takes finishSession's "done" branch
+  // instead of re-arming (#736). Teardown completes in that `onend`; `finalizeTimer` is the backstop
+  // for an engine that never sends one, because a wedged engine must not strand the chip.
+  const releaseDictation = useCallback(() => {
+    heldPointerRef.current = null;
+    keyHoldRef.current = null;
+    if (!dictWantedRef.current && !recogRef.current) return; // nothing held
+    window.clearTimeout(dictIdleTimerRef.current);
+    dictWantedRef.current = false;
+    dictTokenRef.current++; // a grant still in flight must not arm a recognizer after the release
+    setListening(false);
+    const r = recogRef.current;
+    if (!r) {
+      // The hold ended before a recognizer existed (a tap, or a release during the mic grant):
+      // nothing is finalizing, so there is no window to enter.
+      finalizingRef.current = false;
+      setFinalizing(false);
+      return;
+    }
+    finalizingRef.current = true;
+    setFinalizing(true);
+    window.clearTimeout(finalizeTimerRef.current);
+    finalizeTimerRef.current = window.setTimeout(() => {
+      if (finalizingRef.current) stopDictation();
+    }, DICTATION_FINALIZE_MS);
+    try {
+      r.stop(); // end capture, keep the tail
+    } catch {
+      /* already stopped — the pending onend still completes the teardown */
+    }
+  }, [stopDictation]);
+
+  // (Re)start the idle deadline: from the press, and again on every word actually heard. It fires
   // only if DICTATION_IDLE_STOP_MS passes with no speech at all — whatever the engine is doing,
   // open session or re-arm chain — and stops the dictation for real, releasing the mic.
   const armIdleStop = () => {
@@ -353,6 +417,13 @@ export const Compose = forwardRef<
     heardSpeech: boolean,
   ) => {
     if (!dictWantedRef.current) {
+      // The user let go. This `onend` is the engine confirming it has delivered everything it had,
+      // so the release completes here: drop the recognizer, close the finalizing window, and let the
+      // next hold through (#738).
+      recogRef.current = null;
+      window.clearTimeout(finalizeTimerRef.current);
+      finalizingRef.current = false;
+      setFinalizing(false);
       setListening(false);
       return;
     }
@@ -497,7 +568,7 @@ export const Compose = forwardRef<
     }
   };
 
-  // Tap-to-talk start (#483): FIRST acquire the mic explicitly via getUserMedia, THEN build the
+  // Hold start (#483, #738): FIRST acquire the mic explicitly via getUserMedia, THEN build the
   // recognizer. Android Chrome's SpeechRecognition does not reliably obtain the mic on its own —
   // start() fails with `not-allowed` even when the OS + site permission are granted — so we trigger
   // the real grant with getUserMedia (which resolves silently when already allowed, or prompts once)
@@ -506,16 +577,20 @@ export const Compose = forwardRef<
   const startDictation = () => {
     const SR = getSpeechRecognition();
     if (!SR) return;
+    // A hold arriving inside the finalizing window is IGNORED, not queued (#738). Starting here
+    // would take the discard path below on a recognizer that still owes us its last result — which
+    // would drop exactly the trailing phrase the release is waiting for.
+    if (finalizingRef.current) return;
     if (recogRef.current) stopDictation();
     const token = ++dictTokenRef.current;
     // Fresh dictation intent (#736): the mic stays armed across engine session ends until the user
-    // taps stop or a bound fires. Seed the anchor with the live draft and the idle clock with now,
-    // so the first silent stretch is measured from the tap rather than from a previous dictation.
+    // lets go or a bound fires. Seed the anchor with the live draft and the idle clock with now,
+    // so the first silent stretch is measured from the press rather than a previous dictation.
     dictWantedRef.current = true;
     dictTextRef.current = text;
     dictLastSpeechRef.current = performance.now();
     dictDeadStartsRef.current = 0;
-    armIdleStop(); // the deadline runs from the tap, even if not a word is ever heard
+    armIdleStop(); // the deadline runs from the press, even if not a word is ever heard
     setListening(true); // optimistic chip; cleared below if the grant/start fails
     const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
     if (!md?.getUserMedia) {
@@ -539,7 +614,98 @@ export const Compose = forwardRef<
       });
   };
 
-  const toggleDictation = () => (listening ? stopDictation() : startDictation());
+  // --- The hold gesture (#738) ------------------------------------------------------------------
+  // Pointer down starts, pointer up / cancel releases. `setPointerCapture` is what makes a release
+  // reliable: without it a finger that slides off this 34px-tall chip mid-sentence never delivers its
+  // `pointerup` and the mic sticks on. It is also why we deliberately do NOT cancel on `pointerleave`
+  // the way the connect-page hold gate does (`homefree/connect.main.ts`, #690) — leaving the button
+  // is not letting go, and treating it as such would truncate speech, the very complaint behind #736.
+  const onMicPointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return; // left button only
+    if (heldPointerRef.current !== null) return; // a second contact never steals an active hold
+    if (keyHoldRef.current) return; // …nor does a pointer steal a key-owned hold (Hermes on #738)
+    if (finalizingRef.current) return; // the previous release is still finishing (#738)
+    e.preventDefault(); // no text-selection drag, no synthesised mouse events after a touch
+    heldPointerRef.current = e.pointerId;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture unsupported — the blur / visibilitychange backstops still end the hold */
+    }
+    startDictation();
+  };
+  const onMicPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (heldPointerRef.current !== e.pointerId) return; // not the pointer that owns this hold
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* never captured */
+    }
+    releaseDictation();
+  };
+
+  // Whether a keystroke landing on this element is already spoken for, so the global Space hold must
+  // keep its hands off (#738). Editables cover the compose box AND the terminal — xterm focuses a
+  // hidden textarea, so a Space meant for the PTY is caught by the same check. Activatable controls
+  // own Space as their native activation key.
+  const claimsSpaceKey = (el: Element | null): boolean => {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.isContentEditable) return true;
+    if (["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(el.tagName)) return true;
+    return el.getAttribute("role") === "button";
+  };
+
+  // Global key hold. Two gestures share it: Space/Enter while the chip itself is focused, and — the
+  // desktop convenience — Space anywhere that has no claim on the key. The keyup is bound to `window`
+  // rather than the button because focus can move mid-hold, and a button-scoped listener would then
+  // miss the release and leave the mic open (the lesson already encoded in #690's gate).
+  // No dependency array on purpose: the handlers must see the CURRENT start/release closures, and
+  // re-binding four listeners per render is cheaper than the stale-closure bugs a deps list invites.
+  useEffect(() => {
+    if (!getSpeechRecognition()) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== " " && e.key !== "Enter") return;
+      if (e.repeat || keyHoldRef.current) return; // OS auto-repeat is not a new press
+      // Ownership spans BOTH input kinds, not just pointers (Hermes on #738). A key press during a
+      // pointer-owned hold used to reach startDictation(), which — seeing a live recognizer — took
+      // the discard path and killed the held session along with the phrase it was finalizing. The
+      // first input to take the hold keeps it until it lets go.
+      if (heldPointerRef.current !== null) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return; // leave shortcuts alone
+      const onChip = e.target === micBtnRef.current;
+      if (!onChip) {
+        if (e.key !== " ") return; // only Space is the global hotkey; Enter stays local to the chip
+        if (claimsSpaceKey(e.target as Element | null)) return;
+        if (document.querySelector('[role="dialog"], dialog[open]')) return; // a modal owns its keys
+      }
+      if (finalizingRef.current) return;
+      e.preventDefault(); // no page scroll, no implicit button click on keyup
+      keyHoldRef.current = e.key; // remember WHICH key owns it, so another key can't release it
+      setOpen(true); // never dictate into a box the user cannot see
+      startDictation();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!keyHoldRef.current || e.key !== keyHoldRef.current) return; // not the key holding this
+      releaseDictation();
+    };
+    const onLeave = () => {
+      // Focus or visibility leaving mid-hold is a release: the keyup may never arrive.
+      if (keyHoldRef.current || heldPointerRef.current !== null) releaseDictation();
+    };
+    const onVisibility = () => {
+      if (document.hidden) onLeave();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onLeave);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onLeave);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  });
 
   // Stop dictation when the box collapses (the mic chip only lives in the open state) and abort it
   // on unmount / session switch, so a recognizer never outlives the compose box it dictates into.
@@ -875,13 +1041,39 @@ export const Compose = forwardRef<
         {open && speechSupported && (
           <button
             type="button"
-            className={listening ? `${styles.mic} ${styles.micOn}` : styles.mic}
-            aria-label={listening ? "Stop voice input" : "Start voice input"}
+            ref={micBtnRef}
+            className={
+              listening
+                ? `${styles.mic} ${styles.micOn}`
+                : finalizing
+                  ? `${styles.mic} ${styles.micFinalizing}`
+                  : styles.mic
+            }
+            // The accessible name still leads with "…voice input" so it reads as the same control it
+            // has always been, with the gesture spelled out after (#738).
+            aria-label={
+              listening
+                ? "Stop voice input — release to finish"
+                : finalizing
+                  ? "Finishing voice input"
+                  : "Start voice input — hold to talk"
+            }
             aria-pressed={listening}
-            title={listening ? "Stop dictation" : "Dictate (voice to text)"}
-            onClick={toggleDictation}
+            aria-disabled={finalizing}
+            title={
+              listening
+                ? "Release to stop — the last phrase still lands"
+                : finalizing
+                  ? "Finishing transcription…"
+                  : "Hold to talk (or hold Space outside a text field)"
+            }
+            onPointerDown={onMicPointerDown}
+            onPointerUp={onMicPointerUp}
+            onPointerCancel={onMicPointerUp}
+            onContextMenu={(e) => e.preventDefault()} // a long press is a hold, not a menu
           >
             <Mic size={16} />
+            <span className={styles.micLabel}>Push to talk</span>
           </button>
         )}
         {open ? (
