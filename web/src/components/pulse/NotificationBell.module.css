@@ -1,0 +1,137 @@
+/* Notification bell (#726 Phase 3). Tactical-HUD vocabulary: 1px borders, no radii, mono tags.
+ *
+ * The badge is `--status-degraded` (amber), NOT `--status-down` (red). Per docs/design.md, red
+ * means error/offline/destructive; an escalation wants a DECISION and must never read as an
+ * incident just because it is unread. */
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+}
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.btn:hover { color: var(--text-1); }
+.btnOn {
+  color: var(--accent);
+  border-color: var(--line-strong);
+  background: var(--glass-strong);
+}
+.badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: var(--status-degraded);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: min(340px, calc(100vw - 24px));
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
+  z-index: 60;
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.markAll {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  min-height: 30px;
+}
+.markAll:hover { color: var(--text-1); }
+
+.empty {
+  margin: 0;
+  padding: 14px 10px;
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+.list { list-style: none; margin: 0; padding: 0; }
+.row {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+}
+.row:last-child { border-bottom: 0; }
+.unread {
+  background: var(--glass-strong);
+  border-left-color: var(--status-degraded);
+}
+.title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.reason {
+  margin-top: 3px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-3);
+}
+.proj { color: var(--accent); border: 1px solid var(--line); padding: 1px 5px; }
+.eng { border: 1px solid var(--line); padding: 1px 4px; }
+.open {
+  margin-left: auto;
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 2px;
+}
+.open:hover { text-decoration: underline; }
+
+@media (max-width: 800px) {
+  .btn { width: 44px; height: 44px; }
+  .markAll, .open { min-height: 44px; }
+}
