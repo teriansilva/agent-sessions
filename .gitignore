@@ -16,6 +16,8 @@ env
 *.pem
 *.key
 .venv-local/
+# CI bootstraps pip from a workspace-local copy (shared /tmp races across jobs).
+.get-pip.py
 
 # local dev venv for Home Free work
 .venv-hf/
