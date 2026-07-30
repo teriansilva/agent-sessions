@@ -416,10 +416,16 @@ test("a manual collapse choice survives a resize even when sessionStorage is blo
   const toggle = page.locator("#session-toggle");
 
   // Make an explicit collapse choice at desktop width (nothing gets persisted — storage throws).
+  // The setup must WAIT for the widening to settle before touching the toggle (#734). Reading the
+  // class and then conditionally clicking raced the `(max-width: 800px)` change handler: on the
+  // mobile project the bar starts collapsed, so a read that lands before the handler decides to
+  // click, the handler then expands, and the click arrives on an already-expanded bar and collapses
+  // it — `expect(box).not.toHaveClass(/collapsed/)` then sees exactly "session-box collapsed".
+  // A web-first assertion on the no-override viewport default is the settled state to start from,
+  // so the single click below is always the FIRST explicit choice, on every project.
   await page.setViewportSize({ width: 1280, height: 800 });
-  if (((await box.getAttribute("class")) ?? "").includes("collapsed")) await toggle.click();
-  await expect(box).not.toHaveClass(/collapsed/);
-  await toggle.click();
+  await expect(box).not.toHaveClass(/collapsed/); // wide + no override ⇒ expanded, once settled
+  await toggle.click(); // …and this is unambiguously the explicit collapse choice
   await expect(box).toHaveClass(/collapsed/);
 
   // A breakpoint round-trip must NOT revert the in-memory choice.
