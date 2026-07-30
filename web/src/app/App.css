@@ -324,6 +324,12 @@
   .hud-topbar-actions {
     display: flex;
     gap: 4px;
+    /* Anchor the cluster to the right edge with its OWN rule. On desktop it is carried there
+     * by `.hud-telemetry { margin-left: auto }` sitting immediately before it — but the
+     * telemetry is `display: none` at this width, and the auto margin goes with it, which
+     * left the bell stranded mid-bar (#750). Depending on a neighbour's margin for your own
+     * alignment only works while that neighbour exists. */
+    margin-left: auto;
   }
   .hud-topbar-actions > *:not([data-topbar-keep]) {
     display: none;

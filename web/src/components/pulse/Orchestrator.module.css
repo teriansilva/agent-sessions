@@ -131,13 +131,19 @@
   }
 }
 
+/* A SENTENCE with an inline icon — not a row of boxes (#750). As a flex container each text
+ * run became its own flex item, so on a phone the one sentence wrapped into three columns that
+ * broke independently ("Acts on its own:" / "continue" / "only. Everything else…"). Normal flow
+ * wraps it as prose at every width; the icon is aligned inline instead of by `align-items`. */
 .ceiling {
-  display: flex;
-  align-items: center;
-  gap: 5px;
   margin: 8px 0 0;
   font-size: 0.72rem;
+  line-height: 1.5;
   color: var(--text-3);
+}
+.ceiling svg {
+  vertical-align: -1px;
+  margin-right: 3px;
 }
 .ceiling b {
   color: var(--text-2);
@@ -361,9 +367,22 @@
     text-align: center;
     min-height: 44px;
   }
+  /* `Run now` gets its own full-width row (#750). On desktop `margin-left: auto` parks it at
+   * the far right of the meter row; dropping that on mobile left an 86×44 CTA sitting INLINE
+   * beside "conf ≥ 0.75 · below → escalate" on the wrapped second line — a button the size of
+   * the surrounding sentence, jammed against it with an 8px gap. `width: 100%` forces its own
+   * flex line instead, which is also the only way it reaches a comfortable tap target. */
   .runBtn {
     margin-left: 0;
     min-height: 44px;
+    width: 100%;
+    justify-content: center;
+  }
+  /* …and the meter itself takes the slack on its line rather than sitting at 110px with a
+   * ragged gap where the button used to be. */
+  .bar {
+    flex: 1 1 90px;
+    width: auto;
   }
   .conf {
     margin-left: 0;
