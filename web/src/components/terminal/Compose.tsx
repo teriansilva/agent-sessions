@@ -71,6 +71,28 @@ const joinSpoken = (base: string, spoken: string): string => {
   return /\s$/.test(base) ? base + spoken : `${base} ${spoken}`;
 };
 
+/** Dictation outlives the ENGINE's session, not just the user's tap (#736).
+ *
+ *  A `SpeechRecognition` session is not a recording the user controls — the engine ends it on its
+ *  own: Chrome's endpointer gives up on a silent stretch (`no-speech` → `end`), the service caps a
+ *  connection, and the Android fallback recognizer (`continuous = false`, see `beginRecognition`)
+ *  ends after every single utterance by definition. Each of those ended the whole dictation, which
+ *  is why speech "recorded a part and then stopped". So an ended session re-arms a fresh recognizer
+ *  while the user is still holding the mic open, and two bounds keep that from becoming an
+ *  unbounded mic hold or a hot restart loop:
+ *
+ *    • `DICTATION_IDLE_STOP_MS` — silence, measured from the last words actually heard, after which
+ *      re-arming stops. Someone who tapped the mic and walked away gets the mic released rather
+ *      than an indefinitely lit chip.
+ *    • `DICTATION_DEAD_START_LIMIT` consecutive sessions that end within `DICTATION_DEAD_START_MS`
+ *      of starting WITHOUT hearing a word — an engine refusing to run, which a plain re-arm would
+ *      spin on. Any session that hears speech clears the count, so ordinary use never approaches it.
+ *
+ *  Both bounds fail toward stopping, never toward a silent spin. */
+export const DICTATION_IDLE_STOP_MS = 60_000;
+const DICTATION_DEAD_START_MS = 400;
+const DICTATION_DEAD_START_LIMIT = 3;
+
 /** Human-readable note for a dictation failure. Maps the SpeechRecognition `error` codes AND the
  *  DOMException `name`s that getUserMedia rejects with to something actionable — and, crucially,
  *  the default arm echoes the raw code so an unmapped failure names itself instead of hiding behind
@@ -172,10 +194,24 @@ export const Compose = forwardRef<
   const entryEventRef = useRef<number[]>([]);
   const entryFinalBornRef = useRef<boolean[]>([]);
   const dictEventSeqRef = useRef(0);
-  // Guards the async mic-permission grant: bumped on every start AND stop, so a getUserMedia
-  // promise that resolves after the user already cancelled (or restarted) doesn't spin up a
-  // stale recognizer.
+  // Guards the async mic-permission grant AND the deferred re-arm: bumped on every start AND stop,
+  // so a getUserMedia promise (or a queued re-arm) that lands after the user already cancelled or
+  // restarted doesn't spin up a stale recognizer.
   const dictTokenRef = useRef(0);
+  // #736: dictation spans MANY engine sessions. `dictWanted` is the user's intent — true from the
+  // mic tap until stop / a fatal error / a bound firing — and is what an ended session consults
+  // before re-arming. `dictText` is the full textarea text as dictation last wrote it: the anchor a
+  // re-armed recognizer picks up from, so utterance 2 appends to utterance 1 instead of re-anchoring
+  // on the pre-dictation draft captured in the previous session's closure. `dictLastSpeechAt` /
+  // `dictDeadStarts` carry the two re-arm bounds across sessions (see DICTATION_IDLE_STOP_MS).
+  const dictWantedRef = useRef(false);
+  const dictTextRef = useRef("");
+  const dictLastSpeechRef = useRef(0);
+  const dictDeadStartsRef = useRef(0);
+  // The idle deadline is a real TIMER, not a check on the way out of a session (Hermes on #736):
+  // a recognizer can stay open and silent forever — the engine is under no obligation to hang up —
+  // and then no callback ever runs to notice. Only a timer bounds the mic hold in that shape.
+  const dictIdleTimerRef = useRef<number | undefined>(undefined);
 
   // Server-side draft (#477) bookkeeping. `dirty` flips true on the first user edit, so a
   // late GET /draft can't clobber text the user already typed; `loadToken` discards a load
@@ -271,12 +307,16 @@ export const Compose = forwardRef<
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
   };
 
+  const clearIdleStop = () => window.clearTimeout(dictIdleTimerRef.current);
+
   // Stop the active recognizer (tap-to-stop, compose collapse, or teardown). Mark it superseded
   // BEFORE stopping and drop its handlers, so any late callback from this instance is ignored (#483).
   const stopDictation = useCallback(() => {
     const r = recogRef.current;
     recogRef.current = null;
-    dictTokenRef.current++; // invalidate any in-flight getUserMedia grant
+    window.clearTimeout(dictIdleTimerRef.current); // the deadline dies with the dictation
+    dictWantedRef.current = false; // the user is done: an in-flight session end must not re-arm
+    dictTokenRef.current++; // invalidate any in-flight getUserMedia grant / queued re-arm
     setListening(false);
     if (r) {
       r.onresult = null;
@@ -289,6 +329,59 @@ export const Compose = forwardRef<
       }
     }
   }, []);
+
+  // (Re)start the idle deadline: from the mic tap, and again on every word actually heard. It fires
+  // only if DICTATION_IDLE_STOP_MS passes with no speech at all — whatever the engine is doing,
+  // open session or re-arm chain — and stops the dictation for real, releasing the mic.
+  const armIdleStop = () => {
+    clearIdleStop();
+    dictIdleTimerRef.current = window.setTimeout(() => {
+      if (dictWantedRef.current) stopDictation();
+    }, DICTATION_IDLE_STOP_MS);
+  };
+
+  // What happens when an engine SESSION ends (#736) — the shared tail of `onend` and of a `start()`
+  // that threw. While the user still wants to dictate and both bounds hold, a fresh recognizer is
+  // armed and dictation simply continues; otherwise the chip clears for real. The re-arm is deferred
+  // a tick because Chrome can still be tearing the previous session down inside `onend`, where a
+  // synchronous `start()` throws InvalidStateError — and `dictTokenRef` is re-checked when the tick
+  // runs, so a stop during that window wins over the queued re-arm.
+  const finishSession = (
+    SR: SpeechRecognitionStatic,
+    continuousMode: boolean,
+    startedAt: number,
+    heardSpeech: boolean,
+  ) => {
+    if (!dictWantedRef.current) {
+      setListening(false);
+      return;
+    }
+    const now = performance.now();
+    // A session that heard speech proves the engine works, whatever it did afterwards.
+    if (heardSpeech) dictDeadStartsRef.current = 0;
+    else if (now - startedAt < DICTATION_DEAD_START_MS) dictDeadStartsRef.current++;
+    const engineDead = dictDeadStartsRef.current >= DICTATION_DEAD_START_LIMIT;
+    // The deadline is enforced by `armIdleStop`'s timer; re-checking it here only means a session
+    // that ends past it isn't re-armed for the moments before that timer gets its turn.
+    const goneQuiet = now - dictLastSpeechRef.current > DICTATION_IDLE_STOP_MS;
+    if (engineDead || goneQuiet) {
+      dictWantedRef.current = false;
+      clearIdleStop();
+      setListening(false);
+      // Silence is a normal way to stop (the user walked away); an engine that won't run is not —
+      // say so rather than letting the chip wink out unexplained, which is how #736 was reported.
+      if (engineDead) {
+        setNote("dictation stopped — the speech engine kept dropping the session");
+        setTimeout(() => setNote(""), 4000);
+      }
+      return;
+    }
+    const token = dictTokenRef.current;
+    window.setTimeout(() => {
+      if (!dictWantedRef.current || dictTokenRef.current !== token) return; // stopped meanwhile
+      beginRecognition(SR, continuousMode);
+    }, 0);
+  };
 
   // Spin up a fresh recognizer, anchor the current draft, and stream interim + final results into
   // the textarea via the SAME setText + grow + dirty path as typing (#483/#477). `continuousMode`
@@ -303,11 +396,18 @@ export const Compose = forwardRef<
     // Selects the transcript-comparison mode for the snapshot collapse (#711 finding 3): whole
     // words where spaces delimit them, codepoint prefixes where they don't (CJK etc.).
     const spaceDelimited = isSpaceDelimitedLang(lang);
-    dictBaseRef.current = text;
+    // Anchor on what dictation has typed so far, not on the `text` of the render that built this
+    // callback: on a re-arm (#736) that closure is a session stale, and using it would drop every
+    // utterance before this one. `startDictation` seeds the ref with the live draft.
+    dictBaseRef.current = dictTextRef.current;
+    // Per-recognizer evidence for the #711 collapse: a fresh engine's entries earn their own
+    // history, so the collapse never reasons across a session boundary.
     entryTextRef.current = [];
     entryAtRef.current = [];
     entryEventRef.current = [];
     entryFinalBornRef.current = [];
+    const startedAt = performance.now();
+    let heardSpeech = false; // this session, for the dead-start bound in finishSession
     r.onresult = (e) => {
       if (recogRef.current !== r) return; // superseded recognizer — ignore late results
       // Rebuild the transcript from scratch on every event — never accumulate across events, so
@@ -345,22 +445,36 @@ export const Compose = forwardRef<
         }
       }
       const spoken = assembleSpoken(segs, spaceDelimited);
+      if (spoken) {
+        heardSpeech = true;
+        dictLastSpeechRef.current = now;
+        armIdleStop(); // speech pushes the deadline out (#736)
+      }
       dirtyRef.current = true; // dictation is draftable content, just like typing
-      setText(joinSpoken(dictBaseRef.current, spoken));
+      const next = joinSpoken(dictBaseRef.current, spoken);
+      dictTextRef.current = next; // the anchor a re-armed session picks up from
+      setText(next);
       grow();
     };
     r.onerror = (e) => {
       if (recogRef.current !== r) return;
-      recogRef.current = null;
       // Android Chrome rejects a continuous recognizer with `service-not-allowed`; retry ONCE with
       // a single-utterance recognizer before surfacing the error. `continuousMode` gates the retry
       // so the fallback can't loop.
       if (e.error === "service-not-allowed" && continuousMode) {
+        recogRef.current = null;
         beginRecognition(SR, false);
         return;
       }
+      // `no-speech` is the endpointer giving up on a silent stretch, not a failure — the session
+      // ends either way, so leave the recognizer in place and let `onend` re-arm it (#736). That
+      // is what makes a pause between sentences survivable instead of terminal.
+      if (e.error === "no-speech") return;
+      recogRef.current = null;
+      dictWantedRef.current = false; // a real failure ends the dictation, not just the session
+      clearIdleStop();
       setListening(false);
-      if (e.error && e.error !== "aborted" && e.error !== "no-speech") {
+      if (e.error && e.error !== "aborted") {
         setNote(micErrorNote(e.error));
         setTimeout(() => setNote(""), 4000);
       }
@@ -368,16 +482,18 @@ export const Compose = forwardRef<
     r.onend = () => {
       if (recogRef.current !== r) return; // a fresh recognizer already took over
       recogRef.current = null;
-      setListening(false);
+      finishSession(SR, continuousMode, startedAt, heardSpeech);
     };
     recogRef.current = r;
     setListening(true);
     try {
       r.start();
     } catch {
-      // start() throws if it is somehow already running — treat as a failed start.
+      // start() throws if the engine is already running or still tearing a session down. Treat it
+      // exactly like a session that ended without hearing anything: the bounded re-arm path retries
+      // and gives up after DICTATION_DEAD_START_LIMIT of them, rather than spinning (#736).
       recogRef.current = null;
-      setListening(false);
+      finishSession(SR, continuousMode, startedAt, false);
     }
   };
 
@@ -392,6 +508,14 @@ export const Compose = forwardRef<
     if (!SR) return;
     if (recogRef.current) stopDictation();
     const token = ++dictTokenRef.current;
+    // Fresh dictation intent (#736): the mic stays armed across engine session ends until the user
+    // taps stop or a bound fires. Seed the anchor with the live draft and the idle clock with now,
+    // so the first silent stretch is measured from the tap rather than from a previous dictation.
+    dictWantedRef.current = true;
+    dictTextRef.current = text;
+    dictLastSpeechRef.current = performance.now();
+    dictDeadStartsRef.current = 0;
+    armIdleStop(); // the deadline runs from the tap, even if not a word is ever heard
     setListening(true); // optimistic chip; cleared below if the grant/start fails
     const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
     if (!md?.getUserMedia) {
@@ -407,6 +531,8 @@ export const Compose = forwardRef<
       })
       .catch((err: unknown) => {
         if (dictTokenRef.current !== token) return;
+        dictWantedRef.current = false; // no mic, no dictation to re-arm
+        clearIdleStop();
         setListening(false);
         setNote(micErrorNote(gumErrorCode(err)));
         setTimeout(() => setNote(""), 4000);
@@ -424,8 +550,10 @@ export const Compose = forwardRef<
     return () => {
       const r = recogRef.current;
       recogRef.current = null;
-      dictTokenRef.current++; // invalidate a still-pending getUserMedia grant so it can't build a
-      // recognizer after the box has unmounted (the async twin of stopDictation's guard).
+      dictWantedRef.current = false; // no re-arm can outlive the box (#736)
+      window.clearTimeout(dictIdleTimerRef.current); // nor the idle deadline
+      dictTokenRef.current++; // invalidate a still-pending getUserMedia grant / queued re-arm so it
+      // can't build a recognizer after the box has unmounted (the async twin of stopDictation's guard).
       if (r) {
         r.onresult = null;
         r.onerror = null;

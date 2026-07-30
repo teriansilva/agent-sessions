@@ -35,6 +35,32 @@ window.SpeechRecognition = class {
 };
 `;
 
+// #736: a recognizer that ends its OWN session after every utterance — Android Chrome's
+// single-utterance fallback (`continuous = false`), and equally Chrome's endpointer hanging up on a
+// pause. Sessions 1 and 2 each speak one phrase and then fire `end`; from session 3 on the stub
+// simply stays open and silent, the way a live engine waits for more speech. Before the fix the
+// first `end` tore dictation down, so phrase 2 was never heard — "records a part, then stops".
+const SPEECH_STUB_ENGINE_HANGUP = `
+window.__recog = { started: 0, stopped: 0 };
+window.SpeechRecognition = class {
+  constructor() {
+    this.continuous = false; this.interimResults = false; this.lang = "";
+    this.onresult = null; this.onerror = null; this.onend = null;
+    window.__recog.instance = this;
+  }
+  start() {
+    const n = ++window.__recog.started;
+    const phrase = ["deploy the staging build", "and watch the rollout"][n - 1];
+    if (!phrase) return; // session 3+: armed and listening, nothing more to say
+    setTimeout(() => { if (this.onresult) this.onresult({ resultIndex: 0,
+      results: [{ 0: { transcript: phrase }, isFinal: true, length: 1 }] }); }, 30);
+    setTimeout(() => { if (this.onend) this.onend(); }, 60); // the engine hangs up
+  }
+  stop() { window.__recog.stopped++; if (this.onend) this.onend(); }
+  abort() { if (this.onend) this.onend(); }
+};
+`;
+
 // Dictation now acquires the mic via getUserMedia BEFORE building the recognizer (#659 follow-up:
 // the reliable Android grant path). Headless Chromium has no real audio device, so stub it to
 // resolve — otherwise the grant rejects and the stubbed recognizer never starts.
@@ -98,4 +124,47 @@ test("push-to-talk streams the transcript into the compose box; tapping again st
   );
   expect(recog.started).toBe(1);
   expect(recog.stopped).toBe(1);
+});
+
+test("dictation survives the engine ending its own session — both utterances land (#736)", async ({
+  page,
+}) => {
+  await page.addInitScript(NOOP_WS);
+  await page.addInitScript(SPEECH_STUB_ENGINE_HANGUP);
+  await page.addInitScript(GUM_STUB);
+  await page.goto("/s/claude/ptt-736");
+  await expect(page.locator(".xterm")).toBeVisible();
+
+  const mic = page.getByRole("button", { name: /start voice input/i });
+  if (!(await mic.isVisible())) {
+    await page.getByRole("button", { name: /open compose box/i }).click();
+  }
+  await expect(mic).toBeVisible();
+
+  const textarea = page.getByPlaceholder(/Type here/i);
+  await expect(textarea).toHaveValue("");
+
+  // One tap. The engine hangs up after the first phrase; dictation must re-arm itself and keep the
+  // second one — red before the fix, where the textarea stopped at "deploy the staging build".
+  await mic.click();
+  await expect(textarea).toHaveValue("deploy the staging build");
+  await expect(textarea).toHaveValue("deploy the staging build and watch the rollout");
+
+  // Still listening after both hang-ups — only the user ends dictation. Poll for the third session:
+  // the second phrase lands BEFORE its session hangs up, so reading the count straight after the
+  // transcript assertion would race the re-arm rather than test it.
+  const started = () =>
+    page.evaluate(() => (window as unknown as { __recog: { started: number } }).__recog.started);
+  await expect.poll(started).toBe(3);
+  const stopMic = page.getByRole("button", { name: /stop voice input/i });
+  await expect(stopMic).toHaveAttribute("aria-pressed", "true");
+
+  await stopMic.click();
+  await expect(page.getByRole("button", { name: /start voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  // …and the stop is final: no re-arm after the user's own stop.
+  await page.waitForTimeout(200);
+  expect(await started()).toBe(3);
 });

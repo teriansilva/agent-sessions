@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { appendSent, readSent } from "../../lib/sentHistory";
-import { Compose, type ComposeHandle } from "./Compose";
+import { Compose, DICTATION_IDLE_STOP_MS, type ComposeHandle } from "./Compose";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -34,6 +34,9 @@ function renderCompose(connEpoch: () => number = () => 1) {
 // render makes the mic appear (and not installing it models an unsupported browser like Firefox).
 type Seg = { transcript: string; isFinal: boolean };
 let lastRecog: FakeRecognition | null = null;
+// #736: dictation now spans many engine sessions, so tests count how many recognizers were built —
+// a bounded re-arm is part of the contract, not just "one more appeared".
+let recogCount = 0;
 
 class FakeRecognition {
   continuous = false;
@@ -50,6 +53,12 @@ class FakeRecognition {
   constructor() {
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- test double exposes its instance
     lastRecog = this;
+    recogCount++;
+  }
+  /** End the session the way the ENGINE does (#736) — an endpointer pause, the single-utterance
+   *  mode finishing an utterance, or the service capping the connection. Not a user stop. */
+  endSession() {
+    this.onend?.(new Event("end"));
   }
   /** Drive a result event the way the engine would, from the current resultIndex. */
   emit(segments: Seg[], resultIndex = 0) {
@@ -102,8 +111,18 @@ const mockClock = () => {
   return clock;
 };
 
+/** Flush the deferred re-arm (#736): the queued macrotask that builds the next recognizer after the
+ *  engine ended its own session. Inside `act` so the re-armed chip state settles with it. */
+const flushRearm = async () => {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+};
+
 afterEach(() => {
+  vi.useRealTimers(); // the idle-deadline tests fake them (#736); no-op for everyone else
   lastRecog = null;
+  recogCount = 0;
   gumReject = null;
   perfSpy?.mockRestore();
   perfSpy = null;
@@ -499,6 +518,183 @@ test("an unmapped speech error names itself instead of a generic 'microphone blo
   await startVoice(user);
   act(() => lastRecog!.fail("some-odd-code"));
   expect(await screen.findByText(/voice input error: some-odd-code/i)).toBeInTheDocument();
+});
+
+// --- #736: dictation spans MANY engine sessions -------------------------------------------------
+// A SpeechRecognition session belongs to the engine, not to the user: Chrome's endpointer ends it
+// on a pause, the Android fallback recognizer (continuous = false) ends it after every utterance,
+// and the service caps long connections. Treating any of those as "the user is finished" is what
+// made dictation record a part and then stop.
+
+test("the engine ending its own session re-arms dictation instead of stopping it (#736)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  const first = lastRecog!;
+  act(() => first.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  expect(ta.value).toBe("deploy the staging build");
+
+  act(() => first.endSession()); // the engine hangs up mid-dictation
+  await flushRearm();
+  expect(lastRecog).not.toBe(first); // a fresh recognizer took over…
+  expect(lastRecog!.start).toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+  // …and the mic grant is NOT re-requested per session — one grant per user tap (#659).
+  expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+
+  // The next utterance APPENDS. Anchoring the re-armed session on the pre-dictation draft (the
+  // stale `text` of the closure that built the previous one) would drop everything said so far.
+  act(() => lastRecog!.emit([{ transcript: "and watch the rollout", isFinal: true }]));
+  expect(ta.value).toBe("deploy the staging build and watch the rollout");
+});
+
+test("a no-speech pause is survivable, not terminal, and shows no error (#736)", async () => {
+  // Chrome's endpointer reports `no-speech` and ends the session when the user stops to think.
+  // That is a pause in a dictation, not a failed one.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice(user);
+  const first = lastRecog!;
+  act(() => first.emit([{ transcript: "first sentence", isFinal: true }]));
+  act(() => first.fail("no-speech"));
+  act(() => first.endSession());
+  await flushRearm();
+  expect(lastRecog).not.toBe(first);
+  expect(screen.queryByText(/voice input error/i)).toBeNull();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+  act(() => lastRecog!.emit([{ transcript: "second sentence", isFinal: true }]));
+  expect(ta.value).toBe("first sentence second sentence");
+});
+
+test("a fatal speech error still ends dictation — it is not re-armed (#736)", async () => {
+  // The re-arm must not resurrect a dictation the engine genuinely refused: `not-allowed` and its
+  // siblings clear intent, so the following `end` event stops for good.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  act(() => first.fail("not-allowed"));
+  act(() => first.endSession());
+  await flushRearm();
+  expect(recogCount).toBe(1); // no re-arm
+  expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("dictation gives up (and says so) after repeated dead starts instead of spinning (#736)", async () => {
+  // An engine that ends every session immediately without hearing a word would otherwise be
+  // re-armed in a hot loop. Bounded, and the give-up is announced rather than silent.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  for (let i = 0; i < 3; i++) {
+    const r = lastRecog!;
+    act(() => r.endSession());
+    await flushRearm();
+  }
+  expect(recogCount).toBe(3); // bounded: two re-arms, then it stops trying
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(await screen.findByText(/kept dropping the session/i)).toBeInTheDocument();
+});
+
+test("an open, silent recognizer that never fires `end` still releases the mic (#736, Hermes)", async () => {
+  // The shape a session-end check cannot see: the engine keeps the session OPEN and simply hears
+  // nothing — no `end`, no error, no callback of any kind. Only a real timer bounds the mic hold,
+  // so this drives one with fake timers and asserts the recognizer is stopped without the engine
+  // ever ending it.
+  installSpeech();
+  // `shouldAdvanceTime` keeps RTL's waitFor / userEvent polling alive while the clock is faked;
+  // without it `startVoice`'s waitFor never ticks and the test hangs rather than testing anything.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  act(() => first.emit([{ transcript: "hello", isFinal: true }])); // pushes the deadline out
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DICTATION_IDLE_STOP_MS / 2);
+  });
+  expect(first.stop).not.toHaveBeenCalled(); // still well inside the window
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DICTATION_IDLE_STOP_MS / 2 + 10);
+  });
+  expect(first.stop).toHaveBeenCalled(); // the mic is released without any engine callback
+  expect(recogCount).toBe(1); // and nothing is re-armed in its place
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("speech keeps pushing the idle deadline out — a long dictation is never cut off (#736, Hermes)", async () => {
+  // The other half of the timer's contract: it must be RESET by real speech, or a dictation longer
+  // than the window would be killed mid-sentence — the very bug this PR exists to fix.
+  installSpeech();
+  // `shouldAdvanceTime` keeps RTL's waitFor / userEvent polling alive while the clock is faked;
+  // without it `startVoice`'s waitFor never ticks and the test hangs rather than testing anything.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  for (let i = 0; i < 4; i++) {
+    act(() => first.emit([{ transcript: `sentence ${i}`, isFinal: true }]));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DICTATION_IDLE_STOP_MS * 0.8);
+    });
+  }
+  // Over 3× the idle window has elapsed in total, but never 60s without a word.
+  expect(first.stop).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a long silence releases the mic rather than re-arming forever (#736)", async () => {
+  // Tapping the mic and walking away must not hold the microphone behind an indefinitely lit chip.
+  installSpeech();
+  const clock = mockClock();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  clock.now = 1000;
+  act(() => first.emit([{ transcript: "hello", isFinal: true }]));
+  clock.now = 1000 + DICTATION_IDLE_STOP_MS + 1; // nothing heard since
+  act(() => first.endSession());
+  await flushRearm();
+  expect(recogCount).toBe(1); // not re-armed
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("stopping while a session end is in flight cancels the queued re-arm (#736)", async () => {
+  // The re-arm is deferred a tick (Chrome can still be tearing the old session down). A stop
+  // landing inside that window must win — otherwise tapping stop reopens the mic.
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  const first = lastRecog!;
+  act(() => first.emit([{ transcript: "hello", isFinal: true }]));
+  act(() => first.endSession()); // queues the re-arm
+  // Synchronous click: `user.click` awaits internally, which would flush the queued tick first and
+  // test nothing. This lands the stop while the re-arm is genuinely still pending.
+  fireEvent.click(screen.getByRole("button", { name: "Stop voice input" }));
+  await flushRearm();
+  expect(recogCount).toBe(1);
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("collapsing the compose box during a session end cancels the re-arm too (#736)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice(user);
+  act(() => lastRecog!.endSession());
+  fireEvent.click(screen.getByRole("button", { name: /collapse compose/i })); // sync, see above
+  await flushRearm();
+  expect(recogCount).toBe(1);
 });
 
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {
