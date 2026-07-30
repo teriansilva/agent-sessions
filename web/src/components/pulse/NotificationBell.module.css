@@ -1,0 +1,244 @@
+/* Notification bell (#726 Phase 3). Tactical-HUD vocabulary: 1px borders, no radii, mono tags.
+ *
+ * The badge is `--status-degraded` (amber), NOT `--status-down` (red). Per docs/design.md, red
+ * means error/offline/destructive; an escalation wants a DECISION and must never read as an
+ * incident just because it is unread. */
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+}
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.btn:hover {
+  color: var(--text-1);
+}
+.btnOn {
+  color: var(--accent);
+  border-color: var(--line-strong);
+  background: var(--glass-strong);
+}
+.badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: var(--status-degraded);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: min(340px, calc(100vw - 24px));
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
+  z-index: 60;
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.markAll {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  min-height: 30px;
+}
+.markAll:hover {
+  color: var(--text-1);
+}
+
+.empty {
+  margin: 0;
+  padding: 14px 10px;
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.unread {
+  background: var(--glass-strong);
+  border-left-color: var(--status-degraded);
+}
+.title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.reason {
+  margin-top: 3px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-3);
+}
+.proj {
+  color: var(--accent);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+}
+.eng {
+  border: 1px solid var(--line);
+  padding: 1px 4px;
+}
+.open {
+  margin-left: auto;
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 2px;
+}
+.open:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 800px) {
+  .btn {
+    width: 44px;
+    height: 44px;
+  }
+  .markAll,
+  .open {
+    min-height: 44px;
+  }
+}
+
+.closeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: -8px -6px -8px 2px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.closeBtn:hover {
+  color: var(--text-1);
+}
+/* `.markAll` normally takes the slack with `margin-left: auto`; when it is absent (nothing
+ * unread) the close button has to take it instead, or it collapses next to the title. */
+.closeBtn:first-of-type {
+  margin-left: auto;
+}
+
+/* Phone: the anchored dropdown becomes a drawer sliding in from the right, mirroring the
+ * session sidebar's left drawer (#750).
+ *
+ * The dropdown's right edge tracks the bell, and `width: min(340px, …)` grows LEFTWARDS from
+ * there — at 412px wide that laid the panel out at x=-50 with every row clipped, and since
+ * `scrollWidth === clientWidth` the clipped half could not be scrolled into view at all.
+ *
+ * Breakpoint is 640px, not the 800px above: 640 is where the topbar collapses and the
+ * telemetry disappears. Between 641 and 800 the bell is still right-aligned and the dropdown
+ * still lands on-screen, so it stays a dropdown there.
+ *
+ * These rules only ever apply to the portalled copy — a `position: fixed` drawer rendered
+ * inside `.wrap` would be clipped to the topbar, which sets `backdrop-filter` and is therefore
+ * a containing block for fixed descendants. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  /* Above the session sidebar (30) and its backdrop (20), BELOW the topbar (40) — App.css
+   * keeps the topbar on top "so the toggle is always reachable", and the same has to hold for
+   * the bell: you close this drawer with the control that opened it. */
+  z-index: 32;
+  background: rgba(0, 0, 0, 0.5);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.drawer {
+  position: fixed;
+  z-index: 33;
+  top: 0;
+  right: 0;
+  width: min(85vw, 320px);
+  height: 100dvh;
+  /* Clear the fixed command bar, same as the sidebar drawer. */
+  padding-top: 52px;
+  padding-right: env(safe-area-inset-right, 0px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Near-opaque for the same reason the sidebar drawer is (#228): it floats over the live
+   * terminal and mobile Chrome will not blur it, so translucency shows high-contrast terminal
+   * text straight through. */
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border: 0;
+  border-left: 1px solid var(--accent);
+  box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
+  animation: bell-drawer-in 0.18s ease both;
+}
+@keyframes bell-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer {
+    animation: none;
+  }
+}
