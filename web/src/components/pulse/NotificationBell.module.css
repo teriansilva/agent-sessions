@@ -44,10 +44,14 @@
   text-align: center;
 }
 
+/* `fixed`, not `absolute`: the panel is portalled to <body> at both widths (#752), so it has no
+ * offset parent to anchor to — its coordinates come from the bell's measured rect. That is what
+ * lifts it out of the topbar's `backdrop-filter` stacking context, which the terminal pane was
+ * painting over. */
 .panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
+  position: fixed;
+  top: 56px;
+  right: 8px;
   width: min(340px, calc(100vw - 24px));
   max-height: 70vh;
   overflow-y: auto;
@@ -79,6 +83,53 @@
   min-height: 30px;
 }
 .markAll:hover {
+  color: var(--text-1);
+}
+
+/* `Clear all` is an AFFORDANCE, not system state, so it takes no status colour (#752 review):
+ * red would read as an incident and amber collides with the unread badge's meaning. */
+.clearAll,
+.confirmYes {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  min-height: 30px;
+  padding: 0 2px;
+}
+.clearAll:hover {
+  color: var(--text-1);
+}
+/* Only the armed confirmation is destructive, and only then does it earn the colour. */
+.confirmYes {
+  color: var(--status-down);
+  font-weight: 700;
+}
+.confirm {
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: auto;
+}
+
+/* Quiet by design — it must never compete with `Open`, which is what resolves the alert. */
+.rowX {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin: -4px -4px 0 4px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.rowX:hover {
   color: var(--text-1);
 }
 
@@ -156,8 +207,17 @@
     height: 44px;
   }
   .markAll,
+  .clearAll,
+  .confirmYes,
   .open {
     min-height: 44px;
+  }
+  /* 44px interactive box on touch (design.md), while staying visually quiet — the negative
+   * margins keep the *drawn* control small so it does not compete with `Open`. */
+  .rowX {
+    width: 44px;
+    height: 44px;
+    margin: -10px -10px 0 4px;
   }
 }
 

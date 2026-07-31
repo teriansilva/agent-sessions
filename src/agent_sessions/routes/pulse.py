@@ -282,6 +282,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse(
                 {"detail": rec.get("detail") or "the session moved on", **rec}, status_code=409
             )
+        # Delivering it retires the alert too. Rejecting already did this; approving did not, so
+        # a successfully delivered escalation stayed in the bell and still needed the second
+        # manual dismissal this change exists to remove. Strictly after a terminal delivery —
+        # the 409 stale/expired path above returns first, and `NotDeliverable` never reaches
+        # here, so a failed approval can never destroy the operator's only pointer to an action
+        # that is still live.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(notifications.dismiss_for_action, action_id)
         return JSONResponse(rec)
 
     @app.post("/api/pulse/actions/{action_id}/reject")
@@ -307,6 +315,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "rejected",
         )
         if rec is not None:
+            # Deciding it here retires the alert too. The bell and the ledger are separate
+            # stores, so without this the operator dealt with the escalation and then had to
+            # dismiss it a second time, in a second place. Strictly after a successful CAS —
+            # the 404 and 409 paths below must never destroy an alert for an action that is
+            # still live or already delivered.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(notifications.dismiss_for_action, action_id)
             return JSONResponse(rec)
         # Distinguish "never existed" from "too late" — the operator needs to know which.
         cur = await asyncio.to_thread(orchestrator_ledger.get, action_id)
@@ -424,6 +439,40 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 ids = [i for i in body["ids"] if isinstance(i, str)]
         n = await asyncio.to_thread(notifications.mark_read, ids)
         return JSONResponse({"marked": n, **await asyncio.to_thread(notifications.listing)})
+
+    @app.post("/api/pulse/notifications/dismiss")
+    async def dismiss_notifications(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Remove rows from the bell — the given ids, or every one when none are named.
+
+        A DELETE of the operator's own alerts, not a second read-flag: "mark read" answers
+        *have I seen this*, which is a different question from *is this still on my list*. The
+        bell had no answer to the second one at all, so a saturated ring could only be emptied
+        by waiting for 200 newer alerts to evict it.
+        """
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"detail": "expected an object"}, status_code=422)
+
+        ids: list[str] | None
+        if body.get("all") is True:
+            ids = None
+        elif isinstance(body.get("ids"), list) and all(isinstance(i, str) for i in body["ids"]):
+            ids = list(body["ids"])
+        else:
+            # Fails CLOSED, unlike `/read` above. That route coerces a missing or malformed body
+            # to `None` meaning "every row", which is harmless for a read-flag and a footgun for
+            # a delete: `{"ids": "n1"}` — a plausible client typo — would empty the whole bell.
+            # Deleting everything has to be asked for in as many words.
+            return JSONResponse({"detail": 'send {"ids": [...]} or {"all": true}'}, status_code=422)
+
+        n = await asyncio.to_thread(notifications.dismiss, ids)
+        return JSONResponse({"dismissed": n, **await asyncio.to_thread(notifications.listing)})
 
     @app.get("/api/pulse/push/key")
     async def get_push_key(_: str = Depends(logged_in)) -> JSONResponse:

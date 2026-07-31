@@ -30,6 +30,21 @@ export function NotificationBell() {
   const [items, setItems] = useState<PulseNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
+  // Inline confirm for `Clear all` (#752) — NOT an undo, and not a modal.
+  //
+  // Undo was the first choice and does not survive the API: `dismiss` deletes server-side and
+  // there is no restore path, so an undo would need either a new endpoint or a deferred delete
+  // whose window leaves the client and server disagreeing about what exists. A confirm that
+  // arms in place costs one extra tap, needs no new surface, and cannot desynchronise.
+  const [arming, setArming] = useState(false);
+  // Desktop anchoring. `.hud-topbar` sets `backdrop-filter` and carries NO z-index, so it forms
+  // a stacking context the terminal pane paints over — `.panel`'s `z-index: 60` orders it only
+  // WITHIN the topbar and can never rise above a sibling that already beats the topbar. The
+  // dropdown therefore rendered behind the terminal (#752). Portalling it out and positioning
+  // from the bell's own rect removes the stacking dependency instead of trying to out-number it.
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(
+    null,
+  );
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
@@ -162,11 +177,48 @@ export function NotificationBell() {
     return () => document.removeEventListener("keydown", onKey);
   }, [open, drawer]);
 
+  const measure = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ top: r.bottom + 4, right: window.innerWidth - r.right });
+  }, []);
+
+  // Re-measure while open: the topbar does not scroll, but a resize moves the bell.
+  useEffect(() => {
+    if (!open || drawer) return;
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open, drawer, measure]);
+
   const toggle = useCallback(() => {
     const next = !open;
     setOpen(next);
+    setArming(false); // never reopen already armed
+    if (next) measure();
     if (next) void load(); // always show what's true now, not what was true a minute ago
-  }, [open, load]);
+  }, [open, load, measure]);
+
+  const clearAll = useCallback(async () => {
+    try {
+      const r = await api.dismissNotifications({ all: true });
+      setItems(r.notifications);
+      setUnread(r.unread);
+    } catch {
+      /* leave the list alone rather than pretending it cleared */
+    } finally {
+      setArming(false);
+    }
+  }, []);
+
+  const dismissOne = useCallback(async (id: string) => {
+    try {
+      const r = await api.dismissNotifications({ ids: [id] });
+      setItems(r.notifications);
+      setUnread(r.unread);
+    } catch {
+      /* the row stays; a failed delete must never look like a success */
+    }
+  }, []);
 
   const markAll = useCallback(async () => {
     try {
@@ -193,6 +245,34 @@ export function NotificationBell() {
             Mark all read
           </button>
         )}
+        {items.length > 0 &&
+          (arming ? (
+            <>
+              <span className={styles.confirm}>Clear all?</span>
+              <button
+                type="button"
+                className={styles.confirmYes}
+                onClick={() => void clearAll()}
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                className={styles.markAll}
+                onClick={() => setArming(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={styles.clearAll}
+              onClick={() => setArming(true)}
+            >
+              Clear all
+            </button>
+          ))}
         {drawer && (
           <button
             ref={closeRef}
@@ -214,6 +294,14 @@ export function NotificationBell() {
               key={n.id}
               className={`${styles.row} ${n.read ? "" : styles.unread}`}
             >
+              <button
+                type="button"
+                className={styles.rowX}
+                onClick={() => void dismissOne(n.id)}
+                aria-label={`Dismiss: ${n.title}`}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
               <div className={styles.title}>{n.title}</div>
               {n.reason && <div className={styles.reason}>{n.reason}</div>}
               <div className={styles.foot}>
@@ -237,39 +325,41 @@ export function NotificationBell() {
     </>
   );
 
-  const panel = drawer ? (
-    createPortal(
-      <>
-        {/* A real <button> so the dismiss affordance is reachable by keyboard and announced,
+  const panel = drawer
+    ? createPortal(
+        <>
+          {/* A real <button> so the dismiss affordance is reachable by keyboard and announced,
             not a bare div that only a pointer can use. */}
-        <button
-          type="button"
-          className={styles.scrim}
-          aria-label="Dismiss notifications"
-          onClick={() => setOpen(false)}
-        />
+          <button
+            type="button"
+            className={styles.scrim}
+            aria-label="Dismiss notifications"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            ref={panelRef}
+            className={styles.drawer}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Notifications"
+          >
+            {contents}
+          </div>
+        </>,
+        document.body,
+      )
+    : createPortal(
         <div
           ref={panelRef}
-          className={styles.drawer}
+          className={styles.panel}
           role="dialog"
-          aria-modal="true"
           aria-label="Notifications"
+          style={anchor ? { top: anchor.top, right: anchor.right } : undefined}
         >
           {contents}
-        </div>
-      </>,
-      document.body,
-    )
-  ) : (
-    <div
-      ref={panelRef}
-      className={styles.panel}
-      role="dialog"
-      aria-label="Notifications"
-    >
-      {contents}
-    </div>
-  );
+        </div>,
+        document.body,
+      );
 
   return (
     <div className={styles.wrap} ref={wrapRef} data-topbar-keep="">

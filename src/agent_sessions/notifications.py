@@ -131,14 +131,70 @@ def add(
     engine: str,
     reason: str = "",
     action_id: str = "",
+    escalation: bool = False,
+    activity_at: float | None = None,
     path: Path | None = None,
-) -> dict:
-    """Record one notification. Deliberately takes named, bounded fields rather than a free
-    dict: it is the same enforcement trick as ``webpush.build_payload`` — a caller cannot slip
-    screen text in without changing this signature."""
+) -> dict | None:
+    """Record one notification, or return ``None`` when an equivalent one is already pending.
+
+    Deliberately takes named, bounded fields rather than a free dict: it is the same enforcement
+    trick as ``webpush.build_payload`` — a caller cannot slip screen text in without changing
+    this signature."""
     p = path or _notifications_path()
     with _locked(p):
         rows = _read(p)
+        # Announce an unresolved situation ONCE — but only for escalations. The orchestrator's
+        # only dedupe is "at most one
+        # LIVE action per session"; an escalation nobody acts on expires, the session reads as
+        # free again, and the next pass re-escalates the identical situation — so the bell filled
+        # with the same handful of alerts (measured: 200 rows, 54 distinct titles). Read state
+        # cannot help, because nothing on that path ever consults it.
+        #
+        # `None` rather than the existing row: the caller fans out a push on whatever comes back,
+        # so returning the old record would suppress the bell entry and still re-send the push —
+        # the louder half of the problem. Nothing is lost either way; the ledger already holds the
+        # durable record of every proposal.
+        #
+        # Scoped to escalations because `notify == "all"` also announces autonomous actions, and
+        # collapsing those would stop the operator seeing what was done on their behalf — which
+        # is the entire reason that mode exists.
+        if escalation:
+            for r in rows:
+                # BOTH sides must be escalations, and the stored row must SAY so. Gating only
+                # the incoming record left an autonomous `notify=all` notice able to swallow a
+                # later escalation for the same session — an escalation silently lost, which is
+                # the one thing the bell exists to prevent. A legacy row predating this field
+                # has unprovable provenance, so it fails toward ANNOUNCING rather than
+                # suppressing.
+                if r.get("escalation") is not True:
+                    continue
+                if r.get("session_id") != session_id or r.get("title") != title:
+                    continue
+                # "Has this session done anything since I told you?" — the discriminator that
+                # separates the SAME unresolved situation, re-proposed every TTL, from a
+                # genuinely new one. A session that escalated is waiting on the operator, so
+                # it emits nothing and its clock stands still; anything that could constitute a
+                # different situation (a deploy failing, a new prompt) has to produce output
+                # first, which moves it.
+                #
+                # Either side missing means unprovable, and unprovable fails toward ANNOUNCING:
+                # suppressing on a guess loses an escalation, announcing twice repeats one.
+                stored = r.get("activity_at")
+                if (
+                    not isinstance(stored, int | float)
+                    or not isinstance(activity_at, int | float)
+                    or stored != activity_at
+                ):
+                    continue
+                # Re-link, don't just drop. The row still carries the FIRST proposal's id;
+                # once that expired and this equivalent one was recorded, a later
+                # `dismiss_for_action` on the new id would find nothing and leave the row
+                # stranded. `ts`, `read` and the text are untouched so it does not resurface
+                # as new — only the pointer moves, under this same lock.
+                if action_id:
+                    r["action_id"] = action_id
+                    _write(p, rows)
+                return None
         rec = {
             "id": hashlib.sha256(f"{action_id}{session_id}{time.time()}".encode()).hexdigest()[:16],
             "ts": time.time(),
@@ -149,6 +205,10 @@ def add(
             "session_id": session_id,
             "engine": engine,
             "action_id": action_id,
+            # Durable provenance: equivalence is escalation-to-escalation only, and a row has
+            # to carry what it was for that to be checkable on the next pass.
+            "escalation": bool(escalation),
+            "activity_at": activity_at if isinstance(activity_at, int | float) else None,
         }
         rows.append(rec)
         _write(p, rows[-NOTIFY_MAX:])
@@ -172,6 +232,50 @@ def mark_read(ids: list[str] | None = None, path: Path | None = None) -> int:
                 n += 1
         if n:
             _write(p, rows)
+        return n
+
+
+def dismiss(ids: list[str] | None = None, path: Path | None = None) -> int:
+    """Remove notifications by id, or every one when ``ids`` is None. Returns the count removed.
+
+    Deliberately a DELETE, not another read-flag: "mark read" answers "have I seen this", which
+    is a different question from "is this still on my list". Without a way to remove rows the
+    bell was an append-only ring that could only be emptied by waiting for 200 newer ones to
+    evict the old — so a saturated bell showed 99+ with no operator action that could change it.
+    """
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read(p)
+        if ids is None:
+            n = len(rows)
+            if n:
+                _write(p, [])
+            return n
+        drop = set(ids)
+        keep = [r for r in rows if r.get("id") not in drop]
+        n = len(rows) - len(keep)
+        if n:
+            _write(p, keep)
+        return n
+
+
+def dismiss_for_action(action_id: str, path: Path | None = None) -> int:
+    """Drop the rows raised for one orchestrator action. Returns the count removed.
+
+    The bell and the ledger are separate stores, so deciding an escalation in Pulse used to
+    leave its alert sitting in the bell forever — the operator had already dealt with it and
+    still had to clear it a second time, in a second place. Keyed on ``action_id`` because that
+    is the only field tying the two together.
+    """
+    if not action_id:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read(p)
+        keep = [r for r in rows if r.get("action_id") != action_id]
+        n = len(rows) - len(keep)
+        if n:
+            _write(p, keep)
         return n
 
 

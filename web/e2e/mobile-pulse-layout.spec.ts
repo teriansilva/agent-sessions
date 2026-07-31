@@ -306,15 +306,79 @@ test("desktop keeps the anchored dropdown under the bell", async ({
   const panel = page.getByRole("dialog", { name: /notifications/i });
   const pb = (await panel.boundingBox())!;
 
-  // Right edges line up: still `position: absolute; right: 0` on the wrap, not a drawer.
-  expect(Math.abs(pb.x + pb.width - (tb.x + tb.width))).toBeLessThanOrEqual(2);
+  // Still ANCHORED to the bell: right edges line up and it hangs below.
+  expect(Math.abs(pb.x + pb.width - (tb.x + tb.width))).toBeLessThanOrEqual(10);
   expect(pb.y).toBeGreaterThanOrEqual(tb.y + tb.height);
-  // …and it is still rendered inside the bell's wrapper rather than portalled to <body>.
+
+  // …but no longer INSIDE the wrapper. #751 asserted the opposite, which pinned the bug:
+  // `.hud-topbar` sets `backdrop-filter` and no z-index, forming a stacking context the
+  // terminal pane paints over — so an in-wrapper panel rendered BEHIND the terminal however
+  // high its own z-index went (#752).
   await expect(
     page.locator(
       '[data-topbar-keep] [role="dialog"][aria-label="Notifications"]',
     ),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
+
+  // The property that actually matters: the panel is the thing under the cursor. Geometry
+  // alone would pass while it sat invisibly behind the pane.
+  const onTop = await page.evaluate(() => {
+    const d = document.querySelector(
+      '[role="dialog"][aria-label="Notifications"]',
+    )!;
+    const r = d.getBoundingClientRect();
+    const hit = document.elementFromPoint(
+      r.x + r.width / 2,
+      r.y + Math.min(40, r.height / 2),
+    );
+    return !!hit && d.contains(hit);
+  });
+  expect(onTop).toBe(true);
+});
+
+test("the bell can actually be emptied — per-row and all at once (#752)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "mobile layout");
+  // The store is the server's; drive the real routes rather than asserting on a stub.
+  let rows = NOTIFICATIONS.slice();
+  await page.route("**/api/pulse/notifications", (r) =>
+    r.fulfill({ json: { notifications: rows, unread: rows.length } }),
+  );
+  await page.route("**/api/pulse/notifications/dismiss", async (r) => {
+    const body = JSON.parse(r.request().postData() || "{}");
+    rows =
+      body.all === true ? [] : rows.filter((n) => !body.ids?.includes(n.id));
+    await r.fulfill({
+      json: { dismissed: 1, notifications: rows, unread: rows.length },
+    });
+  });
+
+  await openBell(page);
+  const panel = page.getByRole("dialog", { name: /notifications/i });
+  await settled(page, '[role="dialog"][aria-label="Notifications"]');
+  const before = await panel.locator("li").count();
+  expect(before).toBeGreaterThan(1);
+
+  // One row goes, the rest stay.
+  await panel
+    .locator("li")
+    .first()
+    .getByRole("button", { name: /^dismiss:/i })
+    .click();
+  await expect(panel.locator("li")).toHaveCount(before - 1);
+
+  // Clear all ARMS rather than firing — a destructive control one tap from "Mark all read".
+  await panel.getByRole("button", { name: /^clear all$/i }).click();
+  await expect(panel.getByText("Clear all?")).toBeVisible();
+  await expect(panel.locator("li")).toHaveCount(before - 1); // nothing gone yet
+
+  await panel.getByRole("button", { name: /^cancel$/i }).click();
+  await expect(panel.locator("li")).toHaveCount(before - 1); // and cancel really cancels
+
+  await panel.getByRole("button", { name: /^clear all$/i }).click();
+  await panel.getByRole("button", { name: /^yes$/i }).click();
+  await expect(panel.getByText(/nothing needs you right now/i)).toBeVisible();
 });
 
 test("'Run now' takes its own full-width row instead of sitting inline with the threshold text", async ({

@@ -1235,6 +1235,179 @@ def test_a_history_question_never_reaches_the_actuator(auth_cfg, fake_jsonl, mon
     assert r.json().get("intent") == "history"
 
 
+# --- bell clearing + the reject linkage (#752) ---------------------------------------------
+
+
+def _seed_note(action_id: str, title: str = "needs you", session: str = "claude:aaa"):
+    from agent_sessions import notifications
+
+    return notifications.add(
+        title=title, project="p", session_id=session, engine="claude", action_id=action_id
+    )
+
+
+def test_dismiss_route_clears_named_rows_and_then_everything(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):  # noqa: ARG001
+    from agent_sessions import notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    a = _seed_note("act-1", "one")
+    _seed_note("act-2", "two")
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+
+    r = c.post(
+        "/api/pulse/notifications/dismiss",
+        json={"ids": [a["id"]]},
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200 and r.json()["dismissed"] == 1
+    assert [n["title"] for n in r.json()["notifications"]] == ["two"]
+
+    # Clearing everything has to be asked for explicitly.
+    r = c.post(
+        "/api/pulse/notifications/dismiss",
+        json={"all": True},
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    )
+    assert r.json()["dismissed"] == 1
+    assert notifications.listing()["notifications"] == []
+
+
+def test_a_malformed_dismiss_body_never_clears_the_bell(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):  # noqa: ARG001
+    """Fails CLOSED, unlike `/read`.
+
+    `/read` coerces a missing or wrong-typed body to "every row", which is harmless for a
+    read-flag. For a delete it means a plausible client typo — `{"ids": "n1"}` instead of a
+    list — silently empties the operator's whole bell.
+    """
+    from agent_sessions import notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    _seed_note("act-1", "one")
+    _seed_note("act-2", "two", session="codex:bbb")
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = {"Origin": auth_cfg.origin, "X-CSRF-Token": csrf}
+
+    for body in ({}, {"ids": "n1"}, {"ids": [1, 2]}, {"all": "yes"}, [], "nope"):
+        r = c.post("/api/pulse/notifications/dismiss", json=body, headers=h)
+        assert r.status_code == 422, f"{body!r} was accepted"
+    assert len(notifications.listing()["notifications"]) == 2
+
+
+def test_dismiss_route_requires_csrf(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    _seed_note("act-1")
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.post(
+        "/api/pulse/notifications/dismiss",
+        json={},
+        headers={"Origin": auth_cfg.origin},  # no token
+    )
+    assert r.status_code == 403
+    from agent_sessions import notifications
+
+    assert len(notifications.listing()["notifications"]) == 1
+
+
+def test_rejecting_an_action_also_retires_its_bell_row(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
+    """Deciding it in Pulse must not leave the operator to dismiss it a second time."""
+    from agent_sessions import notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    ledger.append(
+        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
+    )
+    _seed_note("act-1", "mine")
+    _seed_note("act-other", "someone else's", session="codex:bbb")
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/pulse/actions/act-1/reject",
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200 and r.json()["state"] == "rejected"
+    assert [n["title"] for n in notifications.listing()["notifications"]] == ["someone else's"]
+
+
+def test_a_failed_reject_never_destroys_an_alert(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
+    """The 404 and 409 paths must leave the bell alone.
+
+    Clearing on a *failed* reject would retire the operator's only pointer to an action that is
+    still live — or one already delivered, where the alert is the record that it happened.
+    """
+    from agent_sessions import notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    ledger.append(
+        {"id": "act-done", "state": "delivered", "verb": "continue", "session_id": "claude:aaa"}
+    )
+    _seed_note("act-done", "already delivered")
+    _seed_note("act-ghost", "never existed", session="codex:bbb")
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = {"Origin": auth_cfg.origin, "X-CSRF-Token": csrf}
+
+    assert c.post("/api/pulse/actions/act-done/reject", headers=h).status_code == 409
+    assert c.post("/api/pulse/actions/act-ghost/reject", headers=h).status_code == 404
+    assert len(notifications.listing()["notifications"]) == 2
+
+
+def test_approving_an_action_also_retires_its_bell_row(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
+    """Delivering it is resolving it — the alert must not need a second dismissal."""
+    from agent_sessions import actuator, notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    _seed_note("act-1", "mine")
+    _seed_note("act-other", "someone else's", session="codex:bbb")
+
+    async def _delivered(action_id, **_k):
+        return {"id": action_id, "state": "delivered"}
+
+    monkeypatch.setattr(actuator, "deliver", _delivered)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/pulse/actions/act-1/approve",
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200 and r.json()["state"] == "delivered"
+    assert [n["title"] for n in notifications.listing()["notifications"]] == ["someone else's"]
+
+
+def test_a_failed_approval_never_retires_the_alert(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
+    """A 409 means nothing was written, so the operator's pointer to a still-live action stays.
+
+    Both failure shapes: the `stale`/`expired` body that returns 409, and `NotDeliverable`.
+    """
+    from agent_sessions import actuator, notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    _seed_note("act-stale", "still mine")
+    _seed_note("act-undeliverable", "also mine", session="codex:bbb")
+
+    async def _stale(action_id, **_k):
+        if action_id == "act-undeliverable":
+            raise actuator.NotDeliverable("not deliverable")
+        return {"id": action_id, "state": "stale", "detail": "the session moved on"}
+
+    monkeypatch.setattr(actuator, "deliver", _stale)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = {"Origin": auth_cfg.origin, "X-CSRF-Token": csrf}
+
+    assert c.post("/api/pulse/actions/act-stale/approve", headers=h).status_code == 409
+    assert c.post("/api/pulse/actions/act-undeliverable/approve", headers=h).status_code == 409
+    assert len(notifications.listing()["notifications"]) == 2
+
+
 # --- Ask matches name what is waiting on the session ---------------------------------------
 
 

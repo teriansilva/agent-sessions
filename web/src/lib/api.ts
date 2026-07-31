@@ -532,6 +532,17 @@ export const api = {
       "/api/pulse/notifications/read",
       ids ? { ids } : {},
     ),
+  /** Remove notifications: the given ids, or every one with `all`. CSRF-guarded.
+   *
+   *  Fails CLOSED server-side, unlike `/read` — a malformed body is a 422 rather than being
+   *  read as "everything" (#752). So the all-scope has to be asked for in as many words; there
+   *  is deliberately no `dismissNotifications()` shorthand that clears the bell by accident. */
+  dismissNotifications: (arg: { ids: string[] } | { all: true }) =>
+    mutateJson<NotificationList & { dismissed: number }>(
+      "POST",
+      "/api/pulse/notifications/dismiss",
+      arg,
+    ),
   /** The VAPID PUBLIC key + registered devices. The private half never leaves the server, and
    *  a device is identified by an opaque id + origin — never its endpoint URL, which is a
    *  capability anyone holding it could push with. */

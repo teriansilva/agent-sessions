@@ -435,6 +435,9 @@ async def run_pass(
             "title": _clamp(card.get("title"), TITLE_MAX),
             "project": _clamp((card.get("project") or {}).get("name"), PROJECT_MAX),
             "project_id": (card.get("project") or {}).get("id") or "",
+            # The session's own clock at proposal time. The bell uses it to tell "the same
+            # unresolved situation, re-proposed" from "something new happened here" (#752).
+            "last_activity": card.get("last_activity"),
             **{k: v for k, v in action.items() if k != "session_id"},
         }
         # Only a verb that will actually be delivered needs a precondition to verify later.
@@ -516,8 +519,14 @@ def _persist(records: list[dict]) -> list[dict]:
                 session_id=str(rec.get("session_id") or ""),
                 engine=str(rec.get("engine") or ""),
                 action_id=str(rec.get("id") or ""),
+                escalation=rec.get("state") == "escalated",
+                activity_at=rec.get("last_activity"),
             )
-            notifications.fanout(note)
+            # `None` means an equivalent alert is already sitting in the bell — the operator has
+            # been told. Re-proposing is correct (the situation IS still unresolved); re-alerting
+            # about it every TTL is not, and a push is the one channel that can wake someone.
+            if note is not None:
+                notifications.fanout(note)
     return kept
 
 
