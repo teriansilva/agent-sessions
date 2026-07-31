@@ -1,0 +1,264 @@
+.compose {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  /* Cap the bar's own height and scroll internally so a tall compose shrinks the
+   * terminal (the flex:1 sibling) rather than pushing the action row off-screen (#7). */
+  max-height: 50dvh;
+  overflow-y: auto;
+}
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.textarea {
+  width: 100%;
+  max-height: 28vh;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px;
+  font: inherit;
+  line-height: 1.35;
+}
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 70%;
+  background: var(--glass-strong);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+.pn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill button {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Single non-wrapping row (#234): takes the row's slack (flex:1) so the available width is
+   layout-driven and stable to measure; KeyBar collapses the overflow into the "…" menu rather
+   than wrapping. position:relative anchors the popover. */
+.keys {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+/* Key + toggle + mic chips below the console (↑ ↓ ↵ tab 📎 ✕ in the collapsible group, plus the
+   mic): flat HUD chips — mono, square, translucent so the ambient field reads through, amber on
+   hover/active (#211/#487). */
+.keys button,
+.moreKey,
+.toggle,
+.mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  cursor: pointer;
+}
+.keys button:hover,
+.moreKey:hover,
+.toggle:hover,
+.mic:hover {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.keys button:active,
+.moreKey:active,
+.toggle:active,
+.mic:active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+/* The mic sits in the right cluster (before Send) and never shrinks. */
+.mic {
+  flex: 0 0 auto;
+}
+/* The "…" overflow trigger never shrinks; it sits right after the last visible chip. */
+.moreKey {
+  flex: none;
+}
+/* Overflow popover (#234): pops UP from the more button (terminal is above). */
+/* Portalled to <body> with position:fixed (#500): bottom/left are set inline from the "…" trigger,
+   so .compose's overflow-y:auto and .terminal-pane's overflow:hidden can't clip it. Opens upward. */
+.keyMenu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.keyMenu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.keyMenu button:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.keyMenuIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex: none;
+}
+.spacer {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* Primary Send: solid amber CTA; the global .shine class adds the rare HUD glitch (#211). */
+.send {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: 0;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.send:hover {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.send:active {
+  background: var(--cta-bg-2);
+}
+.toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+}
+
+/* Push-to-talk mic (#483): a HUD chip on the shared system (above), fixed-width like .toggle so it
+   doesn't flex. Idle inherits the amber hover/active; recording (.micOn) switches to the recording-
+   red LED with a slow pulse ring. --rec is a local recording-red (NOT the brand accent or a status
+   LED), darkened on the light theme for contrast. */
+/* #738: no longer the 34px icon-only chip — it carries "Push to talk", because a bare icon can't
+   say "hold me". `touch-action`/`user-select`/`-webkit-touch-callout` keep a long press a HOLD
+   rather than a text-selection drag or an iOS callout. Width is intrinsic and the label text never
+   changes between states: a control being physically held must not resize under the finger. */
+.mic {
+  gap: 6px;
+  padding: 0 10px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.micLabel {
+  white-space: nowrap;
+}
+/* Released, engine still delivering: the mic is OFF (so never the recording red), and the chip
+   refuses the next hold until the tail lands — dashed + muted says "not yours yet". */
+.micFinalizing {
+  color: var(--text-3);
+  border-style: dashed;
+  cursor: default;
+}
+.micOn {
+  --rec: #ff5a5a;
+  color: var(--rec);
+  border-color: var(--rec);
+  background: color-mix(in srgb, var(--rec) 16%, transparent);
+  animation: micPulse 1.4s ease-in-out infinite;
+}
+.micOn:hover,
+.micOn:active {
+  color: var(--rec);
+  border-color: var(--rec);
+  background: color-mix(in srgb, var(--rec) 24%, transparent);
+}
+:global([data-theme="light"]) .micOn {
+  --rec: #d62f2f;
+}
+@keyframes micPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--rec) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--rec) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .micOn {
+    animation: none;
+  }
+}
