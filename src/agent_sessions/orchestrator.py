@@ -224,6 +224,89 @@ def _digest_entry(card: dict, now: float) -> dict:
     }
 
 
+# A rationale that opens by quoting the title back. Measured on the live store: 4 of 200 began
+# literally `Title says '…' — …`, and 31 of 200 contained their own title somewhere.
+_ECHO_LEAD = re.compile(
+    r"^\s*(?:the\s+)?title\s+(?:says|reads|is)\s*[:\-\u2014]?\s*", re.IGNORECASE
+)
+_ECHO_SEP = re.compile(r"^\s*[\-\u2014:]\s*")
+# Openers mapped to the closer that actually pairs with them.
+_QUOTE_PAIRS = {"'": "'", '"': '"', "\u2018": "\u2019", "\u201c": "\u201d"}
+
+
+def _strip_echo_prefix(rationale: str, title: str) -> tuple[str, bool]:
+    """Remove a leading `Title says '<title>' — ` when the quoted span IS the title.
+
+    Explicit steps rather than one pattern, because three successive regex versions each got the
+    same thing wrong in a new way: non-greedy stopped at an apostrophe inside the title, greedy
+    ran on to a later quote in the real sentence, and an optional closer let the title match as
+    a PREFIX of a longer phrase — `'Build is blocked by CI'` against title `Build is blocked`
+    left `By CI' — …`. Every rejection below has a name, which is the point.
+    """
+    m = _ECHO_LEAD.match(rationale)
+    if not m:
+        return rationale, False
+    rest = rationale[m.end() :]
+    closer = _QUOTE_PAIRS.get(rest[:1])
+    if closer:
+        body = rest[1:]
+        if body[: len(title)].lower() != title.lower():
+            return rationale, False  # quoted something other than the title
+        after = body[len(title) :]
+        if not after.startswith(closer):
+            return rationale, False  # the title is only a PREFIX of the quoted span
+        after = after[1:]
+    else:
+        if rest[: len(title)].lower() != title.lower():
+            return rationale, False
+        after = rest[len(title) :]
+        # Unquoted needs an explicit separator, or `Title says Build is blocked by CI — …`
+        # would be truncated to `by CI — …` on title `Build is blocked`.
+        if not _ECHO_SEP.match(after):
+            return rationale, False
+    return _ECHO_SEP.sub("", after, count=1), True
+
+
+# A word that carries its own internal capital is deliberately cased — `iOS`, `eBay`, `macOS`.
+_ALL_LOWER_LEAD = re.compile(r"^[a-z]+(?![A-Za-z])")
+
+
+def _degabble(rationale: str, title: str) -> str:
+    """Strip a `Title says '<title>' — ` preamble so what is left is the part that says something.
+
+    #753: the rationale is the one line answering *why does this need me*, and some of it just
+    echoed the title printed directly above it. Removing the preamble turns
+    `Title says 'X' — needs user decision on re-queue.` into `Needs user decision on re-queue.`
+
+    Deliberately ONLY the preamble form. Removing a title quoted mid-sentence scored far better
+    on the obvious metric — "does the reason still contain its title", 26 -> 2 against 26 -> 22 —
+    and produced worse text, because in those rows the title IS the opening clause:
+
+        Awaiting user decision on PR #20 merge path after Hermes approval
+        -> "after Hermes approval"
+
+    A redundant sentence is readable; a fragment is not. The metric rewarded shredding, so it
+    was the wrong metric, and those rows are a PROMPT problem rather than something subtraction
+    can fix.
+
+    Subtractive in the strict sense: the retained suffix is handed back byte-for-byte apart
+    from the leading separator that joined it to the preamble. It is NOT re-spaced, and its
+    casing is repaired only when the leading word is unambiguously lowercase — capitalising
+    unconditionally turned `iOS deployment…` into `IOS deployment…` and `eBay…` into `EBay…`.
+    """
+    if not title:
+        return rationale
+    out, had_prefix = _strip_echo_prefix(rationale, title)
+    if not had_prefix:
+        return rationale  # nothing was an echo — hand back exactly what we got
+    out = out.strip()
+    if len(out) < 12:
+        return rationale  # nothing meaningful survived — keep what we had
+    if _ALL_LOWER_LEAD.match(out):
+        out = out[:1].upper() + out[1:]
+    return out
+
+
 def _age_hours(card: dict, now: float) -> float | None:
     """Hours since a session last did anything, from EITHER shape this is handed.
 
@@ -286,7 +369,16 @@ def _validate_actions(
             "session_id": sid,
             "verb": verb,
             "confidence": round(confidence, 3),
-            "rationale": _clamp(item.get("rationale"), RATIONALE_MAX),
+            # The CLAMPED title — the exact string `_digest_entry` put in front of the model.
+            # Comparing against the raw card title meant a >TITLE_MAX title could be echoed
+            # perfectly and never recognised, because the model never saw the long form.
+            "rationale": _clamp(
+                _degabble(
+                    str(item.get("rationale") or ""),
+                    _clamp(sent[sid].get("title"), TITLE_MAX),
+                ),
+                RATIONALE_MAX,
+            ),
             "evidence": evidence,
         }
         if verb == "choose":
