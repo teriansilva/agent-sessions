@@ -1,8 +1,16 @@
-import { ArrowRight, MessageSquare, RefreshCw, Send, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  MessageSquare,
+  RefreshCw,
+  Send,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { HudFrame } from "../components/hud/HudFrame";
+import { pendingLabel } from "../lib/pendingLabel";
 import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, relTime, shortCwd } from "../lib/format";
@@ -40,7 +48,15 @@ function sessionPath(card: PulseCard): string {
  *  banner, an Ask `why`) is rendered as plain text via React's default escaping — never
  *  markup — so a session title/summary can't inject into the page (#441). `why` (#522) is
  *  the Ask panel's one-line match reason, an optional extra row on the same card. */
-function Card({ card, why }: { card: PulseCard; why?: string }) {
+function Card({
+  card,
+  why,
+  pending,
+}: {
+  card: PulseCard;
+  why?: string;
+  pending?: PulseAskMatch["pending"];
+}) {
   const summary = card.synthesis || card.ai_summary || "";
   const intervention = card.intervention_required;
   return (
@@ -69,18 +85,34 @@ function Card({ card, why }: { card: PulseCard; why?: string }) {
       </div>
       {summary && <p className={styles.summary}>{summary}</p>}
       {why && <p className={styles.why}>{`// ${why}`}</p>}
+      {/* Finding the session is only half the answer — "and there is something waiting for you
+          in it" is the other half, and it is the reason to go there now rather than later.
+          Server-supplied (`_with_pending`), never model-asserted: a hallucinated errand sends
+          the operator into a session to find nothing and costs the flag its credibility. */}
+      {pending && (
+        <p className={styles.pending}>
+          <AlertTriangle size={12} aria-hidden="true" />
+          {pendingLabel(pending)}
+        </p>
+      )}
       {intervention && card.intervention_reason && (
         <p className={styles.reason}>{card.intervention_reason}</p>
       )}
       <div className={styles.cardFoot}>
         <span className={styles.proj} title={card.cwd}>
-          {card.project.kind === "project" ? card.project.name : shortCwd(card.cwd)}
+          {card.project.kind === "project"
+            ? card.project.name
+            : shortCwd(card.cwd)}
         </span>
         <span className={styles.sep} aria-hidden="true">
           ·
         </span>
         <span className={styles.age}>{relTime(card.last_activity)}</span>
-        <Link className={styles.jump} to={sessionPath(card)} aria-label={`Jump into ${card.title}`}>
+        <Link
+          className={styles.jump}
+          to={sessionPath(card)}
+          aria-label={`Jump into ${card.title}`}
+        >
           Jump in <ArrowRight size={13} aria-hidden="true" />
         </Link>
       </div>
@@ -125,7 +157,9 @@ function AskPanel({ configured }: { configured: boolean }) {
     setFailed(null);
     setInput("");
     // The replayed history is the thread BEFORE this question (bounded server-side too).
-    const history = thread.map((t) => ({ role: t.role, content: t.content })).slice(-8);
+    const history = thread
+      .map((t) => ({ role: t.role, content: t.content }))
+      .slice(-8);
     setThread((prev) => [...prev, { role: "user", content: query }]);
     try {
       const r = await api.pulseAsk(query, history);
@@ -138,7 +172,9 @@ function AskPanel({ configured }: { configured: boolean }) {
         // Busy or (backstop) unconfigured — the server detail says which.
         setNote(e.message);
       } else {
-        setFailed(e instanceof ApiError ? e.message : "Ask failed — please try again.");
+        setFailed(
+          e instanceof ApiError ? e.message : "Ask failed — please try again.",
+        );
       }
     } finally {
       setAsking(false);
@@ -149,16 +185,27 @@ function AskPanel({ configured }: { configured: boolean }) {
     <section className={styles.ask} aria-label="Ask about your past work">
       <HudFrame />
       <h2 className={styles.askHead}>
-        <MessageSquare size={14} className={styles.askIcon} aria-hidden="true" />
+        <MessageSquare
+          size={14}
+          className={styles.askIcon}
+          aria-hidden="true"
+        />
         Ask
         <span className={styles.sl} aria-hidden="true">
           //
         </span>
-        <span className={styles.askSub}>find past sessions in plain language</span>
+        <span className={styles.askSub}>
+          find past sessions in plain language
+        </span>
       </h2>
 
       {thread.length > 0 && (
-        <div className={styles.askThread} ref={threadRef} role="log" aria-label="Ask conversation">
+        <div
+          className={styles.askThread}
+          ref={threadRef}
+          role="log"
+          aria-label="Ask conversation"
+        >
           {thread.map((t, i) =>
             t.role === "user" ? (
               <p key={i} className={styles.askUser}>
@@ -170,7 +217,12 @@ function AskPanel({ configured }: { configured: boolean }) {
                 {t.matches && t.matches.length > 0 && (
                   <ul className={styles.askCards}>
                     {t.matches.map((m) => (
-                      <Card key={m.id} card={m} why={m.why} />
+                      <Card
+                        key={m.id}
+                        card={m}
+                        why={m.why}
+                        pending={m.pending}
+                      />
                     ))}
                   </ul>
                 )}
@@ -275,7 +327,9 @@ export default function Pulse() {
       const fresh = await api.pulseScan({ depth });
       setOverview(fresh);
       if (fresh.synthesis_skipped) {
-        setNote("Synthesis needs the AI endpoint — configure it in Settings → AI Review.");
+        setNote(
+          "Synthesis needs the AI endpoint — configure it in Settings → AI Review.",
+        );
       }
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
@@ -291,9 +345,10 @@ export default function Pulse() {
   const windowDays = overview?.window_days ?? cfg?.window_days ?? 3;
   const groups = useMemo(() => {
     const cards = overview?.cards ?? [];
-    return GROUPS.map((g) => ({ ...g, cards: cards.filter((c) => c.state === g.state) })).filter(
-      (g) => g.cards.length > 0,
-    );
+    return GROUPS.map((g) => ({
+      ...g,
+      cards: cards.filter((c) => c.state === g.state),
+    })).filter((g) => g.cards.length > 0);
   }, [overview]);
 
   const hasCards = (overview?.cards.length ?? 0) > 0;
@@ -306,7 +361,10 @@ export default function Pulse() {
           <span className={styles.sl} aria-hidden="true">
             //
           </span>
-          <span className={styles.window} title={`Recent window: ${windowDays} days`}>
+          <span
+            className={styles.window}
+            title={`Recent window: ${windowDays} days`}
+          >
             {windowDays}d
           </span>
           <span className={styles.sl} aria-hidden="true">
@@ -338,7 +396,11 @@ export default function Pulse() {
             disabled={scanning}
             onClick={() => void scanNow()}
           >
-            <RefreshCw size={14} className={scanning ? styles.spin : ""} aria-hidden="true" />
+            <RefreshCw
+              size={14}
+              className={scanning ? styles.spin : ""}
+              aria-hidden="true"
+            />
             {scanning ? "Scanning…" : "Scan now"}
           </button>
         </div>
@@ -347,25 +409,37 @@ export default function Pulse() {
       {note && <p className={styles.note}>{note}</p>}
       {error && <p className={styles.err}>{error}</p>}
 
-      {/* Pulse gains agency (#726): the AUTONOMY strip + proposal feed sit above Ask,
-          under the page's existing PULSE header. No new route, no new name. */}
-      <Orchestrator onTierChange={refreshConfig} />
-
+      {/* Ask leads (#522, restored): it is the surface you arrive WITH a question for, and it
+          answers in one line. #726 put the AUTONOMY strip above it, which pushed the chat below
+          a decision queue that grows without bound — on a phone that meant scrolling past every
+          pending escalation to reach the one control you came to use. The queue is what you
+          arrive to READ; the chat is what you arrive to USE, so the chat goes first. */}
       <AskPanel configured={cfg?.configured ?? false} />
 
+      {/* The state-of-your-work summary sits directly under Ask, above the queue: it is the
+          orientation you read FIRST — what happened while you were away and what is waiting —
+          and below a queue that grows without bound it was effectively unreachable. */}
       {overview?.banner && (
         <section className={styles.banner} aria-label="State of your work">
           <HudFrame />
-          <Sparkles size={15} className={styles.bannerIcon} aria-hidden="true" />
+          <Sparkles
+            size={15}
+            className={styles.bannerIcon}
+            aria-hidden="true"
+          />
           <p className={styles.bannerText}>{overview.banner}</p>
         </section>
       )}
+
+      <Orchestrator onTierChange={refreshConfig} />
 
       {loading ? (
         <p className={styles.state}>Loading…</p>
       ) : !hasCards ? (
         <div className={styles.empty}>
-          <p className={styles.emptyTitle}>No work in the last {windowDays} days</p>
+          <p className={styles.emptyTitle}>
+            No work in the last {windowDays} days
+          </p>
           <p className={styles.emptyHint}>
             {overview?.generated_at
               ? "Nothing recent to surface. Start a session, or widen the window in Settings."
@@ -377,14 +451,22 @@ export default function Pulse() {
             disabled={scanning}
             onClick={() => void scanNow()}
           >
-            <RefreshCw size={14} className={scanning ? styles.spin : ""} aria-hidden="true" />
+            <RefreshCw
+              size={14}
+              className={scanning ? styles.spin : ""}
+              aria-hidden="true"
+            />
             {scanning ? "Scanning…" : "Scan now"}
           </button>
         </div>
       ) : (
         <div className={styles.groups}>
           {groups.map((g) => (
-            <section key={g.state} className={styles.group} aria-labelledby={`pulse-${g.state}`}>
+            <section
+              key={g.state}
+              className={styles.group}
+              aria-labelledby={`pulse-${g.state}`}
+            >
               <h2 id={`pulse-${g.state}`} className={styles.groupHead}>
                 {g.label}
                 <span className={styles.count}>{g.cards.length}</span>

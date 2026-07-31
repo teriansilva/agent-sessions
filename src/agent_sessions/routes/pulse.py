@@ -52,6 +52,43 @@ from .. import (
 FEED_LIMIT = 100
 
 
+def _with_pending(result: dict) -> dict:
+    """Annotate each Ask match with the live orchestrator action on that session, if any.
+
+    Server-supplied, never model-asserted — the same asymmetry `evidence_for` is built on: the
+    model names a session, the server states the facts about it. A model asked "does this
+    session need me?" can answer yes about one that needs nothing, and a false "something is
+    waiting for you" is worse than silence: it sends the operator in to find nothing and teaches
+    them to stop trusting the flag.
+
+    Only LIVE states count. An expired, delivered or rejected action is history, not an errand.
+    """
+    matches = result.get("matches")
+    if not isinstance(matches, list) or not matches:
+        return result
+    live: dict[str, dict] = {}
+    with contextlib.suppress(Exception):
+        for a in orchestrator_ledger.live_actions():
+            sid = str(a.get("session_id") or "")
+            # `live_actions` is newest-first, so the first row seen per session is the current
+            # one; later rows are older and must not overwrite it.
+            if sid and sid not in live:
+                live[sid] = a
+    for m in matches:
+        if not isinstance(m, dict):
+            continue
+        # Overwrite unconditionally: whatever the model may have put here is discarded.
+        m.pop("pending", None)
+        a = live.get(str(m.get("id") or ""))
+        if a:
+            m["pending"] = {
+                "action_id": str(a.get("id") or ""),
+                "state": str(a.get("state") or ""),
+                "verb": str(a.get("verb") or ""),
+            }
+    return result
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _working_keys() -> set[str]:
         # Live "in flight" overlay: a session is live if its server-owned stream has recent
@@ -147,7 +184,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except review.ReviewError as e:
             return JSONResponse({"detail": str(e)}, status_code=502)
-        return JSONResponse(result)
+        return JSONResponse(await asyncio.to_thread(_with_pending, result))
 
     # --- orchestrator (#726 Phase 1) ---------------------------------------------------
     # Pulse gains agency. These join the `/api/pulse/*` family on purpose rather than opening

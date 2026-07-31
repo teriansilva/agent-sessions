@@ -306,6 +306,9 @@ export interface Evidence {
 
 export interface PulseAskMatch extends PulseCard {
   why: string;
+  /** The live orchestrator action on this session, if there is one — server-supplied, never
+   *  model-asserted (`routes/pulse._with_pending`). Absent when nothing is waiting. */
+  pending?: { action_id: string; state: string; verb: string };
 }
 
 /** POST /api/pulse/ask (#522). `stage`: `catalog` = ranked from session metadata only;

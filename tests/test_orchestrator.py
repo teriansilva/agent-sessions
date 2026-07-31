@@ -33,6 +33,7 @@ from agent_sessions import (
     orchestrator_loop,
     prefs,
     pulse,
+    pulse_chat,
     review,
 )
 from agent_sessions import (
@@ -1232,3 +1233,69 @@ def test_a_history_question_never_reaches_the_actuator(auth_cfg, fake_jsonl, mon
     )
     # The history rows must still come back for display.
     assert r.json().get("intent") == "history"
+
+
+# --- Ask matches name what is waiting on the session ---------------------------------------
+
+
+def _async_ret(value):
+    async def _f(*_a, **_k):
+        return value
+
+    return _f
+
+
+def _ask(c, csrf, cfg):
+    return c.post(
+        "/api/pulse/ask",
+        json={"query": "where was I"},
+        headers={"Origin": cfg.origin, "X-CSRF-Token": csrf},
+    ).json()
+
+
+def _matches(*ids):
+    return {
+        "answer": "found",
+        "stage": "catalog",
+        "configured": True,
+        "matches": [{"id": i, "why": "w"} for i in ids],
+    }
+
+
+def test_ask_matches_are_annotated_with_the_live_action(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Finding the session is half an answer; "and something is waiting there" is the rest."""
+    ledger.append(
+        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
+    )
+    monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa", "codex:bbb")))
+    c = _client(auth_cfg)
+    a, b = _ask(c, _login(c, auth_cfg), auth_cfg)["matches"]
+    assert a["pending"] == {"action_id": "act-1", "state": "escalated", "verb": "escalate"}
+    assert "pending" not in b, "a session with nothing waiting must carry no flag"
+
+
+def test_a_finished_action_is_history_not_an_errand(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Flagging a delivered or expired action sends the operator somewhere nothing waits —
+    the fastest way to make them stop trusting the flag."""
+    for i, state in enumerate(("delivered", "expired", "rejected")):
+        ledger.append(
+            {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
+        )
+    monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa")))
+    c = _client(auth_cfg)
+    assert "pending" not in _ask(c, _login(c, auth_cfg), auth_cfg)["matches"][0]
+
+
+def test_the_model_cannot_invent_a_pending_action(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The whole reason this is computed server-side.
+
+    A model that can name a session can claim one needs attention. A false "something is waiting
+    for you" costs a wasted trip AND the credibility of every true flag, so whatever the model
+    says here is discarded and replaced by what the ledger actually holds.
+    """
+    payload = _matches("claude:aaa")
+    payload["matches"][0]["pending"] = {"action_id": "made-up", "state": "escalated", "verb": "x"}
+    monkeypatch.setattr(pulse_chat, "ask", _async_ret(payload))
+    c = _client(auth_cfg)
+    got = _ask(c, _login(c, auth_cfg), auth_cfg)["matches"][0]
+    assert "pending" not in got, "a model-authored flag survived to the client"

@@ -468,6 +468,21 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* "…and something is waiting for you in it" — the half of the answer that turns a search
+ * result into a reason to act now. Amber because it IS current system state (an action is
+ * genuinely pending), which is what `--status-degraded` is for; it never animates. */
+.pending {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 5px 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--status-degraded);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .askForm {
   display: flex;
   gap: 8px;
