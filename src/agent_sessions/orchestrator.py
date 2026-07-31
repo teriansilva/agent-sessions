@@ -59,6 +59,10 @@ log = logging.getLogger("agent_sessions.orchestrator")
 
 # --- bounds (server-owned; the model's output is DATA) ---------------------------------
 DIGEST_MAX = 40  # sessions offered to the model in one pass
+# Beyond this, a session's silence is the answer: nothing is waiting on a nudge. Deliberately
+# generous — it exists to stop a `continue` landing in work that finished last week (#755), not
+# to second-guess a session someone stepped away from for an afternoon.
+STALE_DELIVER_HOURS = 48.0
 TITLE_MAX = 80
 SUMMARY_MAX = 300
 PROJECT_MAX = 40
@@ -220,7 +224,27 @@ def _digest_entry(card: dict, now: float) -> dict:
     }
 
 
-def _validate_actions(obj: dict, sent: dict[str, dict]) -> tuple[str, list[dict]]:
+def _age_hours(card: dict, now: float) -> float | None:
+    """Hours since a session last did anything, from EITHER shape this is handed.
+
+    `run_pass` and `orchestrator_chat.ask` build their `sent` map from raw cards, which carry
+    `last_activity`; `age_hours` exists only on the trimmed `_digest_entry` copy sent to the
+    model. Reading `age_hours` alone therefore found `None` on every production call and the
+    staleness gate never fired — and a test that builds its own `sent` with `age_hours` already
+    present cannot see that, because no real caller passes that shape.
+    """
+    age = card.get("age_hours")
+    if isinstance(age, int | float) and not isinstance(age, bool):
+        return float(age)
+    last = card.get("last_activity")
+    if isinstance(last, int | float) and not isinstance(last, bool):
+        return max(0.0, (now - float(last)) / 3600)
+    return None
+
+
+def _validate_actions(
+    obj: dict, sent: dict[str, dict], *, now: float | None = None
+) -> tuple[str, list[dict]]:
     """Narrow a model reply to ``(assessment, [action, …])``.
 
     Anti-hallucination, mirroring ``pulse_chat._validate_matches``: an id must appear in the
@@ -229,6 +253,7 @@ def _validate_actions(obj: dict, sent: dict[str, dict]) -> tuple[str, list[dict]
     without text, degrades to ``escalate`` rather than being invented into something
     deliverable — the operator sees the session, which is the honest outcome.
     """
+    now = time.time() if now is None else now
     assessment = _clamp(obj.get("assessment"), ASSESSMENT_MAX)
     raw = obj.get("actions")
     if not isinstance(raw, list):
@@ -281,6 +306,18 @@ def _validate_actions(obj: dict, sent: dict[str, dict]) -> tuple[str, list[dict]
                 action["answer"] = text
             else:
                 action["verb"] = "escalate"
+        # A delivering verb on a session that has been silent for days is a nudge nobody is
+        # waiting for. #755: `continue` was proposed at confidence 0.8 on a session whose work
+        # finished six days earlier — the model had `age_hours` in front of it and used it for
+        # nothing. Degrading to `escalate` keeps the session in front of the operator without
+        # typing into it, which is the same rule the confidence threshold already encodes:
+        # unsure means ask, never guess.
+        if action["verb"] in DELIVERING_VERBS:
+            age = _age_hours(sent[sid], now)
+            if age is not None and age >= STALE_DELIVER_HOURS:
+                action["verb"] = "escalate"
+                action.pop("option", None)
+                action.pop("answer", None)
         seen.add(sid)
         out.append(action)
     return assessment, out
@@ -358,7 +395,7 @@ async def run_pass(
             {"role": "user", "content": json.dumps(payload)},
         ]
     )
-    assessment, actions = _validate_actions(obj, sent)
+    assessment, actions = _validate_actions(obj, sent, now=now)
 
     # The endpoint call is the long await in this function, and policy can change across it.
     # Re-read the config and re-derive eligibility BEFORE recording anything: an operator who

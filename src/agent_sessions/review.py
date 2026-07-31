@@ -541,7 +541,54 @@ def _shape_guard(obj: dict) -> dict:
     }
 
 
-def _recap_shape_guard(obj: dict) -> str:
+# A span the model presents as VERBATIM — parenthesised, quoted, or backticked, and long enough
+# to be a quotation of machine output rather than a parenthetical aside. 24 chars keeps "(3 files)"
+# and "(PR #741)" out of scope while catching "(OS can't spawn worker thread: Resource temporarily
+# unavailable)".
+# A span the model presents as VERBATIM — parenthesised, quoted or backticked, and long enough
+# to be a quotation of machine output rather than a parenthetical aside. The 24-char floor keeps
+# "(3 files)" and "(PR #741)" out of scope while catching "(OS can't spawn worker thread:
+# Resource temporarily unavailable)".
+_QUOTED_SPAN = re.compile(
+    "\\(([^()]{24,}?)\\)"
+    '|"([^"]{24,}?)"'
+    "|\u2018([^\u2019]{24,}?)\u2019"
+    "|\u201c([^\u201d]{24,}?)\u201d"
+    "|`([^`]{24,}?)`"
+)
+_SPAN_TRIM = "\"'\u2018\u2019\u201c\u201d` "
+
+
+def _flat(text: str) -> str:
+    """Case- and whitespace-insensitive form, so a re-wrapped or re-spaced quote still matches."""
+    return " ".join(text.lower().split())
+
+
+def _ungrounded(line: str, haystack: str) -> bool:
+    """True when the line quotes something that does not occur in the session's own evidence.
+
+    #755: a recap claimed `Session ended with a crash (OS can't spawn worker thread: Resource
+    temporarily unavailable) during a subsequent Explain-this-codebase request`. That session's
+    transcript ended `task_complete` and its 22KB screen held no instance of `crash`, `error`,
+    `unavailable` or `spawn` — the failure was invented whole. An operator reads this field
+    before authorising the actuator to type into a live session, so an invented failure can
+    induce an approval they would otherwise refuse.
+
+    A prompt instruction cannot be verified; this can. Deliberately narrow: only spans the model
+    *presents as quoted* are checked, because paraphrase is the recap's whole job and demanding
+    literal support for prose would gut it.
+    """
+    for m in _QUOTED_SPAN.finditer(line):
+        span = next((g for g in m.groups() if g), "")
+        # Trim nesting ("model: x" inside parens) so the quote characters themselves are never
+        # what makes a true quotation look absent.
+        span = _flat(span.strip(_SPAN_TRIM))
+        if span and span not in haystack:
+            return True
+    return False
+
+
+def _recap_shape_guard(obj: dict, source: str = "") -> str:
     """Server-owned guard for the recap response (#481): the model output is DATA. Requires a
     non-empty ``recap`` string; collapses intra-line whitespace but KEEPS newlines (the recap
     is a short newline-separated timeline), strips any leading bullet / number the model added
@@ -556,7 +603,17 @@ def _recap_shape_guard(obj: dict) -> str:
     # and no longer matches — the strip can therefore never empty a line that had content, and
     # never blanks a previously good recap.
     lines = [_RECAP_LEADING_MARK.sub("", " ".join(ln.split())) for ln in recap.splitlines()]
-    cleaned = "\n".join(ln for ln in lines if ln)
+    kept = [ln for ln in lines if ln]
+    if source:
+        hay = _flat(source)
+        grounded = [ln for ln in kept if not _ungrounded(ln, hay)]
+        if not grounded:
+            # Every line quoted something absent from the evidence. Raising keeps the last good
+            # recap rather than persisting an entirely invented one — the same degrade-don't-drop
+            # rule the caller already relies on.
+            raise ReviewError("recap quoted text absent from the session's own evidence")
+        kept = grounded
+    cleaned = "\n".join(kept)
     return cleaned[:RECAP_MAX]
 
 
@@ -629,7 +686,9 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
                     {"role": "user", "content": recap_text},
                 ]
             )
-            meta = metadata.patch(rk, ai_recap=_recap_shape_guard(obj), recap_fingerprint=recap_fp)
+            meta = metadata.patch(
+                rk, ai_recap=_recap_shape_guard(obj, recap_text), recap_fingerprint=recap_fp
+            )
     except ReviewError:
         pass  # keep the last good recap; the summary/intervention write above stands
     return {

@@ -152,7 +152,9 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
             {"role": "user", "content": json.dumps(payload)},
         ]
     )
-    answer, actions = orchestrator._validate_actions(obj, sent)
+    # Same `now` the digest was built with, so staleness is measured against the instant
+    # this pass observed rather than drifting to wall-clock between the two.
+    answer, actions = orchestrator._validate_actions(obj, sent, now=now)
     answer = _clamp(answer or obj.get("answer"), ANSWER_MAX)
 
     # `complete_json` is the long await here exactly as it is in a scheduled pass, and policy
