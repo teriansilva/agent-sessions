@@ -203,6 +203,7 @@ export const Compose = forwardRef<
   // the evidence is weighed.
   const entryTextRef = useRef<string[]>([]);
   const entryAtRef = useRef<number[]>([]);
+  const entryFirstAtRef = useRef<number[]>([]); // arrival, not latest revision (#749)
   const entryEventRef = useRef<number[]>([]);
   const entryFinalBornRef = useRef<boolean[]>([]);
   const dictEventSeqRef = useRef(0);
@@ -475,6 +476,7 @@ export const Compose = forwardRef<
     // history, so the collapse never reasons across a session boundary.
     entryTextRef.current = [];
     entryAtRef.current = [];
+    entryFirstAtRef.current = [];
     entryEventRef.current = [];
     entryFinalBornRef.current = [];
     const startedAt = performance.now();
@@ -499,7 +501,10 @@ export const Compose = forwardRef<
       for (let i = 0; i < e.results.length; i++) {
         const res = e.results[i];
         const transcript = res[0].transcript;
-        if (entryTextRef.current[i] === undefined) entryFinalBornRef.current[i] = !!res.isFinal;
+        if (entryTextRef.current[i] === undefined) {
+          entryFinalBornRef.current[i] = !!res.isFinal;
+          entryFirstAtRef.current[i] = now; // when it ARRIVED — never revised afterwards (#749)
+        }
         if (entryTextRef.current[i] !== transcript) {
           entryTextRef.current[i] = transcript;
           entryAtRef.current[i] = now;
@@ -509,6 +514,7 @@ export const Compose = forwardRef<
           segs.push({
             text: transcript,
             atMs: entryAtRef.current[i],
+            firstAtMs: entryFirstAtRef.current[i],
             eventSeq: entryEventRef.current[i],
             isFinal: !!res.isFinal,
             finalBorn: entryFinalBornRef.current[i],

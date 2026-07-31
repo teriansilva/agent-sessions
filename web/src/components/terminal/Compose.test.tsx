@@ -908,6 +908,8 @@ test("the window losing focus mid-hold releases the mic (#738)", async () => {
   expect(micChip()).toHaveAttribute("aria-pressed", "false");
 });
 
+
+
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {
   const user = userEvent.setup();
   renderCompose();

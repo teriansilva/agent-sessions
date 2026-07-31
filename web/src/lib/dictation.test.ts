@@ -9,16 +9,26 @@ import { assembleSpoken, isSpaceDelimitedLang, SNAPSHOT_BURST_MS, type SpokenSeg
 // A `fin("")` entry is the stacker's fingerprint (#711 finding 3): a finalized empty result, which
 // no compliant engine produces — it is what arms collapsing at all.
 let seq = 0;
-const fin = (text: string, atMs: number, eventSeq = ++seq): SpokenSegment => ({
+// `firstAtMs` defaults to `atMs`: a final-born entry never changes after it appears, so its arrival
+// IS its timestamp. Only the live interim differs — it keeps being revised while the speaker talks —
+// so the tests that model one pass it explicitly (#749).
+const fin = (text: string, atMs: number, eventSeq = ++seq, firstAtMs = atMs): SpokenSegment => ({
   text,
   atMs,
+  firstAtMs,
   eventSeq,
   isFinal: true,
   finalBorn: true,
 });
-const grown = (text: string, atMs: number, eventSeq = ++seq): SpokenSegment => ({
+const grown = (
+  text: string,
+  atMs: number,
+  eventSeq = ++seq,
+  firstAtMs = atMs,
+): SpokenSegment => ({
   text,
   atMs,
+  firstAtMs,
   eventSeq,
   isFinal: true,
   finalBorn: false,
@@ -104,9 +114,27 @@ test("entries first exposed by the SAME event are preserved even on the identifi
   );
 });
 
-test("an entry that lived as an interim never supersedes, however fast it arrives (#711)", () => {
-  // A compliant narration (interim first) is never a restatement — even on the identified stacker.
-  expect(assembleSpoken([fin("", 0), fin("go", 300), grown("go now", 500)], true)).toBe("go go now");
+test("an interim-grown entry in the MIDDLE of the list never supersedes (#711/#749)", () => {
+  // Unchanged from #711: a compliant narration is not a restatement, so a grown entry that still
+  // has entries after it — i.e. the engine moved on from it — cannot absorb its predecessor.
+  expect(
+    assembleSpoken([fin("", 0), fin("go", 300), grown("go now", 500), fin("later", 4000)], true),
+  ).toBe("go go now later");
+});
+
+test("the LIVE entry may supersede on the identified stacker, interim-grown or not (#749)", () => {
+  // #711 asserted the opposite, from a constructed example. The device capture behind #749 settles
+  // it: on the fingerprinted stacker the last entry is the phrase still being narrated AND a
+  // cumulative restatement of the snapshots before it — it arrives as an interim by definition, so
+  // requiring born-final meant it could never absorb them, and the sentence was typed twice
+  // ("and when you are done with" + "and when you are done with all of this").
+  //
+  // The waiver is deliberately narrow: only the LAST entry, only once the stacker has identified
+  // itself, only when the text restates, only from a later event, and only within the burst window
+  // measured from ARRIVAL. An engine that never finalizes an empty entry still collapses nothing.
+  expect(assembleSpoken([fin("", 0), fin("go", 300), grown("go now", 500)], true)).toBe("go now");
+  // …and the gate still rules: no fingerprint, no collapse, however the entries are shaped.
+  expect(assembleSpoken([fin("go", 300), grown("go now", 500)], true)).toBe("go go now");
 });
 
 test("one interim does not exempt later stacked snapshots (#711 follow-up)", () => {

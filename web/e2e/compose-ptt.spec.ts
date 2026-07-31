@@ -333,3 +333,74 @@ test("a Space press cannot steal a pointer-owned hold or bin its tail (#738)", a
   await page.evaluate(() => (window as unknown as { __recog: { tail: () => void } }).__recog.tail());
   await expect(textarea).toHaveValue("hold to dictate the whole sentence");
 });
+
+// #749: the operator's real device capture (Android 10 / Chrome 150, continuous, one session),
+// replayed at its true relative timings so the burst window is exercised against a real clock.
+// Every entry but the last is born final; three are finalized EMPTY (the #711 stacker fingerprint);
+// the last is the LIVE phrase — it arrives as an interim and keeps growing. On v0.15.0 that last
+// entry could not absorb its predecessor, so the sentence was typed twice.
+const SPEECH_STUB_CAPTURE = `
+window.__recog = { started: 0, stopped: 0 };
+window.SpeechRecognition = class {
+  constructor() {
+    this.continuous = false; this.interimResults = false; this.lang = "";
+    this.onresult = null; this.onerror = null; this.onend = null;
+    window.__recog.instance = this;
+  }
+  start() {
+    window.__recog.started++;
+    const EV = [
+      [1949,0,true,""],[2248,1,true,""],[2457,2,true,""],
+      [2471,3,true,"and"],[2556,4,true,"and"],[2657,5,true,"and"],
+      [2765,6,true,"and when"],[2969,7,true,"and when"],
+      [3074,8,true,"and when you"],[3246,9,true,"and when you are"],
+      [3286,10,true,"and when you are done"],[3378,11,true,"and when you are done"],
+      [3482,12,true,"and when you are done with"],[3688,13,true,"and when you are done with"],
+      [3799,14,true,"and when you are done with"],
+      [4125,15,false,"and when you are done with all"],
+      [4307,15,false,"and when you are done with all of"],
+      [4313,15,false,"and when you are done with all of this"],
+      [4319,15,true,"and when you are done with all of this"],
+    ];
+    const t0 = EV[0][0];
+    const live = new Map();
+    EV.forEach(([t, i, isFinal, transcript]) => {
+      setTimeout(() => {
+        live.set(i, { isFinal, transcript });
+        const results = [...live.keys()].sort((a, b) => a - b).map((k) => ({
+          0: { transcript: live.get(k).transcript },
+          isFinal: live.get(k).isFinal,
+          length: 1,
+        }));
+        if (this.onresult) this.onresult({ resultIndex: 0, results });
+      }, t - t0);
+    });
+  }
+  stop() { window.__recog.stopped++; if (this.onend) this.onend(); }
+  abort() { if (this.onend) this.onend(); }
+};
+`;
+
+test("the captured device stream types the sentence ONCE (#749)", async ({ page }) => {
+  await page.addInitScript(NOOP_WS);
+  await page.addInitScript(SPEECH_STUB_CAPTURE);
+  await page.addInitScript(GUM_STUB);
+  await page.goto("/s/claude/ptt-749");
+  await expect(page.locator(".xterm")).toBeVisible();
+
+  const mic = page.getByRole("button", { name: /start voice input/i });
+  if (!(await mic.isVisible())) {
+    await page.getByRole("button", { name: /open compose box/i }).click();
+  }
+  await expect(mic).toBeVisible();
+  const textarea = page.getByPlaceholder(/Type here/i);
+
+  await mic.hover();
+  await page.mouse.down();
+  // The whole capture spans ~2.4s of wall clock; wait it out, then let go.
+  await expect(textarea).toHaveValue("and when you are done with all of this");
+  await page.mouse.up();
+
+  // Red before #749: "and when you are done with and when you are done with all of this".
+  await expect(textarea).toHaveValue("and when you are done with all of this");
+});

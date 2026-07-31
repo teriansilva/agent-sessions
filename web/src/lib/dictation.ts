@@ -19,6 +19,11 @@
 export type SpokenSegment = {
   text: string;
   atMs: number;
+  /** When the entry FIRST appeared, whatever it said then (#749). `atMs` tracks the latest revision,
+   *  which for the live interim keeps moving for as long as the speaker keeps talking — so measuring
+   *  its arrival with `atMs` inflates the gap by the length of the phrase and pushed a perfectly
+   *  ordinary snapshot pair outside `SNAPSHOT_BURST_MS`. Arrival is when it showed up. */
+  firstAtMs: number;
   eventSeq: number;
   isFinal: boolean;
   finalBorn: boolean;
@@ -120,10 +125,20 @@ const restates = (a: string, b: string, spaceDelimited: boolean): boolean => {
  *      stacker's restatement cadence, so that real repeated speech spoken on the broken device
  *      ("yes", a pause, "yes") is still typed twice;
  *    • `b` textually restates `a` (`restates`). */
-const supersedes = (a: SpokenSegment, b: SpokenSegment, spaceDelimited: boolean): boolean =>
-  b.finalBorn &&
+const supersedes = (
+  a: SpokenSegment,
+  b: SpokenSegment,
+  spaceDelimited: boolean,
+  bIsLive: boolean,
+): boolean =>
+  // Born-final is the stacker's signature — EXCEPT for the live entry, which is the phrase the
+  // engine is still narrating and therefore always arrives as an interim (#749). Waiving it for
+  // that one entry is what lets the last snapshot absorb its predecessor; every earlier entry
+  // still has to have materialised pre-finalized.
+  (b.finalBorn || bIsLive) &&
   b.eventSeq > a.eventSeq &&
-  b.atMs - a.atMs < SNAPSHOT_BURST_MS &&
+  // Measured from b's ARRIVAL, not its latest revision — see `firstAtMs`.
+  b.firstAtMs - a.atMs < SNAPSHOT_BURST_MS &&
   restates(a.text, b.text, spaceDelimited);
 
 /** Assemble what the user actually said from the recognizer's entries (#648, #711).
@@ -138,14 +153,16 @@ const supersedes = (a: SpokenSegment, b: SpokenSegment, spaceDelimited: boolean)
 export const assembleSpoken = (segments: SpokenSegment[], spaceDelimited: boolean): string => {
   const stacking = identifiesStacker(segments);
   const kept: SpokenSegment[] = [];
-  for (const raw of segments) {
+  segments.forEach((raw, i) => {
     const text = raw.text.replace(/\s+/g, " ").trim();
-    if (!text) continue;
+    if (!text) return;
     const seg = { ...raw, text };
     const prev = kept[kept.length - 1];
-    if (stacking && prev && supersedes(prev, seg, spaceDelimited)) kept[kept.length - 1] = seg;
+    // The last entry of the results list is the live one — the phrase still being narrated (#749).
+    const isLive = i === segments.length - 1;
+    if (stacking && prev && supersedes(prev, seg, spaceDelimited, isLive)) kept[kept.length - 1] = seg;
     else kept.push(seg);
-  }
+  });
   return kept.map((s) => s.text).join(" ");
 };
 
