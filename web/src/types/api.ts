@@ -172,6 +172,17 @@ export interface PulseCard {
   /** Per-session "state + next step" line from a `slow` scan (#441 Phase 4); null otherwise.
    *  When set the card shows it instead of `ai_summary`. */
   synthesis: string | null;
+  /** The live orchestrator action on this session, attached server-side by
+   *  `routes/pulse._attach_pending` (#754). Present means the card carries the decision
+   *  controls inline; the queue is no longer a separate list. */
+  pending_action?: OrchestratorAction;
+  /** The band this card had BEFORE `pending_action` re-banded it to `needs_you`. Present only
+   *  when the overlay fired; the client restores it when an action is settled locally, so the
+   *  session does not sit under "Needs you" with nothing pending. */
+  state_without_action?: PulseState;
+  /** True when the card exists only because a live action does — there was no cached card for
+   *  the session. Settle the action and there is nothing left to show, so the card goes too. */
+  synthesized_for_action?: boolean;
 }
 
 /** The cached Pulse overview artifact from GET /api/pulse / POST /api/pulse/scan (#441).

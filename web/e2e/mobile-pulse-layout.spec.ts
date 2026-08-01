@@ -386,11 +386,9 @@ test("'Run now' takes its own full-width row instead of sitting inline with the 
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile layout");
   await page.goto("/pulse");
-  await expect(
-    page.getByRole("heading", { name: /needs a decision/i }),
-  ).toBeVisible();
-
+  // The queue's heading is gone (#754) — wait on the panel this test is actually about.
   const run = page.getByRole("button", { name: /run now/i });
+  await expect(run).toBeVisible();
   const rb = (await run.boundingBox())!;
   const rowBox = await page.evaluate(() => {
     const el = document.querySelector('[class*="meterRow"]')!;

@@ -11,10 +11,13 @@ import { Link } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { HudFrame } from "../components/hud/HudFrame";
 import { pendingLabel } from "../lib/pendingLabel";
+import { ActionRow } from "../components/pulse/ActionRow";
 import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, engineName, relTime, shortCwd } from "../lib/format";
+import { OPERATOR_PENDING } from "../lib/orchestratorAction";
 import type {
+  OrchestratorAction,
   PulseAskMatch,
   PulseCard,
   PulseDepth,
@@ -69,10 +72,16 @@ function Card({
   card,
   why,
   pending,
+  onResolved,
+  onNote,
 }: {
   card: PulseCard;
   why?: string;
   pending?: PulseAskMatch["pending"];
+  onResolved?: (a: OrchestratorAction) => void;
+  /** Where an explanation goes when the row itself is about to disappear — a 409 carrying a
+   *  settled record removes the action from the card, so the reason has to outlive it. */
+  onNote?: (msg: string) => void;
 }) {
   const summary = card.synthesis || card.ai_summary || "";
   const intervention = card.intervention_required;
@@ -102,6 +111,18 @@ function Card({
       </div>
       {summary && <p className={styles.summary}>{summary}</p>}
       {why && <p className={styles.why}>{`// ${why}`}</p>}
+      {/* The decision controls live ON the card (#754). The queue used to be a second list
+          beside these cards and was a strict subset of them — every action's session already
+          appeared here, so the operator read the same session twice in two visual languages
+          with two different affordances. */}
+      {card.pending_action && (
+        <ActionRow
+          action={card.pending_action}
+          onResolved={onResolved}
+          onNote={onNote}
+          embedded
+        />
+      )}
       {/* Finding the session is only half the answer — "and there is something waiting for you
           in it" is the other half, and it is the reason to go there now rather than later.
           Server-supplied (`_with_pending`), never model-asserted: a hallucinated errand sends
@@ -316,17 +337,82 @@ export default function Pulse() {
     if (cfg?.scan_depth) setDepth(cfg.scan_depth);
   }
 
+  // Bumped when an action is resolved from a card, so the orchestrator panel (which owns its
+  // own pending/feed) re-reads rather than showing a count for something already decided.
+  const [orchEpoch, setOrchEpoch] = useState(0);
+  // Monotonic generation for overview writes. `reloadOverview` and `scanNow` race: an older
+  // response arriving last would replace a newer one, and since the older snapshot predates a
+  // rejection it would RESURRECT the settled action and its Approve/Reject buttons. The server
+  // CAS still refuses the delivery, but the UI would be offering something already decided.
+  const overviewGen = useRef(0);
+  const applyOverview = useCallback((gen: number, o: PulseOverview) => {
+    if (gen < overviewGen.current) return; // a newer write already landed
+    overviewGen.current = gen;
+    setOverview(o);
+  }, []);
+  // Re-fetch the cached overview. Deciding an action on a card removes it from the ledger's
+  // live set, so the card must lose its controls without a reload (#754).
+  const reloadOverview = useCallback(
+    (settled?: OrchestratorAction) => {
+      // Apply the settlement to the cards we already hold, BEFORE the refetch — and fence any
+      // older response with the same generation counter. The GET can fail (offline, 5xx) and
+      // its catch is deliberately silent, which left the settled action sitting on the card
+      // while `ActionRow` cleared `busy` in its `finally` — so the controls came back enabled
+      // for something the server had already decided, and stayed that way until a reload. The
+      // decision is known from the response; it does not need a round trip to be shown.
+      if (settled) {
+        overviewGen.current += 1;
+        setOverview((prev) => {
+          if (!prev) return prev;
+          const stillPending = OPERATOR_PENDING.has(settled.state);
+          return {
+            ...prev,
+            cards: prev.cards.flatMap((c) => {
+              if (c.pending_action?.id !== settled.id) return [c];
+              // Mirror the server overlay: keep the row only while the action is still the
+              // operator's to decide.
+              if (stillPending) return [{ ...c, pending_action: settled }];
+              // A card that exists only because the action did has nothing left to show —
+              // dropping it beats leaving an empty phantom under "Needs you".
+              if (c.synthesized_for_action) return [];
+              // Undo the re-band too. `_attach_pending` overwrote `state` with `needs_you`
+              // *because* of this action; with the action gone the band has to go back, or
+              // the session sits under "Needs you" with nothing pending until some later
+              // fetch succeeds — and the failing fetch is the case this whole branch exists
+              // for.
+              return [
+                {
+                  ...c,
+                  pending_action: undefined,
+                  state: c.state_without_action ?? c.state,
+                },
+              ];
+            }),
+          };
+        });
+      }
+      const gen = ++overviewGen.current;
+      api
+        .pulse()
+        .then((o) => applyOverview(gen, o))
+        .catch(() => undefined);
+      setOrchEpoch((n) => n + 1);
+    },
+    [applyOverview],
+  );
+
   useEffect(() => {
     let live = true;
+    const gen = ++overviewGen.current;
     api
       .pulse()
-      .then((o) => live && setOverview(o))
+      .then((o) => live && applyOverview(gen, o))
       .catch(() => live && setError("Couldn’t load the overview."))
       .finally(() => live && setLoading(false));
     return () => {
       live = false;
     };
-  }, []);
+  }, [applyOverview]);
 
   const changeDepth = useCallback((d: PulseDepth) => {
     setDepth(d);
@@ -341,8 +427,9 @@ export default function Pulse() {
     setNote(null);
     setError(null);
     try {
+      const gen = ++overviewGen.current;
       const fresh = await api.pulseScan({ depth });
-      setOverview(fresh);
+      applyOverview(gen, fresh);
       if (fresh.synthesis_skipped) {
         setNote(
           "Synthesis needs the AI endpoint — configure it in Settings → AI Review.",
@@ -357,7 +444,7 @@ export default function Pulse() {
     } finally {
       setScanning(false);
     }
-  }, [depth, scanning]);
+  }, [depth, scanning, applyOverview]);
 
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [engineFilter, setEngineFilter] = useState<string | null>(null);
@@ -441,7 +528,15 @@ export default function Pulse() {
     );
     return GROUPS.map((g) => ({
       ...g,
-      cards: cards.filter((c) => c.state === g.state),
+      // A card carrying a live action sorts first within its band: merging the queue into the
+      // cards must not lose the priority the queue conveyed by simply existing (#754). Order
+      // is otherwise untouched, so recency still decides among equals.
+      cards: cards
+        .filter((c) => c.state === g.state)
+        .slice()
+        .sort(
+          (a, b) => Number(!!b.pending_action) - Number(!!a.pending_action),
+        ),
     })).filter((g) => g.cards.length > 0);
   }, [overview, effProject, effEngine]);
 
@@ -609,7 +704,11 @@ export default function Pulse() {
         </section>
       )}
 
-      <Orchestrator onTierChange={refreshConfig} />
+      <Orchestrator
+        onTierChange={refreshConfig}
+        onActionsChanged={reloadOverview}
+        refreshKey={orchEpoch}
+      />
 
       {loading ? (
         <p className={styles.state}>Loading…</p>
@@ -671,7 +770,12 @@ export default function Pulse() {
               </h2>
               <ul className={styles.cards}>
                 {g.cards.map((c) => (
-                  <Card key={c.id} card={c} />
+                  <Card
+                    key={c.id}
+                    card={c}
+                    onResolved={reloadOverview}
+                    onNote={setNote}
+                  />
                 ))}
               </ul>
             </section>

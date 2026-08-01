@@ -52,6 +52,108 @@ from .. import (
 FEED_LIMIT = 100
 
 
+def _attach_pending(overview: dict) -> dict:
+    """Give each card the live orchestrator action on its session, if any.
+
+    The queue used to be a SECOND list beside the cards. Measured against the live stores, it
+    was a strict subset — every action's session already appeared in "Needs you", and nothing
+    was exclusive to it — so the operator read the same session twice, in two visual languages,
+    with two different affordances. Merging them needs the action ON the card, and the card
+    comes from the pulse cache while the action lives in the ledger.
+
+    Server-side and read-only, for the same reason `_with_pending` is: the ledger states what is
+    pending, never the model. Only LIVE states count — a delivered, expired or rejected action
+    is history, not an errand.
+    """
+    cards = overview.get("cards")
+    if not isinstance(cards, list):
+        # An overview with no cards at all still has to surface live actions — that is exactly
+        # the "no Pulse cache yet" case where they would otherwise be unreachable.
+        cards = []
+        overview["cards"] = cards
+    live: dict[str, dict] = {}
+    with contextlib.suppress(Exception):
+        # Retire overdue proposals FIRST. `live_actions` filters on persisted state and never
+        # looks at `expires_at`, and the expiry sweep lived only in the sibling orchestrator
+        # endpoint — which is fetched independently, so a card could offer Approve/Reject for a
+        # proposal that had already timed out.
+        orchestrator_ledger.expire_due()
+        for a in orchestrator_ledger.live_actions():
+            # `live_actions` includes `claimed`, which is an action already being delivered —
+            # neither rejectable nor waiting on the operator. Overlaying one puts Approve/Reject
+            # on a card for bytes that are already going out, and a non-polling page keeps them
+            # there. The sibling `_pending_and_feed` already drew this line; both now read the
+            # same set so they cannot drift apart again.
+            if a.get("state") not in orchestrator_ledger.OPERATOR_PENDING_STATES:
+                continue
+            sid = str(a.get("session_id") or "")
+            # newest-first, so the first row seen per session is the current one
+            if sid and sid not in live:
+                live[sid] = a
+    seen: set[str] = set()
+    for c in cards:
+        if not isinstance(c, dict):
+            continue
+        seen.add(str(c.get("id") or ""))
+        # Strip BEFORE consulting the ledger, and unconditionally. The cache is written by a
+        # scan and outlives the actions it saw, so a stale `pending_action` would otherwise
+        # survive precisely when the ledger holds nothing live — the case where a card would
+        # show decision controls for an action that no longer exists.
+        c.pop("pending_action", None)
+        a = live.get(str(c.get("id") or ""))
+        if a:
+            c["pending_action"] = a
+            # A proposal awaiting the operator IS something that needs them, whether or not AI
+            # review independently flagged the session. Without this a card could carry Approve
+            # buttons while sitting under "Idle".
+            #
+            # Keep what the band WAS, so the client can put it back. Settling an action from a
+            # card removes the controls immediately (the reconciling GET may fail), but without
+            # this the session stays under "Needs you" until some later fetch succeeds — the
+            # band outliving the reason for it.
+            c["state_without_action"] = c.get("state")
+            c["state"] = "needs_you"
+
+    # An action with NO card would be unreachable now that the standalone queue is gone, and
+    # that is not a hypothetical: `eligible_cards` builds with `window_days=None`, so the
+    # orchestrator can act on a session outside Pulse's cached window — or before any scan has
+    # produced a cache at all. The measured "every action's session already has a card" was
+    # true of one moment, not an invariant, and the queue used to be the thing covering the gap.
+    #
+    # So synthesize a card from the action's own identity fields. It is the same information the
+    # queue row carried, in the one place the operator now looks.
+    for sid, a in live.items():
+        if sid in seen:
+            continue
+        project = str(a.get("project") or "")
+        cards.append(
+            {
+                "id": sid,
+                "engine": str(a.get("engine") or ""),
+                "title": str(a.get("title") or sid),
+                "cwd": "",
+                "project": {
+                    "kind": "project" if a.get("project_id") else "folder",
+                    "id": str(a.get("project_id") or ""),
+                    "name": project,
+                },
+                "state": "needs_you",
+                # This card exists ONLY because the action does. Settle it and there is nothing
+                # left to show, so the client drops the card rather than leaving an empty
+                # phantom under "Needs you" with no title, no summary and no controls.
+                "synthesized_for_action": True,
+                "live": False,
+                "last_activity": a.get("ts"),
+                "intervention_required": False,
+                "intervention_reason": "",
+                "ai_summary": "",
+                "synthesis": "",
+                "pending_action": a,
+            }
+        )
+    return overview
+
+
 def _with_pending(result: dict) -> dict:
     """Annotate each Ask match with the live orchestrator action on that session, if any.
 
@@ -108,9 +210,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     async def get_pulse(_: str = Depends(logged_in)) -> JSONResponse:
         cached = pulse.load_cache()
         if cached is not None:
-            return JSONResponse(cached)
+            return JSONResponse(await asyncio.to_thread(_attach_pending, cached))
         cfg = prefs.get_pulse()
-        return JSONResponse(pulse.empty_overview(cfg["window_days"], cfg["scan_depth"]))
+        # The cache MISS branch needs the overlay just as much — more, in fact: before the first
+        # scan there are no cards at all, so a live action has nothing to attach to and would be
+        # unreachable. My earlier regression mocked an empty cached artifact rather than a miss,
+        # so it never exercised this path.
+        empty = pulse.empty_overview(cfg["window_days"], cfg["scan_depth"])
+        return JSONResponse(await asyncio.to_thread(_attach_pending, empty))
 
     @app.post("/api/pulse/scan")
     async def scan_pulse(
@@ -142,7 +249,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 {"detail": "a Pulse scan is already running", **aitasks.snapshot()},
                 status_code=409,
             )
-        return JSONResponse(artifact)
+        # The same live overlay `GET /api/pulse` applies. A scan writes the CACHE, which has no
+        # business holding ledger state — but the response the client swaps in must still carry
+        # the pending actions, or running a scan silently strips every Approve/Dismiss control
+        # from the page while the ledger still says they are pending.
+        return JSONResponse(await asyncio.to_thread(_attach_pending, artifact))
 
     @app.post("/api/pulse/ask")
     async def ask_pulse(
@@ -222,7 +333,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         only looked right because the e2e helper defaulted `feed` to empty, which hid it.
         """
         live = orchestrator_ledger.live_actions()
-        pending = [r for r in live if r.get("state") in ("proposed", "approved", "escalated")]
+        pending = [r for r in live if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES]
         pending_ids = {r.get("id") for r in pending}
         feed = [r for r in orchestrator_ledger.feed(FEED_LIMIT) if r.get("id") not in pending_ids]
         return pending, feed

@@ -1479,6 +1479,289 @@ def test_the_model_cannot_invent_a_pending_action(auth_cfg, fake_jsonl, monkeypa
     assert "pending" not in got, "a model-authored flag survived to the client"
 
 
+# --- the queue merged into the cards (#754) --------------------------------------------------
+
+
+def test_cards_carry_their_live_action_and_are_banded_as_needing_you(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """The queue was a strict SUBSET of the cards — every action's session already appeared
+    under "Needs you" — so it rendered one session twice. The action now rides on the card."""
+    ledger.append(
+        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
+    )
+    monkeypatch.setattr(
+        pulse,
+        "load_cache",
+        lambda *a, **k: {
+            "cards": [
+                {"id": "claude:aaa", "engine": "claude", "state": "idle"},
+                {"id": "codex:bbb", "engine": "codex", "state": "idle"},
+            ]
+        },
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    a, b = cards
+
+    assert a["pending_action"]["id"] == "act-1"
+    # A proposal awaiting the operator IS something that needs them, whatever AI review said —
+    # otherwise a card could carry Approve buttons while sitting under "Idle".
+    assert a["state"] == "needs_you"
+    assert "pending_action" not in b
+    assert b["state"] == "idle"
+
+
+def test_a_finished_action_never_reaches_a_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Only LIVE states are an errand; a delivered or expired action is history."""
+    for i, state in enumerate(("delivered", "expired", "rejected")):
+        ledger.append(
+            {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
+        )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert "pending_action" not in card
+    assert card["state"] == "idle"
+
+
+def test_a_claimed_action_never_puts_controls_on_a_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`claimed` is live, but it is not the operator's to decide any more.
+
+    A claim is taken immediately before the first byte is written, so the delivery is already
+    under way. Overlaying it offered Approve/Reject for something that could not be honoured —
+    reject refuses `claimed` server-side (`REJECTABLE_STATES`) — and a Pulse page that does not
+    poll would keep those controls on screen. The sibling "Needs a decision" list already drew
+    this line; both now read `OPERATOR_PENDING_STATES`.
+    """
+    ledger.append(
+        {"id": "act-1", "state": "claimed", "verb": "continue", "session_id": "claude:aaa"}
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    body = c.get("/api/pulse").json()
+    card = body["cards"][0]
+    assert "pending_action" not in card
+    # …and it does not get re-banded as needing the operator either.
+    assert card["state"] == "idle"
+    # A claimed action must not appear as a synthesized card for a session the cache missed.
+    assert [x["id"] for x in body["cards"]] == ["claude:aaa"]
+
+
+def test_the_operator_pending_set_is_the_one_the_queue_uses(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Card overlay and the "Needs a decision" list must agree on what is pending, or the same
+    action shows controls in one place and not the other."""
+    for i, state in enumerate(("proposed", "approved", "escalated", "claimed")):
+        ledger.append(
+            {
+                "id": f"a{i}",
+                "state": state,
+                "verb": "continue",
+                "session_id": f"claude:s{i}",
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    on_cards = {x["pending_action"]["id"] for x in cards if x.get("pending_action")}
+    in_queue = {x["id"] for x in c.get("/api/pulse/orchestrator").json()["pending"]}
+    assert on_cards == in_queue == {"a0", "a1", "a2"}
+
+
+def test_the_overlay_records_the_band_it_replaced(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Re-banding to `needs_you` is not reversible unless the old band is kept.
+
+    The client settles an action from a card immediately, because the reconciling GET can fail.
+    Without `state_without_action` it can drop the controls but not the band, so the session
+    sits under "Needs you" with nothing pending until some later fetch succeeds — the band
+    outliving the reason for it (#762 review).
+    """
+    ledger.append(
+        {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:aaa"}
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["state"] == "needs_you"
+    assert card["state_without_action"] == "idle"
+    assert not card.get("synthesized_for_action")
+
+
+def test_a_synthesized_card_says_that_is_all_it_is(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """A card invented for an action has nothing behind it. The client needs to know, so that
+    settling the action removes the card instead of leaving an empty phantom under "Needs you"
+    with no title, no summary and no controls."""
+    ledger.append(
+        {
+            "id": "act-1",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": "codex:ddd",
+            "title": "Relay cap",
+        }
+    )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["id"] == "codex:ddd"
+    assert card["synthesized_for_action"] is True
+
+
+def test_a_stale_cached_pending_action_is_never_trusted(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The cache is written by a scan and can outlive the action it saw. The ledger decides."""
+    monkeypatch.setattr(
+        pulse,
+        "load_cache",
+        lambda *a, **k: {
+            "cards": [
+                {
+                    "id": "claude:aaa",
+                    "state": "needs_you",
+                    "pending_action": {"id": "ghost", "state": "escalated"},
+                }
+            ]
+        },
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert "pending_action" not in c.get("/api/pulse").json()["cards"][0]
+
+
+def test_scanning_does_not_strip_the_inline_actions(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`POST /api/pulse/scan` returns the fresh artifact and the client swaps it in wholesale.
+
+    Without the same live overlay `GET` applies, running a scan silently removed every
+    Approve/Dismiss control from the page while the ledger still said they were pending — the
+    overlay was wired on one route and missing on its sibling.
+    """
+    ledger.append(
+        {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
+    )
+
+    async def _scan(*_a, **_k):
+        return {"cards": [{"id": "claude:aaa", "engine": "claude", "state": "idle"}]}
+
+    monkeypatch.setattr(pulse, "run_scan", _scan)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    body = c.post(
+        "/api/pulse/scan",
+        json={},
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    ).json()
+    card = body["cards"][0]
+    assert card["pending_action"]["id"] == "act-1"
+    assert card["state"] == "needs_you"
+
+
+def test_a_live_action_with_no_card_is_still_reachable(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """No Pulse cache yet — the case the removed queue used to cover.
+
+    `eligible_cards` builds with `window_days=None`, so the orchestrator can act before any
+    scan has run. With the queue gone and no card to host the controls, the action would be
+    impossible to approve or reject from anywhere.
+    """
+    ledger.append(
+        {
+            "id": "act-1",
+            "state": "escalated",
+            "verb": "escalate",
+            "session_id": "claude:aaa",
+            "engine": "claude",
+            "title": "Awaiting a decision",
+            "project": "infra",
+            "project_id": "p1",
+        }
+    )
+    # The REAL cache miss returns None and takes a different branch. My first version
+    # mocked an empty cached artifact, which never exercised it.
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: None)
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+
+    assert len(cards) == 1
+    assert cards[0]["id"] == "claude:aaa"
+    assert cards[0]["pending_action"]["id"] == "act-1"
+    assert cards[0]["state"] == "needs_you"
+    # Identity comes from the action, so the synthesized card is not anonymous.
+    assert cards[0]["title"] == "Awaiting a decision"
+    assert cards[0]["project"]["name"] == "infra"
+
+
+def test_a_session_outside_the_cached_window_still_gets_its_controls(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """The orchestrator has no window; Pulse does. A session the cache never saw must not
+    silently lose its action."""
+    ledger.append(
+        {
+            "id": "act-old",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": "codex:old",
+            "engine": "codex",
+            "title": "Long-idle session",
+        }
+    )
+    monkeypatch.setattr(
+        pulse,
+        "load_cache",
+        lambda *a, **k: {"cards": [{"id": "claude:recent", "engine": "claude", "state": "idle"}]},
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+
+    ids = {c_["id"] for c_ in cards}
+    assert ids == {"claude:recent", "codex:old"}
+    synth = next(c_ for c_ in cards if c_["id"] == "codex:old")
+    assert synth["pending_action"]["id"] == "act-old"
+    # …and the card that WAS cached is untouched.
+    assert next(c_ for c_ in cards if c_["id"] == "claude:recent")["state"] == "idle"
+
+
+def test_an_overdue_proposal_is_never_offered_as_actionable(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`live_actions` filters on persisted STATE and never reads `expires_at`.
+
+    The expiry sweep lived only in the sibling orchestrator endpoint, which is fetched
+    independently — so a card could offer Approve/Reject for a proposal that had already timed
+    out. The overlay now retires due records first.
+    """
+    now = time.time()
+    ledger.append(
+        {
+            "id": "act-old",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": "claude:aaa",
+            "ts": now - 7200,
+            "expires_at": now - 3600,  # overdue
+        }
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert "pending_action" not in card
+    assert card["state"] == "idle"
+
+
 # --- staleness produces SILENCE, not a louder signal (#763) ----------------------------------
 
 from agent_sessions.orchestrator import _validate_actions  # noqa: E402

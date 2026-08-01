@@ -9,7 +9,9 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { ActionRow } from "./ActionRow";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError } from "../../lib/api";
 import type { OrchestratorAction, OrchestratorConfig } from "../../types/api";
@@ -70,10 +72,57 @@ function action(over: Partial<OrchestratorAction> = {}): OrchestratorAction {
   };
 }
 
+/** Mirrors the page's composition after #754: the panel owns tier/threshold/feed, and each
+ *  pending action rides on the session card it belongs to. These tests are about what an action
+ *  DOES — approve, reject, 409, settle — so they follow the controls to their new home rather
+ *  than asserting where they are drawn. */
+function PanelAndCards() {
+  const [pending, setPending] = useState<OrchestratorAction[]>([]);
+  const [resolved, setResolved] = useState<OrchestratorAction[]>([]);
+  // The page owns this surface: a 409 carrying a settled record removes the row, so its
+  // explanation has to outlive the thing that produced it.
+  const [pageNote, setPageNote] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .orchestrator()
+      .then((s) => live && setPending(s.pending))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return (
+    <>
+      <Orchestrator />
+      {pending.map((a) => (
+        <ActionRow
+          key={a.id}
+          action={a}
+          onNote={setPageNote}
+          onResolved={(settled) => {
+            // The page re-fetches the overview, so a settled action stops being attached to its
+            // card. Modelled here by dropping it, and the settled record is surfaced so the
+            // test can assert what came back rather than where it was drawn.
+            setResolved((r) => [...r, settled]);
+            setPending((p) => p.filter((x) => x.id !== settled.id));
+          }}
+        />
+      ))}
+      {pageNote && <p>{pageNote}</p>}
+      {resolved.map((a) => (
+        <span key={`r-${a.id}`} data-testid="settled">
+          {a.state}
+        </span>
+      ))}
+    </>
+  );
+}
+
 function renderIt() {
   return render(
     <MemoryRouter>
-      <Orchestrator />
+      <PanelAndCards />
     </MemoryRouter>,
   );
 }
@@ -118,7 +167,7 @@ test("a deliverable proposal offers approve/reject; a decision-only one does not
     expired_now: 0,
   });
   renderIt();
-  expect(await screen.findByText(/needs a decision · 2/i)).toBeInTheDocument();
+  expect(await screen.findByText(/2 actions need you/i)).toBeInTheDocument();
   // `continue` delivers, so it can be approved; `escalate` never reaches a session, so it
   // must NOT offer a button that implies it would.
   expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
@@ -401,4 +450,32 @@ test("a 409 moves the row out of pending instead of leaving it re-clickable", as
   );
   // ...and the server's settled verdict shows up in Activity.
   await waitFor(() => expect(screen.getByText(/stale/i)).toBeInTheDocument());
+});
+
+// --- #762 review round 4 --------------------------------------------------------------------
+
+test("an embedded row is not a list item — a Pulse card already is one", async () => {
+  // The card is an `<li>`; a nested one produced `<ul><li class=card><li class=act>…`, which
+  // is invalid and exposes the action to assistive technology as a second, parentless list
+  // item. Standalone (the queue) it IS a list row, so the element depends on placement.
+  const { container, rerender } = render(
+    <MemoryRouter>
+      <ul>
+        <li>
+          <ActionRow action={action()} embedded />
+        </li>
+      </ul>
+    </MemoryRouter>,
+  );
+  expect(container.querySelectorAll("li")).toHaveLength(1);
+  expect(screen.getAllByRole("listitem")).toHaveLength(1);
+
+  rerender(
+    <MemoryRouter>
+      <ul>
+        <ActionRow action={action()} />
+      </ul>
+    </MemoryRouter>,
+  );
+  expect(container.querySelectorAll("li")).toHaveLength(1);
 });

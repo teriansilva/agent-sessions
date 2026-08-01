@@ -53,6 +53,13 @@ TERMINAL_STATES: frozenset[str] = frozenset(
 LIVE_STATES: frozenset[str] = frozenset({"proposed", "approved", "claimed", "escalated"})
 ALL_STATES: frozenset[str] = TERMINAL_STATES | LIVE_STATES
 
+# States in which an action is waiting on the OPERATOR — the only ones that should ever put
+# decision controls on a Pulse card or a row under "Needs a decision". Deliberately excludes
+# `claimed`: a claimed action is already being delivered, so offering Approve/Reject for it
+# invites a tap that cannot be honoured. It coincides with `REJECTABLE_STATES` below, and for
+# the same reason, but they answer different questions — keep both named.
+OPERATOR_PENDING_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+
 # The only states a reject may move FROM. Deliberately excludes `claimed`: once a delivery has
 # claimed an action the bytes are already going out, so "rejected" would be a lie the operator
 # acts on. It also excludes every terminal state — rejecting a `delivered` action would rewrite
