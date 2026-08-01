@@ -169,7 +169,7 @@ def eligible_cards(
         for r in ledger.live_actions()
         if r.get("state") in ("proposed", "approved", "escalated")
     }
-    skipped = {"engine": 0, "excluded": 0, "pending": 0}
+    skipped = {"engine": 0, "excluded": 0, "pending": 0, "stale": 0}
     out: list[dict] = []
     for card in cards:
         if card.get("engine") not in actuable:
@@ -182,6 +182,14 @@ def eligible_cards(
             continue
         if key in pending_sessions:
             skipped["pending"] += 1
+            continue
+        # A session silent for days is not waiting on anyone. `build_cards` is called with
+        # `window_days=None`, so without this every session the app has ever seen stays eligible
+        # forever and the rotation re-examines week-old work indefinitely — measured at a median
+        # 43.9h since last activity across the sessions being notified about, oldest 170h (#763).
+        age = _age_hours(card, now if now is not None else time.time())
+        if age is not None and age >= STALE_DELIVER_HOURS:
+            skipped["stale"] += 1
             continue
         out.append(card)
     return out, skipped
@@ -407,9 +415,15 @@ def _validate_actions(
         if action["verb"] in DELIVERING_VERBS:
             age = _age_hours(sent[sid], now)
             if age is not None and age >= STALE_DELIVER_HOURS:
-                action["verb"] = "escalate"
-                action.pop("option", None)
-                action.pop("answer", None)
+                # DROP it. #756 degraded this to `escalate` to stop a nudge landing in work that
+                # finished last week — the verb reasoning was right and the notification
+                # consequence was not. `notify: escalations` raises an alert only for
+                # `escalated`, while a `proposed` delivering verb is silent, so that change
+                # turned a silent proposal into a recurring alert about a stale session (#763).
+                # Dropping stops the delivery just as firmly, and quietly. The session is still
+                # on the Pulse cards and in the sidebar; only the unsolicited interruption goes.
+                seen.add(sid)
+                continue
         seen.add(sid)
         out.append(action)
     return assessment, out

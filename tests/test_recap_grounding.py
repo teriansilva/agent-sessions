@@ -118,9 +118,11 @@ def test_continue_is_not_delivered_into_work_that_finished_days_ago():
         },
         _sent(144.0),
     )
-    assert actions[0]["verb"] == "escalate", "a stale session still got an unattended nudge"
-    # Degraded, never dropped — the operator must still see the session.
-    assert actions[0]["session_id"] == sid
+    # #763: DROPPED, not degraded to `escalate`. The guarantee this test exists for — no
+    # unattended nudge into week-old work — is unchanged; what changed is that it is now silent
+    # rather than raising an alert, because `escalate` is the one state `notify: escalations`
+    # announces.
+    assert actions == [], "a stale session still produced an action"
 
 
 def test_a_recently_idle_session_still_gets_its_nudge():
@@ -146,8 +148,7 @@ def test_a_stale_choose_loses_its_option_when_it_degrades():
         },
         _sent(200.0),
     )
-    assert actions[0]["verb"] == "escalate"
-    assert "option" not in actions[0]
+    assert actions == [], "a stale `choose` should be dropped, not announced"
 
 
 def test_escalate_on_a_stale_session_is_untouched():
@@ -189,7 +190,7 @@ def test_the_gate_fires_on_the_shape_production_actually_passes():
         {sid: raw_card},
         now=now,
     )
-    assert actions[0]["verb"] == "escalate", "the gate did not fire on a real card"
+    assert actions == [], "the gate did not fire on a real card"
 
 
 def test_a_recent_raw_card_keeps_its_nudge():
@@ -238,4 +239,4 @@ def test_the_chat_path_measures_age_against_its_own_pass():
         {sid: {"id": sid, "last_activity": then}},
         now=then + 100 * 3600,
     )
-    assert actions[0]["verb"] == "escalate"
+    assert actions == []

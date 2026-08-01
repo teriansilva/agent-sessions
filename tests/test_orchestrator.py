@@ -1472,3 +1472,79 @@ def test_the_model_cannot_invent_a_pending_action(auth_cfg, fake_jsonl, monkeypa
     c = _client(auth_cfg)
     got = _ask(c, _login(c, auth_cfg), auth_cfg)["matches"][0]
     assert "pending" not in got, "a model-authored flag survived to the client"
+
+
+# --- staleness produces SILENCE, not a louder signal (#763) ----------------------------------
+
+from agent_sessions.orchestrator import _validate_actions  # noqa: E402
+
+
+def test_a_stale_delivering_action_is_dropped_not_escalated():
+    """#756 degraded these to `escalate` to stop the delivery. That was right about the verb and
+    wrong about the volume: `notify: escalations` alerts on `escalated` while a `proposed`
+    delivering verb is silent, so the fix turned a silent proposal into a recurring alert about
+    a week-old session."""
+    sid = "codex:019f980f-2435-7fd1-a86b-e38b25bff3ae"
+    now = time.time()
+    _, actions = _validate_actions(
+        {
+            "assessment": "x",
+            "actions": [{"session_id": sid, "verb": "continue", "confidence": 0.9}],
+        },
+        {sid: {"id": sid, "last_activity": now - 144 * 3600}},
+        now=now,
+    )
+    assert actions == [], "a stale delivering action should be dropped, not announced"
+
+
+def test_a_recent_delivering_action_is_untouched():
+    sid = "codex:019f980f-2435-7fd1-a86b-e38b25bff3ae"
+    now = time.time()
+    _, actions = _validate_actions(
+        {
+            "assessment": "x",
+            "actions": [{"session_id": sid, "verb": "continue", "confidence": 0.9}],
+        },
+        {sid: {"id": sid, "last_activity": now - 2 * 3600}},
+        now=now,
+    )
+    assert [a["verb"] for a in actions] == ["continue"]
+
+
+def test_an_escalation_the_model_raised_itself_still_reaches_the_operator():
+    """The gate is about DELIVERING verbs. A genuine escalation must not be swallowed by it."""
+    sid = "codex:019f980f-2435-7fd1-a86b-e38b25bff3ae"
+    now = time.time()
+    _, actions = _validate_actions(
+        {
+            "assessment": "x",
+            "actions": [{"session_id": sid, "verb": "escalate", "confidence": 0.4}],
+        },
+        {sid: {"id": sid, "last_activity": now - 2 * 3600}},
+        now=now,
+    )
+    assert [a["verb"] for a in actions] == ["escalate"]
+
+
+def test_long_idle_sessions_leave_the_eligible_set(monkeypatch, tmp_path):  # noqa: ARG001
+    """`build_cards` is called with `window_days=None`, so without a bound every session the app
+    has ever seen stays eligible forever and the rotation re-examines week-old work."""
+    now = time.time()
+    cards = [
+        {"id": "claude:fresh", "engine": "claude", "last_activity": now - 3600},
+        {"id": "claude:stale", "engine": "claude", "last_activity": now - 144 * 3600},
+        {"id": "claude:nostamp", "engine": "claude"},
+    ]
+    monkeypatch.setattr(orchestrator.pulse, "build_cards", lambda **k: cards)
+    monkeypatch.setattr(orchestrator.engines, "orchestrator_input_engines", lambda: {"claude"})
+    monkeypatch.setattr(orchestrator.metadata, "load", lambda *a, **k: {})
+    monkeypatch.setattr(orchestrator.metadata, "load_aliases", lambda *a, **k: {})
+    monkeypatch.setattr(orchestrator.ledger, "live_actions", lambda *a, **k: [])
+
+    out, skipped = orchestrator.eligible_cards(now=now)
+    ids = {c["id"] for c in out}
+    assert "claude:fresh" in ids
+    assert "claude:stale" not in ids
+    # Unknown age is not the same as stale — a card with no stamp must not be silently dropped.
+    assert "claude:nostamp" in ids
+    assert skipped["stale"] == 1
