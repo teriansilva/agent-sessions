@@ -530,3 +530,81 @@
 .askHint a {
   color: var(--accent);
 }
+
+/* Filters (#754). Chips carry counts from the UNFILTERED set, so one never disappears because
+ * of the current selection. Neutral by design — a filter is an affordance, not system state,
+ * so it takes no status colour. */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+/* Each labelled `role="group"` lays its own chips out, so wrapping the row in semantic groups
+ * costs nothing visually — the outer row still wraps, one group at a time. */
+.filterGroup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.filterLabel {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.filterSep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  margin: 0 3px;
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 4px 9px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover {
+  color: var(--text-1);
+}
+.chipOn {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--glass-strong);
+}
+.chipN {
+  color: var(--text-3);
+  margin-left: 4px;
+}
+.chipOn .chipN {
+  color: var(--accent);
+}
+.clearFilters {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  min-height: 30px;
+}
+.clearFilters:hover {
+  color: var(--text-1);
+}
+
+@media (max-width: 800px) {
+  .chip,
+  .clearFilters {
+    min-height: 44px;
+  }
+}

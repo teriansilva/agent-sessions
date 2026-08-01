@@ -13,7 +13,7 @@ import { HudFrame } from "../components/hud/HudFrame";
 import { pendingLabel } from "../lib/pendingLabel";
 import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
-import { engineBadge, relTime, shortCwd } from "../lib/format";
+import { engineBadge, engineName, relTime, shortCwd } from "../lib/format";
 import type {
   PulseAskMatch,
   PulseCard,
@@ -36,6 +36,23 @@ const GROUPS: { state: PulseState; label: string }[] = [
   { state: "recently_active", label: "Recently active" },
   { state: "idle", label: "Idle" },
 ];
+
+type Facet = { key: string; label: string; n: number };
+
+/** Canonical identity of a card's project — the id, which is unique, with the name only as a
+ *  fallback for a card whose project ref predates ids. Never the name alone: `/work/a/app` and
+ *  `/work/b/app` are two projects that share one name. */
+function projectKey(c: PulseCard): string {
+  return c.project?.id || c.project?.name || "";
+}
+
+/** Two projects with the same name are told apart by their parent directory. If they share that
+ *  too the label stays ambiguous — the chips still filter correctly, since the key is the id. */
+function disambiguate(label: string, cwd: string): string {
+  const parts = cwd.split("/").filter(Boolean);
+  const parent = parts.length > 1 ? parts[parts.length - 2] : "";
+  return parent ? `${label} · ${parent}` : label;
+}
 
 /** Jump target for a card: the session view at /s/:engine/:uuid. The card `id` is the
  *  engine-qualified key ("engine:uuid"); strip the engine prefix for the route param. */
@@ -342,14 +359,91 @@ export default function Pulse() {
     }
   }, [depth, scanning]);
 
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [engineFilter, setEngineFilter] = useState<string | null>(null);
+
+  // Counts come from the UNFILTERED set, so a chip always states what selecting it would yield
+  // and never vanishes because of the current selection — the same rule `/api/sessions` facets
+  // follow. Filters are view state only and are never persisted, so a reload shows everything.
+  //
+  // Keyed by `project.id`, never by the display name: names are not unique — two checkouts both
+  // called `app` under different parents are two different projects, and keying by name merged
+  // them into one chip that then showed both. When two projects genuinely share a label the
+  // parent directory disambiguates the *text*; the key stays the id either way, so filtering is
+  // correct even in the residual case where the parents collide too.
+  const facets = useMemo(() => {
+    const cards = overview?.cards ?? [];
+    const projects = new Map<
+      string,
+      { label: string; n: number; cwd: string }
+    >();
+    const engines = new Map<string, number>();
+    for (const c of cards) {
+      const key = projectKey(c);
+      if (key) {
+        const cur = projects.get(key);
+        if (cur) cur.n += 1;
+        else
+          projects.set(key, {
+            label: c.project?.name || key,
+            n: 1,
+            cwd: c.cwd || "",
+          });
+      }
+      if (c.engine) engines.set(c.engine, (engines.get(c.engine) ?? 0) + 1);
+    }
+    const ambiguous = new Map<string, number>();
+    for (const v of projects.values())
+      ambiguous.set(v.label, (ambiguous.get(v.label) ?? 0) + 1);
+    const bySize = (a: Facet, b: Facet) =>
+      b.n - a.n || a.label.localeCompare(b.label);
+    return {
+      projects: [...projects.entries()]
+        .map(([key, v]) => ({
+          key,
+          label:
+            (ambiguous.get(v.label) ?? 0) > 1
+              ? disambiguate(v.label, v.cwd)
+              : v.label,
+          n: v.n,
+        }))
+        .sort(bySize),
+      engines: [...engines.entries()]
+        .map(([key, n]) => ({ key, label: key, n }))
+        .sort(bySize),
+      total: cards.length,
+    };
+  }, [overview]);
+
+  // A scan replaces the overview, and the project or agent you had selected may not be in the
+  // new one. Left alone, a stale selection filters every card away — and if the new overview has
+  // too few facets to draw the filter row, it does that with no visible control to undo it.
+  //
+  // So the *effective* filter is derived from the current facets rather than reconciled in an
+  // effect: a selection nothing can match simply stops applying, with no extra render pass. The
+  // raw selection is kept, so if a later scan brings that project back, so does its filter.
+  const effProject =
+    projectFilter && facets.projects.some((f) => f.key === projectFilter)
+      ? projectFilter
+      : null;
+  const effEngine =
+    engineFilter && facets.engines.some((f) => f.key === engineFilter)
+      ? engineFilter
+      : null;
+
   const windowDays = overview?.window_days ?? cfg?.window_days ?? 3;
   const groups = useMemo(() => {
-    const cards = overview?.cards ?? [];
+    const all = overview?.cards ?? [];
+    const cards = all.filter(
+      (c) =>
+        (!effProject || projectKey(c) === effProject) &&
+        (!effEngine || c.engine === effEngine),
+    );
     return GROUPS.map((g) => ({
       ...g,
       cards: cards.filter((c) => c.state === g.state),
     })).filter((g) => g.cards.length > 0);
-  }, [overview]);
+  }, [overview, effProject, effEngine]);
 
   const hasCards = (overview?.cards.length ?? 0) > 0;
 
@@ -409,6 +503,90 @@ export default function Pulse() {
       {note && <p className={styles.note}>{note}</p>}
       {error && <p className={styles.err}>{error}</p>}
 
+      {/* Narrow the whole list, not just the queue (#754) — the filters reach all sessions,
+          including the ones the orchestrator has said nothing about, which is most of them. */}
+      {facets.total > 1 &&
+        (facets.projects.length > 1 || facets.engines.length > 1) && (
+          <div className={styles.filters}>
+            {/* Selection is a toggle state, not just a colour: without `aria-pressed` a screen
+                reader hears an identical button list whatever is filtered. */}
+            <div
+              className={styles.filterGroup}
+              role="group"
+              aria-labelledby="pulse-filter-project"
+            >
+              <span className={styles.filterLabel} id="pulse-filter-project">
+                Project
+              </span>
+              <button
+                type="button"
+                className={`${styles.chip} ${effProject === null ? styles.chipOn : ""}`}
+                aria-pressed={effProject === null}
+                onClick={() => setProjectFilter(null)}
+              >
+                All <span className={styles.chipN}>{facets.total}</span>
+              </button>
+              {facets.projects.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  className={`${styles.chip} ${effProject === f.key ? styles.chipOn : ""}`}
+                  aria-pressed={effProject === f.key}
+                  onClick={() =>
+                    setProjectFilter(effProject === f.key ? null : f.key)
+                  }
+                >
+                  {f.label} <span className={styles.chipN}>{f.n}</span>
+                </button>
+              ))}
+            </div>
+            {facets.engines.length > 1 && (
+              <>
+                <span className={styles.filterSep} aria-hidden="true" />
+                <div
+                  className={styles.filterGroup}
+                  role="group"
+                  aria-labelledby="pulse-filter-agent"
+                >
+                  <span className={styles.filterLabel} id="pulse-filter-agent">
+                    Agent
+                  </span>
+                  {facets.engines.map((f) => (
+                    <button
+                      key={f.key}
+                      type="button"
+                      className={`${styles.chip} ${effEngine === f.key ? styles.chipOn : ""}`}
+                      aria-pressed={effEngine === f.key}
+                      // `cx` on its own is not a name. The label carries the engine's real
+                      // name and its count, so the button is usable without the tooltip.
+                      aria-label={`${engineName(f.key)} ${f.n}`}
+                      onClick={() =>
+                        setEngineFilter(effEngine === f.key ? null : f.key)
+                      }
+                      title={engineName(f.key)}
+                    >
+                      {engineBadge(f.key)}{" "}
+                      <span className={styles.chipN}>{f.n}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {(effProject || effEngine) && (
+              <button
+                type="button"
+                className={styles.clearFilters}
+                onClick={() => {
+                  setProjectFilter(null);
+                  setEngineFilter(null);
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
+
       {/* Ask leads (#522, restored): it is the surface you arrive WITH a question for, and it
           answers in one line. #726 put the AUTONOMY strip above it, which pushed the chat below
           a decision queue that grows without bound — on a phone that meant scrolling past every
@@ -457,6 +635,26 @@ export default function Pulse() {
               aria-hidden="true"
             />
             {scanning ? "Scanning…" : "Scan now"}
+          </button>
+        </div>
+      ) : groups.length === 0 ? (
+        // There ARE cards; this selection just matches none of them. Without this the list area
+        // went blank with no explanation and no obvious way back.
+        <div className={styles.empty}>
+          <p className={styles.emptyTitle}>No sessions match these filters</p>
+          <p className={styles.emptyHint}>
+            {facets.total} session{facets.total === 1 ? "" : "s"} in the last{" "}
+            {windowDays} days, none in this combination.
+          </p>
+          <button
+            type="button"
+            className={`${styles.scanBtn} shine`}
+            onClick={() => {
+              setProjectFilter(null);
+              setEngineFilter(null);
+            }}
+          >
+            Show all sessions
           </button>
         </div>
       ) : (
