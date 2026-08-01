@@ -999,6 +999,15 @@ ORCH_MAX_ACTIONS_MIN = 1
 ORCH_MAX_ACTIONS_MAX = 20
 ORCH_TTL_MIN = 1
 ORCH_TTL_MAX = 240
+# How long a session may sit idle and still be worth interrupting the operator about. Past it
+# the orchestrator stops considering the session entirely — it stays on the Pulse cards and in
+# the sidebar, it just goes quiet. Measured on a live store: the median session was 30.4h idle
+# when it was escalated, so the old hard-coded 48h removed only 18% of the notification volume
+# while 24h removes 52%. The floor is 1h rather than 0 because a 0 would read as "no window",
+# which is the one value this bound exists to make unreachable.
+ORCH_STALE_HOURS_MIN = 1
+ORCH_STALE_HOURS_MAX = 24 * 30
+ORCH_STALE_HOURS_DEFAULT = 24
 ORCH_PROMPT_MAX = 8000
 ORCH_NUDGE_MAX = 2000
 ORCH_NOTIFY: tuple[str, ...] = ("none", "escalations", "all")
@@ -1047,6 +1056,7 @@ _ORCH_DEFAULTS: dict[str, object] = {
     "interval_minutes": 10,
     "max_actions_per_pass": 4,
     "proposal_ttl_minutes": 30,
+    "stale_hours": ORCH_STALE_HOURS_DEFAULT,
     "nudge_template": DEFAULT_ORCH_NUDGE,
     "prompt": DEFAULT_ORCH_PROMPT,
     "notify": "escalations",
@@ -1097,6 +1107,7 @@ def _coerce_orchestrator(raw: object) -> dict:
             ("interval_minutes", ORCH_INTERVAL_MIN, ORCH_INTERVAL_MAX),
             ("max_actions_per_pass", ORCH_MAX_ACTIONS_MIN, ORCH_MAX_ACTIONS_MAX),
             ("proposal_ttl_minutes", ORCH_TTL_MIN, ORCH_TTL_MAX),
+            ("stale_hours", ORCH_STALE_HOURS_MIN, ORCH_STALE_HOURS_MAX),
         ):
             v = raw.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
@@ -1165,6 +1176,7 @@ def validate_orchestrator_patch(patch: object) -> str | None:
         ("interval_minutes", ORCH_INTERVAL_MIN, ORCH_INTERVAL_MAX),
         ("max_actions_per_pass", ORCH_MAX_ACTIONS_MIN, ORCH_MAX_ACTIONS_MAX),
         ("proposal_ttl_minutes", ORCH_TTL_MIN, ORCH_TTL_MAX),
+        ("stale_hours", ORCH_STALE_HOURS_MIN, ORCH_STALE_HOURS_MAX),
     ):
         if k in patch:
             v = patch[k]

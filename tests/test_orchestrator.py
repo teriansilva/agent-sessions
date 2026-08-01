@@ -1919,3 +1919,90 @@ def test_an_escalation_for_a_dead_session_still_reaches_the_operator(monkeypatch
         now=now,
     )
     assert [a["verb"] for a in actions] == ["escalate"]
+
+
+# --- the idle window is a setting, not a constant (#768) -------------------------------------
+
+
+def _cards(monkeypatch, cards):
+    monkeypatch.setattr(orchestrator.pulse, "build_cards", lambda **k: cards)
+    monkeypatch.setattr(orchestrator.engines, "orchestrator_input_engines", lambda: {"claude"})
+    monkeypatch.setattr(orchestrator.metadata, "load", lambda *a, **k: {})
+    monkeypatch.setattr(orchestrator.metadata, "load_aliases", lambda *a, **k: {})
+    monkeypatch.setattr(orchestrator.ledger, "live_actions", lambda *a, **k: [])
+
+
+def test_the_configured_window_is_what_gates_eligibility(monkeypatch):
+    """The whole point of #768: the operator's number decides, not a constant.
+
+    Measured on a live store, the median session was 30.4h idle when it got escalated — so a
+    48h window removed 18% of the notification volume and 24h removes 52%. That difference is
+    a preference, and this test is what makes it one.
+    """
+    now = time.time()
+    cards = [
+        {"id": "claude:h8", "engine": "claude", "last_activity": now - 8 * 3600},
+        {"id": "claude:h30", "engine": "claude", "last_activity": now - 30 * 3600},
+    ]
+    _cards(monkeypatch, cards)
+
+    # Default (24h): the 30h session is past the window, the 8h one is not.
+    ids = {c["id"] for c in orchestrator.eligible_cards(now=now)[0]}
+    assert ids == {"claude:h8"}
+
+    # Widen it and the same session comes back — nothing about the card changed.
+    prefs.set_orchestrator({"stale_hours": 48})
+    ids = {c["id"] for c in orchestrator.eligible_cards(now=now)[0]}
+    assert ids == {"claude:h8", "claude:h30"}
+
+    # Narrow it and even the 8h session goes quiet.
+    prefs.set_orchestrator({"stale_hours": 6})
+    out, skipped = orchestrator.eligible_cards(now=now)
+    assert out == []
+    assert skipped["stale"] == 2
+
+
+def test_the_default_window_is_24h_not_the_old_48(monkeypatch):  # noqa: ARG001
+    assert prefs.get_orchestrator()["stale_hours"] == 24
+    assert orchestrator.stale_hours() == 24.0
+
+
+def test_a_junk_window_falls_back_to_the_default_never_to_no_window(monkeypatch):
+    """The failure mode has to be a window the operator did not pick — never no window.
+
+    A sidecar hand-edited to `0`, `-1`, a string, or something absurd must not turn the gate
+    off; that would restore exactly the unbounded behaviour #763 was filed about.
+    """
+    now = time.time()
+    _cards(
+        monkeypatch,
+        [{"id": "claude:h30", "engine": "claude", "last_activity": now - 30 * 3600}],
+    )
+    for junk in (0, -1, "48", None, 10**9, 3.5, True):
+        # Written past the validator, the way a hand-edited file arrives.
+        prefs._mutate("orchestrator", lambda _cur, v=junk: {"stale_hours": v})
+        assert orchestrator.stale_hours() == 24.0, junk
+        assert orchestrator.eligible_cards(now=now)[0] == [], junk
+
+
+def test_the_accessor_never_returns_no_window_even_for_a_raw_config():
+    """`stale_hours(cfg)` takes the caller's already-read config, which need not have been
+    through `_coerce_orchestrator` — `run_pass` passes the block it re-read for the pass. A
+    missing or zero value there must still mean the default, because the one number this
+    function may never return is 0: that is not a short window, it is no window."""
+    assert orchestrator.stale_hours({}) == 24.0
+    assert orchestrator.stale_hours({"stale_hours": 0}) == 24.0
+    assert orchestrator.stale_hours({"stale_hours": None}) == 24.0
+    assert orchestrator.stale_hours({"stale_hours": 6}) == 6.0
+
+
+def test_the_window_is_rejected_out_of_bounds_and_survives_a_round_trip():
+    assert prefs.validate_orchestrator_patch({"stale_hours": 24}) is None
+    assert prefs.validate_orchestrator_patch({"stale_hours": 0}) is not None
+    assert prefs.validate_orchestrator_patch({"stale_hours": 24 * 30 + 1}) is not None
+    assert prefs.validate_orchestrator_patch({"stale_hours": 12.5}) is not None
+    assert prefs.validate_orchestrator_patch({"stale_hours": True}) is not None
+
+    prefs.set_orchestrator({"stale_hours": 12})
+    assert prefs.get_orchestrator()["stale_hours"] == 12
+    assert prefs.public_orchestrator()["stale_hours"] == 12

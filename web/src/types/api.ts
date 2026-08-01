@@ -262,6 +262,9 @@ export interface OrchestratorConfig {
   interval_minutes: number;
   max_actions_per_pass: number;
   proposal_ttl_minutes: number;
+  /** Idle window (#768): past this many hours the orchestrator stops considering a session,
+   *  so it stops notifying about it. The session stays visible everywhere else. */
+  stale_hours: number;
   nudge_template: string;
   prompt: string;
   notify: "none" | "escalations" | "all";

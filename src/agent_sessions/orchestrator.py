@@ -60,10 +60,6 @@ log = logging.getLogger("agent_sessions.orchestrator")
 
 # --- bounds (server-owned; the model's output is DATA) ---------------------------------
 DIGEST_MAX = 40  # sessions offered to the model in one pass
-# Beyond this, a session's silence is the answer: nothing is waiting on a nudge. Deliberately
-# generous — it exists to stop a `continue` landing in work that finished last week (#755), not
-# to second-guess a session someone stepped away from for an afternoon.
-STALE_DELIVER_HOURS = 48.0
 TITLE_MAX = 80
 SUMMARY_MAX = 300
 PROJECT_MAX = 40
@@ -140,6 +136,24 @@ def precondition_for(key: str) -> dict:
     }
 
 
+def stale_hours(cfg: dict | None = None) -> float:
+    """How long a session may sit idle and still be worth interrupting the operator about.
+
+    Past it, its silence is the answer: nothing is waiting on a nudge, and the session goes
+    quiet rather than disappearing — it stays on the Pulse cards and in the sidebar. It was a
+    hard-coded 48h; measured on a live store the median session was 30.4h idle when it was
+    escalated, so 48h removed 18% of the notification volume where the 24h default removes 52%.
+    That number is an operator preference, not a constant (#768).
+
+    Read through `_coerce_orchestrator`, so a hand-edited or out-of-range sidecar value falls
+    back to the default rather than to "no window" — the failure mode has to be a window the
+    operator did not pick, never no window at all. Pass `cfg` when the caller already re-read
+    the config for this pass, so the gate and the tier cannot disagree across the model call.
+    """
+    c = cfg if cfg is not None else prefs.get_orchestrator()
+    return float(c.get("stale_hours") or prefs.ORCH_STALE_HOURS_DEFAULT)
+
+
 def eligible_cards(
     *, now: float | None = None, working_keys: set[str] | None = None
 ) -> tuple[list[dict], dict[str, int]]:
@@ -156,6 +170,7 @@ def eligible_cards(
     Blocking (FS + metadata); call under ``asyncio.to_thread``.
     """
     cards = pulse.build_cards(window_days=None, now=now, working_keys=working_keys)
+    stale_after = stale_hours()
     actuable = engines.orchestrator_input_engines()
     meta_index = metadata.load()
     aliases = metadata.load_aliases()
@@ -189,7 +204,7 @@ def eligible_cards(
         # forever and the rotation re-examines week-old work indefinitely — measured at a median
         # 43.9h since last activity across the sessions being notified about, oldest 170h (#763).
         age = _age_hours(card, now if now is not None else time.time())
-        if age is not None and age >= STALE_DELIVER_HOURS:
+        if age is not None and age >= stale_after:
             skipped["stale"] += 1
             continue
         out.append(card)
@@ -446,7 +461,7 @@ def _validate_actions(
             # before the model is ever called, so on both production paths nothing this old
             # reaches here. It stays for a caller that assembles `sent` itself.
             age = _age_hours(sent[sid], now)
-            if age is not None and age >= STALE_DELIVER_HOURS:
+            if age is not None and age >= stale_hours():
                 # DROP it. #756 degraded this to `escalate` to stop a nudge landing in work that
                 # finished last week — the verb reasoning was right and the notification
                 # consequence was not. `notify: escalations` raises an alert only for

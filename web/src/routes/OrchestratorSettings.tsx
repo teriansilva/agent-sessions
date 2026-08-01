@@ -14,6 +14,7 @@ const FALLBACK: OrchestratorConfig = {
   interval_minutes: 10,
   max_actions_per_pass: 4,
   proposal_ttl_minutes: 30,
+  stale_hours: 24,
   nudge_template: "",
   prompt: "",
   notify: "escalations",
@@ -21,6 +22,16 @@ const FALLBACK: OrchestratorConfig = {
   default_prompt: "",
   default_nudge_template: "",
 };
+
+/** Idle-window presets (#768). The useful values are few and the units need saying, so a
+ *  select beats a free number field — but the stored value is not restricted to these. */
+const STALE_PRESETS: [number, string][] = [
+  [6, "6 hours"],
+  [12, "12 hours"],
+  [24, "1 day (recommended)"],
+  [48, "2 days"],
+  [168, "1 week"],
+];
 
 const TIER_LABELS: Record<OrchestratorTier, string> = {
   off: "Off — watch and propose, never send anything",
@@ -223,6 +234,39 @@ export function OrchestratorSettings() {
           <option value="escalations">Only things that need my decision</option>
           <option value="all">Everything it does</option>
         </select>
+      </div>
+
+      <div className={styles.aiField}>
+        <label className={styles.aiFieldLabel} htmlFor="orch-stale">
+          Stop after a session has been idle for
+        </label>
+        <select
+          id="orch-stale"
+          className={styles.aiInput}
+          value={String(block.stale_hours)}
+          onChange={(e) => void save({ stale_hours: Number(e.target.value) })}
+        >
+          {/* The server accepts 1–720; these presets are a convenience, not the schema. A
+              stored value outside them (set by hand, or by a preset a later version drops)
+              would otherwise make the select render its FIRST option — silently showing a
+              window the operator never chose, and saving it the moment they touch anything
+              else. Carry the real value as its own option instead. */}
+          {!STALE_PRESETS.some(([h]) => h === block.stale_hours) && (
+            <option value={String(block.stale_hours)}>
+              {`${block.stale_hours} hours`}
+            </option>
+          )}
+          {STALE_PRESETS.map(([h, label]) => (
+            <option key={h} value={String(h)}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <p className={styles.hint}>
+          Past this the orchestrator stops considering the session, so it stops
+          notifying you about it. The session doesn’t go anywhere — it stays on
+          your Pulse cards and in the sidebar, it just goes quiet.
+        </p>
       </div>
 
       <PushDevices />
