@@ -1,0 +1,481 @@
+/* Pulse orchestrator surface (#726 Phase 1). Tactical-HUD vocabulary (#211): 1px borders, no
+ * radii, mono tags, semantic-colour state. Every colour comes from the shared tokens so theme
+ * + custom accent cascade.
+ *
+ * Status colour is load-bearing (docs/design.md): `--status-degraded` (amber) is the
+ * "needs a human" signal, `--status-down` (red) is reserved for errors and failure. An
+ * escalation wants a DECISION — it must never render as an incident. */
+
+.wrap {
+  position: relative;
+  border: 1px solid var(--line-strong);
+  background: var(--glass);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+/* --- autonomy header ---------------------------------------------------------- */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  color: var(--text-2);
+}
+.h2 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.sub {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  margin-left: auto;
+}
+.segBtn {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  padding: 6px 11px;
+  min-height: 30px;
+  background: transparent;
+  color: var(--text-2);
+  border: 0;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+}
+.segBtn:last-child {
+  border-right: 0;
+}
+.segBtn:hover {
+  background: var(--glass-strong);
+  color: var(--text-1);
+}
+/* YOLO reads as the deliberate act it is, without reading as an error. */
+.segYolo {
+  color: var(--status-degraded);
+}
+.segOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.segOn.segYolo {
+  color: var(--on-accent);
+}
+
+/* --- threshold meter ---------------------------------------------------------- */
+.meterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-3);
+}
+.meterLabel {
+  letter-spacing: 0.1em;
+}
+.bar {
+  position: relative;
+  width: 110px;
+  height: 5px;
+  background: var(--glass-strong);
+  border: 1px solid var(--line);
+}
+.bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+}
+.meterText {
+  color: var(--text-3);
+}
+.runBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  min-height: 32px;
+  border: 1px solid var(--line-strong);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  cursor: pointer;
+}
+.runBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.spin {
+  animation: orch-spin 0.9s linear infinite;
+}
+@keyframes orch-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+/* A SENTENCE with an inline icon — not a row of boxes (#750). As a flex container each text
+ * run became its own flex item, so on a phone the one sentence wrapped into three columns that
+ * broke independently ("Acts on its own:" / "continue" / "only. Everything else…"). Normal flow
+ * wraps it as prose at every width; the icon is aligned inline instead of by `align-items`. */
+.ceiling {
+  margin: 8px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.ceiling svg {
+  vertical-align: -1px;
+  margin-right: 3px;
+}
+.ceiling b {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+.hint,
+.note,
+.empty {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.note {
+  color: var(--text-2);
+}
+
+/* --- blocks + project groups --------------------------------------------------- */
+.block {
+  margin-top: 12px;
+}
+.blockHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: var(--status-degraded);
+}
+.blockHead h3 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.group {
+  margin-bottom: 10px;
+}
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 5px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.groupHead b {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.groupHead span {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-3);
+}
+/* The feed flows into as many columns as the panel affords (#754). It was `display: block` —
+ * a single column of full-width rows, measured at 1490px on a 1900px viewport with the content
+ * ending around 1000px and `conf` and `Open session` marooned at the right edge. That is the
+ * screenshot this issue opened with: the queue above it was removed, and the feed underneath
+ * inherited the defect verbatim. Same `auto-fill` rule the session cards use, so the track
+ * count follows the container with no breakpoint arithmetic. */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
+}
+
+/* --- action rows ---------------------------------------------------------------- */
+.act {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  background: var(--bg-1);
+  padding: 9px 11px;
+  /* The grid `gap` spaces these now; a margin here would double it. */
+  display: flex;
+  flex-direction: column;
+  /* As a grid item, let the row shrink below its content's min-content so a long title cannot
+   * force the track — and the panel — wider than the viewport (#494's rule, same reason). */
+  min-width: 0;
+}
+.toneDegraded {
+  border-left-color: var(--status-degraded);
+}
+.toneUp {
+  border-left-color: var(--status-up);
+}
+.toneDown {
+  border-left-color: var(--status-down);
+}
+.toneIdle {
+  border-left-color: var(--status-unknown);
+}
+
+.actTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.verb {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  background: var(--glass-strong);
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+}
+.verbEsc {
+  color: var(--status-degraded);
+  border-color: var(--status-degraded);
+  background: transparent;
+}
+.sname {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.eng {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  padding: 1px 4px;
+}
+.conf {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-2);
+  margin-left: auto;
+}
+.why {
+  margin: 5px 0 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- evidence -------------------------------------------------------------------- */
+.evd {
+  margin-top: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.evdHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 7px;
+  min-height: 30px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.evdHead:hover {
+  color: var(--text-2);
+}
+.chevOpen {
+  transform: rotate(180deg);
+}
+.evdBody {
+  padding: 7px 9px;
+}
+.pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Wide screens scroll INSIDE the block — the page itself never scrolls sideways (#494). */
+  max-height: 220px;
+  overflow-y: auto;
+}
+.muted {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+
+/* --- footer ----------------------------------------------------------------------- */
+.proj {
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* A long project name must not push `Open session` off the row at 320px. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.actFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-3);
+}
+.state {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.wouldSend {
+  color: var(--text-3);
+  font-style: italic;
+}
+.jump {
+  margin-left: auto;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 4px 0;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+}
+.jump:hover {
+  text-decoration: underline;
+}
+
+/* Mobile: the segmented control goes full-width and touch targets reach 44px. */
+@media (max-width: 800px) {
+  .seg {
+    margin-left: 0;
+    width: 100%;
+  }
+  .segBtn {
+    flex: 1;
+    text-align: center;
+    min-height: 44px;
+  }
+  /* `Run now` gets its own full-width row (#750). On desktop `margin-left: auto` parks it at
+   * the far right of the meter row; dropping that on mobile left an 86×44 CTA sitting INLINE
+   * beside "conf ≥ 0.75 · below → escalate" on the wrapped second line — a button the size of
+   * the surrounding sentence, jammed against it with an 8px gap. `width: 100%` forces its own
+   * flex line instead, which is also the only way it reaches a comfortable tap target. */
+  .runBtn {
+    margin-left: 0;
+    min-height: 44px;
+    width: 100%;
+    justify-content: center;
+  }
+  /* …and the meter itself takes the slack on its line rather than sitting at 110px with a
+   * ragged gap where the button used to be. */
+  .bar {
+    flex: 1 1 90px;
+    width: auto;
+  }
+  .conf {
+    margin-left: 0;
+  }
+  .jump {
+    min-height: 44px;
+  }
+  .evdHead {
+    min-height: 44px;
+  }
+}
+
+/* --- approve / reject (#726 Phase 2) -------------------------------------------- */
+.btns {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.approve {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  min-height: 32px;
+  border: 1px solid var(--accent);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  min-height: 32px;
+  min-width: 34px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.approve:disabled,
+.reject:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.reject:hover:not(:disabled) {
+  color: var(--text-1);
+  background: var(--glass-strong);
+}
+/* A stale verdict is information, not an incident — degraded, never `--status-down`. */
+.stale {
+  margin: 7px 0 0;
+  font-size: 0.72rem;
+  color: var(--status-degraded);
+}
+
+@media (max-width: 800px) {
+  .approve {
+    flex: 1;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .reject {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

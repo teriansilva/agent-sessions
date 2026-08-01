@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" font-family="'JetBrains Mono','DejaVu Sans Mono',ui-monospace,monospace">
+  <defs>
+    <g id="c-tl"><path d="M0 12 V0 H12" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="c-tr"><path d="M-12 0 H0 V12" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="c-bl"><path d="M0 -12 V0 H12" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="c-br"><path d="M-12 0 H0 V-12" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="#6f747d"/>
+    </marker>
+  </defs>
+  <rect width="1120" height="440" fill="#08090b"/>
+
+  <text x="28" y="30" fill="#ffb000" font-size="14" font-weight="700" letter-spacing="3">◢ BATTLELAB</text>
+  <text x="168" y="30" fill="#a7abb3" font-size="12" letter-spacing="1">// REMOTE CONNECT — app-only transition (#579)</text>
+  <text x="28" y="50" fill="#6f747d" font-size="11">name + key → connect states → the FULL app streams over the blind relay · no shell fallback</text>
+  <line x1="28" y1="62" x2="1092" y2="62" stroke="rgba(255,255,255,.14)"/>
+
+  <!-- Step 1: connect form -->
+  <g transform="translate(28,90)">
+    <rect width="240" height="200" fill="#131418" stroke="rgba(255,255,255,.14)"/>
+    <use href="#c-tl" x="0" y="0"/><use href="#c-tr" x="240" y="0"/><use href="#c-bl" x="0" y="200"/><use href="#c-br" x="240" y="200"/>
+    <text x="16" y="26" fill="#6f747d" font-size="10" letter-spacing="1.5">1 · SIGN IN</text>
+    <text x="16" y="52" fill="#ffb000" font-size="12" font-weight="700" letter-spacing="1">◢ BATTLELAB</text>
+    <rect x="16" y="70" width="208" height="30" fill="#0d0e10" stroke="#25282e"/>
+    <text x="26" y="90" fill="#6f747d" font-size="11">console name</text>
+    <rect x="16" y="110" width="208" height="30" fill="#0d0e10" stroke="#25282e"/>
+    <text x="26" y="130" fill="#6f747d" font-size="11">access key</text>
+    <rect x="16" y="152" width="208" height="34" fill="#ffb000"/>
+    <text x="120" y="174" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">CONNECT</text>
+  </g>
+  <line x1="278" y1="190" x2="316" y2="190" stroke="#6f747d" marker-end="url(#arw)"/>
+
+  <!-- Step 2: connect states (loading) -->
+  <g transform="translate(324,90)">
+    <rect width="240" height="200" fill="#131418" stroke="rgba(255,255,255,.14)"/>
+    <use href="#c-tl" x="0" y="0"/><use href="#c-tr" x="240" y="0"/><use href="#c-bl" x="0" y="200"/><use href="#c-br" x="240" y="200"/>
+    <text x="16" y="26" fill="#6f747d" font-size="10" letter-spacing="1.5">2 · CONNECTING</text>
+    <circle cx="22" cy="52" r="4" fill="#ffb000"/>
+    <text x="36" y="56" fill="#e8e9ec" font-size="12">nightjar-box</text>
+    <text x="16" y="86" fill="#3fbf6f" font-size="12">✓ human verification</text>
+    <text x="16" y="110" fill="#3fbf6f" font-size="12">✓ encrypted channel</text>
+    <text x="16" y="134" fill="#ffb000" font-size="12">⟳ loading app shell…</text>
+    <rect x="16" y="152" width="208" height="4" fill="#1a1c21"/>
+    <rect x="16" y="152" width="150" height="4" fill="#ffb000"/>
+    <text x="16" y="180" fill="#6f747d" font-size="9">🔒 blind relay · the P3 connect states</text>
+  </g>
+  <line x1="574" y1="190" x2="612" y2="190" stroke="#6f747d" marker-end="url(#arw)"/>
+
+  <!-- Step 3: the full app -->
+  <g transform="translate(620,90)">
+    <rect width="472" height="200" fill="#0d0e10" stroke="rgba(255,255,255,.14)"/>
+    <use href="#c-tl" x="0" y="0"/><use href="#c-tr" x="472" y="0"/><use href="#c-bl" x="0" y="200"/><use href="#c-br" x="472" y="200"/>
+    <text x="16" y="26" fill="#6f747d" font-size="10" letter-spacing="1.5">3 · FULL APP — STREAMED (unchanged)</text>
+    <!-- mini app chrome: topbar + sidebar + pane -->
+    <rect x="14" y="36" width="444" height="24" fill="#131418" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="52" fill="#ffb000" font-size="10" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="52" fill="#6f747d" font-size="9">SYS // OK   ·   MISSION // 59:12   ·   ⚙</text>
+    <rect x="14" y="60" width="128" height="120" fill="#131418" stroke="rgba(255,255,255,.08)"/>
+    <rect x="24" y="72" width="108" height="14" fill="#1a1c21"/><circle cx="31" cy="79" r="3" fill="#3fbf6f"/>
+    <rect x="24" y="92" width="108" height="14" fill="#1a1c21"/><circle cx="31" cy="99" r="3" fill="#ffb000"/>
+    <rect x="24" y="112" width="108" height="14" fill="#1a1c21"/><circle cx="31" cy="119" r="3" fill="#6f747d"/>
+    <rect x="24" y="132" width="108" height="14" fill="#1a1c21"/><circle cx="31" cy="139" r="3" fill="#3b9eff"/>
+    <rect x="150" y="60" width="308" height="120" fill="#08090b" stroke="rgba(255,255,255,.08)"/>
+    <text x="162" y="80" fill="#3fbf6f" font-size="9">$ claude — session live over the tunnel</text>
+    <text x="162" y="96" fill="#a7abb3" font-size="9">sidebar · Pulse · overview · terminals — all real</text>
+    <text x="162" y="150" fill="#6f747d" font-size="9">/api + /ws ride the blind relay (P3 tunnel)</text>
+  </g>
+
+  <!-- refusal branch -->
+  <g transform="translate(324,320)">
+    <rect width="240" height="96" fill="#131418" stroke="rgba(255,255,255,.14)"/>
+    <use href="#c-tl" x="0" y="0"/><use href="#c-tr" x="240" y="0"/><use href="#c-bl" x="0" y="96"/><use href="#c-br" x="240" y="96"/>
+    <circle cx="22" cy="26" r="4" fill="#f59e0b"/>
+    <text x="36" y="30" fill="#e8e9ec" font-size="11">APP MODE REQUIRED</text>
+    <text x="16" y="54" fill="#6f747d" font-size="9">wrong advert, no app port, or non-loopback:</text>
+    <text x="16" y="72" fill="#a7abb3" font-size="10">session closes; installer refuses stream mode.</text>
+  </g>
+  <path d="M444 290 V320" fill="none" stroke="#6f747d" stroke-dasharray="4 3" marker-end="url(#arw)"/>
+  <text x="452" y="312" fill="#6f747d" font-size="9">fail-closed</text>
+
+  <text x="620" y="336" fill="#6f747d" font-size="10" letter-spacing="1">NOTES</text>
+  <text x="620" y="358" fill="#a7abb3" font-size="11">• App mode is the default connect path; there is no `?app` gate or shell fallback.</text>
+  <text x="620" y="376" fill="#a7abb3" font-size="11">  If app streaming is unavailable, the session is refused.</text>
+  <text x="620" y="398" fill="#a7abb3" font-size="11">• The streamed surface IS the existing app (no redesign); only the mount is new.</text>
+  <text x="620" y="416" fill="#6f747d" font-size="11">• app `/api` + terminal `/ws` are injected into the tunnel; the relay stays blind.</text>
+</svg>

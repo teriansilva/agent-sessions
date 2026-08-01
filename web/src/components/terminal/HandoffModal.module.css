@@ -1,0 +1,404 @@
+/* Hand-off modal (#597). HUD vocabulary (#211): near-black ground, phosphor-amber accent,
+ * mono micro-labels, square chrome (no rounded corners, no gradients). Canonical index.css
+ * tokens so theme + custom accent cascade; ≥44px touch targets on the tiles + actions.
+ * Mobile reflows to a bottom sheet like SessionRecapModal. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.dialog {
+  width: min(560px, 100%);
+  max-height: min(86vh, 720px);
+  overflow-y: auto;
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 15px 18px 16px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 0;
+  cursor: pointer;
+}
+.close:hover,
+.close:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+
+.from {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.fromLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+.fromTitle {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.section {
+  margin-bottom: 12px;
+}
+.label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Engine / mode tiles: 44px touch targets, accent border + soft accent fill when selected,
+ * dashed border + reason line when the engine can't be a target. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.tile {
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 12px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.tile:hover:not(:disabled):not(.tileOn),
+.tile:focus-visible:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.tileOn {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  border: 1.4px solid var(--accent);
+  color: var(--text-1);
+}
+.tile:disabled {
+  border-style: dashed;
+  opacity: 0.6;
+  cursor: default;
+}
+.tileName {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.tileWhy {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.previewHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.previewMeta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.preview:disabled {
+  opacity: 0.6;
+}
+.preview {
+  width: 100%;
+  height: 160px;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+/* Degrade notice (#597 Phase 2): AI mode fell back to the local quick tail. Advisory, not
+   an error — the amber brand accent, never a status colour (status stays load-bearing). */
+.notice {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+  border-left: 3px solid var(--accent);
+}
+.error {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--status-down);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.foot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.cancel {
+  min-height: 44px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.cancel:hover,
+.cancel:focus-visible {
+  color: var(--text-1);
+  border-color: var(--line-strong);
+}
+.go {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  border-radius: 0;
+  cursor: pointer;
+}
+.go:hover:not(:disabled),
+.go:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 90%, white);
+}
+.go:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Mobile (≤800px): a bottom sheet; tiles stay ≥44px; actions stack full-width. */
+@media (max-width: 800px) {
+  .backdrop {
+    padding: 10px;
+    align-items: flex-end;
+  }
+  .dialog {
+    width: 100%;
+    max-height: 88vh;
+  }
+  .tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .buttons {
+    flex-direction: column-reverse;
+  }
+  .go,
+  .cancel {
+    justify-content: center;
+    text-align: center;
+  }
+  .foot {
+    text-align: center;
+  }
+}
+
+/* Over-cap readout: the byte counter turns to the down/critical status colour when the
+   edited brief exceeds the server's cap — status colour is load-bearing here (this IS an
+   error state), unlike the amber provenance/notice chrome. */
+.previewOver {
+  color: var(--status-down);
+  font-weight: 700;
+}
+
+/* Discard-confirm strip (#703 review): a target/mode switch would rebuild the seed and
+   throw away typed prose, so it asks first. Square HUD chrome like the rest. */
+.confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+}
+.confirmBtns {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.discard {
+  min-height: 44px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  border-radius: 0;
+  cursor: pointer;
+}
+.discard:hover,
+.discard:focus-visible {
+  background: color-mix(in srgb, var(--accent) 90%, white);
+}
+
+/* Inline Retry for a failed prepare/renewal (#703 review follow-up): a small accent-text
+   button next to the error, so a prepare failure isn't a dead end. */
+.retry {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  border-radius: 0;
+  cursor: pointer;
+}
+.retry:hover,
+.retry:focus-visible {
+  background: color-mix(in srgb, var(--accent) 90%, white);
+}
+
+/* Source reference (#716): one square, tokenized checkbox row in its own section — same
+ * chrome language as the tiles above it (no radius, no gradient, ≥44px target), so it reads
+ * as part of the picker rather than a new nested card. Checked borrows the tile's accent
+ * treatment; the accent fill + --on-accent tick keep the state legible in both themes. */
+.optRow {
+  min-height: 44px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.optRow:hover,
+.optRow:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.optRowOn {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+}
+.optBox {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  margin: 2px 0 0;
+  border-radius: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.optText {
+  font-size: 12px;
+  color: var(--text-1);
+  line-height: 1.4;
+}
+.optHint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+/* The extra disclosure that exists only while the option is on — set off by the semantic
+ * "degraded" rule so it reads as a heads-up, never as the brand accent. */
+.privacyMore {
+  display: block;
+  margin-top: 5px;
+  padding-left: 8px;
+  border-left: 2px solid var(--status-degraded);
+  color: var(--text-2);
+}

@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.venv
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets — never commit
+.env
+env
+*.creds
+*.pem
+*.key
+.venv-local/
+# CI bootstraps pip from a workspace-local copy (shared /tmp races across jobs).
+.get-pip.py
+
+# local dev venv for Home Free work
+.venv-hf/

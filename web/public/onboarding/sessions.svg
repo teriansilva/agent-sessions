@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Sessions sidebar">
+  <rect width="640" height="360" fill="#131418"/>
+  <rect x="8" y="8" width="180" height="344" fill="#0d0e10" stroke="#25282e"/>
+  <rect x="24" y="40" width="148" height="34" fill="#1a1c21" stroke="#25282e"/>
+  <rect x="24" y="84" width="148" height="34" fill="#1a1c21" stroke="#25282e"/>
+  <rect x="24" y="128" width="148" height="34" fill="#1a1c21" stroke="#25282e"/>
+  <circle cx="36" cy="57" r="4" fill="#3fbf6f"/><circle cx="36" cy="101" r="4" fill="#ffb000"/><circle cx="36" cy="145" r="4" fill="#6f747d"/>
+  <g stroke="#ffb000" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>
+  <text x="410" y="186" fill="#6f747d" font-family="monospace" font-size="18" text-anchor="middle">SESSIONS // sidebar</text>
+</svg>
