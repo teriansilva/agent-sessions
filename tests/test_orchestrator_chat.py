@@ -52,6 +52,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
     monkeypatch.setattr(review, "_TRANSPORT", None)
+    # `_validate_actions` asks the writer registry before proposing a delivering verb (#766);
+    # the registry is process-global and empty under test, so without this stub every
+    # `continue` would validate to "no actions" and these assertions would measure nothing.
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
     aitasks.reset()
     prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
     yield
@@ -456,3 +460,159 @@ def test_suggest_leaves_a_chat_instruction_as_a_proposal(monkeypatch):
     assert (
         r["actions"][0]["state"] == "proposed"
     ), "suggest must leave the action awaiting a tap, not deliver it"
+
+
+# --- an acknowledgement must never outrun what was queued (#766 review) ----------------------
+
+
+def _instructed(monkeypatch, answer="Nudged it.", verb="continue"):
+    """Script the two-call chat exchange: intent classification, then the instruction reply."""
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": answer,
+                    "actions": [
+                        {
+                            "session_id": KEY,
+                            "verb": verb,
+                            "confidence": 0.9,
+                            "rationale": "asked to keep going",
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+
+
+def test_a_dead_session_is_never_reported_as_nudged(monkeypatch):
+    """The regression the liveness gate introduced, and the reason it needs drop metadata.
+
+    `intended` was computed from the VALIDATED actions, so an action the validator removed was
+    indistinguishable from the model never proposing one — and the "Nothing was queued"
+    correction below it never fired. The API answered `{"answer": "Nudged it.", "actions": []}`:
+    a success acknowledgement for a nudge that was neither proposed nor delivered.
+    """
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: False)
+    _instructed(monkeypatch)
+
+    r = asyncio.run(orchestrator_chat.ask("tell the claude session to keep going"))
+
+    assert r["actions"] == []
+    assert "Nudged it." not in r["answer"], "a dead session was reported as nudged"
+    # …and it says WHICH wall it hit, not just that nothing happened.
+    assert "isn't running" in r["answer"]
+    assert ledger.live_actions() == []
+
+
+def test_a_live_session_still_gets_the_models_own_wording(monkeypatch):
+    """The correction must not fire on the normal path — it would replace a true answer."""
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
+    _instructed(monkeypatch)
+
+    r = asyncio.run(orchestrator_chat.ask("tell the claude session to keep going"))
+
+    assert len(r["actions"]) == 1
+    assert r["answer"] == "Nudged it."
+
+
+def test_the_model_proposing_nothing_is_not_a_dropped_action(monkeypatch):
+    """`intended` must stay False when there was no intent — otherwise an ordinary "nothing to
+    do here" answer gets overwritten with a correction about a proposal that never existed."""
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: False)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted([{"intent": "instruct"}, {"answer": "Nothing needs a nudge.", "actions": []}]),
+    )
+
+    r = asyncio.run(orchestrator_chat.ask("anything to push along?"))
+
+    assert r["actions"] == []
+    assert r["answer"] == "Nothing needs a nudge."
+
+
+def test_a_partial_drop_does_not_claim_every_session_was_nudged(monkeypatch):
+    """The dangerous half of the same defect (#766 review round 2).
+
+    The correction only ran when NOTHING was recorded. Ask for two sessions, one live and one
+    dead, and the live one records — so `recorded` is non-empty, the model's "Nudged both
+    sessions." is returned unchanged, and the single action sitting next to it reads as
+    corroboration. A partial false success is worse than a total one, not better.
+    """
+    other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    live_key = f"claude:{other}"
+    _setup(
+        monkeypatch,
+        [
+            FakeSession("claude", UID, "/a", time.time()),
+            FakeSession("claude", other, "/b", time.time()),
+        ],
+    )
+    # KEY is dead; the second session is live.
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: key != KEY)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "Nudged both sessions.",
+                    "actions": [
+                        {"session_id": KEY, "verb": "continue", "confidence": 0.9},
+                        {"session_id": live_key, "verb": "continue", "confidence": 0.9},
+                    ],
+                },
+            ]
+        ),
+    )
+
+    r = asyncio.run(orchestrator_chat.ask("nudge both of them"))
+
+    assert [a["session_id"] for a in r["actions"]] == [live_key]
+    assert "Nudged both sessions." not in r["answer"], "a dead session was reported as nudged"
+    assert "Queued 1 of 2" in r["answer"]
+    assert "isn't running" in r["answer"]
+
+
+def test_every_requested_session_being_live_keeps_the_models_wording(monkeypatch):
+    """The counterpart: nothing was withheld, so nothing needs correcting."""
+    other = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    live_key = f"claude:{other}"
+    _setup(
+        monkeypatch,
+        [
+            FakeSession("claude", UID, "/a", time.time()),
+            FakeSession("claude", other, "/b", time.time()),
+        ],
+    )
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "Nudged both sessions.",
+                    "actions": [
+                        {"session_id": KEY, "verb": "continue", "confidence": 0.9},
+                        {"session_id": live_key, "verb": "continue", "confidence": 0.9},
+                    ],
+                },
+            ]
+        ),
+    )
+
+    r = asyncio.run(orchestrator_chat.ask("nudge both of them"))
+
+    assert len(r["actions"]) == 2
+    assert r["answer"] == "Nudged both sessions."

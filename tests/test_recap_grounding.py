@@ -101,7 +101,17 @@ def test_grounding_runs_after_the_existing_cleanup_not_instead_of_it():
 
 # --- a nudge nobody is waiting for (#755, second defect) ------------------------------------
 
+from agent_sessions import orchestrator  # noqa: E402
 from agent_sessions.orchestrator import _validate_actions  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _writable(monkeypatch):
+    """These cases are about AGE, not liveness. `_validate_actions` also asks the writer
+    registry before proposing a delivering verb (#766), and it is empty under test — so
+    without this every `continue` here would drop for the wrong reason and the staleness
+    assertions would pass while measuring nothing."""
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
 
 
 def _sent(age_hours: float, sid: str = "codex:019f980f-2435-7fd1-a86b-e38b25bff3ae"):

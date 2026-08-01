@@ -50,6 +50,7 @@ from . import (
     pulse,
     review,
     scrollback,
+    session_input,
 )
 from . import (
     orchestrator_ledger as ledger,
@@ -334,7 +335,11 @@ def _age_hours(card: dict, now: float) -> float | None:
 
 
 def _validate_actions(
-    obj: dict, sent: dict[str, dict], *, now: float | None = None
+    obj: dict,
+    sent: dict[str, dict],
+    *,
+    now: float | None = None,
+    dropped: list[dict] | None = None,
 ) -> tuple[str, list[dict]]:
     """Narrow a model reply to ``(assessment, [action, …])``.
 
@@ -343,6 +348,12 @@ def _validate_actions(
     dropped, duplicates collapsed. A ``choose`` without a usable option number, or an ``answer``
     without text, degrades to ``escalate`` rather than being invented into something
     deliverable — the operator sees the session, which is the honest outcome.
+
+    ``dropped``, when given, collects ``{"session_id", "verb", "reason"}`` for each action this
+    function REMOVES. A caller that reports back to a human needs it: silently returning fewer
+    actions is indistinguishable from the model having proposed nothing, and `orchestrator_chat`
+    used that distinction to decide whether its "On it." needed correcting. Without it, asking
+    the chat to nudge a dead session answered "Nudged it." over an empty action list.
     """
     now = time.time() if now is None else now
     assessment = _clamp(obj.get("assessment"), ASSESSMENT_MAX)
@@ -413,6 +424,27 @@ def _validate_actions(
         # typing into it, which is the same rule the confidence threshold already encodes:
         # unsure means ask, never guess.
         if action["verb"] in DELIVERING_VERBS:
+            # A delivering verb needs somewhere to type. The actuator refuses on exactly this
+            # predicate — `session_input.is_live(physical_key)`, actuator.py — and settles the
+            # action `failed` with "session is not live". That is where `yolo` was dying: of the
+            # 38 actions it auto-approved, 7 failed there and only 5 ever delivered (#766).
+            # Proposing a nudge for a session with no writable PTY is a guaranteed failure, and
+            # not a decision the operator can act on either, so it is dropped.
+            #
+            # Ask the registry, NOT the card. `card["live"]` means "an agent is working or a
+            # browser is attached" — a headless-but-live session, which is the archetypal
+            # `continue` target, has `live: False` while being perfectly writable. Gating on it
+            # would block precisely the case this is meant to enable.
+            if not session_input.is_live(engines.physical_key(sid)):
+                if dropped is not None:
+                    dropped.append(
+                        {"session_id": sid, "verb": action["verb"], "reason": "not_live"}
+                    )
+                seen.add(sid)
+                continue
+            # Defence in depth only: `eligible_cards` drops anything past this same bound
+            # before the model is ever called, so on both production paths nothing this old
+            # reaches here. It stays for a caller that assembles `sent` itself.
             age = _age_hours(sent[sid], now)
             if age is not None and age >= STALE_DELIVER_HOURS:
                 # DROP it. #756 degraded this to `escalate` to stop a nudge landing in work that
@@ -422,6 +454,8 @@ def _validate_actions(
                 # turned a silent proposal into a recurring alert about a stale session (#763).
                 # Dropping stops the delivery just as firmly, and quietly. The session is still
                 # on the Pulse cards and in the sidebar; only the unsolicited interruption goes.
+                if dropped is not None:
+                    dropped.append({"session_id": sid, "verb": action["verb"], "reason": "stale"})
                 seen.add(sid)
                 continue
         seen.add(sid)

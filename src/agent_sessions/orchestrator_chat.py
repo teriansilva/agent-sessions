@@ -154,7 +154,11 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     )
     # Same `now` the digest was built with, so staleness is measured against the instant
     # this pass observed rather than drifting to wall-clock between the two.
-    answer, actions = orchestrator._validate_actions(obj, sent, now=now)
+    # `dropped` carries what validation REMOVED and why. Without it a removal is invisible here
+    # — `intended` would read False and the "On it." below would stand over an empty action
+    # list, telling the operator a session had been nudged when nothing was even proposed.
+    validation_dropped: list[dict] = []
+    answer, actions = orchestrator._validate_actions(obj, sent, now=now, dropped=validation_dropped)
     answer = _clamp(answer or obj.get("answer"), ANSWER_MAX)
 
     # `complete_json` is the long await here exactly as it is in a scheduled pass, and policy
@@ -168,7 +172,11 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     still_eligible = {
         c["id"] for c in await asyncio.to_thread(orchestrator._eligible_ids, working_keys)
     }
-    intended = bool(actions)  # the model named something; whether it SURVIVES is decided below
+    # How many actions the model actually asked for — counted BEFORE the eligibility filter and
+    # the cap below, and including the ones validation already removed. This is the number the
+    # model's own sentence describes, so it is the only honest thing to reconcile the answer
+    # against.
+    intended_n = len(actions) + len(validation_dropped)
     actions = [a for a in actions if a["session_id"] in still_eligible]
     cap = int(cfg["max_actions_per_pass"])
     if len(actions) > cap:
@@ -210,17 +218,41 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
         # picked up a live one from a concurrent pass, and the reply must not claim
         # to have queued something that was refused.
         recorded = await asyncio.to_thread(orchestrator._persist, recorded)
-    # The model's own phrasing ("On it.") describes what it INTENDED, and by here that
-    # intention may have been overruled twice: by the post-call eligibility recheck (`revoked`)
-    # or by the ledger refusing the slot to a concurrent pass (`intended and not recorded`).
-    # Either way, an answer that sounds like acceptance over an empty action list is the one
-    # thing this reply must never be — the operator would believe a session had been nudged.
-    if intended and not recorded:
-        answer = (
-            "I had something to propose, but by the time I'd worked it out those sessions "
-            "were no longer mine to act on — orchestration was switched off, they were "
-            "excluded, or another pass got there first. Nothing was queued."
-        )
+    # The model's own phrasing ("On it.", "Nudged both sessions.") describes what it INTENDED,
+    # and by here that intention may have been overruled three ways: validation dropped the
+    # action (a dead session), the post-call eligibility recheck revoked it, or the ledger
+    # refused the slot to a concurrent pass.
+    #
+    # The rule is one comparison, not a special case per cause: if FEWER actions were recorded
+    # than the model asked for, its sentence is a claim about work that did not happen. That
+    # covers the partial case too — "Nudged both sessions" over one recorded action is exactly
+    # as wrong as it is over none, and it is the more dangerous of the two, because the answer
+    # looks corroborated by the action list sitting next to it.
+    if intended_n and len(recorded) < intended_n:
+        # Say WHICH wall it hit. "Nothing was queued" is honest but useless if the operator
+        # cannot tell a policy refusal from a session that simply is not running any more.
+        # Only `not_live` gets its own wording. The validator's `stale` reason cannot be
+        # reached from here — `eligible_cards` already drops anything past the same
+        # STALE_DELIVER_HOURS before the model is called — so a message for it would be
+        # untestable text asserting something that never happens.
+        not_live = sum(1 for d in validation_dropped if d.get("reason") == "not_live")
+        if not recorded:
+            answer = (
+                "That session isn't running any more — there's no live terminal to type into, "
+                "so I didn't queue anything. Open it and it can be picked up again."
+                if not_live
+                else "I had something to propose, but by the time I'd worked it out those "
+                "sessions were no longer mine to act on — orchestration was switched off, they "
+                "were excluded, or another pass got there first. Nothing was queued."
+            )
+        else:
+            held = intended_n - len(recorded)
+            why = (
+                f"{held} isn't running any more, so there's no terminal to type into"
+                if not_live >= held
+                else f"{held} was no longer mine to act on"
+            )
+            answer = f"Queued {len(recorded)} of {intended_n} — {why}."
     return {
         "intent": "instruct",
         "answer": answer or ("Queued the action(s) below." if recorded else "Nothing matched."),

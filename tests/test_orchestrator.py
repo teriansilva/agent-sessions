@@ -65,6 +65,11 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
     monkeypatch.setattr(review, "_TRANSPORT", None)
+    # `_validate_actions` asks the writer registry before proposing a delivering verb (#766).
+    # The registry is process-global and empty under test, so without this every `continue` in
+    # this file would silently validate to "no actions" and the assertions would measure nothing.
+    # The liveness tests override this per-test.
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
     orchestrator_loop.reset_state()
     aitasks.reset()
     yield
@@ -1548,3 +1553,86 @@ def test_long_idle_sessions_leave_the_eligible_set(monkeypatch, tmp_path):  # no
     # Unknown age is not the same as stale — a card with no stamp must not be silently dropped.
     assert "claude:nostamp" in ids
     assert skipped["stale"] == 1
+
+
+def _live(monkeypatch, answer):
+    """Stand in for the writer registry the actuator consults.
+
+    `answer` is keyed by PHYSICAL key, which is what `actuator.deliver` passes — a test that
+    stubbed on the app-facing id would pass while production asked a different question.
+    """
+    monkeypatch.setattr(
+        orchestrator.session_input, "is_live", lambda key: bool(answer.get(key, False))
+    )
+
+
+def _continue(sid, now, **card):
+    return _validate_actions(
+        {
+            "assessment": "x",
+            "actions": [{"session_id": sid, "verb": "continue", "confidence": 0.9}],
+        },
+        {sid: {"id": sid, "last_activity": now - 600, **card}},
+        now=now,
+    )[1]
+
+
+SID = "claude:aaaaaaaa-0000-4000-8000-000000000001"
+
+
+def test_a_delivering_verb_needs_a_writable_session(monkeypatch):
+    """The actuator refuses on `session_input.is_live(physical_key)` and settles the action
+    `failed` with "session is not live".
+
+    Measured on the live ledger: of the 38 actions `yolo` auto-approved, 7 failed exactly there
+    and only 5 ever delivered. A nudge for a session with no writable PTY is a guaranteed
+    failure, so it is never proposed (#766).
+    """
+    now = time.time()
+    _live(monkeypatch, {})
+    assert _continue(SID, now) == [], "a nudge was proposed for a session with no writable PTY"
+
+
+def test_a_writable_session_still_gets_its_nudge(monkeypatch):
+    now = time.time()
+    _live(monkeypatch, {SID: True})
+    assert [a["verb"] for a in _continue(SID, now)] == ["continue"]
+
+
+def test_the_card_live_flag_is_NOT_what_gates_delivery(monkeypatch):
+    """The trap this test exists to hold shut.
+
+    `card["live"]` means "an agent is working, or a browser is attached" — it is the registry
+    overlay `pulse.build_cards` computes from `working_keys`. A session running headless under
+    dtach with nobody watching has `live: False` and is perfectly writable, and it is the
+    ARCHETYPAL `continue` target. Gating on the card field would block exactly the case this
+    feature exists for, while passing every test that built its own fixture.
+    """
+    now = time.time()
+    _live(monkeypatch, {SID: True})
+    assert [a["verb"] for a in _continue(SID, now, live=False)] == ["continue"]
+
+
+def test_liveness_is_asked_of_the_PHYSICAL_key(monkeypatch):
+    """An alias resolves to a different physical session; the writer is registered under the
+    physical key, so asking under the app-facing id finds nothing and drops every action."""
+    now = time.time()
+    phys = "claude:bbbbbbbb-0000-4000-8000-000000000002"
+    monkeypatch.setattr(orchestrator.engines, "physical_key", lambda key: phys)
+    _live(monkeypatch, {phys: True})
+    assert [a["verb"] for a in _continue(SID, now)] == ["continue"]
+
+
+def test_an_escalation_for_a_dead_session_still_reaches_the_operator(monkeypatch):
+    """Liveness gates DELIVERY. A decision the operator must make is still theirs to make."""
+    now = time.time()
+    _live(monkeypatch, {})
+    _, actions = _validate_actions(
+        {
+            "assessment": "x",
+            "actions": [{"session_id": SID, "verb": "escalate", "confidence": 0.4}],
+        },
+        {SID: {"id": SID, "last_activity": now - 600}},
+        now=now,
+    )
+    assert [a["verb"] for a in actions] == ["escalate"]
