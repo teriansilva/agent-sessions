@@ -168,9 +168,23 @@ def add(
                 # suppressing.
                 if r.get("escalation") is not True:
                     continue
-                if r.get("session_id") != session_id or r.get("title") != title:
+                # Session identity only. `title` used to be part of this key, and it is
+                # authored by the MODEL — regenerated from scratch every pass. Measured on the
+                # live store: across the 8 sessions announced more than once, the title had
+                # been rewritten in 8 of 8, while `activity_at` had not moved in 6 of 8. So
+                # three quarters of the repeats were one unchanged situation announced two or
+                # three times because the wording drifted:
+                #
+                #     01:37  Awaiting user input to set Opus override on /admin/a…
+                #     03:36  Awaiting user input on Opus override for #870
+                #     04:42  Awaiting user input: set Opus override on /admin/ai
+                #
+                # Testing equality on a string a language model rewrites for free cannot work,
+                # and it short-circuited the discriminator below that actually does (#760).
+                if r.get("session_id") != session_id:
                     continue
-                # "Has this session done anything since I told you?" — the discriminator that
+                # "Has this session done anything since I told you?" — the ONLY discriminator,
+                # now that the model-authored half is gone, and the one that
                 # separates the SAME unresolved situation, re-proposed every TTL, from a
                 # genuinely new one. A session that escalated is waiting on the operator, so
                 # it emits nothing and its clock stands still; anything that could constitute a

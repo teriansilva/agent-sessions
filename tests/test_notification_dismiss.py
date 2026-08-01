@@ -54,9 +54,35 @@ def test_an_unresolved_escalation_is_announced_once_not_once_per_ttl():
 
 
 def test_a_changed_situation_still_gets_through():
+    """A different situation announces — but it is the session's CLOCK that says so, not the
+    wording (#760).
+
+    This test used to vary only the title, with the clock held still. That fixture cannot
+    happen: a build failing produces output, and output moves `activity_at`. Meanwhile the
+    thing it did permit — the model rewording an unchanged situation — was 8 of the 8 repeated
+    sessions on the live store. So the discriminator moved to the clock alone.
+    """
     _add(title="waiting on a menu choice")
-    assert _add(title="the build failed") is not None
+    assert _add(title="the build failed", activity_at=IDLE + 30) is not None
     assert len(_rows()) == 2
+
+
+def test_a_reworded_title_over_a_still_clock_is_the_same_situation():
+    """The measured failure, verbatim from the live store: one session, one unchanged
+    `activity_at`, three announcements over three hours because the model rewrote its own
+    title each pass."""
+    assert _add(title="Awaiting user input to set Opus override on /admin/a") is not None
+    assert _add(title="Awaiting user input on Opus override for #870") is None
+    assert _add(title="Awaiting user input: set Opus override on /admin/ai") is None
+    assert len(_rows()) == 1
+
+
+def test_the_first_wording_is_the_one_kept():
+    """Suppression must not rewrite the row the operator is already looking at — a title that
+    changes under them reads as a new alert they somehow missed."""
+    _add(title="waiting on a menu choice")
+    _add(title="something else entirely")
+    assert [r["title"] for r in _rows()] == ["waiting on a menu choice"]
 
 
 def test_the_same_title_in_a_different_session_is_a_different_alert():
@@ -74,23 +100,23 @@ def test_clearing_lets_a_later_re_escalation_speak_again():
 
 
 def test_dismiss_removes_only_the_named_rows():
-    a = _add(title="one")
-    _add(title="two")
-    c = _add(title="three")
+    a = _add(title="one", session="claude:aaa")
+    _add(title="two", session="codex:bbb")
+    c = _add(title="three", session="gemini:ccc")
     assert notifications.dismiss([a["id"], c["id"]]) == 2
     assert [r["title"] for r in _rows()] == ["two"]
 
 
 def test_dismiss_all_empties_the_ring_and_reports_the_count():
     for i in range(4):
-        _add(title=f"t{i}")
+        _add(title=f"t{i}", session=f"claude:s{i}")
     assert notifications.dismiss() == 4
     assert notifications.listing() == {"notifications": [], "unread": 0}
 
 
 def test_dismiss_for_action_retires_that_alert_and_leaves_the_others():
-    _add(title="one", action_id="act-1")
-    _add(title="two", action_id="act-2")
+    _add(title="one", session="claude:aaa", action_id="act-1")
+    _add(title="two", session="codex:bbb", action_id="act-2")
     assert notifications.dismiss_for_action("act-1") == 1
     assert [r["title"] for r in _rows()] == ["two"]
     # An id nobody raised must not quietly wipe anything.
@@ -136,8 +162,8 @@ def test_a_suppressed_alert_does_not_re_send_the_push(monkeypatch, tmp_path):
 
 def test_the_store_stays_valid_json_after_a_dismiss(tmp_path):
     """A half-written store would take the whole bell down on the next read."""
-    _add(title="one")
-    b = _add(title="two")
+    _add(title="one", session="claude:aaa")
+    b = _add(title="two", session="codex:bbb")
     notifications.dismiss([b["id"]])
     raw = json.loads((tmp_path / "n.json").read_text())
     assert [r["title"] for r in raw] == ["one"]
