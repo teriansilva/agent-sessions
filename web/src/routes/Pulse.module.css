@@ -155,35 +155,6 @@
 }
 
 /* --- groups + cards ---------------------------------------------------------- */
-.groups {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-.group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.groupHead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-.count {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.06em;
-  padding: 1px 6px;
-  border: 1px solid var(--line-strong);
-  color: var(--text-3);
-}
 
 .cards {
   list-style: none;
@@ -193,6 +164,9 @@
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
 }
+/* One list, not four sections (#754): every band flows into the same grid, so a band with two
+ * cards no longer leaves three empty cells before the next heading. Order carries the priority
+ * the headings used to. */
 
 /* Corner-bracket frame only (#476): the HudFrame brackets ARE the card's frame — no left
  * rail, so the bracketed left edge never doubles up with a border-left line. Needs-you urgency

@@ -4,7 +4,7 @@
  * DELIVERING verb offers approve/reject, so the UI never implies an escalation would be sent;
  * a 409 from compare-and-execute reads as "nothing was sent", distinguishable from an error;
  * evidence is fetched from the server on expand rather than rendered from anything the model
- * said; the feed groups by project; and a failing endpoint degrades to no strip, not a blank
+ * said; every feed row names its project; and a failing endpoint degrades to no strip, not a blank
  * page.
  */
 import { render, screen, waitFor } from "@testing-library/react";
@@ -307,7 +307,11 @@ test("evidence is fetched from the server on expand, never rendered from the mod
   );
 });
 
-test("the feed groups by project so 'which project needs me' is one glance", async () => {
+test("every feed row names its project, since the grid no longer groups by one", async () => {
+  // The feed used to render one `<ul>` per project under a heading. In a grid that costs a
+  // partial row per project — measured at 1900px a two-action project filled 2 of 4 tracks —
+  // so it is one flat grid now and the row carries the project itself (#754). The information
+  // has to survive the layout change; that is what this pins.
   vi.mocked(api.orchestrator).mockResolvedValue({
     config: config(),
     pending: [],
@@ -327,10 +331,12 @@ test("the feed groups by project so 'which project needs me' is one glance", asy
     expired_now: 0,
   });
   renderIt();
-  expect(await screen.findByText("agent-sessions")).toBeInTheDocument();
-  expect(screen.getByText("battlelab-cloud")).toBeInTheDocument();
-  expect(screen.getByText("2 actions")).toBeInTheDocument();
-  expect(screen.getByText("1 action")).toBeInTheDocument();
+  // One label per ROW now, not one heading per group: two rows are agent-sessions.
+  expect(await screen.findAllByText("agent-sessions")).toHaveLength(2);
+  expect(screen.getAllByText("battlelab-cloud")).toHaveLength(1);
+  // …and the group headers with their counts are gone.
+  expect(screen.queryByText("2 actions")).toBeNull();
+  expect(screen.queryByText("1 action")).toBeNull();
 });
 
 test("a failing endpoint degrades to no strip, never a blank Pulse page", async () => {

@@ -42,6 +42,11 @@ const GROUPS: { state: PulseState; label: string }[] = [
 
 type Facet = { key: string; label: string; n: number };
 
+/** Band names, previously the section headings. Now the LED's accessible name. */
+const STATE_LABELS: Record<string, string> = Object.fromEntries(
+  GROUPS.map((g) => [g.state, g.label]),
+);
+
 /** Canonical identity of a card's project — the id, which is unique, with the name only as a
  *  fallback for a card whose project ref predates ids. Never the name alone: `/work/a/app` and
  *  `/work/b/app` are two projects that share one name. */
@@ -89,10 +94,18 @@ function Card({
     <li className={styles.card}>
       <HudFrame />
       <div className={styles.cardHead}>
+        {/* With the four section headings gone (#754) the LED is the only thing left carrying
+            the band, so it has to carry it for a screen reader too — colour alone was fine
+            while `Needs you` was a heading above the card and is not fine now. */}
         <span
           className={`${styles.led} ${styles[`led_${card.state}`]}`}
-          role={card.live ? "status" : undefined}
-          aria-label={card.live ? "agent working" : undefined}
+          role={card.live ? "status" : "img"}
+          title={STATE_LABELS[card.state] ?? card.state}
+          aria-label={
+            card.live
+              ? "agent working"
+              : (STATE_LABELS[card.state] ?? card.state)
+          }
         />
         <span className={styles.cardTitle}>{card.title}</span>
         {intervention && (
@@ -519,25 +532,34 @@ export default function Pulse() {
       : null;
 
   const windowDays = overview?.window_days ?? cfg?.window_days ?? 3;
-  const groups = useMemo(() => {
+  // ONE list, not four sections (#754). The page used to render `Needs you` / `In flight` /
+  // `Recently active` / `Idle` as separate blocks, each with its own heading and its own grid —
+  // so every band broke the flow and left a partial row, which at 1900px is most of the wasted
+  // width the issue is about. The band is already legible per card (the LED colour, the ⚠
+  // marker, and now an explicit label), and the filter chips carry the counts, so the section
+  // headings were paying for themselves in whitespace only.
+  //
+  // The ORDER the sections conveyed is kept exactly: band priority first, then a card carrying
+  // a live action ahead of one without inside that band, then whatever order the scan produced
+  // (recency). Sorting rather than sectioning is what lets the grid fill every row.
+  const cards = useMemo(() => {
     const all = overview?.cards ?? [];
-    const cards = all.filter(
-      (c) =>
-        (!effProject || projectKey(c) === effProject) &&
-        (!effEngine || c.engine === effEngine),
-    );
-    return GROUPS.map((g) => ({
-      ...g,
-      // A card carrying a live action sorts first within its band: merging the queue into the
-      // cards must not lose the priority the queue conveyed by simply existing (#754). Order
-      // is otherwise untouched, so recency still decides among equals.
-      cards: cards
-        .filter((c) => c.state === g.state)
-        .slice()
-        .sort(
-          (a, b) => Number(!!b.pending_action) - Number(!!a.pending_action),
-        ),
-    })).filter((g) => g.cards.length > 0);
+    const rank = new Map(GROUPS.map((g, i) => [g.state, i]));
+    const at = (c: PulseCard) => rank.get(c.state) ?? GROUPS.length;
+    return all
+      .filter(
+        (c) =>
+          (!effProject || projectKey(c) === effProject) &&
+          (!effEngine || c.engine === effEngine),
+      )
+      .map((c, i) => ({ c, i }))
+      .sort(
+        (a, b) =>
+          at(a.c) - at(b.c) ||
+          Number(!!b.c.pending_action) - Number(!!a.c.pending_action) ||
+          a.i - b.i,
+      )
+      .map((x) => x.c);
   }, [overview, effProject, effEngine]);
 
   const hasCards = (overview?.cards.length ?? 0) > 0;
@@ -736,7 +758,7 @@ export default function Pulse() {
             {scanning ? "Scanning…" : "Scan now"}
           </button>
         </div>
-      ) : groups.length === 0 ? (
+      ) : cards.length === 0 ? (
         // There ARE cards; this selection just matches none of them. Without this the list area
         // went blank with no explanation and no obvious way back.
         <div className={styles.empty}>
@@ -757,30 +779,16 @@ export default function Pulse() {
           </button>
         </div>
       ) : (
-        <div className={styles.groups}>
-          {groups.map((g) => (
-            <section
-              key={g.state}
-              className={styles.group}
-              aria-labelledby={`pulse-${g.state}`}
-            >
-              <h2 id={`pulse-${g.state}`} className={styles.groupHead}>
-                {g.label}
-                <span className={styles.count}>{g.cards.length}</span>
-              </h2>
-              <ul className={styles.cards}>
-                {g.cards.map((c) => (
-                  <Card
-                    key={c.id}
-                    card={c}
-                    onResolved={reloadOverview}
-                    onNote={setNote}
-                  />
-                ))}
-              </ul>
-            </section>
+        <ul className={styles.cards} aria-label="Recent sessions">
+          {cards.map((c) => (
+            <Card
+              key={c.id}
+              card={c}
+              onResolved={reloadOverview}
+              onNote={setNote}
+            />
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );

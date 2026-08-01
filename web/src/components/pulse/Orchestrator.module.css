@@ -202,10 +202,19 @@
   font-size: 0.62rem;
   color: var(--text-3);
 }
+/* The feed flows into as many columns as the panel affords (#754). It was `display: block` —
+ * a single column of full-width rows, measured at 1490px on a 1900px viewport with the content
+ * ending around 1000px and `conf` and `Open session` marooned at the right edge. That is the
+ * screenshot this issue opened with: the queue above it was removed, and the feed underneath
+ * inherited the defect verbatim. Same `auto-fill` rule the session cards use, so the track
+ * count follows the container with no breakpoint arithmetic. */
 .list {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
 }
 
 /* --- action rows ---------------------------------------------------------------- */
@@ -214,7 +223,12 @@
   border-left: 2px solid var(--line-strong);
   background: var(--bg-1);
   padding: 9px 11px;
-  margin-bottom: 8px;
+  /* The grid `gap` spaces these now; a margin here would double it. */
+  display: flex;
+  flex-direction: column;
+  /* As a grid item, let the row shrink below its content's min-content so a long title cannot
+   * force the track — and the panel — wider than the viewport (#494's rule, same reason). */
+  min-width: 0;
 }
 .toneDegraded {
   border-left-color: var(--status-degraded);
@@ -325,6 +339,16 @@
 }
 
 /* --- footer ----------------------------------------------------------------------- */
+.proj {
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* A long project name must not push `Open session` off the row at 320px. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
 .actFoot {
   display: flex;
   align-items: center;

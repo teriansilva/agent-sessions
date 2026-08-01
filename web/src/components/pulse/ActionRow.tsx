@@ -269,6 +269,12 @@ export function ActionRow({
         </div>
       )}
       <div className={styles.actFoot}>
+        {/* The feed no longer groups by project (#754), so the row has to say which one it is.
+            Suppressed when embedded: a session card already names its project in its own
+            footer, and repeating it there is noise. */}
+        {!embedded && action.project && (
+          <span className={styles.proj}>{action.project}</span>
+        )}
         <span className={styles.state}>{action.state}</span>
         <span className={styles.age}>{relTime(action.ts)}</span>
         <Link className={styles.jump} to={sessionPath(action)}>
@@ -279,5 +285,4 @@ export function ActionRow({
   );
 }
 
-/** The activity feed, grouped by project — so "which of my projects needs me" is answerable
- *  at a glance rather than by scanning a flat list. */
+/** Legacy grouping helper — the feed is one flat grid since #754. */

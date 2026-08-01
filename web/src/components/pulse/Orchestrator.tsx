@@ -1,5 +1,5 @@
 import { Check, Cpu, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HudFrame } from "../hud/HudFrame";
 import { api, ApiError } from "../../lib/api";
@@ -33,7 +33,15 @@ const TIERS: { id: OrchestratorTier; label: string; hint: string }[] = [
 // Fallback only, for a server that predates `delivering_verbs`. It deliberately does NOT
 // include `dispatch`: the actuator cannot render it, so offering Approve guaranteed a 409.
 /** Jump target for an action: the session view at /s/:engine/:uuid. */
-function ByProject({
+/** The activity feed as ONE grid (#754).
+ *
+ * It used to group by project, one `<ul>` per group. In a grid that costs a partial row per
+ * project — measured at 1900px, a two-action project filled 2 of 4 tracks and left the rest
+ * empty, which is the same wasted width the section headings cost the session cards above.
+ * The project moves onto the row instead, so every column is used and the feed still answers
+ * "which project" per item. Order is the server's: newest first.
+ */
+function Feed({
   actions,
   onResolved,
   onNote,
@@ -44,41 +52,18 @@ function ByProject({
   onNote?: (msg: string) => void;
   deliveringVerbs?: Set<string>;
 }) {
-  const groups = useMemo(() => {
-    const m = new Map<string, OrchestratorAction[]>();
-    for (const a of actions) {
-      const k = a.project || "Unfiled";
-      const list = m.get(k);
-      if (list) list.push(a);
-      else m.set(k, [a]);
-    }
-    return [...m.entries()];
-  }, [actions]);
-
   return (
-    <>
-      {groups.map(([project, rows]) => (
-        <div key={project} className={styles.group}>
-          <div className={styles.groupHead}>
-            <b>{project}</b>
-            <span>
-              {rows.length} action{rows.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <ul className={styles.list}>
-            {rows.map((a) => (
-              <ActionRow
-                key={a.id}
-                action={a}
-                onResolved={onResolved}
-                onNote={onNote}
-                deliveringVerbs={deliveringVerbs}
-              />
-            ))}
-          </ul>
-        </div>
+    <ul className={styles.list}>
+      {actions.map((a) => (
+        <ActionRow
+          key={a.id}
+          action={a}
+          onResolved={onResolved}
+          onNote={onNote}
+          deliveringVerbs={deliveringVerbs}
+        />
       ))}
-    </>
+    </ul>
   );
 }
 
@@ -295,9 +280,9 @@ export function Orchestrator({
         <div className={styles.block}>
           <div className={styles.blockHead}>
             <h3>Activity</h3>
-            <span className={styles.sub}>grouped by project</span>
+            <span className={styles.sub}>newest first</span>
           </div>
-          <ByProject
+          <Feed
             actions={feed}
             onResolved={resolve}
             onNote={setNote}

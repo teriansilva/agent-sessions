@@ -366,18 +366,13 @@ test("a settled action loses its controls even when the background refresh fails
 
   // The BAND has to go back too. `_attach_pending` re-banded this card to `needs_you` because
   // of the action; with the action gone it belongs under its own state again, or the session
-  // sits under "Needs you" with nothing pending until a later fetch succeeds — and the fetch
+  // reads as needing you with nothing pending until a later fetch succeeds — and the fetch
   // failing is precisely the case this branch exists for.
-  await expect(
-    page.locator("section", {
-      has: page.getByRole("heading", { name: /needs you/i }),
-    }),
-  ).toHaveCount(0);
-  await expect(
-    page.locator("section", {
-      has: page.getByRole("heading", { name: /^idle/i }),
-    }),
-  ).toContainText("Switch the default model");
+  //
+  // The band used to be a section heading; since #754 it is the card's LED accessible name,
+  // so that is where this asserts it now — same fact, current structure.
+  await expect(page.getByRole("img", { name: "Needs you" })).toHaveCount(0);
+  await expect(page.getByRole("img", { name: "Idle" })).toHaveCount(1);
 });
 
 test("a card that existed only for its action goes away with it", async ({
