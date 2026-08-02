@@ -370,7 +370,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except review.ReviewError as e:
             return JSONResponse({"detail": str(e)}, status_code=502)
         pending, feed = await asyncio.to_thread(_pending_and_feed)
-        return JSONResponse({**report, "pending": pending, "feed": feed})
+        # Carry the health record on the manual path too. `Run now` is what the operator is
+        # told to click to force recovery, so it is exactly the request that clears a degraded
+        # state — and a response that omits the record leaves the warning on screen after the
+        # very pass that fixed it (#772). Read AFTER the `single_flight` block, so `aitasks`
+        # has already written this run's outcome in its `finally`.
+        return JSONResponse({**report, "pending": pending, "feed": feed, **aitasks.snapshot()})
 
     @app.post("/api/pulse/actions/{action_id}/approve")
     async def approve_action(

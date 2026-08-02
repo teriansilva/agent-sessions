@@ -57,6 +57,15 @@ def is_running(kind: str) -> bool:
     return any(r.kind == kind for r in _running.values())
 
 
+ERROR_MAX = 200
+
+
+def _clamp_error(e: BaseException) -> str:
+    """A one-line, bounded rendering of a failure: `ReviewError: endpoint returned HTTP 500`."""
+    msg = " ".join(str(e).split())[:ERROR_MAX]
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 @asynccontextmanager
 async def track(kind: str, detail: str = "", *, exclusive: bool = False):
     """Run the wrapped block as a tracked AI task of ``kind``.
@@ -74,18 +83,36 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False):
     started = time.time()
     _running[token] = _Running(token, kind, detail, started)
     ok = True
+    err: str | None = None
     try:
         yield
-    except BaseException:
+    except BaseException as e:  # noqa: BLE001 — recorded, then re-raised unchanged
         ok = False
+        # WHY it failed, not just that it did. The orchestrator's endpoint went down for 11
+        # hours and the only trace was a journal traceback: the operator saw an empty page and
+        # concluded the feature was broken (#772). A run that failed has to be able to say so.
+        # Clamped, and rendered as plain text by the client — this string is a remote
+        # endpoint's response body, not ours.
+        err = _clamp_error(e)
         raise
     finally:
         _running.pop(token, None)
+        prev = _last.get(kind) or {}
+        finished = time.time()
         _last[kind] = {
-            "finished_at": time.time(),
+            "finished_at": finished,
             "ok": ok,
             "detail": detail,
-            "duration_s": round(time.time() - started, 3),
+            "duration_s": round(finished - started, 3),
+            # None once it has succeeded — a stale error next to `ok: true` reads as a fault
+            # that is still happening.
+            "error": None if ok else err,
+            # A single failure is a blip; a run of them is an outage. The client needs the
+            # count to tell those apart without inventing a rule of its own.
+            "consecutive_failures": 0 if ok else int(prev.get("consecutive_failures") or 0) + 1,
+            # Carried across failures, so "failing since" is answerable at a glance rather
+            # than by digging for the last successful pass.
+            "last_ok": finished if ok else prev.get("last_ok"),
         }
 
 

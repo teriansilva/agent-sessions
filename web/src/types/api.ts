@@ -308,6 +308,25 @@ export interface OrchestratorState_ {
   /** Verbs the actuator can actually render and deliver. Server-owned so the UI cannot offer
    *  Approve on something every delivery would 409 (the client used to keep its own copy). */
   delivering_verbs?: string[];
+  /** Per-kind last-run record from `aitasks.snapshot()`. `orchestrator` is the scheduled pass:
+   *  a run of failures here is the difference between "nothing needs you" and "nothing has
+   *  been looked at since yesterday evening" (#772). */
+  last?: Record<string, AiTaskLast | undefined>;
+}
+
+/** One AI task kind's last run. */
+export interface AiTaskLast {
+  finished_at: number;
+  ok: boolean;
+  detail?: string;
+  duration_s?: number;
+  /** Why the last run failed — a remote endpoint's message, clamped server-side. Rendered as
+   *  plain text, never markup. Null once a run succeeds. */
+  error?: string | null;
+  /** A single failure is a blip; a run of them is an outage. */
+  consecutive_failures?: number;
+  /** Wall-clock (s) of the last SUCCESSFUL run, carried across failures. */
+  last_ok?: number | null;
 }
 
 /** Server-pulled evidence. The model only ever names a `kind`; every byte here comes from the

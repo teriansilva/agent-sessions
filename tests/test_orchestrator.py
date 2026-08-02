@@ -18,6 +18,7 @@ Pinned here, in rough order of how badly it would hurt to get them wrong:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from dataclasses import dataclass
@@ -2006,3 +2007,148 @@ def test_the_window_is_rejected_out_of_bounds_and_survives_a_round_trip():
     prefs.set_orchestrator({"stale_hours": 12})
     assert prefs.get_orchestrator()["stale_hours"] == 12
     assert prefs.public_orchestrator()["stale_hours"] == 12
+
+
+# --- a dead endpoint must not look like a quiet day (#772) -----------------------------------
+
+
+def test_a_failed_task_records_why_and_counts_the_run():
+    """The 11-hour outage: every pass threw, the app said nothing, and the operator concluded
+    the feature was broken. A failed run has to be able to say what happened."""
+
+    async def boom(n):
+        for _ in range(n):
+            with contextlib.suppress(RuntimeError):
+                async with aitasks.track("orchestrator", "auto"):
+                    raise RuntimeError("endpoint returned HTTP 500")
+
+    asyncio.run(boom(1))
+    rec = aitasks.snapshot()["last"]["orchestrator"]
+    assert rec["ok"] is False
+    assert "HTTP 500" in rec["error"]
+    assert rec["consecutive_failures"] == 1
+    # Nothing has ever succeeded, so there is no "failing since" to quote.
+    assert rec["last_ok"] is None
+
+    asyncio.run(boom(2))
+    assert aitasks.snapshot()["last"]["orchestrator"]["consecutive_failures"] == 3
+
+
+def test_a_success_clears_the_error_and_the_count():
+    """A stale error sitting next to `ok: true` reads as a fault that is still happening."""
+
+    async def ok():
+        async with aitasks.track("orchestrator", "auto"):
+            pass
+
+    async def fail():
+        with contextlib.suppress(RuntimeError):
+            async with aitasks.track("orchestrator", "auto"):
+                raise RuntimeError("nope")
+
+    asyncio.run(fail())
+    asyncio.run(ok())
+    rec = aitasks.snapshot()["last"]["orchestrator"]
+    assert rec["ok"] is True
+    assert rec["error"] is None
+    assert rec["consecutive_failures"] == 0
+    assert rec["last_ok"] == rec["finished_at"]
+
+
+def test_the_last_success_survives_later_failures():
+    """ "Failing since" is the useful half. Losing it on the first failure means the operator
+    can only be told THAT it is broken, never for how long."""
+
+    async def ok():
+        async with aitasks.track("orchestrator", "auto"):
+            pass
+
+    async def fail():
+        with contextlib.suppress(RuntimeError):
+            async with aitasks.track("orchestrator", "auto"):
+                raise RuntimeError("down")
+
+    asyncio.run(ok())
+    good = aitasks.snapshot()["last"]["orchestrator"]["finished_at"]
+    asyncio.run(fail())
+    asyncio.run(fail())
+    rec = aitasks.snapshot()["last"]["orchestrator"]
+    assert rec["last_ok"] == good
+    assert rec["consecutive_failures"] == 2
+
+
+def test_the_endpoint_message_is_clamped():
+    """It is a remote server's response body, not ours — bounded before it is stored."""
+
+    async def fail():
+        with contextlib.suppress(RuntimeError):
+            async with aitasks.track("orchestrator", "auto"):
+                raise RuntimeError("x" * 5000)
+
+    asyncio.run(fail())
+    err = aitasks.snapshot()["last"]["orchestrator"]["error"]
+    assert len(err) <= aitasks.ERROR_MAX + len("RuntimeError: ")
+
+
+def test_already_running_is_not_an_endpoint_failure():
+    """`single_flight` refusing a second caller is the guard working, not the endpoint being
+    down — counting it would raise a false outage while a long pass is legitimately running.
+
+    It holds structurally rather than by a special case: `AlreadyRunning` is raised BEFORE the
+    tracked block is entered, so the refused caller never reaches the recording `finally` at
+    all. An `except AlreadyRunning: raise` clause inside `track` looked like the fix and was
+    unreachable — this test passed with it deleted, which is how it was found."""
+
+    async def two():
+        async with aitasks.track("orchestrator", "auto", exclusive=True):
+            with pytest.raises(aitasks.AlreadyRunning):
+                async with aitasks.track("orchestrator", "auto", exclusive=True):
+                    pass
+
+    asyncio.run(two())
+    rec = aitasks.snapshot()["last"]["orchestrator"]
+    assert rec["ok"] is True
+    assert rec["consecutive_failures"] == 0
+
+
+def test_the_route_ships_the_health_record(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The panel reads it off `/api/pulse/orchestrator`; without this it is server-side only."""
+
+    async def fail():
+        with contextlib.suppress(RuntimeError):
+            async with aitasks.track("orchestrator", "auto"):
+                raise RuntimeError("endpoint returned HTTP 500")
+
+    asyncio.run(fail())
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    body = c.get("/api/pulse/orchestrator").json()
+    assert body["last"]["orchestrator"]["ok"] is False
+    assert "HTTP 500" in body["last"]["orchestrator"]["error"]
+
+
+def test_the_manual_pass_response_carries_the_health_record(  # noqa: ARG001
+    auth_cfg, fake_jsonl, configured_ai, monkeypatch
+):
+    """`Run now` is what the operator is told to click to force recovery, so its response is
+    the one that has to be able to CLEAR a degraded state (#772 review)."""
+    now = time.time()
+    uid = "77777777-7777-4777-8777-777777777777"
+    _setup(monkeypatch, [FakeSession("claude", uid, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "x")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport({"assessment": "quiet", "actions": []}),
+    )
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    body = c.post(
+        "/api/pulse/orchestrate",
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    ).json()
+    rec = body["last"]["orchestrator"]
+    assert rec["ok"] is True
+    assert rec["error"] is None
+    assert rec["consecutive_failures"] == 0

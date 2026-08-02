@@ -479,3 +479,27 @@
     min-width: 44px;
   }
 }
+
+/* Configured-but-failing (#772). Amber, not red: the feature is degraded, not destroyed — the
+ * sessions and their history are all still there, only the watching has stopped. Status colour
+ * is load-bearing here, so the icon and the wording carry it too. */
+.degraded {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+  color: var(--text-1);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.degraded svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--status-degraded);
+}
+.degraded a {
+  color: var(--accent);
+}

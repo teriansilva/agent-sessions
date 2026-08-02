@@ -485,3 +485,152 @@ test("an embedded row is not a list item — a Pulse card already is one", async
   );
   expect(container.querySelectorAll("li")).toHaveLength(1);
 });
+
+// --- a dead endpoint must not look like a quiet day (#772) -----------------------------------
+
+function withHealth(last: Record<string, unknown> | undefined) {
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [],
+    feed: [],
+    expired_now: 0,
+    ...(last ? { last } : {}),
+  } as never);
+}
+
+test("a run of failed passes says so, with how long it has been failing", async () => {
+  // The 11-hour outage: every pass threw `ReviewError: endpoint returned HTTP 500`, and this
+  // panel rendered exactly as it does on a quiet day. "Nothing needs you" and "nothing has
+  // been looked at since yesterday evening" have to be distinguishable.
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000,
+      ok: false,
+      error: "ReviewError: endpoint returned HTTP 500",
+      consecutive_failures: 4,
+      last_ok: Date.now() / 1000 - 11 * 3600,
+    },
+  });
+  renderIt();
+  const line = await screen.findByRole("status");
+  expect(line).toHaveTextContent(/can’t reach its AI endpoint/i);
+  expect(line).toHaveTextContent(/HTTP 500/);
+  expect(line).toHaveTextContent(/11 hours ago/i);
+});
+
+test("a single failure stays silent — one blip is not an outage", async () => {
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000,
+      ok: false,
+      error: "ReviewError: endpoint returned HTTP 502",
+      consecutive_failures: 1,
+      last_ok: Date.now() / 1000 - 600,
+    },
+  });
+  renderIt();
+  await screen.findByText(/autonomy/i);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("a healthy last run says nothing at all", async () => {
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000,
+      ok: true,
+      error: null,
+      consecutive_failures: 0,
+      last_ok: Date.now() / 1000,
+    },
+  });
+  renderIt();
+  await screen.findByText(/autonomy/i);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("an older server with no health record renders unchanged", async () => {
+  // `last` is absent from a server that predates this — the panel must not decide that means
+  // "failing" and paint a warning over a perfectly working install.
+  withHealth(undefined);
+  renderIt();
+  await screen.findByText(/autonomy/i);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("the endpoint's message is TEXT, never markup", async () => {
+  // It is a remote server's response body. React escapes it like any other string; this pins
+  // that nobody later reaches for dangerouslySetInnerHTML to make it look nicer.
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000,
+      ok: false,
+      error: "ReviewError: <img src=x onerror=alert(1)>",
+      consecutive_failures: 3,
+      last_ok: Date.now() / 1000 - 3600,
+    },
+  });
+  renderIt();
+  const line = await screen.findByRole("status");
+  expect(line.querySelector("img")).toBeNull();
+  expect(line).toHaveTextContent(/<img src=x onerror=alert\(1\)>/);
+});
+
+test("a successful Run now clears the degraded line it was told to fix", async () => {
+  // The regression Hermes caught. `health` was only ever set by the mount effect, so the pass
+  // the operator ran to FIX the outage left the outage warning on screen until a remount —
+  // and "Run now" is precisely what the guidance says to click. The response carries the
+  // health record now, so the pass that ran is the evidence that clears it.
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000 - 300,
+      ok: false,
+      error: "ReviewError: endpoint returned HTTP 500",
+      consecutive_failures: 5,
+      last_ok: Date.now() / 1000 - 11 * 3600,
+    },
+  });
+  vi.mocked(api.orchestrate).mockResolvedValue({
+    assessment: "",
+    config: config(),
+    pending: [],
+    feed: [],
+    expired_now: 0,
+    last: {
+      orchestrator: {
+        finished_at: Date.now() / 1000,
+        ok: true,
+        error: null,
+        consecutive_failures: 0,
+        last_ok: Date.now() / 1000,
+      },
+    },
+  } as never);
+
+  renderIt();
+  expect(await screen.findByRole("status")).toHaveTextContent(/HTTP 500/);
+
+  await userEvent.click(screen.getByRole("button", { name: /run now/i }));
+
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+});
+
+test("a Run now that also fails leaves the line, with the newer count", async () => {
+  // The other half: a manual pass is health evidence whichever way it goes.
+  withHealth({
+    orchestrator: {
+      finished_at: Date.now() / 1000 - 300,
+      ok: false,
+      error: "ReviewError: endpoint returned HTTP 500",
+      consecutive_failures: 2,
+      last_ok: Date.now() / 1000 - 3600,
+    },
+  });
+  vi.mocked(api.orchestrate).mockRejectedValue(
+    new ApiError(502, "endpoint failure"),
+  );
+  renderIt();
+  expect(await screen.findByRole("status")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /run now/i }));
+  // Still degraded — the mount record stands, because the failed call carried no newer one.
+  await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
+});

@@ -1,15 +1,17 @@
-import { Check, Cpu, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, Cpu, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HudFrame } from "../hud/HudFrame";
 import { api, ApiError } from "../../lib/api";
 import type {
+  AiTaskLast,
   OrchestratorAction,
   OrchestratorConfig,
   OrchestratorTier,
 } from "../../types/api";
 import styles from "./Orchestrator.module.css";
 import { ActionRow } from "./ActionRow";
+import { relTime } from "../../lib/format";
 
 const TIERS: { id: OrchestratorTier; label: string; hint: string }[] = [
   {
@@ -95,6 +97,9 @@ export function Orchestrator({
   const [deliveringVerbs, setDeliveringVerbs] = useState<
     Set<string> | undefined
   >(undefined);
+  // Last run of the scheduled pass. A run of failures here is the difference between
+  // "nothing needs you" and "nothing has been LOOKED AT since yesterday evening" (#772).
+  const [health, setHealth] = useState<AiTaskLast | undefined>(undefined);
   const [running, setRunning] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -114,6 +119,7 @@ export function Orchestrator({
         setDeliveringVerbs(
           s.delivering_verbs ? new Set(s.delivering_verbs) : undefined,
         );
+        setHealth(s.last?.orchestrator);
       })
       .catch(() => undefined)
       .finally(() => live && setLoaded(true));
@@ -173,6 +179,11 @@ export function Orchestrator({
       const s = await api.orchestrate();
       setPending(s.pending);
       setFeed(s.feed);
+      // The pass that just ran IS the newest health evidence. Without this the degraded line
+      // survives the very "Run now" that fixed the endpoint — and "Run now" is what the
+      // operator is told to click to force recovery, so that is the one case it must get
+      // right (#772 review).
+      setHealth(s.last?.orchestrator);
       if (s.assessment) setNote(s.assessment);
       // A pass can propose NEW actions, and those live on the session cards now — this panel
       // says so directly above. Without telling the page, the claim is false until a reload:
@@ -189,6 +200,12 @@ export function Orchestrator({
       setRunning(false);
     }
   }, [running, onActionsChanged]);
+
+  // Two failures, or a first-ever run that failed. `consecutive_failures` is server-owned so
+  // the client is not inventing its own idea of what counts as an outage.
+  const fails = health?.consecutive_failures ?? 0;
+  const degraded = !!health && !health.ok && fails >= 2;
+  const lastOkAgo = health?.last_ok ? relTime(health.last_ok) : "";
 
   if (!loaded || !config) return null;
 
@@ -258,6 +275,23 @@ export function Orchestrator({
         <p className={styles.hint}>
           Needs the AI endpoint — configure it in{" "}
           <Link to="/settings/ai-review">Settings → AI Review</Link>.
+        </p>
+      )}
+      {/* Configured but FAILING is a third state, and it used to render exactly like a quiet
+          day: the endpoint was down for 11 hours, every pass threw, and the page said nothing
+          (#772). Only past a run of failures — one is a blip and must stay silent. The
+          endpoint's own message is a remote response body, so it renders as plain text. */}
+      {degraded && (
+        <p className={styles.degraded} role="status">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>
+            The orchestrator can’t reach its AI endpoint
+            {lastOkAgo
+              ? ` — last successful pass ${lastOkAgo}`
+              : " — no pass has succeeded yet"}
+            .{health?.error ? ` ${health.error}` : ""}{" "}
+            <Link to="/settings/ai-review">Check Settings → AI Review</Link>.
+          </span>
         </p>
       )}
       {note && <p className={styles.note}>{note}</p>}
