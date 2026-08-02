@@ -232,6 +232,10 @@ export type EvidenceKind = "screen" | "transcript_tail" | "recap" | "none";
 
 export interface OrchestratorAction {
   id: string;
+  /** Feed rows only (#774): how many actions this row stands for. The orchestrator makes a
+   *  fresh action per session per pass, so the feed collapses to one row per session and this
+   *  says what was folded in. 1 when nothing was. */
+  repeats?: number;
   state: OrchestratorState;
   ts: number;
   expires_at?: number;

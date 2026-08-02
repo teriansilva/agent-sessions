@@ -335,8 +335,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         live = orchestrator_ledger.live_actions()
         pending = [r for r in live if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES]
         pending_ids = {r.get("id") for r in pending}
-        feed = [r for r in orchestrator_ledger.feed(FEED_LIMIT) if r.get("id") not in pending_ids]
-        return pending, feed
+        # ONE row per session (#774) — see `orchestrator_ledger.feed_by_session`, which
+        # collapses across the COMPLETE action set so `FEED_LIMIT` bounds sessions rather than
+        # actions. Excluding the pending ids there rather than after keeps the pending/feed
+        # disjointness contract: a pending action must never become somebody's visible latest.
+        return pending, orchestrator_ledger.feed_by_session(FEED_LIMIT, exclude=set(pending_ids))
 
     @app.post("/api/pulse/orchestrate")
     async def run_orchestrator(

@@ -276,6 +276,16 @@ export function ActionRow({
           <span className={styles.proj}>{action.project}</span>
         )}
         <span className={styles.state}>{action.state}</span>
+        {/* The feed is one row per session (#774). Say what was folded in, so a collapsed row
+            is visibly a summary rather than looking like the only thing that happened. */}
+        {(action.repeats ?? 1) > 1 && (
+          <span
+            className={styles.repeats}
+            title={`${action.repeats} actions on this session`}
+          >
+            ×{action.repeats}
+          </span>
+        )}
         <span className={styles.age}>{relTime(action.ts)}</span>
         <Link className={styles.jump} to={sessionPath(action)}>
           Open session

@@ -2152,3 +2152,164 @@ def test_the_manual_pass_response_carries_the_health_record(  # noqa: ARG001
     assert rec["ok"] is True
     assert rec["error"] is None
     assert rec["consecutive_failures"] == 0
+
+
+# --- the feed shows one row per session (#774) ------------------------------------------------
+
+
+def _feed_of(c):
+    return c.get("/api/pulse/orchestrator").json()["feed"]
+
+
+def test_the_feed_collapses_repeats_of_one_session(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Measured at 74% duplicate rows: 100 rendered, 26 distinct sessions, one appearing 11
+    times. The orchestrator makes a fresh action per session per pass, so an idle session
+    accumulates a row per pass forever."""
+    sid = "claude:aaa"
+    for i, verb in enumerate(("observe", "escalate", "observe")):
+        ledger.append(
+            {
+                "id": f"a{i}",
+                "state": "observed",
+                "verb": verb,
+                "session_id": sid,
+                "title": f"pass {i}",
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    feed = _feed_of(c)
+
+    assert len(feed) == 1, feed
+    row = feed[0]
+    assert row["repeats"] == 3
+    # The NEWEST action's fields survive — the row is the session's latest state.
+    assert row["title"] == "pass 2"
+    assert row["id"] == "a2"
+
+
+def test_a_session_with_one_action_says_repeats_one(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The client shows the count only above 1, so the field must always be present and honest
+    rather than absent-meaning-one."""
+    ledger.append({"id": "a0", "state": "observed", "verb": "observe", "session_id": "claude:aaa"})
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert _feed_of(c)[0]["repeats"] == 1
+
+
+def test_collapsing_keeps_sessions_apart_and_newest_first(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    for i, sid in enumerate(("claude:aaa", "codex:bbb", "claude:aaa", "gemini:ccc")):
+        ledger.append(
+            {
+                "id": f"a{i}",
+                "state": "observed",
+                "verb": "observe",
+                "session_id": sid,
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    feed = _feed_of(c)
+    assert [r["session_id"] for r in feed] == ["gemini:ccc", "claude:aaa", "codex:bbb"]
+    assert [r["repeats"] for r in feed] == [1, 2, 1]
+
+
+def test_a_pending_action_is_still_excluded_from_the_feed(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`pending` and `feed` are disjoint by contract — collapsing must not smuggle a pending
+    action back in as somebody's 'latest'."""
+    sid = "claude:aaa"
+    ledger.append(
+        {"id": "old", "state": "observed", "verb": "observe", "session_id": sid, "ts": 1000}
+    )
+    ledger.append(
+        {"id": "live", "state": "proposed", "verb": "continue", "session_id": sid, "ts": 2000}
+    )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    body = c.get("/api/pulse/orchestrator").json()
+    assert [r["id"] for r in body["pending"]] == ["live"]
+    assert [r["id"] for r in body["feed"]] == ["old"]
+    assert body["feed"][0]["repeats"] == 1
+
+
+def test_a_row_with_no_session_id_stands_alone(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Keying them all to "" would merge unrelated actions into a single row."""
+    for i in range(3):
+        ledger.append({"id": f"a{i}", "state": "observed", "verb": "observe", "ts": 1000 + i})
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    feed = _feed_of(c)
+    assert len(feed) == 3
+    assert all(r["repeats"] == 1 for r in feed)
+
+
+def test_a_busy_session_cannot_push_older_sessions_out_of_the_feed(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """The regression Hermes caught: collapsing a SLICE is not collapsing.
+
+    A pre-cap on the raw read makes `FEED_LIMIT` an action cap wearing a session cap's name.
+    With one session busy enough to fill the window, older sessions vanish entirely and the
+    count under-reports. Reproduced at 801 actions for one session plus one older session:
+    the older one disappeared and the busy one claimed `repeats: 800`, not 801.
+
+    Bounding the input costs nothing anyway — `latest_by_id` already reads the whole ledger
+    before anything is sliced, so a pre-cap only truncates correctness.
+    """
+    ledger.append(
+        {
+            "id": "old",
+            "state": "observed",
+            "verb": "observe",
+            "session_id": "codex:older",
+            "ts": 1,
+        }
+    )
+    for i in range(801):
+        ledger.append(
+            {
+                "id": f"hot{i}",
+                "state": "observed",
+                "verb": "observe",
+                "session_id": "claude:hot",
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    feed = c.get("/api/pulse/orchestrator").json()["feed"]
+
+    by_sid = {r["session_id"]: r for r in feed}
+    assert "codex:older" in by_sid, "a busy session buried an older one"
+    assert by_sid["claude:hot"]["repeats"] == 801
+    assert by_sid["claude:hot"]["id"] == "hot800"  # still the newest action
+
+
+def test_the_limit_counts_sessions_not_actions(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`FEED_LIMIT` rows must be `FEED_LIMIT` distinct sessions of history."""
+    from agent_sessions import orchestrator_ledger as led
+
+    for s in range(5):
+        for i in range(4):
+            led.append(
+                {
+                    "id": f"s{s}-{i}",
+                    "state": "observed",
+                    "verb": "observe",
+                    "session_id": f"claude:s{s}",
+                    "ts": 1000 + s * 10 + i,
+                }
+            )
+    rows = led.feed_by_session(3)
+    assert len(rows) == 3
+    assert [r["repeats"] for r in rows] == [4, 4, 4]
+    # …and the three kept are the three NEWEST sessions.
+    assert [r["session_id"] for r in rows] == ["claude:s4", "claude:s3", "claude:s2"]

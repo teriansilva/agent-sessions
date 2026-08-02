@@ -349,6 +349,11 @@
   white-space: nowrap;
   max-width: 40%;
 }
+.repeats {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  color: var(--text-2);
+}
 .actFoot {
   display: flex;
   align-items: center;

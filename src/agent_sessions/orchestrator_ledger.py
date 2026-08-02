@@ -252,6 +252,47 @@ def live_actions(path: Path | None = None) -> list[dict]:
     return rows
 
 
+def feed_by_session(
+    limit: int = 100,
+    path: Path | None = None,
+    *,
+    exclude: set[str] | None = None,
+) -> list[dict]:
+    """The activity feed as ONE row per session, newest first, bounded to ``limit`` SESSIONS.
+
+    The orchestrator creates a fresh action for a session on every pass, so an idle session
+    accumulates an action per pass forever — measured on the live ledger, the 100 rows the feed
+    rendered carried only 26 distinct sessions, one of them 11 times (#774).
+
+    Collapsing has to happen across the **complete** action set, not a slice of it: bound the
+    input first and one busy session's recent actions push older sessions out entirely and
+    under-report the count. That costs nothing, because ``latest_by_id`` already reads the whole
+    ledger before anything is sliced — a pre-cap only truncates correctness.
+
+    ``exclude`` drops action ids the caller renders elsewhere (the pending set), applied before
+    the collapse so a hidden action can never become somebody's visible "latest".
+
+    Each row is the session's newest action plus ``repeats`` — how many it stands for, so a
+    collapsed row reads as a summary rather than as the only thing that happened.
+    """
+    rows = list(latest_by_id(path).values())
+    rows.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    skip = exclude or set()
+    collapsed: dict[str, dict] = {}
+    for r in rows:
+        if r.get("id") in skip:
+            continue
+        # No session id means no identity to collapse ON — keying those to "" would merge
+        # unrelated actions into a single row, so they fall back to their own unique id.
+        sid = str(r.get("session_id") or "") or f"\x00{r.get('id')}"
+        prior = collapsed.get(sid)
+        if prior is None:
+            collapsed[sid] = {**r, "repeats": 1}  # newest-first, so the first seen IS the latest
+        else:
+            prior["repeats"] += 1
+    return list(collapsed.values())[: max(0, limit)]
+
+
 def feed(limit: int = 100, path: Path | None = None) -> list[dict]:
     """The activity feed: every action's current state, newest first, bounded."""
     rows = list(latest_by_id(path).values())

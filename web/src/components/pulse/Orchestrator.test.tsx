@@ -634,3 +634,18 @@ test("a Run now that also fails leaves the line, with the newer count", async ()
   // Still degraded — the mount record stands, because the failed call carried no newer one.
   await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
 });
+
+test("a collapsed feed row says how many actions it stands for", async () => {
+  // One row per session (#774) — a row that folded in 10 others must not look like the only
+  // thing that happened on that session.
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [],
+    feed: [action({ id: "a1", repeats: 11 }), action({ id: "a2", repeats: 1 })],
+    expired_now: 0,
+  } as never);
+  renderIt();
+  expect(await screen.findByText("×11")).toBeInTheDocument();
+  // …and a row standing only for itself says nothing.
+  expect(screen.queryByText("×1")).toBeNull();
+});
