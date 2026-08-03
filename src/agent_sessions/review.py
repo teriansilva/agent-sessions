@@ -704,6 +704,12 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     }
 
 
+# Statuses that mean "this server does not accept `response_format`" rather than "your request
+# was bad". 400 and 422 are what an endpoint without JSON mode returns for an unknown field;
+# 501 is the explicit "not implemented".
+_JSON_MODE_REFUSED: frozenset[int] = frozenset({400, 422, 501})
+
+
 async def complete_json(messages: list[dict], *, model: str | None = None) -> dict:
     """One bounded, non-streaming chat completion against the configured AI-review endpoint,
     returning the parsed JSON object (#424 Phase 6 — reused by the auto-sorter). Reuses the
@@ -715,12 +721,32 @@ async def complete_json(messages: list[dict], *, model: str | None = None) -> di
         "messages": messages,
         "temperature": 0,
         "stream": False,
+        # ASK THE SERVER TO ENFORCE IT. A prompt saying "reply with only a JSON object" is a
+        # request, not a constraint, and a model can simply not comply — `laguna-s-2.1` emitted
+        #     {"assessment": Only one session is flagged...", "actions": [
+        # dropping the opening quote of a string value, at `finish_reason: stop` and 174 tokens,
+        # so not truncation. That failed every orchestrator pass for six hours (#778). The same
+        # call with `response_format` set parses first time, at the same latency.
+        #
+        # Repairing malformed model output here was the alternative and is worse: it means
+        # guessing what the model meant, in the one place whose entire job is refusing to treat
+        # model output as trustworthy.
+        "response_format": {"type": "json_object"},
     }
     try:
         async with _client(request_timeout(cfg)) as client:
             r = await client.post(
                 _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
             )
+            # Not every OpenAI-compatible server implements `response_format`, and one that
+            # does not typically rejects the whole request. Degrade to the unconstrained call
+            # rather than making a working endpoint unusable — the tolerant `_extract_json`
+            # below is still there for exactly that case.
+            if r.status_code in _JSON_MODE_REFUSED:
+                body.pop("response_format", None)
+                r = await client.post(
+                    _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
+                )
     except httpx.HTTPError as e:
         raise ReviewError(f"endpoint unreachable ({type(e).__name__})") from None
     if r.status_code != 200:

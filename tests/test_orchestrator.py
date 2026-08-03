@@ -2313,3 +2313,73 @@ def test_the_limit_counts_sessions_not_actions(auth_cfg, fake_jsonl, monkeypatch
     assert [r["repeats"] for r in rows] == [4, 4, 4]
     # …and the three kept are the three NEWEST sessions.
     assert [r["session_id"] for r in rows] == ["claude:s4", "claude:s3", "claude:s2"]
+
+
+# --- the endpoint must ENFORCE json, not be asked nicely (#778) --------------------------------
+
+
+def _capture(reply: str, seen: list):
+    """A transport that records each request body and answers with `reply`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": reply}}]})
+
+    return httpx.MockTransport(handler)
+
+
+def test_the_json_request_asks_the_server_to_enforce_it(monkeypatch, configured_ai):  # noqa: ARG001
+    """A prompt saying "reply with only a JSON object" is a request, not a constraint.
+
+    `laguna-s-2.1` answered `{"assessment": Only one session is flagged…", "actions": [` —
+    the opening quote of a string value simply missing, at `finish_reason: stop` and 174
+    tokens, so not truncation. Every orchestrator pass failed for six hours. The identical
+    call with `response_format` set parses first time.
+    """
+    seen: list = []
+    monkeypatch.setattr(review, "_TRANSPORT", _capture('{"ok": true}', seen))
+    assert asyncio.run(review.complete_json([{"role": "user", "content": "x"}])) == {"ok": True}
+    assert seen[0]["response_format"] == {"type": "json_object"}
+
+
+def test_an_endpoint_without_json_mode_still_works(monkeypatch, configured_ai):  # noqa: ARG001
+    """Not every OpenAI-compatible server implements `response_format`, and one that does not
+    rejects the whole request. Refusing to work with such an endpoint would trade one broken
+    setup for another, so the call degrades to the unconstrained form."""
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        b = json.loads(request.content)
+        seen.append(b)
+        if "response_format" in b:
+            return httpx.Response(400, json={"error": "unknown field response_format"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": true}'}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    assert asyncio.run(review.complete_json([{"role": "user", "content": "x"}])) == {"ok": True}
+    assert len(seen) == 2, "should retry once, without the constraint"
+    assert "response_format" in seen[0]
+    assert "response_format" not in seen[1]
+
+
+def test_a_real_endpoint_error_is_not_retried_as_a_json_mode_refusal(monkeypatch, configured_ai):  # noqa: ARG001
+    """A 500 is the endpoint being broken, not it lacking JSON mode — retrying without the
+    constraint would double every failing call and hide the real status."""
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(500, json={"error": "boom"})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    with pytest.raises(review.ReviewError, match="HTTP 500"):
+        asyncio.run(review.complete_json([{"role": "user", "content": "x"}]))
+    assert len(seen) == 1
+
+
+def test_tolerant_extraction_survives_for_the_degraded_path(monkeypatch, configured_ai):  # noqa: ARG001
+    """The fallback endpoint has no constraint, so prose-wrapped JSON must still parse — the
+    tolerant extractor is what makes degrading safe."""
+    seen: list = []
+    monkeypatch.setattr(review, "_TRANSPORT", _capture('Sure!\n```json\n{"ok": true}\n```', seen))
+    assert asyncio.run(review.complete_json([{"role": "user", "content": "x"}])) == {"ok": True}
