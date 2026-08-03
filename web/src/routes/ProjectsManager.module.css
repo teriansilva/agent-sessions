@@ -1,0 +1,282 @@
+/* Projects manager (#361 Phase 3) — entity rows inside the standard Settings section
+ * card (the card frame itself comes from Settings.module.css). Same HUD language as the
+ * rest of Settings: square corners, mono meta, accent on interaction. */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: var(--bg);
+}
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.dotEmpty {
+  border: 1px dashed var(--border);
+}
+.name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+.iconBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.iconBtn:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--accent);
+}
+.iconBtn:focus-visible {
+  outline: none;
+  color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* The starred (default) project (#615): the only persistently-lit icon in the row, so it reads
+   as state rather than as another action. Hover/focus already paint --accent, so this just makes
+   the resting state match. */
+.starOn {
+  color: var(--accent);
+}
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.editForm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.editInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.editInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+}
+.swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Default launch folder row (#448): label/path + Change button. */
+.defaultRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.defaultLabel code {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+.folderRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px 1px 7px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.chipX {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 1px;
+  color: inherit;
+  cursor: pointer;
+}
+.chipX:hover:not(:disabled) {
+  color: var(--accent);
+}
+.adopt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.adopt select,
+.newRow select {
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.smallBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--surface-2, #1c1c1c);
+  color: var(--text, #ddd);
+  border: 1px solid var(--border, #333);
+  border-radius: 0;
+}
+.smallBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.smallBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.newRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.newInput {
+  flex: 1 1 140px;
+  min-width: 120px;
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+.newInput::placeholder {
+  color: var(--text-muted);
+}
+/* Bulk archive/unarchive report (#361 Phase 2 endpoints): counts line, the failed
+ * members with their reasons, and the blind Retry. */
+.report {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-2, #14102e);
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.reportLine {
+  margin: 0;
+}
+.failedList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--warn, #ffb454);
+}
+.failedList code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.archivedBox {
+  margin-top: 14px;
+}
+.archivedBox summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.archivedList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.archivedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
