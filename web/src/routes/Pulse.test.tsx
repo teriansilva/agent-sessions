@@ -6,6 +6,7 @@ import { ConfigCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type {
   AppConfig,
+  OrchestratorAction,
   PulseCard,
   PulseConfig,
   PulseOverview,
@@ -48,6 +49,28 @@ function card(
     synthesis: null,
     ...over,
   };
+}
+
+/** An operator-pending ledger action as the server attaches it (#781). `rationale` is
+ *  overridable because the empty one is a real persisted shape, not a hypothetical:
+ *  `str(item.get("rationale") or "")` accepts it. */
+function pact(over: Partial<OrchestratorAction> = {}): OrchestratorAction {
+  return {
+    id: "a1",
+    state: "escalated",
+    ts: Math.floor(Date.now() / 1000),
+    tier: "yolo",
+    session_id: "claude:c1",
+    engine: "claude",
+    title: "Docs pass",
+    project: "infra",
+    project_id: "p1",
+    verb: "escalate",
+    confidence: 0.9,
+    rationale: "Blocked on a choice only you can make.",
+    evidence: "none",
+    ...over,
+  } as OrchestratorAction;
 }
 
 function overview(over: Partial<PulseOverview> = {}): PulseOverview {
@@ -430,4 +453,288 @@ test("a card with a live action shows its controls, not a history line (#777)", 
     await screen.findByRole("button", { name: /^approve$/i }),
   ).toBeInTheDocument();
   expect(screen.queryByText("expired")).toBeNull();
+});
+
+// --- #781: one situation statement per card, never four and never zero -------------------
+
+test("an escalation speaks for the card: no ⚠, no review reason, one session link (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          intervention_required: true,
+          intervention_reason: "Agent blocked on user choice between 3 options",
+          pending_action: pact(),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  // The orchestrator's rationale is the one that survives — it is the newer read and the one
+  // with a decision attached.
+  expect(
+    await screen.findByText(/blocked on a choice only you can make/i),
+  ).toBeInTheDocument();
+  // The review's reason said the same thing; it no longer repeats it.
+  expect(screen.queryByText(/between 3 options/i)).toBeNull();
+  // …and neither does its summary. ONE prose line: the rationale.
+  expect(screen.queryByText("did a thing")).toBeNull();
+  // …and neither does the ⚠, whose accessible name carried that same reason.
+  expect(
+    screen.queryByRole("img", { name: /intervention required/i }),
+  ).toBeNull();
+
+  // Destination-specific, not a bare count: exactly one anchor to THIS card's session, named.
+  const toSession = screen
+    .getAllByRole("link")
+    .filter((a) => a.getAttribute("href") === "/s/claude/c1");
+  expect(toSession).toHaveLength(1);
+  expect(toSession[0]).toHaveAccessibleName(/jump into docs pass/i);
+  expect(screen.queryByRole("link", { name: /open session/i })).toBeNull();
+
+  // Accessibility: with the glyph gone, the situation is still exposed non-visually — the LED
+  // still names the band and the action still renders its verb/state/rationale as text.
+  expect(screen.getByRole("img", { name: /needs you/i })).toBeInTheDocument();
+  expect(screen.getByText("ESCALATE")).toBeInTheDocument();
+  expect(screen.getByText("escalated")).toBeInTheDocument();
+});
+
+test("suppression keys on the action, not on it being an escalation — proposed too (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          intervention_required: true,
+          intervention_reason: "Agent blocked on user choice between 3 options",
+          pending_action: pact({
+            state: "proposed",
+            verb: "continue",
+            rationale: "Stopped mid-edit; safe to carry on.",
+          }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(await screen.findByText(/stopped mid-edit/i)).toBeInTheDocument();
+  expect(screen.queryByText(/between 3 options/i)).toBeNull();
+  expect(
+    screen.queryByRole("img", { name: /intervention required/i }),
+  ).toBeNull();
+});
+
+test("a BLANK rationale keeps the review's reason — a card never says nothing (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          intervention_required: true,
+          intervention_reason: "Agent blocked on user choice between 3 options",
+          // What `str(item.get("rationale") or "")` persists for omitted/null model output.
+          pending_action: pact({ rationale: "" }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  // `ActionRow` renders no rationale line for this, so suppressing the review's reason would
+  // leave the card with controls and zero explanatory sentences.
+  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("img", { name: /intervention required/i }),
+  ).toBeInTheDocument();
+});
+
+test("with no action to speak, the review's summary is still the card's line (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "recently_active",
+          ai_summary: "did a thing",
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(await screen.findByText("did a thing")).toBeInTheDocument();
+});
+
+test("a BLANK rationale keeps the review's summary too (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          ai_summary: "did a thing",
+          pending_action: pact({ rationale: "" }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  // Nothing from the action to say, so the card must not be left mute.
+  expect(await screen.findByText("did a thing")).toBeInTheDocument();
+});
+
+test("no pending action at all — the ⚠ / reason fallback is untouched (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          intervention_required: true,
+          intervention_reason: "Agent blocked on user choice between 3 options",
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("img", { name: /intervention required/i }),
+  ).toBeInTheDocument();
+});
+
+test("a `claimed` action is not operator-pending, so the fallback still renders (#781)", async () => {
+  // `claimed` is excluded from OPERATOR_PENDING_STATES server-side — the bytes are already
+  // going out — so `_attach_pending` sends NO pending_action for it. The card must key off the
+  // field's absence rather than re-deriving which states count; this is that regression guard.
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          intervention_required: true,
+          intervention_reason: "Agent blocked on user choice between 3 options",
+          last_action: pact({ state: "claimed", verb: "continue" }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("img", { name: /intervention required/i }),
+  ).toBeInTheDocument();
+});
+
+test("a pending action without an intervention flag renders as before (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          pending_action: pact({ state: "proposed", verb: "continue" }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(
+    await screen.findByText(/blocked on a choice only you can make/i),
+  ).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", { name: /intervention required/i }),
+  ).toBeNull();
+});
+
+test("the action is not a box inside the card: no inner frame, one footer (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          // A `project`-kind entity so the footer renders the NAME (a folder renders shortCwd),
+          // which is what the row used to repeat.
+          project: { kind: "project", id: "p1", name: "alpha" },
+          pending_action: pact({ evidence: "recap", project: "alpha" }),
+        }),
+      ],
+    }),
+  );
+  const { container } = render(
+    <MemoryRouter>
+      <ConfigCtx.Provider
+        value={
+          {
+            csrf: "t",
+            new_session_engines: [],
+            terminal_backend: "ws",
+          } as AppConfig
+        }
+      >
+        <Pulse />
+      </ConfigCtx.Provider>
+    </MemoryRouter>,
+  );
+  await screen.findByText(/blocked on a choice only you can make/i);
+
+  // The row drops its standalone box chrome when it lives on a card.
+  const row = container.querySelector('[class*="actEmbedded"]');
+  expect(row).not.toBeNull();
+
+  // ONE footer for the session: the action's own is gone, so its state appears exactly once
+  // (folded into the card's footer) and there is no second age or second link.
+  expect(screen.getAllByText(/^escalated$/i)).toHaveLength(1);
+  expect(screen.queryByRole("link", { name: /open session/i })).toBeNull();
+  expect(
+    screen
+      .getAllByRole("link")
+      .filter((a) => a.getAttribute("href") === "/s/claude/c1"),
+  ).toHaveLength(1);
+  // The project is named once, by the card — the row no longer repeats it.
+  expect(screen.getAllByText("alpha")).toHaveLength(1);
+
+  // The decision control rides the evidence disclosure's row rather than a line of its own.
+  const recap = screen.getByRole("button", { name: /show recap/i });
+  const dismiss = screen.getByRole("button", {
+    name: /dismiss this escalation/i,
+  });
+  expect(recap.parentElement).toBe(dismiss.parentElement?.parentElement);
+});
+
+test("with no evidence to disclose the controls still render (#781)", async () => {
+  // `evidence: "none"` renders no disclosure, so there is no head row for the controls to ride.
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          pending_action: pact({ evidence: "none" }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(
+    await screen.findByRole("button", { name: /dismiss this escalation/i }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /show recap/i })).toBeNull();
 });

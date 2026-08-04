@@ -89,7 +89,33 @@ function Card({
   onNote?: (msg: string) => void;
 }) {
   const summary = card.synthesis || card.ai_summary || "";
-  const intervention = card.intervention_required;
+  // ONE prose line per card (#781). Three passes describe the same session: the AI review writes
+  // `summary` and `intervention_required`/`intervention_reason`, and the orchestrator reads that
+  // verdict as an INPUT (`orchestrator.py` — `"needs_user": bool(card.get(…))`) before writing
+  // its own rationale. Rendered together the card showed the pipeline's input beside its output
+  // beside a summary of the same transcript — measured on one live card:
+  //
+  //   title      "Awaiting user decision on official acc…"
+  //   summary    "Claude Code session started in <project>, awaiting user's first command…"
+  //   rationale  "Fresh session awaiting user decision on official account provisioning…"
+  //   reason     "Agent blocked on user choice between 3 options…"
+  //
+  // (project name elided — `scripts/check-public-snapshot` denies internal names in the
+  //  published mirror, and a leak there freezes the mirror on a stale version.)
+  //
+  // Four sentences to learn one thing. When the orchestrator has something to say, its rationale
+  // IS the line — it is the newest read and the only one with a decision attached — so the
+  // review's summary and reason both stand down and the title keeps the card's identity.
+  //
+  // The predicate is the rationale, not the action: `str(item.get("rationale") or "")` accepts
+  // an empty one, and `ActionRow` renders that line only when truthy — so keying on the action
+  // alone would leave a card with controls and NO explanation, which is worse than the
+  // duplication this removes. Blank rationale ⇒ the review's reason and ⚠ stay exactly as they
+  // were. Deliberately NOT re-deriving `OPERATOR_PENDING_STATES` here: `_attach_pending` has
+  // already filtered it server-side, so `pending_action` being present IS that proof, and
+  // `claimed` (excluded there) correctly keeps the fallback.
+  const speaks = !!card.pending_action?.rationale;
+  const intervention = card.intervention_required && !speaks;
   return (
     <li className={styles.card}>
       <HudFrame />
@@ -122,7 +148,7 @@ function Card({
           {engineBadge(card.engine)}
         </span>
       </div>
-      {summary && <p className={styles.summary}>{summary}</p>}
+      {summary && !speaks && <p className={styles.summary}>{summary}</p>}
       {why && <p className={styles.why}>{`// ${why}`}</p>}
       {/* The decision controls live ON the card (#754). The queue used to be a second list
           beside these cards and was a strict subset of them — every action's session already
@@ -174,6 +200,18 @@ function Card({
         <p className={styles.reason}>{card.intervention_reason}</p>
       )}
       <div className={styles.cardFoot}>
+        {/* The action's state, folded in from the row's own footer (#781). That footer also
+            carried a second clock and a second link to this same session; the card already
+            answers where, when and how to get in, so only the state had nowhere else to go.
+            Folding it here costs no vertical space — this row already existed. */}
+        {card.pending_action && (
+          <>
+            <span className={styles.actState}>{card.pending_action.state}</span>
+            <span className={styles.sep} aria-hidden="true">
+              ·
+            </span>
+          </>
+        )}
         <span className={styles.proj} title={card.cwd}>
           {card.project.kind === "project"
             ? card.project.name

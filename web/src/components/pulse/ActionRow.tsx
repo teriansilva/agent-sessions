@@ -24,9 +24,14 @@ function toneOf(a: OrchestratorAction): string {
 function EvidenceBlock({
   sessionId,
   kind,
+  trailing,
 }: {
   sessionId: string;
   kind: EvidenceKind;
+  /** Rendered beside the disclosure's HEAD, not below it (#781) — the decision controls share
+   *  that row so they cost no extra line. Kept out of the body's way on purpose: an expanded
+   *  recap needs the full column width. */
+  trailing?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | null>(null);
@@ -81,21 +86,24 @@ function EvidenceBlock({
         : "TRANSCRIPT";
   return (
     <div className={styles.evd}>
-      <button
-        type="button"
-        className={styles.evdHead}
-        onClick={toggle}
-        aria-expanded={open}
-        aria-label={`${open ? "Hide" : "Show"} ${label.toLowerCase()} for this session`}
-      >
-        <MonitorPlay size={11} aria-hidden="true" />
-        {label}
-        <ChevronDown
-          size={11}
-          className={open ? styles.chevOpen : undefined}
-          aria-hidden="true"
-        />
-      </button>
+      <div className={styles.evdHeadRow}>
+        <button
+          type="button"
+          className={styles.evdHead}
+          onClick={toggle}
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Show"} ${label.toLowerCase()} for this session`}
+        >
+          <MonitorPlay size={11} aria-hidden="true" />
+          {label}
+          <ChevronDown
+            size={11}
+            className={open ? styles.chevOpen : undefined}
+            aria-hidden="true"
+          />
+        </button>
+        {trailing}
+      </div>
       {open && (
         <div className={styles.evdBody}>
           {loading && (
@@ -200,8 +208,48 @@ export function ActionRow({
   // list, so the element depends on where the row is rendered, not on how it looks.
   const Root = embedded ? "div" : "li";
 
+  // The decision controls. Embedded they ride the evidence disclosure's head row so they cost no
+  // extra line (#781); standalone they keep their own row under the evidence block.
+  const controls = (approvable || rejectable) && (
+    <div className={styles.btns}>
+      {approvable && (
+        <button
+          type="button"
+          className={styles.approve}
+          disabled={!!busy}
+          onClick={() => void act("approve")}
+        >
+          <Check size={13} aria-hidden="true" />
+          {busy === "approve" ? "Sending…" : "Approve"}
+        </button>
+      )}
+      {rejectable && (
+        <button
+          type="button"
+          className={styles.reject}
+          disabled={!!busy}
+          // Keyed off STATE, not off whether Approve happens to be offered: a proposed
+          // action with a non-deliverable verb is not an escalation, and calling it one
+          // mislabels the control for a screen reader.
+          aria-label={
+            action.state === "escalated"
+              ? "Dismiss this escalation"
+              : "Reject this action"
+          }
+          onClick={() => void act("reject")}
+        >
+          <X size={13} aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
+  // `none` renders no disclosure at all, so there would be no head row to ride.
+  const inlineControls = embedded && action.evidence !== "none";
+
   return (
-    <Root className={`${styles.act} ${toneOf(action)}`}>
+    <Root
+      className={`${styles.act} ${toneOf(action)} ${embedded ? styles.actEmbedded : ""}`}
+    >
       <div className={styles.actTop}>
         <span
           className={`${styles.verb} ${action.verb === "escalate" ? styles.verbEsc : ""}`}
@@ -233,64 +281,42 @@ export function ActionRow({
       {action.answer && <p className={styles.why}>{`“${action.answer}”`}</p>}
       {/* Evidence sits ABOVE the buttons on purpose: the operator should be able to see what
           the session is actually showing before they authorise typing into it. */}
-      <EvidenceBlock sessionId={action.session_id} kind={action.evidence} />
+      <EvidenceBlock
+        sessionId={action.session_id}
+        kind={action.evidence}
+        trailing={inlineControls ? controls : undefined}
+      />
       {note && <p className={styles.stale}>{note}</p>}
-      {(approvable || rejectable) && (
-        <div className={styles.btns}>
-          {approvable && (
-            <button
-              type="button"
-              className={styles.approve}
-              disabled={!!busy}
-              onClick={() => void act("approve")}
-            >
-              <Check size={13} aria-hidden="true" />
-              {busy === "approve" ? "Sending…" : "Approve"}
-            </button>
-          )}
-          {rejectable && (
-            <button
-              type="button"
-              className={styles.reject}
-              disabled={!!busy}
-              // Keyed off STATE, not off whether Approve happens to be offered: a proposed
-              // action with a non-deliverable verb is not an escalation, and calling it one
-              // mislabels the control for a screen reader.
-              aria-label={
-                action.state === "escalated"
-                  ? "Dismiss this escalation"
-                  : "Reject this action"
-              }
-              onClick={() => void act("reject")}
-            >
-              <X size={13} aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      )}
-      <div className={styles.actFoot}>
-        {/* The feed no longer groups by project (#754), so the row has to say which one it is.
+      {!inlineControls && controls}
+      {/* Embedded, the card owns the footer (#781). This one repeated the session link the card
+          already had and put a second clock (the action's age) beside the card's own — two
+          footers for one session. The action's `state` is not dropped: the card folds it into
+          its single footer, which already existed, so the merge costs no vertical space. */}
+      {!embedded && (
+        <div className={styles.actFoot}>
+          {/* The feed no longer groups by project (#754), so the row has to say which one it is.
             Suppressed when embedded: a session card already names its project in its own
             footer, and repeating it there is noise. */}
-        {!embedded && action.project && (
-          <span className={styles.proj}>{action.project}</span>
-        )}
-        <span className={styles.state}>{action.state}</span>
-        {/* The feed is one row per session (#774). Say what was folded in, so a collapsed row
+          {action.project && (
+            <span className={styles.proj}>{action.project}</span>
+          )}
+          <span className={styles.state}>{action.state}</span>
+          {/* The feed is one row per session (#774). Say what was folded in, so a collapsed row
             is visibly a summary rather than looking like the only thing that happened. */}
-        {(action.repeats ?? 1) > 1 && (
-          <span
-            className={styles.repeats}
-            title={`${action.repeats} actions on this session`}
-          >
-            ×{action.repeats}
-          </span>
-        )}
-        <span className={styles.age}>{relTime(action.ts)}</span>
-        <Link className={styles.jump} to={sessionPath(action)}>
-          Open session
-        </Link>
-      </div>
+          {(action.repeats ?? 1) > 1 && (
+            <span
+              className={styles.repeats}
+              title={`${action.repeats} actions on this session`}
+            >
+              ×{action.repeats}
+            </span>
+          )}
+          <span className={styles.age}>{relTime(action.ts)}</span>
+          <Link className={styles.jump} to={sessionPath(action)}>
+            Open session
+          </Link>
+        </div>
+      )}
     </Root>
   );
 }

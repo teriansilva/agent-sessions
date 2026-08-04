@@ -285,6 +285,14 @@
 .age {
   font-family: var(--font-mono);
 }
+/* The pending action's state, folded into the card's one footer (#781). */
+.actState {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
 .jump {
   margin-left: auto;
   display: inline-flex;

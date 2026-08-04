@@ -230,8 +230,45 @@
    * force the track — and the panel — wider than the viewport (#494's rule, same reason). */
   min-width: 0;
 }
+/* Embedded in a session card (#781): NO box. The border, left stripe, background and padding
+ * exist because the row used to stand alone in the Activity list, where it had to read as its
+ * own object. Inside a card it already is inside one, so the frame drew a second boundary
+ * around content that belongs to the card — a box in a box, each with its own footer, one
+ * session rendering as two nested things.
+ *
+ * The status colour the left stripe carried is not lost: the LED and the amber verb chip both
+ * still carry it, so `docs/design.md`'s rule holds (status colour load-bearing, never the sole
+ * signal). Spacing comes from the card's own column `gap`. */
+.actEmbedded {
+  border: 0;
+  background: none;
+  padding: 0;
+}
+/* Evidence disclosure + decision controls share one row (#781) — the ✕ on a line of its own was
+ * pure vertical waste. The controls sit beside the RECAP *head*; the disclosure BODY still
+ * renders full width beneath it, which is why they go in the head row rather than wrapping the
+ * whole block. */
+.evdHeadRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.evdHeadRow .evdHead {
+  width: auto;
+}
+.evdHeadRow .btns {
+  margin-top: 0;
+}
 .toneDegraded {
   border-left-color: var(--status-degraded);
+}
+/* The tone stripe is the box's left edge; with no box there is nothing to tint. */
+.actEmbedded.toneDegraded,
+.actEmbedded.toneUp,
+.actEmbedded.toneDown,
+.actEmbedded.toneIdle {
+  border-left-color: transparent;
 }
 .toneUp {
   border-left-color: var(--status-up);
@@ -291,10 +328,13 @@
 }
 
 /* --- evidence -------------------------------------------------------------------- */
+/* The frame belongs to the disclosure's own parts, not to this wrapper (#781). It used to sit
+ * here, which was fine while the wrapper held nothing but the disclosure — but now the decision
+ * controls share the head's row, and a border on the wrapper drew one big box around the button
+ * AND the controls AND the empty space after them. That is the same box-in-a-box defect this
+ * issue is about, one level down. */
 .evd {
   margin-top: 7px;
-  border: 1px solid var(--line);
-  background: var(--bg-0);
 }
 .evdHead {
   display: flex;
@@ -303,9 +343,8 @@
   width: 100%;
   padding: 5px 7px;
   min-height: 30px;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--line);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
   font-family: var(--font-mono);
   font-size: 0.58rem;
   letter-spacing: 0.1em;
@@ -318,8 +357,12 @@
 .chevOpen {
   transform: rotate(180deg);
 }
+/* Stacks under the head as one box: the head keeps its border, the body drops the shared edge. */
 .evdBody {
   padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: var(--bg-0);
 }
 .pre {
   margin: 0;

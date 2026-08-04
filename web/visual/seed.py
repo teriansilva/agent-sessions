@@ -311,6 +311,43 @@ def seed_pulse(home: Path) -> None:
     d.mkdir(parents=True, exist_ok=True)
     (d / "pulse-cache.json").write_text(json.dumps(artifact, indent=2, sort_keys=True))
 
+    # One operator-pending ledger action, on the SAME session as the needs-you card (#781).
+    #
+    # Without this the `/pulse` capture only ever rendered cards with no `pending_action`, which
+    # is the branch #781 leaves untouched — so the snapshots could not show the change at all.
+    # It has to be a real ledger row rather than a `pending_action` baked into the cache above:
+    # `_attach_pending` pops any cached overlay unconditionally and re-reads the ledger, exactly
+    # so a stale cache cannot resurrect decision controls for an action that no longer exists.
+    #
+    # `session_id` is the card's engine-qualified id, which is what the overlay matches on.
+    # `expires_at` is a year out because `_attach_pending` runs `expire_due()` FIRST — a
+    # near-term one would retire the row before the screenshot and silently restore the old
+    # branch. `rationale` is deliberately non-empty: this fixture is the suppressed case, where
+    # the orchestrator speaks and the review's ⚠ / reason stand down.
+    (d / "orchestrator-ledger.jsonl").write_text(
+        json.dumps(
+            {
+                "id": "5eed0000000000000000000000000001",
+                "state": "escalated",
+                "ts": now - 200,
+                "expires_at": now + 365 * 86400,
+                "tier": "yolo",
+                "session_id": "codex:019e2ba1-1590-7003-8e4a-51ab62cec902",
+                "engine": "codex",
+                "title": "Wire up the deploy step",
+                "project": "alpha",
+                "project_id": "/seed/alpha",
+                "last_activity": now - 240,
+                "verb": "escalate",
+                "confidence": 0.62,
+                "rationale": "Below the act threshold — the push target is ambiguous, so this is yours to call.",
+                "evidence": "recap",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
 
 def seed_projects(home: Path) -> None:
     """One project entity adopting the alpha folder (#285): the overview then renders a
