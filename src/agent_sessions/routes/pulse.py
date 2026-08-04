@@ -142,15 +142,22 @@ def _attach_pending(overview: dict) -> dict:
     # So synthesize a card from the action's own identity fields. It is the same information the
     # queue row carried, in the one place the operator now looks.
     #
-    # The same applies to a SETTLED action whose session has no card, and it is not a rare
-    # corner: measured live, 16 sessions were inside the 3-day Pulse window while the feed
-    # reached 100 — so 84 sessions had history and no card. Dropping the Activity block without
-    # carrying those across would not have merged the two lists, it would have deleted one.
-    for sid, a in list(live.items()) + list(history.items()):
+    # LIVE actions only. #777 also synthesized for settled ones, so that removing the Activity
+    # block would not lose the history of sessions outside the Pulse window. It did not lose
+    # it — it turned it into cards, and the page went from 21 sessions to **102 cards**, with a
+    # filter row full of scratch directories because a synthesized card carries whatever
+    # `project` string its action stored (`/tmp/claude-1000/…`) rather than a real project ref.
+    # A wall of 102 boxes is a worse answer than the duplication it replaced (#787).
+    #
+    # The line that matters is not "card or no card", it is **waiting on you or not**: something
+    # awaiting the operator has to be reachable whatever its age, and history does not. So a
+    # settled action rides the card of a session that has one (`last_action`, above) and
+    # otherwise stays in the ledger, where it is bounded by the Pulse window like everything
+    # else on this page.
+    for sid, a in live.items():
         if sid in seen:
             continue
         seen.add(sid)
-        settled = sid not in live
         project = str(a.get("project") or "")
         cards.append(
             {
@@ -163,9 +170,7 @@ def _attach_pending(overview: dict) -> dict:
                     "id": str(a.get("project_id") or ""),
                     "name": project,
                 },
-                # A settled action is history, not an errand — banding it `needs_you` would
-                # put week-old expired escalations at the top of the list.
-                "state": "idle" if settled else "needs_you",
+                "state": "needs_you",
                 # This card exists ONLY because the action does. Settle it and there is nothing
                 # left to show, so the client drops the card rather than leaving an empty
                 # phantom under "Needs you" with no title, no summary and no controls.
@@ -176,7 +181,7 @@ def _attach_pending(overview: dict) -> dict:
                 "intervention_reason": "",
                 "ai_summary": "",
                 "synthesis": "",
-                **({"last_action": a} if settled else {"pending_action": a}),
+                "pending_action": a,
             }
         )
     return overview

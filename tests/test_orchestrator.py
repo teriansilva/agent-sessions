@@ -2438,33 +2438,6 @@ def test_a_live_action_wins_over_history_on_the_same_card(auth_cfg, fake_jsonl, 
     assert card["state"] == "needs_you"
 
 
-def test_history_for_a_session_with_no_card_still_appears(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """The measurement that decided the design: 16 sessions were inside the 3-day Pulse window
-    while the feed reached 100 — so 84 had history and NO card. Removing the Activity block
-    without carrying them across would not have merged two lists, it would have deleted one."""
-    ledger.append(
-        {
-            "id": "a1",
-            "state": "expired",
-            "verb": "escalate",
-            "session_id": "codex:ghost",
-            "title": "Awaiting approval comment on PR #217",
-            "ts": 1000,
-        }
-    )
-    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
-    c = _client(auth_cfg)
-    _login(c, auth_cfg)
-    cards = c.get("/api/pulse").json()["cards"]
-    assert [x["id"] for x in cards] == ["codex:ghost"]
-    card = cards[0]
-    assert card["synthesized_for_action"] is True
-    assert card["last_action"]["id"] == "a1"
-    assert card["title"] == "Awaiting approval comment on PR #217"
-    # Settled history sorts as history, not as something needing you.
-    assert card["state"] == "idle"
-
-
 def test_a_synthesized_history_card_is_not_duplicated_by_its_own_session(
     auth_cfg, fake_jsonl, monkeypatch
 ):  # noqa: ARG001
@@ -2503,3 +2476,101 @@ def test_the_repeat_count_reaches_the_card(auth_cfg, fake_jsonl, monkeypatch):  
     card = c.get("/api/pulse").json()["cards"][0]
     assert card["last_action"]["repeats"] == 4
     assert card["last_action"]["id"] == "a3"
+
+
+# --- history rides a card, it does not BECOME one (#787) ---------------------------------------
+
+
+def test_settled_history_for_a_session_with_no_card_makes_no_card(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """#777 synthesized a card for every feed session, so the page rendered 102 cards for 21
+    sessions — and the filter row filled with scratch directories, because a synthesized card
+    carries whatever `project` string its action stored rather than a real project ref.
+
+    A wall of 102 boxes is a worse answer than the duplication it replaced.
+    """
+    ledger.append(
+        {
+            "id": "old",
+            "state": "expired",
+            "verb": "escalate",
+            "session_id": "codex:ghost",
+            "title": "Awaiting approval comment on PR #217",
+            "project": "/tmp/scratch-dir/some-checkout",
+            "ts": 1000,
+        }
+    )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/pulse").json()["cards"] == []
+
+
+def test_a_LIVE_action_with_no_card_is_still_synthesized(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The line is not "card or no card", it is WAITING ON YOU or not. `eligible_cards` builds
+    with `window_days=None`, so the orchestrator can act on a session outside Pulse's cached
+    window — and something awaiting the operator must be reachable whatever its age (#762)."""
+    ledger.append(
+        {
+            "id": "live",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": "codex:ghost",
+            "title": "Stopped mid-edit",
+            "ts": 2000,
+        }
+    )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    assert [x["id"] for x in cards] == ["codex:ghost"]
+    assert cards[0]["synthesized_for_action"] is True
+    assert cards[0]["pending_action"]["id"] == "live"
+    assert cards[0]["state"] == "needs_you"
+
+
+def test_a_settled_action_still_rides_a_card_that_exists(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The useful half of #777 stays: a session you HAVE still says what the orchestrator last
+    did there. Only the phantom cards go."""
+    ledger.append(
+        {
+            "id": "a1",
+            "state": "observed",
+            "verb": "observe",
+            "session_id": "claude:aaa",
+            "ts": 1000,
+        }
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["last_action"]["id"] == "a1"
+    assert card["state"] == "idle"
+
+
+def test_the_card_count_tracks_sessions_not_ledger_history(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The shape of the regression, in one assertion: lots of history, few sessions."""
+    for i in range(30):
+        ledger.append(
+            {
+                "id": f"h{i}",
+                "state": "expired",
+                "verb": "escalate",
+                "session_id": f"codex:gone{i}",
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(
+        pulse,
+        "load_cache",
+        lambda *a, **k: {"cards": [{"id": "claude:aaa"}, {"id": "claude:bbb"}]},
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    assert len(cards) == 2, f"30 historical actions produced {len(cards)} cards"
