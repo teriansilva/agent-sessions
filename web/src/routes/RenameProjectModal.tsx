@@ -87,8 +87,8 @@ export function RenameProjectModal({
           />
         </label>
         <p className={styles.help}>
-          Leave the name blank to clear it. The path stays the same — filtering still uses
-          the full cwd.
+          Leave the name blank to clear it. The path stays the same — filtering
+          still uses the full cwd.
         </p>
         <div className={styles.actions}>
           <button type="button" className={styles.cancel} onClick={onCancel}>

@@ -47,22 +47,37 @@ async function mockApp(page: Page) {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route("**/api/engines", (r) =>
     r.fulfill({
-      json: { engines: [{ id: "claude", present: true, supports_new: true, bin: "/x/claude" }] },
+      json: {
+        engines: [
+          { id: "claude", present: true, supports_new: true, bin: "/x/claude" },
+        ],
+      },
     }),
   );
   await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-    r.fulfill({ json: { folders: [{ cwd: "/home/u/battlelab", label: "battlelab" }] } }),
+    r.fulfill({
+      json: { folders: [{ cwd: "/home/u/battlelab", label: "battlelab" }] },
+    }),
   );
   await page.route(/\/api\/fs\/dirs(\?.*)?$/, (r) =>
     r.fulfill({ json: { path: "/home/u", home: "/home/u", dirs: [] } }),
   );
-  await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: MODELS } }));
+  await page.route("**/api/ai-review/models**", (r) =>
+    r.fulfill({ json: { models: MODELS } }),
+  );
   await page.route("**/api/prefs", async (r) => {
     const body = (r.request().postDataJSON() ?? {}) as {
       onboarded?: boolean;
@@ -108,12 +123,16 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → ai
 
   // Fill + Save & validate → the Model field becomes a dropdown populated from /models.
-  await dialog.getByPlaceholder(/api\.openai\.com/i).fill("https://api.openai.com/v1");
+  await dialog
+    .getByPlaceholder(/api\.openai\.com/i)
+    .fill("https://api.openai.com/v1");
   await dialog.getByPlaceholder(/never echoed/i).fill("sk-secret");
   await dialog.getByRole("button", { name: /save & validate/i }).click();
   const wizModel = dialog.getByRole("combobox", { name: /model/i });
   await expect(wizModel).toBeVisible();
-  await expect(dialog.getByText(/endpoint validated — 3 models/i)).toBeVisible();
+  await expect(
+    dialog.getByText(/endpoint validated — 3 models/i),
+  ).toBeVisible();
   await wizModel.selectOption("o3-mini");
 
   // The AI step must not scroll the page horizontally at this width (≤800px footer wrap, #494).
@@ -124,10 +143,12 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   await expect(dialog).toBeHidden();
 
   // Settings → AI now reflects the wizard-saved endpoint + the /models dropdown, WITHOUT reload.
-  await expect(page.getByRole("heading", { name: /ai endpoint/i })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: /endpoint base url/i })).toHaveValue(
-    "https://api.openai.com/v1",
-  );
+  await expect(
+    page.getByRole("heading", { name: /ai endpoint/i }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: /endpoint base url/i }),
+  ).toHaveValue("https://api.openai.com/v1");
   const settingsModel = page.getByRole("combobox", { name: /model/i });
   await expect(settingsModel).toBeVisible();
   await expect(settingsModel).toHaveValue("o3-mini");

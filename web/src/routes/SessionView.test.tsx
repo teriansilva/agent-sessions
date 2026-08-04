@@ -1,7 +1,13 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { SessionView } from "./SessionView";
 
@@ -35,7 +41,9 @@ function Nav() {
   return (
     <>
       <button onClick={() => navigate("/s/claude/cla_2222")}>go-claude</button>
-      <button onClick={() => navigate("/s/opencode/ses_realreal0000")}>go-back</button>
+      <button onClick={() => navigate("/s/opencode/ses_realreal0000")}>
+        go-back
+      </button>
     </>
   );
 }
@@ -73,7 +81,9 @@ test("reconcile converges the URL to the real id without changing the terminal i
   });
 
   // URL converged to the real id (history replace, no reload)…
-  expect(screen.getByTestId("loc").textContent).toBe("/s/opencode/ses_realreal0000");
+  expect(screen.getByTestId("loc").textContent).toBe(
+    "/s/opencode/ses_realreal0000",
+  );
   // …but the terminal keeps its ORIGINAL identity (frozen key/props) so the live socket
   // is preserved — no remount, no relaunch.
   expect(screen.getByTestId("term").textContent).toBe(
@@ -88,7 +98,9 @@ test("navigating back to a reconciled real id (after another session) re-opens i
   act(() => {
     reconcileHandlers[0]("opencode:ses_realreal0000");
   });
-  expect(screen.getByTestId("loc").textContent).toBe("/s/opencode/ses_realreal0000");
+  expect(screen.getByTestId("loc").textContent).toBe(
+    "/s/opencode/ses_realreal0000",
+  );
 
   // Genuine navigation away → the terminal adopts the Claude session (new key → remount).
   await userEvent.click(screen.getByText("go-claude"));
@@ -98,6 +110,10 @@ test("navigating back to a reconciled real id (after another session) re-opens i
   // the Claude session (the real id lingered in `converged`); now it re-opens as a plain
   // attach by the real id.
   await userEvent.click(screen.getByText("go-back"));
-  expect(screen.getByTestId("term").textContent).toBe("opencode:ses_realreal0000");
-  expect(screen.getByTestId("loc").textContent).toBe("/s/opencode/ses_realreal0000");
+  expect(screen.getByTestId("term").textContent).toBe(
+    "opencode:ses_realreal0000",
+  );
+  expect(screen.getByTestId("loc").textContent).toBe(
+    "/s/opencode/ses_realreal0000",
+  );
 });

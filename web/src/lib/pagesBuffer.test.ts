@@ -8,7 +8,11 @@ import type { HistoryPage } from "../types/api";
 import { HistoryLoader } from "./historyLoader";
 import { PagesBuffer, foldWipe } from "./pagesBuffer";
 
-const page = (ansi: string, cursor: number | null, has_more: boolean): HistoryPage => ({
+const page = (
+  ansi: string,
+  cursor: number | null,
+  has_more: boolean,
+): HistoryPage => ({
   ansi,
   cursor,
   has_more,
@@ -21,7 +25,9 @@ describe("PagesBuffer depth cap", () => {
     expect(buf.prepend("older")).toBe(true);
     expect(buf.prepend("oldest")).toBe(true);
     expect(buf.text()).toBe("oldest\r\nolder\r\nnewest-history");
-    expect(buf.size).toBe("newest-history".length + "older".length + "oldest".length);
+    expect(buf.size).toBe(
+      "newest-history".length + "older".length + "oldest".length,
+    );
   });
 
   it("rejects a page that would exceed the cap — retained content is untouched", () => {
@@ -75,7 +81,10 @@ describe("PagesBuffer depth cap", () => {
 
 describe("foldWipe — server clear-scrollback detection", () => {
   it("passes a wipe-free stream through unchanged", () => {
-    expect(foldWipe("hello\r\nworld")).toEqual({ buf: "hello\r\nworld", wiped: false });
+    expect(foldWipe("hello\r\nworld")).toEqual({
+      buf: "hello\r\nworld",
+      wiped: false,
+    });
   });
 
   it("keeps only the post-wipe tail behind a plain clear, and reports wiped", () => {

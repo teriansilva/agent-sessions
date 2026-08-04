@@ -9,7 +9,12 @@ import { describe, expect, it } from "vitest";
 import type { SocketLike } from "./connect";
 import { Responder, derivePsk } from "./handshake";
 import { Mux, type Stream } from "./mux";
-import { installWsBackstop, isAppSocketUrl, mountApp, wireAppTunnel } from "./appMount";
+import {
+  installWsBackstop,
+  isAppSocketUrl,
+  mountApp,
+  wireAppTunnel,
+} from "./appMount";
 import type { Tunnel } from "./tunnel";
 
 const te = new TextEncoder();
@@ -54,7 +59,12 @@ function agentChannel(ws: Sock) {
   let closed = false;
   ws.onmessage = (ev) => {
     const d = ev.data;
-    const v = typeof d === "string" ? d : d instanceof Uint8Array ? d : new Uint8Array(d as ArrayBuffer);
+    const v =
+      typeof d === "string"
+        ? d
+        : d instanceof Uint8Array
+          ? d
+          : new Uint8Array(d as ArrayBuffer);
     const w = waiters.shift();
     if (w) w(v);
     else q.push(v);
@@ -64,7 +74,11 @@ function agentChannel(ws: Sock) {
     while (waiters.length) waiters.shift()?.(null);
   };
   const recv = (): Promise<string | Uint8Array | null> =>
-    q.length ? Promise.resolve(q.shift() ?? null) : closed ? Promise.resolve(null) : new Promise((r) => waiters.push(r));
+    q.length
+      ? Promise.resolve(q.shift() ?? null)
+      : closed
+        ? Promise.resolve(null)
+        : new Promise((r) => waiters.push(r));
   return {
     send: (d: string | Uint8Array) => ws.send(d),
     recv,
@@ -83,10 +97,16 @@ function agentChannel(ws: Sock) {
 
 // The box side: pair + handshake, read the advert, run a responder Mux, and answer every HTTP
 // stream with a canned `u32 meta_len | meta_json | body` (mirrors AppProxyTarget's HTTP framing).
-async function fakeAppAgent(ws: Sock, accessKey: string, respBody: Uint8Array): Promise<void> {
+async function fakeAppAgent(
+  ws: Sock,
+  accessKey: string,
+  respBody: Uint8Array,
+): Promise<void> {
   const chan = agentChannel(ws);
   await chan.recvText(); // hello
-  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }));
+  chan.send(
+    JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }),
+  );
   const res = new Responder(await derivePsk(accessKey));
   chan.send(await res.respond(await chan.recvBinary())); // msg2
   const transport = await res.finish(await chan.recvBinary()); // msg3
@@ -96,7 +116,9 @@ async function fakeAppAgent(ws: Sock, accessKey: string, respBody: Uint8Array): 
   const mux = new Mux({
     isInitiator: false,
     onSend: (f) => {
-      sendChain = sendChain.then(async () => chan.send(await transport.encrypt(f)));
+      sendChain = sendChain.then(async () =>
+        chan.send(await transport.encrypt(f)),
+      );
     },
     onStream: (s) => void serveHttp(s, respBody),
   });
@@ -112,7 +134,12 @@ async function serveHttp(s: Stream, body: Uint8Array): Promise<void> {
     const p = await s.read();
     if (p.length === 0) break; // drain the request body
   }
-  const meta = te.encode(JSON.stringify({ status: 200, headers: [["content-type", "application/json"]] }));
+  const meta = te.encode(
+    JSON.stringify({
+      status: 200,
+      headers: [["content-type", "application/json"]],
+    }),
+  );
   const len = new Uint8Array(4);
   new DataView(len.buffer).setUint32(0, meta.length, false);
   await s.write(len);
@@ -125,9 +152,13 @@ describe("isAppSocketUrl", () => {
   it("matches only SAME-ORIGIN /ws paths (external /ws stays off the tunnel)", () => {
     expect(isAppSocketUrl("/ws/term/claude:abc", "box.example")).toBe(true); // relative → same-origin
     expect(isAppSocketUrl("wss://box.example/ws/x", "box.example")).toBe(true); // same-origin absolute
-    expect(isAppSocketUrl("wss://external.example/ws/x", "box.example")).toBe(false); // external /ws → NOT app
+    expect(isAppSocketUrl("wss://external.example/ws/x", "box.example")).toBe(
+      false,
+    ); // external /ws → NOT app
     expect(isAppSocketUrl("/api/sessions", "box.example")).toBe(false); // not /ws
-    expect(isAppSocketUrl("https://box.example/socket", "box.example")).toBe(false); // same-origin non-/ws
+    expect(isAppSocketUrl("https://box.example/socket", "box.example")).toBe(
+      false,
+    ); // same-origin non-/ws
     expect(isAppSocketUrl("garbage", "box.example")).toBe(false);
   });
 });

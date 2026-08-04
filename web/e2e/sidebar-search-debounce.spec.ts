@@ -28,11 +28,18 @@ async function setup(page: Page, project: string): Promise<string[]> {
     const q = new URL(r.request().url()).searchParams.get("q");
     if (q) qSeen.push(q);
     return r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     });
   });
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 
   await page.goto("/");
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.

@@ -13,7 +13,8 @@ import { Settings } from "./Settings";
 import { SETTINGS_TABS } from "./settingsTabs";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     api: {
@@ -64,7 +65,11 @@ function LocationProbe() {
 
 /** Mounts Settings under the real route shapes (#357): bare /settings and /settings/:tab —
  *  both render the component; the bare/unknown forms replace-redirect to the first tab. */
-function renderSettings(theme: ThemeId = "dark", accent = "#ffb000", initialPath = "/settings") {
+function renderSettings(
+  theme: ThemeId = "dark",
+  accent = "#ffb000",
+  initialPath = "/settings",
+) {
   const setTheme = vi.fn();
   const setAccent = vi.fn();
   render(
@@ -120,7 +125,12 @@ beforeEach(() => {
   });
   vi.mocked(api.engines).mockResolvedValue({
     engines: [
-      { id: "claude", present: true, supports_new: true, bin: "/usr/local/bin/claude" },
+      {
+        id: "claude",
+        present: true,
+        supports_new: true,
+        bin: "/usr/local/bin/claude",
+      },
       { id: "codex", present: false, supports_new: false, bin: null },
     ],
   });
@@ -157,7 +167,11 @@ beforeEach(() => {
   vi.mocked(api.setPrefs).mockResolvedValue({});
   vi.mocked(api.folders).mockResolvedValue({ folders: [] });
   vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 0, files: 0 });
-  vi.mocked(api.clearScrollback).mockResolvedValue({ scope: "all", removed: 0, bytes_freed: 0 });
+  vi.mocked(api.clearScrollback).mockResolvedValue({
+    scope: "all",
+    removed: 0,
+    bytes_freed: 0,
+  });
   // AI Review tab (#356): no sessions excluded, model listing unsupported by default.
   vi.mocked(api.sessions).mockResolvedValue({
     sessions: [],
@@ -166,7 +180,10 @@ beforeEach(() => {
     facets: { projects: [], engines: [] },
   });
   vi.mocked(api.aiReviewModels).mockResolvedValue({ models: [] });
-  vi.mocked(api.reviewExclude).mockResolvedValue({ id: "x", review_excluded: false });
+  vi.mocked(api.reviewExclude).mockResolvedValue({
+    id: "x",
+    review_excluded: false,
+  });
   // Projects manager (#361 Phase 3): no entities by default.
   vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] });
   // Folder picker (#465 / #448): a simple home listing so the discovery picker can open + select.
@@ -182,7 +199,9 @@ beforeEach(() => {
 
 test("bare /settings redirects to the first tab (canonical /settings/:tab)", async () => {
   renderSettings("dark", "#ffb000", "/settings");
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance");
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/appearance",
+  );
   expect(screen.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -192,8 +211,12 @@ test("bare /settings redirects to the first tab (canonical /settings/:tab)", asy
 
 test("an unknown tab falls back to the first tab (no 404)", async () => {
   renderSettings("dark", "#ffb000", "/settings/launch-codes");
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance");
-  expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/appearance",
+  );
+  expect(
+    screen.getByRole("heading", { name: "Appearance" }),
+  ).toBeInTheDocument();
   await flushFetches();
 });
 
@@ -213,7 +236,10 @@ test("the tablist exposes all tabs with roving tabindex", async () => {
   ]);
   // Roving tabindex: only the active tab is in the tab order.
   for (const t of tabs) {
-    expect(t).toHaveAttribute("tabindex", t.textContent === "Projects" ? "0" : "-1");
+    expect(t).toHaveAttribute(
+      "tabindex",
+      t.textContent === "Projects" ? "0" : "-1",
+    );
   }
   await flushFetches();
 });
@@ -221,14 +247,20 @@ test("the tablist exposes all tabs with roving tabindex", async () => {
 test("clicking a tab navigates to its canonical URL and swaps the panel", async () => {
   renderSettings();
   await userEvent.click(screen.getByRole("tab", { name: "Maintenance" }));
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/maintenance");
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/maintenance",
+  );
   expect(screen.getByRole("tab", { name: "Maintenance" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
-  expect(await screen.findByRole("heading", { name: "Maintenance" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Maintenance" }),
+  ).toBeInTheDocument();
   // The previous panel's content is gone.
-  expect(screen.queryByRole("heading", { name: "Appearance" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("heading", { name: "Appearance" }),
+  ).not.toBeInTheDocument();
 });
 
 test("arrow keys move + select tabs with wrap-around; Home/End jump (#357)", async () => {
@@ -237,11 +269,15 @@ test("arrow keys move + select tabs with wrap-around; Home/End jump (#357)", asy
 
   await userEvent.keyboard("{ArrowRight}");
   expect(screen.getByRole("tab", { name: "Projects" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/projects");
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/projects",
+  );
 
   await userEvent.keyboard("{ArrowLeft}");
   expect(screen.getByRole("tab", { name: "Appearance" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance");
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/appearance",
+  );
 
   // Wrap-around: ArrowLeft from the first tab lands on the last.
   await userEvent.keyboard("{ArrowLeft}");
@@ -250,7 +286,9 @@ test("arrow keys move + select tabs with wrap-around; Home/End jump (#357)", asy
 
   await userEvent.keyboard("{Home}");
   expect(screen.getByRole("tab", { name: "Appearance" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance");
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/appearance",
+  );
 
   await userEvent.keyboard("{End}");
   expect(screen.getByRole("tab", { name: "About" })).toHaveFocus();
@@ -290,7 +328,9 @@ test.each([
 
 test("the AI tab renders the restructured panel (endpoint key, review prompt, auto-sort)", async () => {
   renderSettings("dark", "#ffb000", "/settings/ai-review");
-  expect(await screen.findByRole("heading", { name: "AI endpoint" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "AI endpoint" }),
+  ).toBeInTheDocument();
   expect(screen.getByLabelText(/API key/i)).toBeInTheDocument();
   await flushFetches();
 });
@@ -306,7 +346,9 @@ test("mobile smoke (390px): all tabs stay reachable in the scrollable bar (#289/
   expect(tablist).toBeInTheDocument();
   expect(screen.getAllByRole("tab")).toHaveLength(SETTINGS_TABS.length);
   // The long-value System rows (the #289 overflow culprits) are all present.
-  await waitFor(() => expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument(),
+  );
   expect(screen.getByText("Linux-6.8.0-x86_64 · x86_64")).toBeInTheDocument();
 });
 
@@ -316,15 +358,23 @@ test("renders the themes and the theme radios", async () => {
   renderSettings();
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
   for (const label of ["Dark", "Light"]) {
-    expect(screen.getByRole("radio", { name: new RegExp(label) })).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", { name: new RegExp(label) }),
+    ).toBeInTheDocument();
   }
   await flushFetches();
 });
 
 test("the active theme is marked aria-checked", async () => {
   renderSettings("light");
-  expect(screen.getByRole("radio", { name: /Light/ })).toHaveAttribute("aria-checked", "true");
-  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("radio", { name: /Light/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
   await flushFetches();
 });
 
@@ -344,8 +394,14 @@ test("picking an accent preset calls setAccent with its hex (#211 Phase 2)", asy
 
 test("the active accent preset is marked aria-checked", async () => {
   renderSettings("dark", "#c02020");
-  expect(screen.getByRole("radio", { name: "Signal Red" })).toHaveAttribute("aria-checked", "true");
-  expect(screen.getByRole("radio", { name: "Amber" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("radio", { name: "Signal Red" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByRole("radio", { name: "Amber" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
   await flushFetches();
 });
 
@@ -372,7 +428,9 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
 
 test("renders the Connected agents section with each engine + new-session badge", async () => {
   renderSettings("dark", "#ffb000", "/settings/system");
-  expect(screen.getByRole("heading", { name: "Connected agents" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Connected agents" }),
+  ).toBeInTheDocument();
   await waitFor(() => expect(screen.getByText("claude")).toBeInTheDocument());
   expect(screen.getByText("codex")).toBeInTheDocument();
   // present engine shows its resolved bin + a "can start new" badge
@@ -385,7 +443,9 @@ test("renders the Connected agents section with each engine + new-session badge"
 test("renders the System section with humanized fields", async () => {
   renderSettings("dark", "#ffb000", "/settings/system");
   expect(screen.getByRole("heading", { name: "System" })).toBeInTheDocument();
-  await waitFor(() => expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument(),
+  );
   // CPU + load, humanized memory (8/16 GB used/total), humanized uptime (90000s = 1d 1h)
   expect(screen.getByText(/8 cores · load 0\.50/)).toBeInTheDocument();
   expect(screen.getByText("8.0 GB / 16 GB")).toBeInTheDocument();
@@ -401,8 +461,12 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   });
   vi.mocked(api.updateApply).mockResolvedValue({ status: "updating" });
   renderSettings("dark", "#ffb000", "/settings/system");
-  await userEvent.click(screen.getByRole("button", { name: /check for updates/i }));
-  expect(await screen.findByText(/update available: abc1234/i)).toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  expect(
+    await screen.findByText(/update available: abc1234/i),
+  ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /update now/i }));
   expect(api.updateApply).toHaveBeenCalled();
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
@@ -412,14 +476,18 @@ test("Updates: check finds an update, then apply calls the API", async () => {
 
 test("Updates: automatic-updates toggle loads from settings and persists", async () => {
   renderSettings("dark", "#ffb000", "/settings/system");
-  const toggle = await screen.findByRole("checkbox", { name: /automatic updates/i });
+  const toggle = await screen.findByRole("checkbox", {
+    name: /automatic updates/i,
+  });
   await waitFor(() => expect(toggle).toBeEnabled()); // enabled once settings load
   expect(toggle).not.toBeChecked(); // default off (opt-in preserved)
   await userEvent.click(toggle);
   expect(api.setUpdateSettings).toHaveBeenCalledWith({ auto_update: true });
   await waitFor(() => expect(toggle).toBeChecked());
   // With auto-update on and no pass yet this run, the recent-runtime status line shows.
-  expect(screen.getByText(/no automatic check yet since the last restart/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/no automatic check yet since the last restart/i),
+  ).toBeInTheDocument();
 });
 
 test("Updates: last automatic check renders as recent runtime status", async () => {
@@ -429,7 +497,9 @@ test("Updates: last automatic check renders as recent runtime status", async () 
     last_auto: { ts: 1720000000, result: "up-to-date" },
   });
   renderSettings("dark", "#ffb000", "/settings/system");
-  expect(await screen.findByText(/last automatic check: .*up-to-date/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/last automatic check: .*up-to-date/i),
+  ).toBeInTheDocument();
 });
 
 test("Updates: switching channel drops a stale in-flight check result", async () => {
@@ -449,9 +519,16 @@ test("Updates: switching channel drops a stale in-flight check result", async ()
   renderSettings("dark", "#ffb000", "/settings/system");
   const main = await screen.findByRole("radio", { name: /main/i });
   await waitFor(() => expect(main).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", { name: /check for updates/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
   await userEvent.click(main); // switch channels while the check is still in flight
-  resolveCheck({ current: "0.0.1", channel: "stable", latest: "v9.9.9", update_available: true });
+  resolveCheck({
+    current: "0.0.1",
+    channel: "stable",
+    latest: "v9.9.9",
+    update_available: true,
+  });
   await flushFetches();
   expect(screen.queryByText(/update available/i)).not.toBeInTheDocument();
 });
@@ -473,7 +550,8 @@ test("Updates: release-channel radiogroup persists the channel", async () => {
 test("2FA: enable flow shows QR + manual key + recovery codes, then confirms", async () => {
   vi.mocked(api.enroll2fa).mockResolvedValue({
     secret: "JBSWY3DPEHPK3PXP",
-    otpauth_uri: "otpauth://totp/BattleLab:marcus?secret=JBSWY3DPEHPK3PXP&issuer=BattleLab",
+    otpauth_uri:
+      "otpauth://totp/BattleLab:marcus?secret=JBSWY3DPEHPK3PXP&issuer=BattleLab",
     recovery_codes: ["aaaa-bbbb-cccc", "dddd-eeee-ffff"],
   });
   vi.mocked(api.confirm2fa).mockResolvedValue(undefined);
@@ -482,16 +560,22 @@ test("2FA: enable flow shows QR + manual key + recovery codes, then confirms", a
     await screen.findByRole("heading", { name: /two-factor authentication/i }),
   ).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("button", { name: /enable two-factor auth/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /enable two-factor auth/i }),
+  );
   // Manual key + recovery codes are shown.
   expect(await screen.findByText("JBSWY3DPEHPK3PXP")).toBeInTheDocument();
   expect(screen.getByText("aaaa-bbbb-cccc")).toBeInTheDocument();
   expect(screen.getByAltText(/qr code/i)).toBeInTheDocument();
 
   await userEvent.type(screen.getByPlaceholderText(/6-digit code/i), "123456");
-  await userEvent.click(screen.getByRole("button", { name: /confirm & enable/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm & enable/i }),
+  );
   expect(api.confirm2fa).toHaveBeenCalledWith("123456");
-  expect(await screen.findByText(/two-factor authentication is on/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/two-factor authentication is on/i),
+  ).toBeInTheDocument();
 });
 
 test("2FA: hidden entirely when auth_mode is none", async () => {
@@ -505,7 +589,9 @@ test("2FA: hidden entirely when auth_mode is none", async () => {
   renderSettings("dark", "#ffb000", "/settings/security");
   await flushFetches();
   await waitFor(() =>
-    expect(screen.queryByRole("heading", { name: /two-factor authentication/i })).toBeNull(),
+    expect(
+      screen.queryByRole("heading", { name: /two-factor authentication/i }),
+    ).toBeNull(),
   );
 });
 
@@ -526,7 +612,9 @@ test("Account: Sign out hidden when auth_mode is none (#141)", async () => {
   });
   renderSettings("dark", "#ffb000", "/settings/security");
   await flushFetches();
-  await waitFor(() => expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull(),
+  );
 });
 
 // ---- Projects tab ----
@@ -543,9 +631,13 @@ test("Session overview: unticking a project hides it + persists via projects_hid
   const alpha = await screen.findByRole("checkbox", { name: /~\/alpha/i });
   expect(alpha).toBeChecked();
   await userEvent.click(alpha);
-  expect(api.setPrefs).toHaveBeenCalledWith({ projects_hidden: ["/home/u/alpha"] });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    projects_hidden: ["/home/u/alpha"],
+  });
   // Shared state updates → the row immediately reflects the hidden state (now unchecked).
-  expect(await screen.findByRole("checkbox", { name: /~\/alpha/i })).not.toBeChecked();
+  expect(
+    await screen.findByRole("checkbox", { name: /~\/alpha/i }),
+  ).not.toBeChecked();
 });
 
 test("Session overview: renaming via the modal persists via setProjectName (#174)", async () => {
@@ -554,18 +646,24 @@ test("Session overview: renaming via the modal persists via setProjectName (#174
   });
   renderSettings("dark", "#ffb000", "/settings/projects");
   // Click the project NAME (a button now, not an inline input) → opens the rename modal.
-  const trigger = await screen.findByRole("button", { name: /rename ~\/alpha/i });
+  const trigger = await screen.findByRole("button", {
+    name: /rename ~\/alpha/i,
+  });
   await userEvent.click(trigger);
   const modalInput = await screen.findByRole("textbox", {
     name: /custom name for \/home\/u\/alpha/i,
   });
   await userEvent.type(modalInput, "My Alpha");
   await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ project_names: { "/home/u/alpha": "My Alpha" } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    project_names: { "/home/u/alpha": "My Alpha" },
+  });
 });
 
 test("Session overview: a name seeded after /api/config resolves is shown on the row (#161/#174)", async () => {
-  vi.mocked(api.folders).mockResolvedValue({ folders: [{ cwd: "/home/u/alpha", label: "Alpha" }] });
+  vi.mocked(api.folders).mockResolvedValue({
+    folders: [{ cwd: "/home/u/alpha", label: "Alpha" }],
+  });
   // OverviewPrefs seeds projectNames from ConfigCtx, which is null until /api/config resolves —
   // and the row can mount first. Start with null config, then deliver it with a saved name and
   // assert the row's clickable name reflects it (post-#174 the name lives on the button label,
@@ -599,9 +697,9 @@ test("Session overview: a name seeded after /api/config resolves is shown on the
   // The name shows on the row's rename button (it ALSO labels the default-project
   // option since #357 Phase 2, so scope to the button rather than a bare text query).
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: /rename ~\/alpha/i })).toHaveTextContent(
-      "Saved Alpha",
-    ),
+    expect(
+      screen.getByRole("button", { name: /rename ~\/alpha/i }),
+    ).toHaveTextContent("Saved Alpha"),
   );
 });
 
@@ -632,15 +730,23 @@ test("Session overview: folders are grouped under their owning entity + Unassign
   renderSettings("dark", "#ffb000", "/settings/projects");
   // The overview renders one per-entity group (its list is uniquely labelled "Folders in
   // <name>") + an "Unassigned" group — distinct from the ProjectsManager's own entity list above.
-  const alphaList = await screen.findByRole("list", { name: /folders in alpha project/i });
-  const unassignedList = screen.getByRole("list", { name: /folders in unassigned/i });
+  const alphaList = await screen.findByRole("list", {
+    name: /folders in alpha project/i,
+  });
+  const unassignedList = screen.getByRole("list", {
+    name: /folders in unassigned/i,
+  });
   // Both folders keep the inverse-checkbox.
   expect(screen.getByRole("checkbox", { name: /~\/alpha/i })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: /~\/loose/i })).toBeChecked();
   // Rename is only for the UNADOPTED folder (#615 Phase 3): ~/loose (under Unassigned) has the
   // button; ~/alpha (adopted by Alpha Project) does not — its name comes from the project.
-  expect(unassignedList).toContainElement(screen.getByRole("button", { name: /rename ~\/loose/i }));
-  expect(screen.queryByRole("button", { name: /rename ~\/alpha/i })).not.toBeInTheDocument();
+  expect(unassignedList).toContainElement(
+    screen.getByRole("button", { name: /rename ~\/loose/i }),
+  );
+  expect(
+    screen.queryByRole("button", { name: /rename ~\/alpha/i }),
+  ).not.toBeInTheDocument();
   // The adopted row still shows its path, just as static text.
   expect(alphaList).toHaveTextContent("~/alpha");
   await flushFetches();
@@ -669,11 +775,19 @@ test("Session overview: an adopted folder has no rename control; an unassigned o
   });
   renderSettings("dark", "#ffb000", "/settings/projects");
   // Adopted: no rename button, and the static name carries the "rename the project" hint.
-  await screen.findByRole("checkbox", { name: "Offer ~/alpha as a launch location" });
-  expect(screen.queryByRole("button", { name: /rename ~\/alpha/i })).not.toBeInTheDocument();
-  expect(screen.getByTitle(/named by its project/i)).toHaveTextContent("~/alpha");
+  await screen.findByRole("checkbox", {
+    name: "Offer ~/alpha as a launch location",
+  });
+  expect(
+    screen.queryByRole("button", { name: /rename ~\/alpha/i }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByTitle(/named by its project/i)).toHaveTextContent(
+    "~/alpha",
+  );
   // Unadopted: the rename button is still offered.
-  expect(screen.getByRole("button", { name: /rename ~\/loose/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /rename ~\/loose/i }),
+  ).toBeInTheDocument();
   await flushFetches();
 });
 
@@ -703,11 +817,15 @@ test("Session overview: the checkbox label states what unticking does, per row k
   // sessions are exempt server-side (`sessions.py` `_visible`), so the old "hide it
   // everywhere" promise never held here.
   expect(
-    await screen.findByRole("checkbox", { name: "Offer ~/alpha as a launch location" }),
+    await screen.findByRole("checkbox", {
+      name: "Offer ~/alpha as a launch location",
+    }),
   ).toBeChecked();
   // Unadopted: unticking really does drop it from the sidebar/filter/overview too.
   expect(
-    screen.getByRole("checkbox", { name: "Show ~/loose in the sidebar, filter, and overview" }),
+    screen.getByRole("checkbox", {
+      name: "Show ~/loose in the sidebar, filter, and overview",
+    }),
   ).toBeChecked();
   // And the card no longer claims a blanket "hide it everywhere".
   expect(screen.queryByText(/hide it everywhere/i)).not.toBeInTheDocument();
@@ -744,13 +862,19 @@ test("Folder discovery: shows configured roots/exclusions and removing a root pe
     project_roots: ["/home/u/code"],
     folder_exclusions: ["/home/u/code/scratch"],
   });
-  expect(await screen.findByRole("heading", { name: /folder discovery/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: /folder discovery/i }),
+  ).toBeInTheDocument();
   // The configured root + exclusion render with Remove buttons.
   const rootList = screen.getByRole("list", { name: /root directories/i });
   expect(rootList).toBeInTheDocument();
-  expect(screen.getByRole("list", { name: /excluded folders/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("list", { name: /excluded folders/i }),
+  ).toBeInTheDocument();
   // Removing the root persists the empty list via setPrefs.
-  await userEvent.click(screen.getByRole("button", { name: /remove root ~\/code/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /remove root ~\/code/i }),
+  );
   expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: [] });
   await flushFetches();
 });
@@ -782,7 +906,9 @@ test("Folder discovery: picking a root through the folder picker commits it (#46
   vi.mocked(api.setPrefs).mockResolvedValue({ project_roots: ["/home/u"] });
   renderDiscovery();
   // Open the root picker, then "Select ~" (home) returns the home path → committed as a root.
-  await userEvent.click(await screen.findByRole("button", { name: /add root…/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /add root…/i }),
+  );
   const select = await screen.findByRole("button", { name: /^select ~$/i });
   await userEvent.click(select);
   expect(api.setPrefs).toHaveBeenCalledWith({ project_roots: ["/home/u"] });
@@ -825,8 +951,12 @@ test("Default project: the card is gone — the star in Projects owns it now (#6
   await screen.findByRole("heading", { name: "Projects" });
   // The cwd-valued picker is retired: `entity.default_folder` (#448) shadowed it, and the
   // project it pre-selected was `entities[0]` — alphabetical and unsettable.
-  expect(screen.queryByRole("combobox", { name: "Default project" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("heading", { name: "Default project" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("combobox", { name: "Default project" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("heading", { name: "Default project" }),
+  ).not.toBeInTheDocument();
   // Nothing writes the legacy pref from Settings any more.
   expect(api.setPrefs).not.toHaveBeenCalledWith(
     expect.objectContaining({ default_project: expect.anything() }),
@@ -863,7 +993,9 @@ const baseProjectsCfg: AppConfig = {
 };
 
 test("Session overview refetches /api/folders when the discovery scope changes (#470)", async () => {
-  const { rerender } = render(projectsTree({ ...baseProjectsCfg, project_roots: [] }));
+  const { rerender } = render(
+    projectsTree({ ...baseProjectsCfg, project_roots: [] }),
+  );
   await screen.findByRole("heading", { name: /session overview/i });
   await flushFetches();
   // Mount: OverviewCard fetches all folders; the ProjectsManager card (out of scope for #470 —
@@ -873,8 +1005,12 @@ test("Session overview refetches /api/folders when the discovery scope changes (
   expect(before).toBe(2);
   // A roots change lands in config (FolderDiscoveryCard save → config refresh) → OverviewCard
   // refetches. Only it keys on the discovery scope now.
-  rerender(projectsTree({ ...baseProjectsCfg, project_roots: ["/home/u/code"] }));
-  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 1));
+  rerender(
+    projectsTree({ ...baseProjectsCfg, project_roots: ["/home/u/code"] }),
+  );
+  await waitFor(() =>
+    expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 1),
+  );
   // …and an exclusions change refetches again.
   rerender(
     projectsTree({
@@ -883,7 +1019,9 @@ test("Session overview refetches /api/folders when the discovery scope changes (
       folder_exclusions: ["/home/u/code/scratch"],
     }),
   );
-  await waitFor(() => expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2));
+  await waitFor(() =>
+    expect(vi.mocked(api.folders).mock.calls.length).toBe(before + 2),
+  );
   await flushFetches();
 });
 
@@ -897,26 +1035,37 @@ test.each([
   ["https://evil.example", "/"], // absolute external → rejected
   ["/settings", "/"], // self → rejected (no loop)
   ["/settings/about", "/"], // self (tab URL) → rejected too (#357)
-])("Settings back link honors only internal returnTo: %s → %s (#155)", (returnTo, expected) => {
-  render(
-    <MemoryRouter
-      initialEntries={[{ pathname: "/settings/appearance", state: returnTo && { returnTo } }]}
-    >
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
-        <OverviewPrefsProvider>
-          <Routes>
-            <Route path="/settings/:tab" element={<Settings />} />
-          </Routes>
-        </OverviewPrefsProvider>
-      </ThemeCtx.Provider>
-    </MemoryRouter>,
-  );
-  expect(screen.getByRole("link", { name: "Back to sessions" })).toHaveAttribute("href", expected);
-});
+])(
+  "Settings back link honors only internal returnTo: %s → %s (#155)",
+  (returnTo, expected) => {
+    render(
+      <MemoryRouter
+        initialEntries={[
+          { pathname: "/settings/appearance", state: returnTo && { returnTo } },
+        ]}
+      >
+        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+          <OverviewPrefsProvider>
+            <Routes>
+              <Route path="/settings/:tab" element={<Settings />} />
+            </Routes>
+          </OverviewPrefsProvider>
+        </ThemeCtx.Provider>
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByRole("link", { name: "Back to sessions" }),
+    ).toHaveAttribute("href", expected);
+  },
+);
 
 test("the #155 returnTo survives the bare-/settings redirect and tab switches", async () => {
   render(
-    <MemoryRouter initialEntries={[{ pathname: "/settings", state: { returnTo: "/s/claude/x" } }]}>
+    <MemoryRouter
+      initialEntries={[
+        { pathname: "/settings", state: { returnTo: "/s/claude/x" } },
+      ]}
+    >
       <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
         <OverviewPrefsProvider>
           <Routes>
@@ -929,24 +1078,26 @@ test("the #155 returnTo survives the bare-/settings redirect and tab switches", 
     </MemoryRouter>,
   );
   // Redirected to the first tab — the back link still points at the originating session.
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/appearance");
-  expect(screen.getByRole("link", { name: "Back to sessions" })).toHaveAttribute(
-    "href",
-    "/s/claude/x",
+  expect(screen.getByTestId("location")).toHaveTextContent(
+    "/settings/appearance",
   );
+  expect(
+    screen.getByRole("link", { name: "Back to sessions" }),
+  ).toHaveAttribute("href", "/s/claude/x");
   // Switch tabs — the state rides along, so the back link keeps working.
   await userEvent.click(screen.getByRole("tab", { name: "About" }));
-  expect(screen.getByRole("link", { name: "Back to sessions" })).toHaveAttribute(
-    "href",
-    "/s/claude/x",
-  );
+  expect(
+    screen.getByRole("link", { name: "Back to sessions" }),
+  ).toHaveAttribute("href", "/s/claude/x");
 });
 
 // ---- About tab ----
 
 test("About: version, license, creator link, and a safe coffee link", async () => {
   renderSettings("dark", "#ffb000", "/settings/about");
-  await waitFor(() => expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0));
+  await waitFor(() =>
+    expect(screen.getAllByText("1.2.3").length).toBeGreaterThan(0),
+  );
 
   // AGPL-3.0 §13 makes the license + source offer load-bearing for a network-served build,
   // so both links are asserted rather than left to drift with a copy edit.
@@ -959,7 +1110,10 @@ test("About: version, license, creator link, and a safe coffee link", async () =
   expect(license).toHaveAttribute("rel", "noopener noreferrer");
 
   const source = screen.getByRole("link", { name: /source code/i });
-  expect(source).toHaveAttribute("href", "https://github.com/teriansilva/agent-sessions");
+  expect(source).toHaveAttribute(
+    "href",
+    "https://github.com/teriansilva/agent-sessions",
+  );
   expect(source).toHaveAttribute("rel", "noopener noreferrer");
 
   const link = screen.getByRole("link", { name: "Marcus Braun" });
@@ -968,7 +1122,10 @@ test("About: version, license, creator link, and a safe coffee link", async () =
   expect(link).toHaveAttribute("rel", "noopener noreferrer");
 
   const coffee = screen.getByRole("link", { name: /buy me a coffee/i });
-  expect(coffee).toHaveAttribute("href", "https://buymeacoffee.com/teriansilva");
+  expect(coffee).toHaveAttribute(
+    "href",
+    "https://buymeacoffee.com/teriansilva",
+  );
   expect(coffee).toHaveAttribute("target", "_blank");
   expect(coffee).toHaveAttribute("rel", "noopener noreferrer");
 });
@@ -979,23 +1136,36 @@ test("Maintenance: archive-older confirms then calls the API with the chosen hou
   vi.mocked(api.archiveOlder).mockResolvedValue({ archived: 2, skipped: 1 });
   renderSettings("dark", "#ffb000", "/settings/maintenance");
   // Default age is 168h; first click reveals the confirm step (no API call yet).
-  await userEvent.click(await screen.findByRole("button", { name: /archive older/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /archive older/i }),
+  );
   expect(api.archiveOlder).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: /confirm archive/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm archive/i }),
+  );
   expect(api.archiveOlder).toHaveBeenCalledWith(168);
-  expect(await screen.findByText(/archived 2 sessions \(1 skipped\)\./i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/archived 2 sessions \(1 skipped\)\./i),
+  ).toBeInTheDocument();
 });
 
 test("Maintenance: cancel backs out without archiving (#142)", async () => {
   renderSettings("dark", "#ffb000", "/settings/maintenance");
-  await userEvent.click(await screen.findByRole("button", { name: /archive older/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /archive older/i }),
+  );
   await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
   expect(api.archiveOlder).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: /archive older/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /archive older/i }),
+  ).toBeInTheDocument();
 });
 
 test("Scrollback cache: shows size and clears all after confirm (#206)", async () => {
-  vi.mocked(api.scrollbackInfo).mockResolvedValue({ bytes: 2 * 1024 * 1024, files: 3 });
+  vi.mocked(api.scrollbackInfo).mockResolvedValue({
+    bytes: 2 * 1024 * 1024,
+    files: 3,
+  });
   vi.mocked(api.clearScrollback).mockResolvedValue({
     scope: "all",
     removed: 3,
@@ -1003,11 +1173,17 @@ test("Scrollback cache: shows size and clears all after confirm (#206)", async (
   });
   renderSettings("dark", "#ffb000", "/settings/maintenance");
   // The fetched cache size is shown.
-  expect(await screen.findByText(/2(\.0)?\s?MB across 3 sessions/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/2(\.0)?\s?MB across 3 sessions/i),
+  ).toBeInTheDocument();
   // First click reveals the confirm step (no API call yet).
-  await userEvent.click(screen.getByRole("button", { name: /clear all cache/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /clear all cache/i }),
+  );
   expect(api.clearScrollback).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: /confirm clear all/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm clear all/i }),
+  );
   expect(api.clearScrollback).toHaveBeenCalledWith("all");
   expect(await screen.findByText(/cleared 3 cache files/i)).toBeInTheDocument();
 });
@@ -1020,8 +1196,12 @@ test("Scrollback cache: clear archived passes the archived scope (#206)", async 
     bytes_freed: 10,
   });
   renderSettings("dark", "#ffb000", "/settings/maintenance");
-  await userEvent.click(await screen.findByRole("button", { name: /clear archived sessions/i }));
-  await userEvent.click(screen.getByRole("button", { name: /confirm clear archived/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /clear archived sessions/i }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm clear archived/i }),
+  );
   expect(api.clearScrollback).toHaveBeenCalledWith("archived");
 });
 
@@ -1029,10 +1209,9 @@ test("Scrollback cache: clear archived passes the archived scope (#206)", async 
 
 test("the session-list order radios default to Recent activity (#506)", async () => {
   renderSettings("dark", "#ffb000", "/settings/appearance");
-  expect(await screen.findByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  expect(
+    await screen.findByRole("radio", { name: /Recent activity/ }),
+  ).toHaveAttribute("aria-checked", "true");
   expect(screen.getByRole("radio", { name: /Creation date/ })).toHaveAttribute(
     "aria-checked",
     "false",
@@ -1042,8 +1221,12 @@ test("the session-list order radios default to Recent activity (#506)", async ()
 
 test("picking Creation date persists session_list_order via setPrefs (#506)", async () => {
   renderSettings("dark", "#ffb000", "/settings/appearance");
-  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ session_list_order: "created_at" });
+  await userEvent.click(
+    await screen.findByRole("radio", { name: /Creation date/ }),
+  );
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    session_list_order: "created_at",
+  });
   // Optimistic: the chosen card flips immediately.
   expect(screen.getByRole("radio", { name: /Creation date/ })).toHaveAttribute(
     "aria-checked",
@@ -1055,12 +1238,13 @@ test("picking Creation date persists session_list_order via setPrefs (#506)", as
 test("a failed session_list_order save rolls back the selection (#506)", async () => {
   vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
   renderSettings("dark", "#ffb000", "/settings/appearance");
-  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await userEvent.click(
+    await screen.findByRole("radio", { name: /Creation date/ }),
+  );
   await waitFor(() =>
-    expect(screen.getByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    ),
+    expect(
+      screen.getByRole("radio", { name: /Recent activity/ }),
+    ).toHaveAttribute("aria-checked", "true"),
   );
   await flushFetches();
 });
@@ -1084,7 +1268,9 @@ test("a session_list_order save refreshes the shared config (#548)", async () =>
       </ThemeCtx.Provider>
     </MemoryRouter>,
   );
-  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await userEvent.click(
+    await screen.findByRole("radio", { name: /Creation date/ }),
+  );
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
   await flushFetches();
 });
@@ -1107,12 +1293,13 @@ test("a failed session_list_order save does NOT refresh the config (#548)", asyn
       </ThemeCtx.Provider>
     </MemoryRouter>,
   );
-  await userEvent.click(await screen.findByRole("radio", { name: /Creation date/ }));
+  await userEvent.click(
+    await screen.findByRole("radio", { name: /Creation date/ }),
+  );
   await waitFor(() =>
-    expect(screen.getByRole("radio", { name: /Recent activity/ })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    ),
+    expect(
+      screen.getByRole("radio", { name: /Recent activity/ }),
+    ).toHaveAttribute("aria-checked", "true"),
   );
   expect(refresh).not.toHaveBeenCalled();
   await flushFetches();

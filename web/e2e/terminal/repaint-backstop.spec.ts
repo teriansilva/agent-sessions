@@ -7,7 +7,13 @@
 import { expect, test } from "@playwright/test";
 import { setupBench } from "./harness";
 
-const SESSIONS = [{ engine: "claude", uuid: "aaaaaaaa-0000-4000-8000-00000000000a", title: "t" }];
+const SESSIONS = [
+  {
+    engine: "claude",
+    uuid: "aaaaaaaa-0000-4000-8000-00000000000a",
+    title: "t",
+  },
+];
 const KEY = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
 
 test("a (nearly) blank attach repaints by itself — no input, no manual resize", async ({
@@ -27,7 +33,9 @@ test("a (nearly) blank attach repaints by itself — no input, no manual resize"
   });
 });
 
-test("a large replay that leaves visible rows blank still repaints (#407)", async ({ page }) => {
+test("a large replay that leaves visible rows blank still repaints (#407)", async ({
+  page,
+}) => {
   await setupBench(page, {
     sessions: SESSIONS,
     // Models the production report: content can briefly paint during replay, then a
@@ -42,52 +50,81 @@ test("a large replay that leaves visible rows blank still repaints (#407)", asyn
   });
 });
 
-test("a large replay that painted only a sparse fragment repaints (#416)", async ({ page }) => {
+test("a large replay that painted only a sparse fragment repaints (#416)", async ({
+  page,
+}) => {
   // Operator screenshot: a substantial Claude frame was delivered but only the top few rows
   // rendered, the rest of the (tall) grid left blank — self-healing on the agent's next repaint.
   // visibleRowsBlank is FALSE (there IS text), so the #407 guard alone never recovers it. Model
   // it: 3 visible lines + ~6KB of no-op SGR bytes — a big replay that painted only a sparse grid.
   await setupBench(page, {
     sessions: SESSIONS,
-    history: { [KEY]: ["line A\r\nline B\r\nline C\r\n" + "\x1b[m".repeat(2000)] },
+    history: {
+      [KEY]: ["line A\r\nline B\r\nline C\r\n" + "\x1b[m".repeat(2000)],
+    },
     wipeOnResizeChange: true,
   });
   await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", { timeout: 15000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", {
+    timeout: 15000,
+  });
 });
 
-test("an attach that painted real content is NOT flicker-jiggled", async ({ page }) => {
+test("an attach that painted real content is NOT flicker-jiggled", async ({
+  page,
+}) => {
   await setupBench(page, {
     sessions: SESSIONS,
-    history: { [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`) },
+    history: {
+      [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`),
+    },
     wipeOnResizeChange: true, // a jiggle would wipe this content with the marker
   });
   await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
-  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await expect(page.locator(".xterm-rows")).toContainText("content line", {
+    timeout: 15000,
+  });
   await page.waitForTimeout(2500); // comfortably past the backstop window (timers are wall-clock)
-  await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)");
+  await expect(page.locator(".xterm-rows")).not.toContainText(
+    "LIVE (repainted)",
+  );
   await expect(page.locator(".xterm-rows")).toContainText("content line");
 });
 
-test("a caught-up reconnect (no delta) is never jiggled (Hermes #374)", async ({ page }) => {
+test("a caught-up reconnect (no delta) is never jiggled (Hermes #374)", async ({
+  page,
+}) => {
   // After a transient drop the client reconnects with have == total; the server
   // correctly sends nothing and the screen is already painted — the backstop must
   // not mistake the empty delta for a blank attach and wipe a good frame.
   await setupBench(page, {
     sessions: SESSIONS,
-    history: { [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`) },
+    history: {
+      [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`),
+    },
     wipeOnResizeChange: true,
   });
   await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
-  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await expect(page.locator(".xterm-rows")).toContainText("content line", {
+    timeout: 15000,
+  });
   await page.waitForTimeout(2000); // past the first-attach backstop window (rich → no jiggle)
   await page.evaluate(() => {
-    const ws = (window as unknown as { __BENCH_LAST_WS__: { readyState: number; onclose: ((e: { code: number }) => void) | null } }).__BENCH_LAST_WS__;
+    const ws = (
+      window as unknown as {
+        __BENCH_LAST_WS__: {
+          readyState: number;
+          onclose: ((e: { code: number }) => void) | null;
+        };
+      }
+    ).__BENCH_LAST_WS__;
     ws.readyState = 3;
     ws.onclose?.({ code: 1006 }); // transient drop → client auto-reconnects with have>0
   });
   await page.waitForTimeout(4000); // reconnect (0.6s backoff) + would-be backstop window
-  await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)");
+  await expect(page.locator(".xterm-rows")).not.toContainText(
+    "LIVE (repainted)",
+  );
   await expect(page.locator(".xterm-rows")).toContainText("content line");
 });
 
@@ -102,18 +139,28 @@ test("the REPAINT button recovers a mid-session blank — no reconnect, no resta
     sessions: SESSIONS,
     // Rich attach → the first-attach backstop stays silent (the "NOT flicker-jiggled" contract),
     // so the only "LIVE (repainted)" marker can come from the REPAINT click below.
-    history: { [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`) },
+    history: {
+      [KEY]: Array.from({ length: 80 }, (_, i) => `content line ${i}`),
+    },
     wipeOnResizeChange: true, // grid change → the bench agent repaints (marker)
   });
   await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
-  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await expect(page.locator(".xterm-rows")).toContainText("content line", {
+    timeout: 15000,
+  });
   await page.waitForTimeout(2000); // past the first-attach backstop window
-  await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)"); // no auto-jiggle
+  await expect(page.locator(".xterm-rows")).not.toContainText(
+    "LIVE (repainted)",
+  ); // no auto-jiggle
 
   // The agent clears its own viewport mid-think and stops emitting — a blank/fragment, NO reconnect.
   await page.evaluate(() => {
     const ws = (
-      window as unknown as { __BENCH_LAST_WS__: { onmessage: ((e: { data: ArrayBuffer }) => void) | null } }
+      window as unknown as {
+        __BENCH_LAST_WS__: {
+          onmessage: ((e: { data: ArrayBuffer }) => void) | null;
+        };
+      }
     ).__BENCH_LAST_WS__;
     ws.onmessage?.({ data: new TextEncoder().encode("\x1b[2J\x1b[H").buffer });
   });
@@ -121,20 +168,28 @@ test("the REPAINT button recovers a mid-session blank — no reconnect, no resta
 
   // Owner taps REPAINT → the agent redraws its current frame. No RESTART, no reconnect.
   await page.getByRole("button", { name: /repaint/i }).click();
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", {
+    timeout: 5000,
+  });
 });
 
-test("REPAINT is hidden for a read-only secondary viewer (#485)", async ({ page }) => {
+test("REPAINT is hidden for a read-only secondary viewer (#485)", async ({
+  page,
+}) => {
   // A geometry nudge would reach the shared PTY, so REPAINT is owner-only — the server already
   // drops a secondary's resize frames, and a dead button is worse than no button. The stream still
   // flows (a secondary is read-only, never blank) behind the take-over banner.
   await setupBench(page, {
     sessions: SESSIONS,
-    history: { [KEY]: Array.from({ length: 12 }, (_, i) => `content line ${i}`) },
+    history: {
+      [KEY]: Array.from({ length: 12 }, (_, i) => `content line ${i}`),
+    },
     role: "secondary",
   });
   await page.goto("/s/claude/aaaaaaaa-0000-4000-8000-00000000000a");
-  await expect(page.locator(".xterm-rows")).toContainText("content line", { timeout: 15000 });
+  await expect(page.locator(".xterm-rows")).toContainText("content line", {
+    timeout: 15000,
+  });
   await expect(page.getByText(/read-only|another tab/i)).toBeVisible(); // take-over banner
   await expect(page.getByRole("button", { name: /repaint/i })).toHaveCount(0); // owner-only → absent
   await expect(page.getByRole("button", { name: /restart/i })).toHaveCount(0); // RESTART removed (#503)

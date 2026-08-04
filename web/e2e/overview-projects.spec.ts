@@ -70,7 +70,10 @@ test.beforeEach(async ({ page }) => {
         next_offset: null,
         total: sessions.length,
         facets: {
-          projects: [side, { kind: "folder", id: "/home/u/plain", name: "/home/u/plain" }],
+          projects: [
+            side,
+            { kind: "folder", id: "/home/u/plain", name: "/home/u/plain" },
+          ],
           engines: ["claude", "opencode"],
         },
       },
@@ -79,7 +82,10 @@ test.beforeEach(async ({ page }) => {
   // GET = entity listing (other surfaces may poll it); POST = the creates under test.
   await page.route(/\/api\/projects(\?.*)?$/, (r) => {
     if (r.request().method() === "POST") {
-      const body = r.request().postDataJSON() as { name: string; folders?: string[] };
+      const body = r.request().postDataJSON() as {
+        name: string;
+        folders?: string[];
+      };
       return r.fulfill({
         json: {
           id: "p-new",
@@ -94,10 +100,14 @@ test.beforeEach(async ({ page }) => {
     return r.fulfill({ json: { projects: [] } });
   });
   await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-    r.fulfill({ json: { folders: [{ cwd: "/home/u/plain", label: "plain" }] } }),
+    r.fulfill({
+      json: { folders: [{ cwd: "/home/u/plain", label: "plain" }] },
+    }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 });
 
 test("an entity spanning two cwds renders ONE cluster labelled by the entity name", async ({
@@ -110,18 +120,28 @@ test("an entity spanning two cwds renders ONE cluster labelled by the entity nam
   // One merged cluster for the entity (never one per cwd), labelled "Side".
   await expect(ov.getByTitle("Expand Side", { exact: true })).toHaveCount(1);
   await expect(ov.getByText("2 folders", { exact: true })).toBeVisible();
-  await expect(ov.getByTitle("Expand /home/u/app", { exact: true })).toHaveCount(0);
-  await expect(ov.getByTitle("Expand /home/u/lib", { exact: true })).toHaveCount(0);
+  await expect(
+    ov.getByTitle("Expand /home/u/app", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    ov.getByTitle("Expand /home/u/lib", { exact: true }),
+  ).toHaveCount(0);
 
   // The unadopted (folder-fallback) session folds into the Default project, not a path-keyed
   // folder node (#445).
-  await expect(ov.getByTitle("Expand /home/u/plain", { exact: true })).toHaveCount(0);
+  await expect(
+    ov.getByTitle("Expand /home/u/plain", { exact: true }),
+  ).toHaveCount(0);
   await expect(ov.getByTitle("Expand Default", { exact: true })).toBeVisible();
 
   // Expanding the entity cluster shows BOTH cwds' chips merged together.
   await ov.getByTitle("Expand Side", { exact: true }).click();
-  await expect(ov.locator(".tr-ov-chip", { hasText: "App session" })).toBeVisible();
-  await expect(ov.locator(".tr-ov-chip", { hasText: "Lib session" })).toBeVisible();
+  await expect(
+    ov.locator(".tr-ov-chip", { hasText: "App session" }),
+  ).toBeVisible();
+  await expect(
+    ov.locator(".tr-ov-chip", { hasText: "Lib session" }),
+  ).toBeVisible();
 });
 
 test("'Make this a project' POSTs {name, folders:[cwd]} from a folder node (Folders layout)", async ({
@@ -145,7 +165,9 @@ test("'Make this a project' POSTs {name, folders:[cwd]} from a folder node (Fold
   });
 });
 
-test("'+ New project' toolbar flow POSTs a standalone entity (no folders)", async ({ page }) => {
+test("'+ New project' toolbar flow POSTs a standalone entity (no folders)", async ({
+  page,
+}) => {
   await page.goto("/overview");
   const ov = page.locator(".tr-overview");
   await expect(ov).toBeVisible();

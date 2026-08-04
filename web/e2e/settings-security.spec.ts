@@ -20,12 +20,19 @@ function baseRoutes(page, authMode: "none" | "single-user") {
       },
     }),
   );
-  page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
   page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
   page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   page.route("**/api/projects**", (r) => r.fulfill({ json: { projects: [] } }));
@@ -43,7 +50,9 @@ test("Home Free (none): Security tab shows the login-off explainer + enable-logi
   // The recipe is behind a disclosure — open it and confirm the verified command shows.
   await page.getByText(/prefer a password login/i).click();
   await expect(page.getByText(/reset-password --prompt/)).toBeVisible();
-  await expect(page.getByText(/AGENT_SESSIONS_AUTH_MODE=single-user/)).toBeVisible();
+  await expect(
+    page.getByText(/AGENT_SESSIONS_AUTH_MODE=single-user/),
+  ).toBeVisible();
 });
 
 test("single-user: Security tab shows the normal cards, not the login-off card", async ({
@@ -52,7 +61,9 @@ test("single-user: Security tab shows the normal cards, not the login-off card",
   baseRoutes(page, "single-user");
   await page.goto("/settings/security");
   // The 2FA card's heading is always present in single-user mode…
-  await expect(page.getByRole("heading", { name: /two-factor authentication/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /two-factor authentication/i }),
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: /^account$/i })).toBeVisible();
   // …and the login-off card is not shown.
   await expect(page.getByText(/login is off/i)).toHaveCount(0);

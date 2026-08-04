@@ -40,12 +40,35 @@ vi.mock("../components/FolderPickerModal", () => ({
 const mockEntities = vi.mocked(api.projectEntities);
 
 const ENTITIES = [
-  { id: "p-a", name: "Alpha", color: "", folders: ["/a"], default_folder: "/a", archived: false, created_at: 0, session_count: 1 },
-  { id: "p-b", name: "Beta", color: "", folders: ["/b"], default_folder: "/b", archived: false, created_at: 0, session_count: 2 },
+  {
+    id: "p-a",
+    name: "Alpha",
+    color: "",
+    folders: ["/a"],
+    default_folder: "/a",
+    archived: false,
+    created_at: 0,
+    session_count: 1,
+  },
+  {
+    id: "p-b",
+    name: "Beta",
+    color: "",
+    folders: ["/b"],
+    default_folder: "/b",
+    archived: false,
+    created_at: 0,
+    session_count: 2,
+  },
 ];
 
 function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
-  const config: AppConfig = { csrf: "x", new_session_engines: engines, terminal_backend: "ws", ...extra };
+  const config: AppConfig = {
+    csrf: "x",
+    new_session_engines: engines,
+    terminal_backend: "ws",
+    ...extra,
+  };
   return render(
     <ConfigCtx.Provider value={config}>
       <MemoryRouter>
@@ -59,7 +82,9 @@ beforeEach(() => {
   navigateMock.mockReset();
   mockEntities.mockReset();
   mockEntities.mockResolvedValue({ projects: ENTITIES });
-  vi.mocked(api.setSessionProject).mockReset().mockResolvedValue({ id: "x", project_id: "" });
+  vi.mocked(api.setSessionProject)
+    .mockReset()
+    .mockResolvedValue({ id: "x", project_id: "" });
   vi.mocked(api.createProject).mockReset();
 });
 
@@ -80,7 +105,9 @@ test.each([
 
 test("the agent picker is hidden with one engine, shown with more (#448 reorder)", async () => {
   const { unmount } = renderLanding(["claude"]);
-  expect(await screen.findByRole("combobox", { name: "Project" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("combobox", { name: "Project" }),
+  ).toBeInTheDocument();
   expect(screen.queryByText("Agent")).not.toBeInTheDocument();
   unmount();
   renderLanding(["claude", "opencode"]);
@@ -90,12 +117,19 @@ test("the agent picker is hidden with one engine, shown with more (#448 reorder)
 test("selecting a project prefills the Folder with its default and launches there (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  const project = (await screen.findByRole("combobox", {
+    name: "Project",
+  })) as HTMLSelectElement;
   expect(project.value).toBe("p-a"); // first entity is the default selection
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/a");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/a");
 
   await user.click(screen.getByRole("button", { name: /start session/i }));
-  const [path, opts] = navigateMock.mock.calls[0] as [string, { state: { fresh: unknown } }];
+  const [path, opts] = navigateMock.mock.calls[0] as [
+    string,
+    { state: { fresh: unknown } },
+  ];
   expect(path).toMatch(/^\/s\/claude\/[0-9a-f-]{36}$/);
   expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
   // /a is Alpha's adopted folder → folder resolution already yields Alpha → no redundant stamp.
@@ -107,7 +141,9 @@ test("changing the project switches the default folder (#448)", async () => {
   renderLanding(["claude"]);
   const project = await screen.findByRole("combobox", { name: "Project" });
   await user.selectOptions(project, "p-b");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/b");
 });
 
 test("Choose folder overrides the project default for this session + stamps the project (#448)", async () => {
@@ -116,10 +152,15 @@ test("Choose folder overrides the project default for this session + stamps the 
   await screen.findByRole("combobox", { name: "Project" }); // default project = Alpha (/a)
   await user.click(screen.getByRole("button", { name: /choose folder/i }));
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/picked");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/picked");
 
   await user.click(screen.getByRole("button", { name: /start session/i }));
-  const [path, opts] = navigateMock.mock.calls[0] as [string, { state: { fresh: { cwd: string } } }];
+  const [path, opts] = navigateMock.mock.calls[0] as [
+    string,
+    { state: { fresh: { cwd: string } } },
+  ];
   expect(opts.state.fresh.cwd).toBe("/picked");
   // /picked isn't Alpha's adopted folder → the explicit project must be stamped.
   const id = path.split("/").pop();
@@ -131,9 +172,14 @@ test("'no project' launches in the config default folder without stamping (#448)
   renderLanding(["claude"], { default_project: "/d" });
   const project = await screen.findByRole("combobox", { name: "Project" });
   await user.selectOptions(project, "");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/d");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/d");
   await user.click(screen.getByRole("button", { name: /start session/i }));
-  const [, opts] = navigateMock.mock.calls[0] as [string, { state: { fresh: { cwd: string } } }];
+  const [, opts] = navigateMock.mock.calls[0] as [
+    string,
+    { state: { fresh: { cwd: string } } },
+  ];
   expect(opts.state.fresh.cwd).toBe("/d");
   expect(api.setSessionProject).not.toHaveBeenCalled();
 });
@@ -171,14 +217,23 @@ test("inline create requires a default folder, then creates with it (#448)", asy
   await user.click(screen.getByRole("button", { name: /default folder/i }));
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await user.click(screen.getByRole("button", { name: /^create$/i }));
-  expect(api.createProject).toHaveBeenCalledWith({ name: "Zed", default_folder: "/picked" });
-  expect((await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement).toBeInTheDocument();
+  expect(api.createProject).toHaveBeenCalledWith({
+    name: "Zed",
+    default_folder: "/picked",
+  });
+  expect(
+    (await screen.findByRole("combobox", {
+      name: "Project",
+    })) as HTMLSelectElement,
+  ).toBeInTheDocument();
 });
 
 test("no Project select when there are no entities, but New project is offered (#448)", async () => {
   mockEntities.mockResolvedValue({ projects: [] });
   renderLanding(["claude"]);
-  expect(await screen.findByRole("button", { name: /new project/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: /new project/i }),
+  ).toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
 });
 
@@ -191,23 +246,33 @@ test("no Project select when there are no entities, but New project is offered (
 
 test("the starred project is pre-selected, not the alphabetically-first one (#615)", async () => {
   renderLanding(["claude"], { default_project_id: "p-b" });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  const project = (await screen.findByRole("combobox", {
+    name: "Project",
+  })) as HTMLSelectElement;
   expect(project.value).toBe("p-b");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/b");
 });
 
 test("a starred project that no longer exists falls back to the first project (#615)", async () => {
   // Deleted, or archived — `projectEntities()` drops archived, so both look like this.
   renderLanding(["claude"], { default_project_id: "p-gone" });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  const project = (await screen.findByRole("combobox", {
+    name: "Project",
+  })) as HTMLSelectElement;
   expect(project.value).toBe("p-a");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/a");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/a");
 });
 
 test("an archived starred project falls back — it is absent from the entity list (#615)", async () => {
   mockEntities.mockResolvedValue({ projects: [ENTITIES[1]] }); // only Beta survives the archive
   renderLanding(["claude"], { default_project_id: "p-a" });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  const project = (await screen.findByRole("combobox", {
+    name: "Project",
+  })) as HTMLSelectElement;
   expect(project.value).toBe("p-b");
 });
 
@@ -217,8 +282,15 @@ test("a starred project with no default folder falls through to the legacy cwd (
   mockEntities.mockResolvedValue({
     projects: [{ ...ENTITIES[0], default_folder: "" }, ENTITIES[1]],
   });
-  renderLanding(["claude"], { default_project_id: "p-a", default_project: "/legacy" });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  renderLanding(["claude"], {
+    default_project_id: "p-a",
+    default_project: "/legacy",
+  });
+  const project = (await screen.findByRole("combobox", {
+    name: "Project",
+  })) as HTMLSelectElement;
   expect(project.value).toBe("p-a"); // still starred…
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/legacy");
+  expect(
+    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+  ).toBe("/legacy");
 });

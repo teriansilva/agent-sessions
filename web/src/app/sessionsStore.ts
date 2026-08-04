@@ -10,7 +10,10 @@ export interface SessionsStore {
   setSessions: (s: Session[]) => void;
 }
 
-export const SessionsCtx = createContext<SessionsStore>({ sessions: [], setSessions: () => {} });
+export const SessionsCtx = createContext<SessionsStore>({
+  sessions: [],
+  setSessions: () => {},
+});
 
 export function useSessionsStore(): SessionsStore {
   return useContext(SessionsCtx);

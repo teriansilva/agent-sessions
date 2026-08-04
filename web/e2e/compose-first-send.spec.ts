@@ -56,16 +56,27 @@ test("first compose Send into a fresh session waits for the agent's first paint 
       },
     }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   await page.route(/\/api\/sessions\/[^/]+\/draft$/, (r) =>
-    r.fulfill({ json: { id: "", text: "", attachments: [], updated_at: null } }),
+    r.fulfill({
+      json: { id: "", text: "", attachments: [], updated_at: null },
+    }),
   );
   await page.addInitScript(BOOTING_WS);
 
@@ -98,14 +109,18 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   // the screen. Nothing may be released on this chunk: the #616 bug delivered here, and the clear
   // below then wiped the paste. (Red before the fix: __sentInput is already non-empty at this
   // point, and the message never reaches the agent.)
-  await page.evaluate(() => window.__emitOutput("\x1b[?25h\x1b[?25l\x1b[?2004h"));
+  await page.evaluate(() =>
+    window.__emitOutput("\x1b[?25h\x1b[?25l\x1b[?2004h"),
+  );
   await page.waitForTimeout(250);
   expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
   await expect(page.getByText(/waiting for agent/i)).toBeVisible();
 
   // The paint the old gate raced: alternate-screen switch, clear, then the banner.
   await page.evaluate(() => window.__emitOutput("\x1b[?1049h\x1b[2J\x1b[H"));
-  await page.evaluate(() => window.__emitOutput("\x1b[?1000h\x1b[?1006h✳ Claude Code\r\n❯ "));
+  await page.evaluate(() =>
+    window.__emitOutput("\x1b[?1000h\x1b[?1006h✳ Claude Code\r\n❯ "),
+  );
 
   // Paint settled → the held message delivers: clear, paste, then the deferred Enter (#180
   // sequencing preserved).
@@ -124,7 +139,10 @@ test("first compose Send into a fresh session waits for the agent's first paint 
 test("fresh Codex send waits for boot output to go quiet before using fallback readiness (#607)", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "timing-sensitive fallback path runs once");
+  test.skip(
+    testInfo.project.name !== "desktop",
+    "timing-sensitive fallback path runs once",
+  );
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -136,16 +154,27 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
       },
     }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   await page.route(/\/api\/sessions\/[^/]+\/draft$/, (r) =>
-    r.fulfill({ json: { id: "", text: "", attachments: [], updated_at: null } }),
+    r.fulfill({
+      json: { id: "", text: "", attachments: [], updated_at: null },
+    }),
   );
   await page.addInitScript(BOOTING_WS);
 
@@ -171,7 +200,9 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
 
   await expect
-    .poll(async () => page.evaluate(() => window.__sentInput.join("")), { timeout: 3000 })
+    .poll(async () => page.evaluate(() => window.__sentInput.join("")), {
+      timeout: 3000,
+    })
     .toContain("\x1b[200~do the first codex task\x1b[201~");
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.at(-1)))

@@ -51,12 +51,26 @@ test.beforeEach(async ({ page }) => {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions, next_offset: null, total: sessions.length, facets: { projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }], engines: ["claude", "opencode"] } },
+      json: {
+        sessions,
+        next_offset: null,
+        total: sessions.length,
+        facets: {
+          projects: [
+            { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
+          ],
+          engines: ["claude", "opencode"],
+        },
+      },
     }),
   );
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 });
 
 test("desktop: a cluster expands on click, then a chip opens the session (#149)", async ({
@@ -90,28 +104,27 @@ test("desktop: the layout selector regroups the map and persists device-locally 
   const ov = page.locator(".tr-overview");
 
   // Default = Projects: both sessions are unadopted → they fold into the Default project (#445).
-  await expect(ov.getByRole("radio", { name: /group by projects/i })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  await expect(
+    ov.getByRole("radio", { name: /group by projects/i }),
+  ).toHaveAttribute("aria-checked", "true");
   await expect(ov.getByTitle(/expand Default/i)).toBeVisible();
 
   // Switch to Agents → one cluster per engine (claude + opencode), no folder cluster.
   await ov.getByRole("radio", { name: /group by agents/i }).click();
-  await expect(ov.getByRole("radio", { name: /group by agents/i })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  await expect(
+    ov.getByRole("radio", { name: /group by agents/i }),
+  ).toHaveAttribute("aria-checked", "true");
   await expect(ov.getByTitle(/expand claude/i)).toBeVisible();
   await expect(ov.getByTitle(/expand opencode/i)).toBeVisible();
   await expect(ov.getByTitle(/expand \/home\/u\/proj/i)).toHaveCount(0);
 
   // The choice is device-local (localStorage) and survives a reload.
-  expect(await page.evaluate(() => localStorage.getItem("tr-overview-groupby"))).toBe("agent");
+  expect(
+    await page.evaluate(() => localStorage.getItem("tr-overview-groupby")),
+  ).toBe("agent");
   await page.reload();
-  await expect(ov.getByRole("radio", { name: /group by agents/i })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  await expect(
+    ov.getByRole("radio", { name: /group by agents/i }),
+  ).toHaveAttribute("aria-checked", "true");
   await expect(ov.getByTitle(/expand claude/i)).toBeVisible();
 });

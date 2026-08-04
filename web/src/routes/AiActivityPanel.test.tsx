@@ -5,7 +5,8 @@ import type { AiActivity } from "../types/api";
 import { AiActivityPanel } from "./AiActivityPanel";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return { ...actual, api: { aiActivity: vi.fn() } };
 });
 
@@ -41,7 +42,14 @@ test("shows a running scan + a last-run summary (#441 P6)", async () => {
   const now = Math.floor(Date.now() / 1000);
   const activity: AiActivity = {
     running: [{ kind: "pulse-scan", detail: "manual", started_at: now - 6 }],
-    last: { "ai-review": { finished_at: now - 120, ok: true, detail: "sweep", duration_s: 3.2 } },
+    last: {
+      "ai-review": {
+        finished_at: now - 120,
+        ok: true,
+        detail: "sweep",
+        duration_s: 3.2,
+      },
+    },
   };
   vi.mocked(api.aiActivity).mockResolvedValue(activity);
   render(<AiActivityPanel />);

@@ -22,15 +22,28 @@ test.beforeEach(async ({ page }) => {
   await page.route(/\/api\/folders(\?.*)?$/, (r) =>
     r.fulfill({ json: { folders: [{ cwd: "/home/u/test", label: "test" }] } }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
-  await page.route("**/api/system", (r) =>
-    r.fulfill({ json: { auto_update: true, current: "test", channel: "stable" } }),
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
   );
-  await page.route("**/api/projects**", (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
+  await page.route("**/api/system", (r) =>
+    r.fulfill({
+      json: { auto_update: true, current: "test", channel: "stable" },
+    }),
+  );
+  await page.route("**/api/projects**", (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
 });
@@ -38,7 +51,11 @@ test.beforeEach(async ({ page }) => {
 // Default brand accent (--accent = #ffb000). A capped native control is ≤ 18px on both axes.
 const AMBER = "rgb(255, 176, 0)";
 
-async function expectBrandedAndCapped(page, role: "checkbox" | "radio", name: RegExp) {
+async function expectBrandedAndCapped(
+  page,
+  role: "checkbox" | "radio",
+  name: RegExp,
+) {
   const el = page.getByRole(role, { name });
   await expect(el).toBeVisible();
   const accent = await el.evaluate((n) => getComputedStyle(n).accentColor);
@@ -49,12 +66,16 @@ async function expectBrandedAndCapped(page, role: "checkbox" | "radio", name: Re
   expect(box!.height).toBeLessThanOrEqual(18);
 }
 
-test("Updates auto-update checkbox is brand-accented and size-capped (#683)", async ({ page }) => {
+test("Updates auto-update checkbox is brand-accented and size-capped (#683)", async ({
+  page,
+}) => {
   await page.goto("/settings/system");
   await expectBrandedAndCapped(page, "checkbox", /automatic updates/i);
 });
 
-test("Session-overview mode radios are brand-accented and size-capped (#683)", async ({ page }) => {
+test("Session-overview mode radios are brand-accented and size-capped (#683)", async ({
+  page,
+}) => {
   await page.goto("/settings/projects");
   await expectBrandedAndCapped(page, "radio", /show all/i);
   await expectBrandedAndCapped(page, "radio", /only included/i);

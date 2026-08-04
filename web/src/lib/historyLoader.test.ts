@@ -16,7 +16,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const page = (ansi: string, cursor: number | null, has_more: boolean): HistoryPage => ({
+const page = (
+  ansi: string,
+  cursor: number | null,
+  has_more: boolean,
+): HistoryPage => ({
   ansi,
   cursor,
   has_more,
@@ -27,7 +31,9 @@ describe("HistoryLoader", () => {
     const calls: Array<number | undefined> = [];
     const fetchPage = vi.fn(async (q: { before?: number }) => {
       calls.push(q.before);
-      return q.before === undefined ? page("p1", 40, true) : page("p2", 20, true);
+      return q.before === undefined
+        ? page("p1", 40, true)
+        : page("p2", 20, true);
     });
     const loader = new HistoryLoader(fetchPage);
 
@@ -94,7 +100,14 @@ describe("HistoryLoader", () => {
     expect((await loader.retry(80))?.ansi).toBe("p");
     // The failed request and the retry used the same cursor (no advance on error).
     expect(calls).toEqual([undefined, 30, 30]);
-    expect(states).toEqual(["loading", "idle", "loading", "error", "loading", "idle"]);
+    expect(states).toEqual([
+      "loading",
+      "idle",
+      "loading",
+      "error",
+      "loading",
+      "idle",
+    ]);
   });
 
   it("seed() makes the first request carry the exact attach boundary as `before`", async () => {

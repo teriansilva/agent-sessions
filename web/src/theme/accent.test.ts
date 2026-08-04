@@ -21,7 +21,18 @@ test("normalizeAccent: expands #rgb shorthand", () => {
 });
 
 test("normalizeAccent: rejects non-hex / wrong length / non-strings", () => {
-  for (const bad of ["nope", "#12", "#12345", "#1234567", "rgb(0,0,0)", "", "#ggghhh", 7, null, undefined]) {
+  for (const bad of [
+    "nope",
+    "#12",
+    "#12345",
+    "#1234567",
+    "rgb(0,0,0)",
+    "",
+    "#ggghhh",
+    7,
+    null,
+    undefined,
+  ]) {
     expect(normalizeAccent(bad as unknown)).toBeNull();
   }
 });
@@ -46,7 +57,10 @@ test("every preset is a normalized hex AND its on-accent ink meets WCAG AA (>=4.
   const ids = new Set<string>();
   for (const p of ACCENT_PRESETS) {
     expect(normalizeAccent(p.hex), `${p.id} is normalized`).toBe(p.hex);
-    expect(onAccentContrast(p.hex), `${p.id} on-accent AA`).toBeGreaterThanOrEqual(4.5);
+    expect(
+      onAccentContrast(p.hex),
+      `${p.id} on-accent AA`,
+    ).toBeGreaterThanOrEqual(4.5);
     expect(ids.has(p.id), `${p.id} unique`).toBe(false);
     ids.add(p.id);
   }

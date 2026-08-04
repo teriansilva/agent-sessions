@@ -40,7 +40,11 @@ const MATCH = {
   engine: "claude",
   title: "fix ws delta-resume reconnect",
   cwd: "/home/u/agent-sessions",
-  project: { kind: "folder", id: "/home/u/agent-sessions", name: "agent-sessions" },
+  project: {
+    kind: "folder",
+    id: "/home/u/agent-sessions",
+    name: "agent-sessions",
+  },
   last_activity: T - 7200,
   ai_summary: "Reconnect backoff fixed; tests green",
   intervention_required: false,
@@ -59,10 +63,17 @@ async function stubApp(page: import("@playwright/test").Page) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/pulse", (r) => r.fulfill({ json: EMPTY_OVERVIEW }));
 }
@@ -72,11 +83,15 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
 }) => {
   await stubApp(page);
   await page.route("**/api/pulse/ask", async (r) => {
-    const body = r.request().postDataJSON() as { query: string; history: unknown[] };
+    const body = r.request().postDataJSON() as {
+      query: string;
+      history: unknown[];
+    };
     expect(body.query).toContain("websocket reconnect");
     await r.fulfill({
       json: {
-        answer: "That was your ws delta-resume session in agent-sessions, 2 hours ago.",
+        answer:
+          "That was your ws delta-resume session in agent-sessions, 2 hours ago.",
         matches: [MATCH],
         stage: "content",
         configured: true,
@@ -85,18 +100,30 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
   });
 
   await page.goto("/pulse");
-  const input = page.getByRole("textbox", { name: /ask about your past work/i });
-  await input.fill("I worked on the websocket reconnect bug — which session was that?");
+  const input = page.getByRole("textbox", {
+    name: /ask about your past work/i,
+  });
+  await input.fill(
+    "I worked on the websocket reconnect bug — which session was that?",
+  );
   await page.getByRole("button", { name: /^ask$/i }).click();
 
   // Answer line + the matched session card (the reused Pulse card) render in the thread.
-  await expect(page.getByText(/that was your ws delta-resume session/i)).toBeVisible();
+  await expect(
+    page.getByText(/that was your ws delta-resume session/i),
+  ).toBeVisible();
   await expect(page.getByText("fix ws delta-resume reconnect")).toBeVisible();
-  await expect(page.getByText(/transcript discusses reconnect backoff/i)).toBeVisible();
+  await expect(
+    page.getByText(/transcript discusses reconnect backoff/i),
+  ).toBeVisible();
 
   // Jump in navigates into the session view (the card id's engine/uuid route).
-  await page.getByRole("link", { name: /jump into fix ws delta-resume reconnect/i }).click();
-  await expect(page).toHaveURL(/\/s\/claude\/1b2f3a4c-0000-4000-8000-abcdefabcdef/);
+  await page
+    .getByRole("link", { name: /jump into fix ws delta-resume reconnect/i })
+    .click();
+  await expect(page).toHaveURL(
+    /\/s\/claude\/1b2f3a4c-0000-4000-8000-abcdefabcdef/,
+  );
 });
 
 test("a long question + a matched card fit at 320px — no horizontal scroll (#522/#494)", async ({
@@ -125,10 +152,14 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   );
 
   await page.goto("/pulse");
-  const input = page.getByRole("textbox", { name: /ask about your past work/i });
+  const input = page.getByRole("textbox", {
+    name: /ask about your past work/i,
+  });
   await input.fill(LONG_Q);
   await page.getByRole("button", { name: /^ask$/i }).click();
-  await expect(page.getByText(/that long-token session is this one/i)).toBeVisible();
+  await expect(
+    page.getByText(/that long-token session is this one/i),
+  ).toBeVisible();
   await expect(page.getByRole("link", { name: /jump into/i })).toBeVisible();
 
   // No element on the page is user-scrollable horizontally (same probe as #494).

@@ -28,7 +28,8 @@ export function MoveToProjectModal({
   const [projects, setProjects] = useState<ProjectEntity[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const firstRef = useRef<HTMLButtonElement>(null);
-  const currentId = session.project.kind === "project" ? session.project.id : null;
+  const currentId =
+    session.project.kind === "project" ? session.project.id : null;
 
   // Load the assignable entities once on open. Focus moves to the first option after they land.
   useEffect(() => {
@@ -88,14 +89,25 @@ export function MoveToProjectModal({
                   className={styles.option}
                   aria-current={currentId === p.id ? "true" : undefined}
                   onClick={() =>
-                    onMove({ kind: "project", id: p.id, name: p.name, color: p.color || undefined })
+                    onMove({
+                      kind: "project",
+                      id: p.id,
+                      name: p.name,
+                      color: p.color || undefined,
+                    })
                   }
                 >
                   {p.color && (
-                    <span className={styles.dot} style={{ background: p.color }} aria-hidden="true" />
+                    <span
+                      className={styles.dot}
+                      style={{ background: p.color }}
+                      aria-hidden="true"
+                    />
                   )}
                   <span className={styles.optName}>{p.name}</span>
-                  {currentId === p.id && <Check size={14} aria-label="current" />}
+                  {currentId === p.id && (
+                    <Check size={14} aria-label="current" />
+                  )}
                 </button>
               </li>
             ))}
@@ -115,7 +127,9 @@ export function MoveToProjectModal({
           </ul>
         )}
         {projects?.length === 0 && !error && (
-          <p className={styles.help}>No projects yet — create one in Settings or the overview map.</p>
+          <p className={styles.help}>
+            No projects yet — create one in Settings or the overview map.
+          </p>
         )}
         <div className={styles.actions}>
           <button type="button" className={styles.cancel} onClick={onCancel}>

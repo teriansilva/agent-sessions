@@ -26,25 +26,41 @@ async function mockDrafts(page: import("@playwright/test").Page) {
   const store: Record<string, Draft> = {};
   await page.route("**/api/sessions/*/draft", async (route) => {
     const url = route.request().url();
-    const sid = decodeURIComponent(url.split("/api/sessions/")[1].split("/draft")[0]);
+    const sid = decodeURIComponent(
+      url.split("/api/sessions/")[1].split("/draft")[0],
+    );
     if (route.request().method() === "GET") {
       const d = store[sid] ?? { text: "", attachments: [] };
       await route.fulfill({
-        json: { id: sid, text: d.text, attachments: d.attachments, updated_at: d.text ? 1 : null },
+        json: {
+          id: sid,
+          text: d.text,
+          attachments: d.attachments,
+          updated_at: d.text ? 1 : null,
+        },
       });
       return;
     }
     if (route.request().method() === "PUT") {
       const body = route.request().postDataJSON() as Draft;
-      if (!body.text && !(body.attachments?.length)) delete store[sid];
-      else store[sid] = { text: body.text ?? "", attachments: body.attachments ?? [] };
+      if (!body.text && !body.attachments?.length) delete store[sid];
+      else
+        store[sid] = {
+          text: body.text ?? "",
+          attachments: body.attachments ?? [],
+        };
       await route.fulfill({ json: { id: sid, has_draft: !!store[sid] } });
       return;
     }
     await route.fallback();
   });
   await page.route("**/api/upload", (r) =>
-    r.fulfill({ json: { name: "shot.png", path: "/home/u/.agent-sessions/uploads/shot.png" } }),
+    r.fulfill({
+      json: {
+        name: "shot.png",
+        path: "/home/u/.agent-sessions/uploads/shot.png",
+      },
+    }),
   );
   return store;
 }
@@ -59,7 +75,9 @@ async function openCompose(page: import("@playwright/test").Page) {
   return ta;
 }
 
-test("a typed draft is saved and restored verbatim after a full reload (#477)", async ({ page }) => {
+test("a typed draft is saved and restored verbatim after a full reload (#477)", async ({
+  page,
+}) => {
   const store = await mockDrafts(page);
   await page.addInitScript(FAKE_WS);
   await page.goto("/s/claude/draft-text");
@@ -69,15 +87,21 @@ test("a typed draft is saved and restored verbatim after a full reload (#477)", 
   await ta.fill("remember the refresh-token rotation");
 
   // The debounced PUT lands on the server (the heart of cross-device persistence).
-  await expect.poll(() => store["claude:draft-text"]?.text).toBe("remember the refresh-token rotation");
+  await expect
+    .poll(() => store["claude:draft-text"]?.text)
+    .toBe("remember the refresh-token rotation");
 
   // Reload from scratch: the draft is fetched and restored into the box (which auto-opens).
   await page.reload();
   await expect(page.locator(".xterm")).toBeVisible();
-  await expect(page.getByPlaceholder(/type here/i)).toHaveValue("remember the refresh-token rotation");
+  await expect(page.getByPlaceholder(/type here/i)).toHaveValue(
+    "remember the refresh-token rotation",
+  );
 });
 
-test("a pasted image is restored as an attachment pill after reload (#477)", async ({ page }) => {
+test("a pasted image is restored as an attachment pill after reload (#477)", async ({
+  page,
+}) => {
   const store = await mockDrafts(page);
   await page.addInitScript(FAKE_WS);
   await page.goto("/s/claude/draft-img");
@@ -86,15 +110,23 @@ test("a pasted image is restored as an attachment pill after reload (#477)", asy
 
   // Paste an image over the terminal → Compose attaches it as a pill (#157) and saves the draft.
   await xterm.evaluate((host) => {
-    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
     const dt = new DataTransfer();
     dt.items.add(file);
     host.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
     );
   });
   await expect(page.getByText("shot.png")).toBeVisible();
-  await expect.poll(() => store["claude:draft-img"]?.attachments?.length ?? 0).toBe(1);
+  await expect
+    .poll(() => store["claude:draft-img"]?.attachments?.length ?? 0)
+    .toBe(1);
 
   await page.reload();
   await expect(page.locator(".xterm")).toBeVisible();
@@ -110,7 +142,9 @@ test("sending the message clears the saved draft (#477)", async ({ page }) => {
 
   const ta = await openCompose(page);
   await ta.fill("about to send this");
-  await expect.poll(() => store["claude:draft-send"]?.text).toBe("about to send this");
+  await expect
+    .poll(() => store["claude:draft-send"]?.text)
+    .toBe("about to send this");
 
   // A content send takes the bracketed-paste path and then clears the draft server-side.
   await page.getByRole("button", { name: /^send/i }).click();

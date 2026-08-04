@@ -50,20 +50,39 @@ test.beforeEach(async ({ page }) => {
     }),
   );
   await page.route("**/api/prefs", async (r) => {
-    const body = r.request().postDataJSON() as { pulse?: Record<string, unknown> } | null;
+    const body = r.request().postDataJSON() as {
+      pulse?: Record<string, unknown>;
+    } | null;
     Object.assign(pulse, body?.pulse ?? {});
     await r.fulfill({ json: { pulse: { ...pulse } } });
   });
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
-  await page.route("**/api/ai/activity", (r) => r.fulfill({ json: { running: [], last: {} } }));
-  await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: ["minimax-m2.7"] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route(/\/api\/projects($|\?)/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
+  await page.route("**/api/ai/activity", (r) =>
+    r.fulfill({ json: { running: [], last: {} } }),
+  );
+  await page.route("**/api/ai-review/models**", (r) =>
+    r.fulfill({ json: { models: ["minimax-m2.7"] } }),
+  );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
 });

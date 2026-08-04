@@ -58,14 +58,18 @@ async function setup(page: Page, project: string): Promise<void> {
         next_offset: null,
         total: sessions.length,
         facets: {
-          projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }],
+          projects: [
+            { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
+          ],
           engines: ["claude"],
         },
       },
     }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route("**/api/sessions/*/favorite", (r) =>
     r.fulfill({ json: { id: "claude:active", sticky: true } }),
   );
@@ -99,19 +103,31 @@ test.describe("session row redesign (#508)", () => {
     await expect(sidebar.getByText("10 mins ago")).toBeVisible();
 
     // The favorited row leads with the amber ★; the unfavorited one doesn't.
-    const pinnedRow = page.getByRole("listitem").filter({ hasText: "Pinned session" });
-    const activeRow = page.getByRole("listitem").filter({ hasText: "Active work" });
+    const pinnedRow = page
+      .getByRole("listitem")
+      .filter({ hasText: "Pinned session" });
+    const activeRow = page
+      .getByRole("listitem")
+      .filter({ hasText: "Active work" });
     await expect(pinnedRow.locator('[title="Favorited"]')).toBeVisible();
     await expect(activeRow.locator('[title="Favorited"]')).toHaveCount(0);
 
     // Favorite is no longer a standalone row button (it moved into the ⋯ menu).
-    await expect(pinnedRow.getByRole("button", { name: "Unfavorite" })).toHaveCount(0);
-    await expect(activeRow.getByRole("button", { name: "Favorite" })).toHaveCount(0);
+    await expect(
+      pinnedRow.getByRole("button", { name: "Unfavorite" }),
+    ).toHaveCount(0);
+    await expect(
+      activeRow.getByRole("button", { name: "Favorite" }),
+    ).toHaveCount(0);
   });
 
-  test("favoriting from the ⋯ menu adds the ★ prefix to the row", async ({ page }, testInfo) => {
+  test("favoriting from the ⋯ menu adds the ★ prefix to the row", async ({
+    page,
+  }, testInfo) => {
     await setup(page, testInfo.project.name);
-    const activeRow = page.getByRole("listitem").filter({ hasText: "Active work" });
+    const activeRow = page
+      .getByRole("listitem")
+      .filter({ hasText: "Active work" });
     await expect(activeRow.locator('[title="Favorited"]')).toHaveCount(0);
 
     await activeRow.hover();

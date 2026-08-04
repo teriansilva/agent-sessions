@@ -1,5 +1,10 @@
 import { expect, test, vi } from "vitest";
-import { appConsumesWheel, attachTouchScroll, dragToLines, type ScrollAccum } from "./touchScroll";
+import {
+  appConsumesWheel,
+  attachTouchScroll,
+  dragToLines,
+  type ScrollAccum,
+} from "./touchScroll";
 
 test("converts a drag into whole lines by row height", () => {
   const acc: ScrollAccum = { remainder: 0 };
@@ -31,7 +36,10 @@ test("unmeasured / invalid row height is a no-op (never NaN scrolls)", () => {
 
 // --- gesture wiring: long-press selection vs. multi-touch ---------------------------
 
-function touchEvent(type: string, points: Array<{ clientX: number; clientY: number }>) {
+function touchEvent(
+  type: string,
+  points: Array<{ clientX: number; clientY: number }>,
+) {
   const ev = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(ev, "touches", { value: points });
   return ev;
@@ -57,7 +65,9 @@ test("a still single-finger hold enters selection mode (long-press fires)", () =
       onLongPress: () => longPresses++,
       longPressMs: 400,
     });
-    surface.dispatchEvent(touchEvent("touchstart", [{ clientX: 10, clientY: 10 }]));
+    surface.dispatchEvent(
+      touchEvent("touchstart", [{ clientX: 10, clientY: 10 }]),
+    );
     vi.advanceTimersByTime(500);
     expect(longPresses).toBe(1);
     detach();
@@ -77,7 +87,9 @@ test("a second finger cancels the pending long-press (pinch never selects)", () 
       onLongPress: () => longPresses++,
       longPressMs: 400,
     });
-    surface.dispatchEvent(touchEvent("touchstart", [{ clientX: 10, clientY: 10 }]));
+    surface.dispatchEvent(
+      touchEvent("touchstart", [{ clientX: 10, clientY: 10 }]),
+    );
     // second finger joins before the long-press threshold elapses
     surface.dispatchEvent(
       touchEvent("touchstart", [
@@ -103,7 +115,10 @@ test("exposes detach + stopMomentum; stopMomentum halts an in-flight fling", () 
   const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
   try {
     const surface = document.createElement("div");
-    Object.defineProperty(surface, "clientHeight", { value: 480, configurable: true });
+    Object.defineProperty(surface, "clientHeight", {
+      value: 480,
+      configurable: true,
+    });
     let scrolled = 0;
     const term = { ...fakeTerm(), scrollLines: (n: number) => (scrolled += n) };
     const api = attachTouchScroll(surface, term, {});
@@ -111,7 +126,9 @@ test("exposes detach + stopMomentum; stopMomentum halts an in-flight fling", () 
     expect(typeof api.stopMomentum).toBe("function");
 
     const move = (type: string, y: number, empty = false) =>
-      surface.dispatchEvent(touchEvent(type, empty ? [] : [{ clientX: 10, clientY: y }]));
+      surface.dispatchEvent(
+        touchEvent(type, empty ? [] : [{ clientX: 10, clientY: y }]),
+      );
     move("touchstart", 400);
     for (let y = 380; y >= 200; y -= 20) {
       vi.advanceTimersByTime(8); // fast, steady drag → non-trivial velocity
@@ -156,29 +173,45 @@ function fakeAppTerm() {
 test("appConsumesWheel: mouse-tracking OR alt-screen consumes the wheel; a plain normal buffer does not", () => {
   // claude/opencode: mouse tracking on → app owns the scroll.
   expect(
-    appConsumesWheel({ modes: { mouseTrackingMode: "any" }, buffer: { active: { type: "normal" } } }),
+    appConsumesWheel({
+      modes: { mouseTrackingMode: "any" },
+      buffer: { active: { type: "normal" } },
+    }),
   ).toBe(true);
   // alt-screen even without mouse tracking.
   expect(
-    appConsumesWheel({ modes: { mouseTrackingMode: "none" }, buffer: { active: { type: "alternate" } } }),
+    appConsumesWheel({
+      modes: { mouseTrackingMode: "none" },
+      buffer: { active: { type: "alternate" } },
+    }),
   ).toBe(true);
   // codex/gemini inline: no mouse tracking, normal buffer → xterm keeps real scrollback.
   expect(
-    appConsumesWheel({ modes: { mouseTrackingMode: "none" }, buffer: { active: { type: "normal" } } }),
+    appConsumesWheel({
+      modes: { mouseTrackingMode: "none" },
+      buffer: { active: { type: "normal" } },
+    }),
   ).toBe(false);
   expect(appConsumesWheel({})).toBe(false); // defensive: unknown modes/buffer
 });
 
 test("app-consuming session: a touch drag forwards a wheel to the app and reports the scroll direction", () => {
   const surface = document.createElement("div");
-  Object.defineProperty(surface, "clientHeight", { value: 480, configurable: true }); // 20px/row
+  Object.defineProperty(surface, "clientHeight", {
+    value: 480,
+    configurable: true,
+  }); // 20px/row
   const term = fakeAppTerm();
   const dirs: number[] = [];
   let wheels = 0;
   term.screen.addEventListener("wheel", () => wheels++);
-  const api = attachTouchScroll(surface, term, { onAppScroll: (d) => dirs.push(d) });
+  const api = attachTouchScroll(surface, term, {
+    onAppScroll: (d) => dirs.push(d),
+  });
   const move = (type: string, y: number, empty = false) =>
-    surface.dispatchEvent(touchEvent(type, empty ? [] : [{ clientX: 10, clientY: y }]));
+    surface.dispatchEvent(
+      touchEvent(type, empty ? [] : [{ clientX: 10, clientY: y }]),
+    );
   move("touchstart", 100);
   move("touchmove", 160); // finger DOWN 60px → scroll UP into history (lines < 0)
   expect(wheels).toBeGreaterThan(0); // forwarded a synthetic wheel to the app (not scrollLines)
@@ -188,10 +221,15 @@ test("app-consuming session: a touch drag forwards a wheel to the app and report
 
 test("jumpToTail forwards a downward wheel burst for an app-consuming session; no-op for a scrollback session", () => {
   const surface = document.createElement("div");
-  Object.defineProperty(surface, "clientHeight", { value: 480, configurable: true });
+  Object.defineProperty(surface, "clientHeight", {
+    value: 480,
+    configurable: true,
+  });
   const term = fakeAppTerm();
   const deltas: number[] = [];
-  term.screen.addEventListener("wheel", (e) => deltas.push((e as WheelEvent).deltaY));
+  term.screen.addEventListener("wheel", (e) =>
+    deltas.push((e as WheelEvent).deltaY),
+  );
   const api = attachTouchScroll(surface, term, {});
   api.jumpToTail(5); // fewer than a screenful → floored to term.rows so a tap always moves
   expect(deltas.length).toBeGreaterThanOrEqual(term.rows);
@@ -207,7 +245,11 @@ test("jumpToTail forwards a downward wheel burst for an app-consuming session; n
   plainEl.appendChild(plainScreen);
   let plainWheels = 0;
   plainScreen.addEventListener("wheel", () => plainWheels++);
-  const plainApi = attachTouchScroll(plainSurface, { ...fakeTerm(), element: plainEl }, {});
+  const plainApi = attachTouchScroll(
+    plainSurface,
+    { ...fakeTerm(), element: plainEl },
+    {},
+  );
   plainApi.jumpToTail(50);
   expect(plainWheels).toBe(0);
   plainApi.detach();

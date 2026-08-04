@@ -27,7 +27,11 @@ const olderPage = [
   "OLDER-PAGE-END",
 ].join("\r\n");
 
-const oldestPage = ["OLDEST-PAGE-BEGIN", "the very first turn", "OLDEST-PAGE-END"].join("\r\n");
+const oldestPage = [
+  "OLDEST-PAGE-BEGIN",
+  "the very first turn",
+  "OLDEST-PAGE-END",
+].join("\r\n");
 
 /** One scroll-up step: wheel on desktop; a touch drag on the capture surface on mobile
  *  (wheel events never reach xterm there — the touch layer overlays it). */
@@ -38,12 +42,19 @@ async function scrollUpOnce(page: Page, mobile: boolean) {
     return;
   }
   await page.evaluate(() => {
-    const surface = document.querySelector('[data-touch-surface]') as HTMLElement;
+    const surface = document.querySelector(
+      "[data-touch-surface]",
+    ) as HTMLElement;
     const rect = surface.getBoundingClientRect();
     const x = rect.left + rect.width / 2;
     let y = rect.top + 40;
     const ev = (type: string, py: number) => {
-      const touch = new Touch({ identifier: 1, target: surface, clientX: x, clientY: py });
+      const touch = new Touch({
+        identifier: 1,
+        target: surface,
+        clientX: x,
+        clientY: py,
+      });
       return new TouchEvent(type, {
         touches: type === "touchend" ? [] : [touch],
         changedTouches: [touch],
@@ -61,16 +72,23 @@ async function scrollUpOnce(page: Page, mobile: boolean) {
 }
 
 /** Keep scrolling up until `predicate` holds (bounded). */
-async function scrollUpUntil(page: Page, mobile: boolean, predicate: () => Promise<boolean>) {
+async function scrollUpUntil(
+  page: Page,
+  mobile: boolean,
+  predicate: () => Promise<boolean>,
+) {
   for (let i = 0; i < 60; i++) {
     if (await predicate()) return;
     await scrollUpOnce(page, mobile);
     await page.waitForTimeout(60);
   }
-  expect(await predicate(), "scroll-up never reached the expected state").toBe(true);
+  expect(await predicate(), "scroll-up never reached the expected state").toBe(
+    true,
+  );
 }
 
-const rowsText = async (page: Page) => (await page.locator(".xterm-rows").textContent()) ?? "";
+const rowsText = async (page: Page) =>
+  (await page.locator(".xterm-rows").textContent()) ?? "";
 
 test.beforeEach(async ({ page }) => {
   await setupBench(page, {
@@ -89,7 +107,9 @@ test("scroll to top → loading pill → older page above with anchor held → s
 }, testInfo) => {
   const mobile = testInfo.project.name === "mobile";
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
 
   // 1. Scroll to the very top of the delivered scrollback → the fetch fires and the
   //    loading pill (an overlay, not a buffer row) appears while the response is held.
@@ -102,7 +122,9 @@ test("scroll to top → loading pill → older page above with anchor held → s
 
   // 2. Page lands: the pill clears and the ANCHOR HELD — the previously-top visible
   //    line is still in the viewport (the rewrite re-scrolled to it).
-  await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({ timeout: 5000 });
+  await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({
+    timeout: 5000,
+  });
   // Anchor-held is asserted on DESKTOP only: wheel steps are discrete, so exactly one
   // page has landed here. Mobile touch momentum can legitimately chain a second fetch
   // before this point (since #348 arming, fetches only follow real gestures), making
@@ -114,12 +136,18 @@ test("scroll to top → loading pill → older page above with anchor held → s
   }
 
   // 3. Scrolling further up reveals the prepended older page above the anchor.
-  await scrollUpUntil(page, mobile, async () => (await rowsText(page)).includes("OLDER-PAGE"));
+  await scrollUpUntil(page, mobile, async () =>
+    (await rowsText(page)).includes("OLDER-PAGE"),
+  );
 
   // 4. Keep going: the next (oldest) page arrives and at its top the quiet
   //    start-of-history pill shows; the oldest content is reachable.
-  await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="end"]').isVisible());
-  await expect(page.locator('[data-hist-pill="end"]')).toContainText("start of history");
+  await scrollUpUntil(page, mobile, () =>
+    page.locator('[data-hist-pill="end"]').isVisible(),
+  );
+  await expect(page.locator('[data-hist-pill="end"]')).toContainText(
+    "start of history",
+  );
   await scrollUpUntil(page, mobile, async () =>
     (await rowsText(page)).includes("OLDEST-PAGE-BEGIN"),
   );
@@ -132,7 +160,11 @@ test("scroll to top → loading pill → older page above with anchor held → s
   // 5. Scroll-to-bottom behaviour unchanged: the live tail is still reachable below.
   if (!mobile) {
     await page.locator(".xterm").hover();
-    for (let i = 0; i < 60 && !(await rowsText(page)).includes("LIVE tail"); i++) {
+    for (
+      let i = 0;
+      i < 60 && !(await rowsText(page)).includes("LIVE tail");
+      i++
+    ) {
       await page.mouse.wheel(0, 800);
     }
     await expect(page.locator(".xterm-rows")).toContainText("LIVE tail");
@@ -153,18 +185,28 @@ test("history fetch error shows the retry pill; tap retries the same cursor", as
     ],
   });
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
 
-  await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="error"]').isVisible());
-  await expect(page.locator('[data-hist-pill="error"]')).toContainText("tap to retry");
+  await scrollUpUntil(page, mobile, () =>
+    page.locator('[data-hist-pill="error"]').isVisible(),
+  );
+  await expect(page.locator('[data-hist-pill="error"]')).toContainText(
+    "tap to retry",
+  );
 
   // Tap-to-retry re-issues the request (same cursor — first call, so no `before`).
   await page.locator('[data-hist-pill="error"]').click();
-  await expect(page.locator('[data-hist-pill="error"]')).toBeHidden({ timeout: 5000 });
+  await expect(page.locator('[data-hist-pill="error"]')).toBeHidden({
+    timeout: 5000,
+  });
   await scrollUpUntil(page, mobile, async () =>
     (await rowsText(page)).includes("OLDEST-PAGE-BEGIN"),
   );
-  await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="end"]').isVisible());
+  await scrollUpUntil(page, mobile, () =>
+    page.locator('[data-hist-pill="end"]').isVisible(),
+  );
 });
 
 test("attach lands at the live tail with NO auto-fetch until a real scroll (#348 regression)", async ({
@@ -179,7 +221,9 @@ test("attach lands at the live tail with NO auto-fetch until a real scroll (#348
     if (req.url().includes("/history")) fetches += 1;
   });
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
   await page.waitForTimeout(1200); // room for any spurious attach-time trigger to fire
   expect(fetches).toBe(0); // nothing fetched without user intent
   // The viewport sits at the live tail, not anchored up in history.
@@ -201,7 +245,9 @@ test("typing in the terminal does not arm history lazy-load during layout scroll
     if (req.url().includes("/history")) fetches += 1;
   });
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
 
   // A normal terminal keypress is not a scroll intent. The desktop bug armed the
   // lazy-loader from any document keydown, so the next xterm layout scroll event
@@ -228,9 +274,17 @@ test("a seam divider marks where transcript pages end and the live region begins
   // marked honestly instead of reading as one continuous — and duplicated — stream.
   const mobile = testInfo.project.name === "mobile";
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
-  await scrollUpUntil(page, mobile, () => page.locator('[data-hist-pill="loading"]').isVisible());
-  await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({ timeout: 5000 });
-  await scrollUpUntil(page, mobile, async () => (await rowsText(page)).includes("older history"));
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
+  await scrollUpUntil(page, mobile, () =>
+    page.locator('[data-hist-pill="loading"]').isVisible(),
+  );
+  await expect(page.locator('[data-hist-pill="loading"]')).toBeHidden({
+    timeout: 5000,
+  });
+  await scrollUpUntil(page, mobile, async () =>
+    (await rowsText(page)).includes("older history"),
+  );
   expect(await rowsText(page)).toContain("older history ↑ (transcript)");
 });

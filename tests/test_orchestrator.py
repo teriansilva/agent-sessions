@@ -2383,3 +2383,123 @@ def test_tolerant_extraction_survives_for_the_degraded_path(monkeypatch, configu
     seen: list = []
     monkeypatch.setattr(review, "_TRANSPORT", _capture('Sure!\n```json\n{"ok": true}\n```', seen))
     assert asyncio.run(review.complete_json([{"role": "user", "content": "x"}])) == {"ok": True}
+
+
+# --- one list: the activity feed rides the cards (#777) ---------------------------------------
+
+
+def test_a_settled_action_rides_its_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The Activity block was a SECOND list of near-identical boxes above the cards. The
+    session's last action belongs on the row it is about."""
+    ledger.append(
+        {
+            "id": "a1",
+            "state": "observed",
+            "verb": "observe",
+            "session_id": "claude:aaa",
+            "ts": 1000,
+        }
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["last_action"]["id"] == "a1"
+    assert "pending_action" not in card
+    # History is not an errand — it must not re-band the card as needing you.
+    assert card["state"] == "idle"
+
+
+def test_a_live_action_wins_over_history_on_the_same_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """Never both: decision controls are about a choice you still have, and a settled summary
+    beside them would read as a second, contradictory status."""
+    ledger.append(
+        {"id": "old", "state": "observed", "verb": "observe", "session_id": "claude:aaa", "ts": 1}
+    )
+    ledger.append(
+        {
+            "id": "live",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": "claude:aaa",
+            "ts": 2,
+        }
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["pending_action"]["id"] == "live"
+    assert "last_action" not in card
+    assert card["state"] == "needs_you"
+
+
+def test_history_for_a_session_with_no_card_still_appears(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """The measurement that decided the design: 16 sessions were inside the 3-day Pulse window
+    while the feed reached 100 — so 84 had history and NO card. Removing the Activity block
+    without carrying them across would not have merged two lists, it would have deleted one."""
+    ledger.append(
+        {
+            "id": "a1",
+            "state": "expired",
+            "verb": "escalate",
+            "session_id": "codex:ghost",
+            "title": "Awaiting approval comment on PR #217",
+            "ts": 1000,
+        }
+    )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    assert [x["id"] for x in cards] == ["codex:ghost"]
+    card = cards[0]
+    assert card["synthesized_for_action"] is True
+    assert card["last_action"]["id"] == "a1"
+    assert card["title"] == "Awaiting approval comment on PR #217"
+    # Settled history sorts as history, not as something needing you.
+    assert card["state"] == "idle"
+
+
+def test_a_synthesized_history_card_is_not_duplicated_by_its_own_session(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """A session that HAS a card must not also get a synthesized twin — that would recreate the
+    duplication this whole change is about."""
+    ledger.append(
+        {"id": "a1", "state": "observed", "verb": "observe", "session_id": "claude:aaa", "ts": 1}
+    )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = c.get("/api/pulse").json()["cards"]
+    assert [x["id"] for x in cards] == ["claude:aaa"]
+    assert not cards[0].get("synthesized_for_action")
+
+
+def test_the_repeat_count_reaches_the_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`repeats` (#775) is what stops a collapsed row reading as the only thing that happened."""
+    for i in range(4):
+        ledger.append(
+            {
+                "id": f"a{i}",
+                "state": "observed",
+                "verb": "observe",
+                "session_id": "claude:aaa",
+                "ts": 1000 + i,
+            }
+        )
+    monkeypatch.setattr(
+        pulse, "load_cache", lambda *a, **k: {"cards": [{"id": "claude:aaa", "state": "idle"}]}
+    )
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    card = c.get("/api/pulse").json()["cards"][0]
+    assert card["last_action"]["repeats"] == 4
+    assert card["last_action"]["id"] == "a3"

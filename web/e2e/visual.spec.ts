@@ -12,7 +12,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { test } from "@playwright/test";
 import type { BrowserContext, Page } from "@playwright/test";
-import { VISUAL_PATHS, VIEWPORTS, VIEWPORT_NAMES, type VisualPath } from "../visual/paths";
+import {
+  VISUAL_PATHS,
+  VIEWPORTS,
+  VIEWPORT_NAMES,
+  type VisualPath,
+} from "../visual/paths";
 import {
   parseAreasArg,
   shotFile,
@@ -28,9 +33,14 @@ const BASE = process.env.E2E_BASE_URL ?? "http://localhost:4173";
 async function waitForReady(page: Page, p: VisualPath): Promise<void> {
   const w = p.waitFor;
   if ("selector" in w) {
-    await page.waitForSelector(w.selector, { timeout: w.timeoutMs ?? 8000, state: "visible" });
+    await page.waitForSelector(w.selector, {
+      timeout: w.timeoutMs ?? 8000,
+      state: "visible",
+    });
   } else if ("kind" in w) {
-    await page.waitForLoadState("networkidle", { timeout: w.timeoutMs ?? 5000 });
+    await page.waitForLoadState("networkidle", {
+      timeout: w.timeoutMs ?? 5000,
+    });
   } else {
     await page.waitForTimeout(w.timeoutMs);
   }
@@ -44,7 +54,9 @@ async function login(ctx: BrowserContext): Promise<boolean> {
     await page.fill('input[name="username"]', USER);
     await page.fill('input[name="password"]', PASS);
     await page.click('button[type="submit"]');
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+    await page
+      .waitForLoadState("networkidle", { timeout: 15000 })
+      .catch(() => {});
     const cookies = await ctx.cookies();
     return cookies.some((c) => c.name === "agent_sessions");
   } finally {
@@ -68,17 +80,26 @@ test("visual capture", async ({ browser }, info) => {
     mkdirSync(OUT, { recursive: true });
     writeFileSync(
       `${OUT}/manifest.json`,
-      JSON.stringify(emptyManifest(BASE, process.env.HEAD_SHA ?? null, []), null, 2) + "\n",
+      JSON.stringify(
+        emptyManifest(BASE, process.env.HEAD_SHA ?? null, []),
+        null,
+        2,
+      ) + "\n",
     );
     info.skip(true, "VISUAL_AREAS empty/none — wrote empty manifest");
     return;
   }
-  if (parsed.kind === "invalid") throw new Error(`unknown areas: ${parsed.unknown.join(", ")}`);
+  if (parsed.kind === "invalid")
+    throw new Error(`unknown areas: ${parsed.unknown.join(", ")}`);
   const areas = new Set(parsed.areas);
   const inScope = VISUAL_PATHS.filter((p) => areas.has(p.name));
 
   mkdirSync(OUT, { recursive: true });
-  const manifest = emptyManifest(BASE, process.env.HEAD_SHA ?? null, parsed.areas);
+  const manifest = emptyManifest(
+    BASE,
+    process.env.HEAD_SHA ?? null,
+    parsed.areas,
+  );
 
   // One anonymous context (login page) + one authed context (everything else). Motion is left
   // ON so the ambient HUD canvas + LEDs + button glitch render in the shots (#211) — these are
@@ -95,7 +116,13 @@ test("visual capture", async ({ browser }, info) => {
   if (inScope.some((p) => p.requireAuth === "admin")) {
     if (sessionCookie) {
       await authed.addCookies([
-        { name: "agent_sessions", value: sessionCookie, url: BASE, httpOnly: true, sameSite: "Lax" },
+        {
+          name: "agent_sessions",
+          value: sessionCookie,
+          url: BASE,
+          httpOnly: true,
+          sameSite: "Lax",
+        },
       ]);
     } else {
       loggedIn = await login(authed);
@@ -119,18 +146,29 @@ test("visual capture", async ({ browser }, info) => {
       const started = Date.now();
       // A required login that failed → record login_failed, never a blank shot.
       if (p.requireAuth === "admin" && !loggedIn) {
-        manifest.paths.push({ ...entry, status: "login_failed", file: null, error: "login failed" });
+        manifest.paths.push({
+          ...entry,
+          status: "login_failed",
+          file: null,
+          error: "login failed",
+        });
         continue;
       }
       const page = await ctx.newPage();
       try {
         await page.setViewportSize(VIEWPORTS[vp]);
-        await page.goto(p.path, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await page.goto(p.path, {
+          waitUntil: "domcontentloaded",
+          timeout: 20000,
+        });
         await waitForReady(page, p);
         // Guard against the demoapp "login-redirect screenshot" quirk: an authed area that
         // rendered the server /login form means auth didn't take — fail the shot rather than
         // capture a misleading login page as e.g. "settings".
-        if (p.requireAuth === "admin" && (await page.locator('form[action="/login"]').count()) > 0) {
+        if (
+          p.requireAuth === "admin" &&
+          (await page.locator('form[action="/login"]').count()) > 0
+        ) {
           throw new Error("auth not applied — rendered the /login form");
         }
         // Settle so the motion-on canvas + LEDs have painted a frame before the shot.
@@ -144,7 +182,8 @@ test("visual capture", async ({ browser }, info) => {
           status: "failed",
           file: null,
           duration_ms: Date.now() - started,
-          error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+          error:
+            err instanceof Error ? `${err.name}: ${err.message}` : String(err),
         });
       } finally {
         await page.close().catch(() => {});
@@ -154,19 +193,30 @@ test("visual capture", async ({ browser }, info) => {
 
   await anon.close();
   await authed.close();
-  writeFileSync(`${OUT}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
+  writeFileSync(
+    `${OUT}/manifest.json`,
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
 
   const ok = manifest.paths.filter((p) => p.status === "ok").length;
-  console.log(`[visual] captured ${ok}/${manifest.paths.length} → ${OUT}/manifest.json`);
+  console.log(
+    `[visual] captured ${ok}/${manifest.paths.length} → ${OUT}/manifest.json`,
+  );
   // Fail loudly on ANY required miss — every in-scope, non-seeded shot must be `ok`.
   // (Manifest is already written above, so diagnostics survive the failure.) Seeded
   // areas are skipped until the Phase-2 seeder exists. This stops a broken admin login
   // from passing just because the public /login area captured (Hermes #99).
-  const seeded = new Set(VISUAL_PATHS.filter((p) => p.seeded).map((p) => p.name));
+  const seeded = new Set(
+    VISUAL_PATHS.filter((p) => p.seeded).map((p) => p.name),
+  );
   const required = manifest.paths.filter((p) => !seeded.has(p.name));
   const bad = required.filter((p) => p.status !== "ok");
   if (bad.length > 0) {
-    const detail = bad.map((p) => `${p.name}/${p.viewport}=${p.status}`).join(", ");
-    throw new Error(`visual capture: ${bad.length}/${required.length} required shots not ok → ${detail}`);
+    const detail = bad
+      .map((p) => `${p.name}/${p.viewport}=${p.status}`)
+      .join(", ");
+    throw new Error(
+      `visual capture: ${bad.length}/${required.length} required shots not ok → ${detail}`,
+    );
   }
 });

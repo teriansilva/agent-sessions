@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { isCopyShortcut, isPasteShortcut } from "./termKeys";
 
-type KE = { type: string; key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean };
+type KE = {
+  type: string;
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+};
 const ev = (p: Partial<KE>): KE => ({
   type: "keydown",
   key: "v",
@@ -29,12 +35,18 @@ describe("isPasteShortcut (#209)", () => {
   test("plain v, Ctrl+C, and Alt+Ctrl+V are not the paste shortcut", () => {
     expect(isPasteShortcut(ev({}), false)).toBe(false);
     expect(isPasteShortcut(ev({ key: "c", ctrlKey: true }), false)).toBe(false);
-    expect(isPasteShortcut(ev({ ctrlKey: true, altKey: true }), false)).toBe(false);
+    expect(isPasteShortcut(ev({ ctrlKey: true, altKey: true }), false)).toBe(
+      false,
+    );
   });
 
   test("only keydown — keyup/keypress are ignored (no double-handling)", () => {
-    expect(isPasteShortcut(ev({ type: "keyup", ctrlKey: true }), false)).toBe(false);
-    expect(isPasteShortcut(ev({ type: "keypress", ctrlKey: true }), false)).toBe(false);
+    expect(isPasteShortcut(ev({ type: "keyup", ctrlKey: true }), false)).toBe(
+      false,
+    );
+    expect(
+      isPasteShortcut(ev({ type: "keypress", ctrlKey: true }), false),
+    ).toBe(false);
   });
 });
 
@@ -44,14 +56,20 @@ describe("isCopyShortcut (#536)", () => {
     expect(isCopyShortcut(ev({ ctrlKey: true, key: "C" }))).toBe(true); // shifted variant
   });
   test("keyup never copies (double-fire guard)", () => {
-    expect(isCopyShortcut(ev({ ctrlKey: true, key: "c", type: "keyup" }))).toBe(false);
+    expect(isCopyShortcut(ev({ ctrlKey: true, key: "c", type: "keyup" }))).toBe(
+      false,
+    );
   });
   test("plain c / other modifiers are not the copy shortcut", () => {
     expect(isCopyShortcut(ev({ key: "c" }))).toBe(false);
     expect(isCopyShortcut(ev({ ctrlKey: true, key: "x" }))).toBe(false);
-    expect(isCopyShortcut(ev({ ctrlKey: true, altKey: true, key: "c" }))).toBe(false);
+    expect(isCopyShortcut(ev({ ctrlKey: true, altKey: true, key: "c" }))).toBe(
+      false,
+    );
     // Cmd+C copies natively via the mirrored DOM selection — never intercepted.
     expect(isCopyShortcut(ev({ metaKey: true, key: "c" }))).toBe(false);
-    expect(isCopyShortcut(ev({ ctrlKey: true, metaKey: true, key: "c" }))).toBe(false);
+    expect(isCopyShortcut(ev({ ctrlKey: true, metaKey: true, key: "c" }))).toBe(
+      false,
+    );
   });
 });

@@ -60,7 +60,9 @@ async function hkdf(
   info: Uint8Array,
   lengthBytes: number,
 ): Promise<Uint8Array> {
-  const key = await subtle().importKey("raw", src(ikm), "HKDF", false, ["deriveBits"]);
+  const key = await subtle().importKey("raw", src(ikm), "HKDF", false, [
+    "deriveBits",
+  ]);
   const bits = await subtle().deriveBits(
     { name: "HKDF", hash: "SHA-256", salt: src(salt), info: src(info) },
     key,
@@ -70,7 +72,10 @@ async function hkdf(
 }
 
 async function importAes(key: Uint8Array): Promise<CryptoKey> {
-  return subtle().importKey("raw", src(key), "AES-GCM", false, ["encrypt", "decrypt"]);
+  return subtle().importKey("raw", src(key), "AES-GCM", false, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
 async function aesEncrypt(
@@ -79,7 +84,11 @@ async function aesEncrypt(
   plaintext: Uint8Array,
   aad?: Uint8Array,
 ): Promise<Uint8Array> {
-  const params: AesGcmParams = { name: "AES-GCM", iv: src(nonce), tagLength: 128 };
+  const params: AesGcmParams = {
+    name: "AES-GCM",
+    iv: src(nonce),
+    tagLength: 128,
+  };
   if (aad) params.additionalData = src(aad);
   return new Uint8Array(await subtle().encrypt(params, key, src(plaintext)));
 }
@@ -90,7 +99,11 @@ async function aesDecrypt(
   ciphertext: Uint8Array,
   aad?: Uint8Array,
 ): Promise<Uint8Array> {
-  const params: AesGcmParams = { name: "AES-GCM", iv: src(nonce), tagLength: 128 };
+  const params: AesGcmParams = {
+    name: "AES-GCM",
+    iv: src(nonce),
+    tagLength: 128,
+  };
   if (aad) params.additionalData = src(aad);
   return new Uint8Array(await subtle().decrypt(params, key, src(ciphertext)));
 }
@@ -128,7 +141,10 @@ export class Transport {
     this.recvKey = recvKey;
   }
 
-  static async create(sendKey: Uint8Array, recvKey: Uint8Array): Promise<Transport> {
+  static async create(
+    sendKey: Uint8Array,
+    recvKey: Uint8Array,
+  ): Promise<Transport> {
     return new Transport(await importAes(sendKey), await importAes(recvKey));
   }
 
@@ -141,9 +157,17 @@ export class Transport {
 
   async decrypt(frame: Uint8Array): Promise<Uint8Array> {
     if (frame.length < 8) throw new HandshakeError("short transport frame");
-    const ctr = new DataView(frame.buffer, frame.byteOffset, 8).getBigUint64(0, false);
-    if (ctr <= this.recvSeen) throw new HandshakeError("replayed or out-of-order frame");
-    const plaintext = await aesDecrypt(this.recvKey, nonceFor(ctr), frame.subarray(8));
+    const ctr = new DataView(frame.buffer, frame.byteOffset, 8).getBigUint64(
+      0,
+      false,
+    );
+    if (ctr <= this.recvSeen)
+      throw new HandshakeError("replayed or out-of-order frame");
+    const plaintext = await aesDecrypt(
+      this.recvKey,
+      nonceFor(ctr),
+      frame.subarray(8),
+    );
     this.recvSeen = ctr;
     return plaintext;
   }
@@ -171,18 +195,30 @@ export class Initiator {
     return this.eI;
   }
 
-  async finish(msg2: Uint8Array): Promise<{ transport: Transport; msg3: Uint8Array }> {
+  async finish(
+    msg2: Uint8Array,
+  ): Promise<{ transport: Transport; msg3: Uint8Array }> {
     if (msg2.length !== 48) throw new HandshakeError("bad msg2 length");
     const eR = msg2.subarray(0, 32);
     const confR = msg2.subarray(32);
     const dh = x25519.getSharedSecret(this.priv, eR);
-    const { kI2r, kR2i, th } = await deriveSessionKeys(dh, this.psk, this.eI, eR);
+    const { kI2r, kR2i, th } = await deriveSessionKeys(
+      dh,
+      this.psk,
+      this.eI,
+      eR,
+    );
     try {
       await aesDecrypt(await importAes(kR2i), ZERO_NONCE, confR, th);
     } catch {
       throw new HandshakeError("responder confirmation failed (bad PSK?)");
     }
-    const confI = await aesEncrypt(await importAes(kI2r), ZERO_NONCE, new Uint8Array(0), th);
+    const confI = await aesEncrypt(
+      await importAes(kI2r),
+      ZERO_NONCE,
+      new Uint8Array(0),
+      th,
+    );
     return { transport: await Transport.create(kI2r, kR2i), msg3: confI };
   }
 }
@@ -217,7 +253,12 @@ export class Responder {
     if (!this.keys) throw new HandshakeError("finish() before respond()");
     if (msg3.length !== 16) throw new HandshakeError("bad msg3 length");
     try {
-      await aesDecrypt(await importAes(this.keys.kI2r), ZERO_NONCE, msg3, this.keys.th);
+      await aesDecrypt(
+        await importAes(this.keys.kI2r),
+        ZERO_NONCE,
+        msg3,
+        this.keys.th,
+      );
     } catch {
       throw new HandshakeError("initiator confirmation failed (bad PSK?)");
     }

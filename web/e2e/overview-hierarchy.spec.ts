@@ -25,7 +25,11 @@ const sessions = [
     uuid: "c",
     short_uuid: "c",
     cwd: "/home/u/claude/demoapp.io",
-    project: { kind: "folder", id: "/home/u/claude/demoapp.io", name: "demoapp.io" },
+    project: {
+      kind: "folder",
+      id: "/home/u/claude/demoapp.io",
+      name: "demoapp.io",
+    },
     last_mtime: now - 100,
     first_user_message: "",
     title: "Child session",
@@ -50,12 +54,31 @@ test.beforeEach(async ({ page }) => {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions, next_offset: null, total: 2, facets: { projects: [{ kind: "folder", id: "/home/u/claude", name: "/home/u/claude" }, { kind: "folder", id: "/home/u/claude/demoapp.io", name: "/home/u/claude/demoapp.io" }], engines: ["claude"] } },
+      json: {
+        sessions,
+        next_offset: null,
+        total: 2,
+        facets: {
+          projects: [
+            { kind: "folder", id: "/home/u/claude", name: "/home/u/claude" },
+            {
+              kind: "folder",
+              id: "/home/u/claude/demoapp.io",
+              name: "/home/u/claude/demoapp.io",
+            },
+          ],
+          engines: ["claude"],
+        },
+      },
     }),
   );
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 });
 
 test("desktop: nested projects form a tree with a custom name + working toggle (#148)", async ({
@@ -82,5 +105,7 @@ test("desktop: nested projects form a tree with a custom name + working toggle (
   await expect(rootHeader).toBeVisible();
   await expect(ov.locator(".tr-ov-chip")).toHaveCount(0);
   await rootHeader.click();
-  await expect(ov.locator(".tr-ov-chip", { hasText: "Root session" })).toBeVisible();
+  await expect(
+    ov.locator(".tr-ov-chip", { hasText: "Root session" }),
+  ).toBeVisible();
 });

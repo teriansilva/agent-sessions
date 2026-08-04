@@ -16,10 +16,21 @@ function sess(id: string, title: string, mtime: number) {
   };
 }
 
-async function setup(page: Page, project: string): Promise<{ promote: () => void }> {
+async function setup(
+  page: Page,
+  project: string,
+): Promise<{ promote: () => void }> {
   const now = Math.floor(Date.now() / 1000);
-  const alpha = sess("aaaaaaaa-0000-0000-0000-000000000001", "Alpha session", now - 10);
-  const bravo = sess("bbbbbbbb-0000-0000-0000-000000000002", "Bravo session", now - 120);
+  const alpha = sess(
+    "aaaaaaaa-0000-0000-0000-000000000001",
+    "Alpha session",
+    now - 10,
+  );
+  const bravo = sess(
+    "bbbbbbbb-0000-0000-0000-000000000002",
+    "Bravo session",
+    now - 120,
+  );
   let promoted = false;
 
   await page.route("**/api/config", (r) =>
@@ -48,15 +59,21 @@ async function setup(page: Page, project: string): Promise<{ promote: () => void
     }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route(/\/api\/projects($|\?)/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
 
   await page.goto("/");
   if (project === "mobile") {
     await page.getByRole("button", { name: "Open session list" }).click();
   }
   await expect(page.getByRole("link", { name: /Alpha session/ })).toBeVisible();
-  await expect(page.locator('aside a[href^="/s/"]').first()).toContainText("Alpha session");
+  await expect(page.locator('aside a[href^="/s/"]').first()).toContainText(
+    "Alpha session",
+  );
 
   return {
     promote: () => {
@@ -73,13 +90,21 @@ test("rows animate when a refresh re-sorts by recent activity (#607)", async ({
 
   // Force the hook's visibility catch-up refresh without waiting for the 15s poll interval.
   await page.evaluate(() => {
-    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    Object.defineProperty(document, "hidden", {
+      value: true,
+      configurable: true,
+    });
     document.dispatchEvent(new Event("visibilitychange"));
-    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    Object.defineProperty(document, "hidden", {
+      value: false,
+      configurable: true,
+    });
     document.dispatchEvent(new Event("visibilitychange"));
   });
 
   const movingRows = page.locator('li[data-reorder-motion="true"]');
   await expect(movingRows.first()).toBeVisible();
-  await expect(page.locator('aside a[href^="/s/"]').first()).toContainText("Bravo session");
+  await expect(page.locator('aside a[href^="/s/"]').first()).toContainText(
+    "Bravo session",
+  );
 });

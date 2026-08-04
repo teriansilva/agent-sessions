@@ -8,6 +8,9 @@ import { expect, test } from "@playwright/test";
 // The queue this issue opened about was removed in #762; the feed underneath inherited its
 // defect verbatim. Separately the cards rendered as four state sections, each leaving a
 // partial row.
+//
+// #777 then merged the feed INTO the cards, so the two feed-density tests that lived here are
+// gone with it — one list means the card assertions below are the whole story.
 const NOW = Math.floor(Date.now() / 1000);
 
 const ORCH = {
@@ -193,37 +196,6 @@ async function layout(page, prefix: string) {
     };
   }, prefix);
 }
-
-test("at desktop width the activity feed flows into columns, not one full-width stack", async ({
-  page,
-}) => {
-  await mock(page);
-  await page.setViewportSize({ width: 1900, height: 1200 });
-  await page.goto("/pulse");
-  await expect(page.getByRole("heading", { name: /activity/i })).toBeVisible();
-
-  const feed = await layout(page, "_act_");
-  expect(feed.n).toBeGreaterThan(4);
-  // The defect: one row per line at ~1490px. Anything above 1 column is the fix working; the
-  // width bound is what catches a regression back to full-width rows.
-  expect(feed.perRow).toBeGreaterThan(1);
-  expect(feed.width).toBeLessThan(700);
-});
-
-test("a feed row names its project, now that the project headings are gone", async ({
-  page,
-}) => {
-  await mock(page);
-  await page.setViewportSize({ width: 1900, height: 1200 });
-  await page.goto("/pulse");
-  await expect(page.getByRole("heading", { name: /activity/i })).toBeVisible();
-  // Grouping by project answered "which project" with a header. Flattening the grid removes
-  // that, so the row has to carry it or the information is simply lost.
-  const feedText = await page.locator("section").last().innerText();
-  for (const p of ["infra", "battlelab", "superstatus"]) {
-    expect(feedText.toLowerCase()).toContain(p);
-  }
-});
 
 test("the session cards are ONE list, ordered needs-you first", async ({
   page,

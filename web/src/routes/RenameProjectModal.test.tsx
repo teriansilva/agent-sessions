@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { RenameProjectModal } from "./RenameProjectModal";
 
-function renderModal(overrides: Partial<Parameters<typeof RenameProjectModal>[0]> = {}) {
+function renderModal(
+  overrides: Partial<Parameters<typeof RenameProjectModal>[0]> = {},
+) {
   const onCancel = vi.fn();
   const onSave = vi.fn();
   const trigger = document.createElement("button");
@@ -62,7 +64,9 @@ test("Cancel button cancels (no save); Save button saves (#174)", async () => {
 
 test("clicking the backdrop cancels without saving (#174)", async () => {
   const { onSave, onCancel, baseElement } = renderModal();
-  const backdrop = baseElement.querySelector(`[class*="backdrop"]`) as HTMLElement;
+  const backdrop = baseElement.querySelector(
+    `[class*="backdrop"]`,
+  ) as HTMLElement;
   expect(backdrop).toBeTruthy();
   await userEvent.click(backdrop);
   expect(onCancel).toHaveBeenCalled();

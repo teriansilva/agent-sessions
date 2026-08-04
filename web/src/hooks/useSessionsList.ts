@@ -106,12 +106,18 @@ export function useSessionsList() {
         visibleInFlight.current += 1; // suppresses the silent poll while we're pending
       }
       try {
-        const page = await api.sessions({ ...query, offset, limit: opts.limit ?? PAGE });
+        const page = await api.sessions({
+          ...query,
+          offset,
+          limit: opts.limit ?? PAGE,
+        });
         if (gen !== reqId.current) return; // superseded by a newer request → drop
         setSessions((prev) => {
           const merged = replace ? page.sessions : [...prev, ...page.sessions];
           const seen = new Set<string>(); // dedupe by id (defensive)
-          return merged.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)));
+          return merged.filter((s) =>
+            seen.has(s.id) ? false : (seen.add(s.id), true),
+          );
         });
         setNextOffset(page.next_offset);
         setTotal(page.total);
@@ -120,7 +126,9 @@ export function useSessionsList() {
         if (gen !== reqId.current) return;
         if (opts.silent) return; // background failure → keep existing rows, no flicker
         setError(
-          e instanceof ApiError && e.status === 401 ? "Please sign in." : "Failed to load sessions.",
+          e instanceof ApiError && e.status === 401
+            ? "Please sign in."
+            : "Failed to load sessions.",
         );
       } finally {
         if (gen === reqId.current && !opts.silent) setLoading(false);
@@ -152,7 +160,8 @@ export function useSessionsList() {
   useEffect(() => {
     const prev = seenOrder.current;
     seenOrder.current = order;
-    if (order !== undefined && prev !== undefined && prev !== order) void fetchPage(0, true);
+    if (order !== undefined && prev !== undefined && prev !== order)
+      void fetchPage(0, true);
   }, [order, fetchPage]);
 
   /** Silent refresh from offset 0 covering every loaded row, so a session that just got new
@@ -204,20 +213,27 @@ export function useSessionsList() {
     void fetchPage(nextOffset, false);
   }, [loading, nextOffset, fetchPage]);
 
-  const update = useCallback((patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch })), []);
+  const update = useCallback(
+    (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch })),
+    [],
+  );
   const clear = useCallback(() => setFilters(EMPTY), []);
 
   // Rename in place: the row stays in the current view, only its title changes.
   const renameRow = useCallback(async (id: string, title: string) => {
     const r = await api.rename(id, title);
-    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: r.title } : s)));
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: r.title } : s)),
+    );
   }, []);
 
   // Set/clear the custom tag (#551): patch the row in place from the server's echoed value
   // (already trimmed + capped), so the summary line reflects it without a refetch.
   const setTag = useCallback(async (id: string, tag: string) => {
     const r = await api.setTag(id, tag);
-    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, tag: r.tag } : s)));
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, tag: r.tag } : s)),
+    );
   }, []);
 
   // Toggle archived: the list is scoped to one archived-state, so after the flip the
@@ -226,12 +242,15 @@ export function useSessionsList() {
   // row shifts down one offset — decrement nextOffset to match, or the next "Load more"
   // would skip the first unloaded row (it sat at the old offset). When all rows are
   // already loaded (nextOffset == null) there is nothing to backfill.
-  const setArchived = useCallback(async (id: string, currentlyArchived: boolean) => {
-    await (currentlyArchived ? api.unarchive(id) : api.archive(id));
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    setTotal((t) => Math.max(0, t - 1));
-    setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
-  }, []);
+  const setArchived = useCallback(
+    async (id: string, currentlyArchived: boolean) => {
+      await (currentlyArchived ? api.unarchive(id) : api.archive(id));
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      setTotal((t) => Math.max(0, t - 1));
+      setNextOffset((o) => (o == null ? null : Math.max(0, o - 1)));
+    },
+    [],
+  );
 
   // Toggle favorite (#122): flip the row's `sticky` flag in place, then re-sort the loaded
   // rows sticky-first to MIRROR the server sort (sticky desc, then the active timestamp tier —
@@ -245,9 +264,7 @@ export function useSessionsList() {
     setSessions((prev) =>
       prev
         .map((s) => (s.id === id ? { ...s, sticky: r.sticky } : s))
-        .sort(
-          (a, b) => Number(b.sticky) - Number(a.sticky) || ts(b) - ts(a),
-        ),
+        .sort((a, b) => Number(b.sticky) - Number(a.sticky) || ts(b) - ts(a)),
     );
   }, []);
 
@@ -280,24 +297,34 @@ export function useSessionsList() {
   }, []);
 
   // Per-session exclude-from-review toggle (#356); the row stays, only the flag flips.
-  const setReviewExcluded = useCallback(async (id: string, excluded: boolean) => {
-    const r = await api.reviewExclude(id, excluded);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, review_excluded: r.review_excluded } : s)),
-    );
-  }, []);
+  const setReviewExcluded = useCallback(
+    async (id: string, excluded: boolean) => {
+      const r = await api.reviewExclude(id, excluded);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === id ? { ...s, review_excluded: r.review_excluded } : s,
+        ),
+      );
+    },
+    [],
+  );
 
   // Per-session Pulse-orchestration opt-out (#726). Managed-by-default, so this withdraws
   // agency for ONE session. Deliberately independent of review_excluded: the session stays
   // listed, stays summarised, stays flagged needs-you — it just stops being acted on.
-  const setOrchestratorExcluded = useCallback(async (id: string, excluded: boolean) => {
-    const r = await api.setOrchestratorExcluded(id, excluded);
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, orchestrator_excluded: r.orchestrator_excluded } : s,
-      ),
-    );
-  }, []);
+  const setOrchestratorExcluded = useCallback(
+    async (id: string, excluded: boolean) => {
+      const r = await api.setOrchestratorExcluded(id, excluded);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, orchestrator_excluded: r.orchestrator_excluded }
+            : s,
+        ),
+      );
+    },
+    [],
+  );
 
   // Reassign a session to a project entity — the keyboard-accessible equivalent of the map's
   // drag-to-reassign (#424 Phase 5). `ref` is the target entity, or `null` to unassign (back to
@@ -312,7 +339,9 @@ export function useSessionsList() {
           ? {
               ...s,
               project:
-                ref && ref.kind === "project" ? ref : { kind: "folder", id: s.cwd, name: s.cwd },
+                ref && ref.kind === "project"
+                  ? ref
+                  : { kind: "folder", id: s.cwd, name: s.cwd },
             }
           : s,
       ),

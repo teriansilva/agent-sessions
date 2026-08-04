@@ -17,8 +17,9 @@ window.WebSocket = class {
 `;
 
 const resizeCount = () =>
-  ((window as unknown as { __sent?: string[] }).__sent ?? []).filter((f) => f.includes('"t":"r"'))
-    .length;
+  ((window as unknown as { __sent?: string[] }).__sent ?? []).filter((f) =>
+    f.includes('"t":"r"'),
+  ).length;
 
 test("returning to the foreground auto-repaints (a fresh resize nudge) for the owner (#503)", async ({
   page,
@@ -27,21 +28,26 @@ test("returning to the foreground auto-repaints (a fresh resize nudge) for the o
   await page.goto("/s/claude/repaint-503");
   await expect(page.locator(".xterm")).toBeVisible();
   // role defaults to owner → the REPAINT control is present and the auto-repaint effect is wired.
-  await expect(page.getByRole("button", { name: /repaint screen/i })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /repaint screen/i }),
+  ).toBeVisible();
   // Let the initial connect + fit settle (its own resize frames land first).
   await page.waitForFunction(
-    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
   const before = await page.evaluate(resizeCount);
 
   // Simulate returning to the tab.
-  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
 
   // The auto-repaint jiggle emits new resize frames.
   await page.waitForFunction((b) => {
-    const n = ((window as unknown as { __sent?: string[] }).__sent ?? []).filter((f) =>
-      f.includes('"t":"r"'),
-    ).length;
+    const n = (
+      (window as unknown as { __sent?: string[] }).__sent ?? []
+    ).filter((f) => f.includes('"t":"r"')).length;
     return n > b;
   }, before);
 });

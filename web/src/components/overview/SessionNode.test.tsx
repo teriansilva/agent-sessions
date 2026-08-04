@@ -78,25 +78,36 @@ test("non-working chip falls back to active/idle (no pulse) (#156)", () => {
 
 test("an intervention-required chip shows the ! badge with its reason (#356 parity)", () => {
   renderNode({
-    session: sess({ intervention_required: true, intervention_reason: "needs input" }),
+    session: sess({
+      intervention_required: true,
+      intervention_reason: "needs input",
+    }),
     active: true,
     working: false,
     selected: false,
     folderLabel: "p",
   });
-  const badge = screen.getByRole("img", { name: /intervention required: needs input/i });
+  const badge = screen.getByRole("img", {
+    name: /intervention required: needs input/i,
+  });
   expect(badge).toHaveTextContent("!");
 });
 
 test("a review-excluded chip suppresses the ! badge and shows the exclusion marker (#424)", () => {
   renderNode({
-    session: sess({ intervention_required: true, review_excluded: true, ai_summary: "stale" }),
+    session: sess({
+      intervention_required: true,
+      review_excluded: true,
+      ai_summary: "stale",
+    }),
     active: true,
     working: false,
     selected: false,
     folderLabel: "p",
   });
-  expect(screen.queryByRole("img", { name: /intervention required/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", { name: /intervention required/i }),
+  ).not.toBeInTheDocument();
   expect(screen.getByText(/excluded from ai review/i)).toBeInTheDocument();
   expect(screen.queryByText("stale")).not.toBeInTheDocument();
 });
@@ -115,7 +126,12 @@ test("renders the AI summary line (#356 parity)", () => {
 test("an assigned chip shows BOTH the project entity and its launch folder (#424 parity)", () => {
   renderNode({
     session: sess({
-      project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
+      project: {
+        kind: "project" as const,
+        id: "p-1",
+        name: "SampleProject",
+        color: "#5fd7ff",
+      },
     }),
     active: true,
     working: false,
@@ -143,7 +159,12 @@ test("an unassigned chip shows the launch folder only, no project chip (#424 par
 test("chip carries --proj: explicit entity colour wins, uncoloured entities hash their id (#285)", () => {
   const { container } = renderNode({
     session: sess({
-      project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
+      project: {
+        kind: "project" as const,
+        id: "p-1",
+        name: "SampleProject",
+        color: "#5fd7ff",
+      },
     }),
     active: true,
     working: false,

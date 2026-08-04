@@ -90,7 +90,8 @@ function MarqueeText({
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const reduce =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const measure = () => {
       // scrollWidth − clientWidth is the hidden overflow regardless of the inner display mode;
       // transforms don't affect it, so it stays stable once scrolling.
@@ -137,7 +138,10 @@ interface RowProps {
    *  the feature is unconfigured (the controls are hidden). */
   onReviewNow?: (id: string) => Promise<void>;
   onToggleReviewExcluded?: (id: string, excluded: boolean) => Promise<void>;
-  onToggleOrchestratorExcluded?: (id: string, excluded: boolean) => Promise<void>;
+  onToggleOrchestratorExcluded?: (
+    id: string,
+    excluded: boolean,
+  ) => Promise<void>;
   /** Reassign the session to a project entity (or `null` to unassign) — the keyboard path
    *  for the map's drag-to-reassign (#424 Phase 5). */
   onSetProject: (id: string, ref: ProjectRef | null) => Promise<void>;
@@ -173,13 +177,18 @@ function Row({
   const [menuOpen, setMenuOpen] = useState(false);
   // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
   const [moving, setMoving] = useState(false);
-  const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(null);
+  const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(
+    null,
+  );
   // Session brief (Recap) + Hand off, mirrored from the terminal header into the ⋯ menu so
   // both are reachable from the sidebar without opening the session first (#597 follow-up).
   const [recapOpen, setRecapOpen] = useState(false);
-  const [recapReturnFocus, setRecapReturnFocus] = useState<HTMLElement | null>(null);
+  const [recapReturnFocus, setRecapReturnFocus] = useState<HTMLElement | null>(
+    null,
+  );
   const [handoffOpen, setHandoffOpen] = useState(false);
-  const [handoffReturnFocus, setHandoffReturnFocus] = useState<HTMLElement | null>(null);
+  const [handoffReturnFocus, setHandoffReturnFocus] =
+    useState<HTMLElement | null>(null);
   // Imperative route to a handoff peer from the ⋯ menu (#597 Phase 2) — the row itself is
   // a NavLink, so the peer link can't be nested inside it.
   const navigate = useNavigate();
@@ -336,7 +345,11 @@ function Row({
     ] as const
   )
     .filter((p) => p.key)
-    .map((p) => ({ ...p, parsed: parseSessionKey(p.key), path: sessionPathFromKey(p.key) }))
+    .map((p) => ({
+      ...p,
+      parsed: parseSessionKey(p.key),
+      path: sessionPathFromKey(p.key),
+    }))
     .filter((p) => p.parsed !== null);
 
   // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Items are
@@ -411,7 +424,9 @@ function Row({
       key: "review",
       label: "Review now",
       ariaLabel: "Review session now",
-      icon: <Sparkles size={15} className={reviewing ? styles.spin : undefined} />,
+      icon: (
+        <Sparkles size={15} className={reviewing ? styles.spin : undefined} />
+      ),
       disabled: busy || reviewing,
       onSelect: () => void reviewNow(),
     });
@@ -419,7 +434,9 @@ function Row({
   if (onToggleReviewExcluded) {
     reviewItems.push({
       key: "exclude",
-      label: s.review_excluded ? "Include in AI review" : "Exclude from AI review",
+      label: s.review_excluded
+        ? "Include in AI review"
+        : "Exclude from AI review",
       icon: s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />,
       disabled: busy || reviewing,
       onSelect: () => void toggleExcluded(),
@@ -430,7 +447,9 @@ function Row({
     // orchestrator's agency. The session keeps its summary and its needs-you flag.
     reviewItems.push({
       key: "orchestrate",
-      label: s.orchestrator_excluded ? "Let Pulse manage this" : "Stop Pulse managing this",
+      label: s.orchestrator_excluded
+        ? "Let Pulse manage this"
+        : "Stop Pulse managing this",
       icon: s.orchestrator_excluded ? <Bot size={15} /> : <BotOff size={15} />,
       disabled: busy,
       onSelect: () => void toggleOrchestrated(),
@@ -503,19 +522,27 @@ function Row({
 
   // Per-project accent (#285): the explicit entity color (Settings, #361) wins; otherwise a
   // stable hash of the ref key (entity id / folder cwd). One CSS var feeds the rail + dot.
-  const proj = { "--proj": s.project.color || projectColor(s.project.id) } as CSSProperties;
+  const proj = {
+    "--proj": s.project.color || projectColor(s.project.id),
+  } as CSSProperties;
 
   // Summary line (#356 + #551): an optional custom tag prefixes the AI summary (or the
   // "excluded" marker), joined by " · ". The line renders whenever there's a tag OR summary,
   // so a tagged-but-unreviewed row still shows its tag. `summaryText` is the plain-text form
   // for the marquee tooltip / reduced-motion fallback.
   const staleHint =
-    !s.review_excluded && s.ai_summary && reviewIsStale(s) && s.reviewed_at != null
+    !s.review_excluded &&
+    s.ai_summary &&
+    reviewIsStale(s) &&
+    s.reviewed_at != null
       ? ` · reviewed ${relTime(s.reviewed_at)}`
       : "";
-  const summaryBody = s.review_excluded ? "Excluded from AI review" : (s.ai_summary ?? "");
+  const summaryBody = s.review_excluded
+    ? "Excluded from AI review"
+    : (s.ai_summary ?? "");
   const showSummary = !!(s.tag || summaryBody);
-  const summaryText = [s.tag, summaryBody].filter(Boolean).join(" · ") + staleHint;
+  const summaryText =
+    [s.tag, summaryBody].filter(Boolean).join(" · ") + staleHint;
 
   return (
     <li ref={rowRef} className={styles.rowWrap}>
@@ -560,7 +587,9 @@ function Row({
       )}
       <NavLink
         to={`/s/${s.engine}/${s.uuid}`}
-        className={({ isActive }) => (isActive ? `${styles.row} ${styles.active}` : styles.row)}
+        className={({ isActive }) =>
+          isActive ? `${styles.row} ${styles.active}` : styles.row
+        }
         style={proj}
         onClick={onNavigate}
       >
@@ -581,20 +610,33 @@ function Row({
         <div className={styles.body}>
           {/* Title + summary auto-scroll (#551) when this row is selected and the text
               overflows; otherwise the same single-line ellipsis as before. */}
-          <MarqueeText active={active} className={styles.title} text={s.title || "(untitled)"} />
+          <MarqueeText
+            active={active}
+            className={styles.title}
+            text={s.title || "(untitled)"}
+          />
           {/* One-line summary (#356): optional custom tag (#551) + AI summary / exclusion
               marker + stale-age hint when there's been activity since the last review. */}
           {showSummary && (
-            <MarqueeText active={active} className={styles.summary} text={summaryText}>
+            <MarqueeText
+              active={active}
+              className={styles.summary}
+              text={summaryText}
+            >
               {s.tag && <span className={styles.summaryTag}>{s.tag}</span>}
               {s.tag && summaryBody ? " · " : null}
               {s.review_excluded ? (
-                <span className={styles.summaryExcluded}>Excluded from AI review</span>
+                <span className={styles.summaryExcluded}>
+                  Excluded from AI review
+                </span>
               ) : (
                 <>
                   {s.ai_summary}
                   {reviewIsStale(s) && s.reviewed_at != null && (
-                    <span className={styles.summaryStale}> · reviewed {relTime(s.reviewed_at)}</span>
+                    <span className={styles.summaryStale}>
+                      {" "}
+                      · reviewed {relTime(s.reviewed_at)}
+                    </span>
                   )}
                 </>
               )}
@@ -605,7 +647,11 @@ function Row({
                 only (they already pin to the top). Decorative — the on/off state lives on the
                 menu's Favorite/Unfavorite item. */}
             {s.sticky && (
-              <span className={styles.favStar} aria-hidden="true" title="Favorited">
+              <span
+                className={styles.favStar}
+                aria-hidden="true"
+                title="Favorited"
+              >
                 <Star size={11} fill="currentColor" />
               </span>
             )}
@@ -618,7 +664,9 @@ function Row({
             {peers.map((p) => (
               <span
                 key={p.key}
-                className={p.inbound ? styles.handoffBadge : styles.handoffBadgeOut}
+                className={
+                  p.inbound ? styles.handoffBadge : styles.handoffBadgeOut
+                }
                 title={
                   p.inbound
                     ? `Handed off from ${engineName(p.parsed!.engine)} · ${p.key}`
@@ -646,12 +694,16 @@ function Row({
           </div>
         </div>
       </NavLink>
-      <div className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}>
+      <div
+        className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}
+      >
         <RowMenu
           items={menuItems}
           title={s.title || "(untitled)"}
           triggerIcon={
-            reviewing ? <Sparkles size={15} className={styles.spin} /> : undefined
+            reviewing ? (
+              <Sparkles size={15} className={styles.spin} />
+            ) : undefined
           }
           onOpenChange={setMenuOpen}
         />
@@ -783,9 +835,10 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
   // Review-now outcome toast (#392): the spinner shows activity but not OUTCOME — success
   // flashes the fresh one-line summary; failure shows the server's sanitized error `detail`
   // (e.g. "review endpoint returned HTTP 502") and lingers longer so it can be read.
-  const [reviewToast, setReviewToast] = useState<{ kind: "ok" | "err"; text: string } | null>(
-    null,
-  );
+  const [reviewToast, setReviewToast] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
   useEffect(() => {
     if (!reviewToast) return;
     const ms = reviewToast.kind === "ok" ? TOAST_OK_MS : TOAST_ERR_MS;
@@ -796,12 +849,18 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     async (id: string) => {
       try {
         const r = await reviewRow(id);
-        setReviewToast({ kind: "ok", text: r.ai_summary || "Review complete." });
+        setReviewToast({
+          kind: "ok",
+          text: r.ai_summary || "Review complete.",
+        });
       } catch (e) {
         // `api.reviewNow` surfaces the server's `detail` (already operator-safe: the
         // backend never embeds keys/headers in it). Anything else gets a generic line.
         const detail = e instanceof ApiError ? e.message : "";
-        setReviewToast({ kind: "err", text: `Review failed — ${detail || "unexpected error."}` });
+        setReviewToast({
+          kind: "err",
+          text: `Review failed — ${detail || "unexpected error."}`,
+        });
       }
     },
     [reviewRow],
@@ -821,7 +880,8 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     if (typeof document === "undefined") return;
     let id: number | undefined;
     const start = () => {
-      if (id == null) id = window.setInterval(() => setClockTick((t) => t + 1), 30_000);
+      if (id == null)
+        id = window.setInterval(() => setClockTick((t) => t + 1), 30_000);
     };
     const stop = () => {
       if (id != null) window.clearInterval(id);
@@ -842,7 +902,12 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
         <Plus size={16} />
         New session
       </Link>
-      <FiltersBar filters={filters} facets={facets} onChange={update} onClear={clear} />
+      <FiltersBar
+        filters={filters}
+        facets={facets}
+        onChange={update}
+        onClear={clear}
+      />
       {error ? (
         <div className={styles.empty}>{error}</div>
       ) : sessions.length === 0 && !loading ? (
@@ -869,7 +934,9 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
               onToggleArchive={handleToggleArchive}
               onToggleFavorite={setSticky}
               onReviewNow={aiConfigured ? reviewNowWithOutcome : undefined}
-              onToggleReviewExcluded={aiConfigured ? setReviewExcluded : undefined}
+              onToggleReviewExcluded={
+                aiConfigured ? setReviewExcluded : undefined
+              }
               onToggleOrchestratorExcluded={
                 aiConfigured ? setOrchestratorExcluded : undefined
               }

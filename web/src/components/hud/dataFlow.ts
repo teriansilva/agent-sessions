@@ -9,7 +9,9 @@
 const noop = () => {};
 
 function prefersReducedMotion(): boolean {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
 }
 
 /**
@@ -24,7 +26,14 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
 
   let W = 0;
   let H = 0;
-  let parts: { x: number; y: number; v: number; len: number; c: string; a: number }[] = [];
+  let parts: {
+    x: number;
+    y: number;
+    v: number;
+    len: number;
+    c: string;
+    a: number;
+  }[] = [];
   let raf = 0;
   let cancelled = false;
 
@@ -44,7 +53,8 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
   const size = () => {
     W = canvas.width = window.innerWidth;
     H = canvas.height = window.innerHeight;
-    const mask = "radial-gradient(ellipse at center, #000 55%, transparent 95%)";
+    const mask =
+      "radial-gradient(ellipse at center, #000 55%, transparent 95%)";
     canvas.style.maskImage = mask;
     canvas.style.webkitMaskImage = mask;
     const n = Math.min(34, Math.round((W * H) / 44000));
@@ -117,7 +127,9 @@ export function runButtonGlitch(): () => void {
   const schedule = () => {
     timer = setTimeout(
       () => {
-        const btns = Array.from(document.querySelectorAll<HTMLElement>(".shine")).filter(
+        const btns = Array.from(
+          document.querySelectorAll<HTMLElement>(".shine"),
+        ).filter(
           (b) => b.offsetParent !== null, // visible only
         );
         if (btns.length) {

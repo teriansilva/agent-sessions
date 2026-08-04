@@ -8,7 +8,9 @@ import { THEME_STORAGE_KEY } from "./applyTheme";
 import { ThemeProvider } from "./ThemeProvider";
 import { useTheme } from "./themeStore";
 
-vi.mock("../lib/api", () => ({ api: { setTheme: vi.fn().mockResolvedValue({ theme: "dark" }) } }));
+vi.mock("../lib/api", () => ({
+  api: { setTheme: vi.fn().mockResolvedValue({ theme: "dark" }) },
+}));
 
 function Harness() {
   const { theme, setTheme } = useTheme();
@@ -48,8 +50,15 @@ test("setTheme applies to <html>, caches locally, and persists to the server", a
 });
 
 test("reconciles to the server theme once config loads", async () => {
-  renderWithConfig({ csrf: "x", new_session_engines: [], terminal_backend: "ws", theme: "light" });
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+  renderWithConfig({
+    csrf: "x",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    theme: "light",
+  });
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("light"),
+  );
   expect(screen.getByRole("button")).toHaveTextContent("light");
 });
 
@@ -60,7 +69,9 @@ test("an unknown server theme falls back to the default", async () => {
     terminal_backend: "ws",
     theme: "neon",
   } as AppConfig);
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("dark"),
+  );
 });
 
 test("a local choice wins over the server's theme on reload (#172)", async () => {
@@ -76,7 +87,9 @@ test("a local choice wins over the server's theme on reload (#172)", async () =>
   });
   // Give the reconcile effect a tick to fire (or not). Use waitFor to assert stability
   // rather than racing the effect.
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("light"),
+  );
   expect(screen.getByRole("button")).toHaveTextContent("light");
   expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light"); // NOT overwritten to dark
 });
@@ -92,7 +105,9 @@ test("a malformed local value does NOT block server seeding (Hermes #173 review)
     terminal_backend: "ws",
     theme: "dark",
   });
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("dark"),
+  );
   expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark"); // bad value overwritten
 });
 
@@ -106,6 +121,8 @@ test("first load on a fresh device still seeds from the server (#172)", async ()
     terminal_backend: "ws",
     theme: "light",
   });
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+  await waitFor(() =>
+    expect(document.documentElement.dataset.theme).toBe("light"),
+  );
   expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light"); // now cached locally
 });

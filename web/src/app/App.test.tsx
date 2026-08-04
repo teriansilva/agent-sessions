@@ -8,16 +8,29 @@ import { applySWUpdate } from "./swUpdate";
 // Mock the whole API surface the shell touches on load so render is deterministic.
 vi.mock("../lib/api", () => ({
   api: {
-    config: vi.fn().mockResolvedValue({ csrf: "x", new_session_engines: [], terminal_backend: "ws" }),
+    config: vi
+      .fn()
+      .mockResolvedValue({
+        csrf: "x",
+        new_session_engines: [],
+        terminal_backend: "ws",
+      }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
     // #726 Phase 3: the topbar mounts the notification bell, which polls on mount.
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
-    markNotificationsRead: vi.fn().mockResolvedValue({ notifications: [], unread: 0, marked: 0 }),
+    markNotificationsRead: vi
+      .fn()
+      .mockResolvedValue({ notifications: [], unread: 0, marked: 0 }),
     setTheme: vi.fn().mockResolvedValue({ theme: "dark" }),
     setPrefs: vi.fn().mockResolvedValue({ session_list_order: "created_at" }),
     sessions: vi
       .fn()
-      .mockResolvedValue({ sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } }),
+      .mockResolvedValue({
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      }),
     folders: vi.fn().mockResolvedValue({ folders: [] }),
     projectEntities: vi.fn().mockResolvedValue({ projects: [] }),
   },
@@ -82,10 +95,9 @@ test("clicking the topbar Settings link lands on the first settings tab (#357)",
   await screen.findAllByRole("link", { name: "Settings" });
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
   await userEvent.click(within(topbar).getByRole("link", { name: "Settings" }));
-  expect(await screen.findByRole("tab", { name: "Appearance" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  expect(
+    await screen.findByRole("tab", { name: "Appearance" }),
+  ).toHaveAttribute("aria-selected", "true");
   expect(window.location.pathname).toBe("/settings/appearance");
 });
 
@@ -97,10 +109,14 @@ test("desktop: the single command-bar toggle collapses then re-expands the sideb
   const app = container.querySelector(".app");
   expect(app).not.toHaveClass("collapsed");
 
-  await userEvent.click(await screen.findByRole("button", { name: "Collapse session list" }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Collapse session list" }),
+  );
   expect(app).toHaveClass("collapsed");
 
-  await userEvent.click(screen.getByRole("button", { name: "Open session list" }));
+  await userEvent.click(
+    screen.getByRole("button", { name: "Open session list" }),
+  );
   expect(app).not.toHaveClass("collapsed");
 });
 
@@ -108,7 +124,9 @@ test("the command topbar carries the overview entrypoint (#139/#211)", async () 
   const { container } = render(<App />);
   await screen.findAllByRole("link", { name: /open session overview/i });
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
-  const link = within(topbar).getByRole("link", { name: /open session overview/i });
+  const link = within(topbar).getByRole("link", {
+    name: /open session overview/i,
+  });
   expect(link).toHaveAttribute("href", "/overview");
 });
 
@@ -117,9 +135,13 @@ test("the command topbar carries the overview entrypoint (#139/#211)", async () 
 test("the sidebar is list-only — no List/Map view toggle (#424)", async () => {
   render(<App />);
   // The session list shell (its "New session" entrypoint) is present unconditionally.
-  expect(await screen.findByRole("link", { name: /new session/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("link", { name: /new session/i }),
+  ).toBeInTheDocument();
   // The retired tablist and its Map tab no longer exist.
-  expect(screen.queryByRole("tablist", { name: /sidebar view/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("tablist", { name: /sidebar view/i }),
+  ).not.toBeInTheDocument();
   expect(screen.queryByRole("tab", { name: /map/i })).not.toBeInTheDocument();
 });
 
@@ -129,7 +151,9 @@ test("a stale tr-sidebar-view pref is cleared on mount (#424)", async () => {
   localStorage.setItem("tr-sidebar-view", "overview");
   render(<App />);
   await screen.findByRole("link", { name: /new session/i });
-  await waitFor(() => expect(localStorage.getItem("tr-sidebar-view")).toBeNull());
+  await waitFor(() =>
+    expect(localStorage.getItem("tr-sidebar-view")).toBeNull(),
+  );
 });
 
 // #548: the sidebar header's decorative "Sessions / SEC // 01" label row is now the sort-order
@@ -174,12 +198,16 @@ test("sidebar: flipping to Created persists the pref, refreshes config, and refe
   await userEvent.click(created);
   expect(created).toHaveAttribute("aria-checked", "true"); // optimistic flip
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ session_list_order: "created_at" }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      session_list_order: "created_at",
+    }),
   );
   // The save refreshes the shared config…
   await waitFor(() => expect(api.config).toHaveBeenCalledTimes(2));
   // …whose new order triggers exactly one page-0 refetch, re-sorting the list in place.
-  await waitFor(() => expect(vi.mocked(api.sessions).mock.calls.length).toBe(fetches + 1));
+  await waitFor(() =>
+    expect(vi.mocked(api.sessions).mock.calls.length).toBe(fetches + 1),
+  );
   expect(created).toHaveAttribute("aria-checked", "true"); // reconciled, not reverted
 });
 
@@ -189,7 +217,10 @@ test("sidebar: a failed order save snaps the toggle back to the server truth (#5
   const created = await screen.findByRole("radio", { name: "Created" });
   await userEvent.click(created);
   await waitFor(() => expect(created).toHaveAttribute("aria-checked", "false"));
-  expect(screen.getByRole("radio", { name: "Recent" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("radio", { name: "Recent" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
   expect(api.config).toHaveBeenCalledTimes(1); // no config refresh on a failed save
 });
 
@@ -201,24 +232,29 @@ test.each([
   ["New session", /new session/i],
   ["Overview", /open session overview/i],
   ["Settings", /^settings$/i],
-])("mobile: tapping same-route %s closes the open drawer in one tap (#283)", async (_label, name) => {
-  mockMobileViewport();
-  const { container } = render(<App />);
-  const app = container.querySelector(".app") as HTMLElement;
+])(
+  "mobile: tapping same-route %s closes the open drawer in one tap (#283)",
+  async (_label, name) => {
+    mockMobileViewport();
+    const { container } = render(<App />);
+    const app = container.querySelector(".app") as HTMLElement;
 
-  // Open the off-canvas drawer (mobile toggle drives navOpen, not the desktop collapse flag).
-  await userEvent.click(await screen.findByRole("button", { name: "Open session list" }));
-  expect(app).toHaveClass("navOpen");
+    // Open the off-canvas drawer (mobile toggle drives navOpen, not the desktop collapse flag).
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open session list" }),
+    );
+    expect(app).toHaveClass("navOpen");
 
-  // Tap the same-route link — there can be two copies (topbar + in-drawer); either carries the
-  // close handler, so the first is enough.
-  const links = await screen.findAllByRole("link", { name });
-  await userEvent.click(links[0]);
+    // Tap the same-route link — there can be two copies (topbar + in-drawer); either carries the
+    // close handler, so the first is enough.
+    const links = await screen.findAllByRole("link", { name });
+    await userEvent.click(links[0]);
 
-  await waitFor(() => expect(app).not.toHaveClass("navOpen"));
-  // The desktop collapse flag must stay untouched (the two surfaces are independent, #128).
-  expect(app).not.toHaveClass("collapsed");
-});
+    await waitFor(() => expect(app).not.toHaveClass("navOpen"));
+    // The desktop collapse flag must stay untouched (the two surfaces are independent, #128).
+    expect(app).not.toHaveClass("collapsed");
+  },
+);
 
 // --- Footer version surface (#661) --------------------------------------------------------------
 
@@ -230,13 +266,17 @@ test("the footer shows the running version as a hud tag (#661)", async () => {
   expect(tag).toHaveClass("hud-version");
   expect(container.querySelector("footer.hud-classbar")).toContainElement(tag);
   // In sync ⇒ no update chip.
-  expect(screen.queryByRole("button", { name: /tap to reload/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /tap to reload/i }),
+  ).not.toBeInTheDocument();
 });
 
 test("a swapped-in SW shell surfaces the tap-to-reload chip; tap applies via the SW path (#661)", async () => {
   swSwapped = true;
   render(<App />);
-  const chip = await screen.findByRole("button", { name: /ready — tap to reload/i });
+  const chip = await screen.findByRole("button", {
+    name: /ready — tap to reload/i,
+  });
   await userEvent.click(chip);
   expect(vi.mocked(applySWUpdate)).toHaveBeenCalledTimes(1); // SW-aware reload, never bare
 });

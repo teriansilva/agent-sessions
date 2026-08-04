@@ -21,10 +21,21 @@ async function setup(page: Page): Promise<unknown[]> {
     }),
   );
   await page.route("**/api/sessions**", (r) =>
-    r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
+    r.fulfill({
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
+    }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/prefs", (r) => {
     posts.push(r.request().postDataJSON());
     return r.fulfill({ json: { session_list_order: "created_at" } });
@@ -34,8 +45,13 @@ async function setup(page: Page): Promise<unknown[]> {
 }
 
 test.describe("session list sort order (#506)", () => {
-  test("toggling to Creation date persists session_list_order", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "desktop", "the control is identical on mobile; run once");
+  test("toggling to Creation date persists session_list_order", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "desktop",
+      "the control is identical on mobile; run once",
+    );
     const posts = await setup(page);
 
     const recent = page.getByRole("radio", { name: /Recent activity/ });
@@ -50,7 +66,9 @@ test.describe("session list sort order (#506)", () => {
     await expect(created).toHaveAttribute("aria-checked", "true");
     await expect(recent).toHaveAttribute("aria-checked", "false");
     // …and the choice is persisted via /api/prefs.
-    await expect.poll(() => posts).toContainEqual({ session_list_order: "created_at" });
+    await expect
+      .poll(() => posts)
+      .toContainEqual({ session_list_order: "created_at" });
   });
 });
 
@@ -78,8 +96,20 @@ function sess(id: string, title: string, mtime: number, created: number) {
 async function setupSidebar(page: Page): Promise<void> {
   const NOW = Math.floor(Date.now() / 1000);
   // "updated-latest" has the newest activity; "created-latest" was created most recently.
-  const byActivity = [sess("aaaaaaaa-0000-0000-0000-000000000001", "updated-latest", NOW, NOW - 9000),
-    sess("bbbbbbbb-0000-0000-0000-000000000002", "created-latest", NOW - 5000, NOW - 100)];
+  const byActivity = [
+    sess(
+      "aaaaaaaa-0000-0000-0000-000000000001",
+      "updated-latest",
+      NOW,
+      NOW - 9000,
+    ),
+    sess(
+      "bbbbbbbb-0000-0000-0000-000000000002",
+      "created-latest",
+      NOW - 5000,
+      NOW - 100,
+    ),
+  ];
   const byCreation = [byActivity[1], byActivity[0]];
   let order = "recent_activity";
   await page.route("**/api/config", (r) =>
@@ -105,10 +135,18 @@ async function setupSidebar(page: Page): Promise<void> {
       },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route(/\/api\/projects($|\?)/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/prefs", (r) => {
     const body = r.request().postDataJSON() as { session_list_order?: string };
     if (body.session_list_order) order = body.session_list_order;
@@ -132,20 +170,18 @@ test.describe("sidebar sort-order toggle (#548)", () => {
       // The decorative header content is gone; the toggle owns the row.
       await expect(page.getByText("SEC // 01")).toBeHidden();
       const group = page.getByRole("radiogroup", { name: "Order" });
-      await expect(group.getByRole("radio", { name: "Recent" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
+      await expect(
+        group.getByRole("radio", { name: "Recent" }),
+      ).toHaveAttribute("aria-checked", "true");
 
       // Recent-activity order: the newest-updated session leads.
       const firstRow = page.locator('aside a[href^="/s/"]').first();
       await expect(firstRow).toContainText("updated-latest");
 
       await group.getByRole("radio", { name: "Created" }).click();
-      await expect(group.getByRole("radio", { name: "Created" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      );
+      await expect(
+        group.getByRole("radio", { name: "Created" }),
+      ).toHaveAttribute("aria-checked", "true");
       // The refetch lands the creation order without navigating anywhere.
       await expect(firstRow).toContainText("created-latest");
     });

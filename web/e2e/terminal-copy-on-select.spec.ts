@@ -24,7 +24,8 @@ window.WebSocket = class {
 `;
 
 // claude's real attach prefix: mouse tracking + SGR + bracketed paste, then a normal-buffer frame.
-const CLAUDE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
+const CLAUDE =
+  "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
 
 async function dragSelect(page: import("@playwright/test").Page) {
   const box = (await page.locator(".xterm-screen").boundingBox())!;
@@ -39,7 +40,9 @@ async function openTerm(page: import("@playwright/test").Page, id: string) {
   await page.addInitScript(stub(CLAUDE));
   await page.goto(`/s/claude/${id}`);
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("selectable");
 }
 
@@ -48,7 +51,10 @@ test("auto copy-on-select copies the selection to the clipboard + flashes the to
   browserName,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "mouse behavior");
-  test.skip(browserName !== "chromium", "clipboard-read permission is chromium-only");
+  test.skip(
+    browserName !== "chromium",
+    "clipboard-read permission is chromium-only",
+  );
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await openTerm(page, "copysel-auto");
   await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
@@ -66,7 +72,10 @@ test("a plain click (no selection) never clobbers the clipboard (#554 guard)", a
   browserName,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "mouse behavior");
-  test.skip(browserName !== "chromium", "clipboard-read permission is chromium-only");
+  test.skip(
+    browserName !== "chromium",
+    "clipboard-read permission is chromium-only",
+  );
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await openTerm(page, "copysel-guard");
   await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
@@ -74,6 +83,8 @@ test("a plain click (no selection) never clobbers the clipboard (#554 guard)", a
   await page.locator(".xterm-screen").click(); // focus, no drag → no selection
   // Give any (wrong) auto-copy a chance to fire, then assert the sentinel is untouched.
   await page.waitForTimeout(150);
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("SENTINEL");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "SENTINEL",
+  );
   await expect(page.locator("[data-copied-toast]")).toHaveCount(0);
 });

@@ -3,7 +3,11 @@
 // behavior the #300 fix established: switching and reloading keep the right session's scroll-up
 // intact, with no fragments and no spurious resize wipe. A regression here is a real regression.
 import { test, expect } from "@playwright/test";
-import { setupBench, expectTerminalShows, expectTerminalHidden } from "./harness";
+import {
+  setupBench,
+  expectTerminalShows,
+  expectTerminalHidden,
+} from "./harness";
 
 const SESSIONS = [
   { engine: "claude", uuid: "aaa", title: "Session Alpha" },
@@ -39,16 +43,23 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("live render: the session's scroll-up is shown on open", async ({ page }) => {
+test("live render: the session's scroll-up is shown on open", async ({
+  page,
+}) => {
   await page.goto("/s/claude/aaa");
   await expectTerminalShows(page, A_END);
   // The fake server served it — if a real WS had escaped, the tripwire would have thrown.
 });
 
-test("in-app switch keeps the right history, no fragments (#300)", async ({ page }, testInfo) => {
+test("in-app switch keeps the right history, no fragments (#300)", async ({
+  page,
+}, testInfo) => {
   // The switch path here clicks a sidebar row; on mobile that lives behind a nav drawer (a separate
   // UI path covered elsewhere). The #300 connect-stability fix it exercises is viewport-agnostic.
-  test.skip(testInfo.project.name === "mobile", "sidebar switch is drawer-gated on mobile");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "sidebar switch is drawer-gated on mobile",
+  );
   await page.goto("/s/claude/aaa");
   await expectTerminalShows(page, A_END);
 
@@ -70,7 +81,9 @@ test("reload keeps the session's history", async ({ page }) => {
   await expectTerminalShows(page, A_END);
 });
 
-test("connect happens once the grid is stable — no resize wipe on attach (#300)", async ({ page }) => {
+test("connect happens once the grid is stable — no resize wipe on attach (#300)", async ({
+  page,
+}) => {
   // wipeOnResizeChange is on (models the real agent repaint). If the client connected before layout
   // settled and then sent a correcting resize, the server would wipe and A_END would vanish. It must not.
   await page.goto("/s/claude/aaa");
@@ -81,7 +94,9 @@ test("connect happens once the grid is stable — no resize wipe on attach (#300
   await expect(page.locator(".xterm-rows")).not.toContainText("repainted");
 });
 
-test("TEETH + current limitation: a post-connect grid change repaints the live view (#301)", async ({ page }) => {
+test("TEETH + current limitation: a post-connect grid change repaints the live view (#301)", async ({
+  page,
+}) => {
   // Two jobs at once:
   //  1. Proves the bench has teeth — it can actually detect a wipe end-to-end through the real app
   //     (if this passed vacuously, the green specs above would be meaningless).
@@ -96,7 +111,9 @@ test("TEETH + current limitation: a post-connect grid change repaints the live v
   await expectTerminalHidden(page, A_END);
 });
 
-test("isolation tripwire: a real WebSocket is a hard failure", async ({ page }) => {
+test("isolation tripwire: a real WebSocket is a hard failure", async ({
+  page,
+}) => {
   // Self-test of the gate: without the fake WS the app would open a real WS to /ws/term/... and the
   // page.on('websocket') tripwire would throw. Here the fake WS is installed, so the page is clean —
   // we assert the terminal came up purely from the mock.

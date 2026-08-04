@@ -7,7 +7,12 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { Session } from "../types/api";
-import { displayProjectName, engineColor, engineName, projectColor } from "./format";
+import {
+  displayProjectName,
+  engineColor,
+  engineName,
+  projectColor,
+} from "./format";
 
 /** A session counts as "active" if its last activity is within this window. */
 export const ACTIVE_WINDOW_S = 15 * 60;
@@ -151,12 +156,22 @@ interface Cluster {
 }
 const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
   if (groupBy === "agent") {
-    return { key: `agent:${s.engine}`, kind: "agent", label: engineName(s.engine), color: engineColor(s.engine) };
+    return {
+      key: `agent:${s.engine}`,
+      kind: "agent",
+      label: engineName(s.engine),
+      color: engineColor(s.engine),
+    };
   }
   if (groupBy === "folder") {
     // Pure cwd tree — the path is the label fallback; entity name/color are intentionally
     // dropped. The folder still gets its own stable accent from the cwd hash (#285).
-    return { key: s.cwd, kind: "folder", label: s.cwd, color: projectColor(s.cwd) };
+    return {
+      key: s.cwd,
+      kind: "folder",
+      label: s.cwd,
+      color: projectColor(s.cwd),
+    };
   }
   // Entity groups tint by the explicit entity color, else the stable id hash (#285). The
   // synthetic Default catch-all stays neutral — it is many folders, not one project.
@@ -218,7 +233,8 @@ export function expandableKeys(
       .map((s) => clusterOf(s, groupBy).key),
   );
   // Empty project clusters are expandable too (#447) so "Expand all" covers them.
-  if (groupBy === "project") for (const p of projects) keys.add(`project:${p.id}`);
+  if (groupBy === "project")
+    for (const p of projects) keys.add(`project:${p.id}`);
   return [...keys];
 }
 
@@ -228,7 +244,10 @@ export function expandableKeys(
  *  layered tidy tree: depth = nesting level → row; siblings spread left→right with parents
  *  centered over their children. Group nodes precede their session-chip children (React
  *  Flow requirement). */
-export function buildOverview(sessions: Session[], opts: BuildOptions = {}): OverviewGraph {
+export function buildOverview(
+  sessions: Session[],
+  opts: BuildOptions = {},
+): OverviewGraph {
   const nowS = opts.nowS ?? Date.now() / 1000;
   const groupBy = opts.groupBy ?? "project";
   const expanded = opts.expanded ?? new Set<string>();
@@ -238,9 +257,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   // cwd visibility prefs apply per `keepsHiddenCwd`: an entity-resolved session in `project`
   // mode survives a hidden cwd (server sidebar/facet parity, #361); in `folder`/`agent` mode
   // a hidden cwd hides its sessions outright (#424 Phase 2).
-  const visible = (opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)).filter(
-    (s) => keepsHiddenCwd(s, groupBy) || !excluded.has(s.cwd),
-  );
+  const visible = (
+    opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)
+  ).filter((s) => keepsHiddenCwd(s, groupBy) || !excluded.has(s.cwd));
 
   const groups = new Map<
     string,
@@ -296,7 +315,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   // can render the same tree (#174). Folder-nesting edges apply among FOLDER groups only
   // (their keys are cwds); entity groups are roots laid out alongside (#361 Phase 4).
   const present = new Set(groups.keys());
-  const folderKeys = [...present].filter((k) => groups.get(k)!.kind === "folder");
+  const folderKeys = [...present].filter(
+    (k) => groups.get(k)!.kind === "folder",
+  );
   const tree = buildProjectTree(folderKeys);
   const parent = new Map<string, string | undefined>(
     [...tree.values()].map((n) => [n.cwd, n.parent]),
@@ -306,7 +327,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   );
   const depthOf = (key: string): number => tree.get(key)?.depth ?? 0;
   const sizeOf = (key: string) =>
-    expanded.has(key) ? groupSize(groups.get(key)!.items.length) : { w: COLLAPSED_W, h: HEADER_H };
+    expanded.has(key)
+      ? groupSize(groups.get(key)!.items.length)
+      : { w: COLLAPSED_W, h: HEADER_H };
 
   // Row Y by depth (each row as tall as its tallest cluster).
   const maxDepth = present.size ? Math.max(...[...present].map(depthOf)) : 0;
@@ -353,7 +376,9 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
   const emit = (key: string) => {
     const g = groups.get(key)!;
     const isExpanded = expanded.has(key);
-    const { w, h } = isExpanded ? groupSize(g.items.length) : { w: COLLAPSED_W, h: HEADER_H };
+    const { w, h } = isExpanded
+      ? groupSize(g.items.length)
+      : { w: COLLAPSED_W, h: HEADER_H };
     const cols = isExpanded ? groupSize(g.items.length).cols : 1;
     const groupId = `group:${key}`;
     // Representative cwd: a folder group's key IS its cwd; an entity group shows its
@@ -376,7 +401,10 @@ export function buildOverview(sessions: Session[], opts: BuildOptions = {}): Ove
         // Folders layout (#445): tag each folder node with its owning project (the user project
         // all its sessions resolve to, else Default) so folders read as a sub-property of a
         // project. Only meaningful for folder-kind groups in `folder` mode.
-        owner: groupBy === "folder" && g.kind === "folder" ? ownerOf(g.items) : undefined,
+        owner:
+          groupBy === "folder" && g.kind === "folder"
+            ? ownerOf(g.items)
+            : undefined,
       } satisfies ProjectGroupData,
       style: { width: w, height: h },
       draggable: false,

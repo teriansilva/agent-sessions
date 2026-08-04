@@ -13,7 +13,9 @@ window.WebSocket = class {
 };
 `;
 
-test("paste image over terminal → Compose attachment pill (#157)", async ({ page }) => {
+test("paste image over terminal → Compose attachment pill (#157)", async ({
+  page,
+}) => {
   await page.route("**/api/upload", (r) =>
     r.fulfill({ json: { name: "shot.png", path: "/uploads/shot.png" } }),
   );
@@ -26,11 +28,17 @@ test("paste image over terminal → Compose attachment pill (#157)", async ({ pa
   // Dispatch a paste with an image File on a node inside the terminal host. The capture-phase
   // listener on the host catches it (`#157`) and forwards to Compose.
   await xterm.evaluate((host) => {
-    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
     const dt = new DataTransfer();
     dt.items.add(file);
     host.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
     );
   });
 

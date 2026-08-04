@@ -26,7 +26,10 @@ function selfHost(): string | undefined {
 /** True for the app's OWN sockets (**same-origin** `/ws…`) — only those ride the tunnel; a
  *  genuinely external WebSocket (any other host, or a non-`/ws` path) keeps the real
  *  constructor. `host` is the connect page's own host (defaults to `location.host`). */
-export function isAppSocketUrl(url: string, host: string | undefined = selfHost()): boolean {
+export function isAppSocketUrl(
+  url: string,
+  host: string | undefined = selfHost(),
+): boolean {
   if (url.startsWith("/")) return url.startsWith("/ws"); // relative → same-origin by definition
   try {
     const u = new URL(url); // absolute ws(s)://host/path
@@ -50,7 +53,10 @@ export function installWsBackstop(
   host: string | undefined = selfHost(),
 ): () => void {
   const real = win.WebSocket;
-  const shim = function (url: string | URL, protocols?: string | string[]): WebSocket {
+  const shim = function (
+    url: string | URL,
+    protocols?: string | string[],
+  ): WebSocket {
     return isAppSocketUrl(String(url), host)
       ? (tunnel.wsFactory(String(url)) as unknown as WebSocket)
       : new real(url, protocols);
@@ -119,20 +125,27 @@ export type RenderApp = (rootId: string) => Promise<() => void>;
 
 /** Fork C (dynamic-import): pull the app bundle on demand and boot it exactly like main.tsx. */
 const dynamicImportRender: RenderApp = async (rootId) => {
-  const [{ default: App }, { createRoot }, react, { bootTheme }, { bootAccent }] =
-    await Promise.all([
-      import("../app/App"),
-      import("react-dom/client"),
-      import("react"),
-      import("../theme/applyTheme"),
-      import("../theme/applyAccent"),
-    ]);
+  const [
+    { default: App },
+    { createRoot },
+    react,
+    { bootTheme },
+    { bootAccent },
+  ] = await Promise.all([
+    import("../app/App"),
+    import("react-dom/client"),
+    import("react"),
+    import("../theme/applyTheme"),
+    import("../theme/applyAccent"),
+  ]);
   bootTheme();
   bootAccent();
   const el = document.getElementById(rootId);
   if (!el) throw new Error("mountApp: root element missing");
   const root = createRoot(el);
-  root.render(react.createElement(react.StrictMode, null, react.createElement(App)));
+  root.render(
+    react.createElement(react.StrictMode, null, react.createElement(App)),
+  );
   return () => root.unmount();
 };
 
@@ -145,11 +158,17 @@ export async function mountApp(
   ws: SocketLike,
   accessKey: string,
   captcha: string,
-  opts: { rootId?: string; onEvent?: (e: SessionEvent) => void; render?: RenderApp } = {},
+  opts: {
+    rootId?: string;
+    onEvent?: (e: SessionEvent) => void;
+    render?: RenderApp;
+  } = {},
 ): Promise<MountedApp> {
   const wired = await wireAppTunnel(ws, accessKey, captcha, opts.onEvent);
   try {
-    const unmount = await (opts.render ?? dynamicImportRender)(opts.rootId ?? "app-root");
+    const unmount = await (opts.render ?? dynamicImportRender)(
+      opts.rootId ?? "app-root",
+    );
     return {
       teardown: () => {
         unmount();

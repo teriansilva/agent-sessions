@@ -104,24 +104,29 @@ test("push-to-talk streams the transcript into the compose box; releasing stops 
   await mic.hover();
   await page.mouse.down();
   await expect(textarea).toHaveValue(/deploy the staging build/); // interim arrives first
-  await expect(textarea).toHaveValue("deploy the staging build and watch the rollout"); // final
+  await expect(textarea).toHaveValue(
+    "deploy the staging build and watch the rollout",
+  ); // final
   // The final result re-fires 5× (Chrome behaviour, #487). After they all land the transcript must
   // appear exactly ONCE — never duplicated. Wait out the re-fires, then assert the exact value.
   await page.waitForTimeout(250);
-  await expect(textarea).toHaveValue("deploy the staging build and watch the rollout");
+  await expect(textarea).toHaveValue(
+    "deploy the staging build and watch the rollout",
+  );
   // While recording the control is the "stop" affordance and reports its pressed state.
   const stopMic = page.getByRole("button", { name: /stop voice input/i });
   await expect(stopMic).toHaveAttribute("aria-pressed", "true");
 
   // Let go → stops, back to the idle "start" affordance.
   await page.mouse.up();
-  await expect(page.getByRole("button", { name: /start voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
+  await expect(
+    page.getByRole("button", { name: /start voice input/i }),
+  ).toHaveAttribute("aria-pressed", "false");
 
   const recog = await page.evaluate(
-    () => (window as unknown as { __recog: { started: number; stopped: number } }).__recog,
+    () =>
+      (window as unknown as { __recog: { started: number; stopped: number } })
+        .__recog,
   );
   expect(recog.started).toBe(1);
   expect(recog.stopped).toBe(1);
@@ -150,22 +155,26 @@ test("dictation survives the engine ending its own session — both utterances l
   await mic.hover();
   await page.mouse.down();
   await expect(textarea).toHaveValue("deploy the staging build");
-  await expect(textarea).toHaveValue("deploy the staging build and watch the rollout");
+  await expect(textarea).toHaveValue(
+    "deploy the staging build and watch the rollout",
+  );
 
   // Still listening after both hang-ups — only the user ends dictation. Poll for the third session:
   // the second phrase lands BEFORE its session hangs up, so reading the count straight after the
   // transcript assertion would race the re-arm rather than test it.
   const started = () =>
-    page.evaluate(() => (window as unknown as { __recog: { started: number } }).__recog.started);
+    page.evaluate(
+      () =>
+        (window as unknown as { __recog: { started: number } }).__recog.started,
+    );
   await expect.poll(started).toBe(3);
   const stopMic = page.getByRole("button", { name: /stop voice input/i });
   await expect(stopMic).toHaveAttribute("aria-pressed", "true");
 
   await page.mouse.up();
-  await expect(page.getByRole("button", { name: /start voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
+  await expect(
+    page.getByRole("button", { name: /start voice input/i }),
+  ).toHaveAttribute("aria-pressed", "false");
   // …and the release is final: no re-arm after the user let go.
   await page.waitForTimeout(200);
   expect(await started()).toBe(3);
@@ -223,25 +232,36 @@ test("press-and-hold records; releasing stops capture but still lands the tail (
   // HOLD — press and keep the button down. A click (press+release) would be a whole dictation.
   await mic.hover();
   await page.mouse.down();
-  await expect(page.getByRole("button", { name: /stop voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: /stop voice input/i }),
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(textarea).toHaveValue("hold to dictate"); // streaming while held
 
   // RELEASE — capture stops, but the engine still owes us the finished phrase.
   await page.mouse.up();
-  expect(await page.evaluate(() => (window as unknown as { __recog: { stopped: number; aborted: number } }).__recog.stopped)).toBe(1);
-  expect(await page.evaluate(() => (window as unknown as { __recog: { aborted: number } }).__recog.aborted)).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __recog: { stopped: number; aborted: number } })
+          .__recog.stopped,
+    ),
+  ).toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __recog: { aborted: number } }).__recog.aborted,
+    ),
+  ).toBe(0);
 
   // …and it arrives after the release. Red before #738: the old teardown detached onresult on stop,
   // so this final landed nowhere and the box stayed at "hold to dictate".
-  await page.evaluate(() => (window as unknown as { __recog: { tail: () => void } }).__recog.tail());
-  await expect(textarea).toHaveValue("hold to dictate the whole sentence");
-  await expect(page.getByRole("button", { name: /start voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "false",
+  await page.evaluate(() =>
+    (window as unknown as { __recog: { tail: () => void } }).__recog.tail(),
   );
+  await expect(textarea).toHaveValue("hold to dictate the whole sentence");
+  await expect(
+    page.getByRole("button", { name: /start voice input/i }),
+  ).toHaveAttribute("aria-pressed", "false");
 
   // The labelled chip must not wrap the action bar — it shares the row with the key chips, which
   // collapse into the "…" overflow instead (#234). One row, both viewports.
@@ -253,7 +273,9 @@ test("press-and-hold records; releasing stops capture but still lands the tail (
   expect(Math.abs(box!.y - send!.y)).toBeLessThan(box!.height); // same row, not stacked
 });
 
-test("holding Space outside a text field dictates; inside it types (#738)", async ({ page }) => {
+test("holding Space outside a text field dictates; inside it types (#738)", async ({
+  page,
+}) => {
   await page.addInitScript(NOOP_WS);
   await page.addInitScript(SPEECH_STUB_HOLD);
   await page.addInitScript(GUM_STUB);
@@ -271,24 +293,29 @@ test("holding Space outside a text field dictates; inside it types (#738)", asyn
   await textarea.click();
   await page.keyboard.press(" ");
   await expect(textarea).toHaveValue(" ");
-  expect(await page.evaluate(() => (window as unknown as { __recog: { started: number } }).__recog.started)).toBe(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __recog: { started: number } }).__recog.started,
+    ),
+  ).toBe(0);
 
   // Space held on the page background is push-to-talk.
   await textarea.evaluate((el: HTMLElement) => el.blur());
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.down(" ");
-  await expect(page.getByRole("button", { name: /stop voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: /stop voice input/i }),
+  ).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.up(" ");
-  await expect(page.getByRole("button", { name: /start voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
+  await expect(
+    page.getByRole("button", { name: /start voice input/i }),
+  ).toHaveAttribute("aria-pressed", "false");
 });
 
-test("a Space press cannot steal a pointer-owned hold or bin its tail (#738)", async ({ page }) => {
+test("a Space press cannot steal a pointer-owned hold or bin its tail (#738)", async ({
+  page,
+}) => {
   // The cross-input ownership case Hermes reproduced in a browser: with the chip held by the
   // pointer, pressing Space used to stop the live recognizer (`__recog.stopped` 0 → 1) and start a
   // replacement, losing the phrase being finalized.
@@ -306,31 +333,35 @@ test("a Space press cannot steal a pointer-owned hold or bin its tail (#738)", a
   const textarea = page.getByPlaceholder(/Type here/i);
 
   // Focus somewhere that does not claim Space — Hermes's exact setup.
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() =>
+    (document.activeElement as HTMLElement | null)?.blur(),
+  );
 
   await mic.hover();
   await page.mouse.down();
-  await expect(page.getByRole("button", { name: /stop voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: /stop voice input/i }),
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(textarea).toHaveValue("hold to dictate");
 
   await page.keyboard.down(" ");
   await page.keyboard.up(" ");
   const recog = await page.evaluate(
-    () => (window as unknown as { __recog: { started: number; stopped: number } }).__recog,
+    () =>
+      (window as unknown as { __recog: { started: number; stopped: number } })
+        .__recog,
   );
   expect(recog.stopped).toBe(0); // the held session survived the keypress
   expect(recog.started).toBe(1); // …and no replacement was started
-  await expect(page.getByRole("button", { name: /stop voice input/i })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: /stop voice input/i }),
+  ).toHaveAttribute("aria-pressed", "true");
 
   // The owning pointer still ends it, and the tail still lands.
   await page.mouse.up();
-  await page.evaluate(() => (window as unknown as { __recog: { tail: () => void } }).__recog.tail());
+  await page.evaluate(() =>
+    (window as unknown as { __recog: { tail: () => void } }).__recog.tail(),
+  );
   await expect(textarea).toHaveValue("hold to dictate the whole sentence");
 });
 
@@ -381,7 +412,9 @@ window.SpeechRecognition = class {
 };
 `;
 
-test("the captured device stream types the sentence ONCE (#749)", async ({ page }) => {
+test("the captured device stream types the sentence ONCE (#749)", async ({
+  page,
+}) => {
   await page.addInitScript(NOOP_WS);
   await page.addInitScript(SPEECH_STUB_CAPTURE);
   await page.addInitScript(GUM_STUB);

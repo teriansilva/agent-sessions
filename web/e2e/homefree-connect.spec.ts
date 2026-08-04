@@ -4,7 +4,9 @@ import { verifyHuman } from "./connect-helpers";
 
 // #579 app-only connect: the public connect page no longer exposes the recovery terminal pane.
 // Real browser guard because this is page structure/layout, not a jsdom-only contract.
-test("Home Free connect page exposes the app root, not a recovery terminal pane", async ({ page }) => {
+test("Home Free connect page exposes the app root, not a recovery terminal pane", async ({
+  page,
+}) => {
   await page.goto("/connect.html");
 
   await expect(page.getByRole("button", { name: "CONNECT" })).toBeVisible();
@@ -42,7 +44,9 @@ test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchab
   await expect(canvas).toHaveCount(1);
   await expect(canvas).toHaveCSS("pointer-events", "none");
   await expect
-    .poll(() => canvas.evaluate((c: HTMLCanvasElement) => c.width > 0 && c.height > 0))
+    .poll(() =>
+      canvas.evaluate((c: HTMLCanvasElement) => c.width > 0 && c.height > 0),
+    )
     .toBe(true);
 
   // Corner-bracket frame, not a rounded box. The card owns exactly four brackets of its own;
@@ -61,7 +65,9 @@ test("connect page wears the HUD chrome: ambient canvas, four brackets, glitchab
 // `max-height: inherit` overflowed the dialog's border box by another 2px. Headless Chromium draws
 // OVERLAY scrollbars, so a gutter measurement sees nothing; assert the conditions that *cause* a
 // bar instead — a scroll container that overflows. docs/design.md §7: no horizontal overflow.
-test("the how-it-works modal paints no scrollbars, and its body still scrolls", async ({ page }) => {
+test("the how-it-works modal paints no scrollbars, and its body still scrolls", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 666, height: 1006 });
   await page.goto("/connect.html");
   await page.getByRole("button", { name: "How does it work?" }).click();
@@ -95,12 +101,18 @@ test("the how-it-works modal paints no scrollbars, and its body still scrolls", 
   if (m.innerScrollable) {
     await page.locator(".modal-inner").hover();
     await page.mouse.wheel(0, 400);
-    await expect.poll(() => page.locator(".modal-inner").evaluate((e) => e.scrollTop)).toBeGreaterThan(0);
+    await expect
+      .poll(() => page.locator(".modal-inner").evaluate((e) => e.scrollTop))
+      .toBeGreaterThan(0);
   }
-  await expect(page.getByRole("link", { name: /home-free-handshake\.md/ })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /home-free-handshake\.md/ }),
+  ).toBeVisible();
 });
 
-test("connect page explains the blind relay in a dismissible modal", async ({ page }) => {
+test("connect page explains the blind relay in a dismissible modal", async ({
+  page,
+}) => {
   await page.goto("/connect.html");
 
   const modal = page.locator("#how-modal");
@@ -108,12 +120,16 @@ test("connect page explains the blind relay in a dismissible modal", async ({ pa
 
   await page.getByRole("button", { name: "How does it work?" }).click();
   await expect(modal).toBeVisible();
-  await expect(page.getByRole("heading", { name: "The relay is blind" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "The relay is blind" }),
+  ).toBeVisible();
   // The trust claims that make the page worth believing.
   await expect(modal).toContainText("X25519");
   await expect(modal).toContainText("AES-256-GCM");
   await expect(modal).toContainText("Forward secrecy");
-  await expect(modal.getByRole("link", { name: /home-free-handshake\.md/ })).toBeVisible();
+  await expect(
+    modal.getByRole("link", { name: /home-free-handshake\.md/ }),
+  ).toBeVisible();
 
   // Both new controls are thumb-sized on touch (design.md §8). Pixel 7 runs this at ≤800px.
   const isMobile = page.viewportSize()!.width <= 800;
@@ -148,7 +164,10 @@ test("connect page starts no animation loop under reduced motion, and falls back
   await expect(page.locator("canvas#bg")).toBeHidden();
   await page.waitForTimeout(600); // a loop, had one started, would have ticked by now
   expect(await rafCount(page)).toBe(0);
-  await expect(page.locator("body")).toHaveCSS("background-image", /linear-gradient/);
+  await expect(page.locator("body")).toHaveCSS(
+    "background-image",
+    /linear-gradient/,
+  );
 });
 
 test.use({
@@ -167,7 +186,9 @@ function publicConnectUrl(baseURL: string | undefined): string {
   return `http://battlelab.superstatus.io:${u.port}/connect.html?relay=https://evil.example&token=leak`;
 }
 
-async function stubSuccessfulConnect(page: import("@playwright/test").Page): Promise<void> {
+async function stubSuccessfulConnect(
+  page: import("@playwright/test").Page,
+): Promise<void> {
   await page.addInitScript(() => {
     window.__battlelabConnectHarness = {
       holdMs: 250, // keep the human-gate hold short in tests
@@ -199,21 +220,26 @@ async function stubSuccessfulConnect(page: import("@playwright/test").Page): Pro
       },
     };
   });
-  await page.route("https://relay.battlelab.superstatus.io/altcha/challenge", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        algorithm: "SHA-256",
-        challenge: ZERO_ALTCHA,
-        salt: "",
-        signature: "test",
-        maxnumber: 0,
-      }),
-    });
-  });
+  await page.route(
+    "https://relay.battlelab.superstatus.io/altcha/challenge",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          algorithm: "SHA-256",
+          challenge: ZERO_ALTCHA,
+          salt: "",
+          signature: "test",
+          maxnumber: 0,
+        }),
+      });
+    },
+  );
 }
 
-test("connect sign-in is centered and keeps custom relay in advanced controls", async ({ page }) => {
+test("connect sign-in is centered and keeps custom relay in advanced controls", async ({
+  page,
+}) => {
   await page.goto("/connect.html");
 
   const card = page.locator(".connect-card");
@@ -226,7 +252,9 @@ test("connect sign-in is centered and keeps custom relay in advanced controls", 
   const viewport = page.viewportSize();
   expect(box).not.toBeNull();
   expect(viewport).not.toBeNull();
-  expect(Math.abs(box!.x + box!.width / 2 - viewport!.width / 2)).toBeLessThan(80);
+  expect(Math.abs(box!.x + box!.width / 2 - viewport!.width / 2)).toBeLessThan(
+    80,
+  );
 
   await page.getByText("Custom relay").click();
   await expect(page.getByLabel("Relay base URL")).toBeVisible();
@@ -248,22 +276,35 @@ test("public connect signs in, canonicalizes the URL, stores credentials for the
   await expect(page.locator(".session-box")).toBeVisible();
   await expect(page.locator(".connect-card")).toBeHidden();
   await expect(page).toHaveURL(/\/connect\/$/);
-  const saved = await page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY);
+  const saved = await page.evaluate(
+    (key) => sessionStorage.getItem(key),
+    STORAGE_KEY,
+  );
   expect(saved).toBeTruthy();
   const parsed = JSON.parse(saved!);
-  expect(parsed).toMatchObject({ relay: PUBLIC_RELAY, name: "viper-8231", key: "stream-secret" });
+  expect(parsed).toMatchObject({
+    relay: PUBLIC_RELAY,
+    name: "viper-8231",
+    key: "stream-secret",
+  });
   // The relay announced a 4-hour deadline — the saved window must follow it and
   // must NOT be clamped back to the old one-hour cap (#662 regression).
   expect(parsed.expiresAt).toBeGreaterThan(Date.now() + 3_600_000);
   expect(parsed.expiresAt).toBeLessThanOrEqual(Date.now() + 14_400_000);
 
   // #684: on narrow viewports the bar defaults collapsed, hiding Sign out — expand it first.
-  if (((await page.locator(".session-box").getAttribute("class")) ?? "").includes("collapsed")) {
+  if (
+    ((await page.locator(".session-box").getAttribute("class")) ?? "").includes(
+      "collapsed",
+    )
+  ) {
     await page.locator("#session-toggle").click();
   }
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.locator(".connect-card")).toBeVisible();
-  await expect(page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).resolves.toBeNull();
+  await expect(
+    page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY),
+  ).resolves.toBeNull();
   await expect(page.getByLabel("Access password")).toHaveValue("");
 });
 
@@ -272,7 +313,12 @@ test("expired saved credentials are ignored", async ({ page, baseURL }) => {
     ({ key, relay }) => {
       sessionStorage.setItem(
         key,
-        JSON.stringify({ relay, name: "old-box", key: "old-secret", expiresAt: Date.now() - 1000 }),
+        JSON.stringify({
+          relay,
+          name: "old-box",
+          key: "old-secret",
+          expiresAt: Date.now() - 1000,
+        }),
       );
     },
     { key: STORAGE_KEY, relay: PUBLIC_RELAY },
@@ -282,7 +328,9 @@ test("expired saved credentials are ignored", async ({ page, baseURL }) => {
 
   await expect(page.locator(".connect-card")).toBeVisible();
   await expect(page.getByLabel("Console key")).toHaveValue("");
-  await expect(page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY)).resolves.toBeNull();
+  await expect(
+    page.evaluate((key) => sessionStorage.getItem(key), STORAGE_KEY),
+  ).resolves.toBeNull();
 });
 
 async function streamConnected(
@@ -352,7 +400,8 @@ test("collapsed connection bar is click-through beside the toggle and persists t
   const toggle = page.locator("#session-toggle");
 
   // Deterministically make an explicit "collapsed" choice from either viewport default.
-  if (((await box.getAttribute("class")) ?? "").includes("collapsed")) await toggle.click();
+  if (((await box.getAttribute("class")) ?? "").includes("collapsed"))
+    await toggle.click();
   await expect(box).not.toHaveClass(/collapsed/);
   await toggle.click();
   await expect(box).toHaveClass(/collapsed/);
@@ -363,16 +412,21 @@ test("collapsed connection bar is click-through beside the toggle and persists t
   // …and a point just beside it resolves to the app underneath, not the bar (chrome is
   // pointer-events:none so toolbar controls stay clickable).
   const hit = await page.evaluate(
-    ({ x, y }) => (document.elementFromPoint(x, y)?.closest(".session-box") ? "bar" : "through"),
+    ({ x, y }) =>
+      document.elementFromPoint(x, y)?.closest(".session-box")
+        ? "bar"
+        : "through",
     { x: bb.x + bb.width + 40, y: bb.y + bb.height / 2 },
   );
   expect(hit).toBe("through");
 
   // The explicit choice is persisted in its own key, so a later reconnect restores it via
   // applyBarDefault() (which reads the override before falling back to the viewport default).
-  expect(await page.evaluate(() => sessionStorage.getItem("battlelab.connect.bar.v1"))).toBe(
-    "collapsed",
-  );
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("battlelab.connect.bar.v1"),
+    ),
+  ).toBe("collapsed");
 });
 
 test("connection bar default tracks viewport resize while no explicit choice is set", async ({
@@ -407,7 +461,8 @@ test("a manual collapse choice survives a resize even when sessionStorage is blo
   await page.addInitScript(() => {
     const orig = Storage.prototype.setItem;
     Storage.prototype.setItem = function (k, v) {
-      if (k === "battlelab.connect.bar.v1") throw new DOMException("blocked", "SecurityError");
+      if (k === "battlelab.connect.bar.v1")
+        throw new DOMException("blocked", "SecurityError");
       return orig.call(this, k, v);
     };
   });
@@ -464,7 +519,11 @@ test("a newer in-memory choice beats a stale readable stored value on reconnect"
   await expect(box).toHaveClass(/collapsed/);
   await toggle.click();
   await expect(box).not.toHaveClass(/collapsed/);
-  expect(await page.evaluate(() => sessionStorage.getItem("battlelab.connect.bar.v1"))).toBe(
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("battlelab.connect.bar.v1"),
+    ),
+  ).toBe(
     "collapsed", // storage stayed stale — the write was blocked
   );
 

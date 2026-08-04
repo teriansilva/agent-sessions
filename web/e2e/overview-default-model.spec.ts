@@ -11,7 +11,13 @@ import { expect, test } from "@playwright/test";
 
 const now = Math.floor(Date.now() / 1000);
 const side = { kind: "project", id: "p-1", name: "Side", color: "#5fd7ff" };
-const mk = (id: string, cwd: string, project: unknown, title: string, dt = 0) => ({
+const mk = (
+  id: string,
+  cwd: string,
+  project: unknown,
+  title: string,
+  dt = 0,
+) => ({
   id,
   engine: "claude",
   uuid: id.split(":")[1],
@@ -26,15 +32,33 @@ const mk = (id: string, cwd: string, project: unknown, title: string, dt = 0) =>
 });
 const sessions = [
   mk("claude:a", "/home/u/app", side, "Adopted session"),
-  mk("claude:p", "/home/u/plain", { kind: "folder", id: "/home/u/plain", name: "plain" }, "Plain", 100),
-  mk("claude:s", "/home/u/scratch", { kind: "folder", id: "/home/u/scratch", name: "scratch" }, "Scratch", 200),
+  mk(
+    "claude:p",
+    "/home/u/plain",
+    { kind: "folder", id: "/home/u/plain", name: "plain" },
+    "Plain",
+    100,
+  ),
+  mk(
+    "claude:s",
+    "/home/u/scratch",
+    { kind: "folder", id: "/home/u/scratch", name: "scratch" },
+    "Scratch",
+    200,
+  ),
 ];
 // Server facets (#445): project entities incl. a 0-count empty one, plus the Default aggregate.
 const facets = {
   projects: [
     { kind: "project", id: "p-1", name: "Side", color: "#5fd7ff", count: 1 },
     { kind: "project", id: "p-2", name: "Empty", color: "", count: 0 },
-    { kind: "project", id: "__default__", name: "Default", color: "", count: 2 },
+    {
+      kind: "project",
+      id: "__default__",
+      name: "Default",
+      color: "",
+      count: 2,
+    },
   ],
   engines: ["claude"],
 };
@@ -53,12 +77,20 @@ test.beforeEach(async ({ page }) => {
     }),
   );
   await page.route("**/api/sessions**", (r) =>
-    r.fulfill({ json: { sessions, next_offset: null, total: sessions.length, facets } }),
+    r.fulfill({
+      json: { sessions, next_offset: null, total: sessions.length, facets },
+    }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 });
 
 test("Projects layout: unadopted sessions fold into Default, no per-folder nodes (#445)", async ({
@@ -72,8 +104,12 @@ test("Projects layout: unadopted sessions fold into Default, no per-folder nodes
   await expect(ov.getByTitle("Expand Side", { exact: true })).toBeVisible();
   await expect(ov.getByTitle("Expand Default", { exact: true })).toBeVisible();
   // No standalone folder nodes for the unadopted launch dirs.
-  await expect(ov.getByTitle("Expand /home/u/plain", { exact: true })).toHaveCount(0);
-  await expect(ov.getByTitle("Expand /home/u/scratch", { exact: true })).toHaveCount(0);
+  await expect(
+    ov.getByTitle("Expand /home/u/plain", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    ov.getByTitle("Expand /home/u/scratch", { exact: true }),
+  ).toHaveCount(0);
 
   // Default merges BOTH unadopted sessions.
   await ov.getByTitle("Expand Default", { exact: true }).click();
@@ -103,14 +139,25 @@ test("Folders layout: each folder node carries its owning-project badge (#445)",
 test("sidebar dropdown lists project entities incl. Default, not folder paths (#445)", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "sidebar dropdown covered on desktop");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "sidebar dropdown covered on desktop",
+  );
   await page.goto("/overview");
   const select = page.getByLabel("Filter by project");
   await expect(select).toBeVisible();
   // Project entities (incl. the empty one) + Default — never the launch-folder paths.
   await expect(select.getByRole("option", { name: "Side (1)" })).toHaveCount(1);
-  await expect(select.getByRole("option", { name: "Empty (0)" })).toHaveCount(1);
-  await expect(select.getByRole("option", { name: "Default (2)" })).toHaveCount(1);
-  await expect(select.getByRole("option", { name: "/home/u/plain" })).toHaveCount(0);
-  await expect(select.getByRole("option", { name: "/home/u/scratch" })).toHaveCount(0);
+  await expect(select.getByRole("option", { name: "Empty (0)" })).toHaveCount(
+    1,
+  );
+  await expect(select.getByRole("option", { name: "Default (2)" })).toHaveCount(
+    1,
+  );
+  await expect(
+    select.getByRole("option", { name: "/home/u/plain" }),
+  ).toHaveCount(0);
+  await expect(
+    select.getByRole("option", { name: "/home/u/scratch" }),
+  ).toHaveCount(0);
 });

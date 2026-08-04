@@ -33,7 +33,9 @@ async function bordersUniform(locator: import("@playwright/test").Locator) {
 }
 
 test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
-  test("Pulse card: uniform border + four corner brackets", async ({ page }) => {
+  test("Pulse card: uniform border + four corner brackets", async ({
+    page,
+  }) => {
     const card = {
       id: "claude:need-1",
       engine: "claude",
@@ -51,10 +53,19 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
     };
     await page.route("**/api/config", (r) => r.fulfill({ json: config }));
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+    await page.route("**/api/version", (r) =>
+      r.fulfill({ json: { version: "test" } }),
+    );
     // Empty sidebar so the only matching <li> is the Pulse card.
     await page.route("**/api/sessions**", (r) =>
-      r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
+      r.fulfill({
+        json: {
+          sessions: [],
+          next_offset: null,
+          total: 0,
+          facets: { projects: [], engines: [] },
+        },
+      }),
     );
     await page.route("**/api/pulse", (r) =>
       r.fulfill({
@@ -84,8 +95,13 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
     await expect(li.locator(".hud-cnr")).toHaveCount(4);
   });
 
-  test("Overview chip: uniform border + four corner brackets", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === "mobile", "overview canvas is a desktop interaction");
+  test("Overview chip: uniform border + four corner brackets", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name === "mobile",
+      "overview canvas is a desktop interaction",
+    );
     const sessions = [
       {
         id: "claude:aaa",
@@ -103,9 +119,13 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
     ];
     await page.route("**/api/config", (r) => r.fulfill({ json: config }));
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+    await page.route("**/api/version", (r) =>
+      r.fulfill({ json: { version: "test" } }),
+    );
     await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-      r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }),
+      r.fulfill({
+        json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] },
+      }),
     );
     await page.route("**/api/sessions**", (r) =>
       r.fulfill({
@@ -113,7 +133,12 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
           sessions,
           next_offset: null,
           total: sessions.length,
-          facets: { projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }], engines: ["claude"] },
+          facets: {
+            projects: [
+              { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
+            ],
+            engines: ["claude"],
+          },
         },
       }),
     );

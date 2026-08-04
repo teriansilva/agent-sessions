@@ -25,7 +25,11 @@ export const INITIAL_WINDOW = 256 * 1024;
 export const MAX_CHUNK = 16 * 1024;
 const U24_MAX = (1 << 24) - 1;
 
-export function encodeFrame(streamId: number, ftype: number, payload: Uint8Array = new Uint8Array(0)): Uint8Array {
+export function encodeFrame(
+  streamId: number,
+  ftype: number,
+  payload: Uint8Array = new Uint8Array(0),
+): Uint8Array {
   if (payload.length > U24_MAX) throw new Error("mux frame payload too large");
   const out = new Uint8Array(8 + payload.length);
   const dv = new DataView(out.buffer);
@@ -38,7 +42,11 @@ export function encodeFrame(streamId: number, ftype: number, payload: Uint8Array
   return out;
 }
 
-export function decodeFrame(frame: Uint8Array): { streamId: number; ftype: number; payload: Uint8Array } {
+export function decodeFrame(frame: Uint8Array): {
+  streamId: number;
+  ftype: number;
+  payload: Uint8Array;
+} {
   if (frame.length < 8) throw new Error("short mux frame");
   const dv = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
   const streamId = dv.getUint32(0, false);
@@ -102,7 +110,11 @@ export class Stream {
         if (this._recvReset !== null) throw new StreamReset(this._recvReset);
         await new Promise<void>((r) => this._sendWaiters.push(r));
       }
-      const n = Math.min(data.length - off, this._sendWindow, this._mux.maxChunk);
+      const n = Math.min(
+        data.length - off,
+        this._sendWindow,
+        this._mux.maxChunk,
+      );
       this._mux._emit(encodeFrame(this.id, DATA, data.subarray(off, off + n)));
       this._sendWindow -= n;
       off += n;
@@ -124,11 +136,16 @@ export class Stream {
 
   /** Up to `maxBytes` of received data; empty array at clean EOF. Reading replenishes the peer window. */
   async read(maxBytes = MAX_CHUNK): Promise<Uint8Array> {
-    while (this._recvBuf.length === 0 && !this._recvEof && this._recvReset === null) {
+    while (
+      this._recvBuf.length === 0 &&
+      !this._recvEof &&
+      this._recvReset === null
+    ) {
       this._dataReady.reset();
       await this._dataReady.wait();
     }
-    if (this._recvReset !== null && this._recvBuf.length === 0) throw new StreamReset(this._recvReset);
+    if (this._recvReset !== null && this._recvBuf.length === 0)
+      throw new StreamReset(this._recvReset);
     if (this._recvBuf.length === 0) return new Uint8Array(0); // clean EOF
     const n = Math.min(maxBytes, this._recvBuf.length);
     const out = Uint8Array.from(this._recvBuf.splice(0, n));
@@ -148,7 +165,8 @@ export class Stream {
   }
   _onWindow(credit: number): void {
     this._sendWindow += credit;
-    while (this._sendWaiters.length && this._sendWindow > 0) this._sendWaiters.shift()!();
+    while (this._sendWaiters.length && this._sendWindow > 0)
+      this._sendWaiters.shift()!();
   }
   _fail(code: number): void {
     this._recvReset = code;
@@ -208,7 +226,14 @@ export class Mux {
       // WINDOW carries a u32 credit — a wrong-length payload is a malformed
       // control frame; abort the stream rather than throw or inflate credit.
       if (payload.length !== 4) s.reset();
-      else s._onWindow(new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, false));
+      else
+        s._onWindow(
+          new DataView(
+            payload.buffer,
+            payload.byteOffset,
+            payload.byteLength,
+          ).getUint32(0, false),
+        );
     } else if (ftype === RESET) {
       this._drop(streamId);
       s._fail(payload.length ? payload[0] : 0);

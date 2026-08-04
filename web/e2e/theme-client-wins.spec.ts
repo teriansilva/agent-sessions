@@ -18,12 +18,25 @@ test.beforeEach(async ({ page }) => {
     }),
   );
   await page.route("**/api/sessions**", (r) =>
-    r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
+    r.fulfill({
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
+    }),
   );
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   // Seed the local choice BEFORE the SPA boots, so the inline pre-paint script + React
   // reconcile both see localStorage already set.
   await page.addInitScript(() => {
@@ -31,7 +44,9 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("local theme wins over stale server theme on reload (#172)", async ({ page }) => {
+test("local theme wins over stale server theme on reload (#172)", async ({
+  page,
+}) => {
   await page.goto("/");
   // The page settled; data-theme should still be light, not dark.
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");

@@ -50,7 +50,13 @@ export function HandoffModal({
   // invalidates the old handle/preview (derived below) without a synchronous reset here.
   const [prepRes, setPrepRes] = useState<{
     for: string;
-    prep?: { handle: string; preview: string; turns: number; cap: number; notice?: string };
+    prep?: {
+      handle: string;
+      preview: string;
+      turns: number;
+      cap: number;
+      notice?: string;
+    };
     error?: string;
   } | null>(null);
   // The user's edit, keyed by target|mode — deliberately NOT by the nonce, so renewing an
@@ -58,11 +64,16 @@ export function HandoffModal({
   // genuine target/mode switch — which asks for a different seed — drops it by derivation
   // (behind a confirm, below). Hermes on #703: losing typed prose to a silent re-prepare
   // is data loss, not a refresh.
-  const [editState, setEditState] = useState<{ for: string; text: string } | null>(null);
+  const [editState, setEditState] = useState<{
+    for: string;
+    text: string;
+  } | null>(null);
   // A target/mode switch the user must confirm because it would discard a dirty edit.
-  const [pendingSwitch, setPendingSwitch] = useState<
-    { target: string; mode: HandoffMode; srcRef: boolean } | null
-  >(null);
+  const [pendingSwitch, setPendingSwitch] = useState<{
+    target: string;
+    mode: HandoffMode;
+    srcRef: boolean;
+  } | null>(null);
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // An INFO line explaining why a fresh seed is being prepared (expired handle) — kept
@@ -97,7 +108,9 @@ export function HandoffModal({
   // guard — a switch mid-renewal then silently discarded the brief. `prep === null` (a
   // renewal) can't prove equality, so it counts as dirty; a matched preview does not.
   const dirty =
-    edited !== null && edited.trim() !== "" && (prep === null || edited !== prep.preview);
+    edited !== null &&
+    edited.trim() !== "" &&
+    (prep === null || edited !== prep.preview);
   // The cap is the SERVER's number (meta.cap) — the same one it enforces at commit, so the
   // UI can never invite an edit the server would reject (Hermes on #703: it used to accept
   // an over-cap brief and silently truncate it).
@@ -191,7 +204,10 @@ export function HandoffModal({
         if (alive)
           setPrepRes({
             for: forKey,
-            error: e instanceof ApiError ? e.message : "Couldn't prepare the handoff.",
+            error:
+              e instanceof ApiError
+                ? e.message
+                : "Couldn't prepare the handoff.",
           });
       });
     return () => {
@@ -201,7 +217,11 @@ export function HandoffModal({
 
   // A switch that would throw away typed prose asks first; a clean preview switches
   // immediately (nothing to lose).
-  const requestSwitch = (next: { target?: string; mode?: HandoffMode; srcRef?: boolean }) => {
+  const requestSwitch = (next: {
+    target?: string;
+    mode?: HandoffMode;
+    srcRef?: boolean;
+  }) => {
     const t = next.target ?? target ?? "";
     const m = next.mode ?? mode;
     const s = next.srcRef ?? srcRef;
@@ -245,7 +265,9 @@ export function HandoffModal({
       if (!mountedRef.current) return;
       // The normal fresh-launch route: the server redeems the seed at spawn time. Nothing
       // handoff-specific rides the URL.
-      navigate(`/s/${r.engine}/${r.native}`, { state: { fresh: { cwd: r.cwd, bypass: true } } });
+      navigate(`/s/${r.engine}/${r.native}`, {
+        state: { fresh: { cwd: r.cwd, bypass: true } },
+      });
       onClose();
     } catch (e) {
       if (!mountedRef.current) return; // unmounted mid-request — nothing to surface
@@ -317,7 +339,11 @@ export function HandoffModal({
           {tiles === null && !error ? (
             <p className={styles.muted}>Loading engines…</p>
           ) : (
-            <div className={styles.tiles} role="radiogroup" aria-label="Target engine">
+            <div
+              className={styles.tiles}
+              role="radiogroup"
+              aria-label="Target engine"
+            >
               {(tiles ?? []).map((e) => (
                 <button
                   key={String(e.id)}
@@ -329,8 +355,12 @@ export function HandoffModal({
                   title={e.seed_reason ?? undefined}
                   onClick={() => requestSwitch({ target: String(e.id) })}
                 >
-                  <span className={styles.tileName}>{String(e.id).toUpperCase()}</span>
-                  {e.seed_reason && <span className={styles.tileWhy}>{e.seed_reason}</span>}
+                  <span className={styles.tileName}>
+                    {String(e.id).toUpperCase()}
+                  </span>
+                  {e.seed_reason && (
+                    <span className={styles.tileWhy}>{e.seed_reason}</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -339,7 +369,11 @@ export function HandoffModal({
 
         <div className={styles.section}>
           <span className={styles.label}>Seed mode //</span>
-          <div className={styles.tiles} role="radiogroup" aria-label="Seed mode">
+          <div
+            className={styles.tiles}
+            role="radiogroup"
+            aria-label="Seed mode"
+          >
             <button
               type="button"
               role="radio"
@@ -375,7 +409,9 @@ export function HandoffModal({
             dirty edit gets the same discard confirmation a target/mode switch gets. */}
         <div className={styles.section}>
           <span className={styles.label}>Source reference //</span>
-          <label className={`${styles.optRow} ${srcRef ? styles.optRowOn : ""}`}>
+          <label
+            className={`${styles.optRow} ${srcRef ? styles.optRowOn : ""}`}
+          >
             <input
               type="checkbox"
               className={styles.optBox}
@@ -386,8 +422,8 @@ export function HandoffModal({
             <span className={styles.optText}>
               Reference the source session
               <span className={styles.optHint}>
-                Adds where the transcript lives so the new agent can read the full history. Uses
-                extra tokens.
+                Adds where the transcript lives so the new agent can read the
+                full history. Uses extra tokens.
               </span>
             </span>
           </label>
@@ -397,7 +433,9 @@ export function HandoffModal({
           <div className={styles.previewHead}>
             <span className={styles.label}>Seed preview // editable</span>
             {prep && (
-              <span className={`${styles.previewMeta} ${overCap ? styles.previewOver : ""}`}>
+              <span
+                className={`${styles.previewMeta} ${overCap ? styles.previewOver : ""}`}
+              >
                 {prep.turns} TURNS · {kb(seedBytes)} / {kb(cap)} KB
               </span>
             )}
@@ -410,14 +448,18 @@ export function HandoffModal({
             <textarea
               className={styles.preview}
               value={seedText}
-              onChange={(e) => setEditState({ for: editKey, text: e.target.value })}
+              onChange={(e) =>
+                setEditState({ for: editKey, text: e.target.value })
+              }
               disabled={committing}
               aria-label="Handoff seed preview"
               spellCheck={false}
             />
           ) : preparing ? (
             <p className={styles.muted} role="status">
-              {mode === "ai" ? "Summarizing this session…" : "Building the handoff seed…"}
+              {mode === "ai"
+                ? "Summarizing this session…"
+                : "Building the handoff seed…"}
             </p>
           ) : (
             !shownError && <p className={styles.muted}>No preview yet.</p>
@@ -441,8 +483,8 @@ export function HandoffModal({
           )}
           {overCap && (
             <p className={styles.error} role="alert">
-              This brief is {kb(seedBytes)} KB — over the {kb(cap)} KB limit the target
-              accepts. Trim it to hand off.
+              This brief is {kb(seedBytes)} KB — over the {kb(cap)} KB limit the
+              target accepts. Trim it to hand off.
             </p>
           )}
         </div>
@@ -453,7 +495,11 @@ export function HandoffModal({
             {/* A prepare failure (including a failed renewal) can be retried in place —
                 the recovery path the modal previously lacked (#703 review follow-up). */}
             {prepError && !committing && (
-              <button type="button" className={styles.retry} onClick={retryPrepare}>
+              <button
+                type="button"
+                className={styles.retry}
+                onClick={retryPrepare}
+              >
                 Retry
               </button>
             )}
@@ -467,7 +513,9 @@ export function HandoffModal({
             aria-modal="true"
             aria-label="Discard your edits?"
           >
-            <span>Switching rebuilds the seed and discards your edited brief.</span>
+            <span>
+              Switching rebuilds the seed and discards your edited brief.
+            </span>
             <div className={styles.confirmBtns}>
               <button
                 ref={keepEditingRef}
@@ -492,12 +540,13 @@ export function HandoffModal({
 
         <div className={styles.actions}>
           <span className={styles.foot}>
-            The seed is pasted into the new session as its first prompt — that engine's model
-            provider sees it.
+            The seed is pasted into the new session as its first prompt — that
+            engine's model provider sees it.
             {srcRef && (
               <span className={styles.privacyMore}>
-                Also sends the transcript's <b>location</b> — a local path that can reveal your
-                username and project name. No transcript contents are included.
+                Also sends the transcript's <b>location</b> — a local path that
+                can reveal your username and project name. No transcript
+                contents are included.
               </span>
             )}
           </span>

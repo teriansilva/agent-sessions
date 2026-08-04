@@ -15,7 +15,10 @@ import type { HistoryPage } from "../types/api";
 
 export type HistoryState = "idle" | "loading" | "end" | "error" | "capped";
 
-export type HistoryFetch = (q: { before?: number; cols: number }) => Promise<HistoryPage>;
+export type HistoryFetch = (q: {
+  before?: number;
+  cols: number;
+}) => Promise<HistoryPage>;
 
 export class HistoryLoader {
   /** undefined → never seeded (the first fetch omits `before`; the server answers with its
@@ -31,7 +34,10 @@ export class HistoryLoader {
   private readonly fetchPage: HistoryFetch;
   private readonly onState: (s: HistoryState) => void;
 
-  constructor(fetchPage: HistoryFetch, onState: (s: HistoryState) => void = () => {}) {
+  constructor(
+    fetchPage: HistoryFetch,
+    onState: (s: HistoryState) => void = () => {},
+  ) {
     this.fetchPage = fetchPage;
     this.onState = onState;
   }
@@ -54,7 +60,8 @@ export class HistoryLoader {
    *  fetch are superseded by the new authoritative boundary. */
   seed(cursor: number): void {
     this.cursor = cursor;
-    if (this.current === "end" || this.current === "error") this.setState("idle");
+    if (this.current === "end" || this.current === "error")
+      this.setState("idle");
   }
 
   /** Fetch the next older page (the scroll-to-top trigger). Returns the page, or null when

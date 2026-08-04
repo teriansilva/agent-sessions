@@ -60,14 +60,18 @@ export function AiActivityPanel() {
   const extraRunning = running
     .map((r) => r.kind)
     .filter((k) => !KINDS.some((x) => x.kind === k));
-  const rows = [...KINDS, ...[...new Set(extraRunning)].map((k) => ({ kind: k, label: k }))];
+  const rows = [
+    ...KINDS,
+    ...[...new Set(extraRunning)].map((k) => ({ kind: k, label: k })),
+  ];
 
   return (
     <section className={styles.section} aria-labelledby="ai-activity-h">
       <h2 id="ai-activity-h">AI activity</h2>
       <p className={styles.hint}>
-        What AI work is running right now across the platform, plus the last run of each. Scans of
-        the same kind never overlap — a second one waits for the first.
+        What AI work is running right now across the platform, plus the last run
+        of each. Scans of the same kind never overlap — a second one waits for
+        the first.
       </p>
       <ul className={styles.activityList} aria-live="polite">
         {rows.map(({ kind, label }) => {

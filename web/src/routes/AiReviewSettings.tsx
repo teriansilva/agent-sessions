@@ -66,7 +66,9 @@ export function AiReviewSettings() {
   // Drafts for commit-on-blur fields (typing must not spam the server).
   const [urlDraft, setUrlDraft] = useState(block.base_url);
   const [keyDraft, setKeyDraft] = useState("");
-  const [intervalDraft, setIntervalDraft] = useState(String(block.interval_minutes));
+  const [intervalDraft, setIntervalDraft] = useState(
+    String(block.interval_minutes),
+  );
   const [timeoutDraft, setTimeoutDraft] = useState(
     block.request_timeout == null ? "" : String(block.request_timeout),
   );
@@ -86,7 +88,9 @@ export function AiReviewSettings() {
     setSeeded(block);
     if (!urlDirty) setUrlDraft(block.base_url);
     setIntervalDraft(String(block.interval_minutes));
-    setTimeoutDraft(block.request_timeout == null ? "" : String(block.request_timeout));
+    setTimeoutDraft(
+      block.request_timeout == null ? "" : String(block.request_timeout),
+    );
     setPromptDraft(block.prompt);
   }
 
@@ -105,7 +109,9 @@ export function AiReviewSettings() {
     async (partial: Record<string, unknown>) => {
       setError(null);
       try {
-        const r = (await api.setPrefs({ ai_review: partial })) as { ai_review?: AiReviewConfig };
+        const r = (await api.setPrefs({ ai_review: partial })) as {
+          ai_review?: AiReviewConfig;
+        };
         if (r.ai_review) {
           setBlock(r.ai_review);
           if (r.ai_review.configured !== ctxConfigured) refreshConfig();
@@ -132,30 +138,41 @@ export function AiReviewSettings() {
   // a listing failure never blocks configuration (#356).
   const [models, setModels] = useState<ModelsState>({ kind: "idle" });
   const [endpoint, setEndpoint] = useState<EndpointState>({ kind: "idle" });
-  const probe = useCallback(async (opts: { refresh?: boolean; quiet?: boolean } = {}) => {
-    setModels({ kind: "loading" });
-    // The quiet (mount) path drives only the model list: no "Validating endpoint…" on a
-    // plain visit (#543). Probe FAILURES still surface either way — a broken stored
-    // endpoint must not become invisible.
-    if (!opts.quiet) setEndpoint({ kind: "validating" });
-    try {
-      const d = await api.aiReviewModels(opts.refresh ? { refresh: true } : undefined);
-      if (d.models.length > 0) {
-        setModels({ kind: "ok", models: d.models });
-        setEndpoint({ kind: "ok", count: d.models.length, quiet: opts.quiet });
-      } else {
+  const probe = useCallback(
+    async (opts: { refresh?: boolean; quiet?: boolean } = {}) => {
+      setModels({ kind: "loading" });
+      // The quiet (mount) path drives only the model list: no "Validating endpoint…" on a
+      // plain visit (#543). Probe FAILURES still surface either way — a broken stored
+      // endpoint must not become invisible.
+      if (!opts.quiet) setEndpoint({ kind: "validating" });
+      try {
+        const d = await api.aiReviewModels(
+          opts.refresh ? { refresh: true } : undefined,
+        );
+        if (d.models.length > 0) {
+          setModels({ kind: "ok", models: d.models });
+          setEndpoint({
+            kind: "ok",
+            count: d.models.length,
+            quiet: opts.quiet,
+          });
+        } else {
+          setModels({ kind: "unsupported" });
+          setEndpoint({ kind: "ok", count: 0, quiet: opts.quiet });
+        }
+      } catch (e) {
         setModels({ kind: "unsupported" });
-        setEndpoint({ kind: "ok", count: 0, quiet: opts.quiet });
+        setEndpoint({
+          kind: "error",
+          message:
+            e instanceof ApiError && e.message
+              ? e.message
+              : "Endpoint validation failed.",
+        });
       }
-    } catch (e) {
-      setModels({ kind: "unsupported" });
-      setEndpoint({
-        kind: "error",
-        message:
-          e instanceof ApiError && e.message ? e.message : "Endpoint validation failed.",
-      });
-    }
-  }, []);
+    },
+    [],
+  );
   // Probe once when the panel opens with a stored, complete config (it can land after
   // mount). Saves run their own explicit probe — `probedOnce` keeps the two paths from
   // double-fetching when `configured` flips on a save echo.
@@ -172,7 +189,10 @@ export function AiReviewSettings() {
     let alive = true;
     api
       .sessions({ limit: 200 })
-      .then((d) => alive && setExcluded(d.sessions.filter((s) => s.review_excluded)))
+      .then(
+        (d) =>
+          alive && setExcluded(d.sessions.filter((s) => s.review_excluded)),
+      )
       .catch(() => alive && setExcluded([]));
     return () => {
       alive = false;
@@ -190,7 +210,8 @@ export function AiReviewSettings() {
   // --- explicit endpoint save (#394): blur NEVER persists the URL or the key ---
   const keyEdit = keyDraft.trim();
   const endpointDirty =
-    urlDraft.trim() !== block.base_url || (keyEdit !== "" && keyEdit !== KEY_MASK);
+    urlDraft.trim() !== block.base_url ||
+    (keyEdit !== "" && keyEdit !== KEY_MASK);
   const busy = endpoint.kind === "saving" || endpoint.kind === "validating";
   /** Persist base URL + key together, then validate immediately via the /models probe.
    *  The mask/blank key is the "unchanged" sentinel and is never sent (#356). */
@@ -202,7 +223,9 @@ export function AiReviewSettings() {
     setEndpoint({ kind: "saving" });
     let next: AiReviewConfig | undefined;
     try {
-      const r = (await api.setPrefs({ ai_review: patch })) as { ai_review?: AiReviewConfig };
+      const r = (await api.setPrefs({ ai_review: patch })) as {
+        ai_review?: AiReviewConfig;
+      };
       next = r.ai_review;
     } catch (e) {
       setEndpoint({
@@ -256,7 +279,9 @@ export function AiReviewSettings() {
     }
     const n = Number(v);
     if (!Number.isFinite(n) || n < 10 || n > 600) {
-      setTimeoutDraft(block.request_timeout == null ? "" : String(block.request_timeout));
+      setTimeoutDraft(
+        block.request_timeout == null ? "" : String(block.request_timeout),
+      );
       return;
     }
     if (n !== block.request_timeout) void save({ request_timeout: n });
@@ -292,7 +317,9 @@ export function AiReviewSettings() {
         type="text"
         spellCheck={false}
         disabled={modelLocked}
-        placeholder={models.kind === "loading" ? "loading model list…" : "model id"}
+        placeholder={
+          models.kind === "loading" ? "loading model list…" : "model id"
+        }
         defaultValue={block.model}
         onBlur={(e) => {
           const v = e.target.value.trim();
@@ -305,23 +332,29 @@ export function AiReviewSettings() {
   // dirty edits (any prior result describes values the user is replacing), then the
   // last validation outcome. A quiet (mount-probe) ok renders nothing — the line only
   // ever reports explicit user actions and real errors (#543).
-  const endpointNote = endpoint.kind === "saving" ? (
-    <p className={styles.hint}>Saving…</p>
-  ) : endpoint.kind === "validating" ? (
-    <p className={styles.hint}>Validating endpoint…</p>
-  ) : endpointDirty ? (
-    <p className={styles.warn}>● Unsaved changes — Save applies and validates them.</p>
-  ) : endpoint.kind === "ok" && endpoint.quiet ? null : endpoint.kind === "ok" ? (
-    <p className={styles.ok}>
-      {endpoint.count > 0
-        ? `✓ Endpoint validated — ${endpoint.count} model${endpoint.count === 1 ? "" : "s"} available.`
-        : "✓ Endpoint saved — it doesn’t list models; enter the model id manually."}
-    </p>
-  ) : endpoint.kind === "error" ? (
-    <p className={styles.err}>✗ {endpoint.message}</p>
-  ) : endpoint.kind === "incomplete" ? (
-    <p className={styles.hint}>Saved. Set both the base URL and an API key to validate.</p>
-  ) : null;
+  const endpointNote =
+    endpoint.kind === "saving" ? (
+      <p className={styles.hint}>Saving…</p>
+    ) : endpoint.kind === "validating" ? (
+      <p className={styles.hint}>Validating endpoint…</p>
+    ) : endpointDirty ? (
+      <p className={styles.warn}>
+        ● Unsaved changes — Save applies and validates them.
+      </p>
+    ) : endpoint.kind === "ok" && endpoint.quiet ? null : endpoint.kind ===
+      "ok" ? (
+      <p className={styles.ok}>
+        {endpoint.count > 0
+          ? `✓ Endpoint validated — ${endpoint.count} model${endpoint.count === 1 ? "" : "s"} available.`
+          : "✓ Endpoint saved — it doesn’t list models; enter the model id manually."}
+      </p>
+    ) : endpoint.kind === "error" ? (
+      <p className={styles.err}>✗ {endpoint.message}</p>
+    ) : endpoint.kind === "incomplete" ? (
+      <p className={styles.hint}>
+        Saved. Set both the base URL and an API key to validate.
+      </p>
+    ) : null;
 
   return (
     <>
@@ -330,8 +363,9 @@ export function AiReviewSettings() {
       <section className={styles.section} aria-labelledby="ai-endpoint-h">
         <h2 id="ai-endpoint-h">AI endpoint</h2>
         <p className={styles.hint}>
-          One OpenAI-compatible endpoint powers both session review and auto-sort. The API
-          key is stored server-side and never sent to the browser.
+          One OpenAI-compatible endpoint powers both session review and
+          auto-sort. The API key is stored server-side and never sent to the
+          browser.
         </p>
         {error && <p className={styles.err}>{error}</p>}
 
@@ -359,7 +393,9 @@ export function AiReviewSettings() {
         <div className={styles.aiField}>
           <label className={styles.aiFieldLabel} htmlFor="ai-api-key">
             API key
-            {block.api_key_set && <span className={styles.aiKeyBadge}>set</span>}
+            {block.api_key_set && (
+              <span className={styles.aiKeyBadge}>set</span>
+            )}
           </label>
           <div className={styles.aiModelRow}>
             <input
@@ -371,7 +407,9 @@ export function AiReviewSettings() {
               // overwriting the stored API key (#543). "new-password" suppresses the fill.
               autoComplete="new-password"
               spellCheck={false}
-              placeholder={block.api_key_set ? `${KEY_MASK} (write-only)` : "sk-…"}
+              placeholder={
+                block.api_key_set ? `${KEY_MASK} (write-only)` : "sk-…"
+              }
               value={keyDraft}
               onChange={(e) => setKeyDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -393,8 +431,9 @@ export function AiReviewSettings() {
             )}
           </div>
           <p className={styles.hint}>
-            Write-only: the stored key is never shown. It is saved only by “Save &amp;
-            validate” — never on blur. Use “Remove key” to delete the stored secret.
+            Write-only: the stored key is never shown. It is saved only by “Save
+            &amp; validate” — never on blur. Use “Remove key” to delete the
+            stored secret.
           </p>
         </div>
 
@@ -421,7 +460,9 @@ export function AiReviewSettings() {
               className={styles.secBtnGhost}
               aria-label="Refresh model list"
               title="Refresh model list"
-              disabled={!block.configured || models.kind === "loading" || modelLocked}
+              disabled={
+                !block.configured || models.kind === "loading" || modelLocked
+              }
               onClick={() => void probe({ refresh: true })}
             >
               <RefreshCw size={14} />
@@ -455,8 +496,9 @@ export function AiReviewSettings() {
             <span>seconds</span>
           </div>
           <p className={styles.hint}>
-            Hard timeout per request (10–600), shared by review and auto-sort. Slow local
-            models often need 60–180s. Leave empty to use the server default.
+            Hard timeout per request (10–600), shared by review and auto-sort.
+            Slow local models often need 60–180s. Leave empty to use the server
+            default.
           </p>
         </div>
         {savedNote && <p className={styles.hint}>Saved.</p>}
@@ -467,8 +509,9 @@ export function AiReviewSettings() {
       <section className={styles.section} aria-labelledby="ai-review-h">
         <h2 id="ai-review-h">Session review</h2>
         <p className={styles.hint}>
-          Periodically reviews sessions with new activity and produces a one-line summary, a
-          title, and an intervention flag per session — using the endpoint above.
+          Periodically reviews sessions with new activity and produces a
+          one-line summary, a title, and an intervention flag per session —
+          using the endpoint above.
         </p>
 
         <label className={styles.aiToggle}>
@@ -480,8 +523,8 @@ export function AiReviewSettings() {
           <span>Enable periodic reviews</span>
         </label>
         <p className={styles.hint}>
-          The background loop ships in the next phase — manual “Review now” works as soon
-          as the endpoint above is configured.
+          The background loop ships in the next phase — manual “Review now”
+          works as soon as the endpoint above is configured.
         </p>
 
         <div className={styles.aiField}>
@@ -501,8 +544,8 @@ export function AiReviewSettings() {
             <span>minutes</span>
           </div>
           <p className={styles.hint}>
-            Only sessions with new activity since their last review are sent. One bounded
-            request per session — no streaming.
+            Only sessions with new activity since their last review are sent.
+            One bounded request per session — no streaming.
           </p>
         </div>
 
@@ -542,18 +585,23 @@ export function AiReviewSettings() {
         <div className={styles.aiField}>
           <span className={styles.aiFieldLabel}>Excluded sessions</span>
           <p className={styles.hint}>
-            Exclude a session from review via its row actions in the sidebar. Currently
-            excluded:
+            Exclude a session from review via its row actions in the sidebar.
+            Currently excluded:
           </p>
           {excluded === null ? (
             <p className={styles.hint}>…</p>
           ) : excluded.length === 0 ? (
             <p className={styles.hint}>No sessions are excluded.</p>
           ) : (
-            <ul className={styles.aiExcludedList} aria-label="Excluded sessions">
+            <ul
+              className={styles.aiExcludedList}
+              aria-label="Excluded sessions"
+            >
               {excluded.map((s) => (
                 <li key={s.id} className={styles.aiExcludedRow}>
-                  <span className={styles.aiExcludedTitle}>{s.title || "(untitled)"}</span>
+                  <span className={styles.aiExcludedTitle}>
+                    {s.title || "(untitled)"}
+                  </span>
                   <button
                     type="button"
                     className={styles.secBtnGhost}

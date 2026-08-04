@@ -6,7 +6,9 @@
  *    (no service worker under the landing origin), but its app-mode dynamic-imports the real
  *    SPA whose module graph reaches swUpdate.ts. Registering nothing preserves the "no SW
  *    artifacts in dist-connect" invariant its deploy workflow asserts. */
-export function registerSW(options?: unknown): (reloadPage?: boolean) => Promise<void> {
+export function registerSW(
+  options?: unknown,
+): (reloadPage?: boolean) => Promise<void> {
   void options; // accepted for signature-compatibility; nothing to register here
   return () => Promise.resolve();
 }

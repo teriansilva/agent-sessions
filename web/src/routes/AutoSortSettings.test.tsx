@@ -7,8 +7,12 @@ import type { AppConfig, AutoSortConfig } from "../types/api";
 import { AutoSortSettings } from "./AutoSortSettings";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { setPrefs: vi.fn(), autoSortNow: vi.fn(), projectEntities: vi.fn() } };
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    ...actual,
+    api: { setPrefs: vi.fn(), autoSortNow: vi.fn(), projectEntities: vi.fn() },
+  };
 });
 
 function block(over: Partial<AutoSortConfig> = {}): AutoSortConfig {
@@ -25,7 +29,12 @@ function block(over: Partial<AutoSortConfig> = {}): AutoSortConfig {
 }
 
 function renderPanel(b: AutoSortConfig | undefined = block()) {
-  const config = { csrf: "t", new_session_engines: [], terminal_backend: "ws", auto_sort: b };
+  const config = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    auto_sort: b,
+  };
   return render(
     <ConfigCtx.Provider value={config as AppConfig}>
       <AutoSortSettings />
@@ -34,14 +43,20 @@ function renderPanel(b: AutoSortConfig | undefined = block()) {
 }
 
 beforeEach(() => {
-  vi.mocked(api.setPrefs).mockReset().mockResolvedValue({ auto_sort: block({ enabled: true }) });
+  vi.mocked(api.setPrefs)
+    .mockReset()
+    .mockResolvedValue({ auto_sort: block({ enabled: true }) });
   vi.mocked(api.autoSortNow).mockReset();
-  vi.mocked(api.projectEntities).mockReset().mockResolvedValue({ projects: [] });
+  vi.mocked(api.projectEntities)
+    .mockReset()
+    .mockResolvedValue({ projects: [] });
 });
 
 test("toggling enable persists the auto_sort flag (#424)", async () => {
   renderPanel(block({ enabled: false }));
-  await userEvent.click(screen.getByRole("checkbox", { name: /enable auto-sort/i }));
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /enable auto-sort/i }),
+  );
   expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { enabled: true } });
 });
 
@@ -51,7 +66,9 @@ test("the interval commits on blur within bounds; out-of-range reverts (#424)", 
   await userEvent.clear(input);
   await userEvent.type(input, "60");
   await userEvent.tab();
-  expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { interval_minutes: 60 } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    auto_sort: { interval_minutes: 60 },
+  });
 
   vi.mocked(api.setPrefs).mockClear();
   await userEvent.clear(input);
@@ -67,7 +84,9 @@ test("the confidence threshold commits on blur within bounds; out-of-range rever
   await userEvent.clear(input);
   await userEvent.type(input, "0.55");
   await userEvent.tab();
-  expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { confidence_min: 0.55 } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    auto_sort: { confidence_min: 0.55 },
+  });
 
   vi.mocked(api.setPrefs).mockClear();
   await userEvent.clear(input);
@@ -82,7 +101,9 @@ test("sessions-per-run commits on blur within bounds; out-of-range reverts (#459
   await userEvent.clear(input);
   await userEvent.type(input, "20");
   await userEvent.tab();
-  expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { max_per_pass: 20 } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    auto_sort: { max_per_pass: 20 },
+  });
 
   vi.mocked(api.setPrefs).mockClear();
   await userEvent.clear(input);
@@ -92,15 +113,27 @@ test("sessions-per-run commits on blur within bounds; out-of-range reverts (#459
 });
 
 test("the auto-sort prompt saves and resets to default (#459)", async () => {
-  renderPanel(block({ enabled: true, prompt: "SORT PROMPT", default_prompt: "DEFAULT SORT PROMPT" }));
+  renderPanel(
+    block({
+      enabled: true,
+      prompt: "SORT PROMPT",
+      default_prompt: "DEFAULT SORT PROMPT",
+    }),
+  );
   const ta = screen.getByLabelText(/auto-sort prompt/i);
   await userEvent.type(ta, " extra");
   await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { prompt: "SORT PROMPT extra" } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    auto_sort: { prompt: "SORT PROMPT extra" },
+  });
 
   vi.mocked(api.setPrefs).mockClear();
-  await userEvent.click(screen.getByRole("button", { name: /reset to default/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ auto_sort: { prompt: "DEFAULT SORT PROMPT" } });
+  await userEvent.click(
+    screen.getByRole("button", { name: /reset to default/i }),
+  );
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    auto_sort: { prompt: "DEFAULT SORT PROMPT" },
+  });
 });
 
 test("'Auto-sort now' is disabled until enabled AND the endpoint is configured (#424)", () => {
@@ -110,7 +143,9 @@ test("'Auto-sort now' is disabled until enabled AND the endpoint is configured (
 
 test("an unconfigured endpoint disables auto-sort and shows the hint (#424)", () => {
   renderPanel(block({ enabled: true, configured: false }));
-  expect(screen.getByText(/configure the AI endpoint above first/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/configure the AI endpoint above first/i),
+  ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /auto-sort now/i })).toBeDisabled();
 });
 
@@ -129,7 +164,9 @@ test("running auto-sort reports how many sessions were assigned (#424)", async (
   renderPanel(block({ enabled: true, configured: true }));
   await userEvent.click(screen.getByRole("button", { name: /auto-sort now/i }));
   expect(api.autoSortNow).toHaveBeenCalledOnce();
-  expect(await screen.findByText(/assigned 2 sessions to projects/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/assigned 2 sessions to projects/i),
+  ).toBeInTheDocument();
 });
 
 test("a run with no matches lists the near-misses with project names (#459)", async () => {
@@ -158,8 +195,12 @@ test("a run with no matches lists the near-misses with project names (#459)", as
   renderPanel(block({ enabled: true, configured: true }));
   await userEvent.click(screen.getByRole("button", { name: /auto-sort now/i }));
   expect(
-    await screen.findByText(/no confident matches among 3 unassigned sessions/i),
+    await screen.findByText(
+      /no confident matches among 3 unassigned sessions/i,
+    ),
   ).toBeInTheDocument();
-  const closest = await screen.findByText(/lower the threshold to assign them/i);
+  const closest = await screen.findByText(
+    /lower the threshold to assign them/i,
+  );
   expect(closest.textContent).toMatch(/superstatus 0\.62/);
 });

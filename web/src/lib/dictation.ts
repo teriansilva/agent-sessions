@@ -90,7 +90,9 @@ const within1Edit = (a: string, b: string): boolean => {
  *  requires ≥3 chars on both sides so short words can't alias each other ("no" is never a draft
  *  of "go"). */
 const revisesToken = (a: string, b: string): boolean =>
-  a === b || b.startsWith(a) || (a.length >= 3 && b.length >= 3 && within1Edit(a, b));
+  a === b ||
+  b.startsWith(a) ||
+  (a.length >= 3 && b.length >= 3 && within1Edit(a, b));
 
 /** Whether transcript `b` restates transcript `a` — the textual leg of the supersession evidence.
  *
@@ -150,7 +152,10 @@ const supersedes = (
  *  form link by link. Unarmed, or for any pair failing any leg of the evidence, entries are
  *  concatenated verbatim: finals from an engine not positively identified as stacking are never
  *  deleted, whatever their shape or timing. */
-export const assembleSpoken = (segments: SpokenSegment[], spaceDelimited: boolean): string => {
+export const assembleSpoken = (
+  segments: SpokenSegment[],
+  spaceDelimited: boolean,
+): string => {
   const stacking = identifiesStacker(segments);
   const kept: SpokenSegment[] = [];
   segments.forEach((raw, i) => {
@@ -160,7 +165,8 @@ export const assembleSpoken = (segments: SpokenSegment[], spaceDelimited: boolea
     const prev = kept[kept.length - 1];
     // The last entry of the results list is the live one — the phrase still being narrated (#749).
     const isLive = i === segments.length - 1;
-    if (stacking && prev && supersedes(prev, seg, spaceDelimited, isLive)) kept[kept.length - 1] = seg;
+    if (stacking && prev && supersedes(prev, seg, spaceDelimited, isLive))
+      kept[kept.length - 1] = seg;
     else kept.push(seg);
   });
   return kept.map((s) => s.text).join(" ");

@@ -279,19 +279,24 @@ test("rejecting settles the action without delivering anything", async () => {
   expect(api.approveAction).not.toHaveBeenCalled();
 });
 
+/** Render an `ActionRow` directly. Since #777 the panel has no feed of its own — a session's
+ *  action rides its card — so the row's own behaviour is exercised here rather than through a
+ *  list that no longer exists. */
+function renderRow(over: Partial<OrchestratorAction> = {}) {
+  return render(
+    <MemoryRouter>
+      <ActionRow action={action(over)} embedded />
+    </MemoryRouter>,
+  );
+}
+
 test("evidence is fetched from the server on expand, never rendered from the model", async () => {
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [action()],
-    expired_now: 0,
-  });
   vi.mocked(api.evidence).mockResolvedValue({
     kind: "screen",
     text: "› waiting for input",
     available: true,
   });
-  renderIt();
+  renderRow();
   const toggle = await screen.findByRole("button", {
     name: /show live screen/i,
   });
@@ -307,36 +312,16 @@ test("evidence is fetched from the server on expand, never rendered from the mod
   );
 });
 
-test("every feed row names its project, since the grid no longer groups by one", async () => {
-  // The feed used to render one `<ul>` per project under a heading. In a grid that costs a
-  // partial row per project — measured at 1900px a two-action project filled 2 of 4 tracks —
-  // so it is one flat grid now and the row carries the project itself (#754). The information
-  // has to survive the layout change; that is what this pins.
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [
-      action({ id: "a1", project: "agent-sessions" }),
-      action({
-        id: "a2",
-        project: "battlelab-cloud",
-        session_id: "codex:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      }),
-      action({
-        id: "a3",
-        project: "agent-sessions",
-        session_id: "kimi:session_cccccccc",
-      }),
-    ],
-    expired_now: 0,
-  });
-  renderIt();
-  // One label per ROW now, not one heading per group: two rows are agent-sessions.
-  expect(await screen.findAllByText("agent-sessions")).toHaveLength(2);
-  expect(screen.getAllByText("battlelab-cloud")).toHaveLength(1);
-  // …and the group headers with their counts are gone.
-  expect(screen.queryByText("2 actions")).toBeNull();
-  expect(screen.queryByText("1 action")).toBeNull();
+test("a non-embedded row names its project", async () => {
+  // The feed used to group by project under headings; #754 flattened it and moved the project
+  // onto the row. #777 then removed the feed entirely, so this is now the row's own contract
+  // rather than a statement about a grid — kept because the standalone row still supports it.
+  render(
+    <MemoryRouter>
+      <ActionRow action={action({ project: "agent-sessions" })} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("agent-sessions")).toBeInTheDocument();
 });
 
 test("a failing endpoint degrades to no strip, never a blank Pulse page", async () => {
@@ -370,12 +355,6 @@ test("evidence is re-fetched on every open — 'live' must not mean 'cached once
   // The server serves evidence uncached so the operator always reads the CURRENT screen.
   // Caching the first snapshot client-side quietly defeats that, and shows a screen the
   // session has moved past — exactly what must not be approved against.
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [action()],
-    expired_now: 0,
-  });
   vi.mocked(api.evidence)
     .mockResolvedValueOnce({
       kind: "screen",
@@ -387,7 +366,7 @@ test("evidence is re-fetched on every open — 'live' must not mean 'cached once
       text: "second screen",
       available: true,
     });
-  renderIt();
+  renderRow();
   const toggle = await screen.findByRole("button", { name: /live screen/i });
   await userEvent.click(toggle);
   await waitFor(() =>
@@ -635,17 +614,14 @@ test("a Run now that also fails leaves the line, with the newer count", async ()
   await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
 });
 
-test("a collapsed feed row says how many actions it stands for", async () => {
+test("a collapsed row says how many actions it stands for", async () => {
   // One row per session (#774) — a row that folded in 10 others must not look like the only
-  // thing that happened on that session.
-  vi.mocked(api.orchestrator).mockResolvedValue({
-    config: config(),
-    pending: [],
-    feed: [action({ id: "a1", repeats: 11 }), action({ id: "a2", repeats: 1 })],
-    expired_now: 0,
-  } as never);
-  renderIt();
-  expect(await screen.findByText("×11")).toBeInTheDocument();
-  // …and a row standing only for itself says nothing.
-  expect(screen.queryByText("×1")).toBeNull();
+  // thing that happened. Since #777 the panel has no feed, so this is the ROW's contract; the
+  // card's own history line is covered in Pulse.test.tsx.
+  render(
+    <MemoryRouter>
+      <ActionRow action={action({ id: "a1", repeats: 11 })} />
+    </MemoryRouter>,
+  );
+  expect(screen.getByText("×11")).toBeInTheDocument();
 });

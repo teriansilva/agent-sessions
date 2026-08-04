@@ -10,7 +10,9 @@ const NOW = 1_750_000_000_000; // arbitrary fixed ms epoch
 describe("sessionExpiryMs", () => {
   test("no deadline → 4-hour fallback window", () => {
     expect(sessionExpiryMs(NOW)).toBe(NOW + SESSION_LIMIT_FALLBACK_MS);
-    expect(sessionExpiryMs(NOW, undefined)).toBe(NOW + SESSION_LIMIT_FALLBACK_MS);
+    expect(sessionExpiryMs(NOW, undefined)).toBe(
+      NOW + SESSION_LIMIT_FALLBACK_MS,
+    );
     expect(sessionExpiryMs(NOW, 0)).toBe(NOW + SESSION_LIMIT_FALLBACK_MS);
   });
 

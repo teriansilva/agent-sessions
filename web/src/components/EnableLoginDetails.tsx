@@ -22,17 +22,21 @@ const ENABLE_LOGIN_COMMANDS = [
 export function EnableLoginDetails() {
   return (
     <details className={styles.details}>
-      <summary className={styles.summary}>Prefer a password login? Here's how to turn it on.</summary>
+      <summary className={styles.summary}>
+        Prefer a password login? Here's how to turn it on.
+      </summary>
       <p className={styles.blurb}>
-        Home Free runs with login off by design — the access key is the gate. To require an in-app
-        password (plus optional two-factor) instead, run these on the box, then reconnect:
+        Home Free runs with login off by design — the access key is the gate. To
+        require an in-app password (plus optional two-factor) instead, run these
+        on the box, then reconnect:
       </p>
       <pre className={styles.code}>
         <code>{ENABLE_LOGIN_COMMANDS}</code>
       </pre>
       <p className={styles.blurb}>
-        The password is active immediately after the restart — there's no forced first-login
-        change. Add two-factor later from this Security tab once login is on.
+        The password is active immediately after the restart — there's no forced
+        first-login change. Add two-factor later from this Security tab once
+        login is on.
       </p>
     </details>
   );

@@ -24,7 +24,9 @@ window.WebSocket = class {
 };
 `;
 
-test("press-and-hold selects text (enables copy)", async ({ page }, testInfo) => {
+test("press-and-hold selects text (enables copy)", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
 
   await page.addInitScript(FAKE_WS_TEXT);
@@ -34,7 +36,9 @@ test("press-and-hold selects text (enables copy)", async ({ page }, testInfo) =>
   await expect(surface).toBeVisible();
   // Wait until the text has actually rendered into the top row.
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("selectable");
 
   // Press-and-hold (touchstart, hold past the long-press threshold, lift — no move) over a word
@@ -44,15 +48,28 @@ test("press-and-hold selects text (enables copy)", async ({ page }, testInfo) =>
     const cellH = r.height / 24;
     const x = Math.round(r.x + r.width * 0.2); // within "hello selectable world here"
     const y = Math.round(r.y + cellH * 0.5);
-    const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+    const touch = new Touch({
+      identifier: 1,
+      target: el,
+      clientX: x,
+      clientY: y,
+    });
     el.dispatchEvent(
-      new TouchEvent("touchstart", { cancelable: true, bubbles: true, touches: [touch] }),
+      new TouchEvent("touchstart", {
+        cancelable: true,
+        bubbles: true,
+        touches: [touch],
+      }),
     );
     // Hold past the 450ms threshold, then lift without moving.
     return new Promise<void>((resolve) =>
       setTimeout(() => {
         el.dispatchEvent(
-          new TouchEvent("touchend", { cancelable: true, bubbles: true, touches: [] }),
+          new TouchEvent("touchend", {
+            cancelable: true,
+            bubbles: true,
+            touches: [],
+          }),
         );
         resolve();
       }, 600),
@@ -61,8 +78,14 @@ test("press-and-hold selects text (enables copy)", async ({ page }, testInfo) =>
 
   // A non-empty selection must now exist (red on current code: overlay + user-select:none).
   await expect
-    .poll(async () => page.evaluate(() => (window.getSelection()?.toString() ?? "").trim().length), {
-      timeout: 3000,
-    })
+    .poll(
+      async () =>
+        page.evaluate(
+          () => (window.getSelection()?.toString() ?? "").trim().length,
+        ),
+      {
+        timeout: 3000,
+      },
+    )
     .toBeGreaterThan(0);
 });

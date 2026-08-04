@@ -48,7 +48,10 @@ export interface GestureMouseDown {
 }
 
 /** What to do with a `mousedown` on the terminal surface. */
-export function decideMouseDown(e: GestureMouseDown, env: GestureEnv): MouseDownDecision {
+export function decideMouseDown(
+  e: GestureMouseDown,
+  env: GestureEnv,
+): MouseDownDecision {
   if (!e.isTrusted) return "native"; // a twin / click-replay we dispatched ourselves
   if (e.button !== 0) return "native"; // right/middle: context menu, paste — never selection
   if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return "native"; // explicit user intent
@@ -76,6 +79,9 @@ export function exceededSlop(
  *  to select on every Mac. We only ever synthesize this modifier; the operator still just drags.
  *  The Mac branch additionally requires the terminal to be constructed with
  *  `macOptionClickForcesSelection: true` (see Terminal.tsx). */
-export function forceSelectModifier(isMac: boolean): { shiftKey: boolean; altKey: boolean } {
+export function forceSelectModifier(isMac: boolean): {
+  shiftKey: boolean;
+  altKey: boolean;
+} {
   return { shiftKey: !isMac, altKey: isMac };
 }

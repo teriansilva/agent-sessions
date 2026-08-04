@@ -23,7 +23,8 @@ test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Se
   await page.goto("/s/claude/compose-actions-500");
   await expect(page.locator(".xterm")).toBeVisible();
   await page.waitForFunction(
-    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
 
   // Open the box if collapsed (desktop default) so Send + the close chip render.
@@ -34,13 +35,19 @@ test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Se
   await expect(send).toBeVisible();
 
   // No second (kebab) menu, and no interrupt / Ctrl-C control anywhere.
-  await expect(page.getByRole("button", { name: /more actions/i })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /interrupt|ctrl-c/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /more actions/i })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("button", { name: /interrupt|ctrl-c/i }),
+  ).toHaveCount(0);
 
   // Send is the LAST control — everything (the key group + its overflow "…" + the mic) is to its
   // left. Up is always the first inline chip.
   const sendX = (await send.boundingBox())!.x;
-  expect((await page.getByRole("button", { name: "Up" }).boundingBox())!.x).toBeLessThan(sendX);
+  expect(
+    (await page.getByRole("button", { name: "Up" }).boundingBox())!.x,
+  ).toBeLessThan(sendX);
 
   // The group either fits inline, or its trailing chips collapse into the SINGLE "…" overflow when
   // narrow (the dynamic behavior). Either way attach + close are reachable, and Send stays last.
@@ -48,7 +55,9 @@ test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Se
   if (await more.isVisible()) {
     expect((await more.boundingBox())!.x).toBeLessThan(sendX); // the "…" is left of Send too
     await more.click();
-    await expect(page.getByRole("menuitem", { name: /attach file/i })).toBeVisible();
+    await expect(
+      page.getByRole("menuitem", { name: /attach file/i }),
+    ).toBeVisible();
     await page.getByRole("menuitem", { name: /collapse compose box/i }).click();
   } else {
     const attach = page.getByRole("button", { name: /attach file/i });
@@ -58,7 +67,9 @@ test("single-row bar: keys + attach + close in one group, no kebab/interrupt, Se
     await close.click();
   }
   // Collapsing (inline chip or menu item) returns the compose/open affordance.
-  await expect(page.getByRole("button", { name: /open compose box/i })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /open compose box/i }),
+  ).toBeVisible();
 });
 
 test("the overflow … menu is fully on-screen (not clipped) at a narrow width (#500)", async ({
@@ -71,7 +82,8 @@ test("the overflow … menu is fully on-screen (not clipped) at a narrow width (
   await page.goto("/s/claude/compose-narrow-500");
   await expect(page.locator(".xterm")).toBeVisible();
   await page.waitForFunction(
-    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
 
   const send = page.getByRole("button", { name: /^send/i });
@@ -97,5 +109,7 @@ test("the overflow … menu is fully on-screen (not clipped) at a narrow width (
   expect(box.y + box.height).toBeLessThanOrEqual(vh + 1);
 
   // A collapsed-away action (the close chip) is reachable from the menu.
-  await expect(page.getByRole("menuitem", { name: /collapse compose box/i })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: /collapse compose box/i }),
+  ).toBeVisible();
 });

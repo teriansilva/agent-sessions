@@ -13,7 +13,9 @@ function html(text: string): string {
 
 test("maps **bold** to <strong> and `code` to <code> (#744)", () => {
   render(
-    <div data-testid="out">{inlineMarkup("**Root-caused** the race in `auth/refresh.ts`.")}</div>,
+    <div data-testid="out">
+      {inlineMarkup("**Root-caused** the race in `auth/refresh.ts`.")}
+    </div>,
   );
   const out = screen.getByTestId("out");
   expect(out.querySelector("strong")).toHaveTextContent("Root-caused");
@@ -29,19 +31,25 @@ test("plain text passes through untouched (#744)", () => {
 
 // The whole reason this helper exists instead of a markdown renderer.
 test("markup outside the subset stays LITERAL — no html sink (#744)", () => {
-  expect(html("<script>alert(1)</script>")).toBe("&lt;script&gt;alert(1)&lt;/script&gt;");
+  expect(html("<script>alert(1)</script>")).toBe(
+    "&lt;script&gt;alert(1)&lt;/script&gt;",
+  );
   expect(html('<img src=x onerror="alert(1)">')).toBe(
     '&lt;img src=x onerror="alert(1)"&gt;',
   );
   // Links, images and headings are NOT in the subset — they render as the characters they are.
-  expect(html("[click](javascript:alert(1))")).toBe("[click](javascript:alert(1))");
+  expect(html("[click](javascript:alert(1))")).toBe(
+    "[click](javascript:alert(1))",
+  );
   expect(html("![x](http://evil/x.png)")).toBe("![x](http://evil/x.png)");
   expect(html("# Heading")).toBe("# Heading");
 });
 
 test("html INSIDE a subset token is still escaped (#744)", () => {
   // `code` wins the token, but its contents are a React child — never markup.
-  expect(html("ran `<script>x</script>`")).toBe("ran <code>&lt;script&gt;x&lt;/script&gt;</code>");
+  expect(html("ran `<script>x</script>`")).toBe(
+    "ran <code>&lt;script&gt;x&lt;/script&gt;</code>",
+  );
   expect(html("**<b>hi</b>**")).toBe("<strong>&lt;b&gt;hi&lt;/b&gt;</strong>");
 });
 

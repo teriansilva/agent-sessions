@@ -13,7 +13,11 @@ export interface ScrollAccum {
  *  newer output (positive xterm `scrollLines`). The remainder is updated in place so a
  *  sequence of small drags accumulates to whole lines instead of being lost to rounding.
  */
-export function dragToLines(dyPx: number, pxPerRow: number, acc: ScrollAccum): number {
+export function dragToLines(
+  dyPx: number,
+  pxPerRow: number,
+  acc: ScrollAccum,
+): number {
   if (!(pxPerRow > 0)) return 0; // unmeasured row height → no-op (also guards NaN)
   const total = acc.remainder + dyPx / pxPerRow;
   const lines = Math.trunc(total);
@@ -41,7 +45,9 @@ interface Scrollable {
  *  mouse-wheel report) rather than moving xterm's own viewport. Shared with Terminal: the
  *  scroll-to-bottom FAB uses it to decide between forwarding a jump-to-tail vs `scrollToBottom()`,
  *  since for these sessions `term.buffer` never leaves the tail (nothing to be "not at bottom" of). */
-export function appConsumesWheel(term: Pick<Scrollable, "modes" | "buffer">): boolean {
+export function appConsumesWheel(
+  term: Pick<Scrollable, "modes" | "buffer">,
+): boolean {
   return (
     (term.modes?.mouseTrackingMode ?? "none") !== "none" ||
     term.buffer?.active?.type === "alternate"
@@ -89,7 +95,11 @@ export function attachTouchScroll(
   surface: HTMLElement,
   term: Scrollable,
   handlers: TouchScrollHandlers = {},
-): { detach: () => void; stopMomentum: () => void; jumpToTail: (notches: number) => void } {
+): {
+  detach: () => void;
+  stopMomentum: () => void;
+  jumpToTail: (notches: number) => void;
+} {
   const acc: ScrollAccum = { remainder: 0 };
   let lastY = 0;
   let startY = 0;
@@ -121,7 +131,9 @@ export function attachTouchScroll(
   // Gating on mouseTrackingMode (not just the alt buffer) is the fix: opencode runs in the NORMAL
   // buffer with mouse tracking, so an alt-buffer-only check never engaged for it.
   const wheelTarget = () =>
-    term.element?.querySelector<HTMLElement>(".xterm-screen") ?? term.element ?? null;
+    term.element?.querySelector<HTMLElement>(".xterm-screen") ??
+    term.element ??
+    null;
   // Synthesize one wheel over xterm's screen element. deltaY>0 = scroll toward newer output
   // (down), matching positive scrollLines(). Real pointer coords at the screen centre so xterm
   // encodes a valid cell (a bare 0,0 can land outside the screen on a laid-out page).
@@ -230,7 +242,11 @@ export function attachTouchScroll(
       return;
     }
     // Fling: if the finger was still moving at lift, keep gliding with friction decay.
-    if (performance.now() - lastMoveT > STALE_LIFT_MS || Math.abs(velocity) < MIN_FLING_V) return;
+    if (
+      performance.now() - lastMoveT > STALE_LIFT_MS ||
+      Math.abs(velocity) < MIN_FLING_V
+    )
+      return;
     let v = velocity;
     let prev = performance.now();
     const step = (t: number) => {
@@ -243,10 +259,19 @@ export function attachTouchScroll(
     fling = requestAnimationFrame(step);
   };
 
-  surface.addEventListener("touchstart", onStart, { passive: false, capture: true });
-  surface.addEventListener("touchmove", onMove, { passive: false, capture: true });
+  surface.addEventListener("touchstart", onStart, {
+    passive: false,
+    capture: true,
+  });
+  surface.addEventListener("touchmove", onMove, {
+    passive: false,
+    capture: true,
+  });
   surface.addEventListener("touchend", onEnd, { passive: true, capture: true });
-  surface.addEventListener("touchcancel", onEnd, { passive: true, capture: true });
+  surface.addEventListener("touchcancel", onEnd, {
+    passive: true,
+    capture: true,
+  });
   // Jump an app-consuming session (mouse-tracking / alt-screen) back to its live tail: the app
   // owns the scroll, so we can't move xterm's viewport — forward a burst of downward wheel
   // notches and let the app scroll itself to the bottom (it clamps there, so an over-estimate is

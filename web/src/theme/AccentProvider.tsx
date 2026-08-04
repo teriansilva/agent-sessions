@@ -3,7 +3,12 @@ import type { ReactNode } from "react";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
 import { coerceAccent, DEFAULT_ACCENT, normalizeAccent } from "./accent";
-import { ACCENT_STORAGE_KEY, applyAccent, readStoredAccent, storeAccent } from "./applyAccent";
+import {
+  ACCENT_STORAGE_KEY,
+  applyAccent,
+  readStoredAccent,
+  storeAccent,
+} from "./applyAccent";
 import { AccentCtx } from "./accentStore";
 
 /** Owns the active brand accent. Mirrors ThemeProvider (#172): the initial value is the
@@ -29,7 +34,8 @@ export function AccentProvider({ children }: { children: ReactNode }) {
     reconciled.current = true;
     let hasValidLocal = false;
     try {
-      hasValidLocal = normalizeAccent(localStorage.getItem(ACCENT_STORAGE_KEY)) !== null;
+      hasValidLocal =
+        normalizeAccent(localStorage.getItem(ACCENT_STORAGE_KEY)) !== null;
     } catch {
       /* storage disabled — treat as no local; the seed is then this run only */
     }
@@ -47,7 +53,11 @@ export function AccentProvider({ children }: { children: ReactNode }) {
     api.setAccent(next).catch(() => {});
   }, []);
 
-  return <AccentCtx.Provider value={{ accent, setAccent }}>{children}</AccentCtx.Provider>;
+  return (
+    <AccentCtx.Provider value={{ accent, setAccent }}>
+      {children}
+    </AccentCtx.Provider>
+  );
 }
 
 export { DEFAULT_ACCENT };

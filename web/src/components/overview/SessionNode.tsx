@@ -1,6 +1,12 @@
 import { type NodeProps } from "@xyflow/react";
 import { type CSSProperties } from "react";
-import { engineBadge, engineColor, projectColor, relTime, shortCwd } from "../../lib/format";
+import {
+  engineBadge,
+  engineColor,
+  projectColor,
+  relTime,
+  shortCwd,
+} from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
 import { HudFrame } from "../hud/HudFrame";
 
@@ -13,14 +19,18 @@ import { HudFrame } from "../hud/HudFrame";
  *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
  *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold. */
 export function SessionNode({ data }: NodeProps) {
-  const { session, active, working, selected, folderLabel } = data as SessionNodeData;
+  const { session, active, working, selected, folderLabel } =
+    data as SessionNodeData;
   const color = engineColor(session.engine);
   // #284: the server already resolves the meaningful display title (manual rename → AI
   // title → meaningful first message, else ""). Never fall back to the RAW first message
   // here, or a stray "a" / "." would leak as the chip name — drop straight to the short id.
   const title = session.title || session.short_uuid;
-  const intervention = !!session.intervention_required && !session.review_excluded;
-  const summary = session.review_excluded ? "Excluded from AI review" : session.ai_summary;
+  const intervention =
+    !!session.intervention_required && !session.review_excluded;
+  const summary = session.review_excluded
+    ? "Excluded from AI review"
+    : session.ai_summary;
   const folder = folderLabel ?? shortCwd(session.cwd);
 
   return (
@@ -60,7 +70,9 @@ export function SessionNode({ data }: NodeProps) {
         </span>
       </span>
       {summary && (
-        <span className={`tr-ov-summary${session.review_excluded ? " excluded" : ""}`}>
+        <span
+          className={`tr-ov-summary${session.review_excluded ? " excluded" : ""}`}
+        >
           {summary}
         </span>
       )}

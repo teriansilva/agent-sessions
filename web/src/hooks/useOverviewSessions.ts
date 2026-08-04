@@ -41,7 +41,11 @@ export function useOverviewSessions(): OverviewSessions {
       let partial = false;
       try {
         for (let page = 0; page < MAX_PAGES; page++) {
-          const res = await api.sessions({ limit: PAGE, offset, archived: false });
+          const res = await api.sessions({
+            limit: PAGE,
+            offset,
+            archived: false,
+          });
           acc.push(...res.sessions);
           if (res.next_offset == null) {
             offset = -1;
@@ -50,10 +54,16 @@ export function useOverviewSessions(): OverviewSessions {
           offset = res.next_offset;
           if (page === MAX_PAGES - 1) partial = true; // cap hit with more to come
         }
-        if (alive) setState({ sessions: acc, loading: false, error: null, partial });
+        if (alive)
+          setState({ sessions: acc, loading: false, error: null, partial });
       } catch {
         if (alive)
-          setState({ sessions: acc, loading: false, error: "Couldn’t load sessions.", partial });
+          setState({
+            sessions: acc,
+            loading: false,
+            error: "Couldn’t load sessions.",
+            partial,
+          });
       }
     })();
     return () => {

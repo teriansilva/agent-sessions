@@ -109,7 +109,11 @@ export class TermSocket {
   // immediately instead of waiting out a pending backoff / hung handshake.
   private readonly onOnline = () => this.wake();
   private readonly onVisible = () => {
-    if (typeof document === "undefined" || document.visibilityState === "visible") this.wake();
+    if (
+      typeof document === "undefined" ||
+      document.visibilityState === "visible"
+    )
+      this.wake();
   };
 
   constructor(
@@ -120,7 +124,8 @@ export class TermSocket {
     this.urlFor = urlFor;
     this.handlers = handlers;
     this.wsFactory = wsFactory;
-    if (typeof window !== "undefined") window.addEventListener("online", this.onOnline);
+    if (typeof window !== "undefined")
+      window.addEventListener("online", this.onOnline);
     if (typeof document !== "undefined")
       document.addEventListener("visibilitychange", this.onVisible);
   }
@@ -145,7 +150,9 @@ export class TermSocket {
   connect(): void {
     this.stopped = false;
     this.handlers.onStatus(
-      this.attempt === 0 ? { kind: "connecting" } : { kind: "reconnecting", attempt: this.attempt },
+      this.attempt === 0
+        ? { kind: "connecting" }
+        : { kind: "reconnecting", attempt: this.attempt },
     );
     const ws = this.wsFactory(this.urlFor(this.offset));
     ws.binaryType = "arraybuffer";
@@ -232,11 +239,15 @@ export class TermSocket {
           this.handlers.onSeq?.(msg.n);
         }
         // {"t":"id","sid":"opencode:ses_…"} — the new-session reconcile result (#127).
-        else if (msg.t === "id" && typeof msg.sid === "string") this.handlers.onId?.(msg.sid);
+        else if (msg.t === "id" && typeof msg.sid === "string")
+          this.handlers.onId?.(msg.sid);
         // {"t":"role","role":"owner"|"secondary","holder"?} — per-tab claim verdict
         // (#184/#293/#434). A `secondary` carries the active viewer's `holder` (flag-on
         // take-over) for the read-only banner; the stream keeps flowing either way.
-        else if (msg.t === "role" && (msg.role === "owner" || msg.role === "secondary"))
+        else if (
+          msg.t === "role" &&
+          (msg.role === "owner" || msg.role === "secondary")
+        )
           this.handlers.onRole?.(msg.role, msg.holder ?? null);
         // {"t":"hist","cursor":N} — exact first-page history cursor of a transcript attach (#348).
         else if (msg.t === "hist" && typeof msg.cursor === "number")
@@ -257,7 +268,10 @@ export class TermSocket {
     if (this.stopped) return;
     if (NO_RETRY.has(code)) {
       this.rejected = true;
-      this.handlers.onStatus({ kind: "rejected", reason: REJECT_REASON[code] ?? "unavailable" });
+      this.handlers.onStatus({
+        kind: "rejected",
+        reason: REJECT_REASON[code] ?? "unavailable",
+      });
       return;
     }
     // Transient drop (incl. 4409 busy) → reconnect with capped backoff, resuming from
@@ -282,7 +296,8 @@ export class TermSocket {
   /** Stop for good (component unmount): no further reconnects. */
   close(): void {
     this.stopped = true;
-    if (typeof window !== "undefined") window.removeEventListener("online", this.onOnline);
+    if (typeof window !== "undefined")
+      window.removeEventListener("online", this.onOnline);
     if (typeof document !== "undefined")
       document.removeEventListener("visibilitychange", this.onVisible);
     if (this.timer) clearTimeout(this.timer);

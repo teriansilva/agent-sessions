@@ -20,9 +20,13 @@ for (const engine of ["opencode", "antigravity"] as const) {
         },
       }),
     );
-    await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+    await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+      r.fulfill({ json: { projects: [] } }),
+    );
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+    await page.route("**/api/version", (r) =>
+      r.fulfill({ json: { version: "test" } }),
+    );
 
     await page.goto("/");
     await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/proj");

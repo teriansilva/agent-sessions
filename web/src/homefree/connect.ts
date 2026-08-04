@@ -50,7 +50,10 @@ export function solveAltcha(ch: AltchaChallenge): string {
 }
 
 /** Derive the relay's HTTP + WS endpoints from a base origin (e.g. https://box:4443). */
-export function relayUrls(base: string, name: string): { altchaUrl: string; wsUrl: string } {
+export function relayUrls(
+  base: string,
+  name: string,
+): { altchaUrl: string; wsUrl: string } {
   const b = base.replace(/\/+$/, "");
   const ws = b.replace(/^http/, "ws");
   return {
@@ -118,7 +121,8 @@ export class FrameChannel {
 
   open(): Promise<void> {
     if (this.isOpen) return Promise.resolve();
-    if (this.closed) return Promise.reject(new ViewerError("connection_failed"));
+    if (this.closed)
+      return Promise.reject(new ViewerError("connection_failed"));
     return new Promise((resolve, reject) => {
       this.openResolve = resolve;
       this.openReject = reject;
@@ -141,13 +145,15 @@ export class FrameChannel {
 
   async recvText(): Promise<string> {
     const f = await this.recv();
-    if (typeof f !== "string") throw new ViewerError("protocol", "expected a text frame");
+    if (typeof f !== "string")
+      throw new ViewerError("protocol", "expected a text frame");
     return f;
   }
 
   async recvBinary(): Promise<Uint8Array> {
     const f = await this.recv();
-    if (!(f instanceof Uint8Array)) throw new ViewerError("protocol", "expected a binary frame");
+    if (!(f instanceof Uint8Array))
+      throw new ViewerError("protocol", "expected a binary frame");
     return f;
   }
 }
@@ -161,7 +167,10 @@ export type SessionEvent =
 /** The app-mode advert (#579): the exact first encrypted frame after the E2E handshake.
  *  Must byte-match the agent's `_APP_ADVERT` (`b"\x00HF-APP/1"`). Anything else makes the
  *  agent close the session; there is no recovery-shell fallback. */
-export const APP_ADVERT: Uint8Array = new Uint8Array([0, ...new TextEncoder().encode("HF-APP/1")]);
+export const APP_ADVERT: Uint8Array = new Uint8Array([
+  0,
+  ...new TextEncoder().encode("HF-APP/1"),
+]);
 
 export interface AppSessionCallbacks {
   /** One decrypted mux frame from the box (feed it to the tunnel's `Mux`). */
@@ -193,7 +202,8 @@ export async function runAppSession(
   chan.send(JSON.stringify({ t: "hello", captcha }));
   const first = JSON.parse(await chan.recvText());
   if (first.t === "error") throw new ViewerError(first.code ?? "error");
-  if (first.t !== "paired") throw new ViewerError("protocol", `expected paired, got ${first.t}`);
+  if (first.t !== "paired")
+    throw new ViewerError("protocol", `expected paired, got ${first.t}`);
   cb.onEvent({ type: "paired", deadline: first.deadline, ttl: first.ttl });
 
   const ini = new Initiator(await derivePsk(accessKey));
@@ -219,7 +229,8 @@ export async function runAppSession(
       }
       if (typeof frame === "string") {
         const m = JSON.parse(frame);
-        if (m.t === "warn") cb.onEvent({ type: "warn", remaining: m.remaining });
+        if (m.t === "warn")
+          cb.onEvent({ type: "warn", remaining: m.remaining });
         else if (m.t === "expired") {
           cb.onEvent({ type: "expired" });
           break;

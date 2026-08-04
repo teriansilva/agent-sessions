@@ -25,10 +25,13 @@ const selHistory = [
 ];
 
 const STREAMED = "STREAMED-WHILE-SELECTING-XYZ";
-const streamChunk = "\r\n" + Array.from({ length: 6 }, () => STREAMED).join("\r\n") + "\r\n";
+const streamChunk =
+  "\r\n" + Array.from({ length: 6 }, () => STREAMED).join("\r\n") + "\r\n";
 
 const vpScrollTop = (page: Page) =>
-  page.locator(".xterm-viewport").evaluate((el) => (el as HTMLElement).scrollTop);
+  page
+    .locator(".xterm-viewport")
+    .evaluate((el) => (el as HTMLElement).scrollTop);
 
 test.beforeEach(async ({ page }) => {
   await setupBench(page, {
@@ -39,7 +42,9 @@ test.beforeEach(async ({ page }) => {
     wipeOnResizeChange: false,
   });
   await page.goto("/s/claude/aaa");
-  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
   // Let the initial attach replay settle so the #407 tail-lock has released into steady state
   // (otherwise output follows regardless of selection).
   await page.waitForTimeout(1000);
@@ -68,7 +73,9 @@ test("streaming output does not drift the viewport out from under a mouse select
   await page.mouse.up();
 
   expect(after).toBe(before); // pinned — did not follow the tail
-  expect(await page.locator(".xterm-rows").textContent()).not.toContain(STREAMED); // stayed off-screen
+  expect(await page.locator(".xterm-rows").textContent()).not.toContain(
+    STREAMED,
+  ); // stayed off-screen
 });
 
 test("streaming output does not drift the viewport out from under a touch selection", async ({
@@ -84,19 +91,42 @@ test("streaming output does not drift the viewport out from under a touch select
     const cellH = r.height / 24;
     const x = Math.round(r.x + r.width * 0.3);
     const y = Math.round(r.y + cellH * 0.5);
-    const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
-    el.dispatchEvent(new TouchEvent("touchstart", { cancelable: true, bubbles: true, touches: [touch] }));
+    const touch = new Touch({
+      identifier: 1,
+      target: el,
+      clientX: x,
+      clientY: y,
+    });
+    el.dispatchEvent(
+      new TouchEvent("touchstart", {
+        cancelable: true,
+        bubbles: true,
+        touches: [touch],
+      }),
+    );
     return new Promise<void>((resolve) =>
       setTimeout(() => {
-        el.dispatchEvent(new TouchEvent("touchend", { cancelable: true, bubbles: true, touches: [] }));
+        el.dispatchEvent(
+          new TouchEvent("touchend", {
+            cancelable: true,
+            bubbles: true,
+            touches: [],
+          }),
+        );
         resolve();
       }, 600),
     );
   });
   await expect
-    .poll(() => page.evaluate(() => (window.getSelection()?.toString() ?? "").trim().length), {
-      timeout: 3000,
-    })
+    .poll(
+      () =>
+        page.evaluate(
+          () => (window.getSelection()?.toString() ?? "").trim().length,
+        ),
+      {
+        timeout: 3000,
+      },
+    )
     .toBeGreaterThan(0);
 
   // Selection is active (select-mode stays on because the lift left a non-empty selection). Streamed

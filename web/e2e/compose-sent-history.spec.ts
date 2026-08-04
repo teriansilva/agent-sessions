@@ -45,7 +45,9 @@ declare global {
 
 async function boot(page: Page, id: string, dropAfterPaste = false) {
   await page.route(/\/api\/sessions\/[^/]+\/draft$/, (r) =>
-    r.fulfill({ json: { id: "", text: "", attachments: [], updated_at: null } }),
+    r.fulfill({
+      json: { id: "", text: "", attachments: [], updated_at: null },
+    }),
   );
   await page.addInitScript(RECORDING_WS(dropAfterPaste));
   await page.goto(`/s/claude/${id}`);
@@ -76,7 +78,9 @@ async function openHistory(page: Page) {
   return page.getByRole("dialog");
 }
 
-test("a sent message survives the composer clear and can be restored (#619)", async ({ page }) => {
+test("a sent message survives the composer clear and can be restored (#619)", async ({
+  page,
+}) => {
   await boot(page, "hist-restore");
   const sendBtn = await openCompose(page);
   const ta = page.getByPlaceholder(/type here/i);
@@ -84,12 +88,15 @@ test("a sent message survives the composer clear and can be restored (#619)", as
   // Nothing to recover yet → no chip. A natural empty state, not a feature flag.
   await expect(page.getByLabel(/sent messages/i)).toHaveCount(0);
 
-  const long = "a looong message that must never be lost, even if the agent swallows it";
+  const long =
+    "a looong message that must never be lost, even if the agent swallows it";
   await ta.fill(long);
   await sendBtn.click();
 
   // Delivered: the composer clears. This is precisely the moment the text used to vanish forever.
-  await expect.poll(async () => page.evaluate(() => window.__input.at(-1))).toBe("\r");
+  await expect
+    .poll(async () => page.evaluate(() => window.__input.at(-1)))
+    .toBe("\r");
   await expect(ta).toHaveValue("");
 
   // …but it is recoverable.
@@ -115,7 +122,9 @@ test("a send whose deferred Enter never lands is kept and flagged UNCONFIRMED (#
 
   // The paste went out; the socket died before the deferred Enter (#287) → the turn never submitted.
   await expect
-    .poll(async () => page.evaluate(() => window.__input.some((d) => d.includes("\x1b[200~"))))
+    .poll(async () =>
+      page.evaluate(() => window.__input.some((d) => d.includes("\x1b[200~"))),
+    )
     .toBe(true);
   await expect(page.getByText(/not sent/i)).toBeVisible();
   await expect(ta).toHaveValue("this one never landed"); // #287: the composer is restored

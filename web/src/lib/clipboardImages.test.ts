@@ -1,5 +1,8 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { imageFilesFromAsyncClipboard, imageFilesFromData } from "./clipboardImages";
+import {
+  imageFilesFromAsyncClipboard,
+  imageFilesFromData,
+} from "./clipboardImages";
 
 const img = (name = "x.png", type = "image/png") =>
   new File([new Uint8Array([1, 2, 3])], name, { type });
@@ -24,7 +27,9 @@ test("extracts image files from clipboard items", () => {
 
 test("ignores non-image items (e.g. pasted text)", () => {
   const out = imageFilesFromData(
-    dt({ items: [{ kind: "string", type: "text/plain", getAsFile: () => null }] }),
+    dt({
+      items: [{ kind: "string", type: "text/plain", getAsFile: () => null }],
+    }),
   );
   expect(out).toEqual([]);
 });
@@ -38,7 +43,10 @@ test("falls back to .files and filters to images", () => {
 test("dedupes an image present in both items and files", () => {
   const f = img();
   const out = imageFilesFromData(
-    dt({ items: [{ kind: "file", type: "image/png", getAsFile: () => f }], files: [f] }),
+    dt({
+      items: [{ kind: "file", type: "image/png", getAsFile: () => f }],
+      files: [f],
+    }),
   );
   expect(out).toEqual([f]);
 });
@@ -49,7 +57,9 @@ test("dedupes an image present in both items and files", () => {
 
 test("materializes a file-kind item whose enumeration-time type is empty (#530)", () => {
   const f = img();
-  const out = imageFilesFromData(dt({ items: [{ kind: "file", type: "", getAsFile: () => f }] }));
+  const out = imageFilesFromData(
+    dt({ items: [{ kind: "file", type: "", getAsFile: () => f }] }),
+  );
   expect(out).toEqual([f]);
 });
 
@@ -68,7 +78,9 @@ test("still rejects a materialized non-image file", () => {
 
 test("survives getAsFile() returning null", () => {
   expect(
-    imageFilesFromData(dt({ items: [{ kind: "file", type: "", getAsFile: () => null }] })),
+    imageFilesFromData(
+      dt({ items: [{ kind: "file", type: "", getAsFile: () => null }] }),
+    ),
   ).toEqual([]);
 });
 
@@ -85,8 +97,14 @@ test("imageFilesFromAsyncClipboard lifts image items into Files", async () => {
   const bytes = new Blob([new Uint8Array([9, 9])], { type: "image/png" });
   stubClipboardRead(() =>
     Promise.resolve([
-      { types: ["text/html"], getType: () => Promise.reject(new Error("unused")) },
-      { types: ["text/plain", "image/png"], getType: () => Promise.resolve(bytes) },
+      {
+        types: ["text/html"],
+        getType: () => Promise.reject(new Error("unused")),
+      },
+      {
+        types: ["text/plain", "image/png"],
+        getType: () => Promise.resolve(bytes),
+      },
     ]),
   );
   const out = await imageFilesFromAsyncClipboard();
@@ -96,7 +114,9 @@ test("imageFilesFromAsyncClipboard lifts image items into Files", async () => {
 });
 
 test("imageFilesFromAsyncClipboard fails soft on rejection / missing API", async () => {
-  stubClipboardRead(() => Promise.reject(new DOMException("denied", "NotAllowedError")));
+  stubClipboardRead(() =>
+    Promise.reject(new DOMException("denied", "NotAllowedError")),
+  );
   expect(await imageFilesFromAsyncClipboard()).toEqual([]);
   vi.stubGlobal("navigator", {}); // no clipboard at all (insecure context)
   expect(await imageFilesFromAsyncClipboard()).toEqual([]);

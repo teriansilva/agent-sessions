@@ -53,7 +53,12 @@ export function FiltersBar({ filters, facets, onChange, onClear }: Props) {
           </select>
         )}
         {hasFilter && (
-          <button type="button" className={styles.clear} onClick={onClear} aria-label="Clear filters">
+          <button
+            type="button"
+            className={styles.clear}
+            onClick={onClear}
+            aria-label="Clear filters"
+          >
             Clear
           </button>
         )}

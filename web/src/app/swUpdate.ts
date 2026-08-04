@@ -39,7 +39,8 @@ export function onSWSwap(cb: () => void): () => void {
 /** Register the SW and arm the liveness checks. Called once from main.tsx; safe no-op where
  *  serviceWorker is unsupported or the virtual module is absent (vitest/jsdom, SSR). */
 export async function initSWUpdates(): Promise<void> {
-  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator))
+    return;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     // Only a swap counts: `hadController` distinguishes "new SW replaced the old one" from the
     // very first claim after install (where there was no controller to replace).
@@ -57,7 +58,10 @@ export async function initSWUpdates(): Promise<void> {
         registration = r;
         // A long-lived tab never re-checks sw.js on its own — poll hourly and the moment the
         // app is foregrounded (the realistic "I just came back after a release" beat).
-        window.setInterval(() => void r.update().catch(() => {}), SW_RECHECK_MS);
+        window.setInterval(
+          () => void r.update().catch(() => {}),
+          SW_RECHECK_MS,
+        );
         document.addEventListener("visibilitychange", () => {
           if (!document.hidden) void r.update().catch(() => {});
         });
@@ -95,7 +99,9 @@ export function applySWUpdate(): void {
   // already swapped in the background, or the server bumped without a web change pre-#661),
   // the fallback timer reloads anyway.
   sw.addEventListener("controllerchange", go, { once: true });
-  const check = registration ? registration.update().catch(() => {}) : Promise.resolve();
+  const check = registration
+    ? registration.update().catch(() => {})
+    : Promise.resolve();
   void check.finally(() => {
     window.setTimeout(go, APPLY_FALLBACK_MS);
   });

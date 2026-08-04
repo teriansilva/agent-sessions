@@ -2,7 +2,13 @@ import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, ApiError } from "../../lib/api";
-import { engineBadge, engineName, projectColor, relTime, shortCwd } from "../../lib/format";
+import {
+  engineBadge,
+  engineName,
+  projectColor,
+  relTime,
+  shortCwd,
+} from "../../lib/format";
 import { inlineMarkup } from "../../lib/inlineMarkup";
 import { sessionStatus, type SessionStatusBase } from "../../lib/sessionStatus";
 import type { ProjectRef } from "../../types/api";
@@ -159,7 +165,9 @@ export function SessionRecapModal({
     : "";
   const projectStyle =
     project?.kind === "project"
-      ? ({ "--proj": project.color || projectColor(project.id) } as CSSProperties)
+      ? ({
+          "--proj": project.color || projectColor(project.id),
+        } as CSSProperties)
       : undefined;
   // Subtitle = the sidebar row's summary line, same precedence: the exclusion marker wins over
   // the AI summary, and an unreviewed session says so rather than showing an empty gap.
@@ -205,7 +213,13 @@ export function SessionRecapModal({
         {/* Subtitle (#744): the AI summary promoted out of its own labelled SUMMARY section —
             same text, one fewer micro-label, and it reads as the session's subtitle exactly
             like the sidebar row's second line. */}
-        <p className={state.summary || reviewExcluded ? styles.subtitle : styles.subtitleMuted}>
+        <p
+          className={
+            state.summary || reviewExcluded
+              ? styles.subtitle
+              : styles.subtitleMuted
+          }
+        >
           {subtitle}
         </p>
         {/* Meta run (#744): everything the sidebar row carries about this session's identity —
@@ -265,7 +279,12 @@ export function SessionRecapModal({
                the ordinal semantically, which is why the prompt asks the model NOT to number. */
             <ol className={styles.timeline}>
               {steps.map((step, i) => (
-                <li key={i} className={i === steps.length - 1 ? styles.stepLast : undefined}>
+                <li
+                  key={i}
+                  className={
+                    i === steps.length - 1 ? styles.stepLast : undefined
+                  }
+                >
                   {inlineMarkup(step)}
                 </li>
               ))}
@@ -296,7 +315,11 @@ export function SessionRecapModal({
                 : "Re-run the AI review now"
             }
           >
-            <RefreshCw size={13} className={reviewing ? styles.spin : ""} aria-hidden="true" />
+            <RefreshCw
+              size={13}
+              className={reviewing ? styles.spin : ""}
+              aria-hidden="true"
+            />
             {reviewing ? "Reviewing…" : "Review now"}
           </button>
         </div>

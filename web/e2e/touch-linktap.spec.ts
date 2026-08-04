@@ -41,22 +41,43 @@ async function tapRow(surface: Locator, rowIndex: number): Promise<void> {
     const sr = el.getBoundingClientRect();
     const x = Math.round(sr.x + sr.width * 0.15);
     const y = Math.round(rr.y + rr.height * 0.5);
-    const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+    const touch = new Touch({
+      identifier: 1,
+      target: el,
+      clientX: x,
+      clientY: y,
+    });
     el.dispatchEvent(
-      new TouchEvent("touchstart", { cancelable: true, bubbles: true, touches: [touch] }),
+      new TouchEvent("touchstart", {
+        cancelable: true,
+        bubbles: true,
+        touches: [touch],
+      }),
     );
-    el.dispatchEvent(new TouchEvent("touchend", { cancelable: true, bubbles: true, touches: [] }));
+    el.dispatchEvent(
+      new TouchEvent("touchend", {
+        cancelable: true,
+        bubbles: true,
+        touches: [],
+      }),
+    );
   }, rowIndex);
 }
 
-async function openSession(page: import("@playwright/test").Page, line: string, slug: string) {
+async function openSession(
+  page: import("@playwright/test").Page,
+  line: string,
+  slug: string,
+) {
   await page.addInitScript(fakeWs(line));
   await page.goto(`/s/claude/${slug}`);
   const surface = page.locator("[data-touch-surface]");
   await expect(surface).toBeVisible();
   // Wait until the URL has actually rendered (avoids racing grid-stable connect).
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("example.com");
   return surface;
 }
@@ -67,12 +88,16 @@ const openedUrls = (page: import("@playwright/test").Page) =>
 test("tap on a link opens the URL", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
 
-  const surface = await openSession(page, "https://example.com/foo", "linktaptest");
+  const surface = await openSession(
+    page,
+    "https://example.com/foo",
+    "linktaptest",
+  );
   await tapRow(surface, 0);
 
-  await expect.poll(() => openedUrls(page), { timeout: 3000 }).toContain(
-    "https://example.com/foo",
-  );
+  await expect
+    .poll(() => openedUrls(page), { timeout: 3000 })
+    .toContain("https://example.com/foo");
 });
 
 test("tap on a wrapped URL's continuation row opens the full URL (#664)", async ({
@@ -85,7 +110,9 @@ test("tap on a wrapped URL's continuation row opens the full URL (#664)", async 
   // Today this finds no https:// prefix on the row and just refocuses the keyboard.
   await tapRow(surface, 1);
 
-  await expect.poll(() => openedUrls(page), { timeout: 3000 }).toContain(WRAPPED_URL);
+  await expect
+    .poll(() => openedUrls(page), { timeout: 3000 })
+    .toContain(WRAPPED_URL);
 });
 
 test("tap on a wrapped URL's first row opens the full URL, not a truncated fragment (#664)", async ({
@@ -97,6 +124,8 @@ test("tap on a wrapped URL's first row opens the full URL, not a truncated fragm
   // Today this opens only the first row's slice of the URL — a dead link.
   await tapRow(surface, 0);
 
-  await expect.poll(async () => (await openedUrls(page)).length, { timeout: 3000 }).toBe(1);
+  await expect
+    .poll(async () => (await openedUrls(page)).length, { timeout: 3000 })
+    .toBe(1);
   expect(await openedUrls(page)).toEqual([WRAPPED_URL]);
 });

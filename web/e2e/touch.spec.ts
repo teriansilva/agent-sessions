@@ -90,7 +90,12 @@ async function dragDownOverTouchSurface(page: import("@playwright/test").Page) {
     const r = el.getBoundingClientRect();
     const cx = Math.round(r.x + r.width / 2);
     const touch = (y: number) =>
-      new Touch({ identifier: 1, target: el, clientX: cx, clientY: Math.round(y) });
+      new Touch({
+        identifier: 1,
+        target: el,
+        clientX: cx,
+        clientY: Math.round(y),
+      });
     const fire = (type: string, y: number) =>
       el.dispatchEvent(
         new TouchEvent(type, {
@@ -131,7 +136,9 @@ async function dragIntoScrollback(
   return scrollMetrics(viewport);
 }
 
-test("one-finger drag scrolls the terminal scrollback", async ({ page }, testInfo) => {
+test("one-finger drag scrolls the terminal scrollback", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
 
   await page.addInitScript(FAKE_WS);
@@ -141,9 +148,12 @@ test("one-finger drag scrolls the terminal scrollback", async ({ page }, testInf
   await expect(viewport).toBeVisible();
   // Wait until 400 lines are in and the view auto-scrolled to the bottom (scrollable).
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
-      timeout: 5000,
-    })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThan(100);
   const before = await viewport.evaluate((el) => el.scrollTop);
   expect(before).toBeGreaterThan(0); // sitting at the bottom of the scrollback
@@ -153,7 +163,9 @@ test("one-finger drag scrolls the terminal scrollback", async ({ page }, testInf
   await dragDownOverTouchSurface(page);
 
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollTop), { timeout: 3000 })
+    .poll(async () => viewport.evaluate((el) => el.scrollTop), {
+      timeout: 3000,
+    })
     .toBeLessThan(before); // scrolled up into the scrollback
 });
 
@@ -169,9 +181,12 @@ test("Codex live clear-scrollback repaint does not break mobile touch scroll", a
   await expect(viewport).toBeVisible();
   await expect(page.locator(".xterm-screen")).toContainText("codex live frame");
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
-      timeout: 5000,
-    })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThan(100);
   const before = await viewport.evaluate((el) => el.scrollTop);
   expect(before).toBeGreaterThan(0);
@@ -179,7 +194,9 @@ test("Codex live clear-scrollback repaint does not break mobile touch scroll", a
   await dragDownOverTouchSurface(page);
 
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollTop), { timeout: 3000 })
+    .poll(async () => viewport.evaluate((el) => el.scrollTop), {
+      timeout: 3000,
+    })
     .toBeLessThan(before);
 });
 
@@ -194,9 +211,12 @@ test("Codex live updates preserve mobile scrollback position while the user is r
   const viewport = page.locator(".xterm-viewport");
   await expect(viewport).toBeVisible();
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
-      timeout: 5000,
-    })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThan(100);
   const before = await scrollMetrics(viewport);
   expect(before.scrollTop).toBeGreaterThan(0);
@@ -206,12 +226,22 @@ test("Codex live updates preserve mobile scrollback position while the user is r
   expect(reading.bottomGap).toBeGreaterThan(100);
 
   await page.evaluate(() =>
-    (window as unknown as { __startCodexFrames: () => void }).__startCodexFrames(),
+    (
+      window as unknown as { __startCodexFrames: () => void }
+    ).__startCodexFrames(),
   );
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __codexFramesSent: number }).__codexFramesSent), {
-      timeout: 5000,
-    })
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __codexFramesSent: number })
+              .__codexFramesSent,
+        ),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThanOrEqual(8);
   const afterLive = await scrollMetrics(viewport);
   expect(afterLive.bottomGap).toBeGreaterThan(100);
@@ -229,9 +259,12 @@ test("Codex live updates preserve unarmed viewport scrollback position", async (
   const viewport = page.locator(".xterm-viewport");
   await expect(viewport).toBeVisible();
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
-      timeout: 5000,
-    })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThan(100);
   const before = await scrollMetrics(viewport);
   expect(before.scrollTop).toBeGreaterThan(0);
@@ -245,15 +278,27 @@ test("Codex live updates preserve unarmed viewport scrollback position", async (
     };
   });
   expect(reading.bottomGap).toBeGreaterThan(100);
-  await expect.poll(async () => (await scrollMetrics(viewport)).bottomGap).toBeGreaterThan(100);
+  await expect
+    .poll(async () => (await scrollMetrics(viewport)).bottomGap)
+    .toBeGreaterThan(100);
 
   await page.evaluate(() =>
-    (window as unknown as { __startCodexFrames: () => void }).__startCodexFrames(),
+    (
+      window as unknown as { __startCodexFrames: () => void }
+    ).__startCodexFrames(),
   );
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __codexFramesSent: number }).__codexFramesSent), {
-      timeout: 5000,
-    })
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __codexFramesSent: number })
+              .__codexFramesSent,
+        ),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThanOrEqual(8);
   const afterLive = await scrollMetrics(viewport);
   expect(afterLive.bottomGap).toBeGreaterThan(100);
@@ -271,16 +316,22 @@ test("Codex viewport resize preserves mobile scrollback position while the user 
   const viewport = page.locator(".xterm-viewport");
   await expect(viewport).toBeVisible();
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
-      timeout: 5000,
-    })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      {
+        timeout: 5000,
+      },
+    )
     .toBeGreaterThan(100);
 
   const reading = await dragIntoScrollback(page, viewport);
   expect(reading.bottomGap).toBeGreaterThan(100);
 
   const size = page.viewportSize() ?? { width: 393, height: 851 };
-  await page.setViewportSize({ width: size.width, height: Math.max(520, size.height - 180) });
+  await page.setViewportSize({
+    width: size.width,
+    height: Math.max(520, size.height - 180),
+  });
   await page.waitForTimeout(400);
 
   const afterResize = await scrollMetrics(viewport);

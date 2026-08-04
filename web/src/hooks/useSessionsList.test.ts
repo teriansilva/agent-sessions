@@ -48,7 +48,12 @@ function sess(title: string): Session {
   };
 }
 function pageOf(sessions: Session[]): SessionsPage {
-  return { sessions, next_offset: null, total: sessions.length, facets: { projects: [], engines: [] } };
+  return {
+    sessions,
+    next_offset: null,
+    total: sessions.length,
+    facets: { projects: [], engines: [] },
+  };
 }
 
 beforeEach(() => {
@@ -132,7 +137,9 @@ test("a burst of search keystrokes collapses to a single fetch (#561 debounce)",
       await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
     });
     expect(mockSessions).toHaveBeenCalledTimes(1);
-    expect(mockSessions.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ q: "hello" }));
+    expect(mockSessions.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ q: "hello" }),
+    );
   } finally {
     vi.useRealTimers();
   }
@@ -149,7 +156,9 @@ test("archiving a row in a partially loaded list keeps the next unloaded row rea
   mockArchive.mockResolvedValue({ id: "claude:A", archived: true });
 
   const { result } = renderHook(() => useSessionsList());
-  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B"]));
+  await waitFor(() =>
+    expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B"]),
+  );
 
   // Archive A → server set becomes [B, C]; row leaves the view, total drops, and the
   // next-page offset must shift from 2 → 1 (C moved down one slot).
@@ -170,17 +179,30 @@ test("archiving a row in a partially loaded list keeps the next unloaded row rea
   await act(async () => {
     result.current.loadMore();
   });
-  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["B", "C"]));
-  expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 }));
+  await waitFor(() =>
+    expect(result.current.sessions.map((s) => s.title)).toEqual(["B", "C"]),
+  );
+  expect(mockSessions).toHaveBeenLastCalledWith(
+    expect.objectContaining({ offset: 1 }),
+  );
 });
 
 test("favoriting a row flips sticky and floats it to the top; unfavoriting clears it (#122)", async () => {
   mockSessions.mockResolvedValueOnce(pageOf([sess("A"), sess("B"), sess("C")]));
   vi.mocked(api.favorite).mockResolvedValue({ id: "claude:C", sticky: true });
-  vi.mocked(api.unfavorite).mockResolvedValue({ id: "claude:C", sticky: false });
+  vi.mocked(api.unfavorite).mockResolvedValue({
+    id: "claude:C",
+    sticky: false,
+  });
 
   const { result } = renderHook(() => useSessionsList());
-  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B", "C"]));
+  await waitFor(() =>
+    expect(result.current.sessions.map((s) => s.title)).toEqual([
+      "A",
+      "B",
+      "C",
+    ]),
+  );
 
   // Favorite C → calls api.favorite, C gets sticky=true and re-sorts to the very top
   // (sticky-first), with the non-sticky rows keeping their relative order (stable sort).
@@ -189,7 +211,9 @@ test("favoriting a row flips sticky and floats it to the top; unfavoriting clear
   });
   expect(api.favorite).toHaveBeenCalledWith("claude:C");
   expect(result.current.sessions.map((s) => s.title)).toEqual(["C", "A", "B"]);
-  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(true);
+  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(
+    true,
+  );
 
   // Unfavorite C → calls api.unfavorite, flag clears (server reorders by recency on the
   // next poll; the local re-sort just drops the pin).
@@ -197,7 +221,9 @@ test("favoriting a row flips sticky and floats it to the top; unfavoriting clear
     await result.current.setSticky("claude:C", false);
   });
   expect(api.unfavorite).toHaveBeenCalledWith("claude:C");
-  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(false);
+  expect(result.current.sessions.find((s) => s.title === "C")?.sticky).toBe(
+    false,
+  );
 });
 
 // ---- #159: live polling + visibility-aware pause + silent failures ----
@@ -221,12 +247,18 @@ test("polling refetches from offset 0 every 15s with limit covering the loaded r
   vi.useFakeTimers();
   try {
     const { result } = renderHook(() => useSessionsList());
-    await vi.waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B"]));
+    await vi.waitFor(() =>
+      expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B"]),
+    );
     await act(async () => {
       result.current.loadMore();
     });
     await vi.waitFor(() =>
-      expect(result.current.sessions.map((s) => s.title)).toEqual(["A", "B", "C"]),
+      expect(result.current.sessions.map((s) => s.title)).toEqual([
+        "A",
+        "B",
+        "C",
+      ]),
     );
 
     mockSessions.mockClear();
@@ -246,7 +278,11 @@ test("polling refetches from offset 0 every 15s with limit covering the loaded r
     expect(call.offset).toBe(0);
     // The contract is "limit covers all loaded rows" — never drop loaded pages on refresh.
     expect(call.limit ?? 0).toBeGreaterThanOrEqual(3);
-    expect(result.current.sessions.map((s) => s.title)).toEqual(["C", "A", "B"]);
+    expect(result.current.sessions.map((s) => s.title)).toEqual([
+      "C",
+      "A",
+      "B",
+    ]);
   } finally {
     vi.useRealTimers();
   }
@@ -275,7 +311,10 @@ test("hidden tab pauses polling; becoming visible again triggers an immediate re
   mockSessions.mockResolvedValue(pageOf([sess("A")]));
   vi.useFakeTimers();
   let hidden = false;
-  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => hidden,
+  });
   try {
     renderHook(() => useSessionsList());
     await vi.waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(1));
@@ -310,7 +349,11 @@ test("polling does not start until the initial fetch has settled (#168 race)", a
   // Defer the initial fetch indefinitely so the poller's 15s tick would fire before it
   // resolves. With the gate in place, NO silent poll request goes out.
   let resolveInit!: (v: SessionsPage) => void;
-  mockSessions.mockReturnValueOnce(new Promise<SessionsPage>((res) => { resolveInit = res; }));
+  mockSessions.mockReturnValueOnce(
+    new Promise<SessionsPage>((res) => {
+      resolveInit = res;
+    }),
+  );
   vi.useFakeTimers();
   try {
     renderHook(() => useSessionsList());
@@ -362,7 +405,11 @@ test("polling is suppressed while loadMore is in flight (#168 race round 2)", as
 
     // Defer the loadMore so the silent poll can interleave.
     let resolveMore!: (v: SessionsPage) => void;
-    mockSessions.mockReturnValueOnce(new Promise<SessionsPage>((res) => { resolveMore = res; }));
+    mockSessions.mockReturnValueOnce(
+      new Promise<SessionsPage>((res) => {
+        resolveMore = res;
+      }),
+    );
     await act(async () => {
       result.current.loadMore();
     });
@@ -396,7 +443,10 @@ test("polling is suppressed while loadMore is in flight (#168 race round 2)", as
 
 test("setProject writes the assignment and folds the new resolution into the row (#424 Phase 5b)", async () => {
   mockSessions.mockResolvedValue(pageOf([{ ...sess("S"), cwd: "/x" }]));
-  vi.mocked(api.setSessionProject).mockResolvedValue({ id: "claude:S", project_id: "p-1" });
+  vi.mocked(api.setSessionProject).mockResolvedValue({
+    id: "claude:S",
+    project_id: "p-1",
+  });
   const { result } = renderHook(() => useSessionsList());
   await waitFor(() => expect(result.current.sessions).toHaveLength(1));
 
@@ -410,12 +460,19 @@ test("setProject writes the assignment and folds the new resolution into the row
     });
   });
   expect(api.setSessionProject).toHaveBeenCalledWith("claude:S", "p-1");
-  expect(result.current.sessions[0].project).toMatchObject({ kind: "project", id: "p-1", name: "SampleProject" });
+  expect(result.current.sessions[0].project).toMatchObject({
+    kind: "project",
+    id: "p-1",
+    name: "SampleProject",
+  });
 
   // Unassign → PATCH null, row falls back to the folder keyed by its cwd.
   await act(async () => {
     await result.current.setProject("claude:S", null);
   });
   expect(api.setSessionProject).toHaveBeenLastCalledWith("claude:S", null);
-  expect(result.current.sessions[0].project).toMatchObject({ kind: "folder", id: "/x" });
+  expect(result.current.sessions[0].project).toMatchObject({
+    kind: "folder",
+    id: "/x",
+  });
 });

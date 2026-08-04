@@ -1,6 +1,13 @@
 import { MoreHorizontal } from "lucide-react";
 import { createPortal } from "react-dom";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import styles from "./Compose.module.css";
 
 export interface KeyAction {
@@ -33,7 +40,10 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
   // The overflow popover is portalled to <body> with position:fixed, measured from the "…" trigger
   // (#500): the compose bar lives inside `.compose` (overflow-y:auto) and `.terminal-pane`
   // (overflow:hidden), so an in-tree popover gets clipped/offscreen on narrow widths. Opens upward.
-  const [menuPos, setMenuPos] = useState<{ bottom: number; left: number } | null>(null);
+  const [menuPos, setMenuPos] = useState<{
+    bottom: number;
+    left: number;
+  } | null>(null);
 
   useLayoutEffect(() => {
     const el = wrapRef.current;
@@ -70,7 +80,8 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
     // currently-shown chips carry [data-key]) and wrongly trims a chip into the "…" even on a wide
     // desktop. RO + a RAF fallback both fire post-paint, once the freshly-shown full set is in DOM.
     let raf = 0;
-    if (typeof requestAnimationFrame !== "undefined") raf = requestAnimationFrame(recompute);
+    if (typeof requestAnimationFrame !== "undefined")
+      raf = requestAnimationFrame(recompute);
     if (typeof ResizeObserver === "undefined") {
       return () => {
         if (raf) cancelAnimationFrame(raf);
@@ -179,7 +190,11 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
                 }}
               >
                 <span className={styles.keyMenuIcon}>
-                  {a.text ? <span className={styles.txt}>{a.text}</span> : a.icon}
+                  {a.text ? (
+                    <span className={styles.txt}>{a.text}</span>
+                  ) : (
+                    a.icon
+                  )}
                 </span>
                 <span>{a.aria}</span>
               </button>

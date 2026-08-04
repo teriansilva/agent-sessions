@@ -80,14 +80,30 @@ function mockApi(page: Page, sessions: BenchSession[]) {
       },
     }),
   );
-  page.route("**/api/version", (r) => r.fulfill({ json: { version: "bench" } }));
-  page.route("**/api/engines", (r) => r.fulfill({ json: { engines: ["claude"] } }));
+  page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "bench" } }),
+  );
+  page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: ["claude"] } }),
+  );
   page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }));
+  page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }),
+  );
   page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: items, next_offset: null, total: items.length, facets: { projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }], engines: ["claude"] } },
+      json: {
+        sessions: items,
+        next_offset: null,
+        total: items.length,
+        facets: {
+          projects: [
+            { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
+          ],
+          engines: ["claude"],
+        },
+      },
     }),
   );
 }
@@ -151,11 +167,16 @@ function attachTripwires(page: Page) {
       url.startsWith("http://127.0.0.1:") ||
       url.startsWith("data:") ||
       url.startsWith("blob:");
-    if (!ok) throw new Error(`BENCH ISOLATION BREACH: un-mocked request escaped → ${url}`);
+    if (!ok)
+      throw new Error(
+        `BENCH ISOLATION BREACH: un-mocked request escaped → ${url}`,
+      );
   });
   // window.WebSocket is replaced in-page, so Playwright should never see a real WS open.
   page.on("websocket", (ws) => {
-    throw new Error(`BENCH ISOLATION BREACH: a real WebSocket opened → ${ws.url()}`);
+    throw new Error(
+      `BENCH ISOLATION BREACH: a real WebSocket opened → ${ws.url()}`,
+    );
   });
 }
 
@@ -170,10 +191,15 @@ function mockHistoryApi(page: Page, pages: LazyHistoryPage[] = []) {
     const p = pages[call++] ?? { ansi: "", cursor: null, has_more: false };
     if (p.delayMs) await new Promise((r) => setTimeout(r, p.delayMs));
     if (p.status && p.status >= 400) {
-      await route.fulfill({ status: p.status, json: { detail: "bench error" } });
+      await route.fulfill({
+        status: p.status,
+        json: { detail: "bench error" },
+      });
       return;
     }
-    await route.fulfill({ json: { ansi: p.ansi, cursor: p.cursor, has_more: p.has_more } });
+    await route.fulfill({
+      json: { ansi: p.ansi, cursor: p.cursor, has_more: p.has_more },
+    });
   });
 }
 
@@ -181,14 +207,27 @@ export async function setupBench(page: Page, opts: BenchOptions) {
   attachTripwires(page);
   mockApi(page, opts.sessions);
   mockHistoryApi(page, opts.lazyPages);
-  const history = opts.history ?? Object.fromEntries(
-    opts.sessions.map((s) => [`${s.engine}:${s.uuid}`, defaultHistory(`${s.engine}:${s.uuid}`)]),
-  );
+  const history =
+    opts.history ??
+    Object.fromEntries(
+      opts.sessions.map((s) => [
+        `${s.engine}:${s.uuid}`,
+        defaultHistory(`${s.engine}:${s.uuid}`),
+      ]),
+    );
   await page.addInitScript(
     ({ history, wipeOnResizeChange, role }) => {
-      (window as unknown as { __BENCH__: unknown }).__BENCH__ = { history, wipeOnResizeChange, role };
+      (window as unknown as { __BENCH__: unknown }).__BENCH__ = {
+        history,
+        wipeOnResizeChange,
+        role,
+      };
     },
-    { history, wipeOnResizeChange: opts.wipeOnResizeChange ?? true, role: opts.role ?? "owner" },
+    {
+      history,
+      wipeOnResizeChange: opts.wipeOnResizeChange ?? true,
+      role: opts.role ?? "owner",
+    },
   );
   await page.addInitScript(fakeWsScript());
 }
@@ -204,16 +243,21 @@ export async function pushOutput(page: Page, text: string) {
         __BENCH_LAST_WS__?: { onmessage?: (e: { data: ArrayBuffer }) => void };
       }
     ).__BENCH_LAST_WS__;
-    if (!ws?.onmessage) throw new Error("BENCH: no live WS to push output from");
+    if (!ws?.onmessage)
+      throw new Error("BENCH: no live WS to push output from");
     ws.onmessage({ data: new TextEncoder().encode(t).buffer });
   }, text);
 }
 
 /** Assert the live terminal shows the given text (in the visible xterm rows). */
 export async function expectTerminalShows(page: Page, text: string) {
-  await expect(page.locator(".xterm-rows")).toContainText(text, { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).toContainText(text, {
+    timeout: 5000,
+  });
 }
 
 export async function expectTerminalHidden(page: Page, text: string) {
-  await expect(page.locator(".xterm-rows")).not.toContainText(text, { timeout: 5000 });
+  await expect(page.locator(".xterm-rows")).not.toContainText(text, {
+    timeout: 5000,
+  });
 }

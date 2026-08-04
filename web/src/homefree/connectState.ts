@@ -7,7 +7,10 @@
 // the live/loading state, kept SEPARATE from the status hues — red (`--status-down`) is
 // reserved for active failure.
 
-export type ConnectStep = { label: string; state: "done" | "active" | "pending" };
+export type ConnectStep = {
+  label: string;
+  state: "done" | "active" | "pending";
+};
 
 export type ConnectState =
   | { kind: "loading"; box?: string; steps?: ConnectStep[]; progress?: number }
@@ -32,7 +35,11 @@ function led(kind: "accent" | "down"): HTMLElement {
   return el("span", `cs-led cs-led-${kind}`);
 }
 
-function button(cls: string, label: string, onClick?: () => void): HTMLButtonElement {
+function button(
+  cls: string,
+  label: string,
+  onClick?: () => void,
+): HTMLButtonElement {
   const b = el("button", cls, label);
   b.type = "button";
   if (onClick) b.addEventListener("click", onClick);
@@ -68,7 +75,10 @@ export function renderConnectState(
       const list = el("ul", "cs-steps");
       for (const s of state.steps) {
         const li = el("li", `cs-step cs-step-${s.state}`);
-        li.append(el("span", "cs-step-mark", STEP_MARK[s.state]), el("span", "cs-step-label", s.label));
+        li.append(
+          el("span", "cs-step-mark", STEP_MARK[s.state]),
+          el("span", "cs-step-label", s.label),
+        );
         list.append(li);
       }
       host.append(list);
@@ -79,7 +89,9 @@ export function renderConnectState(
     fill.style.width = `${Math.max(0, Math.min(100, state.progress ?? 0))}%`;
     rail.append(fill);
     host.append(rail);
-    host.append(el("div", "cs-note", "🔒 end-to-end encrypted · the relay is blind"));
+    host.append(
+      el("div", "cs-note", "🔒 end-to-end encrypted · the relay is blind"),
+    );
     return;
   }
 

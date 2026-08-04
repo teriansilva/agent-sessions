@@ -59,7 +59,12 @@ function makeChannel(ws: MockSocket) {
   ws.binaryType = "arraybuffer";
   ws.onmessage = (ev) => {
     const d = ev.data;
-    const v = typeof d === "string" ? d : d instanceof Uint8Array ? d : new Uint8Array(d as ArrayBuffer);
+    const v =
+      typeof d === "string"
+        ? d
+        : d instanceof Uint8Array
+          ? d
+          : new Uint8Array(d as ArrayBuffer);
     const w = waiters.shift();
     if (w) w(v);
     else queue.push(v);
@@ -97,7 +102,8 @@ describe("Home Free connect core", () => {
     const salt = "abc.9999999999";
     const number = 4242;
     // build the matching challenge hash via the same sha256 the solver uses
-    const toHex = (u: Uint8Array) => [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const toHex = (u: Uint8Array) =>
+      [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
     const challenge = toHex(sha256(enc.encode(salt + number)));
     const ch: AltchaChallenge = {
       algorithm: "SHA-256",
@@ -139,7 +145,10 @@ describe("Home Free connect core", () => {
       chan.send(JSON.stringify({ t: "error", code: "busy" }));
     })();
     await expect(
-      runAppSession(clientWs, "k", "x", { onFrame: () => {}, onEvent: () => {} }),
+      runAppSession(clientWs, "k", "x", {
+        onFrame: () => {},
+        onEvent: () => {},
+      }),
     ).rejects.toMatchObject({ code: "busy" });
   });
 });
@@ -154,7 +163,9 @@ async function fakeAppRelay(
   const chan = makeChannel(ws);
   await chan.opened;
   await chan.recvText(); // hello
-  chan.send(JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }));
+  chan.send(
+    JSON.stringify({ t: "paired", deadline: 1_000_000_000, ttl: 14400 }),
+  );
   const res = new Responder(await derivePsk(accessKey));
   const msg1 = await chan.recvBinary();
   chan.send(await res.respond(msg1));
@@ -190,7 +201,10 @@ describe("runAppSession", () => {
     const [clientWs, serverWs] = linkedPair();
     void fakeAppRelay(serverWs, "correct-key", []).catch(() => {});
     await expect(
-      runAppSession(clientWs, "wrong-key", "x", { onFrame: () => {}, onEvent: () => {} }),
+      runAppSession(clientWs, "wrong-key", "x", {
+        onFrame: () => {},
+        onEvent: () => {},
+      }),
     ).rejects.toThrow(); // the Initiator handshake rejects a bad key (generic Error)
   });
 });

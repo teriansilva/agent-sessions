@@ -53,7 +53,11 @@ test("a giant paste evicts older entries rather than blowing the byte cap", () =
 });
 
 test("round-trips attachments and the session tag (null for a fresh launch)", () => {
-  appendSent({ text: "look", attachments: ["/tmp/a.png", "/tmp/b.png"], session: null });
+  appendSent({
+    text: "look",
+    attachments: ["/tmp/a.png", "/tmp/b.png"],
+    session: null,
+  });
   const [e] = readSent();
   expect(e.attachments).toEqual(["/tmp/a.png", "/tmp/b.png"]);
   expect(e.session).toBeNull(); // #616's fresh-session loss must be recordable
@@ -76,7 +80,10 @@ test("a corrupt or foreign ring reads as empty, never throws", () => {
   expect(readSent()).toEqual([]);
   localStorage.setItem(SENT_HISTORY_KEY, JSON.stringify({ nope: 1 }));
   expect(readSent()).toEqual([]);
-  localStorage.setItem(SENT_HISTORY_KEY, JSON.stringify([{ id: 1 }, null, "x"]));
+  localStorage.setItem(
+    SENT_HISTORY_KEY,
+    JSON.stringify([{ id: 1 }, null, "x"]),
+  );
   expect(readSent()).toEqual([]); // malformed entries are dropped, not surfaced
 });
 

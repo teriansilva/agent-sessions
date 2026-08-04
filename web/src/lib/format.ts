@@ -27,7 +27,10 @@ export function pathBase(cwd: string): string {
 
 /** A project's display label: the user's custom name for this cwd (#148) if set, else the
  *  shortened path. Display-only — filtering/identity stays keyed by the raw cwd. */
-export function displayProjectName(cwd: string, names?: Record<string, string>): string {
+export function displayProjectName(
+  cwd: string,
+  names?: Record<string, string>,
+): string {
   return names?.[cwd]?.trim() || shortCwd(cwd);
 }
 
@@ -120,7 +123,9 @@ export function humanDuration(seconds: number): string {
 /** Split an engine-qualified session id (`<engine>:<native_id>`) into its parts, or null
  *  when it isn't one (#597 handoff provenance). `indexOf` — not `split` — because a native
  *  id may itself contain a colon; only the FIRST separator delimits the engine. */
-export function parseSessionKey(key: string): { engine: string; uuid: string } | null {
+export function parseSessionKey(
+  key: string,
+): { engine: string; uuid: string } | null {
   const i = key.indexOf(":");
   if (i <= 0 || i === key.length - 1) return null;
   return { engine: key.slice(0, i), uuid: key.slice(i + 1) };
@@ -131,5 +136,7 @@ export function parseSessionKey(key: string): { engine: string; uuid: string } |
  *  (the route renders its own empty state); nothing here dereferences the session. */
 export function sessionPathFromKey(key: string): string | null {
   const p = parseSessionKey(key);
-  return p ? `/s/${encodeURIComponent(p.engine)}/${encodeURIComponent(p.uuid)}` : null;
+  return p
+    ? `/s/${encodeURIComponent(p.engine)}/${encodeURIComponent(p.uuid)}`
+    : null;
 }

@@ -1,5 +1,11 @@
 import { beforeEach, expect, test } from "vitest";
-import { applyTheme, bootTheme, readStoredTheme, storeTheme, THEME_STORAGE_KEY } from "./applyTheme";
+import {
+  applyTheme,
+  bootTheme,
+  readStoredTheme,
+  storeTheme,
+  THEME_STORAGE_KEY,
+} from "./applyTheme";
 
 beforeEach(() => {
   localStorage.clear();

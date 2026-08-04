@@ -90,6 +90,17 @@ def _attach_pending(overview: dict) -> dict:
             # newest-first, so the first row seen per session is the current one
             if sid and sid not in live:
                 live[sid] = a
+    # Settled history, one row per session (`feed_by_session`, #775). The Activity block used to
+    # render this as a SECOND list of near-identical boxes directly above the cards — different
+    # things (what the orchestrator did vs what your sessions are) that looked the same and sat
+    # adjacent, so the page read as duplication (#777). It rides the card now.
+    history: dict[str, dict] = {}
+    with contextlib.suppress(Exception):
+        for a in orchestrator_ledger.feed_by_session(FEED_LIMIT):
+            sid = str(a.get("session_id") or "")
+            if sid and sid not in live:
+                history[sid] = a
+
     seen: set[str] = set()
     for c in cards:
         if not isinstance(c, dict):
@@ -113,6 +124,14 @@ def _attach_pending(overview: dict) -> dict:
             # band outliving the reason for it.
             c["state_without_action"] = c.get("state")
             c["state"] = "needs_you"
+        else:
+            # No live action — show what the orchestrator last DID here instead. Never both:
+            # a card with decision controls is about a choice you still have, and a settled
+            # summary next to it would read as a second, contradictory status.
+            c.pop("last_action", None)
+            h = history.get(str(c.get("id") or ""))
+            if h:
+                c["last_action"] = h
 
     # An action with NO card would be unreachable now that the standalone queue is gone, and
     # that is not a hypothetical: `eligible_cards` builds with `window_days=None`, so the
@@ -122,9 +141,16 @@ def _attach_pending(overview: dict) -> dict:
     #
     # So synthesize a card from the action's own identity fields. It is the same information the
     # queue row carried, in the one place the operator now looks.
-    for sid, a in live.items():
+    #
+    # The same applies to a SETTLED action whose session has no card, and it is not a rare
+    # corner: measured live, 16 sessions were inside the 3-day Pulse window while the feed
+    # reached 100 — so 84 sessions had history and no card. Dropping the Activity block without
+    # carrying those across would not have merged the two lists, it would have deleted one.
+    for sid, a in list(live.items()) + list(history.items()):
         if sid in seen:
             continue
+        seen.add(sid)
+        settled = sid not in live
         project = str(a.get("project") or "")
         cards.append(
             {
@@ -137,7 +163,9 @@ def _attach_pending(overview: dict) -> dict:
                     "id": str(a.get("project_id") or ""),
                     "name": project,
                 },
-                "state": "needs_you",
+                # A settled action is history, not an errand — banding it `needs_you` would
+                # put week-old expired escalations at the top of the list.
+                "state": "idle" if settled else "needs_you",
                 # This card exists ONLY because the action does. Settle it and there is nothing
                 # left to show, so the client drops the card rather than leaving an empty
                 # phantom under "Needs you" with no title, no summary and no controls.
@@ -148,7 +176,7 @@ def _attach_pending(overview: dict) -> dict:
                 "intervention_reason": "",
                 "ai_summary": "",
                 "synthesis": "",
-                "pending_action": a,
+                **({"last_action": a} if settled else {"pending_action": a}),
             }
         )
     return overview

@@ -36,7 +36,9 @@ async function dragAndAssertForwarded(page: import("@playwright/test").Page) {
   const surface = page.locator("[data-touch-surface]");
   await expect(surface).toBeVisible();
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("row 0");
   await page.evaluate(() => {
     (window as unknown as { __sentInput: string[] }).__sentInput = [];
@@ -45,7 +47,12 @@ async function dragAndAssertForwarded(page: import("@playwright/test").Page) {
     const r = el.getBoundingClientRect();
     const cx = Math.round(r.x + r.width / 2);
     const touch = (y: number) =>
-      new Touch({ identifier: 1, target: el, clientX: cx, clientY: Math.round(y) });
+      new Touch({
+        identifier: 1,
+        target: el,
+        clientX: cx,
+        clientY: Math.round(y),
+      });
     const fire = (type: string, y: number) =>
       el.dispatchEvent(
         new TouchEvent(type, {
@@ -65,12 +72,15 @@ async function dragAndAssertForwarded(page: import("@playwright/test").Page) {
   await expect
     .poll(
       async () =>
-        page.evaluate(() => (window as unknown as { __sentInput: string[] }).__sentInput.length),
+        page.evaluate(
+          () =>
+            (window as unknown as { __sentInput: string[] }).__sentInput.length,
+        ),
       { timeout: 3000 },
     )
     .toBeGreaterThan(0);
-  const sent = await page.evaluate(
-    () => (window as unknown as { __sentInput: string[] }).__sentInput.join(""),
+  const sent = await page.evaluate(() =>
+    (window as unknown as { __sentInput: string[] }).__sentInput.join(""),
   );
   // Wheel/scroll input (SGR mouse-wheel \x1b[<64..|<65.. or cursor keys \x1b[A/\x1b[B), not text.
   // eslint-disable-next-line no-control-regex -- matching the literal ESC in mouse/cursor sequences
@@ -89,7 +99,9 @@ test("touch drag with mouse tracking (normal buffer, opencode) forwards scroll t
 });
 
 // Alt-screen app (alternate buffer + mouse tracking): the secondary forward path.
-test("touch drag in the alt screen forwards scroll to the app", async ({ page }, testInfo) => {
+test("touch drag in the alt screen forwards scroll to the app", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
   await page.addInitScript(fakeWs("\x1b[?1049h\x1b[?1000h\x1b[?1006h"));
   await page.goto("/s/opencode/altscreentest");

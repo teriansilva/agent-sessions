@@ -16,10 +16,19 @@ import { expectTerminalShows, setupBench } from "./harness";
 test("mobile: attach during viewport animation keeps history without any input (#349)", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile", "coarse-pointer budget is mobile-only");
+  test.skip(
+    testInfo.project.name !== "mobile",
+    "coarse-pointer budget is mobile-only",
+  );
 
   await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: "m0b11e00-0000-4000-8000-000000000001", title: "m" }],
+    sessions: [
+      {
+        engine: "claude",
+        uuid: "m0b11e00-0000-4000-8000-000000000001",
+        title: "m",
+      },
+    ],
     wipeOnResizeChange: true, // the agent-repaint wipe the old timing tripped
   });
   // Start at a non-final width, then animate width steps past the OLD 1.5s budget while
@@ -42,5 +51,7 @@ test("mobile: attach during viewport animation keeps history without any input (
   await expectTerminalShows(page, "BEGIN");
   await expectTerminalShows(page, "END");
   // And the wipe marker must NOT have replaced it.
-  await expect(page.locator(".xterm-rows")).not.toContainText("LIVE (repainted)");
+  await expect(page.locator(".xterm-rows")).not.toContainText(
+    "LIVE (repainted)",
+  );
 });

@@ -43,7 +43,13 @@ export function FolderPickerModal({
         setCwd(r.path);
         setDirs(r.dirs);
       })
-      .catch((e) => setError(e instanceof ApiError && e.message ? e.message : "Couldn’t read that folder."));
+      .catch((e) =>
+        setError(
+          e instanceof ApiError && e.message
+            ? e.message
+            : "Couldn’t read that folder.",
+        ),
+      );
   }, []);
 
   // Initial browse (server resolves an empty/undefined path to home). The synchronous loading
@@ -70,7 +76,10 @@ export function FolderPickerModal({
   }, [onCancel]);
 
   // Breadcrumb: home + each path segment below it, each clickable to jump up.
-  const rel = home && cwd.startsWith(home) ? cwd.slice(home.length).replace(/^\//, "") : "";
+  const rel =
+    home && cwd.startsWith(home)
+      ? cwd.slice(home.length).replace(/^\//, "")
+      : "";
   const segs = rel ? rel.split("/") : [];
   const segPath = (i: number) => [home, ...segs.slice(0, i + 1)].join("/");
 
@@ -84,7 +93,11 @@ export function FolderPickerModal({
       setNewName("");
       browse(path); // navigate into the freshly-created folder so Select picks it
     } catch (e) {
-      setError(e instanceof ApiError && e.message ? e.message : "Couldn’t create that folder.");
+      setError(
+        e instanceof ApiError && e.message
+          ? e.message
+          : "Couldn’t create that folder.",
+      );
     } finally {
       setCreating(false);
     }
@@ -116,8 +129,16 @@ export function FolderPickerModal({
           </button>
           {segs.map((s, i) => (
             <span key={segPath(i)} className={styles.crumbSeg}>
-              <ChevronRight size={12} aria-hidden="true" className={styles.sep} />
-              <button type="button" className={styles.crumb} onClick={() => browse(segPath(i))}>
+              <ChevronRight
+                size={12}
+                aria-hidden="true"
+                className={styles.sep}
+              />
+              <button
+                type="button"
+                className={styles.crumb}
+                onClick={() => browse(segPath(i))}
+              >
                 {s}
               </button>
             </span>
@@ -140,7 +161,11 @@ export function FolderPickerModal({
                   title={`Open ${d.name}`}
                 >
                   <span className={styles.name}>{d.name}</span>
-                  <ChevronRight size={14} aria-hidden="true" className={styles.chev} />
+                  <ChevronRight
+                    size={14}
+                    aria-hidden="true"
+                    className={styles.chev}
+                  />
                 </button>
               </li>
             ))}
@@ -163,7 +188,11 @@ export function FolderPickerModal({
             aria-label="New folder name"
             disabled={creating || dirs === null}
           />
-          <button type="submit" className={styles.mkBtn} disabled={creating || !newName.trim()}>
+          <button
+            type="submit"
+            className={styles.mkBtn}
+            disabled={creating || !newName.trim()}
+          >
             <FolderPlus size={13} aria-hidden="true" /> Create
           </button>
         </form>

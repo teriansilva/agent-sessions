@@ -34,7 +34,9 @@ test("degraded compose paste (empty DataTransfer) falls back to the async clipbo
   page,
 }) => {
   await page.route("**/api/upload", (r) =>
-    r.fulfill({ json: { name: "clipboard.png", path: "/uploads/clipboard.png" } }),
+    r.fulfill({
+      json: { name: "clipboard.png", path: "/uploads/clipboard.png" },
+    }),
   );
   await page.addInitScript(FAKE_WS);
   await page.goto("/s/claude/img-paste-fallback");
@@ -64,7 +66,9 @@ test("degraded paste over the terminal falls back to the async clipboard (#530)"
   page,
 }) => {
   await page.route("**/api/upload", (r) =>
-    r.fulfill({ json: { name: "clipboard.png", path: "/uploads/clipboard.png" } }),
+    r.fulfill({
+      json: { name: "clipboard.png", path: "/uploads/clipboard.png" },
+    }),
   );
   await page.addInitScript(FAKE_WS);
   await page.goto("/s/claude/img-paste-fallback-term");
@@ -92,7 +96,9 @@ test("plain-text paste is untouched by the fallback — no prompt, no upload (#5
   let uploads = 0;
   await page.route("**/api/upload", (r) => {
     uploads += 1;
-    return r.fulfill({ json: { name: "clipboard.png", path: "/uploads/clipboard.png" } });
+    return r.fulfill({
+      json: { name: "clipboard.png", path: "/uploads/clipboard.png" },
+    });
   });
   await page.addInitScript(FAKE_WS);
   await page.goto("/s/claude/img-paste-fallback-text");
@@ -111,7 +117,11 @@ test("plain-text paste is untouched by the fallback — no prompt, no upload (#5
     const dt = new DataTransfer();
     dt.setData("text/plain", "hello from the clipboard");
     el.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
     );
   });
 

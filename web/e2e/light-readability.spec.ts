@@ -6,7 +6,11 @@
 //  3. the topbar/classbar read as distinct surfaces on light (firmer edge, lifted telemetry).
 // Dark is pinned unchanged alongside each light assertion. Runs on the desktop AND mobile projects.
 import { expect, test, type Page } from "@playwright/test";
-import { pushOutput, setupBench, expectTerminalShows } from "./terminal/harness";
+import {
+  pushOutput,
+  setupBench,
+  expectTerminalShows,
+} from "./terminal/harness";
 
 const SESSIONS = [{ engine: "claude", uuid: "aaa", title: "Session Alpha" }];
 
@@ -37,10 +41,14 @@ const surfaceBehindTerminal = (page: Page) =>
 
 // Colourised the way agent CLIs actually colourise: bright-black secondary text, green ✓,
 // yellow SHAs, cyan file paths (SGR 90/32/33/36 → ANSI slots 8/2/3/6).
-const ANSI_SAMPLE = "\r\n\x1b[90mDIM90\x1b[0m \x1b[32mGRN32\x1b[0m \x1b[33mYLW33\x1b[0m \x1b[36mCYN36\x1b[0m\r\n";
+const ANSI_SAMPLE =
+  "\r\n\x1b[90mDIM90\x1b[0m \x1b[32mGRN32\x1b[0m \x1b[33mYLW33\x1b[0m \x1b[36mCYN36\x1b[0m\r\n";
 
 const ansiColorOf = (page: Page, marker: string) =>
-  page.locator(".xterm-rows span", { hasText: marker }).first().evaluate((el) => getComputedStyle(el).color);
+  page
+    .locator(".xterm-rows span", { hasText: marker })
+    .first()
+    .evaluate((el) => getComputedStyle(el).color);
 
 async function openBench(page: Page, theme: "dark" | "light") {
   await setupBench(page, { sessions: SESSIONS });
@@ -67,7 +75,9 @@ test.describe("light theme (#473)", () => {
     expect(await ansiColorOf(page, "CYN36")).toBe(hexToRgb("#0e6c7c"));
   });
 
-  test("topbar + classbar read as distinct surfaces", async ({ page }, testInfo) => {
+  test("topbar + classbar read as distinct surfaces", async ({
+    page,
+  }, testInfo) => {
     await openBench(page, "light");
     const topbar = page.locator(".hud-topbar");
     const classbar = page.locator(".hud-classbar");
@@ -75,16 +85,26 @@ test.describe("light theme (#473)", () => {
     await expect(topbar).toHaveCSS("border-bottom-color", hexToRgb("#c9ccd2"));
     await expect(classbar).toHaveCSS("border-top-color", hexToRgb("#c9ccd2"));
     // Telemetry tags lift one step: --text-3 → --text-2 (#41454d).
-    await expect(classbar.locator(".hud-tag").last()).toHaveCSS("color", hexToRgb("#41454d"));
+    await expect(classbar.locator(".hud-tag").last()).toHaveCSS(
+      "color",
+      hexToRgb("#41454d"),
+    );
     // Chrome fill: desktop rises 55% → 92%; mobile keeps the #228 96% degrade (the light
     // override is desktop-scoped so it must NOT beat the mobile rule's near-opaque fill).
-    const alpha = alphaOf(await topbar.evaluate((el) => getComputedStyle(el).backgroundColor));
-    expect(alpha).toBeCloseTo(testInfo.project.name === "mobile" ? 0.96 : 0.92, 2);
+    const alpha = alphaOf(
+      await topbar.evaluate((el) => getComputedStyle(el).backgroundColor),
+    );
+    expect(alpha).toBeCloseTo(
+      testInfo.project.name === "mobile" ? 0.96 : 0.92,
+      2,
+    );
   });
 });
 
 test.describe("dark theme stays as-is (#473 sanity)", () => {
-  test("terminal surface + ANSI palette + chrome are unchanged", async ({ page }, testInfo) => {
+  test("terminal surface + ANSI palette + chrome are unchanged", async ({
+    page,
+  }, testInfo) => {
     await openBench(page, "dark");
     // Surface = the dark xterm canvas bg (#0d0e10; was the visually identical #0e0e0e).
     expect(await surfaceBehindTerminal(page)).toBe(hexToRgb("#0d0e10"));
@@ -97,9 +117,20 @@ test.describe("dark theme stays as-is (#473 sanity)", () => {
     expect(await ansiColorOf(page, "CYN36")).toBe(hexToRgb("#06989a"));
     // Chrome keeps the dark frosted look: --line edge, --text-3 tags, 55%/96% fill.
     const topbar = page.locator(".hud-topbar");
-    await expect(topbar).toHaveCSS("border-bottom-color", "rgba(255, 255, 255, 0.08)");
-    await expect(page.locator(".hud-classbar .hud-tag").last()).toHaveCSS("color", hexToRgb("#6f747d"));
-    const alpha = alphaOf(await topbar.evaluate((el) => getComputedStyle(el).backgroundColor));
-    expect(alpha).toBeCloseTo(testInfo.project.name === "mobile" ? 0.96 : 0.55, 2);
+    await expect(topbar).toHaveCSS(
+      "border-bottom-color",
+      "rgba(255, 255, 255, 0.08)",
+    );
+    await expect(page.locator(".hud-classbar .hud-tag").last()).toHaveCSS(
+      "color",
+      hexToRgb("#6f747d"),
+    );
+    const alpha = alphaOf(
+      await topbar.evaluate((el) => getComputedStyle(el).backgroundColor),
+    );
+    expect(alpha).toBeCloseTo(
+      testInfo.project.name === "mobile" ? 0.96 : 0.55,
+      2,
+    );
   });
 });

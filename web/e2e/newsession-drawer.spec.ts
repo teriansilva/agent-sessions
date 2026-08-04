@@ -18,7 +18,9 @@ const landing = (page: import("@playwright/test").Page) =>
   page.getByRole("heading", { name: /start a new session/i });
 
 /** Open the off-canvas drawer if we're on a mobile viewport; returns whether it's mobile. */
-async function openDrawerIfMobile(page: import("@playwright/test").Page): Promise<boolean> {
+async function openDrawerIfMobile(
+  page: import("@playwright/test").Page,
+): Promise<boolean> {
   const hamburger = page.getByRole("button", { name: /open session list/i });
   const isMobile = await hamburger.isVisible().catch(() => false);
   if (isMobile) {
@@ -28,7 +30,9 @@ async function openDrawerIfMobile(page: import("@playwright/test").Page): Promis
   return isMobile;
 }
 
-test("New session closes the drawer in one tap when already at / (#283)", async ({ page }) => {
+test("New session closes the drawer in one tap when already at / (#283)", async ({
+  page,
+}) => {
   await page.goto("/");
   await expect(landing(page)).toBeVisible();
 
@@ -40,7 +44,9 @@ test("New session closes the drawer in one tap when already at / (#283)", async 
   await expect(landing(page)).toBeVisible();
 });
 
-test("from a session view, one New session click shows the landing (#283)", async ({ page }) => {
+test("from a session view, one New session click shows the landing (#283)", async ({
+  page,
+}) => {
   await page.goto("/s/claude/fake-session-id");
   await expect(landing(page)).toHaveCount(0);
 

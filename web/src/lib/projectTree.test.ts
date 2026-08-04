@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import { buildProjectTree, flattenTree, nearestAncestor, owningProjectId } from "./projectTree";
+import {
+  buildProjectTree,
+  flattenTree,
+  nearestAncestor,
+  owningProjectId,
+} from "./projectTree";
 
 // nearestAncestor — the core boundary-aware rule (#148 carry-over, #174 extract).
 
@@ -67,10 +72,12 @@ test("buildProjectTree: parents/children/depth are consistent", () => {
 
 test("buildProjectTree: multiple roots remain disconnected", () => {
   const t = buildProjectTree(["/x", "/y", "/x/a", "/y/b"]);
-  expect([...t.values()].filter((n) => n.parent === undefined).map((n) => n.cwd).sort()).toEqual([
-    "/x",
-    "/y",
-  ]);
+  expect(
+    [...t.values()]
+      .filter((n) => n.parent === undefined)
+      .map((n) => n.cwd)
+      .sort(),
+  ).toEqual(["/x", "/y"]);
 });
 
 // flattenTree — DFS for rendering as a list.

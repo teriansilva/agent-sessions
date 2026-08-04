@@ -65,7 +65,10 @@ test("a transient /api/version failure is ignored, polling continues (#169)", as
 test("visibilitychange triggers an immediate version poll (#169)", async () => {
   mockVersion.mockResolvedValueOnce({ version: "1.0.0" });
   let hidden = false;
-  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => hidden,
+  });
   const { result } = renderHook(() => useAppVersion("1.0.0"));
   await waitFor(() => expect(result.current.server).toBe("1.0.0"));
 

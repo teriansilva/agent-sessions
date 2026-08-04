@@ -10,7 +10,14 @@ import {
   useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Bot, Boxes, ChevronsDownUp, ChevronsUpDown, FolderTree, Plus } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FolderTree,
+  Plus,
+} from "lucide-react";
 import {
   type FormEvent,
   type MouseEvent,
@@ -41,14 +48,17 @@ import "./overview.css";
 const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
 
 // The map layout selector (#424 Phase 2) — one explicit grouping at a time.
-const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] = [
-  { key: "folder", label: "Folders", Icon: FolderTree },
-  { key: "project", label: "Projects", Icon: Boxes },
-  { key: "agent", label: "Agents", Icon: Bot },
-];
+const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] =
+  [
+    { key: "folder", label: "Folders", Icon: FolderTree },
+    { key: "project", label: "Projects", Icon: Boxes },
+    { key: "agent", label: "Agents", Icon: Bot },
+  ];
 
 const miniMapColor = (n: Node): string =>
-  n.type === "session" ? engineColor((n.data as SessionNodeData).session.engine) : "var(--border)";
+  n.type === "session"
+    ? engineColor((n.data as SessionNodeData).session.engine)
+    : "var(--border)";
 
 type OverviewCanvasProps = {
   sessions: Session[];
@@ -79,8 +89,18 @@ function OverviewCanvasInner({
   compact = false,
   onRefetch,
 }: OverviewCanvasProps) {
-  const { expanded, excluded, projectsMode, includedProjects, projectNames, groupBy, setGroupBy, toggle, expandAll, collapseAll } =
-    useOverviewPrefs();
+  const {
+    expanded,
+    excluded,
+    projectsMode,
+    includedProjects,
+    projectNames,
+    groupBy,
+    setGroupBy,
+    toggle,
+    expandAll,
+    collapseAll,
+  } = useOverviewPrefs();
   const navigate = useNavigate();
   const rf = useReactFlow();
   // Drag-to-reassign is live in Projects layout only — folder/agent clusters aren't user-assignable.
@@ -89,7 +109,9 @@ function OverviewCanvasInner({
   // Non-archived project entities (#447) → empty ones still render as drag-target clusters in
   // Projects mode. Fetched here (sessions alone can't surface a 0-session project) and refreshed
   // after create/reassign so a just-made project appears immediately.
-  const [projects, setProjects] = useState<{ id: string; name: string; color?: string }[]>([]);
+  const [projects, setProjects] = useState<
+    { id: string; name: string; color?: string }[]
+  >([]);
   const fetchProjects = useCallback(() => {
     api
       .projectEntities()
@@ -97,7 +119,11 @@ function OverviewCanvasInner({
         setProjects(
           r.projects
             .filter((p) => !p.archived)
-            .map((p) => ({ id: p.id, name: p.name, color: p.color || undefined })),
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              color: p.color || undefined,
+            })),
         ),
       )
       .catch(() => {});
@@ -112,13 +138,17 @@ function OverviewCanvasInner({
   // with the server-filtered sidebar/facets.
   const dropped = useMemo(() => {
     if (projectsMode !== "included") return excluded;
-    return new Set(sessions.map((s) => s.cwd).filter((cwd) => !includedProjects.has(cwd)));
+    return new Set(
+      sessions.map((s) => s.cwd).filter((cwd) => !includedProjects.has(cwd)),
+    );
   }, [projectsMode, excluded, includedProjects, sessions]);
 
   // Optimistic reassignment overlay (#424 Phase 5): a drop applies `project` locally at once so
   // the chip jumps to its new cluster, then the server write is awaited. Authoritative session
   // data (a refetch landing) clears the overlay; a failed write rolls its entry back.
-  const [overrides, setOverrides] = useState<Map<string, ProjectRef>>(new Map());
+  const [overrides, setOverrides] = useState<Map<string, ProjectRef>>(
+    new Map(),
+  );
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOverrides(new Map());
@@ -139,7 +169,9 @@ function OverviewCanvasInner({
   const { pathname } = useLocation();
   const activeId = useMemo(() => {
     const m = /^\/s\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
-    return m ? `${decodeURIComponent(m[1])}:${decodeURIComponent(m[2])}` : undefined;
+    return m
+      ? `${decodeURIComponent(m[1])}:${decodeURIComponent(m[2])}`
+      : undefined;
   }, [pathname]);
 
   const { nodes, edges } = useMemo(
@@ -154,7 +186,17 @@ function OverviewCanvasInner({
         draggableSessions: draggable,
         projects,
       }),
-    [effectiveSessions, groupBy, includeArchived, expanded, dropped, activeId, projectNames, draggable, projects],
+    [
+      effectiveSessions,
+      groupBy,
+      includeArchived,
+      expanded,
+      dropped,
+      activeId,
+      projectNames,
+      draggable,
+      projects,
+    ],
   );
 
   // React Flow needs to own node positions to drag them, so mirror the derived graph into RF
@@ -198,7 +240,11 @@ function OverviewCanvasInner({
           next.delete(sid);
           return next;
         });
-        setDragErr(ex instanceof ApiError && ex.message ? ex.message : "Couldn’t move the session.");
+        setDragErr(
+          ex instanceof ApiError && ex.message
+            ? ex.message
+            : "Couldn’t move the session.",
+        );
       }
     },
     [onRefetch, fetchProjects],
@@ -211,15 +257,24 @@ function OverviewCanvasInner({
       if (draggable && node.type === "session") {
         const target = rf
           .getIntersectingNodes(node)
-          .find((n) => n.type === "projectGroup" && (n.data as ProjectGroupData).kind === "project");
+          .find(
+            (n) =>
+              n.type === "projectGroup" &&
+              (n.data as ProjectGroupData).kind === "project",
+          );
         if (target) {
-          const pid = (target.data as ProjectGroupData).groupKey.replace(/^project:/, "");
+          const pid = (target.data as ProjectGroupData).groupKey.replace(
+            /^project:/,
+            "",
+          );
           const session = (node.data as SessionNodeData).session;
           const cur = session.project;
           // Dropping onto Default = clear assignment; a folder-fallback session is already in
           // Default, so that's a no-op. Onto a user project = assign, unless already there.
           const alreadyThere =
-            pid === DEFAULT_PROJECT_ID ? cur.kind === "folder" : cur.kind === "project" && cur.id === pid;
+            pid === DEFAULT_PROJECT_ID
+              ? cur.kind === "folder"
+              : cur.kind === "project" && cur.id === pid;
           if (!alreadyThere) {
             void reassign(node.id, session.cwd, target);
             return; // the optimistic overlay re-lays the chip into its new cluster
@@ -240,7 +295,9 @@ function OverviewCanvasInner({
     (_e: MouseEvent, node: Node) => {
       if (node.type === "session") {
         const s = (node.data as SessionNodeData).session;
-        navigate(`/s/${encodeURIComponent(s.engine)}/${encodeURIComponent(s.uuid)}`);
+        navigate(
+          `/s/${encodeURIComponent(s.engine)}/${encodeURIComponent(s.uuid)}`,
+        );
       } else if (node.type === "projectGroup") {
         toggle((node.data as ProjectGroupData).groupKey);
       }
@@ -249,7 +306,10 @@ function OverviewCanvasInner({
   );
 
   // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions.
-  const actions = useMemo(() => ({ refetchSessions: onRefetch ?? (() => {}) }), [onRefetch]);
+  const actions = useMemo(
+    () => ({ refetchSessions: onRefetch ?? (() => {}) }),
+    [onRefetch],
+  );
 
   // "+ New project" (#361 Phase 4): a standalone entity (no folders) from an inline name
   // input in the toolbar. A 409 (duplicate name) carries the server's detail string.
@@ -270,22 +330,37 @@ function OverviewCanvasInner({
       onRefetch?.();
       fetchProjects(); // the new (empty) project should appear as a cluster at once (#447)
     } catch (ex) {
-      setCreateErr(ex instanceof ApiError && ex.message ? ex.message : "Couldn’t create the project.");
+      setCreateErr(
+        ex instanceof ApiError && ex.message
+          ? ex.message
+          : "Couldn’t create the project.",
+      );
     } finally {
       setCreateBusy(false);
     }
   };
 
   if (!nodes.length) {
-    return <div className="tr-overview tr-ov-state">No sessions to map yet.</div>;
+    return (
+      <div className="tr-overview tr-ov-state">No sessions to map yet.</div>
+    );
   }
 
   return (
     <OverviewActionsCtx.Provider value={actions}>
-      <div className={`tr-overview${dragging ? " tr-overview--dragging" : ""}`} style={{ position: "relative" }}>
-        {partial && <div className="tr-ov-partial">Showing the most recent sessions</div>}
+      <div
+        className={`tr-overview${dragging ? " tr-overview--dragging" : ""}`}
+        style={{ position: "relative" }}
+      >
+        {partial && (
+          <div className="tr-ov-partial">Showing the most recent sessions</div>
+        )}
         <div className="tr-ov-toolbar">
-          <div className="tr-ov-groupby" role="radiogroup" aria-label="Group sessions by">
+          <div
+            className="tr-ov-groupby"
+            role="radiogroup"
+            aria-label="Group sessions by"
+          >
             {GROUP_MODES.map(({ key, label, Icon }) => (
               <button
                 key={key}
@@ -327,18 +402,32 @@ function OverviewCanvasInner({
               </button>
             </form>
           ) : (
-            <button type="button" onClick={() => setNaming(true)} title="Create a project entity">
+            <button
+              type="button"
+              onClick={() => setNaming(true)}
+              title="Create a project entity"
+            >
               <Plus size={14} /> New project
             </button>
           )}
-          <button type="button" onClick={() => expandAll(allKeys)} title="Expand all projects">
+          <button
+            type="button"
+            onClick={() => expandAll(allKeys)}
+            title="Expand all projects"
+          >
             <ChevronsUpDown size={14} /> Expand all
           </button>
-          <button type="button" onClick={collapseAll} title="Collapse all projects">
+          <button
+            type="button"
+            onClick={collapseAll}
+            title="Collapse all projects"
+          >
             <ChevronsDownUp size={14} /> Collapse all
           </button>
         </div>
-        {(createErr || dragErr) && <div className="tr-ov-toolbar-err">{createErr || dragErr}</div>}
+        {(createErr || dragErr) && (
+          <div className="tr-ov-toolbar-err">{createErr || dragErr}</div>
+        )}
         {draggable && (
           <div className="tr-ov-hint" aria-hidden="true">
             Drag a session onto a project to move it
@@ -361,10 +450,23 @@ function OverviewCanvasInner({
           elementsSelectable={false}
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--border)" />
-          <Controls showInteractive={false} position={compact ? "bottom-right" : "bottom-left"} />
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={22}
+            size={1}
+            color="var(--border)"
+          />
+          <Controls
+            showInteractive={false}
+            position={compact ? "bottom-right" : "bottom-left"}
+          />
           {!compact && (
-            <MiniMap pannable zoomable nodeColor={miniMapColor} maskColor="rgba(0,0,0,0.45)" />
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={miniMapColor}
+              maskColor="rgba(0,0,0,0.45)"
+            />
           )}
         </ReactFlow>
       </div>

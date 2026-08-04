@@ -11,7 +11,13 @@ afterEach(() => {
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
     "matchMedia",
-    vi.fn().mockReturnValue({ matches: reduce, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    vi
+      .fn()
+      .mockReturnValue({
+        matches: reduce,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
   );
 }
 
@@ -29,7 +35,9 @@ function fakeCanvas(): HTMLCanvasElement {
     stroke: vi.fn(),
     createLinearGradient: vi.fn().mockReturnValue({ addColorStop: vi.fn() }),
   };
-  canvas.getContext = vi.fn().mockReturnValue(ctx) as unknown as HTMLCanvasElement["getContext"];
+  canvas.getContext = vi
+    .fn()
+    .mockReturnValue(ctx) as unknown as HTMLCanvasElement["getContext"];
   return canvas;
 }
 
@@ -76,7 +84,10 @@ test("runButtonGlitch teardown stops the pending glitch", () => {
   document.body.innerHTML = `<button class="shine">Connect</button>`;
   const btn = document.querySelector<HTMLElement>(".shine")!;
   // jsdom has no layout: offsetParent is null, which the "visible only" filter rejects.
-  Object.defineProperty(btn, "offsetParent", { get: () => document.body, configurable: true });
+  Object.defineProperty(btn, "offsetParent", {
+    get: () => document.body,
+    configurable: true,
+  });
 
   try {
     runButtonGlitch()();

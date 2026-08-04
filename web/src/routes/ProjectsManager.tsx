@@ -19,7 +19,14 @@ import styles from "./ProjectsManager.module.css";
 
 /** Preset entity colors (#361): a deliberately small set — the color is a glanceable
  *  sidebar marker, not a theming surface. "Clear" maps to the store's `color: ""`. */
-const COLOR_PRESETS = ["#ffb000", "#5fd7ff", "#7ee787", "#c792ea", "#ff7a7a", "#e8e8e8"];
+const COLOR_PRESETS = [
+  "#ffb000",
+  "#5fd7ff",
+  "#7ee787",
+  "#c792ea",
+  "#ff7a7a",
+  "#e8e8e8",
+];
 
 /** "1 archived · 2 already archived · 1 failed" from the bulk report's counts —
  *  the keys mirror the direction, so the same formatter serves both endpoints. */
@@ -47,7 +54,15 @@ interface RowProps {
   onDelete: (entity: ProjectEntity) => Promise<void>;
 }
 
-function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, onDelete }: RowProps) {
+function EntityRow({
+  entity,
+  adoptable,
+  starred,
+  onStar,
+  onChanged,
+  onArchive,
+  onDelete,
+}: RowProps) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(entity.name);
   const [showColors, setShowColors] = useState(false);
@@ -88,14 +103,17 @@ function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, o
 
   const addFolder = async () => {
     if (!folderSel) return;
-    if (await patch({ folders: [...entity.folders, folderSel] })) setFolderSel("");
+    if (await patch({ folders: [...entity.folders, folderSel] }))
+      setFolderSel("");
   };
 
   return (
     <li className={styles.row}>
       <div className={styles.rowHead}>
         <span
-          className={entity.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`}
+          className={
+            entity.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`
+          }
           style={entity.color ? { background: entity.color } : undefined}
           aria-hidden="true"
         />
@@ -156,7 +174,9 @@ function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, o
               checkbox) because it's a one-of-many toggle rendered as an icon button. */}
           <button
             type="button"
-            className={starred ? `${styles.iconBtn} ${styles.starOn}` : styles.iconBtn}
+            className={
+              starred ? `${styles.iconBtn} ${styles.starOn}` : styles.iconBtn
+            }
             aria-label={
               starred
                 ? `${entity.name} is the default project — clear it`
@@ -216,7 +236,11 @@ function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, o
       </div>
 
       {showColors && (
-        <div className={styles.swatches} role="group" aria-label={`Color for ${entity.name}`}>
+        <div
+          className={styles.swatches}
+          role="group"
+          aria-label={`Color for ${entity.name}`}
+        >
           {COLOR_PRESETS.map((c) => (
             <button
               key={c}
@@ -225,14 +249,20 @@ function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, o
               style={{ background: c }}
               aria-label={`Color ${c}`}
               disabled={busy}
-              onClick={() => void patch({ color: c }).then((ok) => ok && setShowColors(false))}
+              onClick={() =>
+                void patch({ color: c }).then(
+                  (ok) => ok && setShowColors(false),
+                )
+              }
             />
           ))}
           <button
             type="button"
             className={styles.smallBtn}
             disabled={busy}
-            onClick={() => void patch({ color: "" }).then((ok) => ok && setShowColors(false))}
+            onClick={() =>
+              void patch({ color: "" }).then((ok) => ok && setShowColors(false))
+            }
           >
             Clear
           </button>
@@ -243,7 +273,10 @@ function EntityRow({ entity, adoptable, starred, onStar, onChanged, onArchive, o
       <div className={styles.defaultRow}>
         {entity.default_folder ? (
           <span className={styles.defaultLabel}>
-            default folder: <code title={entity.default_folder}>{shortCwd(entity.default_folder)}</code>
+            default folder:{" "}
+            <code title={entity.default_folder}>
+              {shortCwd(entity.default_folder)}
+            </code>
           </span>
         ) : (
           <span className={settings.err}>⚠ no default folder — set one</span>
@@ -402,7 +435,9 @@ export function ProjectsManagerCard() {
   const runBulk = async (id: string, archiveMembers: boolean) => {
     setError(null);
     try {
-      const r = archiveMembers ? await api.archiveProject(id) : await api.unarchiveProject(id);
+      const r = archiveMembers
+        ? await api.archiveProject(id)
+        : await api.unarchiveProject(id);
       setReport(r);
       await refresh();
     } catch (e) {
@@ -450,13 +485,14 @@ export function ProjectsManagerCard() {
     <section className={settings.section} aria-labelledby="projects-manager-h">
       <h2 id="projects-manager-h">Projects</h2>
       <p className={settings.hint}>
-        Group sessions across folders: a project adopts launch folders and can be assigned
-        per session. Projects are metadata — assigning or archiving never moves session
-        files.
+        Group sessions across folders: a project adopts launch folders and can
+        be assigned per session. Projects are metadata — assigning or archiving
+        never moves session files.
       </p>
       <p className={settings.hint}>
-        Star a project to pre-select it for a new session; its default folder becomes the start
-        directory. With none starred, the first project is used.
+        Star a project to pre-select it for a new session; its default folder
+        becomes the start directory. With none starred, the first project is
+        used.
       </p>
 
       {error && <p className={settings.err}>{error}</p>}
@@ -485,7 +521,8 @@ export function ProjectsManagerCard() {
       {report && (
         <div className={styles.report} role="status">
           <p className={styles.reportLine}>
-            {report.archived ? "Archive" : "Unarchive"}: {formatCounts(report.counts)}
+            {report.archived ? "Archive" : "Unarchive"}:{" "}
+            {formatCounts(report.counts)}
           </p>
           {failed.length > 0 && (
             <>
@@ -507,7 +544,11 @@ export function ProjectsManagerCard() {
               </button>
             </>
           )}
-          <button type="button" className={styles.smallBtn} onClick={() => setReport(null)}>
+          <button
+            type="button"
+            className={styles.smallBtn}
+            onClick={() => setReport(null)}
+          >
             Dismiss
           </button>
         </div>

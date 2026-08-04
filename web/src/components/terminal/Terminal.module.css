@@ -200,7 +200,11 @@
  * semantic status hue there; dark keeps its exact current look (#473). */
 :global([data-theme="light"]) .rejected {
   color: var(--status-down);
-  border-color: color-mix(in srgb, var(--status-down) 45%, var(--border-subtle));
+  border-color: color-mix(
+    in srgb,
+    var(--status-down) 45%,
+    var(--border-subtle)
+  );
 }
 /* Floating scroll-to-bottom button (#187, shown on every pointer type). Sits above any
  * safe-area inset in the bottom-right of the terminal area; frosted glass via backdrop-filter
@@ -243,7 +247,9 @@
 }
 /* Solid-background fallback for browsers without backdrop-filter support
  * (older Android WebViews). Loses the see-through effect but stays legible. */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
   .scrollFab {
     background: var(--bg);
   }
@@ -320,7 +326,9 @@
 }
 /* The session-brief trigger (#481) reuses .restartBtn now — a "Recap" text button matching the
  * REPAINT / RESTART chips beside it in the panel header (#497-followup). */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+@supports not (
+  (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+) {
   .secondaryBanner {
     background: var(--bg);
   }

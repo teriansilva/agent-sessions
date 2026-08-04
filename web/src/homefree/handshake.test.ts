@@ -12,7 +12,8 @@ import vectors from "./handshake.vectors.json";
 
 function hex(s: string): Uint8Array {
   const out = new Uint8Array(s.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
@@ -27,7 +28,10 @@ describe("Home Free handshake — browser mirror vs Python vectors", () => {
   });
 
   it("initiator produces the pinned e_i (msg1)", () => {
-    const ini = new Initiator(hex(vectors.psk_hex), hex(vectors.initiator_ephemeral_priv_hex));
+    const ini = new Initiator(
+      hex(vectors.psk_hex),
+      hex(vectors.initiator_ephemeral_priv_hex),
+    );
     expect(toHex(ini.start())).toBe(vectors.e_i_hex);
   });
 
@@ -82,7 +86,9 @@ describe("Home Free handshake — browser mirror vs Python vectors", () => {
 
   it("rejects a wrong PSK at the responder confirmation", async () => {
     const res = new Responder(await derivePsk("wrong"));
-    const msg2 = await res.respond(new Initiator(await derivePsk("right")).start());
+    const msg2 = await res.respond(
+      new Initiator(await derivePsk("right")).start(),
+    );
     const ini = new Initiator(await derivePsk("right"));
     await expect(ini.finish(msg2)).rejects.toThrow();
   });

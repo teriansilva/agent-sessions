@@ -56,11 +56,13 @@ export function OrchestratorSettings() {
   const [intervalDraft, setIntervalDraft] = useState(
     String(block.interval_minutes),
   );
+  const [confDraft, setConfDraft] = useState(block.confidence_min);
   const [nudgeDraft, setNudgeDraft] = useState(block.nudge_template);
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
     setSeeded(block);
     setIntervalDraft(String(block.interval_minutes));
+    setConfDraft(block.confidence_min);
     setNudgeDraft(block.nudge_template);
   }
 
@@ -70,24 +72,45 @@ export function OrchestratorSettings() {
     undefined,
   );
 
+  // Monotonic generation per save. Responses do not arrive in send order, so applying whichever
+  // lands LAST is not applying the last WRITE — measured live at 43 saves in one second from a
+  // single slider drag, leaving the panel showing 0.70 while the server held 0.85 (#776). The
+  // same rule `Pulse.tsx` uses for overview writes.
+  const saveGen = useRef(0);
+
   const save = async (partial: Record<string, unknown>) => {
     setError(null);
+    const gen = ++saveGen.current;
     try {
       const r = (await api.setPrefs({ orchestrator: partial })) as {
         orchestrator?: OrchestratorConfig;
       };
+      // A newer save is already in flight — its answer is the truth, not this one's.
+      if (gen < saveGen.current) return;
       if (r.orchestrator) setBlock(r.orchestrator);
       refreshConfig();
       clearTimeout(savedTimer.current);
       setSaved(true);
       savedTimer.current = setTimeout(() => setSaved(false), 1500);
     } catch (e) {
+      // The fence applies to FAILURES too. Guarding only the success path left a stale
+      // rejection able to paint "Couldn't save" over a newer save that had already succeeded —
+      // the same false error this whole change exists to remove (#776 review). An older
+      // response, of either kind, is not news about the current state.
+      if (gen < saveGen.current) return;
       setError(
         e instanceof ApiError && e.status === 422
           ? e.message
           : "Couldn’t save — please try again.",
       );
     }
+  };
+
+  const commitConf = () => {
+    // Nothing to write when the drag ended where it started — a click on the track that lands
+    // on the current value should not cost a round trip.
+    if (confDraft === block.confidence_min) return;
+    void save({ confidence_min: confDraft });
   };
 
   const commitInterval = () => {
@@ -177,18 +200,23 @@ export function OrchestratorSettings() {
           Act above confidence
         </label>
         <div className={styles.aiIntervalRow}>
+          {/* Drag updates LOCAL state only; the save happens once, on release. `onChange` fires
+              continuously while dragging, so saving there issued a full locked read-modify-write
+              of prefs.json per pixel — 43 in one second, measured — which serialized into the
+              "stuck and slow" and painted a false "Couldn't save" (#776). */}
           <input
             id="orch-conf"
             type="range"
             min={0.5}
             max={0.95}
             step={0.05}
-            value={block.confidence_min}
-            onChange={(e) =>
-              void save({ confidence_min: Number(e.target.value) })
-            }
+            value={confDraft}
+            onChange={(e) => setConfDraft(Number(e.target.value))}
+            onPointerUp={commitConf}
+            onKeyUp={commitConf}
+            onBlur={commitConf}
           />
-          <span>{block.confidence_min.toFixed(2)}</span>
+          <span>{confDraft.toFixed(2)}</span>
         </div>
         <p className={styles.hint}>
           Below this, Pulse asks you instead of acting. Unsure means ask — never

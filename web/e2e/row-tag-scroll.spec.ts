@@ -84,11 +84,15 @@ async function setup(page: Page, project: string): Promise<void> {
     }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   // Echo the posted tag back (trimmed like the server), driving the optimistic row update.
   await page.route("**/api/sessions/*/tag", async (r) => {
     const body = (r.request().postDataJSON() ?? {}) as { tag?: string };
-    await r.fulfill({ json: { id: "claude:plain", tag: (body.tag ?? "").trim() } });
+    await r.fulfill({
+      json: { id: "claude:plain", tag: (body.tag ?? "").trim() },
+    });
   });
 
   await page.goto("/");
@@ -97,20 +101,30 @@ async function setup(page: Page, project: string): Promise<void> {
 }
 
 test.describe("custom row tag (#551)", () => {
-  test("renders the tag before the AI summary on the row", async ({ page }, testInfo) => {
+  test("renders the tag before the AI summary on the row", async ({
+    page,
+  }, testInfo) => {
     await setup(page, testInfo.project.name);
     const row = page.getByRole("listitem").filter({ hasText: "Auth refactor" });
     // The tag leads the summary line, joined by " · " — proving it renders BEFORE the summary.
-    await expect(row).toContainText("🔥 hotpath · Wiring the pbkdf2 check into the login path");
+    await expect(row).toContainText(
+      "🔥 hotpath · Wiring the pbkdf2 check into the login path",
+    );
     // An untagged row shows only its summary (unchanged behaviour).
-    const plain = page.getByRole("listitem").filter({ hasText: "Landing copy" });
+    const plain = page
+      .getByRole("listitem")
+      .filter({ hasText: "Landing copy" });
     await expect(plain).toContainText("Polishing the hero subhead wording");
     await expect(plain).not.toContainText("🔥");
   });
 
-  test("Set tag… from the ⋯ menu adds the tag to the row", async ({ page }, testInfo) => {
+  test("Set tag… from the ⋯ menu adds the tag to the row", async ({
+    page,
+  }, testInfo) => {
     await setup(page, testInfo.project.name);
-    const plain = page.getByRole("listitem").filter({ hasText: "Landing copy" });
+    const plain = page
+      .getByRole("listitem")
+      .filter({ hasText: "Landing copy" });
     await expect(plain).not.toContainText("review ·");
 
     await plain.hover();
@@ -124,9 +138,9 @@ test.describe("custom row tag (#551)", () => {
     await input.press("Enter");
 
     // The row (re-located after the edit form closes) now leads its summary with the tag.
-    await expect(page.getByRole("listitem").filter({ hasText: "Landing copy" })).toContainText(
-      "review · Polishing the hero subhead wording",
-    );
+    await expect(
+      page.getByRole("listitem").filter({ hasText: "Landing copy" }),
+    ).toContainText("review · Polishing the hero subhead wording");
   });
 });
 
@@ -141,17 +155,25 @@ test.describe("selected-row auto-scroll (#551)", () => {
     await setup(page, testInfo.project.name);
 
     // Not selected yet → the long title truncates statically (no animation).
-    const idleTitle = page.getByRole("listitem").filter({ hasText: LONG_TITLE }).getByText(LONG_TITLE);
+    const idleTitle = page
+      .getByRole("listitem")
+      .filter({ hasText: LONG_TITLE })
+      .getByText(LONG_TITLE);
     await expect(idleTitle).toHaveCSS("animation-name", "none");
 
     // Select the row → its overflowing title now runs the ping-pong marquee animation.
     await page.goto("/s/claude/longrow");
     await expect(page.locator("aside.sidebar")).toBeVisible();
-    const activeTitle = page.getByRole("listitem").filter({ hasText: LONG_TITLE }).getByText(LONG_TITLE);
+    const activeTitle = page
+      .getByRole("listitem")
+      .filter({ hasText: LONG_TITLE })
+      .getByText(LONG_TITLE);
     await expect(activeTitle).toHaveCSS("animation-name", /marq/);
   });
 
-  test("reduced-motion keeps the selected row static (no marquee)", async ({ browser }) => {
+  test("reduced-motion keeps the selected row static (no marquee)", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({ reducedMotion: "reduce" });
     const page = await context.newPage();
     await setup(page, "desktop");

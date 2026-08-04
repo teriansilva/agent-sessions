@@ -31,7 +31,8 @@ const ROW = {
   sticky: false,
   archived: false,
   working: false,
-  ai_summary: "Refactoring the token-refresh path to remove a double-refresh race.",
+  ai_summary:
+    "Refactoring the token-refresh path to remove a double-refresh race.",
   ai_recap: RECAP,
   reviewed_at: 1_700_000_000,
   review_excluded: false,
@@ -39,10 +40,38 @@ const ROW = {
 };
 
 const ENGINES = [
-  { id: "claude", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/claude" },
-  { id: "codex", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/codex" },
-  { id: "gemini", present: true, supports_new: true, supports_seed_start: false, seed_reason: "no seed-capable start yet", bin: "/bin/gemini" },
-  { id: "shell", present: true, supports_new: true, supports_seed_start: false, seed_reason: "not an agent engine", bin: "/bin/bash" },
+  {
+    id: "claude",
+    present: true,
+    supports_new: true,
+    supports_seed_start: true,
+    seed_reason: null,
+    bin: "/bin/claude",
+  },
+  {
+    id: "codex",
+    present: true,
+    supports_new: true,
+    supports_seed_start: true,
+    seed_reason: null,
+    bin: "/bin/codex",
+  },
+  {
+    id: "gemini",
+    present: true,
+    supports_new: true,
+    supports_seed_start: false,
+    seed_reason: "no seed-capable start yet",
+    bin: "/bin/gemini",
+  },
+  {
+    id: "shell",
+    present: true,
+    supports_new: true,
+    supports_seed_start: false,
+    seed_reason: "not an agent engine",
+    bin: "/bin/bash",
+  },
 ];
 
 async function setup(page: Page, project: string): Promise<void> {
@@ -69,8 +98,12 @@ async function setup(page: Page, project: string): Promise<void> {
     }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: ENGINES } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: ENGINES } }),
+  );
   await page.route("**/api/handoff/prepare", (r) =>
     r.fulfill({
       json: {
@@ -100,7 +133,9 @@ async function openRowMenu(page: Page) {
 }
 
 test.describe("row ⋯ menu: session brief + hand off (#597 follow-up)", () => {
-  test("Session brief opens the recap modal for the row", async ({ page }, testInfo) => {
+  test("Session brief opens the recap modal for the row", async ({
+    page,
+  }, testInfo) => {
     await setup(page, testInfo.project.name);
     const menu = await openRowMenu(page);
     await menu.getByRole("menuitem", { name: "Open session brief" }).click();
@@ -115,7 +150,9 @@ test.describe("row ⋯ menu: session brief + hand off (#597 follow-up)", () => {
   }, testInfo) => {
     await setup(page, testInfo.project.name);
     const menu = await openRowMenu(page);
-    await menu.getByRole("menuitem", { name: "Hand off session to another engine" }).click();
+    await menu
+      .getByRole("menuitem", { name: "Hand off session to another engine" })
+      .click();
 
     const dialog = page.getByRole("dialog", { name: /hand off/i });
     await expect(dialog).toBeVisible();

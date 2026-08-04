@@ -118,15 +118,18 @@ test("an id control frame fires onId with the real engine-qualified id (#127)", 
 });
 
 describe("close codes", () => {
-  test.each([4401, 4403, 4404, 4500])("deliberate reject %i → no reconnect", (code) => {
-    vi.useFakeTimers();
-    const { ts, statuses } = makeSocket();
-    ts.connect();
-    FakeWS.instances[0].drop(code);
-    vi.advanceTimersByTime(60_000);
-    expect(FakeWS.instances).toHaveLength(1); // never reconnected
-    expect(statuses.at(-1)).toMatchObject({ kind: "rejected" });
-  });
+  test.each([4401, 4403, 4404, 4500])(
+    "deliberate reject %i → no reconnect",
+    (code) => {
+      vi.useFakeTimers();
+      const { ts, statuses } = makeSocket();
+      ts.connect();
+      FakeWS.instances[0].drop(code);
+      vi.advanceTimersByTime(60_000);
+      expect(FakeWS.instances).toHaveLength(1); // never reconnected
+      expect(statuses.at(-1)).toMatchObject({ kind: "rejected" });
+    },
+  );
 
   test("4409 (busy) reconnects — retries until the master is attachable", () => {
     vi.useFakeTimers();
@@ -247,7 +250,11 @@ test("a role control frame fires onRole with role + holder, null holder when abs
   const roles: Array<[unknown, unknown]> = [];
   const ts = new TermSocket(
     () => "/ws/term/claude:abc?have=0",
-    { onOutput: () => {}, onStatus: () => {}, onRole: (r, h) => roles.push([r, h ?? null]) },
+    {
+      onOutput: () => {},
+      onStatus: () => {},
+      onRole: (r, h) => roles.push([r, h ?? null]),
+    },
     (u) => new FakeWS(u) as unknown as WebSocket,
   );
   created.push(ts);
@@ -256,7 +263,11 @@ test("a role control frame fires onRole with role + holder, null holder when abs
   ws.open();
   // Flag-on take-over: a read-only secondary carries the active viewer for the banner.
   ws.message(
-    JSON.stringify({ t: "role", role: "secondary", holder: { label: "Mac · Chrome", since: 1700 } }),
+    JSON.stringify({
+      t: "role",
+      role: "secondary",
+      holder: { label: "Mac · Chrome", since: 1700 },
+    }),
   );
   ws.message(JSON.stringify({ t: "role", role: "owner" })); // #184 path → no holder → null
   expect(roles).toEqual([

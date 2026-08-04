@@ -42,7 +42,9 @@ window.WebSocket = class {
 
 async function waitForPaint(page: import("@playwright/test").Page) {
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("row 0");
 }
 
@@ -60,10 +62,16 @@ test("mouse-tracking claude: the ↓ FAB is available on a FRESH attach, before 
 
   // Tapping it forwards a DOWNWARD wheel burst (button 65) to walk the mouse-tracking agent to its
   // tail — not a no-op xterm scrollToBottom.
-  await page.evaluate(() => ((window as unknown as { __sentInput: string[] }).__sentInput = []));
+  await page.evaluate(
+    () => ((window as unknown as { __sentInput: string[] }).__sentInput = []),
+  );
   await fab.click();
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __sentInput: string[] }).__sentInput.join("")))
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __sentInput: string[] }).__sentInput.join(""),
+      ),
+    )
     .toMatch(WHEEL_DOWN);
   // …and once jumped, the FAB clears (the app-tail-unknown state is resolved).
   await expect(fab).toHaveCount(0);
@@ -78,5 +86,7 @@ test("a non-mouse-tracking session does NOT get the fresh-attach FAB (only real 
   await page.goto("/s/codex/open-tail-nomouse");
   await waitForPaint(page);
   await page.waitForTimeout(1000); // past the attach-settle window
-  await expect(page.getByRole("button", { name: /scroll to bottom/i })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /scroll to bottom/i }),
+  ).toHaveCount(0);
 });

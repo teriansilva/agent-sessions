@@ -22,15 +22,29 @@ async function setup(page: Page): Promise<unknown[]> {
   );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "1.2.3" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
-  await page.route("**/api/system", (r) => r.fulfill({ json: { os: "Linux" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "1.2.3" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
+  await page.route("**/api/system", (r) =>
+    r.fulfill({ json: { os: "Linux" } }),
+  );
   await page.route("**/api/update/settings", (r) => {
     if (r.request().method() === "POST") {
-      const body = r.request().postDataJSON() as { auto_update?: boolean; channel?: string };
+      const body = r.request().postDataJSON() as {
+        auto_update?: boolean;
+        channel?: string;
+      };
       posts.push(body);
       return r.fulfill({
         json: {
@@ -40,14 +54,18 @@ async function setup(page: Page): Promise<unknown[]> {
         },
       });
     }
-    return r.fulfill({ json: { auto_update: false, channel: "stable", last_auto: null } });
+    return r.fulfill({
+      json: { auto_update: false, channel: "stable", last_auto: null },
+    });
   });
   await page.goto("/settings/system");
   return posts;
 }
 
 test.describe("in-app auto-update settings (#538)", () => {
-  test("toggle + channel persist via /api/update/settings", async ({ page }) => {
+  test("toggle + channel persist via /api/update/settings", async ({
+    page,
+  }) => {
     const posts = await setup(page);
 
     const toggle = page.getByRole("checkbox", { name: /automatic updates/i });
@@ -57,7 +75,9 @@ test.describe("in-app auto-update settings (#538)", () => {
     await toggle.click();
     await expect(toggle).toBeChecked();
     // With auto-update on and no pass yet this run, the recent-runtime status line shows.
-    await expect(page.getByText(/no automatic check yet since the last restart/i)).toBeVisible();
+    await expect(
+      page.getByText(/no automatic check yet since the last restart/i),
+    ).toBeVisible();
 
     const main = page.getByRole("radio", { name: /main/i });
     const stable = page.getByRole("radio", { name: /stable/i });
@@ -69,15 +89,21 @@ test.describe("in-app auto-update settings (#538)", () => {
     expect(posts).toEqual([{ auto_update: true }, { channel: "main" }]);
   });
 
-  test("System tab has no horizontal scroll with the grown Updates card", async (
-    { page },
-    testInfo,
-  ) => {
-    test.skip(testInfo.project.name !== "mobile", "the single-column reflow is a mobile concern");
+  test("System tab has no horizontal scroll with the grown Updates card", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "the single-column reflow is a mobile concern",
+    );
     await setup(page);
-    await expect(page.getByRole("checkbox", { name: /automatic updates/i })).toBeVisible();
+    await expect(
+      page.getByRole("checkbox", { name: /automatic updates/i }),
+    ).toBeVisible();
     const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      () =>
+        document.documentElement.scrollWidth -
+        document.documentElement.clientWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });

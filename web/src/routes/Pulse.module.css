@@ -582,3 +582,27 @@
     min-height: 44px;
   }
 }
+
+/* What the orchestrator last did on this session (#777) — a history line, not a call to
+ * action, so it is quiet: mono, muted, no status colour of its own. */
+.lastAction {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.lastVerb {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  color: var(--text-2);
+}
+.lastRepeats {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+}

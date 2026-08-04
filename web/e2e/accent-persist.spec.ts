@@ -18,12 +18,25 @@ test.beforeEach(async ({ page }) => {
     }),
   );
   await page.route("**/api/sessions**", (r) =>
-    r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
+    r.fulfill({
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
+    }),
   );
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   // …but this device picked tactical green earlier.
   await page.addInitScript(() => {
     localStorage.setItem("tr-accent", "#3fbf6f");
@@ -35,7 +48,9 @@ test("a device-cached custom accent is applied pre-paint and wins over the serve
 }) => {
   await page.goto("/");
   const accent = () =>
-    page.evaluate(() => document.documentElement.style.getPropertyValue("--accent").trim());
+    page.evaluate(() =>
+      document.documentElement.style.getPropertyValue("--accent").trim(),
+    );
   await expect.poll(accent).toBe("#3fbf6f");
   // Green is light enough that the on-accent ink is the near-black, not white.
   const onAccent = await page.evaluate(() =>
@@ -45,5 +60,7 @@ test("a device-cached custom accent is applied pre-paint and wins over the serve
   // Stable after the reconcile effect runs (no flip to the server's amber).
   await page.waitForTimeout(300);
   await expect.poll(accent).toBe("#3fbf6f");
-  expect(await page.evaluate(() => localStorage.getItem("tr-accent"))).toBe("#3fbf6f");
+  expect(await page.evaluate(() => localStorage.getItem("tr-accent"))).toBe(
+    "#3fbf6f",
+  );
 });

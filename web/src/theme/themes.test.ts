@@ -21,7 +21,11 @@ test("each theme is self-consistent with a usable terminal palette", () => {
     expect(t.id).toBe(id);
     expect(t.label.length).toBeGreaterThan(0);
     expect(t.description.length).toBeGreaterThan(0);
-    for (const c of [t.terminal.background, t.terminal.foreground, t.terminal.cursor]) {
+    for (const c of [
+      t.terminal.background,
+      t.terminal.foreground,
+      t.terminal.cursor,
+    ]) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i);
     }
     expect(t.terminal.fontSize).toBeGreaterThan(0);
@@ -134,6 +138,9 @@ function ratio(a: string, b: string): number {
 test("light ANSI palette holds WCAG AA (>=4.5:1) on the light terminal ground (#473)", () => {
   const t = THEMES.light.terminal;
   for (const k of ANSI_KEYS) {
-    expect(ratio(t.ansi[k], t.background), `light ansi.${k} on ${t.background}`).toBeGreaterThanOrEqual(4.5);
+    expect(
+      ratio(t.ansi[k], t.background),
+      `light ansi.${k} on ${t.background}`,
+    ).toBeGreaterThanOrEqual(4.5);
   }
 });

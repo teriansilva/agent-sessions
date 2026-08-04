@@ -54,7 +54,7 @@ export interface ThemeMeta {
 
 // Same monospace stack the terminal has always used; kept per-theme so a future theme
 // could ship a different face without touching Terminal.tsx.
-const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 // Dark ANSI = xterm.js's built-in default (the Tango palette), spelled out verbatim so the
 // dark terminal renders pixel-identical to before the palette became theme-driven (#473).
@@ -104,7 +104,8 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
   dark: {
     id: "dark",
     label: "Dark",
-    description: "BattleLab tactical-HUD — near-black ground, phosphor-amber accent.",
+    description:
+      "BattleLab tactical-HUD — near-black ground, phosphor-amber accent.",
     terminal: {
       fontFamily: MONO,
       fontSize: 13,

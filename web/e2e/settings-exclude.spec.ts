@@ -28,11 +28,22 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/sessions**", (r) =>
-    r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }),
+    r.fulfill({
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
+    }),
   );
 });
 
@@ -54,6 +65,8 @@ test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #1
   await expect(alpha).toBeChecked();
 
   await alpha.uncheck();
-  await expect.poll(() => prefsBody).toEqual({ projects_hidden: ["/home/u/alpha"] });
+  await expect
+    .poll(() => prefsBody)
+    .toEqual({ projects_hidden: ["/home/u/alpha"] });
   await expect(alpha).not.toBeChecked();
 });

@@ -13,20 +13,53 @@ const UUID = "aaaaaaaa-1111-2222-3333-444444444444";
 const TITLE = "Fix the auth token refresh-rotation race";
 const PREVIEW =
   "# Handoff — continued from a claude session\n\n## Recent turns\n\n[user] run the auth tests again\n[agent] 4 passed — pushed the fix";
-const AI_PREVIEW = "# Handoff — continued from a claude session\n\n## State\n\nAuth refresh race fixed.";
+const AI_PREVIEW =
+  "# Handoff — continued from a claude session\n\n## State\n\nAuth refresh race fixed.";
 const TARGET_NATIVE = "new-bbbbbbbb-1111-2222-3333-444444444444";
 
 const ENGINES = [
-  { id: "claude", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/claude" },
-  { id: "codex", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/codex" },
-  { id: "gemini", present: true, supports_new: true, supports_seed_start: false, seed_reason: "no seed-capable start yet", bin: "/bin/gemini" },
-  { id: "shell", present: true, supports_new: true, supports_seed_start: false, seed_reason: "not an agent engine", bin: "/bin/bash" },
+  {
+    id: "claude",
+    present: true,
+    supports_new: true,
+    supports_seed_start: true,
+    seed_reason: null,
+    bin: "/bin/claude",
+  },
+  {
+    id: "codex",
+    present: true,
+    supports_new: true,
+    supports_seed_start: true,
+    seed_reason: null,
+    bin: "/bin/codex",
+  },
+  {
+    id: "gemini",
+    present: true,
+    supports_new: true,
+    supports_seed_start: false,
+    seed_reason: "no seed-capable start yet",
+    bin: "/bin/gemini",
+  },
+  {
+    id: "shell",
+    present: true,
+    supports_new: true,
+    supports_seed_start: false,
+    seed_reason: "not an agent engine",
+    bin: "/bin/bash",
+  },
 ];
 
 test.beforeEach(async ({ page }) => {
-  await setupBench(page, { sessions: [{ engine: ENGINE, uuid: UUID, title: TITLE }] });
+  await setupBench(page, {
+    sessions: [{ engine: ENGINE, uuid: UUID, title: TITLE }],
+  });
   // Registered after the bench routes → these win for their endpoints.
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: ENGINES } }));
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: ENGINES } }),
+  );
   await page.route("**/api/handoff/prepare", (r) =>
     r.fulfill({
       json: {
@@ -75,11 +108,12 @@ test("hand-off control opens the modal; picker + preview render; confirm lands o
   const preview = dialog.getByLabel(/seed preview/i);
   await expect(preview).toHaveValue(PREVIEW);
   await expect(preview).not.toHaveAttribute("readonly", "");
-  await expect(dialog.getByRole("radio", { name: /ai summary/i })).toBeEnabled();
-  await expect(dialog.getByRole("radio", { name: /quick tail/i })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  );
+  await expect(
+    dialog.getByRole("radio", { name: /ai summary/i }),
+  ).toBeEnabled();
+  await expect(
+    dialog.getByRole("radio", { name: /quick tail/i }),
+  ).toHaveAttribute("aria-checked", "true");
   // The privacy line is accurate about where the seed actually goes (Hermes on #701).
   await expect(dialog).toContainText(/that engine's model provider sees it/i);
 
@@ -122,12 +156,22 @@ test("AI summary mode prepares an AI seed, and an edit is what gets handed off (
           ? {
               handle: "h-ai",
               preview: AI_PREVIEW,
-              meta: { mode: "ai", turns: 9, bytes: AI_PREVIEW.length, cap: 8192 },
+              meta: {
+                mode: "ai",
+                turns: 9,
+                bytes: AI_PREVIEW.length,
+                cap: 8192,
+              },
             }
           : {
               handle: "h-e2e-1",
               preview: PREVIEW,
-              meta: { mode: "quick", turns: 2, bytes: PREVIEW.length, cap: 8192 },
+              meta: {
+                mode: "quick",
+                turns: 2,
+                bytes: PREVIEW.length,
+                cap: 8192,
+              },
             },
     });
   });
@@ -135,7 +179,12 @@ test("AI summary mode prepares an AI seed, and an edit is what gets handed off (
   await page.route(/\/api\/handoff$/, async (route) => {
     committed = route.request().postDataJSON();
     await route.fulfill({
-      json: { id: `codex:${TARGET_NATIVE}`, engine: "codex", native: TARGET_NATIVE, cwd: "/home/u/proj" },
+      json: {
+        id: `codex:${TARGET_NATIVE}`,
+        engine: "codex",
+        native: TARGET_NATIVE,
+        cwd: "/home/u/proj",
+      },
     });
   });
 
@@ -180,7 +229,9 @@ test("a degraded AI handoff tells the user it fell back to the quick tail (#597 
   await page.getByRole("button", { name: /hand off session/i }).click();
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   await dialog.getByRole("radio", { name: /ai summary/i }).click();
-  await expect(dialog).toContainText(/isn't configured — using the local quick tail/i);
+  await expect(dialog).toContainText(
+    /isn't configured — using the local quick tail/i,
+  );
 });
 
 test("the source-reference toggle re-prepares and adds the transcript locator (#716)", async ({
@@ -188,9 +239,12 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
 }) => {
   // The server decides what the seed says; the flag is what it keys on. Vary the preview by
   // `include_source_ref` so the assertion proves the flag actually reached the server.
-  const LOCATOR = "/home/u/.claude/projects/-home-u-proj/aaaaaaaa-1111-2222-3333-444444444444.jsonl";
+  const LOCATOR =
+    "/home/u/.claude/projects/-home-u-proj/aaaaaaaa-1111-2222-3333-444444444444.jsonl";
   await page.route("**/api/handoff/prepare", async (route) => {
-    const body = route.request().postDataJSON() as { include_source_ref?: boolean };
+    const body = route.request().postDataJSON() as {
+      include_source_ref?: boolean;
+    };
     const preview = body.include_source_ref
       ? `${PREVIEW}\n- transcript: ${LOCATOR}`
       : PREVIEW;
@@ -209,18 +263,28 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
   const preview = dialog.getByLabel(/seed preview/i);
 
   // Opt-in: off by default, so no locator and no extra disclosure.
-  const opt = dialog.getByRole("checkbox", { name: /reference the source session/i });
+  const opt = dialog.getByRole("checkbox", {
+    name: /reference the source session/i,
+  });
   await expect(opt).not.toBeChecked();
   await expect(preview).not.toHaveValue(new RegExp(LOCATOR));
-  await expect(dialog.getByText(/a local path that can reveal/i)).toHaveCount(0);
+  await expect(dialog.getByText(/a local path that can reveal/i)).toHaveCount(
+    0,
+  );
 
   // Turning it on re-prepares; the locator lands in the preview and the disclosure appears.
   await opt.check();
-  await expect(preview).toHaveValue(new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")));
+  await expect(preview).toHaveValue(
+    new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")),
+  );
   await expect(dialog.getByText(/a local path that can reveal/i)).toBeVisible();
-  await expect(dialog.getByText(/no transcript contents are included/i)).toBeVisible();
+  await expect(
+    dialog.getByText(/no transcript contents are included/i),
+  ).toBeVisible();
 
   // And back off — the locator goes away again (the flag keys the prepared result).
   await opt.uncheck();
-  await expect(preview).not.toHaveValue(new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")));
+  await expect(preview).not.toHaveValue(
+    new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")),
+  );
 });

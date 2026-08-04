@@ -4,7 +4,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { SessionRecapModal } from "./SessionRecapModal";
 
-function renderModal(overrides: Partial<Parameters<typeof SessionRecapModal>[0]> = {}) {
+function renderModal(
+  overrides: Partial<Parameters<typeof SessionRecapModal>[0]> = {},
+) {
   const onClose = vi.fn();
   const trigger = document.createElement("button");
   trigger.textContent = "Open";
@@ -36,7 +38,9 @@ test("shows the full title, summary, and the chronological recap (#481)", () => 
   expect(
     screen.getByRole("dialog", { name: /fix the auth token refresh race/i }),
   ).toBeInTheDocument();
-  expect(screen.getByText("Refactoring the token-refresh path.")).toBeInTheDocument();
+  expect(
+    screen.getByText("Refactoring the token-refresh path."),
+  ).toBeInTheDocument();
   expect(screen.getByText(/Cloned repo\./)).toBeInTheDocument();
   expect(screen.getByText(/Fixed bug\./)).toBeInTheDocument();
 });
@@ -58,7 +62,9 @@ test("the meta line carries engine, project, updated and reviewed (#744)", () =>
   expect(screen.getByText(/updated 2 hours ago/i)).toBeInTheDocument();
   expect(screen.getByText(/reviewed /i)).toBeInTheDocument();
   // State is never colour-only: the LED keeps an accessible name.
-  expect(screen.getByRole("status", { name: /agent working/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("status", { name: /agent working/i }),
+  ).toBeInTheDocument();
 });
 
 // The status shown here is the SESSION's (sidebar parity), never this browser's socket state.
@@ -76,19 +82,25 @@ test("an intervention session shows the attention dot with its reason as the nam
     interventionRequired: true,
     interventionReason: "waiting on permission",
   });
-  const led = screen.getByRole("img", { name: /intervention required: waiting on permission/i });
+  const led = screen.getByRole("img", {
+    name: /intervention required: waiting on permission/i,
+  });
   expect(led).toHaveClass("attention");
 });
 
 test("an idle dot is hidden from assistive tech rather than announced as nothing (#744)", () => {
-  renderModal({ statusRow: { review_excluded: false, working: false, has_draft: false } });
+  renderModal({
+    statusRow: { review_excluded: false, working: false, has_draft: false },
+  });
   const led = screen.getByRole("dialog").querySelector(".hud-led")!;
   expect(led).toHaveAttribute("aria-hidden", "true");
 });
 
 test("the AI summary is the subtitle — no separate SUMMARY section (#744)", () => {
   renderModal();
-  expect(screen.getByText("Refactoring the token-refresh path.")).toBeInTheDocument();
+  expect(
+    screen.getByText("Refactoring the token-refresh path."),
+  ).toBeInTheDocument();
   expect(screen.queryByText("Summary")).not.toBeInTheDocument();
 });
 
@@ -99,7 +111,13 @@ test("an unreviewed session still shows a subtitle placeholder (#744)", () => {
 });
 
 test("a folder-only project shortens the cwd and skips the colour dot (#744)", () => {
-  renderModal({ project: { kind: "folder", id: "/home/u/proj/api", name: "/home/u/proj/api" } });
+  renderModal({
+    project: {
+      kind: "folder",
+      id: "/home/u/proj/api",
+      name: "/home/u/proj/api",
+    },
+  });
   expect(screen.getByText("~/proj/api")).toBeInTheDocument();
 });
 
@@ -118,11 +136,16 @@ test("the recap renders as an ordered timeline, one step per line (#744)", () =>
 
 test("blank lines in a recap do not become empty timeline steps (#744)", () => {
   renderModal({ recap: "One.\n\n   \nTwo.\n" });
-  expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["One.", "Two."]);
+  expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    "One.",
+    "Two.",
+  ]);
 });
 
 test("a recap step renders the safe inline subset and nothing else (#744)", () => {
-  renderModal({ recap: "**Fixed** the race in `auth.ts` <script>alert(1)</script>" });
+  renderModal({
+    recap: "**Fixed** the race in `auth.ts` <script>alert(1)</script>",
+  });
   const step = screen.getAllByRole("listitem")[0];
   expect(step.querySelector("strong")).toHaveTextContent("Fixed");
   expect(step.querySelector("code")).toHaveTextContent("auth.ts");
@@ -132,7 +155,10 @@ test("a recap step renders the safe inline subset and nothing else (#744)", () =
 });
 
 test("the intervention chip renders only when required (#481)", () => {
-  renderModal({ interventionRequired: true, interventionReason: "waiting on permission" });
+  renderModal({
+    interventionRequired: true,
+    interventionReason: "waiting on permission",
+  });
   expect(screen.getByText(/needs you/i)).toBeInTheDocument();
   expect(screen.getByText(/waiting on permission/i)).toBeInTheDocument();
 });
@@ -141,10 +167,14 @@ test("Esc, the backdrop, and the close button all close it (#481 a11y)", async (
   const { onClose, baseElement } = renderModal();
   await userEvent.keyboard("{Escape}");
   expect(onClose).toHaveBeenCalledTimes(1);
-  const backdrop = baseElement.querySelector('[class*="backdrop"]') as HTMLElement;
+  const backdrop = baseElement.querySelector(
+    '[class*="backdrop"]',
+  ) as HTMLElement;
   await userEvent.click(backdrop);
   expect(onClose).toHaveBeenCalledTimes(2);
-  await userEvent.click(screen.getByRole("button", { name: /close session brief/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /close session brief/i }),
+  );
   expect(onClose).toHaveBeenCalledTimes(3);
 });
 
@@ -178,7 +208,9 @@ test("'Review now' refreshes the recap in place (#481)", async () => {
   expect(screen.getByText(/no recap yet/i)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /review now/i }));
   expect(spy).toHaveBeenCalledWith("claude:abc");
-  await waitFor(() => expect(screen.getByText(/all green now/i)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/all green now/i)).toBeInTheDocument(),
+  );
   expect(screen.getByText(/updated summary/i)).toBeInTheDocument();
 });
 
@@ -205,12 +237,16 @@ test("'Review now' clearing intervention drops the attention dot to the row's ow
     interventionRequired: true,
     interventionReason: "waiting on permission",
   });
-  expect(screen.getByRole("img", { name: /intervention required/i })).toHaveClass("attention");
+  expect(
+    screen.getByRole("img", { name: /intervention required/i }),
+  ).toHaveClass("attention");
 
   await userEvent.click(screen.getByRole("button", { name: /review now/i }));
 
   // The panel's own claim clears…
-  await waitFor(() => expect(screen.queryByText(/waiting on permission/i)).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByText(/waiting on permission/i)).toBeNull(),
+  );
   // …and the dot agrees instead of contradicting it, without waiting for the next store poll.
   const led = screen.getByRole("dialog").querySelector(".hud-led")!;
   expect(led).not.toHaveClass("attention");
@@ -231,13 +267,17 @@ test("'Review now' raising intervention shows it on the dot immediately (#745)",
     recap_fingerprint: "fp3",
   });
   renderModal(); // row: working, no intervention
-  expect(screen.getByRole("status", { name: /agent working/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("status", { name: /agent working/i }),
+  ).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("button", { name: /review now/i }));
 
   await waitFor(() =>
     expect(
-      screen.getByRole("img", { name: /intervention required: needs a decision on the schema/i }),
+      screen.getByRole("img", {
+        name: /intervention required: needs a decision on the schema/i,
+      }),
     ).toHaveClass("attention"),
   );
 });
@@ -247,6 +287,8 @@ test("a review-excluded session shows the excluded state and disables Review now
   // #744: it now reads in two places, answering two questions — the subtitle says what this
   // session IS (sidebar parity), the recap slot says why it is empty.
   expect(screen.getByText("Excluded from AI review")).toBeInTheDocument();
-  expect(screen.getByText("This session is excluded from AI review.")).toBeInTheDocument();
+  expect(
+    screen.getByText("This session is excluded from AI review."),
+  ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /review now/i })).toBeDisabled();
 });

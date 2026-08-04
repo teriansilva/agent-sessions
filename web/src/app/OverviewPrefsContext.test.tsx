@@ -6,8 +6,12 @@ import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { useOverviewPrefs } from "./overviewPrefs";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
-  return { ...actual, api: { ...actual.api, setPrefs: vi.fn().mockResolvedValue({}) } };
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    ...actual,
+    api: { ...actual.api, setPrefs: vi.fn().mockResolvedValue({}) },
+  };
 });
 
 beforeEach(() => {
@@ -56,7 +60,8 @@ test("toggling a cluster updates shared expanded state + persists (#144)", async
 
 // Project-visibility mode (#335). No ConfigProvider here → seeds to the safe default (all mode).
 function VisibilityHarness() {
-  const { projectsMode, isVisible, setProjectsMode, setProjectVisible } = useOverviewPrefs();
+  const { projectsMode, isVisible, setProjectsMode, setProjectVisible } =
+    useOverviewPrefs();
   return (
     <>
       <div data-testid="mode">{projectsMode}</div>
@@ -123,7 +128,9 @@ test("groupBy defaults to project and persists device-locally (#424)", async () 
   expect(screen.getByTestId("groupby").textContent).toBe("agent");
   // localStorage only — NOT a /api/prefs write (it's not cross-device synced).
   expect(localStorage.getItem("tr-overview-groupby")).toBe("agent");
-  expect(api.setPrefs).not.toHaveBeenCalledWith(expect.objectContaining({ groupBy: "agent" }));
+  expect(api.setPrefs).not.toHaveBeenCalledWith(
+    expect.objectContaining({ groupBy: "agent" }),
+  );
 });
 
 test("groupBy seeds from a stored device-local value (#424)", () => {

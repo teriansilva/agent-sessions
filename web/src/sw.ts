@@ -83,7 +83,10 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
   const target = (event.notification.data?.url as string) || "/pulse";
   event.waitUntil(
     (async () => {
-      const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const all = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
       // Prefer focusing an existing tab and navigating it — opening a second BattleLab window
       // every time a notification is tapped is its own small hell.
       for (const client of all) {

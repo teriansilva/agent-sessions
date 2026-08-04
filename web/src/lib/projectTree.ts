@@ -10,12 +10,16 @@
 
 /** The nearest *present* project that is a path-BOUNDARY ancestor of `cwd` (longest match),
  *  or `undefined`. Boundary-aware so `/a/b` links to `/a` but `/a-foo` never does. */
-export function nearestAncestor(cwd: string, present: Iterable<string>): string | undefined {
+export function nearestAncestor(
+  cwd: string,
+  present: Iterable<string>,
+): string | undefined {
   let best: string | undefined;
   for (const c of present) {
     if (c === cwd) continue;
     const pfx = c.endsWith("/") ? c : `${c}/`;
-    if (cwd.startsWith(pfx) && (best === undefined || c.length > best.length)) best = c;
+    if (cwd.startsWith(pfx) && (best === undefined || c.length > best.length))
+      best = c;
   }
   return best;
 }
@@ -56,7 +60,9 @@ export interface TreeNode {
 /** Build the parent/children/depth map for `cwds` using `nearestAncestor`. The returned
  *  shape is keyed by cwd so callers can render either a flat list (sorted) or walk depth-
  *  first by following `children`. Roots are cwds with no present ancestor. */
-export function buildProjectTree(cwds: Iterable<string>): Map<string, TreeNode> {
+export function buildProjectTree(
+  cwds: Iterable<string>,
+): Map<string, TreeNode> {
   const present = new Set(cwds);
   const nodes = new Map<string, TreeNode>();
   for (const cwd of present) {

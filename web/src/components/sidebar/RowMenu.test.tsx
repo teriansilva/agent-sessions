@@ -52,7 +52,9 @@ test("menu is closed until the trigger is clicked; trigger reflects expanded sta
   const menu = screen.getByRole("menu", { name: "Session actions" });
   expect(menu.parentElement?.parentElement).toBe(document.body);
   // Menu-button pattern: the first item takes focus on open.
-  expect(screen.getByRole("menuitem", { name: "Review session now" })).toHaveFocus();
+  expect(
+    screen.getByRole("menuitem", { name: "Review session now" }),
+  ).toHaveFocus();
 });
 
 test("ArrowUp/Down cycle with wrap, Home/End jump (#384 keyboard)", async () => {

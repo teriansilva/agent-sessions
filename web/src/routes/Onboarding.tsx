@@ -1,5 +1,12 @@
 import encodeQR from "@paulmillr/qr";
-import { ArrowLeft, ArrowRight, Check, FolderPlus, ShieldCheck, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  FolderPlus,
+  ShieldCheck,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
@@ -71,7 +78,15 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   },
 ];
 
-const WIZARD_STEPS = ["welcome", "security", "agents", "ai", "project", "tour", "launch"] as const;
+const WIZARD_STEPS = [
+  "welcome",
+  "security",
+  "agents",
+  "ai",
+  "project",
+  "tour",
+  "launch",
+] as const;
 type Step = (typeof WIZARD_STEPS)[number];
 const STEP_LABEL: Record<Step, string> = {
   welcome: "Welcome",
@@ -117,7 +132,11 @@ function Slideshow({
         )}
         <span className={styles.grow} />
         {i > 0 && (
-          <button type="button" className={styles.btn} onClick={() => setI((n) => n - 1)}>
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={() => setI((n) => n - 1)}
+          >
             <ArrowLeft size={14} /> Back
           </button>
         )}
@@ -173,7 +192,9 @@ export function Onboarding({
   // N/A when there is no login (auth_mode=none, e.g. Home Free stream mode).
   const authMode = config?.auth_mode ?? "single-user";
   const loginOff = authMode === "none";
-  const [twofaEnroll, setTwofaEnroll] = useState<TwoFactorEnrollment | null>(null);
+  const [twofaEnroll, setTwofaEnroll] = useState<TwoFactorEnrollment | null>(
+    null,
+  );
   const [twofaCode, setTwofaCode] = useState("");
   // Seed from the live config so a re-run (Help → Re-run setup) by someone who already has 2FA
   // enabled shows it as ON — never offers a re-enrollment the server rejects without fresh proof.
@@ -182,7 +203,10 @@ export function Onboarding({
   const [twofaErr, setTwofaErr] = useState<string | null>(null);
   // Client-side QR from the otpauth:// URI (bundled lib, no CDN) — same as Settings' 2FA card.
   const twofaQr = useMemo(
-    () => (twofaEnroll ? encodeQR(twofaEnroll.otpauth_uri, "svg", { border: 2 }) : null),
+    () =>
+      twofaEnroll
+        ? encodeQR(twofaEnroll.otpauth_uri, "svg", { border: 2 })
+        : null,
     [twofaEnroll],
   );
   // AI (Set up AI step) — a compact view over the existing /api/prefs → ai_review contract.
@@ -202,7 +226,8 @@ export function Onboarding({
   const [aiModels, setAiModels] = useState<ModelsState>({ kind: "idle" });
   // Monotonic probe id: a response whose id is stale (endpoint edited / superseded) is ignored.
   const aiProbeSeq = useRef(0);
-  const aiBusy = aiEndpoint.kind === "saving" || aiEndpoint.kind === "validating";
+  const aiBusy =
+    aiEndpoint.kind === "saving" || aiEndpoint.kind === "validating";
   // Project + folder.
   const [folders, setFolders] = useState<Folder[]>([]);
   const [home, setHome] = useState("");
@@ -290,7 +315,9 @@ export function Onboarding({
       setTwofaEnroll(null);
       setTwofaCode("");
     } catch {
-      setTwofaErr("That code didn't match — check your authenticator and try again.");
+      setTwofaErr(
+        "That code didn't match — check your authenticator and try again.",
+      );
     } finally {
       setTwofaBusy(false);
     }
@@ -327,7 +354,10 @@ export function Onboarding({
       setAiModels({ kind: "unsupported" });
       setAiEndpoint({
         kind: "error",
-        message: e instanceof ApiError && e.message ? e.message : "Endpoint validation failed.",
+        message:
+          e instanceof ApiError && e.message
+            ? e.message
+            : "Endpoint validation failed.",
       });
     }
   }, []);
@@ -342,7 +372,8 @@ export function Onboarding({
     const key = aiKey.trim();
     if (key) patch.api_key = key;
     setAiEndpoint({ kind: "saving" });
-    let next: { base_url: string; model: string; configured: boolean } | undefined;
+    let next:
+      { base_url: string; model: string; configured: boolean } | undefined;
     try {
       const r = (await api.setPrefs({ ai_review: patch })) as {
         ai_review?: { base_url: string; model: string; configured: boolean };
@@ -389,7 +420,10 @@ export function Onboarding({
     setFolderErr(null);
     try {
       const r = await api.fsMkdir(home, name);
-      setFolders((f) => [{ cwd: r.path, label: name }, ...f.filter((x) => x.cwd !== r.path)]);
+      setFolders((f) => [
+        { cwd: r.path, label: name },
+        ...f.filter((x) => x.cwd !== r.path),
+      ]);
       setCwd(r.path);
       setNewFolder("");
     } catch {
@@ -422,7 +456,9 @@ export function Onboarding({
     }
     onClose();
     const id = mintNewSessionId(engine);
-    navigate(`/s/${engine}/${id}`, { state: { fresh: { cwd: effectiveCwd, bypass } } });
+    navigate(`/s/${engine}/${id}`, {
+      state: { fresh: { cwd: effectiveCwd, bypass } },
+    });
   };
 
   // Standalone slideshow replay (topbar Help) — no setup, no persistence.
@@ -445,7 +481,9 @@ export function Onboarding({
             key={s}
             className={`${styles.step} ${n === idx ? styles.cur : ""} ${n < idx ? styles.done : ""}`}
           >
-            <span className={styles.stepDot}>{n < idx ? <Check size={11} /> : n + 1}</span>
+            <span className={styles.stepDot}>
+              {n < idx ? <Check size={11} /> : n + 1}
+            </span>
             {STEP_LABEL[s]}
           </span>
         ))}
@@ -453,21 +491,30 @@ export function Onboarding({
 
       <div className={styles.pane}>
         {step === "welcome" && (
-          <Step title="Welcome to BattleLab" desc="Command & Code. A quick setup, then you're in.">
+          <Step
+            title="Welcome to BattleLab"
+            desc="Command & Code. A quick setup, then you're in."
+          >
             <p className={styles.copy}>
-              We'll check which agents are installed, let you wire up your AI, create a first
-              project, and launch your first session — about a minute.
+              We'll check which agents are installed, let you wire up your AI,
+              create a first project, and launch your first session — about a
+              minute.
             </p>
             <p className={styles.copy}>
-              Installed with streaming (the default)? Your deck is also reachable from any
-              browser via the Connect page — end-to-end encrypted, sessions up to 4 hours.
+              Installed with streaming (the default)? Your deck is also
+              reachable from any browser via the Connect page — end-to-end
+              encrypted, sessions up to 4 hours.
             </p>
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>
                 Skip setup
               </button>
               <span className={styles.grow} />
-              <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("security")}>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => setStep("security")}
+              >
                 Get started <ArrowRight size={14} />
               </button>
             </Foot>
@@ -481,22 +528,30 @@ export function Onboarding({
           >
             {loginOff ? (
               <>
-                <div className={styles.row} style={{ alignItems: "flex-start" }}>
+                <div
+                  className={styles.row}
+                  style={{ alignItems: "flex-start" }}
+                >
                   <Brackets />
                   <ShieldCheck size={16} aria-hidden="true" />
                   <div>
                     <strong>Login is off — your access key is the gate</strong>
                     <p className={styles.copy} style={{ margin: "4px 0 0" }}>
-                      You installed with streaming (Home Free), so the app is bound to loopback and
-                      reached only through the blind relay with the access key the installer printed.
-                      No in-app password is needed.
+                      You installed with streaming (Home Free), so the app is
+                      bound to loopback and reached only through the blind relay
+                      with the access key the installer printed. No in-app
+                      password is needed.
                     </p>
                   </div>
                 </div>
                 <EnableLoginDetails />
                 <Foot>
                   <span className={styles.grow} />
-                  <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={() => setStep("welcome")}
+                  >
                     <ArrowLeft size={14} /> Back
                   </button>
                   <button
@@ -511,8 +566,8 @@ export function Onboarding({
             ) : (
               <>
                 <p className={styles.copy}>
-                  Your password is set. Add two-factor authentication (TOTP) for a second layer —
-                  optional, and changeable anytime in Settings.
+                  Your password is set. Add two-factor authentication (TOTP) for
+                  a second layer — optional, and changeable anytime in Settings.
                 </p>
                 {twofaOn ? (
                   <p className={styles.note}>
@@ -528,7 +583,10 @@ export function Onboarding({
                     <ShieldCheck size={14} /> Add two-factor authentication
                   </button>
                 ) : (
-                  <div className={styles.row} style={{ alignItems: "flex-start" }}>
+                  <div
+                    className={styles.row}
+                    style={{ alignItems: "flex-start" }}
+                  >
                     <Brackets />
                     {twofaQr && (
                       <img
@@ -539,9 +597,13 @@ export function Onboarding({
                     )}
                     <div style={{ flex: 1 }}>
                       <p className={styles.copy} style={{ margin: "0 0 6px" }}>
-                        Scan with your authenticator, then enter a code to confirm.
+                        Scan with your authenticator, then enter a code to
+                        confirm.
                       </p>
-                      <p className={styles.copy} style={{ margin: "0 0 6px", fontSize: 11 }}>
+                      <p
+                        className={styles.copy}
+                        style={{ margin: "0 0 6px", fontSize: 11 }}
+                      >
                         Recovery codes (save these once):
                         <br />
                         <code>{twofaEnroll.recovery_codes.join("  ")}</code>
@@ -569,11 +631,19 @@ export function Onboarding({
                 )}
                 {twofaErr && <p className={styles.err}>{twofaErr}</p>}
                 <Foot>
-                  <button type="button" className={styles.ghost} onClick={() => setStep("agents")}>
+                  <button
+                    type="button"
+                    className={styles.ghost}
+                    onClick={() => setStep("agents")}
+                  >
                     Skip for now
                   </button>
                   <span className={styles.grow} />
-                  <button type="button" className={styles.btn} onClick={() => setStep("welcome")}>
+                  <button
+                    type="button"
+                    className={styles.btn}
+                    onClick={() => setStep("welcome")}
+                  >
                     <ArrowLeft size={14} /> Back
                   </button>
                   <button
@@ -590,7 +660,10 @@ export function Onboarding({
         )}
 
         {step === "agents" && (
-          <Step title="Connected agents" desc="Detected on this host. Install more, then re-open setup.">
+          <Step
+            title="Connected agents"
+            desc="Detected on this host. Install more, then re-open setup."
+          >
             <ul className={styles.rows}>
               {engines === null ? (
                 <li className={styles.skeleton}>Scanning…</li>
@@ -604,9 +677,13 @@ export function Onboarding({
                     ) : (
                       <span className={styles.na}>— not found</span>
                     )}
-                    <span className={styles.path}>{e.bin ?? "install to enable"}</span>
+                    <span className={styles.path}>
+                      {e.bin ?? "install to enable"}
+                    </span>
                     {e.present && (
-                      <span className={`${styles.badge} ${e.supports_new ? styles.badgeGo : ""}`}>
+                      <span
+                        className={`${styles.badge} ${e.supports_new ? styles.badgeGo : ""}`}
+                      >
                         {e.supports_new ? "can start" : "resume only"}
                       </span>
                     )}
@@ -619,10 +696,18 @@ export function Onboarding({
                 Skip setup
               </button>
               <span className={styles.grow} />
-              <button type="button" className={styles.btn} onClick={() => setStep("security")}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("security")}
+              >
                 <ArrowLeft size={14} /> Back
               </button>
-              <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("ai")}>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => setStep("ai")}
+              >
                 Next <ArrowRight size={14} />
               </button>
             </Foot>
@@ -647,7 +732,12 @@ export function Onboarding({
               />
             </label>
             <label className={styles.field}>
-              <span>API key {config?.ai_review?.api_key_set ? "(set — leave blank to keep)" : ""}</span>
+              <span>
+                API key{" "}
+                {config?.ai_review?.api_key_set
+                  ? "(set — leave blank to keep)"
+                  : ""}
+              </span>
               <input
                 type="password"
                 value={aiKey}
@@ -689,14 +779,21 @@ export function Onboarding({
                     const v = e.target.value.trim();
                     if (v !== aiPersistedModel.trim()) void saveAiModel(v);
                   }}
-                  placeholder={aiModels.kind === "loading" ? "loading model list…" : "gpt-4o"}
+                  placeholder={
+                    aiModels.kind === "loading"
+                      ? "loading model list…"
+                      : "gpt-4o"
+                  }
                   spellCheck={false}
                 />
               )}
             </label>
-            {aiEndpoint.kind === "saving" || aiEndpoint.kind === "validating" ? (
+            {aiEndpoint.kind === "saving" ||
+            aiEndpoint.kind === "validating" ? (
               <p className={styles.desc}>
-                {aiEndpoint.kind === "saving" ? "Saving…" : "Validating endpoint…"}
+                {aiEndpoint.kind === "saving"
+                  ? "Saving…"
+                  : "Validating endpoint…"}
               </p>
             ) : aiEndpoint.kind === "ok" ? (
               <p className={styles.note}>
@@ -707,14 +804,24 @@ export function Onboarding({
             ) : aiEndpoint.kind === "error" ? (
               <p className={styles.err}>✗ {aiEndpoint.message}</p>
             ) : aiEndpoint.kind === "incomplete" ? (
-              <p className={styles.desc}>Saved. Set both the base URL and an API key to validate.</p>
+              <p className={styles.desc}>
+                Saved. Set both the base URL and an API key to validate.
+              </p>
             ) : null}
             <Foot>
-              <button type="button" className={styles.ghost} onClick={() => setStep("project")}>
+              <button
+                type="button"
+                className={styles.ghost}
+                onClick={() => setStep("project")}
+              >
                 I'll do this later
               </button>
               <span className={styles.grow} />
-              <button type="button" className={styles.btn} onClick={() => setStep("agents")}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("agents")}
+              >
                 <ArrowLeft size={14} /> Back
               </button>
               <button
@@ -729,7 +836,11 @@ export function Onboarding({
                     ? "Validating…"
                     : "Save & validate"}
               </button>
-              <button type="button" className={`${styles.pri} shine`} onClick={() => setStep("project")}>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => setStep("project")}
+              >
                 Next <ArrowRight size={14} />
               </button>
             </Foot>
@@ -737,7 +848,10 @@ export function Onboarding({
         )}
 
         {step === "project" && (
-          <Step title="Create your first project" desc="Your home folder is the root. Start in one, or make a new folder.">
+          <Step
+            title="Create your first project"
+            desc="Your home folder is the root. Start in one, or make a new folder."
+          >
             <label className={styles.field}>
               <span>Project name (optional)</span>
               <input
@@ -748,8 +862,13 @@ export function Onboarding({
             </label>
             <label className={styles.field}>
               <span>Launch folder</span>
-              <select value={effectiveCwd} onChange={(e) => setCwd(e.target.value)}>
-                {folders.length === 0 && <option value="">no folders found</option>}
+              <select
+                value={effectiveCwd}
+                onChange={(e) => setCwd(e.target.value)}
+              >
+                {folders.length === 0 && (
+                  <option value="">no folders found</option>
+                )}
                 {folders.map((f) => (
                   <option key={f.cwd} value={f.cwd}>
                     {f.label}
@@ -776,10 +895,18 @@ export function Onboarding({
             {folderErr && <p className={styles.err}>{folderErr}</p>}
             <Foot>
               <span className={styles.grow} />
-              <button type="button" className={styles.btn} onClick={() => setStep("ai")}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("ai")}
+              >
                 <ArrowLeft size={14} /> Back
               </button>
-              <button type="button" className={`${styles.pri} shine`} onClick={goPastProject}>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={goPastProject}
+              >
                 Next <ArrowRight size={14} />
               </button>
             </Foot>
@@ -787,17 +914,29 @@ export function Onboarding({
         )}
 
         {step === "tour" && (
-          <Step title="The lay of the land" desc="A 30-second tour of the main surfaces.">
-            <Slideshow onDone={() => setStep("launch")} doneLabel="Finish tour" />
+          <Step
+            title="The lay of the land"
+            desc="A 30-second tour of the main surfaces."
+          >
+            <Slideshow
+              onDone={() => setStep("launch")}
+              doneLabel="Finish tour"
+            />
           </Step>
         )}
 
         {step === "launch" && (
-          <Step title="Start your first session" desc="Everything's set — launch into your project.">
+          <Step
+            title="Start your first session"
+            desc="Everything's set — launch into your project."
+          >
             {newEngines.length > 1 && (
               <label className={styles.field}>
                 <span>Agent</span>
-                <select value={engine} onChange={(e) => setEngineChoice(e.target.value)}>
+                <select
+                  value={engine}
+                  onChange={(e) => setEngineChoice(e.target.value)}
+                >
                   {newEngines.map((id) => (
                     <option key={id} value={id}>
                       {id}
@@ -808,8 +947,13 @@ export function Onboarding({
             )}
             <label className={styles.field}>
               <span>Folder</span>
-              <select value={effectiveCwd} onChange={(e) => setCwd(e.target.value)}>
-                {folders.length === 0 && <option value="">no folder selected</option>}
+              <select
+                value={effectiveCwd}
+                onChange={(e) => setCwd(e.target.value)}
+              >
+                {folders.length === 0 && (
+                  <option value="">no folder selected</option>
+                )}
                 {folders.map((f) => (
                   <option key={f.cwd} value={f.cwd}>
                     {f.label}
@@ -818,7 +962,11 @@ export function Onboarding({
               </select>
             </label>
             <label className={styles.checkbox}>
-              <input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={bypass}
+                onChange={(e) => setBypass(e.target.checked)}
+              />
               <span>Skip permission prompts</span>
             </label>
             <Foot>
@@ -826,7 +974,11 @@ export function Onboarding({
                 Finish without launching
               </button>
               <span className={styles.grow} />
-              <button type="button" className={styles.btn} onClick={() => setStep("tour")}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("tour")}
+              >
                 <ArrowLeft size={14} /> Back
               </button>
               <button
@@ -863,7 +1015,12 @@ function Overlay({
     return () => window.removeEventListener("keydown", on);
   }, [onClose]);
   return (
-    <div className={styles.scrim} role="dialog" aria-modal="true" aria-label={title}>
+    <div
+      className={styles.scrim}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
       <div className={`${styles.card} ${wide ? styles.wide : ""}`}>
         <Brackets hero />
         <header className={styles.bar}>
@@ -871,7 +1028,12 @@ function Overlay({
             <span aria-hidden="true">◢</span> BATTLE<b>LAB</b>
           </span>
           <span className={styles.barTag}>{title.toUpperCase()}</span>
-          <button type="button" className={styles.x} aria-label="Close" onClick={onClose}>
+          <button
+            type="button"
+            className={styles.x}
+            aria-label="Close"
+            onClick={onClose}
+          >
             <X size={16} />
           </button>
         </header>

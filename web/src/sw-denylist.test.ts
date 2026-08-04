@@ -47,7 +47,10 @@ describe("navigation fallback denylist", () => {
     ];
     const now = NAVIGATE_FALLBACK_DENYLIST.map((r) => r.source);
     for (const src of before) {
-      expect(now, `denylist lost the ${src} entry in the injectManifest migration`).toContain(src);
+      expect(
+        now,
+        `denylist lost the ${src} entry in the injectManifest migration`,
+      ).toContain(src);
     }
   });
 
@@ -100,7 +103,14 @@ describe("NavigationRoute integration (the wiring, not the predicate)", () => {
     // only reads `request.mode`, so a minimal stand-in drives the identical code path.
     const request = { mode: "navigate" } as Request;
     // `match` returns a truthy value when the SPA shell WOULD be served.
-    return Boolean(route.match({ url, request, event: undefined as never, params: undefined }));
+    return Boolean(
+      route.match({
+        url,
+        request,
+        event: undefined as never,
+        params: undefined,
+      }),
+    );
   };
 
   it.each(SERVER_RENDERED_PATHS)(
@@ -110,9 +120,12 @@ describe("NavigationRoute integration (the wiring, not the predicate)", () => {
     },
   );
 
-  it.each(SPA_PATHS)("the real NavigationRoute still serves the shell for %s", (path) => {
-    expect(matches(path)).toBe(true);
-  });
+  it.each(SPA_PATHS)(
+    "the real NavigationRoute still serves the shell for %s",
+    (path) => {
+      expect(matches(path)).toBe(true);
+    },
+  );
 
   it("denies a server route carrying a query string", () => {
     // workbox matches pathname+search, so an entry anchored with a bare `$` would leak here.

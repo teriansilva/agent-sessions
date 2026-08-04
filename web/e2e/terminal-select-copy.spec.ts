@@ -36,11 +36,13 @@ window.WebSocket = class {
 
 // claude's REAL attach prefix since 2.1.178: alternate screen + mouse tracking + SGR + bracketed
 // paste. Verified against 39 recorded boot rings — it enters ?1049h at startup and never leaves.
-const CLAUDE = "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
+const CLAUDE =
+  "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
 // opencode: alt screen + mouse tracking (the #397/#414 contract this fix must not break).
 const OPENCODE = "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H\x1b[2J";
 // claude <= 2.1.177 (and any inline mouse-tracking agent): mouse tracking on the NORMAL buffer.
-const CLAUDE_LEGACY = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
+const CLAUDE_LEGACY =
+  "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[H\x1b[2J";
 // antigravity (`agy`): INLINE on the normal buffer with NO mouse tracking (verified against agy
 // 1.0.16 — it flips ?1049h only for the ~0.6s splash, then leaves it and renders the conversation
 // inline, arming only ?2004h and never ?1000/?1002/?1003/?1006). xterm selects natively here, so
@@ -50,7 +52,10 @@ const AGY = "\x1b[?2004h\x1b[H\x1b[2J";
 
 const SIGINT_FRAME = '"d":"\\u0003"'; // {"t":"i","d":"\x03"} — ^C reaching the PTY
 
-async function dragSelect(page: import("@playwright/test").Page, shift = false) {
+async function dragSelect(
+  page: import("@playwright/test").Page,
+  shift = false,
+) {
   const box = (await page.locator(".xterm-screen").boundingBox())!;
   const y = box.y + 8;
   if (shift) await page.keyboard.down("Shift");
@@ -70,7 +75,9 @@ async function clickInPlace(page: import("@playwright/test").Page) {
 }
 
 const selectionCells = (page: import("@playwright/test").Page) =>
-  page.evaluate(() => document.querySelector(".xterm-selection")?.childElementCount ?? 0);
+  page.evaluate(
+    () => document.querySelector(".xterm-selection")?.childElementCount ?? 0,
+  );
 
 /** xterm paints `.xterm-selection` on its next frame, so an instantaneous gesture (click,
  *  double-click) has no cells the moment the mouse event returns. Poll, never read once. */
@@ -78,20 +85,30 @@ const expectSelection = async (page: import("@playwright/test").Page) =>
   expect.poll(async () => selectionCells(page)).toBeGreaterThan(0);
 
 const sentJoined = (page: import("@playwright/test").Page) =>
-  page.evaluate(() => (window as never as { __sent: string[] }).__sent.join(""));
+  page.evaluate(() =>
+    (window as never as { __sent: string[] }).__sent.join(""),
+  );
 
 /** The SGR mouse reports the app actually received (`ESC [ < b ; x ; y M|m`). ESC is JSON-encoded
  *  on the wire, so the literal "[<" marker is what survives. */
 const mouseReports = (page: import("@playwright/test").Page) =>
   page.evaluate(() =>
-    (window as never as { __sent: string[] }).__sent.filter((f) => f.includes("[<")),
+    (window as never as { __sent: string[] }).__sent.filter((f) =>
+      f.includes("[<"),
+    ),
   );
 
-async function openTerm(page: import("@playwright/test").Page, prefix: string, id: string) {
+async function openTerm(
+  page: import("@playwright/test").Page,
+  prefix: string,
+  id: string,
+) {
   await page.addInitScript(stub(prefix));
   await page.goto(`/s/claude/${id}`);
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("selectable");
 }
 
@@ -106,7 +123,9 @@ test("alt-screen mouse-tracking agent (claude >=2.1.178): plain drag SELECTS (#6
   await expectSelection(page);
   // The override must not break typing: a keystroke after the drag still reaches the PTY.
   await page.keyboard.type("x");
-  await expect.poll(async () => sentJoined(page)).toContain('{"t":"i","d":"x"}');
+  await expect
+    .poll(async () => sentJoined(page))
+    .toContain('{"t":"i","d":"x"}');
 });
 
 test("alt-screen TUI still gets a plain CLICK as a mouse report (#617 — the click, not the buffer)", async ({
@@ -174,7 +193,10 @@ test("Ctrl+C with a selection copies it and never reaches the PTY (#536)", async
   browserName,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "mouse behavior");
-  test.skip(browserName !== "chromium", "clipboard-read permission is chromium-only");
+  test.skip(
+    browserName !== "chromium",
+    "clipboard-read permission is chromium-only",
+  );
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await openTerm(page, CLAUDE, "selcopy-copy");
   await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
@@ -183,7 +205,9 @@ test("Ctrl+C with a selection copies it and never reaches the PTY (#536)", async
   await expect
     .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
     .toContain("selectable");
-  const sent = await page.evaluate(() => (window as never as { __sent: string[] }).__sent);
+  const sent = await page.evaluate(
+    () => (window as never as { __sent: string[] }).__sent,
+  );
   expect(sent.some((f) => f.includes(SIGINT_FRAME))).toBe(false); // the copy never interrupts
   // The selection survives the copy (browser copy semantics) — no clearing side effects.
   expect(await selectionCells(page)).toBeGreaterThan(0);
@@ -199,7 +223,9 @@ test("Ctrl+C without a selection still interrupts the agent (#536 guard)", async
   await expect
     .poll(async () =>
       page.evaluate(() =>
-        (window as never as { __sent: string[] }).__sent.some((f) => f.includes('"d":"\\u0003"')),
+        (window as never as { __sent: string[] }).__sent.some((f) =>
+          f.includes('"d":"\\u0003"'),
+        ),
       ),
     )
     .toBe(true);

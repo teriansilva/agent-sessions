@@ -47,7 +47,8 @@ export class PagesBuffer {
    *  per-page render caps keep one page far below any sane buffer cap, and showing
    *  nothing at all would be strictly worse than overshooting once. */
   prepend(ansi: string): boolean {
-    if (this.pages.length > 0 && this.total + ansi.length > this.cap) return false;
+    if (this.pages.length > 0 && this.total + ansi.length > this.cap)
+      return false;
     this.pages.unshift(ansi);
     this.total += ansi.length;
     return true;

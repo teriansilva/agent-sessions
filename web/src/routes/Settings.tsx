@@ -20,13 +20,23 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
-import { buildProjectTree, flattenTree, owningProjectId } from "../lib/projectTree";
+import {
+  buildProjectTree,
+  flattenTree,
+  owningProjectId,
+} from "../lib/projectTree";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
@@ -83,7 +93,10 @@ function SettingsTablist({ active }: { active: SettingsTabId }) {
     const tab = SETTINGS_TABS[index];
     refs.current[index]?.focus();
     if (tab.id !== active) {
-      navigate(`/settings/${tab.id}`, { replace: opts?.replace, state: location.state });
+      navigate(`/settings/${tab.id}`, {
+        replace: opts?.replace,
+        state: location.state,
+      });
     }
   };
 
@@ -115,7 +128,9 @@ function SettingsTablist({ active }: { active: SettingsTabId }) {
           aria-selected={t.id === active}
           aria-controls={`settings-panel-${t.id}`}
           tabIndex={t.id === active ? 0 : -1}
-          className={t.id === active ? `${styles.tab} ${styles.active}` : styles.tab}
+          className={
+            t.id === active ? `${styles.tab} ${styles.active}` : styles.tab
+          }
           onClick={() => select(i)}
           onKeyDown={(e) => onKeyDown(e, i)}
         >
@@ -147,7 +162,9 @@ function ConnectedAgents() {
   return (
     <section className={styles.section} aria-labelledby="agents-h">
       <h2 id="agents-h">Connected agents</h2>
-      <p className={styles.hint}>The AI-coding CLIs BattleLab can discover on this host.</p>
+      <p className={styles.hint}>
+        The AI-coding CLIs BattleLab can discover on this host.
+      </p>
       {engines === null ? (
         <p className={styles.hint}>…</p>
       ) : (
@@ -159,8 +176,12 @@ function ConnectedAgents() {
                 aria-hidden="true"
               />
               <span className={styles.agentName}>{engineName(e.id)}</span>
-              <span className={styles.agentState}>{e.present ? "installed" : "not found"}</span>
-              {e.supports_new && <span className={styles.newBadge}>can start new</span>}
+              <span className={styles.agentState}>
+                {e.present ? "installed" : "not found"}
+              </span>
+              {e.supports_new && (
+                <span className={styles.newBadge}>can start new</span>
+              )}
               <span className={styles.agentBin}>{e.bin ?? "—"}</span>
             </li>
           ))}
@@ -221,7 +242,10 @@ function SystemCard() {
         },
         {
           label: "Uptime",
-          value: sys.uptime_seconds != null ? humanDuration(sys.uptime_seconds) : null,
+          value:
+            sys.uptime_seconds != null
+              ? humanDuration(sys.uptime_seconds)
+              : null,
         },
         { label: "App version", value: sys.version ?? null },
         { label: "Python", value: sys.python ?? null },
@@ -263,9 +287,9 @@ function UpdatesCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
   const [settings, setSettings] = useState<UpdateSettings | null>(null);
-  const [state, setState] = useState<"idle" | "checking" | "applying" | "applied" | "error">(
-    "idle",
-  );
+  const [state, setState] = useState<
+    "idle" | "checking" | "applying" | "applied" | "error"
+  >("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -365,8 +389,9 @@ function UpdatesCard() {
         <span>Automatic updates</span>
       </label>
       <p className={styles.hint}>
-        Checks daily and installs new releases with the same rollback-guarded installer as
-        “Update now”. No reinstall or terminal needed — the setting applies immediately.
+        Checks daily and installs new releases with the same rollback-guarded
+        installer as “Update now”. No reinstall or terminal needed — the setting
+        applies immediately.
       </p>
       {settings?.auto_update && (
         <p className={styles.hint}>
@@ -375,10 +400,22 @@ function UpdatesCard() {
             : "No automatic check yet since the last restart."}
         </p>
       )}
-      <div className={styles.themes} role="radiogroup" aria-label="Release channel">
+      <div
+        className={styles.themes}
+        role="radiogroup"
+        aria-label="Release channel"
+      >
         {[
-          { id: "stable", label: "stable", description: "Tagged releases (recommended)" },
-          { id: "main", label: "main", description: "Development branch — expect rough edges" },
+          {
+            id: "stable",
+            label: "stable",
+            description: "Tagged releases (recommended)",
+          },
+          {
+            id: "main",
+            label: "main",
+            description: "Development branch — expect rough edges",
+          },
         ].map((o) => (
           <button
             key={o.id}
@@ -386,7 +423,11 @@ function UpdatesCard() {
             role="radio"
             aria-checked={channel === o.id}
             disabled={!settings}
-            className={channel === o.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard}
+            className={
+              channel === o.id
+                ? `${styles.themeCard} ${styles.active}`
+                : styles.themeCard
+            }
             onClick={() => void save({ channel: o.id })}
           >
             <span className={styles.themeName}>{o.label}</span>
@@ -395,8 +436,8 @@ function UpdatesCard() {
         ))}
       </div>
       <p className={styles.hint}>
-        Switching back to stable waits for the next tagged release (it never downgrades on its
-        own).
+        Switching back to stable waits for the next tagged release (it never
+        downgrades on its own).
       </p>
       {saveErr && <p className={styles.err}>{saveErr}</p>}
       {info &&
@@ -404,7 +445,9 @@ function UpdatesCard() {
           <p className={styles.hint}>Update available: {info.latest}</p>
         ) : (
           <p className={styles.hint}>
-            {info.latest ? `You’re on the latest (${info.latest}).` : "You’re up to date."}
+            {info.latest
+              ? `You’re on the latest (${info.latest}).`
+              : "You’re up to date."}
           </p>
         ))}
       {msg && <p className={styles.hint}>{msg}</p>}
@@ -415,7 +458,8 @@ function UpdatesCard() {
           onClick={check}
           disabled={state === "checking" || state === "applying" || saving}
         >
-          <RefreshCw size={15} /> {state === "checking" ? "Checking…" : "Check for updates"}
+          <RefreshCw size={15} />{" "}
+          {state === "checking" ? "Checking…" : "Check for updates"}
         </button>
         {info?.update_available && (
           <button
@@ -424,7 +468,8 @@ function UpdatesCard() {
             onClick={apply}
             disabled={state === "applying" || state === "applied" || saving}
           >
-            <Download size={15} /> {state === "applying" ? "Updating…" : "Update now"}
+            <Download size={15} />{" "}
+            {state === "applying" ? "Updating…" : "Update now"}
           </button>
         )}
       </div>
@@ -447,7 +492,9 @@ function RecoveryCodes({ codes, label }: { codes: string[]; label: string }) {
     }
   };
   const download = () => {
-    const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain" }));
+    const url = URL.createObjectURL(
+      new Blob([`${text}\n`], { type: "text/plain" }),
+    );
     const a = document.createElement("a");
     a.href = url;
     a.download = "battlelab-recovery-codes.txt";
@@ -607,14 +654,16 @@ function TwoFactorCard() {
     <section className={styles.section} aria-labelledby="twofa-h">
       <h2 id="twofa-h">Two-factor authentication</h2>
       <p className={styles.hint}>
-        Require a 6-digit code from an authenticator app (Google Authenticator, Authy,
-        1Password, Aegis…) in addition to your password.
+        Require a 6-digit code from an authenticator app (Google Authenticator,
+        Authy, 1Password, Aegis…) in addition to your password.
       </p>
 
       {enabled !== null && (
         <p className={styles.twofaStatus}>
           <ShieldCheck size={15} />
-          <span className={`${styles.twofaBadge} ${enabled ? styles.twofaOn : styles.twofaOff}`}>
+          <span
+            className={`${styles.twofaBadge} ${enabled ? styles.twofaOn : styles.twofaOff}`}
+          >
             {enabled ? "On" : "Off"}
           </span>
         </p>
@@ -624,15 +673,23 @@ function TwoFactorCard() {
 
       {/* Disabled, not mid-enrollment → offer Enable. */}
       {enabled === false && !enroll && (
-        <button type="button" className={`${styles.secBtn} shine`} onClick={begin} disabled={busy}>
-          <ShieldCheck size={15} /> {busy ? "Starting…" : "Enable two-factor auth"}
+        <button
+          type="button"
+          className={`${styles.secBtn} shine`}
+          onClick={begin}
+          disabled={busy}
+        >
+          <ShieldCheck size={15} />{" "}
+          {busy ? "Starting…" : "Enable two-factor auth"}
         </button>
       )}
 
       {/* Enrollment in progress: QR + manual key + recovery codes + confirm. */}
       {enroll && !confirmed && (
         <div className={styles.enrollPanel}>
-          <p className={styles.hint}>1. Scan this with your authenticator app:</p>
+          <p className={styles.hint}>
+            1. Scan this with your authenticator app:
+          </p>
           {qrSvg && (
             <img
               className={styles.qr}
@@ -643,11 +700,16 @@ function TwoFactorCard() {
           <p className={styles.hint}>…or enter this key manually:</p>
           <code className={styles.manualKey}>{enroll.secret}</code>
           <p className={styles.hint}>
-            2. Save these recovery codes somewhere safe — each works once if you lose your
-            device. They’re shown only now.
+            2. Save these recovery codes somewhere safe — each works once if you
+            lose your device. They’re shown only now.
           </p>
-          <RecoveryCodes codes={enroll.recovery_codes} label="Recovery codes (shown once)" />
-          <p className={styles.hint}>3. Enter the current 6-digit code to finish:</p>
+          <RecoveryCodes
+            codes={enroll.recovery_codes}
+            label="Recovery codes (shown once)"
+          />
+          <p className={styles.hint}>
+            3. Enter the current 6-digit code to finish:
+          </p>
           <input
             className={styles.codeInput}
             inputMode="numeric"
@@ -665,7 +727,12 @@ function TwoFactorCard() {
             >
               {busy ? "Confirming…" : "Confirm & enable"}
             </button>
-            <button type="button" className={styles.secBtnGhost} onClick={reset} disabled={busy}>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={reset}
+              disabled={busy}
+            >
               Cancel
             </button>
           </div>
@@ -723,7 +790,10 @@ function TwoFactorCard() {
         <div className={styles.enrollPanel}>
           <p className={styles.hint}>
             Enter a current authenticator code or your password to{" "}
-            {showDisable ? "disable two-factor auth" : "regenerate your recovery codes"}.
+            {showDisable
+              ? "disable two-factor auth"
+              : "regenerate your recovery codes"}
+            .
           </p>
           <input
             className={styles.codeInput}
@@ -765,7 +835,11 @@ function TwoFactorCard() {
             codes={regenCodes}
             label="New recovery codes — the old ones no longer work. Shown only now."
           />
-          <button type="button" className={styles.secBtn} onClick={() => setRegenCodes(null)}>
+          <button
+            type="button"
+            className={styles.secBtn}
+            onClick={() => setRegenCodes(null)}
+          >
             Done
           </button>
         </div>
@@ -823,9 +897,9 @@ function LoginOffCard() {
     <section className={styles.section} aria-labelledby="loginoff-h">
       <h2 id="loginoff-h">Login</h2>
       <p className={styles.blurb}>
-        Login is off — you’re running <strong>Home Free</strong>. The app is bound to loopback and
-        reached only through the blind relay with your access key, so there’s no in-app password or
-        two-factor to manage here.
+        Login is off — you’re running <strong>Home Free</strong>. The app is
+        bound to loopback and reached only through the blind relay with your
+        access key, so there’s no in-app password or two-factor to manage here.
       </p>
       <EnableLoginDetails />
     </section>
@@ -885,7 +959,10 @@ function FolderDiscoveryCard() {
     setExclusions(configExclusions);
   }
   // Which picker is open ("root" | "exclusion" | null) + the trigger to refocus on close.
-  const [picking, setPicking] = useState<{ kind: "root" | "exclusion"; trigger: HTMLElement | null } | null>(null);
+  const [picking, setPicking] = useState<{
+    kind: "root" | "exclusion";
+    trigger: HTMLElement | null;
+  } | null>(null);
 
   const commitRoots = (next: string[]) => {
     const prev = roots;
@@ -923,13 +1000,16 @@ function FolderDiscoveryCard() {
     <section className={styles.section} aria-labelledby="discovery-h">
       <h2 id="discovery-h">Folder discovery</h2>
       <p className={styles.hint}>
-        Scope folder discovery to your project root(s). When a root is set this is a hard scope —
-        folders outside it are hidden from the sidebar, filter, and pickers too. With no roots,
-        discovery is unscoped (every session&rsquo;s folder plus ~/claude subdirs), as before. Add
-        exclusions for scratch folders that slip through.
+        Scope folder discovery to your project root(s). When a root is set this
+        is a hard scope — folders outside it are hidden from the sidebar,
+        filter, and pickers too. With no roots, discovery is unscoped (every
+        session&rsquo;s folder plus ~/claude subdirs), as before. Add exclusions
+        for scratch folders that slip through.
       </p>
 
-      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>Root directories</h3>
+      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>
+        Root directories
+      </h3>
       {roots.length === 0 ? (
         <p className={styles.hint}>No roots — discovery is unscoped.</p>
       ) : (
@@ -957,7 +1037,9 @@ function FolderDiscoveryCard() {
         Add root…
       </button>
 
-      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>Excluded folders</h3>
+      <h3 className={`${styles.aiFieldLabel} ${styles.discoverySub}`}>
+        Excluded folders
+      </h3>
       {exclusions.length === 0 ? (
         <p className={styles.hint}>No exclusions.</p>
       ) : (
@@ -968,7 +1050,9 @@ function FolderDiscoveryCard() {
               <button
                 type="button"
                 className={styles.discoveryRemove}
-                onClick={() => commitExclusions(exclusions.filter((e) => e !== x))}
+                onClick={() =>
+                  commitExclusions(exclusions.filter((e) => e !== x))
+                }
                 aria-label={`Remove exclusion ${shortCwd(x)}`}
               >
                 Remove
@@ -980,14 +1064,20 @@ function FolderDiscoveryCard() {
       <button
         type="button"
         className={styles.secBtnGhost}
-        onClick={(e) => setPicking({ kind: "exclusion", trigger: e.currentTarget })}
+        onClick={(e) =>
+          setPicking({ kind: "exclusion", trigger: e.currentTarget })
+        }
       >
         Add exclusion…
       </button>
 
       {picking && (
         <FolderPickerModal
-          title={picking.kind === "root" ? "Choose a root directory" : "Choose a folder to exclude"}
+          title={
+            picking.kind === "root"
+              ? "Choose a root directory"
+              : "Choose a folder to exclude"
+          }
           onPick={onPick}
           onCancel={() => setPicking(null)}
           returnFocusTo={picking.trigger}
@@ -1054,7 +1144,10 @@ function ProjectRow({
          *  Settings row shows the folder's PATH as static text (no rename affordance) and points
          *  the user at the project. */}
         {adopted ? (
-          <span className={styles.nameStatic} title="Named by its project — rename the project instead">
+          <span
+            className={styles.nameStatic}
+            title="Named by its project — rename the project instead"
+          >
             {shortCwd(cwd)}
           </span>
         ) : (
@@ -1069,11 +1162,15 @@ function ProjectRow({
             >
               {displayName || shortCwd(cwd)}
             </button>
-            {displayName && <span className={styles.excludePath}>{shortCwd(cwd)}</span>}
+            {displayName && (
+              <span className={styles.excludePath}>{shortCwd(cwd)}</span>
+            )}
           </>
         )}
       </span>
-      {stale && <span className={styles.excludeStale}>not currently active</span>}
+      {stale && (
+        <span className={styles.excludeStale}>not currently active</span>
+      )}
     </li>
   );
 }
@@ -1167,11 +1264,14 @@ function OverviewCard() {
   // /api/config after a save, so keying the fetch on the EFFECTIVE (server-echoed) prefs
   // re-runs it live — and only when the scope actually changed.
   const discoveryKey = useDiscoveryKey();
-  const [projects, setProjects] = useState<{ cwd: string; label: string }[] | null>(null);
+  const [projects, setProjects] = useState<
+    { cwd: string; label: string }[] | null
+  >(null);
   const [entities, setEntities] = useState<ProjectEntity[]>([]);
-  const [renaming, setRenaming] = useState<{ cwd: string; trigger: HTMLElement | null } | null>(
-    null,
-  );
+  const [renaming, setRenaming] = useState<{
+    cwd: string;
+    trigger: HTMLElement | null;
+  } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -1247,7 +1347,10 @@ function OverviewCard() {
     return entityGroups;
   }, [projects, entities, hiddenProjects, includedProjects, projectNames]);
 
-  const total = useMemo(() => groups.reduce((n, g) => n + g.rows.length, 0), [groups]);
+  const total = useMemo(
+    () => groups.reduce((n, g) => n + g.rows.length, 0),
+    [groups],
+  );
   const curated = projectsMode === "included";
   return (
     <section className={styles.section} aria-labelledby="overview-h">
@@ -1255,7 +1358,11 @@ function OverviewCard() {
       {/* Visibility mode (#335). "Show all" = the legacy denylist (untick to hide). "Only included"
        *  = a curated allowlist: only ticked projects show, and a new directory never auto-appears
        *  until you tick it (starting a session in a directory also adds it automatically). */}
-      <div className={styles.modeRow} role="radiogroup" aria-label="Project visibility">
+      <div
+        className={styles.modeRow}
+        role="radiogroup"
+        aria-label="Project visibility"
+      >
         <label className={styles.modeOpt}>
           <input
             type="radio"
@@ -1286,9 +1393,10 @@ function OverviewCard() {
           : "Folders are grouped under their owning project. Unticking a folder stops it being offered as a launch location; if no project has adopted it, its sessions also disappear from the sidebar, filter, and overview map. Filtering still uses the full path under the hood."}
       </p>
       <p className={styles.hint}>
-        A project&rsquo;s sessions stay in the sidebar and filter even with its folders unticked —
-        archive the project to hide those. Click an <em>unassigned</em> folder&rsquo;s name to give
-        it a custom display name; an adopted folder takes its label from its project, so rename the
+        A project&rsquo;s sessions stay in the sidebar and filter even with its
+        folders unticked — archive the project to hide those. Click an{" "}
+        <em>unassigned</em> folder&rsquo;s name to give it a custom display
+        name; an adopted folder takes its label from its project, so rename the
         project (above) instead.
       </p>
       {projects === null ? (
@@ -1360,8 +1468,8 @@ function CleanupCard() {
     <section className={styles.section} aria-labelledby="cleanup-h">
       <h2 id="cleanup-h">Maintenance</h2>
       <p className={styles.hint}>
-        Archive sessions you haven’t touched in a while. Archived sessions are hidden from the
-        list but can be unarchived — nothing is deleted.
+        Archive sessions you haven’t touched in a while. Archived sessions are
+        hidden from the list but can be unarchived — nothing is deleted.
       </p>
       <div className={styles.cleanupRow}>
         <label className={styles.cleanupLabel}>
@@ -1378,7 +1486,12 @@ function CleanupCard() {
         </label>
         {confirming ? (
           <span className={styles.confirmRow}>
-            <button type="button" className={styles.danger} disabled={busy} onClick={run}>
+            <button
+              type="button"
+              className={styles.danger}
+              disabled={busy}
+              onClick={run}
+            >
               <Archive size={16} /> {busy ? "Archiving…" : "Confirm archive"}
             </button>
             <button
@@ -1413,7 +1526,9 @@ function CleanupCard() {
  *  survive restarts. Shows the cache size and lets the user reclaim it — either just the
  *  archived sessions' caches, or everything. A two-step confirm guards each clear. */
 function ScrollbackCacheCard() {
-  const [info, setInfo] = useState<{ bytes: number; files: number } | null>(null);
+  const [info, setInfo] = useState<{ bytes: number; files: number } | null>(
+    null,
+  );
   const [confirming, setConfirming] = useState<"all" | "archived" | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -1449,10 +1564,13 @@ function ScrollbackCacheCard() {
     <section className={styles.section} aria-labelledby="scrollback-h">
       <h2 id="scrollback-h">Scrollback cache</h2>
       <p className={styles.hint}>
-        Terminal history is cached on disk per session so scrollback survives restarts.
-        {info ? ` Currently ${humanBytes(info.bytes)} across ${info.files} session${info.files === 1 ? "" : "s"}.` : ""}{" "}
-        Clearing only drops cached scrollback — sessions and their on-disk transcripts are
-        untouched.
+        Terminal history is cached on disk per session so scrollback survives
+        restarts.
+        {info
+          ? ` Currently ${humanBytes(info.bytes)} across ${info.files} session${info.files === 1 ? "" : "s"}.`
+          : ""}{" "}
+        Clearing only drops cached scrollback — sessions and their on-disk
+        transcripts are untouched.
       </p>
       {confirming ? (
         <span className={styles.confirmRow}>
@@ -1595,13 +1713,23 @@ export function Settings() {
   }, []);
 
   if (!isSettingsTab(tab)) {
-    return <Navigate to={`/settings/${DEFAULT_SETTINGS_TAB}`} replace state={location.state} />;
+    return (
+      <Navigate
+        to={`/settings/${DEFAULT_SETTINGS_TAB}`}
+        replace
+        state={location.state}
+      />
+    );
   }
 
   return (
     <div className={styles.wrap}>
       <header className={styles.head}>
-        <Link to={returnTo} className={styles.back} aria-label="Back to sessions">
+        <Link
+          to={returnTo}
+          className={styles.back}
+          aria-label="Back to sessions"
+        >
           <ArrowLeft size={18} />
         </Link>
         <h1>Settings</h1>
@@ -1620,7 +1748,11 @@ export function Settings() {
             <section className={styles.section} aria-labelledby="appearance-h">
               <h2 id="appearance-h">Appearance</h2>
               <p className={styles.hint}>Choose how BattleLab looks.</p>
-              <div className={styles.themes} role="radiogroup" aria-label="Theme">
+              <div
+                className={styles.themes}
+                role="radiogroup"
+                aria-label="Theme"
+              >
                 {THEME_LIST.map((t) => (
                   <button
                     key={t.id}
@@ -1628,7 +1760,9 @@ export function Settings() {
                     role="radio"
                     aria-checked={theme === t.id}
                     className={
-                      theme === t.id ? `${styles.themeCard} ${styles.active}` : styles.themeCard
+                      theme === t.id
+                        ? `${styles.themeCard} ${styles.active}`
+                        : styles.themeCard
                     }
                     onClick={() => setTheme(t.id)}
                   >
@@ -1648,7 +1782,11 @@ export function Settings() {
               <p className={styles.hint}>
                 The brand colour — buttons, highlights, the terminal cursor.
               </p>
-              <div className={styles.accents} role="radiogroup" aria-labelledby="accent-h">
+              <div
+                className={styles.accents}
+                role="radiogroup"
+                aria-labelledby="accent-h"
+              >
                 {ACCENT_PRESETS.map((p) => (
                   <button
                     key={p.id}
@@ -1658,7 +1796,9 @@ export function Settings() {
                     aria-label={p.label}
                     title={p.label}
                     className={
-                      accent === p.hex ? `${styles.accentDot} ${styles.active}` : styles.accentDot
+                      accent === p.hex
+                        ? `${styles.accentDot} ${styles.active}`
+                        : styles.accentDot
                     }
                     style={{ "--dot": p.hex } as CSSProperties}
                     onClick={() => setAccent(p.hex)}
@@ -1694,13 +1834,30 @@ export function Settings() {
                 Compose box
               </h3>
               <p className={styles.hint}>
-                Default state when a session opens. Applies after the next reload.
+                Default state when a session opens. Applies after the next
+                reload.
               </p>
-              <div className={styles.themes} role="radiogroup" aria-labelledby="compose-h">
+              <div
+                className={styles.themes}
+                role="radiogroup"
+                aria-labelledby="compose-h"
+              >
                 {[
-                  { id: "auto", label: "Auto", description: "Open on touch, collapsed on desktop" },
-                  { id: "open", label: "Open", description: "Always expanded on load" },
-                  { id: "collapsed", label: "Collapsed", description: "Always collapsed to the bar" },
+                  {
+                    id: "auto",
+                    label: "Auto",
+                    description: "Open on touch, collapsed on desktop",
+                  },
+                  {
+                    id: "open",
+                    label: "Open",
+                    description: "Always expanded on load",
+                  },
+                  {
+                    id: "collapsed",
+                    label: "Collapsed",
+                    description: "Always collapsed to the bar",
+                  },
                 ].map((o) => (
                   <button
                     key={o.id}
@@ -1724,9 +1881,14 @@ export function Settings() {
                 Session list order
               </h3>
               <p className={styles.hint}>
-                How sessions are sorted in the sidebar. Favorites always pin to the top.
+                How sessions are sorted in the sidebar. Favorites always pin to
+                the top.
               </p>
-              <div className={styles.themes} role="radiogroup" aria-labelledby="listorder-h">
+              <div
+                className={styles.themes}
+                role="radiogroup"
+                aria-labelledby="listorder-h"
+              >
                 {[
                   {
                     id: "recent_activity",
@@ -1736,7 +1898,8 @@ export function Settings() {
                   {
                     id: "created_at",
                     label: "Creation date",
-                    description: "Newest-created first; order stays put as sessions update",
+                    description:
+                      "Newest-created first; order stays put as sessions update",
                   },
                 ].map((o) => (
                   <button
@@ -1822,8 +1985,8 @@ export function Settings() {
               </p>
               <p className={styles.hint}>Command &amp; Code</p>
               <p className={styles.blurb}>
-                The mobile-first organizer for your AI-coding sessions — claude, opencode, codex,
-                gemini, antigravity and kimi, all in one place.
+                The mobile-first organizer for your AI-coding sessions — claude,
+                opencode, codex, gemini, antigravity and kimi, all in one place.
               </p>
               <dl className={styles.meta}>
                 <dt>Version</dt>
@@ -1865,7 +2028,8 @@ export function Settings() {
                   href={`mailto:${contactAddr()}`}
                   onClick={(e) => {
                     // Assemble the mailto at click time so the literal address is never in the DOM at rest.
-                    (e.currentTarget as HTMLAnchorElement).href = `mailto:${contactAddr()}`;
+                    (e.currentTarget as HTMLAnchorElement).href =
+                      `mailto:${contactAddr()}`;
                   }}
                 >
                   <Mail size={15} /> {CONTACT_USER}&#64;{CONTACT_DOMAIN}

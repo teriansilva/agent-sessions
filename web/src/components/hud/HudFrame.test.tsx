@@ -11,7 +11,9 @@ test("renders the four corner-bracket spans (accent by default)", () => {
   const cnr = container.querySelectorAll(".hud-cnr");
   expect(cnr).toHaveLength(4);
   // The four corners, and none are the hero variant by default.
-  ["tl", "tr", "bl", "br"].forEach((c) => expect(container.querySelector(`.hud-cnr.${c}`)).toBeTruthy());
+  ["tl", "tr", "bl", "br"].forEach((c) =>
+    expect(container.querySelector(`.hud-cnr.${c}`)).toBeTruthy(),
+  );
   expect(container.querySelector(".hud-cnr.hero")).toBeNull();
 });
 

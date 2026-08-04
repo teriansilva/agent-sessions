@@ -43,8 +43,20 @@ test.beforeEach(async ({ page }) => {
         total: sessions.length,
         facets: {
           projects: [
-            { kind: "project", id: "p-empty", name: "Empty", color: "", count: 0 },
-            { kind: "project", id: "__default__", name: "Default", color: "", count: 1 },
+            {
+              kind: "project",
+              id: "p-empty",
+              name: "Empty",
+              color: "",
+              count: 0,
+            },
+            {
+              kind: "project",
+              id: "__default__",
+              name: "Default",
+              color: "",
+              count: 1,
+            },
           ],
           engines: ["claude"],
         },
@@ -68,21 +80,30 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 });
 
 test("an empty project renders as a cluster and accepts a dropped session (#447)", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "drag-to-reassign is a desktop/pointer path");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "drag-to-reassign is a desktop/pointer path",
+  );
 
   let patched: { url: string; projectId: unknown } | null = null;
   await page.route("**/api/sessions/*/metadata", async (route) => {
     const body = route.request().postDataJSON() as { project_id?: unknown };
     patched = { url: route.request().url(), projectId: body?.project_id };
-    await route.fulfill({ json: { id: "claude:s", project_id: body?.project_id } });
+    await route.fulfill({
+      json: { id: "claude:s", project_id: body?.project_id },
+    });
   });
 
   await page.goto("/overview");
@@ -91,11 +112,15 @@ test("an empty project renders as a cluster and accepts a dropped session (#447)
 
   // The 0-session project is a visible cluster + a discoverable drop target.
   await expect(ov.getByTitle("Expand Empty", { exact: true })).toBeVisible();
-  await expect(ov.getByText("drag sessions here", { exact: true })).toBeVisible();
+  await expect(
+    ov.getByText("drag sessions here", { exact: true }),
+  ).toBeVisible();
 
   // Drag the session chip from Default onto the empty project cluster.
   const chip = page.locator('.react-flow__node[data-id="claude:s"]');
-  const empty = page.locator('.react-flow__node[data-id="group:project:p-empty"]');
+  const empty = page.locator(
+    '.react-flow__node[data-id="group:project:p-empty"]',
+  );
   await expect(chip).toBeVisible();
   await expect(empty).toBeVisible();
   const cb = await chip.boundingBox();
@@ -103,10 +128,16 @@ test("an empty project renders as a cluster and accepts a dropped session (#447)
   if (!cb || !tb) throw new Error("missing bounding boxes");
   await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
   await page.mouse.down();
-  await page.mouse.move(cb.x + cb.width / 2 + 12, cb.y + cb.height / 2 + 12, { steps: 4 });
-  await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, { steps: 12 });
+  await page.mouse.move(cb.x + cb.width / 2 + 12, cb.y + cb.height / 2 + 12, {
+    steps: 4,
+  });
+  await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2, {
+    steps: 12,
+  });
   await page.mouse.up();
 
   await expect.poll(() => patched?.projectId).toBe("p-empty");
-  expect(decodeURIComponent(patched!.url)).toContain("/api/sessions/claude:s/metadata");
+  expect(decodeURIComponent(patched!.url)).toContain(
+    "/api/sessions/claude:s/metadata",
+  );
 });

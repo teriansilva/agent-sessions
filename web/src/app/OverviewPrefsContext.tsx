@@ -18,7 +18,9 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
   const config = useConfig();
   const [expanded, setExpandedState] = useState<Set<string>>(new Set());
   const [excluded, setExcludedState] = useState<Set<string>>(new Set());
-  const [projectNames, setProjectNamesState] = useState<Record<string, string>>({});
+  const [projectNames, setProjectNamesState] = useState<Record<string, string>>(
+    {},
+  );
   const [mode, setModeState] = useState<"all" | "included">("all");
   const [included, setIncludedState] = useState<Set<string>>(new Set());
   const [groupBy, setGroupByState] = useState<GroupBy>(readGroupBy);
@@ -51,7 +53,8 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
   };
   // Mirror of the server `prefs.project_visible` resolver — mode-EXCLUSIVE so the map + Settings
   // agree with the server-filtered sidebar/facets (#335).
-  const isVisible = (cwd: string) => (mode === "included" ? included.has(cwd) : !excluded.has(cwd));
+  const isVisible = (cwd: string) =>
+    mode === "included" ? included.has(cwd) : !excluded.has(cwd);
   const value: OverviewPrefs = {
     expanded,
     hiddenProjects: excluded, // same Set under both names (#174)
@@ -109,5 +112,9 @@ export function OverviewPrefsProvider({ children }: { children: ReactNode }) {
     },
   };
 
-  return <OverviewPrefsCtx.Provider value={value}>{children}</OverviewPrefsCtx.Provider>;
+  return (
+    <OverviewPrefsCtx.Provider value={value}>
+      {children}
+    </OverviewPrefsCtx.Provider>
+  );
 }

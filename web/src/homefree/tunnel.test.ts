@@ -2,7 +2,12 @@ import { expect, test } from "vitest";
 
 import { type TermStatus, TermSocket } from "../lib/termSocket";
 import { Mux, type Stream } from "./mux";
-import { type CloseEventLike, createTunnel, MuxWebSocket, type Tunnel } from "./tunnel";
+import {
+  type CloseEventLike,
+  createTunnel,
+  MuxWebSocket,
+  type Tunnel,
+} from "./tunnel";
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -15,7 +20,9 @@ interface Agent {
 
 /** Wire a browser tunnel to an agent responder that handles each opened stream. The two
  *  muxes feed each other directly (the E2E crypto is tested in handshake.test.ts). */
-function wire(handle: (info: Record<string, unknown>, s: Stream) => Promise<void>): Agent {
+function wire(
+  handle: (info: Record<string, unknown>, s: Stream) => Promise<void>,
+): Agent {
   // Holder so `send` can reference the responder mux before it's constructed (no `let`).
   const ref: { agent: Mux | null } = { agent: null };
   const tunnel = createTunnel((f) => ref.agent?.feed(f));
@@ -88,7 +95,12 @@ test("tunnelFetch round-trips a GET: path + headers to the agent, Response back"
   const { tunnel } = wire(async (i, s) => {
     info = i;
     body = await drain(s);
-    await httpReply(s, 200, [["content-type", "application/json"]], te.encode('{"ok":true}'));
+    await httpReply(
+      s,
+      200,
+      [["content-type", "application/json"]],
+      te.encode('{"ok":true}'),
+    );
   });
 
   const resp = await tunnel.fetch("/api/sessions", {
@@ -134,7 +146,12 @@ test("tunnelFetch serializes a FormData/multipart upload with its boundary Conte
   const { tunnel } = wire(async (i, s) => {
     info = i;
     body = await drain(s);
-    await httpReply(s, 200, [], te.encode('{"path":"/u/pasted","name":"pasted"}'));
+    await httpReply(
+      s,
+      200,
+      [],
+      te.encode('{"path":"/u/pasted","name":"pasted"}'),
+    );
   });
 
   // A string form field (not a Blob) so the serialization is realm-independent in the
@@ -180,7 +197,12 @@ test("tunnelFetch persists the box Set-Cookie and re-attaches it (session/CSRF c
     // The first response mints a session cookie (as AUTH_MODE=none does on /api/config).
     const setCookie: [string, string][] =
       seenCookies.length === 1
-        ? [["set-cookie", "agent_sessions=SID9; Path=/; HttpOnly; SameSite=Lax"]]
+        ? [
+            [
+              "set-cookie",
+              "agent_sessions=SID9; Path=/; HttpOnly; SameSite=Lax",
+            ],
+          ]
         : [];
     await httpReply(s, 200, setCookie, te.encode("{}"));
   });
@@ -201,7 +223,12 @@ test("MuxWebSocket carries the tunnel session cookie on the WS upgrade after log
   const { tunnel } = wire(async (info, s) => {
     if (info.k === "http") {
       await drain(s);
-      await httpReply(s, 200, [["set-cookie", "agent_sessions=SID9; Path=/"]], te.encode("{}"));
+      await httpReply(
+        s,
+        200,
+        [["set-cookie", "agent_sessions=SID9; Path=/"]],
+        te.encode("{}"),
+      );
       return;
     }
     wsInfo = info;
@@ -213,7 +240,9 @@ test("MuxWebSocket carries the tunnel session cookie on the WS upgrade after log
   const ws = tunnel.wsFactory("/ws/term/claude:abc");
   await opened(ws);
   await tick();
-  expect((wsInfo.headers as Record<string, string>).cookie).toContain("agent_sessions=SID9");
+  expect((wsInfo.headers as Record<string, string>).cookie).toContain(
+    "agent_sessions=SID9",
+  );
   ws.close();
 });
 
@@ -222,7 +251,12 @@ test("switching sessions reuses the tunnel session cookie — no re-auth (#595 P
   const { tunnel } = wire(async (info, s) => {
     if (info.k === "http") {
       await drain(s);
-      await httpReply(s, 200, [["set-cookie", "agent_sessions=SID9; Path=/"]], te.encode("{}"));
+      await httpReply(
+        s,
+        200,
+        [["set-cookie", "agent_sessions=SID9; Path=/"]],
+        te.encode("{}"),
+      );
       return;
     }
     wsCookies.push((info.headers as Record<string, string>).cookie);
@@ -269,7 +303,9 @@ test("MuxWebSocket round-trips text + binary messages (echo)", async () => {
   await tick();
 
   expect(got[0]).toBe("hello");
-  expect(new Uint8Array(got[1] as ArrayBuffer)).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+  expect(new Uint8Array(got[1] as ArrayBuffer)).toEqual(
+    new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+  );
 });
 
 test("MuxWebSocket reassembles coalesced and fragmented frames into whole messages", async () => {
@@ -277,7 +313,9 @@ test("MuxWebSocket reassembles coalesced and fragmented frames into whole messag
   const { tunnel } = wire(async (info, s) => {
     if (info.k !== "ws") return;
     // Two text frames in ONE write (must not coalesce into one message)…
-    await s.write(concat([wsFrame(0, te.encode("aa")), wsFrame(0, te.encode("bb"))]));
+    await s.write(
+      concat([wsFrame(0, te.encode("aa")), wsFrame(0, te.encode("bb"))]),
+    );
     // …and one large binary frame the mux will fragment across DATA frames.
     await s.write(wsFrame(1, big));
     await s.end();

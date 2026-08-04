@@ -9,10 +9,14 @@ test("shell renders + new-session landing at /", async ({ page }) => {
   await page.goto("/");
   // The BATTLELAB wordmark lives in the full-width command topbar (one bar, all widths).
   await expect(page.locator(".hud-brand")).toBeVisible();
-  await expect(page.getByRole("heading", { name: /start a new session/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /start a new session/i }),
+  ).toBeVisible();
 });
 
-test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async ({ page }) => {
+test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async ({
+  page,
+}) => {
   await page.goto("/s/claude/abc123");
   // No backend in the preview, so the ws can't connect — but the xterm pane must mount
   // and a CONNECTION status must surface (connecting/reconnecting), never a blank route.
@@ -20,7 +24,9 @@ test("deep-link to /s/:engine/:id mounts the terminal (URL = identity)", async (
   // Review-now outcome lands) status live region, so the bare role query is ambiguous —
   // and role=status takes no name from content, so a name filter can't disambiguate.
   await expect(page.locator(".xterm")).toBeVisible();
-  await expect(page.getByRole("status").filter({ hasText: /connect/i })).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: /connect/i }),
+  ).toBeVisible();
 });
 
 test("responsive nav: drawer hamburger on mobile; single collapse affordance on desktop", async ({
@@ -57,7 +63,9 @@ test("responsive nav: drawer hamburger on mobile; single collapse affordance on 
   }
 });
 
-test("the command topbar spans the top and the pane floats below it (#134/#211)", async ({ page }) => {
+test("the command topbar spans the top and the pane floats below it (#134/#211)", async ({
+  page,
+}) => {
   await page.goto("/");
   const top = await page.locator(".hud-topbar").boundingBox();
   const pane = await page.locator(".terminal-pane").boundingBox();
@@ -76,16 +84,24 @@ test("opens the fullscreen session overview (topbar on desktop, drawer on mobile
   if (testInfo.project.name === "mobile") {
     // ≤640px the topbar actions collapse into the drawer — open it, then tap Overview there.
     await page.locator(".navToggle").click();
-    await page.locator(".sidebar").getByRole("link", { name: /open session overview/i }).click();
+    await page
+      .locator(".sidebar")
+      .getByRole("link", { name: /open session overview/i })
+      .click();
   } else {
-    await page.locator(".hud-topbar").getByRole("link", { name: /open session overview/i }).click();
+    await page
+      .locator(".hud-topbar")
+      .getByRole("link", { name: /open session overview/i })
+      .click();
   }
   await expect(page).toHaveURL(/\/overview$/);
   // The overview surface mounts (loading/empty/error state — never a blank route).
   await expect(page.locator(".tr-overview")).toBeVisible();
 });
 
-test("layout snapshot (per-project: desktop + mobile viewports)", async ({ page }, testInfo) => {
+test("layout snapshot (per-project: desktop + mobile viewports)", async ({
+  page,
+}, testInfo) => {
   await page.goto("/");
   // Screenshot named per project → mobile vs desktop layout regressions are visible/diffable.
   await testInfo.attach(`shell-${testInfo.project.name}`, {

@@ -21,10 +21,22 @@ import {
   useState,
 } from "react";
 import { api } from "../../lib/api";
-import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
-import { type SentMessage, appendSent, confirmSent, readSent } from "../../lib/sentHistory";
+import {
+  imageFilesFromAsyncClipboard,
+  imageFilesFromData,
+} from "../../lib/clipboardImages";
+import {
+  type SentMessage,
+  appendSent,
+  confirmSent,
+  readSent,
+} from "../../lib/sentHistory";
 import { SentMessagesModal } from "./SentMessagesModal";
-import { assembleSpoken, isSpaceDelimitedLang, type SpokenSegment } from "../../lib/dictation";
+import {
+  assembleSpoken,
+  isSpaceDelimitedLang,
+  type SpokenSegment,
+} from "../../lib/dictation";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
@@ -63,7 +75,9 @@ const draftSignature = (text: string, attachments: Attachment[]): string =>
  *  Read lazily (not a module constant) so tests can install a stub on `window` before render and
  *  so an unsupported browser (e.g. Firefox) simply yields `undefined` → the mic chip isn't shown. */
 const getSpeechRecognition = (): SpeechRecognitionStatic | undefined =>
-  typeof window === "undefined" ? undefined : window.SpeechRecognition ?? window.webkitSpeechRecognition;
+  typeof window === "undefined"
+    ? undefined
+    : (window.SpeechRecognition ?? window.webkitSpeechRecognition);
 
 /** Append freshly-spoken text to the draft that existed when dictation started (#483), inserting a
  *  single separator only when needed so dictation reads like a continuation of what was typed. */
@@ -170,7 +184,13 @@ export const Compose = forwardRef<
     sessionId?: string | null;
   }
 >(function Compose(
-  { sendInput, connEpoch, waitInputReady, defaultOpen = true, sessionId = null },
+  {
+    sendInput,
+    connEpoch,
+    waitInputReady,
+    defaultOpen = true,
+    sessionId = null,
+  },
   ref,
 ) {
   const [open, setOpen] = useState(defaultOpen);
@@ -306,7 +326,10 @@ export const Compose = forwardRef<
     const sig = draftSignature(text, attachments);
     if (sig === lastSavedRef.current) return;
     window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => flushDraft(text, attachments), DRAFT_SAVE_DEBOUNCE_MS);
+    saveTimerRef.current = window.setTimeout(
+      () => flushDraft(text, attachments),
+      DRAFT_SAVE_DEBOUNCE_MS,
+    );
     return () => window.clearTimeout(saveTimerRef.current);
   }, [text, attachments, sessionId, flushDraft]);
 
@@ -317,7 +340,9 @@ export const Compose = forwardRef<
       if (dirtyRef.current && sidRef.current) {
         const { text: t, attachments: a } = latestRef.current;
         if (draftSignature(t, a) !== lastSavedRef.current && sidRef.current) {
-          void api.saveDraft(sidRef.current, { text: t, attachments: a }).catch(() => {});
+          void api
+            .saveDraft(sidRef.current, { text: t, attachments: a })
+            .catch(() => {});
         }
       }
     };
@@ -431,7 +456,8 @@ export const Compose = forwardRef<
     const now = performance.now();
     // A session that heard speech proves the engine works, whatever it did afterwards.
     if (heardSpeech) dictDeadStartsRef.current = 0;
-    else if (now - startedAt < DICTATION_DEAD_START_MS) dictDeadStartsRef.current++;
+    else if (now - startedAt < DICTATION_DEAD_START_MS)
+      dictDeadStartsRef.current++;
     const engineDead = dictDeadStartsRef.current >= DICTATION_DEAD_START_LIMIT;
     // The deadline is enforced by `armIdleStop`'s timer; re-checking it here only means a session
     // that ends past it isn't re-armed for the moments before that timer gets its turn.
@@ -443,7 +469,9 @@ export const Compose = forwardRef<
       // Silence is a normal way to stop (the user walked away); an engine that won't run is not —
       // say so rather than letting the chip wink out unexplained, which is how #736 was reported.
       if (engineDead) {
-        setNote("dictation stopped — the speech engine kept dropping the session");
+        setNote(
+          "dictation stopped — the speech engine kept dropping the session",
+        );
         setTimeout(() => setNote(""), 4000);
       }
       return;
@@ -459,11 +487,15 @@ export const Compose = forwardRef<
   // the textarea via the SAME setText + grow + dirty path as typing (#483/#477). `continuousMode`
   // is false on the Android-Chrome retry path (see startDictation): Android Chrome rejects a
   // continuous recognizer with `service-not-allowed`, so we fall back to single-utterance mode.
-  const beginRecognition = (SR: SpeechRecognitionStatic, continuousMode: boolean) => {
+  const beginRecognition = (
+    SR: SpeechRecognitionStatic,
+    continuousMode: boolean,
+  ) => {
     const r = new SR();
     r.continuous = continuousMode;
     r.interimResults = true;
-    const lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    const lang =
+      (typeof navigator !== "undefined" && navigator.language) || "en-US";
     r.lang = lang;
     // Selects the transcript-comparison mode for the snapshot collapse (#711 finding 3): whole
     // words where spaces delimit them, codepoint prefixes where they don't (CJK etc.).
@@ -598,7 +630,8 @@ export const Compose = forwardRef<
     dictDeadStartsRef.current = 0;
     armIdleStop(); // the deadline runs from the press, even if not a word is ever heard
     setListening(true); // optimistic chip; cleared below if the grant/start fails
-    const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    const md =
+      typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
     if (!md?.getUserMedia) {
       // Old / insecure context without mediaDevices — let the recognizer request the mic itself.
       beginRecognition(SR, true);
@@ -657,7 +690,8 @@ export const Compose = forwardRef<
   const claimsSpaceKey = (el: Element | null): boolean => {
     if (!(el instanceof HTMLElement)) return false;
     if (el.isContentEditable) return true;
-    if (["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(el.tagName)) return true;
+    if (["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(el.tagName))
+      return true;
     return el.getAttribute("role") === "button";
   };
 
@@ -696,7 +730,8 @@ export const Compose = forwardRef<
     };
     const onLeave = () => {
       // Focus or visibility leaving mid-hold is a release: the keyup may never arrive.
-      if (keyHoldRef.current || heldPointerRef.current !== null) releaseDictation();
+      if (keyHoldRef.current || heldPointerRef.current !== null)
+        releaseDictation();
     };
     const onVisibility = () => {
       if (document.hidden) onLeave();
@@ -816,7 +851,9 @@ export const Compose = forwardRef<
       // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
       // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
       const enterDelay =
-        savedAttachments.length > 0 ? ENTER_DELAY_AFTER_ATTACHMENT_MS : ENTER_DELAY_MS;
+        savedAttachments.length > 0
+          ? ENTER_DELAY_AFTER_ATTACHMENT_MS
+          : ENTER_DELAY_MS;
       // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
       // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it
       // submits an EMPTY turn (#287). Keep the text so the user can resend, and say why.
@@ -906,7 +943,8 @@ export const Compose = forwardRef<
     if (fileRef.current) fileRef.current.value = "";
   };
 
-  const pickFiles = (files: FileList | null) => uploadFiles(Array.from(files ?? []));
+  const pickFiles = (files: FileList | null) =>
+    uploadFiles(Array.from(files ?? []));
 
   // External path (#157): the parent terminal forwards a captured image paste here. Open
   // Compose if it was collapsed (desktop default) and always upload as an attachment pill,
@@ -933,7 +971,9 @@ export const Compose = forwardRef<
       return;
     }
     if (e.clipboardData?.getData("text/plain")) return; // normal text paste — textarea handles it
-    const hadFileKind = Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === "file");
+    const hadFileKind = Array.from(e.clipboardData?.items ?? []).some(
+      (i) => i.kind === "file",
+    );
     e.preventDefault(); // nothing would have pasted anyway
     void imageFilesFromAsyncClipboard().then((fallback) => {
       if (fallback.length) {
@@ -954,11 +994,41 @@ export const Compose = forwardRef<
   // The single collapsible group (#487), in order: up, down, return, esc, tab, attach, and — when
   // open — collapse. Everything else (mic, Send) sits inline to the right; no second menu.
   const keyActions: KeyAction[] = [
-    { id: "up", aria: "Up", title: "Up", icon: <ArrowUp size={16} />, run: () => sendInput(KEYSEQ.up) },
-    { id: "down", aria: "Down", title: "Down", icon: <ArrowDown size={16} />, run: () => sendInput(KEYSEQ.down) },
-    { id: "enter", aria: "Return", title: "Return", icon: <CornerDownLeft size={16} />, run: () => sendInput(KEYSEQ.enter) },
-    { id: "esc", aria: "Escape", title: "Escape", text: "esc", run: () => sendInput(KEYSEQ.esc) },
-    { id: "tab", aria: "Tab", title: "Tab", icon: <ArrowRightToLine size={16} />, run: () => sendInput(KEYSEQ.tab) },
+    {
+      id: "up",
+      aria: "Up",
+      title: "Up",
+      icon: <ArrowUp size={16} />,
+      run: () => sendInput(KEYSEQ.up),
+    },
+    {
+      id: "down",
+      aria: "Down",
+      title: "Down",
+      icon: <ArrowDown size={16} />,
+      run: () => sendInput(KEYSEQ.down),
+    },
+    {
+      id: "enter",
+      aria: "Return",
+      title: "Return",
+      icon: <CornerDownLeft size={16} />,
+      run: () => sendInput(KEYSEQ.enter),
+    },
+    {
+      id: "esc",
+      aria: "Escape",
+      title: "Escape",
+      text: "esc",
+      run: () => sendInput(KEYSEQ.esc),
+    },
+    {
+      id: "tab",
+      aria: "Tab",
+      title: "Tab",
+      icon: <ArrowRightToLine size={16} />,
+      run: () => sendInput(KEYSEQ.tab),
+    },
     {
       id: "attach",
       aria: "Attach file",
@@ -976,7 +1046,8 @@ export const Compose = forwardRef<
             run: () => {
               // The chip may be inline or inside KeyBar's "…" overflow menu — either way the
               // trigger is whatever holds focus, and focus returns there on close.
-              historyBtnRef.current = document.activeElement as HTMLElement | null;
+              historyBtnRef.current =
+                document.activeElement as HTMLElement | null;
               setHistory(readSent()); // another tab may have sent since we last looked
               setHistoryOpen(true);
             },
@@ -1083,7 +1154,12 @@ export const Compose = forwardRef<
           </button>
         )}
         {open ? (
-          <button type="button" className={`${styles.send} shine`} title="Send + Enter" onClick={send}>
+          <button
+            type="button"
+            className={`${styles.send} shine`}
+            title="Send + Enter"
+            onClick={send}
+          >
             <Send size={15} />
             Send
           </button>

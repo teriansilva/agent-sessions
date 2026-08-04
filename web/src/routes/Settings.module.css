@@ -375,7 +375,12 @@
 }
 .agentBin {
   margin-left: auto;
-  font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font:
+    11.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }

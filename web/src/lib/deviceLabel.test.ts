@@ -2,7 +2,10 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { getDeviceLabel, setDeviceLabel } from "./deviceLabel";
 
 function setUA(ua: string) {
-  Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
+  Object.defineProperty(navigator, "userAgent", {
+    value: ua,
+    configurable: true,
+  });
 }
 
 beforeEach(() => {

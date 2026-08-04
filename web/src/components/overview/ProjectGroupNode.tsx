@@ -26,7 +26,8 @@ export function ProjectGroupNode({ data }: NodeProps) {
   // label for both). A project/agent group spanning several folders (#361 Phase 4) shows the
   // folder count instead of a single (arbitrary) path.
   const label = kind === "folder" ? name || shortCwd(cwd) || project : project;
-  const spansFolders = (kind === "project" || kind === "agent") && (cwdCount ?? 1) > 1;
+  const spansFolders =
+    (kind === "project" || kind === "agent") && (cwdCount ?? 1) > 1;
   // An empty project cluster (#447) is a drop target — show a discoverable hint instead of a
   // (nonexistent) path subtitle, since clusters are collapsed (header-only) by default.
   const isEmptyProject = kind === "project" && count === 0;
@@ -48,7 +49,11 @@ export function ProjectGroupNode({ data }: NodeProps) {
       .createProject({ name: pathBase(cwd), folders: [cwd] })
       .then(() => refetchSessions())
       .catch((ex: unknown) => {
-        setErr(ex instanceof ApiError && ex.message ? ex.message : "Couldn’t create the project.");
+        setErr(
+          ex instanceof ApiError && ex.message
+            ? ex.message
+            : "Couldn’t create the project.",
+        );
       })
       .finally(() => setBusy(false));
   };
@@ -59,7 +64,12 @@ export function ProjectGroupNode({ data }: NodeProps) {
       style={color ? ({ "--proj": color } as CSSProperties) : undefined}
     >
       <HudFrame />
-      <Handle type="target" position={Position.Top} className="tr-ov-handle" isConnectable={false} />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="tr-ov-handle"
+        isConnectable={false}
+      />
       <div
         className="tr-ov-group-head nodrag nopan"
         aria-expanded={!collapsed}
@@ -72,7 +82,11 @@ export function ProjectGroupNode({ data }: NodeProps) {
             <span
               className="tr-ov-owner"
               title={`In project ${owner.name}`}
-              style={owner.color ? ({ "--owner": owner.color } as CSSProperties) : undefined}
+              style={
+                owner.color
+                  ? ({ "--owner": owner.color } as CSSProperties)
+                  : undefined
+              }
             >
               <span className="tr-ov-owner-dot" aria-hidden="true" />
               {owner.name}

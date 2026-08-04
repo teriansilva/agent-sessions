@@ -43,7 +43,9 @@ const WHEEL_DOWN = /\x1b\[<65[;0-9]*[Mm]/; // eslint-disable-line no-control-reg
 
 async function waitForPaint(page: import("@playwright/test").Page) {
   await expect
-    .poll(async () => page.locator(".xterm-screen").innerText(), { timeout: 5000 })
+    .poll(async () => page.locator(".xterm-screen").innerText(), {
+      timeout: 5000,
+    })
     .toContain("row 0");
 }
 
@@ -66,10 +68,16 @@ test("mouse-tracking session (desktop): wheel-up reveals the ↓ FAB; clicking i
 
   // Clicking the FAB must forward DOWNWARD wheel reports (button 65) to walk the agent back to its
   // tail — not just call the (no-op here) xterm scrollToBottom().
-  await page.evaluate(() => ((window as unknown as { __sentInput: string[] }).__sentInput = []));
+  await page.evaluate(
+    () => ((window as unknown as { __sentInput: string[] }).__sentInput = []),
+  );
   await fab.click();
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __sentInput: string[] }).__sentInput.join("")))
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __sentInput: string[] }).__sentInput.join(""),
+      ),
+    )
     .toMatch(WHEEL_DOWN);
   await expect(fab).toHaveCount(0); // returned to the tail → hidden again
 });
@@ -93,7 +101,12 @@ test("mouse-tracking session (mobile): a scroll-up drag reveals the ↓ FAB; tap
     const r = el.getBoundingClientRect();
     const cx = Math.round(r.x + r.width / 2);
     const touch = (y: number) =>
-      new Touch({ identifier: 1, target: el, clientX: cx, clientY: Math.round(y) });
+      new Touch({
+        identifier: 1,
+        target: el,
+        clientX: cx,
+        clientY: Math.round(y),
+      });
     const fire = (type: string, y: number) =>
       el.dispatchEvent(
         new TouchEvent(type, {
@@ -113,10 +126,16 @@ test("mouse-tracking session (mobile): a scroll-up drag reveals the ↓ FAB; tap
   await expect(fab).toBeVisible();
 
   // Tap the FAB → forwards downward wheel reports to return the agent to its tail.
-  await page.evaluate(() => ((window as unknown as { __sentInput: string[] }).__sentInput = []));
+  await page.evaluate(
+    () => ((window as unknown as { __sentInput: string[] }).__sentInput = []),
+  );
   await fab.click();
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { __sentInput: string[] }).__sentInput.join("")))
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __sentInput: string[] }).__sentInput.join(""),
+      ),
+    )
     .toMatch(WHEEL_DOWN);
   await expect(fab).toHaveCount(0);
 });

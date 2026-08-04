@@ -13,7 +13,9 @@ window.WebSocket = class {
 };
 `;
 
-test("the status footer renders the running version as a hud tag (#661)", async ({ page }) => {
+test("the status footer renders the running version as a hud tag (#661)", async ({
+  page,
+}) => {
   await page.addInitScript(NOOP_WS);
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "9.9.9" } }),

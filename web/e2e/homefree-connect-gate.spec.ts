@@ -14,7 +14,8 @@ test.use({
 });
 
 const STORAGE_KEY = "battlelab.connect.session.v1";
-const ZERO_ALTCHA = "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9";
+const ZERO_ALTCHA =
+  "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9";
 
 function publicConnectUrl(baseURL: string | undefined): string {
   const u = new URL(baseURL ?? "http://localhost:41873");
@@ -79,21 +80,26 @@ async function stubInstrumentedConnect(
     },
     { failMount: opts.failMount ?? false, holdMs: opts.holdMs ?? 250 },
   );
-  await page.route("https://relay.battlelab.superstatus.io/altcha/challenge", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        algorithm: "SHA-256",
-        challenge: ZERO_ALTCHA,
-        salt: "",
-        signature: "test",
-        maxnumber: 0,
-      }),
-    });
-  });
+  await page.route(
+    "https://relay.battlelab.superstatus.io/altcha/challenge",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          algorithm: "SHA-256",
+          challenge: ZERO_ALTCHA,
+          salt: "",
+          signature: "test",
+          maxnumber: 0,
+        }),
+      });
+    },
+  );
 }
 
-async function fillCredentials(page: import("@playwright/test").Page): Promise<void> {
+async function fillCredentials(
+  page: import("@playwright/test").Page,
+): Promise<void> {
   await page.getByLabel("Console key").fill("nightjar-1010");
   await page.getByLabel("Access password").fill("stream-secret");
 }
@@ -112,11 +118,16 @@ test("scripted connects are inert: zero challenge fetches and zero sockets befor
 
   // …and even a JS-driven submit that bypasses the disabled button goes nowhere.
   await page.evaluate(() =>
-    (document.getElementById("connect-form") as HTMLFormElement).requestSubmit(),
+    (
+      document.getElementById("connect-form") as HTMLFormElement
+    ).requestSubmit(),
   );
   await expect(page.locator("#status")).toContainText(/hold to verify/i);
   await expect(page.locator("#status")).toHaveAttribute("data-kind", "error");
-  await expect(page.locator("#verify-gate")).toHaveAttribute("data-state", "idle");
+  await expect(page.locator("#verify-gate")).toHaveAttribute(
+    "data-state",
+    "idle",
+  );
   expect(altcha()).toBe(0);
   expect(await wsCount(page)).toBe(0);
 });
@@ -139,7 +150,10 @@ test("interrupting the hold cancels it: early release, window blur, and auto-rep
   await page.waitForTimeout(250);
   await page.mouse.up();
   await expect(gate).toHaveAttribute("data-state", "idle");
-  await expect(page.locator("#gate-meter")).toHaveAttribute("aria-valuenow", "0");
+  await expect(page.locator("#gate-meter")).toHaveAttribute(
+    "aria-valuenow",
+    "0",
+  );
   await expect(page.getByRole("button", { name: "Connect" })).toBeDisabled();
 
   // Window blur mid-hold cancels too (tab-away must not accumulate progress).
@@ -178,25 +192,37 @@ test("a completed hold arms exactly one attempt, and sign-out re-gates", async (
   expect(await wsCount(page)).toBe(1);
 
   // Sign out (the bar may default collapsed on narrow viewports) → the gate is fresh again.
-  if (((await page.locator(".session-box").getAttribute("class")) ?? "").includes("collapsed")) {
+  if (
+    ((await page.locator(".session-box").getAttribute("class")) ?? "").includes(
+      "collapsed",
+    )
+  ) {
     await page.locator("#session-toggle").click();
   }
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.locator(".connect-card")).toBeVisible();
-  await expect(page.locator("#verify-gate")).toHaveAttribute("data-state", "idle");
+  await expect(page.locator("#verify-gate")).toHaveAttribute(
+    "data-state",
+    "idle",
+  );
   await expect(page.getByRole("button", { name: "Connect" })).toBeDisabled();
 
   // The consumed verification cannot be replayed by a scripted re-submit.
   await fillCredentials(page);
   await page.evaluate(() =>
-    (document.getElementById("connect-form") as HTMLFormElement).requestSubmit(),
+    (
+      document.getElementById("connect-form") as HTMLFormElement
+    ).requestSubmit(),
   );
   await expect(page.locator("#status")).toContainText(/hold to verify/i);
   expect(altcha()).toBe(1);
   expect(await wsCount(page)).toBe(1);
 });
 
-test("a failed connect re-gates the next attempt", async ({ page, baseURL }) => {
+test("a failed connect re-gates the next attempt", async ({
+  page,
+  baseURL,
+}) => {
   const altcha = trackAltcha(page);
   await stubInstrumentedConnect(page, { failMount: true });
   await page.goto(publicConnectUrl(baseURL));
@@ -208,7 +234,10 @@ test("a failed connect re-gates the next attempt", async ({ page, baseURL }) => 
   expect(altcha()).toBe(1);
 
   // The failure consumed the verification: back to an idle gate and a disabled button…
-  await expect(page.locator("#verify-gate")).toHaveAttribute("data-state", "idle");
+  await expect(page.locator("#verify-gate")).toHaveAttribute(
+    "data-state",
+    "idle",
+  );
   await expect(page.getByRole("button", { name: "Connect" })).toBeDisabled();
 
   // …and a fresh hold recovers the flow.
@@ -243,7 +272,10 @@ test("a reload with saved credentials stops at a fresh gate — no auto-connect"
   await expect(page.locator(".connect-card")).toBeVisible();
   await expect(page.getByLabel("Console key")).toHaveValue("saved-box");
   await expect(page.locator("#status")).toContainText(/hold to verify/i);
-  await expect(page.locator("#verify-gate")).toHaveAttribute("data-state", "idle");
+  await expect(page.locator("#verify-gate")).toHaveAttribute(
+    "data-state",
+    "idle",
+  );
   await expect(page.getByRole("button", { name: "Connect" })).toBeDisabled();
 
   await page.waitForTimeout(600); // an auto-connect, had one started, would have fetched by now
@@ -293,7 +325,9 @@ test("a lost key release cannot verify, and a cancelled hold never latches the k
   // A fresh keyboard hold still verifies — the gate is not latched shut.
   await hold.focus();
   await page.keyboard.down(" ");
-  await expect(gate).toHaveAttribute("data-state", "verified", { timeout: 5_000 });
+  await expect(gate).toHaveAttribute("data-state", "verified", {
+    timeout: 5_000,
+  });
   await page.keyboard.up(" ");
   await expect(page.getByRole("button", { name: "Connect" })).toBeEnabled();
   expect(altcha()).toBe(0);
@@ -326,9 +360,15 @@ test("the gate is keyboard-operable and its progress survives reduced motion", a
     .poll(async () => Number(await meter.getAttribute("aria-valuenow")))
     .toBeGreaterThan(0);
   await expect
-    .poll(() => page.locator("#gate-fill").evaluate((el) => el.getBoundingClientRect().width))
+    .poll(() =>
+      page
+        .locator("#gate-fill")
+        .evaluate((el) => el.getBoundingClientRect().width),
+    )
     .toBeGreaterThan(0);
-  await expect(gate).toHaveAttribute("data-state", "verified", { timeout: 5_000 });
+  await expect(gate).toHaveAttribute("data-state", "verified", {
+    timeout: 5_000,
+  });
   await page.keyboard.up(" ");
 
   await expect(meter).toHaveAttribute("aria-valuenow", "100");

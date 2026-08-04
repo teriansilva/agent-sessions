@@ -47,7 +47,10 @@ test("tapping the scroll-to-bottom FAB returns to the tail even with fling momen
   const viewport = page.locator(".xterm-viewport");
   await expect(viewport).toBeVisible();
   await expect
-    .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), { timeout: 5000 })
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      { timeout: 5000 },
+    )
     .toBeGreaterThan(100);
 
   // One finger-drag DOWN over the capture overlay = scroll UP into history, lifting WHILE moving so
@@ -57,7 +60,12 @@ test("tapping the scroll-to-bottom FAB returns to the tail even with fling momen
       const r = el.getBoundingClientRect();
       const cx = Math.round(r.x + r.width / 2);
       const touch = (y: number) =>
-        new Touch({ identifier: 1, target: el, clientX: cx, clientY: Math.round(y) });
+        new Touch({
+          identifier: 1,
+          target: el,
+          clientX: cx,
+          clientY: Math.round(y),
+        });
       const fire = (type: string, y: number) =>
         el.dispatchEvent(
           new TouchEvent(type, {
@@ -88,7 +96,10 @@ test("tapping the scroll-to-bottom FAB returns to the tail even with fling momen
   await flingUpOnce();
   const box = await fab.boundingBox();
   if (!box) throw new Error("FAB has no box");
-  await page.touchscreen.tap(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+  await page.touchscreen.tap(
+    Math.round(box.x + box.width / 2),
+    Math.round(box.y + box.height / 2),
+  );
 
   // Let any (cancelled, if fixed) momentum decay, then assert the STEADY state is the tail. Unfixed,
   // the leftover fling drags the view back to the top within a few frames and the FAB reappears; the

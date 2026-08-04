@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
-import type { AppConfig, ProjectArchiveReport, ProjectEntity } from "../types/api";
+import type {
+  AppConfig,
+  ProjectArchiveReport,
+  ProjectEntity,
+} from "../types/api";
 import { ProjectsManagerCard } from "./ProjectsManager";
 
 vi.mock("../lib/api", async (orig) => {
@@ -90,16 +94,27 @@ test("create requires a default folder, then calls the API and refetches (#448)"
   vi.mocked(api.projectEntities).mockResolvedValue({
     projects: [
       ent(),
-      ent({ id: "p-2", name: "Fresh", folders: ["/picked"], default_folder: "/picked", session_count: 0 }),
+      ent({
+        id: "p-2",
+        name: "Fresh",
+        folders: ["/picked"],
+        default_folder: "/picked",
+        session_count: 0,
+      }),
     ],
   });
   await user.type(screen.getByLabelText("New project name"), "Fresh");
   // Create stays disabled until a default folder is chosen (#448).
   expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Choose the default folder" }));
+  await user.click(
+    screen.getByRole("button", { name: "Choose the default folder" }),
+  );
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await user.click(screen.getByRole("button", { name: "Create" }));
-  expect(api.createProject).toHaveBeenCalledWith({ name: "Fresh", default_folder: "/picked" });
+  expect(api.createProject).toHaveBeenCalledWith({
+    name: "Fresh",
+    default_folder: "/picked",
+  });
   expect(await screen.findByText("Fresh")).toBeInTheDocument();
   expect(api.projectEntities).toHaveBeenCalledTimes(2);
 });
@@ -117,9 +132,13 @@ test("changing a project's default folder patches default_folder (#448)", async 
   });
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
-  await user.click(screen.getByRole("button", { name: "Change default folder for SampleProject" }));
+  await user.click(
+    screen.getByRole("button", { name: "Change default folder for SampleProject" }),
+  );
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  expect(api.patchProject).toHaveBeenCalledWith("p-1", { default_folder: "/picked" });
+  expect(api.patchProject).toHaveBeenCalledWith("p-1", {
+    default_folder: "/picked",
+  });
 });
 
 test("archive with a failed member shows the failed list and Retry re-calls the endpoint", async () => {
@@ -136,9 +155,13 @@ test("archive with a failed member shows the failed list and Retry re-calls the 
   vi.mocked(api.archiveProject).mockResolvedValue(report);
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
-  await user.click(screen.getByRole("button", { name: "Archive project SampleProject" }));
+  await user.click(
+    screen.getByRole("button", { name: "Archive project SampleProject" }),
+  );
   expect(api.archiveProject).toHaveBeenCalledWith("p-1");
-  expect(await screen.findByText(/1 archived · 0 already archived · 1 failed/)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/1 archived · 0 already archived · 1 failed/),
+  ).toBeInTheDocument();
   expect(screen.getByText("opencode:bbbb")).toBeInTheDocument();
   expect(screen.getByText(/db locked/)).toBeInTheDocument();
   // Retry blindly re-calls the SAME endpoint — already_* results are normal.
@@ -153,7 +176,9 @@ test("delete asks for confirmation (files-never-touched copy) before calling the
   vi.mocked(api.deleteProject).mockResolvedValue({ deleted: true, id: "p-1" });
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
-  await user.click(screen.getByRole("button", { name: "Delete project SampleProject" }));
+  await user.click(
+    screen.getByRole("button", { name: "Delete project SampleProject" }),
+  );
   expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/never touched/i));
   expect(api.deleteProject).toHaveBeenCalledWith("p-1");
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalledTimes(2));
@@ -164,14 +189,19 @@ test("a declined confirm aborts the delete", async () => {
   vi.spyOn(window, "confirm").mockReturnValue(false);
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
-  await user.click(screen.getByRole("button", { name: "Delete project SampleProject" }));
+  await user.click(
+    screen.getByRole("button", { name: "Delete project SampleProject" }),
+  );
   expect(api.deleteProject).not.toHaveBeenCalled();
 });
 
 test("archived entities sit in a collapsed subsection with an Unarchive action", async () => {
   const user = userEvent.setup();
   vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [ent(), ent({ id: "p-9", name: "Old", archived: true, session_count: 1 })],
+    projects: [
+      ent(),
+      ent({ id: "p-9", name: "Old", archived: true, session_count: 1 }),
+    ],
   });
   vi.mocked(api.unarchiveProject).mockResolvedValue({
     id: "p-9",
@@ -182,8 +212,12 @@ test("archived entities sit in a collapsed subsection with an Unarchive action",
   render(<ProjectsManagerCard />);
   expect(await screen.findByText("Archived (1)")).toBeInTheDocument();
   // The archived row is NOT in the active list (no archive/delete actions for it).
-  expect(screen.queryByRole("button", { name: "Archive project Old" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Unarchive project Old" }));
+  expect(
+    screen.queryByRole("button", { name: "Archive project Old" }),
+  ).toBeNull();
+  await user.click(
+    screen.getByRole("button", { name: "Unarchive project Old" }),
+  );
   expect(api.unarchiveProject).toHaveBeenCalledWith("p-9");
   expect(await screen.findByText(/1 unarchived/)).toBeInTheDocument();
   expect(api.projectEntities).toHaveBeenCalledTimes(2);
@@ -195,7 +229,10 @@ test("a 409 folder conflict surfaces the server's detail string inline", async (
     folders: [{ cwd: "/home/u/free", label: "/home/u/free" }],
   });
   vi.mocked(api.patchProject).mockRejectedValue(
-    new ApiError(409, "folder '/home/u/free' conflicts with '/home/u/free' already adopted by project p-7"),
+    new ApiError(
+      409,
+      "folder '/home/u/free' conflicts with '/home/u/free' already adopted by project p-7",
+    ),
   );
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
@@ -207,7 +244,9 @@ test("a 409 folder conflict surfaces the server's detail string inline", async (
   expect(api.patchProject).toHaveBeenCalledWith("p-1", {
     folders: ["/home/u/sampleproject", "/home/u/free"],
   });
-  expect(await screen.findByText(/already adopted by project p-7/)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/already adopted by project p-7/),
+  ).toBeInTheDocument();
 });
 
 test("releasing a folder chip patches the remaining folder set", async () => {
@@ -223,7 +262,9 @@ test("releasing a folder chip patches the remaining folder set", async () => {
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
   await user.click(
-    screen.getByRole("button", { name: "Release folder /home/u/sampleproject from SampleProject" }),
+    screen.getByRole("button", {
+      name: "Release folder /home/u/sampleproject from SampleProject",
+    }),
   );
   expect(api.patchProject).toHaveBeenCalledWith("p-1", { folders: [] });
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalledTimes(2));
@@ -241,7 +282,9 @@ test("rename commits via patchProject and color swatches set/clear the color", a
   });
   render(<ProjectsManagerCard />);
   await screen.findByText("SampleProject");
-  await user.click(screen.getByRole("button", { name: "Rename project SampleProject" }));
+  await user.click(
+    screen.getByRole("button", { name: "Rename project SampleProject" }),
+  );
   const input = screen.getByRole("textbox", { name: "Project name for SampleProject" });
   await user.clear(input);
   await user.type(input, "SampleProject 2");
@@ -280,13 +323,17 @@ function renderWithConfig(config: Partial<AppConfig> = {}) {
 
 test("star: unstarred by default, and starring persists default_project_id", async () => {
   renderWithConfig();
-  const star = await screen.findByRole("button", { name: "Make SampleProject the default project" });
+  const star = await screen.findByRole("button", {
+    name: "Make SampleProject the default project",
+  });
   expect(star).toHaveAttribute("aria-pressed", "false");
   await userEvent.click(star);
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "p-1" });
   // Optimistic: the row flips before the config refresh lands.
   expect(
-    await screen.findByRole("button", { name: "SampleProject is the default project — clear it" }),
+    await screen.findByRole("button", {
+      name: "SampleProject is the default project — clear it",
+    }),
   ).toHaveAttribute("aria-pressed", "true");
 });
 
@@ -301,35 +348,48 @@ test("star: seeds from config.default_project_id, and clicking the starred one c
   await userEvent.click(star);
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "" });
   expect(
-    await screen.findByRole("button", { name: "Make SampleProject the default project" }),
+    await screen.findByRole("button", {
+      name: "Make SampleProject the default project",
+    }),
   ).toHaveAttribute("aria-pressed", "false");
 });
 
 test("star: exactly one project is starred at a time", async () => {
   vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [ent(), ent({ id: "p-2", name: "BattleLab", folders: ["/home/u/bl"] })],
+    projects: [
+      ent(),
+      ent({ id: "p-2", name: "BattleLab", folders: ["/home/u/bl"] }),
+    ],
   });
   renderWithConfig({ default_project_id: "p-1" });
-  await screen.findByRole("button", { name: "SampleProject is the default project — clear it" });
-  const other = screen.getByRole("button", { name: "Make BattleLab the default project" });
+  await screen.findByRole("button", {
+    name: "SampleProject is the default project — clear it",
+  });
+  const other = screen.getByRole("button", {
+    name: "Make BattleLab the default project",
+  });
   await userEvent.click(other);
   expect(api.setPrefs).toHaveBeenCalledWith({ default_project_id: "p-2" });
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Make SampleProject the default project" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    ),
+    expect(
+      screen.getByRole("button", { name: "Make SampleProject the default project" }),
+    ).toHaveAttribute("aria-pressed", "false"),
   );
 });
 
 test("star: a failed save rolls back and surfaces an error", async () => {
   vi.mocked(api.setPrefs).mockRejectedValue(new Error("nope"));
   renderWithConfig();
-  await userEvent.click(await screen.findByRole("button", { name: "Make SampleProject the default project" }));
-  expect(await screen.findByText(/couldn.t save the default project/i)).toBeInTheDocument();
-  // Rolled back to unstarred — never leave the UI asserting a default the server rejected.
-  expect(screen.getByRole("button", { name: "Make SampleProject the default project" })).toHaveAttribute(
-    "aria-pressed",
-    "false",
+  await userEvent.click(
+    await screen.findByRole("button", {
+      name: "Make SampleProject the default project",
+    }),
   );
+  expect(
+    await screen.findByText(/couldn.t save the default project/i),
+  ).toBeInTheDocument();
+  // Rolled back to unstarred — never leave the UI asserting a default the server rejected.
+  expect(
+    screen.getByRole("button", { name: "Make SampleProject the default project" }),
+  ).toHaveAttribute("aria-pressed", "false");
 });

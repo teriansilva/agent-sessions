@@ -29,7 +29,10 @@ const chunkErr = () => {
   return e;
 };
 
-function renderLazy(factory: () => Promise<{ default: React.ComponentType<unknown> }>, key: string) {
+function renderLazy(
+  factory: () => Promise<{ default: React.ComponentType<unknown> }>,
+  key: string,
+) {
   const C = lazyWithReload(factory, key);
   return render(
     <ChunkErrorBoundary fallback={<div>chunk-fallback</div>}>

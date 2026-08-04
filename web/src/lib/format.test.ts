@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { engineBadge, engineColor, engineName, projectColor, relTime } from "./format";
+import {
+  engineBadge,
+  engineColor,
+  engineName,
+  projectColor,
+  relTime,
+} from "./format";
 
 // #636: the plain-terminal "shell" engine gets its own badge / neutral accent / name, and any
 // unknown engine still falls through to the claude default (the helpers never throw).
@@ -11,7 +17,9 @@ describe("engine presentation — shell (#636)", () => {
   });
 
   test("shell's accent differs from every agent engine's", () => {
-    const agents = ["claude", "opencode", "codex", "gemini", "antigravity"].map(engineColor);
+    const agents = ["claude", "opencode", "codex", "gemini", "antigravity"].map(
+      engineColor,
+    );
     expect(agents).not.toContain(engineColor("shell"));
   });
 
@@ -65,7 +73,8 @@ describe("relTime — spelled-out relative time (#508)", () => {
 // folder cwd) → golden-angle hue, emitted as a light-dark() pair so the same hue gets a
 // theme-appropriate lightness. Pin determinism, spread, shape, and degenerate inputs.
 describe("projectColor — deterministic per-project accent (#285)", () => {
-  const SHAPE = /^light-dark\(hsl\((\d{1,3}) 55% 40%\), hsl\((\d{1,3}) 60% 58%\)\)$/;
+  const SHAPE =
+    /^light-dark\(hsl\((\d{1,3}) 55% 40%\), hsl\((\d{1,3}) 60% 58%\)\)$/;
 
   test("same key → identical colour on every call (stable across reloads)", () => {
     expect(projectColor("/home/u/proj")).toBe(projectColor("/home/u/proj"));

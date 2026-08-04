@@ -16,7 +16,10 @@ export interface SessionStatus {
  *  session brief — which re-reviews in place and therefore holds a fresher intervention pair than
  *  the store does — can take only these from the row and supply the pair itself, instead of
  *  carrying two sources for one fact. A `Session` satisfies it. */
-export type SessionStatusBase = Pick<Session, "review_excluded" | "working" | "has_draft">;
+export type SessionStatusBase = Pick<
+  Session,
+  "review_excluded" | "working" | "has_draft"
+>;
 
 /** Exactly the row fields the dot is resolved from. */
 export type SessionStatusInput = SessionStatusBase &
@@ -40,10 +43,20 @@ export function sessionStatus(s: SessionStatusInput): SessionStatus {
     };
   }
   if (s.working) {
-    return { variant: "up", role: "status", label: "agent working", title: "agent working" };
+    return {
+      variant: "up",
+      role: "status",
+      label: "agent working",
+      title: "agent working",
+    };
   }
   if (s.has_draft) {
-    return { variant: "draft", role: "img", label: "unsent draft", title: "Unsent draft" };
+    return {
+      variant: "draft",
+      role: "img",
+      label: "unsent draft",
+      title: "Unsent draft",
+    };
   }
   return { variant: "idle", role: undefined, label: undefined, title: "idle" };
 }

@@ -176,6 +176,10 @@ export interface PulseCard {
    *  `routes/pulse._attach_pending` (#754). Present means the card carries the decision
    *  controls inline; the queue is no longer a separate list. */
   pending_action?: OrchestratorAction;
+  /** The orchestrator's most recent SETTLED action on this session (#777) — what it last did
+   *  here, now that the separate Activity list is gone. Never set alongside `pending_action`:
+   *  a card either has a decision waiting or a history line, not both. */
+  last_action?: OrchestratorAction;
   /** The band this card had BEFORE `pending_action` re-banded it to `needs_you`. Present only
    *  when the overlay fired; the client restores it when an action is settled locally, so the
    *  session does not sit under "Needs you" with nothing pending. */

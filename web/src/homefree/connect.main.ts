@@ -158,9 +158,14 @@ function renderGate(pct: number): void {
   // longer actionable — disable it until the verification is consumed.
   gateHoldBtn.disabled = gateState === "verified";
   const label =
-    gateState === "verified" ? "Verified — human" : gateState === "holding" ? "Verifying…" : "Hold to verify";
+    gateState === "verified"
+      ? "Verified — human"
+      : gateState === "holding"
+        ? "Verifying…"
+        : "Hold to verify";
   gateStateLabel.textContent = label;
-  gateHoldLabel.textContent = gateState === "verified" ? "Verified — human" : "Hold to verify";
+  gateHoldLabel.textContent =
+    gateState === "verified" ? "Verified — human" : "Hold to verify";
   syncConnectEnabled();
 }
 
@@ -170,7 +175,10 @@ function stopHoldTimer(): void {
 }
 
 function gateTick(): void {
-  const pct = Math.min(100, ((performance.now() - holdStartedAt) / gateHoldMs()) * 100);
+  const pct = Math.min(
+    100,
+    ((performance.now() - holdStartedAt) / gateHoldMs()) * 100,
+  );
   if (pct >= 100) {
     stopHoldTimer();
     gateState = "verified";
@@ -325,10 +333,14 @@ barNarrowMq.addEventListener("change", () => {
 });
 
 function setSessionLed(kind: "up" | "warn" | "down"): void {
-  if (sessionLed) sessionLed.className = kind === "up" ? "session-led" : `session-led ${kind}`;
+  if (sessionLed)
+    sessionLed.className =
+      kind === "up" ? "session-led" : `session-led ${kind}`;
 }
 
-sessionToggle.addEventListener("click", () => setBarCollapsed(!barCollapsed, true));
+sessionToggle.addEventListener("click", () =>
+  setBarCollapsed(!barCollapsed, true),
+);
 
 let countdownTimer: number | undefined;
 let expiryTimer: number | undefined;
@@ -385,10 +397,18 @@ function readSavedSession(): SavedConnectSession | null {
 function scheduleStorageExpiry(expiresAt: number): void {
   expiryTimer = stopTimer(expiryTimer);
   const delay = Math.max(0, expiresAt - nowMs());
-  expiryTimer = window.setTimeout(() => endSession(sessionExpiredMessage(), "expired"), delay);
+  expiryTimer = window.setTimeout(
+    () => endSession(sessionExpiredMessage(), "expired"),
+    delay,
+  );
 }
 
-function saveSession(base: string, name: string, key: string, deadline?: number): void {
+function saveSession(
+  base: string,
+  name: string,
+  key: string,
+  deadline?: number,
+): void {
   const expiresAt = sessionExpiryMs(nowMs(), deadline);
   if (!Number.isFinite(expiresAt) || expiresAt <= nowMs()) return;
   const saved: SavedConnectSession = { relay: base, name, key, expiresAt };
@@ -401,7 +421,11 @@ function saveSession(base: string, name: string, key: string, deadline?: number)
 }
 
 function canonicalConnectPath(): string {
-  if (isPublicDeploy() || location.pathname === "/connect" || location.pathname.startsWith("/connect/")) {
+  if (
+    isPublicDeploy() ||
+    location.pathname === "/connect" ||
+    location.pathname.startsWith("/connect/")
+  ) {
     return "/connect/";
   }
   return "/connect.html";
@@ -442,7 +466,10 @@ function teardownActiveApp(): void {
   activeApp = null;
 }
 
-function endSession(message: string, reason: "expired" | "closed" | "signed-out"): void {
+function endSession(
+  message: string,
+  reason: "expired" | "closed" | "signed-out",
+): void {
   teardownActiveApp();
   clearSavedSession();
   stopCountdown();
@@ -474,7 +501,9 @@ function restoreSavedSession(): SavedConnectSession | null {
 }
 
 async function connect(): Promise<void> {
-  const base = (relayInput.value.trim() || (isPublicDeploy() ? PUBLIC_RELAY : "")).replace(/\/+$/, "");
+  const base = (
+    relayInput.value.trim() || (isPublicDeploy() ? PUBLIC_RELAY : "")
+  ).replace(/\/+$/, "");
   const name = nameInput.value.trim();
   const key = keyInput.value.trim();
   if (!base || !name || !key) {
@@ -504,13 +533,21 @@ async function connect(): Promise<void> {
 }
 
 /** Solve the captcha, open the relay socket, then mount the real BattleLab SPA over the tunnel. */
-async function connectApp(base: string, name: string, key: string): Promise<MountedApp> {
+async function connectApp(
+  base: string,
+  name: string,
+  key: string,
+): Promise<MountedApp> {
   const { altchaUrl, wsUrl } = relayUrls(base, name);
   const fetchFn = window.fetch.bind(window);
-  const makeWebSocket = harness()?.makeWebSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike);
+  const makeWebSocket =
+    harness()?.makeWebSocket ??
+    ((url: string) => new WebSocket(url) as unknown as SocketLike);
   const mount = harness()?.mountApp ?? mountApp;
 
-  const challenge = (await (await fetchFn(altchaUrl)).json()) as AltchaChallenge;
+  const challenge = (await (
+    await fetchFn(altchaUrl)
+  ).json()) as AltchaChallenge;
   const captcha = solveAltcha(challenge);
   setStatus("connecting to the relay…");
 
@@ -521,11 +558,16 @@ async function connectApp(base: string, name: string, key: string): Promise<Moun
         canonicalizeConnectedUrl();
         sessionNameEl.textContent = `Connected to ${name}`;
         setState("connected");
-        setStatus("connected — streaming your BattleLab, the relay is blind", "ok");
+        setStatus(
+          "connected — streaming your BattleLab, the relay is blind",
+          "ok",
+        );
         saveSession(base, name, key, evt.deadline);
         if (evt.deadline) startCountdown(evt.deadline);
       } else if (evt.type === "warn") {
-        setStatus(`session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`);
+        setStatus(
+          `session ends soon (${evt.remaining ?? "<5m"}s) — reconnect after`,
+        );
         setSessionLed("warn"); // amber pulse so a collapsed bar still signals near-expiry
         updateToggleLabel();
       } else if (evt.type === "expired") {
@@ -561,5 +603,7 @@ const restored = restoreSavedSession();
 if (restored) {
   // Saved credentials prefill the form but never auto-connect: the gate is per-attempt, so
   // a reload must stop at a fresh unverified gate — no ALTCHA fetch, no WebSocket.
-  setStatus("session restored — hold to verify you're human, then press Connect");
+  setStatus(
+    "session restored — hold to verify you're human, then press Connect",
+  );
 }

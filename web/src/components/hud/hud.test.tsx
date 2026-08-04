@@ -7,7 +7,13 @@ import { SysClock } from "./SysClock";
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
     "matchMedia",
-    vi.fn().mockReturnValue({ matches: reduce, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    vi
+      .fn()
+      .mockReturnValue({
+        matches: reduce,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
   );
 }
 
@@ -20,7 +26,9 @@ test("SysClock renders a SYS // UTC readout", () => {
   const { getByText, container } = render(<SysClock />);
   expect(getByText(/SYS \/\//)).toBeInTheDocument();
   // a HH:MM:SSZ time sits in the tabular-num slot
-  expect(container.querySelector(".num")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}Z$/);
+  expect(container.querySelector(".num")?.textContent).toMatch(
+    /^\d{2}:\d{2}:\d{2}Z$/,
+  );
 });
 
 test("DataFlowCanvas renders an aria-hidden #bg canvas and survives a null 2d context", () => {
@@ -44,7 +52,10 @@ test("ButtonGlitch briefly glitches a visible .shine button, then clears it", ()
   const btn = document.createElement("button");
   btn.className = "shine";
   // jsdom doesn't compute layout → offsetParent is null; force it visible for the filter.
-  Object.defineProperty(btn, "offsetParent", { get: () => document.body, configurable: true });
+  Object.defineProperty(btn, "offsetParent", {
+    get: () => document.body,
+    configurable: true,
+  });
   document.body.appendChild(btn);
   try {
     render(<ButtonGlitch />);
@@ -63,7 +74,10 @@ test("ButtonGlitch is a no-op under prefers-reduced-motion", () => {
   vi.useFakeTimers();
   const btn = document.createElement("button");
   btn.className = "shine";
-  Object.defineProperty(btn, "offsetParent", { get: () => document.body, configurable: true });
+  Object.defineProperty(btn, "offsetParent", {
+    get: () => document.body,
+    configurable: true,
+  });
   document.body.appendChild(btn);
   try {
     render(<ButtonGlitch />);

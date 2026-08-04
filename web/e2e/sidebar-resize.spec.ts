@@ -28,7 +28,9 @@ async function setup(page: Page): Promise<void> {
     }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.goto("/");
 }
 
@@ -36,14 +38,19 @@ async function setup(page: Page): Promise<void> {
 function sidebarW(page: Page): Promise<number> {
   return page
     .locator(".app")
-    .evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--sidebar-w")));
+    .evaluate((el) =>
+      parseFloat(getComputedStyle(el).getPropertyValue("--sidebar-w")),
+    );
 }
 
 test.describe("resizable sidebar (#507)", () => {
   test("drag resizes the column + reflows the pane, persists across reload, double-click resets", async ({
     page,
   }, testInfo) => {
-    test.skip(testInfo.project.name !== "desktop", "the resize handle is desktop-only");
+    test.skip(
+      testInfo.project.name !== "desktop",
+      "the resize handle is desktop-only",
+    );
     await setup(page);
 
     const handle = page.locator(".sidebar-resize");
@@ -51,7 +58,8 @@ test.describe("resizable sidebar (#507)", () => {
     await expect(handle).toHaveAttribute("role", "separator");
 
     expect(await sidebarW(page)).toBe(320);
-    const paneBefore = (await page.locator("main.terminal-pane").boundingBox())!.width;
+    const paneBefore = (await page.locator("main.terminal-pane").boundingBox())!
+      .width;
 
     // Drag the handle 120px to the right.
     const box = (await handle.boundingBox())!;
@@ -67,7 +75,8 @@ test.describe("resizable sidebar (#507)", () => {
     expect(wAfter).toBeGreaterThan(430);
     expect(wAfter).toBeLessThan(450);
     // …and the pane shrank to match (the reflow that fires Terminal.tsx's ResizeObserver).
-    const paneAfter = (await page.locator("main.terminal-pane").boundingBox())!.width;
+    const paneAfter = (await page.locator("main.terminal-pane").boundingBox())!
+      .width;
     expect(paneAfter).toBeLessThan(paneBefore - 100);
 
     // Width persists across a reload (device-local localStorage).
@@ -80,8 +89,13 @@ test.describe("resizable sidebar (#507)", () => {
     expect(await sidebarW(page)).toBe(320);
   });
 
-  test("keyboard: arrow keys nudge the focused separator", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "desktop", "the resize handle is desktop-only");
+  test("keyboard: arrow keys nudge the focused separator", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      testInfo.project.name !== "desktop",
+      "the resize handle is desktop-only",
+    );
     await setup(page);
     const handle = page.locator(".sidebar-resize");
     await handle.focus();
@@ -93,7 +107,9 @@ test.describe("resizable sidebar (#507)", () => {
     expect(await sidebarW(page)).toBe(304); // 336 − 16 − 16
   });
 
-  test("no resize handle on mobile (the drawer stays fixed-width)", async ({ page }, testInfo) => {
+  test("no resize handle on mobile (the drawer stays fixed-width)", async ({
+    page,
+  }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "asserts the mobile absence");
     await setup(page);
     // Open the drawer so the sidebar is mounted; the handle must still be absent.

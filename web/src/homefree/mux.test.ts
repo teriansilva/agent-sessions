@@ -16,8 +16,10 @@ import {
   encodeFrame,
 } from "./mux";
 
-const fromHex = (h: string) => new Uint8Array((h.match(/../g) ?? []).map((x) => parseInt(x, 16)));
-const toHex = (u: Uint8Array) => [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
+const fromHex = (h: string) =>
+  new Uint8Array((h.match(/../g) ?? []).map((x) => parseInt(x, 16)));
+const toHex = (u: Uint8Array) =>
+  [...u].map((b) => b.toString(16).padStart(2, "0")).join("");
 const enc = (s: string) => new TextEncoder().encode(s);
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -29,8 +31,18 @@ interface Link {
 function link(opts: { initialWindow?: number; maxChunk?: number } = {}): Link {
   const opened: { a: Stream[]; b: Stream[] } = { a: [], b: [] };
   const mux: { a?: Mux; b?: Mux } = {};
-  mux.a = new Mux({ isInitiator: true, onSend: (f) => mux.b!.feed(f), onStream: (s) => opened.a.push(s), ...opts });
-  mux.b = new Mux({ isInitiator: false, onSend: (f) => mux.a!.feed(f), onStream: (s) => opened.b.push(s), ...opts });
+  mux.a = new Mux({
+    isInitiator: true,
+    onSend: (f) => mux.b!.feed(f),
+    onStream: (s) => opened.a.push(s),
+    ...opts,
+  });
+  mux.b = new Mux({
+    isInitiator: false,
+    onSend: (f) => mux.a!.feed(f),
+    onStream: (s) => opened.b.push(s),
+    ...opts,
+  });
   return { a: mux.a, b: mux.b, opened };
 }
 
@@ -40,14 +52,23 @@ describe("Home Free mux", () => {
       const frame = encodeFrame(v.stream_id, v.type, fromHex(v.payload_hex));
       expect(toHex(frame)).toBe(v.frame_hex);
       const d = decodeFrame(fromHex(v.frame_hex));
-      expect([d.streamId, d.ftype, toHex(d.payload)]).toEqual([v.stream_id, v.type, v.payload_hex]);
+      expect([d.streamId, d.ftype, toHex(d.payload)]).toEqual([
+        v.stream_id,
+        v.type,
+        v.payload_hex,
+      ]);
     }
   });
 
   it("rejects a truncated or overlong frame", () => {
     expect(() => decodeFrame(new Uint8Array([0, 0, 0, 1]))).toThrow();
-    expect(() => decodeFrame(encodeFrame(1, DATA, enc("abcd")).subarray(0, -1))).toThrow();
-    const overlong = new Uint8Array([...encodeFrame(1, DATA, enc("abcd")), 122]); // trailing byte
+    expect(() =>
+      decodeFrame(encodeFrame(1, DATA, enc("abcd")).subarray(0, -1)),
+    ).toThrow();
+    const overlong = new Uint8Array([
+      ...encodeFrame(1, DATA, enc("abcd")),
+      122,
+    ]); // trailing byte
     expect(() => decodeFrame(overlong)).toThrow();
   });
 
@@ -85,10 +106,16 @@ describe("Home Free mux", () => {
     await s1.write(enc("AAA"));
     await s2.write(enc("BBB"));
     await s1.write(enc("aaa"));
-    const by = new Map(opened.b.map((s) => [new TextDecoder().decode(s.openInfo), s]));
+    const by = new Map(
+      opened.b.map((s) => [new TextDecoder().decode(s.openInfo), s]),
+    );
     expect([...by.keys()].sort()).toEqual(["one", "two"]);
-    expect(new TextDecoder().decode(await by.get("one")!.read(1024))).toBe("AAAaaa");
-    expect(new TextDecoder().decode(await by.get("two")!.read(1024))).toBe("BBB");
+    expect(new TextDecoder().decode(await by.get("one")!.read(1024))).toBe(
+      "AAAaaa",
+    );
+    expect(new TextDecoder().decode(await by.get("two")!.read(1024))).toBe(
+      "BBB",
+    );
   });
 
   it("applies backpressure until the reader drains", async () => {
@@ -96,7 +123,9 @@ describe("Home Free mux", () => {
     const s = a.open(enc("bp"));
     const rs = opened.b[0];
     let done = false;
-    const writer = s.write(new Uint8Array(4096 * 3).fill(120)).then(() => (done = true));
+    const writer = s
+      .write(new Uint8Array(4096 * 3).fill(120))
+      .then(() => (done = true));
     await tick();
     expect(done).toBe(false); // window drained → write is parked
     let total = 0;
@@ -111,9 +140,13 @@ describe("Home Free mux", () => {
     const s1 = a.open(enc("keep"));
     const s2 = a.open(enc("kill"));
     await s1.write(enc("alive"));
-    const by = new Map(opened.b.map((s) => [new TextDecoder().decode(s.openInfo), s]));
+    const by = new Map(
+      opened.b.map((s) => [new TextDecoder().decode(s.openInfo), s]),
+    );
     s2.reset(9);
     await expect(by.get("kill")!.read()).rejects.toBeInstanceOf(StreamReset);
-    expect(new TextDecoder().decode(await by.get("keep")!.read(1024))).toBe("alive");
+    expect(new TextDecoder().decode(await by.get("keep")!.read(1024))).toBe(
+      "alive",
+    );
   });
 });

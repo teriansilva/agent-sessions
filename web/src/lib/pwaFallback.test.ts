@@ -15,14 +15,19 @@ import { isDenied, NAVIGATE_FALLBACK_DENYLIST } from "../sw-denylist";
 // stronger — it asserts BEHAVIOUR rather than the presence of a string in a config file, so it
 // would also catch a regex that is present but subtly wrong.
 describe("PWA navigateFallbackDenylist", () => {
-  it.each(["/api", "/ws", "/login", "/logout", "/change-password", "/link", "/healthz"])(
-    "denylists the server-owned route %s",
-    (route) => {
-      expect(isDenied(route)).toBe(true);
-      // …and the deeper paths under it, which is what actually gets navigated to.
-      expect(isDenied(`${route}/something/deeper`)).toBe(true);
-    },
-  );
+  it.each([
+    "/api",
+    "/ws",
+    "/login",
+    "/logout",
+    "/change-password",
+    "/link",
+    "/healthz",
+  ])("denylists the server-owned route %s", (route) => {
+    expect(isDenied(route)).toBe(true);
+    // …and the deeper paths under it, which is what actually gets navigated to.
+    expect(isDenied(`${route}/something/deeper`)).toBe(true);
+  });
 
   it("is the list the service worker actually consumes", () => {
     // A behavioural assertion is worthless if the SW ignores this module.

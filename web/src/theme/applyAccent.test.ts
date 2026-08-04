@@ -22,7 +22,9 @@ test("applyAccent sets --accent + a readable --on-accent for a custom accent", (
 
 test("applyAccent picks dark ink on a light accent", () => {
   applyAccent("#3fbf6f"); // light-ish green → dark ink
-  expect(document.documentElement.style.getPropertyValue("--on-accent")).toBe("#0b0b0d");
+  expect(document.documentElement.style.getPropertyValue("--on-accent")).toBe(
+    "#0b0b0d",
+  );
 });
 
 test("applyAccent(default) clears the inline overrides so index.css rules", () => {
@@ -53,5 +55,7 @@ test("readStoredAccent coerces a corrupt cached value to the default", () => {
 test("bootAccent applies the device-cached accent", () => {
   storeAccent("#3b82f6");
   bootAccent();
-  expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#3b82f6");
+  expect(document.documentElement.style.getPropertyValue("--accent")).toBe(
+    "#3b82f6",
+  );
 });

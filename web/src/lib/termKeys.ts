@@ -30,7 +30,13 @@ export function bracketedPaste(text: string): string {
  *  event still fires and is handled by Terminal's capture-phase listener. ``alt`` excluded
  *  so it never swallows unrelated control input. */
 export function isPasteShortcut(
-  e: { type: string; key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+  e: {
+    type: string;
+    key: string;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    altKey: boolean;
+  },
   isMac: boolean,
 ): boolean {
   if (e.type !== "keydown" || e.altKey) return false;

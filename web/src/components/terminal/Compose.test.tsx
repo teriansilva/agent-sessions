@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -17,7 +23,9 @@ vi.mock("../../lib/api", () => ({
     upload: vi.fn(),
     // #477: Compose loads/saves its draft when given a sessionId. Default to an empty draft so the
     // non-draft tests (rendered without a sessionId) are unaffected; the draft test asserts on these.
-    getDraft: vi.fn(() => Promise.resolve({ id: "", text: "", attachments: [], updated_at: null })),
+    getDraft: vi.fn(() =>
+      Promise.resolve({ id: "", text: "", attachments: [], updated_at: null }),
+    ),
     saveDraft: vi.fn(() => Promise.resolve({ id: "", has_draft: false })),
   },
 }));
@@ -79,11 +87,17 @@ class FakeRecognition {
       length: 1,
       item: () => ({ transcript: s.transcript, confidence: 1 }),
     }));
-    this.onresult?.({ resultIndex, results } as unknown as SpeechRecognitionEvent);
+    this.onresult?.({
+      resultIndex,
+      results,
+    } as unknown as SpeechRecognitionEvent);
   }
   /** Drive an error event (permission denied etc). */
   fail(error: string) {
-    this.onerror?.({ error, message: error } as unknown as SpeechRecognitionErrorEvent);
+    this.onerror?.({
+      error,
+      message: error,
+    } as unknown as SpeechRecognitionErrorEvent);
   }
 }
 
@@ -92,14 +106,19 @@ class FakeRecognition {
 // `gumReject` to a DOMException name to model a denied / absent mic.
 let gumReject: string | null = null;
 const installSpeech = () => {
-  window.SpeechRecognition = FakeRecognition as unknown as typeof window.SpeechRecognition;
+  window.SpeechRecognition =
+    FakeRecognition as unknown as typeof window.SpeechRecognition;
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
     value: {
       getUserMedia: vi.fn(() =>
         gumReject
-          ? Promise.reject(Object.assign(new Error(gumReject), { name: gumReject }))
-          : Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream),
+          ? Promise.reject(
+              Object.assign(new Error(gumReject), { name: gumReject }),
+            )
+          : Promise.resolve({
+              getTracks: () => [{ stop: vi.fn() }],
+            } as unknown as MediaStream),
       ),
     },
   });
@@ -149,12 +168,17 @@ afterEach(() => {
   perfSpy = null;
   delete window.SpeechRecognition;
   delete window.webkitSpeechRecognition;
-  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: undefined,
+  });
 });
 
 test("the mic chip is hidden when the browser has no SpeechRecognition (#483)", () => {
   renderCompose(); // no stub installed → unsupported engine, e.g. Firefox
-  expect(screen.queryByRole("button", { name: /voice input/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /voice input/i }),
+  ).not.toBeInTheDocument();
 });
 
 test("the mic chip carries the icon AND a 'Push to talk' label (#483/#738)", () => {
@@ -166,7 +190,10 @@ test("the mic chip carries the icon AND a 'Push to talk' label (#483/#738)", () 
   const mic = screen.getByRole("button", { name: /start voice input/i });
   expect(mic.textContent).toMatch(/push to talk/i);
   expect(mic.querySelector("svg")).not.toBeNull(); // icon kept alongside the label
-  expect(mic).toHaveAttribute("aria-label", expect.stringMatching(/voice input/i));
+  expect(mic).toHaveAttribute(
+    "aria-label",
+    expect.stringMatching(/voice input/i),
+  );
   expect(mic).toHaveAttribute("title", expect.stringMatching(/hold/i));
   expect(mic).toHaveAttribute("aria-pressed", "false");
 });
@@ -179,14 +206,26 @@ test("holding the mic starts dictation, streams the transcript in, then releasin
   expect(lastRecog!.start).toHaveBeenCalled();
   expect(lastRecog!.continuous).toBe(true);
   expect(lastRecog!.interimResults).toBe(true);
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 
-  act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
-  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("deploy the staging build");
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "deploy the staging build", isFinal: true },
+    ]),
+  );
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+    "deploy the staging build",
+  );
 
   releaseVoice();
   expect(lastRecog!.stop).toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("dictation appends to already-typed text and streams interim then final (#483)", async () => {
@@ -208,7 +247,10 @@ test("a permission-denied error surfaces a note and leaves the mic idle (#483)",
   await startVoice();
   act(() => lastRecog!.fail("not-allowed"));
   expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("collapsing the compose box stops an active dictation (#483)", async () => {
@@ -237,7 +279,11 @@ test("a transcript re-fired many times (Chrome continuous mode) is NOT duplicate
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await startVoice();
   for (let i = 0; i < 6; i++) {
-    act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+    act(() =>
+      lastRecog!.emit([
+        { transcript: "deploy the staging build", isFinal: true },
+      ]),
+    );
   }
   expect(ta.value).toBe("deploy the staging build"); // once — never repeated
 });
@@ -296,14 +342,25 @@ test("replays the captured Android Chrome 150 session — types the sentence onc
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await startVoice();
-  const captured = ["", "", "this", "this is", "this is", "this is", "this is a", "this is a test"];
+  const captured = [
+    "",
+    "",
+    "this",
+    "this is",
+    "this is",
+    "this is",
+    "this is a",
+    "this is a test",
+  ];
   const capturedAtMs = [1931, 2192, 2519, 2733, 3059, 3459, 3620, 4107];
   const clock = mockClock();
   // Replay it the way the engine did: one appended entry per event, cumulative results each time,
   // at the timestamps the device actually delivered them.
   for (let n = 1; n <= captured.length; n++) {
     clock.now = capturedAtMs[n - 1];
-    const slice = captured.slice(0, n).map((transcript) => ({ transcript, isFinal: true }));
+    const slice = captured
+      .slice(0, n)
+      .map((transcript) => ({ transcript, isFinal: true }));
     act(() => lastRecog!.emit(slice, n - 1));
   }
   expect(ta.value).toBe("this is a test");
@@ -319,8 +376,18 @@ test("a compliant engine's repeated utterance survives — 'yes' twice stays 'ye
   await startVoice();
   act(() => lastRecog!.emit([{ transcript: "yes", isFinal: false }]));
   act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }]));
-  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }, { transcript: "yes", isFinal: false }]));
-  act(() => lastRecog!.emit([{ transcript: "yes", isFinal: true }, { transcript: "yes", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "yes", isFinal: true },
+      { transcript: "yes", isFinal: false },
+    ]),
+  );
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "yes", isFinal: true },
+      { transcript: "yes", isFinal: true },
+    ]),
+  );
   expect(ta.value).toBe("yes yes"); // both utterances kept
 });
 
@@ -338,7 +405,12 @@ test("a compliant engine's 'go' then 'go now' keeps both utterances (#711)", asy
   clock.now = 1600;
   act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }]));
   clock.now = 3600;
-  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }, { transcript: "go now", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "go", isFinal: true },
+      { transcript: "go now", isFinal: true },
+    ]),
+  );
   expect(ta.value).toBe("go go now");
 });
 
@@ -354,7 +426,12 @@ test("a final-only engine's separate utterances survive when spoken apart (#711 
   clock.now = 1000;
   act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }]));
   clock.now = 3200;
-  act(() => lastRecog!.emit([{ transcript: "go", isFinal: true }, { transcript: "go now", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "go", isFinal: true },
+      { transcript: "go now", isFinal: true },
+    ]),
+  );
   clock.now = 5600;
   act(() =>
     lastRecog!.emit([
@@ -379,7 +456,12 @@ test("one interim does not exempt later stacked all-final snapshots (#711 follow
   clock.now = 700;
   act(() => lastRecog!.emit([{ transcript: "", isFinal: true }]));
   clock.now = 1000;
-  act(() => lastRecog!.emit([{ transcript: "", isFinal: true }, { transcript: "this", isFinal: false }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "", isFinal: true },
+      { transcript: "this", isFinal: false },
+    ]),
+  );
   clock.now = 1300;
   act(() =>
     lastRecog!.emit([
@@ -430,7 +512,12 @@ test("an interim-tracked utterance followed by a real second one keeps both (#71
   clock.now = 1600;
   act(() => lastRecog!.emit([{ transcript: "ship", isFinal: true }]));
   clock.now = 3600;
-  act(() => lastRecog!.emit([{ transcript: "ship", isFinal: true }, { transcript: "ship it", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "ship", isFinal: true },
+      { transcript: "ship it", isFinal: true },
+    ]),
+  );
   expect(ta.value).toBe("ship ship it"); // two real utterances, seconds apart
 });
 
@@ -442,10 +529,21 @@ test("a re-punctuated snapshot supersedes its predecessor on a stacking engine (
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await startVoice();
-  const snapshots = ["", "hey claude", "Hey, Claude — can you", "Hey, Claude, can you deploy?"];
+  const snapshots = [
+    "",
+    "hey claude",
+    "Hey, Claude — can you",
+    "Hey, Claude, can you deploy?",
+  ];
   for (let n = 1; n <= snapshots.length; n++) {
     clock.now = 1000 + n * 300;
-    act(() => lastRecog!.emit(snapshots.slice(0, n).map((transcript) => ({ transcript, isFinal: true }))));
+    act(() =>
+      lastRecog!.emit(
+        snapshots
+          .slice(0, n)
+          .map((transcript) => ({ transcript, isFinal: true })),
+      ),
+    );
   }
   expect(ta.value).toBe("Hey, Claude, can you deploy?");
 });
@@ -479,7 +577,10 @@ test("a denied getUserMedia grant names the reason and never builds a recognizer
   fireEvent.pointerDown(micChip(), HOLD);
   expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
   expect(lastRecog).toBeNull(); // grant refused up front — no recognizer created
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("Android Chrome's service-not-allowed on a continuous recognizer retries once, non-continuous", async () => {
@@ -494,7 +595,9 @@ test("Android Chrome's service-not-allowed on a continuous recognizer retries on
   expect(lastRecog).not.toBe(first); // a fresh recognizer took over synchronously
   expect(lastRecog!.continuous).toBe(false);
   expect(lastRecog!.start).toHaveBeenCalled();
-  expect(screen.queryByText(/unavailable|blocked|error/i)).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/unavailable|blocked|error/i),
+  ).not.toBeInTheDocument();
 });
 
 test("a getUserMedia grant resolving AFTER unmount builds no stale recognizer (#660 review)", async () => {
@@ -505,7 +608,9 @@ test("a getUserMedia grant resolving AFTER unmount builds no stale recognizer (#
   let resolveGrant!: (s: unknown) => void;
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
-    value: { getUserMedia: vi.fn(() => new Promise((r) => (resolveGrant = r))) },
+    value: {
+      getUserMedia: vi.fn(() => new Promise((r) => (resolveGrant = r))),
+    },
   });
   const { unmount } = renderCompose();
   fireEvent.pointerDown(micChip(), HOLD);
@@ -523,7 +628,9 @@ test("an unmapped speech error names itself instead of a generic 'microphone blo
   renderCompose();
   await startVoice();
   act(() => lastRecog!.fail("some-odd-code"));
-  expect(await screen.findByText(/voice input error: some-odd-code/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/voice input error: some-odd-code/i),
+  ).toBeInTheDocument();
 });
 
 // --- #736: dictation spans MANY engine sessions -------------------------------------------------
@@ -538,20 +645,27 @@ test("the engine ending its own session re-arms dictation instead of stopping it
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await startVoice();
   const first = lastRecog!;
-  act(() => first.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  act(() =>
+    first.emit([{ transcript: "deploy the staging build", isFinal: true }]),
+  );
   expect(ta.value).toBe("deploy the staging build");
 
   act(() => first.endSession()); // the engine hangs up mid-dictation
   await flushRearm();
   expect(lastRecog).not.toBe(first); // a fresh recognizer took over…
   expect(lastRecog!.start).toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   // …and the mic grant is NOT re-requested per session — one grant per user tap (#659).
   expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
 
   // The next utterance APPENDS. Anchoring the re-armed session on the pre-dictation draft (the
   // stale `text` of the closure that built the previous one) would drop everything said so far.
-  act(() => lastRecog!.emit([{ transcript: "and watch the rollout", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([{ transcript: "and watch the rollout", isFinal: true }]),
+  );
   expect(ta.value).toBe("deploy the staging build and watch the rollout");
 });
 
@@ -569,8 +683,13 @@ test("a no-speech pause is survivable, not terminal, and shows no error (#736)",
   await flushRearm();
   expect(lastRecog).not.toBe(first);
   expect(screen.queryByText(/voice input error/i)).toBeNull();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
-  act(() => lastRecog!.emit([{ transcript: "second sentence", isFinal: true }]));
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  act(() =>
+    lastRecog!.emit([{ transcript: "second sentence", isFinal: true }]),
+  );
   expect(ta.value).toBe("first sentence second sentence");
 });
 
@@ -586,7 +705,10 @@ test("a fatal speech error still ends dictation — it is not re-armed (#736)", 
   await flushRearm();
   expect(recogCount).toBe(1); // no re-arm
   expect(await screen.findByText(/allow microphone/i)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("dictation gives up (and says so) after repeated dead starts instead of spinning (#736)", async () => {
@@ -601,8 +723,13 @@ test("dictation gives up (and says so) after repeated dead starts instead of spi
     await flushRearm();
   }
   expect(recogCount).toBe(3); // bounded: two re-arms, then it stops trying
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
-  expect(await screen.findByText(/kept dropping the session/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(
+    await screen.findByText(/kept dropping the session/i),
+  ).toBeInTheDocument();
 });
 
 test("an open, silent recognizer that never fires `end` still releases the mic (#736, Hermes)", async () => {
@@ -627,7 +754,10 @@ test("an open, silent recognizer that never fires `end` still releases the mic (
   });
   expect(first.stop).toHaveBeenCalled(); // the mic is released without any engine callback
   expect(recogCount).toBe(1); // and nothing is re-armed in its place
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("speech keeps pushing the idle deadline out — a long dictation is never cut off (#736, Hermes)", async () => {
@@ -648,7 +778,10 @@ test("speech keeps pushing the idle deadline out — a long dictation is never c
   }
   // Over 3× the idle window has elapsed in total, but never 60s without a word.
   expect(first.stop).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("a long silence releases the mic rather than re-arming forever (#736)", async () => {
@@ -664,7 +797,10 @@ test("a long silence releases the mic rather than re-arming forever (#736)", asy
   act(() => first.endSession());
   await flushRearm();
   expect(recogCount).toBe(1); // not re-armed
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("stopping while a session end is in flight cancels the queued re-arm (#736)", async () => {
@@ -681,7 +817,10 @@ test("stopping while a session end is in flight cancels the queued re-arm (#736)
   releaseVoice();
   await flushRearm();
   expect(recogCount).toBe(1);
-  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: /voice input/i })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("collapsing the compose box during a session end cancels the re-arm too (#736)", async () => {
@@ -704,7 +843,9 @@ test("releasing stops capture but the trailing final still lands in the box (#73
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   await startVoice();
   lastRecog!.deferEnd = true; // the engine has not finished yet
-  act(() => lastRecog!.emit([{ transcript: "deploy the staging", isFinal: false }]));
+  act(() =>
+    lastRecog!.emit([{ transcript: "deploy the staging", isFinal: false }]),
+  );
 
   releaseVoice();
   expect(lastRecog!.stop).toHaveBeenCalled();
@@ -713,7 +854,11 @@ test("releasing stops capture but the trailing final still lands in the box (#73
   expect(micChip()).toHaveAttribute("aria-pressed", "false"); // the mic itself is off
 
   // …and now the engine delivers what it heard before the release.
-  act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "deploy the staging build", isFinal: true },
+    ]),
+  );
   expect(ta.value).toBe("deploy the staging build");
 
   act(() => lastRecog!.endSession()); // engine confirms it is done
@@ -791,7 +936,11 @@ test("holding Space outside a text field is push-to-talk; releasing it stops (#7
   fireEvent.keyDown(document.body, { key: " " });
   await waitFor(() => expect(lastRecog).not.toBeNull());
   expect(micChip()).toHaveAttribute("aria-pressed", "true");
-  act(() => lastRecog!.emit([{ transcript: "spoken with the keyboard", isFinal: true }]));
+  act(() =>
+    lastRecog!.emit([
+      { transcript: "spoken with the keyboard", isFinal: true },
+    ]),
+  );
   fireEvent.keyUp(document.body, { key: " " });
   expect(lastRecog!.stop).toHaveBeenCalled();
   expect(ta.value).toBe("spoken with the keyboard");
@@ -824,7 +973,9 @@ test("Space stays a space in the compose box, the terminal, and on other control
   expect(lastRecog).toBeNull();
 
   // Space is the native activation key of a button — it must keep activating it.
-  fireEvent.keyDown(screen.getByRole("button", { name: /^send/i }), { key: " " });
+  fireEvent.keyDown(screen.getByRole("button", { name: /^send/i }), {
+    key: " ",
+  });
   expect(lastRecog).toBeNull();
 
   // A modifier combo is somebody's shortcut, not a hold.
@@ -867,7 +1018,9 @@ test("Space during a POINTER-owned hold cannot steal it or bin the tail (#738, H
   expect(held.stop).not.toHaveBeenCalled();
 
   releaseVoice(); // only the owning pointer ends it — and the tail still lands
-  act(() => held.emit([{ transcript: "mid sentence complete", isFinal: true }]));
+  act(() =>
+    held.emit([{ transcript: "mid sentence complete", isFinal: true }]),
+  );
   expect(ta.value).toBe("mid sentence complete");
 });
 
@@ -908,8 +1061,6 @@ test("the window losing focus mid-hold releases the mic (#738)", async () => {
   expect(micChip()).toHaveAttribute("aria-pressed", "false");
 });
 
-
-
 test("the nav-key chips send their control sequence to the PTY (#487/#500)", async () => {
   const user = userEvent.setup();
   renderCompose();
@@ -925,14 +1076,24 @@ test("the nav-key chips send their control sequence to the PTY (#487/#500)", asy
 
 test("the single-row bar has no second (kebab) menu and no copy / interrupt chips (#500/#503)", () => {
   renderCompose();
-  expect(screen.queryByRole("button", { name: /more actions/i })).not.toBeInTheDocument(); // no kebab
-  expect(screen.queryByRole("button", { name: /interrupt|ctrl-c/i })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /more actions/i }),
+  ).not.toBeInTheDocument(); // no kebab
+  expect(
+    screen.queryByRole("button", { name: /interrupt|ctrl-c/i }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: /copy/i }),
+  ).not.toBeInTheDocument();
   // The chips are the nav group (up/down/return/esc/tab) + attach + close, then the inline Send.
   expect(screen.getByRole("button", { name: "Up" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Escape" })).toBeInTheDocument(); // esc re-added (#503)
-  expect(screen.getByRole("button", { name: /attach file/i })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /collapse compose/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /attach file/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /collapse compose/i }),
+  ).toBeInTheDocument();
 });
 
 test("the esc chip sends the escape sequence to the PTY (#503)", async () => {
@@ -949,7 +1110,9 @@ test("the attach chip lives in the key group and triggers the file input (#487/#
   // Icon-only affordance (no visible text).
   expect(attach.textContent ?? "").toBe("");
   // Clicking it opens the (hidden) native file picker — assert it forwards the click.
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const input = document.querySelector(
+    'input[type="file"]',
+  ) as HTMLInputElement;
   const clicked = vi.spyOn(input, "click").mockImplementation(() => {});
   await user.click(attach);
   expect(clicked).toHaveBeenCalledOnce();
@@ -966,7 +1129,9 @@ test("Send clears the line, bracketed-pastes the message, then submits a DEFERRE
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
   expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
   expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
-  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
+  );
 });
 
 test("does NOT submit a bare Enter when the paste wasn't delivered — no empty turn (#287)", async () => {
@@ -1033,7 +1198,9 @@ test("a SECOND reconnect during the deferred retry still never submits an empty 
   const ta = screen.getByRole("textbox");
   await user.type(ta, "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("hello world")); // text restored
+  await waitFor(() =>
+    expect((ta as HTMLTextAreaElement).value).toBe("hello world"),
+  ); // text restored
   expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
 });
 
@@ -1050,10 +1217,14 @@ test("a content send whose deferred Enter never delivers preserves + re-saves th
   await user.type(ta, "keep me");
   await user.click(screen.getByRole("button", { name: /^send/i }));
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter)); // deferred Enter attempted
-  await waitFor(() => expect((ta as HTMLTextAreaElement).value).toBe("keep me")); // composer kept
+  await waitFor(() =>
+    expect((ta as HTMLTextAreaElement).value).toBe("keep me"),
+  ); // composer kept
   const saved = vi.mocked(api.saveDraft).mock.calls.map((c) => c[1]);
   expect(saved.some((d) => d.text === "keep me")).toBe(true); // restored content persisted
-  expect(saved.some((d) => d.text === "" && d.attachments.length === 0)).toBe(false); // never cleared
+  expect(saved.some((d) => d.text === "" && d.attachments.length === 0)).toBe(
+    false,
+  ); // never cleared
 });
 
 test("Enter sends, Shift+Enter inserts a newline", async () => {
@@ -1063,7 +1234,9 @@ test("Enter sends, Shift+Enter inserts a newline", async () => {
   await user.type(ta, "line1{Shift>}{Enter}{/Shift}line2");
   expect(sendInput).not.toHaveBeenCalled(); // shift+enter = newline, not send
   await user.type(ta, "{Enter}");
-  expect(sendInput).toHaveBeenCalledWith(expect.stringContaining(bracketedPaste("line1\nline2")));
+  expect(sendInput).toHaveBeenCalledWith(
+    expect.stringContaining(bracketedPaste("line1\nline2")),
+  );
 });
 
 test("Send with image attachment writes Enter as its own DEFERRED frame after the paste (#180/#197)", async () => {
@@ -1074,13 +1247,18 @@ test("Send with image attachment writes Enter as its own DEFERRED frame after th
   // agent ingests the pasted image path asynchronously, so the Enter must also be
   // DEFERRED past the paste, or it still races ingestion and is dropped.
   const user = userEvent.setup();
-  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "shot.png",
+    path: "/uploads/shot.png",
+  });
   const handle = createRef<ComposeHandle>();
   render(<Compose ref={handle} sendInput={sendInput} />);
   await user.type(screen.getByRole("textbox"), "look at this");
   // Forward an image paste the way Terminal does — the upload resolves and the
   // attachment pill renders.
-  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+    type: "image/png",
+  });
   handle.current!.attachImages([file]);
   await screen.findByText("shot.png");
 
@@ -1096,7 +1274,9 @@ test("Send with image attachment writes Enter as its own DEFERRED frame after th
   );
   expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
   // …it arrives shortly after as its own discrete frame.
-  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
+  );
   // No frame ever contains the paste-end marker + Enter back-to-back.
   const pasteEndPlusEnter = "\x1b[201~" + KEYSEQ.enter;
   for (const [arg] of sendInput.mock.calls) {
@@ -1125,7 +1305,9 @@ test("empty Send mid-reconnect surfaces the note and sends nothing else (#474)",
   await user.click(screen.getByRole("button", { name: /^send/i }));
   expect(sendInput).toHaveBeenCalledTimes(1);
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
-  expect(await screen.findByText(/reconnecting — not sent/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/reconnecting — not sent/i),
+  ).toBeInTheDocument();
 });
 
 test("the compose toggle hides/shows the text field", async () => {
@@ -1137,8 +1319,13 @@ test("the compose toggle hides/shows the text field", async () => {
 });
 
 test("pasting an image uploads it and adds an attachment, not text (#135)", async () => {
-  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
-  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+    type: "image/png",
+  });
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "shot.png",
+    path: "/uploads/shot.png",
+  });
   renderCompose();
   const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
   fireEvent.paste(ta, {
@@ -1159,12 +1346,19 @@ test("pasting plain text is left to the textarea (no upload)", async () => {
   await user.click(screen.getByRole("textbox"));
   await user.paste("just text");
   expect(api.upload).not.toHaveBeenCalled();
-  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain("just text");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toContain(
+    "just text",
+  );
 });
 
 test("attachImages opens the compose (if collapsed) and adds the upload as a pill (#157)", async () => {
-  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
-  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+    type: "image/png",
+  });
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "shot.png",
+    path: "/uploads/shot.png",
+  });
   const ref = createRef<ComposeHandle>();
   render(<Compose ref={ref} sendInput={sendInput} defaultOpen={false} />);
   // Desktop-style: collapsed → no textarea visible.
@@ -1175,7 +1369,9 @@ test("attachImages opens the compose (if collapsed) and adds the upload as a pil
   await screen.findByText("shot.png");
   expect(api.upload).toHaveBeenCalledWith(file);
   // No bracketed-paste of the path into the PTY — pill mode only.
-  expect(sendInput).not.toHaveBeenCalledWith(`${bracketedPaste("/uploads/shot.png")} `);
+  expect(sendInput).not.toHaveBeenCalledWith(
+    `${bracketedPaste("/uploads/shot.png")} `,
+  );
 });
 
 test("attachImages with no files is a no-op", () => {
@@ -1194,9 +1390,16 @@ test("holds the first Send until the agent's input is ready, then delivers (#533
   const user = userEvent.setup();
   let resolveReady!: (ok: boolean) => void;
   const waitInputReady = vi.fn(
-    (): true | Promise<boolean> => new Promise<boolean>((r) => (resolveReady = r)),
+    (): true | Promise<boolean> =>
+      new Promise<boolean>((r) => (resolveReady = r)),
   );
-  render(<Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={waitInputReady} />);
+  render(
+    <Compose
+      sendInput={sendInput}
+      connEpoch={() => 1}
+      waitInputReady={waitInputReady}
+    />,
+  );
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
   // Nothing may reach the PTY while the agent is booting — the lost-first-message incident was
@@ -1204,32 +1407,48 @@ test("holds the first Send until the agent's input is ready, then delivers (#533
   expect(sendInput).not.toHaveBeenCalled();
   expect(screen.getByText(/waiting for agent/i)).toBeTruthy();
   act(() => resolveReady(true));
-  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("hello world")));
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenCalledWith(bracketedPaste("hello world")),
+  );
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter)); // deferred Enter intact
 });
 
 test("ready-before-send (synchronous true) keeps the delivery sequence unchanged (#533)", async () => {
   const user = userEvent.setup();
-  render(<Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={() => true} />);
+  render(
+    <Compose
+      sendInput={sendInput}
+      connEpoch={() => 1}
+      waitInputReady={() => true}
+    />,
+  );
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
   // Identical to the ungated path: clear + paste synchronously, Enter deferred (#180).
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
   expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
   expect(sendInput).toHaveBeenCalledTimes(2);
-  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
+  );
 });
 
 test("readiness timeout never sends, keeps the text, and says why (#533)", async () => {
   const user = userEvent.setup();
   render(
-    <Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={() => Promise.resolve(false)} />,
+    <Compose
+      sendInput={sendInput}
+      connEpoch={() => 1}
+      waitInputReady={() => Promise.resolve(false)}
+    />,
   );
   const ta = screen.getByRole("textbox");
   await user.type(ta, "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  await waitFor(() => expect(screen.getByText(/agent not ready/i)).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByText(/agent not ready/i)).toBeTruthy(),
+  );
   expect(sendInput).not.toHaveBeenCalled(); // no frame ever reached the booting agent
   expect((ta as HTMLTextAreaElement).value).toBe("hello world"); // preserved for a retry
 });
@@ -1240,7 +1459,9 @@ test("readiness timeout never sends, keeps the text, and says why (#533)", async
 
 test("a send is recorded BEFORE the composer clears, and confirmed only once the Enter lands (#619)", async () => {
   const user = userEvent.setup();
-  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+  render(
+    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />,
+  );
   await user.type(screen.getByRole("textbox"), "recover me");
   await user.click(screen.getByRole("button", { name: /^send/i }));
 
@@ -1256,7 +1477,9 @@ test("a send whose Enter never reaches the socket stays UNCONFIRMED (#619)", asy
   const user = userEvent.setup();
   // clear + paste deliver; the deferred Enter does not (a reconnect landed in the gap, #287).
   sendInput = vi.fn((d: string) => d !== KEYSEQ.enter);
-  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+  render(
+    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />,
+  );
   await user.type(screen.getByRole("textbox"), "never landed");
   await user.click(screen.getByRole("button", { name: /^send/i }));
 
@@ -1279,13 +1502,21 @@ test("the history chip is hidden until there is something to recover (#619)", as
   expect(screen.queryByRole("button", { name: /sent messages/i })).toBeNull();
   await user.type(screen.getByRole("textbox"), "first message");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  await waitFor(() => expect(screen.getByRole("button", { name: /sent messages/i })).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /sent messages/i })).toBeTruthy(),
+  );
 });
 
 test("Restore refills the composer with the exact text + attachments, and flushes the draft (#619)", async () => {
   const user = userEvent.setup();
-  appendSent({ text: "  keep my\n\nwhitespace  ", attachments: ["/up/a.png"], session: "claude:s1" });
-  render(<Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />);
+  appendSent({
+    text: "  keep my\n\nwhitespace  ",
+    attachments: ["/up/a.png"],
+    session: "claude:s1",
+  });
+  render(
+    <Compose sessionId="claude:s1" sendInput={sendInput} connEpoch={() => 1} />,
+  );
 
   await user.click(screen.getByRole("button", { name: /sent messages/i }));
   await user.click(screen.getByRole("button", { name: /restore/i }));
@@ -1314,7 +1545,9 @@ test("a failing localStorage never blocks the send (#619)", async () => {
   renderCompose();
   await user.type(screen.getByRole("textbox"), "still sends");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("still sends")));
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenCalledWith(bracketedPaste("still sends")),
+  );
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
   vi.unstubAllGlobals();
 });

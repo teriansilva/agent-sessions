@@ -37,15 +37,26 @@ const EV: [number, [number, boolean, string][]][] = [
 ];
 
 test("the captured device stream assembles to the sentence ONCE (#749)", () => {
-  const text: string[] = [], at: number[] = [], firstAt: number[] = [], evq: number[] = [], born: boolean[] = [];
+  const text: string[] = [],
+    at: number[] = [],
+    firstAt: number[] = [],
+    evq: number[] = [],
+    born: boolean[] = [];
   const live = new Map<number, { isFinal: boolean; tr: string }>();
   let seq = 0;
   for (const [t, upd] of EV) {
     seq++;
     for (const [i, isFinal, tr] of upd) live.set(i, { isFinal, tr });
     for (const [i, e] of [...live].sort((a, b) => a[0] - b[0])) {
-      if (text[i] === undefined) { born[i] = e.isFinal; firstAt[i] = t; }
-      if (text[i] !== e.tr) { text[i] = e.tr; at[i] = t; evq[i] = seq; }
+      if (text[i] === undefined) {
+        born[i] = e.isFinal;
+        firstAt[i] = t;
+      }
+      if (text[i] !== e.tr) {
+        text[i] = e.tr;
+        at[i] = t;
+        evq[i] = seq;
+      }
     }
   }
   const n = live.size;
@@ -53,11 +64,20 @@ test("the captured device stream assembles to the sentence ONCE (#749)", () => {
   for (let i = 0; i < n; i++) {
     const e = live.get(i)!;
     if (e.isFinal || i === n - 1)
-      segs.push({ text: text[i], atMs: at[i], firstAtMs: firstAt[i], eventSeq: evq[i], isFinal: e.isFinal, finalBorn: born[i] });
+      segs.push({
+        text: text[i],
+        atMs: at[i],
+        firstAtMs: firstAt[i],
+        eventSeq: evq[i],
+        isFinal: e.isFinal,
+        finalBorn: born[i],
+      });
   }
   // The two legs that fail on the FINAL pair:
-  expect(at[15] - at[14]).toBe(514);        // latest-revision gap — what the old rule saw
-  expect(firstAt[15] - at[14]).toBe(326);   // ARRIVAL gap — comfortably in-burst
-  expect(born[15]).toBe(false);           // …and the live entry is never "born final"
-  expect(assembleSpoken(segs, true)).toBe("and when you are done with all of this");
+  expect(at[15] - at[14]).toBe(514); // latest-revision gap — what the old rule saw
+  expect(firstAt[15] - at[14]).toBe(326); // ARRIVAL gap — comfortably in-burst
+  expect(born[15]).toBe(false); // …and the live entry is never "born final"
+  expect(assembleSpoken(segs, true)).toBe(
+    "and when you are done with all of this",
+  );
 });

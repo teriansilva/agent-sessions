@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
-import { applyTheme, readStoredTheme, storeTheme, THEME_STORAGE_KEY } from "./applyTheme";
+import {
+  applyTheme,
+  readStoredTheme,
+  storeTheme,
+  THEME_STORAGE_KEY,
+} from "./applyTheme";
 import { coerceTheme, isThemeId, type ThemeId } from "./themes";
 import { ThemeCtx } from "./themeStore";
 
@@ -53,5 +58,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     api.setTheme(id).catch(() => {});
   }, []);
 
-  return <ThemeCtx.Provider value={{ theme, setTheme }}>{children}</ThemeCtx.Provider>;
+  return (
+    <ThemeCtx.Provider value={{ theme, setTheme }}>
+      {children}
+    </ThemeCtx.Provider>
+  );
 }

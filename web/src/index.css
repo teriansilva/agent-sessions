@@ -31,7 +31,8 @@
   /* Unsent compose draft (#477) — a HUD blue, kept distinct from the green/amber/red status
      hues and the amber brand accent. Theme-shared like the other status tokens. */
   --status-draft: #3b9eff;
-  --font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+  --font-mono:
+    "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
     "Roboto Mono", Menlo, Consolas, monospace;
   /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */
   --bg: #0d0e10;
@@ -52,7 +53,12 @@
   --cta-bg-1: var(--accent);
   --cta-bg-2: color-mix(in srgb, var(--accent) 85%, #000);
   --cta-text: var(--on-accent);
-  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font:
+    14px/1.4 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
 }
 
 /* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the

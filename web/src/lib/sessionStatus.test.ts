@@ -44,7 +44,9 @@ test("an excluded session never shows the intervention dot (#744)", () => {
 });
 
 test("working beats an unsent draft (#744)", () => {
-  expect(sessionStatus(row({ working: true, has_draft: true })).variant).toBe("up");
+  expect(sessionStatus(row({ working: true, has_draft: true })).variant).toBe(
+    "up",
+  );
 });
 
 test("an unsent draft beats idle (#744)", () => {
@@ -59,7 +61,9 @@ test("idle carries no role and no accessible name — it is decorative (#744)", 
 });
 
 test("an intervention with no reason still names itself (#744)", () => {
-  const s = sessionStatus(row({ intervention_required: true, intervention_reason: "" }));
+  const s = sessionStatus(
+    row({ intervention_required: true, intervention_reason: "" }),
+  );
   expect(s.label).toBe("intervention required: see session");
   expect(s.title).toBe("Intervention required");
 });

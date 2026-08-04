@@ -20,7 +20,10 @@ const sessions = [
 
 test.describe("Mobile Context Menu", () => {
   test.beforeEach(async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "mobile", "drawer behavior is mobile-specific");
+    test.skip(
+      testInfo.project.name !== "mobile",
+      "drawer behavior is mobile-specific",
+    );
 
     await page.route("**/api/config", (r) =>
       r.fulfill({
@@ -41,14 +44,18 @@ test.describe("Mobile Context Menu", () => {
           next_offset: null,
           total: sessions.length,
           facets: {
-            projects: [{ kind: "folder", id: "/home/u/proj", name: "/home/u/proj" }],
-            engines: ["claude"]
-          }
+            projects: [
+              { kind: "folder", id: "/home/u/proj", name: "/home/u/proj" },
+            ],
+            engines: ["claude"],
+          },
         },
       }),
     );
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+    await page.route("**/api/version", (r) =>
+      r.fulfill({ json: { version: "test" } }),
+    );
 
     // Go to the home page.
     await page.goto("/");
@@ -56,7 +63,9 @@ test.describe("Mobile Context Menu", () => {
     await expect(page.locator("header .navToggle")).toBeVisible();
   });
 
-  test("actions trigger is visible and clickable on mobile (390px)", async ({ page }) => {
+  test("actions trigger is visible and clickable on mobile (390px)", async ({
+    page,
+  }) => {
     // Open the sidebar drawer.
     await page.locator("header .navToggle").click();
 
@@ -69,13 +78,17 @@ test.describe("Mobile Context Menu", () => {
     await expect(firstRow).toBeVisible();
 
     // The "..." button (Session actions) should be visible even without hover.
-    const actionsTrigger = firstRow.getByRole("button", { name: "Session actions" });
+    const actionsTrigger = firstRow.getByRole("button", {
+      name: "Session actions",
+    });
 
     // Check if it's visible.
     await expect(actionsTrigger).toBeVisible();
 
     // Check opacity (should be 1 on mobile).
-    const opacity = await actionsTrigger.evaluate((el) => window.getComputedStyle(el.parentElement!).opacity);
+    const opacity = await actionsTrigger.evaluate(
+      (el) => window.getComputedStyle(el.parentElement!).opacity,
+    );
     expect(opacity).toBe("1");
 
     // Click it.
@@ -89,12 +102,15 @@ test.describe("Mobile Context Menu", () => {
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
     // edge sits at the viewport floor rather than behind a mobile browser toolbar.
     const atViewportBottom = await menu.evaluate(
-      (el) => Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
+      (el) =>
+        Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
     );
     expect(atViewportBottom).toBe(true);
   });
 
-  test("actions trigger is visible and functional in the 640px-800px range", async ({ page }) => {
+  test("actions trigger is visible and functional in the 640px-800px range", async ({
+    page,
+  }) => {
     // Set viewport to 700px.
     await page.setViewportSize({ width: 700, height: 800 });
 
@@ -105,7 +121,9 @@ test.describe("Mobile Context Menu", () => {
     const firstRow = page.locator("ul[aria-label] li").first();
     await expect(firstRow).toBeVisible();
 
-    const actionsTrigger = firstRow.getByRole("button", { name: "Session actions" });
+    const actionsTrigger = firstRow.getByRole("button", {
+      name: "Session actions",
+    });
     await expect(actionsTrigger).toBeVisible();
 
     // Click it.
@@ -119,12 +137,15 @@ test.describe("Mobile Context Menu", () => {
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
     // edge sits at the viewport floor rather than behind a mobile browser toolbar.
     const atViewportBottom = await menu.evaluate(
-      (el) => Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
+      (el) =>
+        Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
     );
     expect(atViewportBottom).toBe(true);
   });
 
-  test("actions trigger is visible and functional at 768px (iPad portrait)", async ({ page }) => {
+  test("actions trigger is visible and functional at 768px (iPad portrait)", async ({
+    page,
+  }) => {
     // Specifically requested by Hermes review.
     await page.setViewportSize({ width: 768, height: 1024 });
 
@@ -132,7 +153,9 @@ test.describe("Mobile Context Menu", () => {
     const firstRow = page.locator("ul[aria-label] li").first();
     await expect(firstRow).toBeVisible();
 
-    const actionsTrigger = firstRow.getByRole("button", { name: "Session actions" });
+    const actionsTrigger = firstRow.getByRole("button", {
+      name: "Session actions",
+    });
     await expect(actionsTrigger).toBeVisible();
 
     await actionsTrigger.click();
@@ -143,19 +166,24 @@ test.describe("Mobile Context Menu", () => {
     // The sheet is anchored to the visible bottom of the (dynamic) viewport — its lower
     // edge sits at the viewport floor rather than behind a mobile browser toolbar.
     const atViewportBottom = await menu.evaluate(
-      (el) => Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
+      (el) =>
+        Math.round(el.getBoundingClientRect().bottom) === window.innerHeight,
     );
     expect(atViewportBottom).toBe(true);
   });
 
-  test("actions trigger is visible on devices that might report hover support (tablet/hybrid)", async ({ page }) => {
+  test("actions trigger is visible on devices that might report hover support (tablet/hybrid)", async ({
+    page,
+  }) => {
     // Some browsers/devices (like iPad or Chrome with a mouse) might not match `hover: none`.
     // We want to ensure that if isMobile (<= 800px) is true, the actions are visible.
     await page.setViewportSize({ width: 800, height: 1000 });
 
     await page.locator("header .navToggle").click();
     const firstRow = page.locator("ul[aria-label] li").first();
-    const actionsTrigger = firstRow.getByRole("button", { name: "Session actions" });
+    const actionsTrigger = firstRow.getByRole("button", {
+      name: "Session actions",
+    });
 
     await expect(actionsTrigger).toBeVisible();
   });
@@ -167,7 +195,9 @@ test.describe("Mobile Context Menu", () => {
   // The sheet now lives in a dynamic-viewport (100dvh) wrapper, is capped + scrollable, and
   // every action stays reachable. (Headless Chromium can't model the visual/layout split, so
   // we assert the structural guarantees that make the cut-off impossible.)
-  test("bottom sheet is viewport-bounded, scrollable, and fully reachable", async ({ page }) => {
+  test("bottom sheet is viewport-bounded, scrollable, and fully reachable", async ({
+    page,
+  }) => {
     // Configure AI review so the sheet carries its tallest item set (Review / Exclude /
     // Rename / Archive + Cancel) — the case most likely to overflow a short phone.
     await page.route("**/api/config", (r) =>
@@ -231,7 +261,9 @@ test.describe("Mobile Context Menu", () => {
   // close triggers (they only make sense for the trigger-anchored desktop popover), so it
   // flickered shut the instant you pressed ⋯. The mobile sheet must survive a viewport
   // resize/scroll — it's pinned to the viewport, not the trigger.
-  test("sheet survives a viewport resize/scroll (no URL-bar flicker)", async ({ page }) => {
+  test("sheet survives a viewport resize/scroll (no URL-bar flicker)", async ({
+    page,
+  }) => {
     await page.locator("header .navToggle").click();
     const firstRow = page.locator("ul[aria-label] li").first();
     await firstRow.getByRole("button", { name: "Session actions" }).click();

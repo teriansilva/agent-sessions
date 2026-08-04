@@ -7,7 +7,8 @@ import type { AiReviewConfig, AppConfig, Session } from "../types/api";
 import { AiReviewSettings } from "./AiReviewSettings";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     api: {
@@ -58,7 +59,12 @@ function renderPanel(
   block: AiReviewConfig | undefined = aiBlock(),
   refresh: () => void = () => {},
 ) {
-  const config = { csrf: "t", new_session_engines: [], terminal_backend: "ws", ai_review: block };
+  const config = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    ai_review: block,
+  };
   return render(
     <ConfigRefreshCtx.Provider value={refresh}>
       <ConfigCtx.Provider value={config as AppConfig}>
@@ -71,22 +77,35 @@ function renderPanel(
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.setPrefs).mockImplementation(async (p) => ({
-    ai_review: { ...aiBlock(), ...(p as { ai_review: object }).ai_review, api_key_set: true },
+    ai_review: {
+      ...aiBlock(),
+      ...(p as { ai_review: object }).ai_review,
+      api_key_set: true,
+    },
   }));
-  vi.mocked(api.aiReviewModels).mockResolvedValue({ models: ["m-a", "m-b", "minimax-m2.7"] });
+  vi.mocked(api.aiReviewModels).mockResolvedValue({
+    models: ["m-a", "m-b", "minimax-m2.7"],
+  });
   vi.mocked(api.sessions).mockResolvedValue({
     sessions: [],
     next_offset: null,
     total: 0,
     facets: { projects: [], engines: [] },
   });
-  vi.mocked(api.reviewExclude).mockResolvedValue({ id: "claude:a", review_excluded: false });
+  vi.mocked(api.reviewExclude).mockResolvedValue({
+    id: "claude:a",
+    review_excluded: false,
+  });
 });
 
 test("renders the config from /api/config and never echoes a key (write-only)", async () => {
   renderPanel();
-  expect(await screen.findByRole("heading", { name: "AI endpoint" })).toBeInTheDocument();
-  expect(screen.getByLabelText(/Endpoint base URL/i)).toHaveValue("https://ai.example.io/v1");
+  expect(
+    await screen.findByRole("heading", { name: "AI endpoint" }),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText(/Endpoint base URL/i)).toHaveValue(
+    "https://ai.example.io/v1",
+  );
   // The key field is empty (value never round-trips); a SET badge marks a stored key.
   const key = screen.getByLabelText(/API key/i);
   expect(key).toHaveValue("");
@@ -119,7 +138,9 @@ test("falls back to free-text model entry when the endpoint can't list models", 
   vi.mocked(api.aiReviewModels).mockRejectedValue(new Error("502"));
   renderPanel();
   await waitFor(() =>
-    expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe("model id"),
+    expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe(
+      "model id",
+    ),
   );
   expect(
     screen.getByText(/doesn’t list models — enter the model id manually/i),
@@ -136,7 +157,9 @@ test("a plain visit with a stored config stays quiet — no dirty note, no statu
   expect(screen.queryByText(/Validating endpoint/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/Endpoint validated/i)).not.toBeInTheDocument();
   expect(screen.getByLabelText(/API key/i)).toHaveValue("");
-  expect(screen.getByRole("button", { name: /save & validate/i })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: /save & validate/i }),
+  ).toBeDisabled();
 });
 
 test("the API-key field opts out of password-manager autofill (#543)", () => {
@@ -144,7 +167,10 @@ test("the API-key field opts out of password-manager autofill (#543)", () => {
   // password into the field on load, dirtying the form one click away from overwriting
   // the stored API key. "new-password" is the standard suppression signal.
   renderPanel();
-  expect(screen.getByLabelText(/API key/i)).toHaveAttribute("autocomplete", "new-password");
+  expect(screen.getByLabelText(/API key/i)).toHaveAttribute(
+    "autocomplete",
+    "new-password",
+  );
 });
 
 test("a failed mount probe still surfaces the gateway error on a plain visit (#543)", async () => {
@@ -161,7 +187,9 @@ test("model list is not fetched while unconfigured (no endpoint/key yet)", async
   renderPanel(aiBlock({ configured: false, api_key_set: false, base_url: "" }));
   await screen.findByRole("heading", { name: "AI endpoint" });
   expect(api.aiReviewModels).not.toHaveBeenCalled();
-  expect(screen.getByText(/Set the base URL and API key first/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Set the base URL and API key first/i),
+  ).toBeInTheDocument();
 });
 
 test("Save & validate persists URL+key together, probes /models, and confirms", async () => {
@@ -180,14 +208,21 @@ test("Save & validate persists URL+key together, probes /models, and confirms", 
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({
-      ai_review: { base_url: "https://other.example/v1", api_key: "sk-new-key" },
+      ai_review: {
+        base_url: "https://other.example/v1",
+        api_key: "sk-new-key",
+      },
     }),
   );
   expect(api.setPrefs).toHaveBeenCalledTimes(1); // both fields in ONE save
   // The save-time validation probe bypasses the server cache.
-  await waitFor(() => expect(api.aiReviewModels).toHaveBeenLastCalledWith({ refresh: true }));
+  await waitFor(() =>
+    expect(api.aiReviewModels).toHaveBeenLastCalledWith({ refresh: true }),
+  );
   await waitFor(() => expect(key).toHaveValue("")); // write-only: cleared after save
-  expect(await screen.findByText(/Endpoint validated — 3 models available/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/Endpoint validated — 3 models available/i),
+  ).toBeInTheDocument();
 });
 
 test("the URL and key fields never persist on blur", async () => {
@@ -218,24 +253,34 @@ test("a failed validation shows the gateway's error verbatim (#382)", async () =
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   expect(await screen.findByText(`✗ ${gw}`)).toBeInTheDocument();
   // The model field falls back to free-text entry; the config itself stayed saved.
-  expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe("model id");
+  expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe(
+    "model id",
+  );
 });
 
 test("dirty endpoint edits show the unsaved note and lock the model control", async () => {
   const user = userEvent.setup();
   // No validated config: the mount probe fails (e.g. stored key already broken).
-  vi.mocked(api.aiReviewModels).mockRejectedValue(new ApiError(502, "HTTP 401"));
+  vi.mocked(api.aiReviewModels).mockRejectedValue(
+    new ApiError(502, "HTTP 401"),
+  );
   renderPanel();
   await waitFor(() =>
-    expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe("model id"),
+    expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe(
+      "model id",
+    ),
   );
   const saveBtn = screen.getByRole("button", { name: /save & validate/i });
   expect(saveBtn).toBeDisabled(); // nothing edited yet
   await user.type(screen.getByLabelText(/API key/i), "sk-fresh");
-  expect(screen.getByText(/Unsaved changes — Save applies and validates/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Unsaved changes — Save applies and validates/i),
+  ).toBeInTheDocument();
   expect(saveBtn).toBeEnabled();
   expect(screen.getByLabelText("Model")).toBeDisabled(); // no validated config → locked
-  expect(screen.getByRole("button", { name: /refresh model list/i })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: /refresh model list/i }),
+  ).toBeDisabled();
 });
 
 test("dirty edits do NOT lock the model dropdown while a validated config exists", async () => {
@@ -282,7 +327,9 @@ test("a successful Save & validate still reseeds — the dirty state clears", as
     expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument(),
   );
   expect(url).toHaveValue("https://other.example/v1"); // the new persisted value
-  expect(screen.getByRole("button", { name: /save & validate/i })).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: /save & validate/i }),
+  ).toBeDisabled();
 });
 
 test("the masked sentinel round-trips as 'unchanged' — never sent as the key", async () => {
@@ -315,7 +362,9 @@ test("a save that leaves the config incomplete reports it instead of probing", a
   await user.type(url, "https://other.example/v1");
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   expect(
-    await screen.findByText(/Set both the base URL and an API key to validate/i),
+    await screen.findByText(
+      /Set both the base URL and an API key to validate/i,
+    ),
   ).toBeInTheDocument();
   expect(api.aiReviewModels).not.toHaveBeenCalled(); // nothing to validate yet
 });
@@ -329,11 +378,15 @@ test("prompt Save persists the draft; Reset to default saves the server default"
   await user.type(area, "my new prompt");
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { prompt: "my new prompt" } }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { prompt: "my new prompt" },
+    }),
   );
   await user.click(screen.getByRole("button", { name: /reset to default/i }));
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { prompt: DEFAULT_PROMPT } }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { prompt: DEFAULT_PROMPT },
+    }),
   );
   expect(area).toHaveValue(DEFAULT_PROMPT);
 });
@@ -353,8 +406,12 @@ test("excluded sessions list re-includes a session", async () => {
   expect(await screen.findByText("rotate creds")).toBeInTheDocument();
   expect(screen.queryByText("not excluded")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Include" }));
-  await waitFor(() => expect(api.reviewExclude).toHaveBeenCalledWith("claude:a", false));
-  await waitFor(() => expect(screen.queryByText("rotate creds")).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(api.reviewExclude).toHaveBeenCalledWith("claude:a", false),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("rotate creds")).not.toBeInTheDocument(),
+  );
 });
 
 test("Remove key sends api_key: null, clears the badge, and the action disappears", async () => {
@@ -368,14 +425,20 @@ test("Remove key sends api_key: null, clears the badge, and the action disappear
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { api_key: null } }),
   );
-  await waitFor(() => expect(screen.queryByText("set")).not.toBeInTheDocument());
-  expect(screen.queryByRole("button", { name: "Remove key" })).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.queryByText("set")).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.queryByRole("button", { name: "Remove key" }),
+  ).not.toBeInTheDocument();
 });
 
 test("Remove key is not offered while no key is stored", async () => {
   renderPanel(aiBlock({ api_key_set: false, configured: false }));
   await screen.findByRole("heading", { name: "AI endpoint" });
-  expect(screen.queryByRole("button", { name: "Remove key" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Remove key" }),
+  ).not.toBeInTheDocument();
 });
 
 test("completing the endpoint config refetches the shared /api/config context", async () => {
@@ -394,7 +457,9 @@ test("a save that doesn't flip `configured` leaves the config context alone", as
   const user = userEvent.setup();
   const refresh = vi.fn();
   renderPanel(aiBlock(), refresh); // already configured; the echo stays configured
-  await user.click(screen.getByRole("checkbox", { name: /enable periodic reviews/i }));
+  await user.click(
+    screen.getByRole("checkbox", { name: /enable periodic reviews/i }),
+  );
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
   expect(refresh).not.toHaveBeenCalled();
 });
@@ -402,7 +467,9 @@ test("a save that doesn't flip `configured` leaves the config context alone", as
 test("review timeout renders the saved value; empty shows the 120s default hint", async () => {
   renderPanel(aiBlock({ request_timeout: 90 }));
   expect(await screen.findByLabelText("Request timeout")).toHaveValue(90);
-  expect(screen.getByText(/Slow local models often need 60–180s/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Slow local models often need 60–180s/i),
+  ).toBeInTheDocument();
 });
 
 test("review timeout commits on blur through the ai_review patch flow", async () => {
@@ -413,7 +480,9 @@ test("review timeout commits on blur through the ai_review patch flow", async ()
   await user.type(field, "240");
   await user.tab();
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { request_timeout: 240 } }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { request_timeout: 240 },
+    }),
   );
 });
 
@@ -426,7 +495,9 @@ test("an out-of-range review timeout is rejected client-side and the draft rever
   await user.tab();
   expect(api.setPrefs).not.toHaveBeenCalledWith(
     expect.objectContaining({
-      ai_review: expect.objectContaining({ request_timeout: expect.anything() }),
+      ai_review: expect.objectContaining({
+        request_timeout: expect.anything(),
+      }),
     }),
   );
   expect(field).toHaveValue(90); // reverted to the saved value, like interval
@@ -439,14 +510,18 @@ test("clearing the review timeout sends null (unset → env/default applies)", a
   await user.clear(field);
   await user.tab();
   await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { request_timeout: null } }),
+    expect(api.setPrefs).toHaveBeenCalledWith({
+      ai_review: { request_timeout: null },
+    }),
   );
 });
 
 test("the enable toggle persists immediately", async () => {
   const user = userEvent.setup();
   renderPanel();
-  await user.click(screen.getByRole("checkbox", { name: /enable periodic reviews/i }));
+  await user.click(
+    screen.getByRole("checkbox", { name: /enable periodic reviews/i }),
+  );
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { enabled: true } }),
   );

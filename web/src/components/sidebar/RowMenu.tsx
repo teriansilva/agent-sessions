@@ -86,10 +86,15 @@ export function RowMenu({
     const rect = trigger.getBoundingClientRect();
     const menuH = menu.offsetHeight;
     const below = rect.bottom + GAP;
-    const flip = below + menuH > window.innerHeight - EDGE && rect.top - GAP - menuH > EDGE;
+    const flip =
+      below + menuH > window.innerHeight - EDGE &&
+      rect.top - GAP - menuH > EDGE;
     const top = flip ? rect.top - GAP - menuH : below;
     menu.style.setProperty("--rm-top", `${Math.max(EDGE, top)}px`);
-    menu.style.setProperty("--rm-right", `${Math.max(EDGE, window.innerWidth - rect.right)}px`);
+    menu.style.setProperty(
+      "--rm-right",
+      `${Math.max(EDGE, window.innerWidth - rect.right)}px`,
+    );
   }, [open]);
 
   // Focus the first item on open (menu-button pattern).
@@ -106,10 +111,12 @@ export function RowMenu({
   useEffect(() => {
     if (!open) return;
     const isSheet =
-      typeof window.matchMedia === "function" && window.matchMedia("(max-width: 800px)").matches;
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 800px)").matches;
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target as Node;
-      if (menuRef.current?.contains(t) || triggerRef.current?.contains(t)) return;
+      if (menuRef.current?.contains(t) || triggerRef.current?.contains(t))
+        return;
       close(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
@@ -137,7 +144,8 @@ export function RowMenu({
   const onMenuKeyDown = (e: React.KeyboardEvent) => {
     const focusable = itemRefs.current.filter(Boolean) as HTMLButtonElement[];
     const cur = focusable.indexOf(document.activeElement as HTMLButtonElement);
-    const focusAt = (i: number) => focusable[(i + focusable.length) % focusable.length]?.focus();
+    const focusAt = (i: number) =>
+      focusable[(i + focusable.length) % focusable.length]?.focus();
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -193,7 +201,11 @@ export function RowMenu({
         createPortal(
           <>
             {/* Mobile-only scrim behind the bottom sheet (display:none on desktop). */}
-            <div className={styles.scrim} aria-hidden="true" onClick={() => close(false)} />
+            <div
+              className={styles.scrim}
+              aria-hidden="true"
+              onClick={() => close(false)}
+            />
             {/* Sheet wrapper: `display:contents` on desktop (the menu stays a fixed popover),
                 but on mobile a click-through, dynamic-viewport-height flex box that pins the
                 sheet to the *visible* bottom — above the browser's collapsing toolbar — so the
@@ -214,10 +226,18 @@ export function RowMenu({
                 )}
                 {items.map((entry, i) => {
                   if (entry === "separator") {
-                    return <div key={`sep-${i}`} className={styles.sep} role="separator" />;
+                    return (
+                      <div
+                        key={`sep-${i}`}
+                        className={styles.sep}
+                        role="separator"
+                      />
+                    );
                   }
                   // Roving-focus slot: position among action items only (separators skipped).
-                  const idx = items.slice(0, i).filter((it) => it !== "separator").length;
+                  const idx = items
+                    .slice(0, i)
+                    .filter((it) => it !== "separator").length;
                   return (
                     <button
                       key={entry.key}

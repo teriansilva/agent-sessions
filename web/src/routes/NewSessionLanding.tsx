@@ -42,16 +42,21 @@ export function NewSessionLanding() {
   // "" (#448 back-compat), and "" is a *missing* folder, not a chosen one — fall through to the
   // legacy cwd rather than opening the picker on nothing (#615 Phase 2 edge case). `cwdOverride`
   // keeps `??`: an explicit "" from the picker is a real choice.
-  const projectCwd = selectedProject?.default_folder || config?.default_project || "";
+  const projectCwd =
+    selectedProject?.default_folder || config?.default_project || "";
   const cwd = cwdOverride ?? projectCwd;
-  const isProjectDefault = !!selectedProject && cwd === selectedProject.default_folder && cwd !== "";
+  const isProjectDefault =
+    !!selectedProject && cwd === selectedProject.default_folder && cwd !== "";
 
   // One folder picker serves two flows: overriding this session's folder, or choosing the
   // default folder for a "+ New project". `null` = closed.
   const [picker, setPicker] = useState<null | "cwd" | "newproject">(null);
   // Captured at open time (not read from a ref during render) so focus returns to the trigger.
   const [pickerReturn, setPickerReturn] = useState<HTMLElement | null>(null);
-  const openPicker = (mode: "cwd" | "newproject", e: { currentTarget: HTMLElement }) => {
+  const openPicker = (
+    mode: "cwd" | "newproject",
+    e: { currentTarget: HTMLElement },
+  ) => {
     setPickerReturn(e.currentTarget);
     setPicker(mode);
   };
@@ -79,7 +84,10 @@ export function NewSessionLanding() {
     setCreatingProject(true);
     setProjectError(null);
     try {
-      const created = await api.createProject({ name, default_folder: newProjectFolder });
+      const created = await api.createProject({
+        name,
+        default_folder: newProjectFolder,
+      });
       await refreshEntities();
       setProjectChoice(created.id); // select it; folder follows its default
       setCwdOverride(null);
@@ -127,7 +135,10 @@ export function NewSessionLanding() {
         {engines.length > 1 && (
           <label className={styles.field}>
             <span>Agent</span>
-            <select value={engine} onChange={(e) => setEngineChoice(e.target.value)}>
+            <select
+              value={engine}
+              onChange={(e) => setEngineChoice(e.target.value)}
+            >
               {engines.map((id) => (
                 <option key={id} value={id}>
                   {id}
@@ -159,7 +170,11 @@ export function NewSessionLanding() {
           </label>
         )}
         {!showNewProject ? (
-          <button type="button" className={styles.setDefault} onClick={() => setShowNewProject(true)}>
+          <button
+            type="button"
+            className={styles.setDefault}
+            onClick={() => setShowNewProject(true)}
+          >
             + New project…
           </button>
         ) : (
@@ -176,13 +191,17 @@ export function NewSessionLanding() {
               className={styles.newFolderBtn}
               onClick={(e) => openPicker("newproject", e)}
             >
-              {newProjectFolder ? `📁 ${shortCwd(newProjectFolder)}` : "Default folder *…"}
+              {newProjectFolder
+                ? `📁 ${shortCwd(newProjectFolder)}`
+                : "Default folder *…"}
             </button>
             <button
               type="button"
               className={styles.newFolderBtn}
               onClick={() => void createProject()}
-              disabled={!newProjectName.trim() || !newProjectFolder || creatingProject}
+              disabled={
+                !newProjectName.trim() || !newProjectFolder || creatingProject
+              }
             >
               {creatingProject ? "Creating…" : "Create"}
             </button>
@@ -223,26 +242,51 @@ export function NewSessionLanding() {
           </div>
         </label>
         {isProjectDefault ? (
-          <p className={styles.hint}>✓ default folder for “{selectedProject?.name}” — change it just for this session</p>
-        ) : selectedProject && !selectedProject.default_folder && !cwdOverride ? (
-          <p className={styles.error}>“{selectedProject.name}” has no default folder — choose one for this session.</p>
+          <p className={styles.hint}>
+            ✓ default folder for “{selectedProject?.name}” — change it just for
+            this session
+          </p>
+        ) : selectedProject &&
+          !selectedProject.default_folder &&
+          !cwdOverride ? (
+          <p className={styles.error}>
+            “{selectedProject.name}” has no default folder — choose one for this
+            session.
+          </p>
         ) : null}
 
         <label className={styles.checkbox}>
-          <input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={bypass}
+            onChange={(e) => setBypass(e.target.checked)}
+          />
           <span>Skip permission prompts</span>
         </label>
 
-        <button type="button" className={`${styles.start} shine`} disabled={!canStart} onClick={start}>
+        <button
+          type="button"
+          className={`${styles.start} shine`}
+          disabled={!canStart}
+          onClick={start}
+        >
           Start session
         </button>
-        <p className={styles.hint}>…or open an existing session from the list.</p>
+        <p className={styles.hint}>
+          …or open an existing session from the list.
+        </p>
       </div>
 
       {picker && (
         <FolderPickerModal
-          initialPath={picker === "cwd" ? cwd || undefined : newProjectFolder || undefined}
-          title={picker === "newproject" ? "Choose the project's default folder" : "Choose a folder"}
+          initialPath={
+            picker === "cwd" ? cwd || undefined : newProjectFolder || undefined
+          }
+          title={
+            picker === "newproject"
+              ? "Choose the project's default folder"
+              : "Choose a folder"
+          }
           onPick={onPick}
           onCancel={() => setPicker(null)}
           returnFocusTo={pickerReturn}

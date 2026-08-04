@@ -26,14 +26,20 @@ test("Ctrl+V over the terminal sends no raw ^V keystroke to the PTY (#209)", asy
 }, testInfo) => {
   // Ctrl+V is a physical-keyboard (desktop) concern; on the touch/mobile project there is
   // no hardware Ctrl+V and the touch overlay owns focus, so the assertion isn't meaningful.
-  test.skip(testInfo.project.name === "mobile", "Ctrl+V is a desktop-only concern");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "Ctrl+V is a desktop-only concern",
+  );
   await page.addInitScript(RECORDING_WS);
   await page.goto("/s/claude/paste-keys");
   await expect(page.locator(".xterm")).toBeVisible();
   // Wait for the socket to actually OPEN — sends are dropped before readyState 1. The terminal now
   // attaches only once the grid goes quiet (#304), which can land past a fixed delay, so gate on the
   // connect-time resize frame appearing in __sent rather than a timeout.
-  await page.waitForFunction(() => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0);
+  await page.waitForFunction(
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+  );
 
   // A REAL (trusted) Ctrl+V so xterm runs its actual key path — without the custom handler
   // this is exactly what would emit ^V to the PTY.
@@ -41,7 +47,9 @@ test("Ctrl+V over the terminal sends no raw ^V keystroke to the PTY (#209)", asy
   await page.keyboard.press("Control+v");
   await page.waitForTimeout(50);
 
-  const sent = await page.evaluate(() => (window as unknown as { __sent: string[] }).__sent);
+  const sent = await page.evaluate(
+    () => (window as unknown as { __sent: string[] }).__sent,
+  );
   expect(sent.some((f) => f.includes(CTRL_V_ESCAPED))).toBe(false);
 });
 
@@ -52,7 +60,10 @@ test("a text paste over the terminal still reaches the PTY (#181 path intact)", 
   await page.goto("/s/claude/paste-text");
   await expect(page.locator(".xterm")).toBeVisible();
   // Wait for the socket to OPEN (see the #304 note above) before pasting, so the frame isn't dropped.
-  await page.waitForFunction(() => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0);
+  await page.waitForFunction(
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+  );
 
   // Synthesize a text paste on a node inside the terminal host; the capture-phase listener
   // forwards it via term.paste(text) (#181).
@@ -60,10 +71,16 @@ test("a text paste over the terminal still reaches the PTY (#181 path intact)", 
     const dt = new DataTransfer();
     dt.setData("text/plain", "hello-from-paste");
     host.dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
     );
   });
 
-  const sent = await page.evaluate(() => (window as unknown as { __sent: string[] }).__sent);
+  const sent = await page.evaluate(
+    () => (window as unknown as { __sent: string[] }).__sent,
+  );
   expect(sent.some((f) => f.includes("hello-from-paste"))).toBe(true);
 });

@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { clampW, DEFAULT_W, maxSidebarW, MIN_W, readStoredW, WIDTH_KEY } from "./sidebarWidth";
+import {
+  clampW,
+  DEFAULT_W,
+  maxSidebarW,
+  MIN_W,
+  readStoredW,
+  WIDTH_KEY,
+} from "./sidebarWidth";
 
 function setViewport(w: number): void {
-  Object.defineProperty(window, "innerWidth", { value: w, configurable: true, writable: true });
+  Object.defineProperty(window, "innerWidth", {
+    value: w,
+    configurable: true,
+    writable: true,
+  });
 }
 
 // #507: the desktop sidebar width is persisted device-local and clamped to a viewport-aware

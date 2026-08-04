@@ -15,7 +15,14 @@ vi.mock("../../lib/api", () => ({
   // draft so the load is a no-op and these Terminal tests stay about the socket/terminal.
   api: {
     upload: vi.fn(),
-    getDraft: vi.fn().mockResolvedValue({ id: "", text: "", attachments: [], updated_at: null }),
+    getDraft: vi
+      .fn()
+      .mockResolvedValue({
+        id: "",
+        text: "",
+        attachments: [],
+        updated_at: null,
+      }),
     saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
   },
 }));
@@ -84,7 +91,8 @@ vi.mock("@xterm/addon-fit", () => ({
     // xterm and advance — so connectWhenStable sees a grid that settles over several frames.
     fit() {
       if (!gridScript.length) return;
-      const term = xterms[xterms.length - 1] as unknown as { cols: number; rows: number } | undefined;
+      const term = xterms[xterms.length - 1] as unknown as
+        { cols: number; rows: number } | undefined;
       if (!term) return;
       term.cols = gridScript[gridIdx].cols;
       term.rows = gridScript[gridIdx].rows;
@@ -136,8 +144,7 @@ vi.mock("../../lib/termSocket", () => ({
       this.url = urlFor;
       this.connect = vi.fn(() => {
         const term = xterms[xterms.length - 1] as unknown as
-          | { cols: number; rows: number }
-          | undefined;
+          { cols: number; rows: number } | undefined;
         this.connectCols = term?.cols;
         this.connectRows = term?.rows;
       });
@@ -173,7 +180,9 @@ function wrap(node: ReactNode) {
   // Terminal uses useNavigate (gate Cancel → new session, #293), so it needs a Router context.
   return (
     <MemoryRouter>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>{node}</ThemeCtx.Provider>
+      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
+        {node}
+      </ThemeCtx.Provider>
     </MemoryRouter>
   );
 }
@@ -182,7 +191,13 @@ const PLACEHOLDER = "new-11111111-1111-1111-1111-111111111111";
 
 test("a fresh launch opens one socket whose URL carries new=1 for the placeholder id", () => {
   render(
-    wrap(<Terminal engine="opencode" id={PLACEHOLDER} fresh={{ cwd: "/proj", bypass: true }} />),
+    wrap(
+      <Terminal
+        engine="opencode"
+        id={PLACEHOLDER}
+        fresh={{ cwd: "/proj", bypass: true }}
+      />,
+    ),
   );
   expect(sockets).toHaveLength(1);
   expect(sockets[0].connect).toHaveBeenCalledTimes(1);
@@ -230,12 +245,20 @@ test("attaches at the SETTLED grid, not an in-flight one — fixes 'switch almos
 // is still the pending placeholder), killing the terminal the converge is meant to preserve.
 test("dropping `fresh` during convergence keeps the same live socket (no relaunch, no 4404)", () => {
   const { rerender } = render(
-    wrap(<Terminal engine="opencode" id={PLACEHOLDER} fresh={{ cwd: "/proj", bypass: true }} />),
+    wrap(
+      <Terminal
+        engine="opencode"
+        id={PLACEHOLDER}
+        fresh={{ cwd: "/proj", bypass: true }}
+      />,
+    ),
   );
   expect(sockets).toHaveLength(1);
 
   // Owner clears route state during placeholder→real converge: same key, fresh now undefined.
-  rerender(wrap(<Terminal engine="opencode" id={PLACEHOLDER} fresh={undefined} />));
+  rerender(
+    wrap(<Terminal engine="opencode" id={PLACEHOLDER} fresh={undefined} />),
+  );
 
   // No teardown, no new socket — the socket effect is identity-only (engine:id), so the live
   // connection is preserved, and its frozen URL still carries new=1 for any future reconnect.
@@ -247,8 +270,13 @@ test("dropping `fresh` during convergence keeps the same live socket (no relaunc
 // #157: pasting an image over the terminal opens Compose and adds an attachment pill —
 // it never goes to the PTY (no bracketed-paste of the server path, no terminal pollution).
 test("pasting an image over the terminal routes to Compose as an attachment, not to the PTY (#157)", async () => {
-  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
-  vi.mocked(api.upload).mockResolvedValue({ name: "shot.png", path: "/uploads/shot.png" });
+  const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+    type: "image/png",
+  });
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "shot.png",
+    path: "/uploads/shot.png",
+  });
   const { container } = render(wrap(<Terminal engine="claude" id="abc123" />));
   const host = container.getElementsByClassName(styles.term)[0];
   expect(host).toBeTruthy();
@@ -288,7 +316,11 @@ test("loads WebLinksAddon and opens links in a new tab with noopener,noreferrer 
 
   // Fire the handler as the addon would on a real click.
   wl!.handler({}, "https://example.com/foo");
-  expect(open).toHaveBeenCalledWith("https://example.com/foo", "_blank", "noopener,noreferrer");
+  expect(open).toHaveBeenCalledWith(
+    "https://example.com/foo",
+    "_blank",
+    "noopener,noreferrer",
+  );
 });
 
 // #187: floating scroll-to-bottom button. Mounts on EVERY pointer type whenever the
@@ -305,7 +337,9 @@ function setCoarsePointer(coarse: boolean) {
 test("#187 FAB stays hidden when the viewport sits on the live tail", () => {
   setCoarsePointer(true);
   render(wrap(<Terminal engine="claude" id="abc" />));
-  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /scroll to bottom/i }),
+  ).toBeNull();
 });
 
 test("#187 FAB appears when the user scrolls off the tail, dismisses on tap", () => {
@@ -326,7 +360,9 @@ test("#187 FAB appears when the user scrolls off the tail, dismisses on tap", ()
   // Tap → scrollToBottom called + position lands on the tail → button hides.
   fireEvent.click(fab);
   expect(term.scrollToBottom).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /scroll to bottom/i }),
+  ).toBeNull();
 });
 
 test("#187 FAB shows on a fine-pointer (desktop) device too", () => {
@@ -338,7 +374,9 @@ test("#187 FAB shows on a fine-pointer (desktop) device too", () => {
   const term = xterms[0];
 
   // On the tail: hidden.
-  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /scroll to bottom/i }),
+  ).toBeNull();
 
   // Scrolled off the tail: visible, and a click jumps back to the bottom.
   act(() => {
@@ -350,7 +388,9 @@ test("#187 FAB shows on a fine-pointer (desktop) device too", () => {
   expect(fab).toBeInTheDocument();
   fireEvent.click(fab);
   expect(term.scrollToBottom).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole("button", { name: /scroll to bottom/i })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /scroll to bottom/i }),
+  ).toBeNull();
 });
 
 // #184: per-tab ownership protocol — the URL must carry fp + tab so the server
@@ -376,7 +416,9 @@ test("#184 secondary role surfaces the read-only banner + Take-over button", () 
   });
   // Banner explains the state + Take-over button is wired.
   expect(screen.getByText(/read-only mode/i)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /take over/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /take over/i }),
+  ).toBeInTheDocument();
 });
 
 test("#184 Take-over reconnects with ?force=1 exactly once", () => {
@@ -399,7 +441,9 @@ test("#184 Take-over reconnects with ?force=1 exactly once", () => {
 test("#184 owner role hides the banner", () => {
   render(wrap(<Terminal engine="claude" id="abc" />));
   act(() => sockets[0].emitRole!("secondary"));
-  expect(screen.getByRole("button", { name: /take over/i })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /take over/i }),
+  ).toBeInTheDocument();
   act(() => sockets[0].emitRole!("owner"));
   expect(screen.queryByRole("button", { name: /take over/i })).toBeNull();
 });
@@ -434,7 +478,11 @@ function headerRow(over: Record<string, unknown> = {}): Session[] {
       uuid: "abc",
       short_uuid: "abc",
       cwd: "/home/u/proj/api",
-      project: { kind: "folder", id: "/home/u/proj/api", name: "/home/u/proj/api" },
+      project: {
+        kind: "folder",
+        id: "/home/u/proj/api",
+        name: "/home/u/proj/api",
+      },
       last_mtime: Math.floor(Date.now() / 1000) - 172_800,
       first_user_message: "a",
       title: "",
@@ -482,12 +530,16 @@ test("the header LED keeps an accessible name for the link state (#744)", () => 
 // leak; the title drops to the short id instead.
 test("the display title falls back to the short id — a one-char first message never leaks (#284)", async () => {
   renderTerminal(headerRow());
-  await userEvent.click(screen.getByRole("button", { name: /open session brief/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /open session brief/i }),
+  );
   expect(screen.getByRole("dialog", { name: "abc…" })).toBeInTheDocument();
 });
 
 // An adopted project shows its entity name, not the launch folder (sidebar parity).
 test("an adopted project shows its entity name in the header (#744)", () => {
-  renderTerminal(headerRow({ project: { kind: "project", id: "p-1", name: "BattleLab" } }));
+  renderTerminal(
+    headerRow({ project: { kind: "project", id: "p-1", name: "BattleLab" } }),
+  );
   expect(screen.getByText("BattleLab")).toBeInTheDocument();
 });

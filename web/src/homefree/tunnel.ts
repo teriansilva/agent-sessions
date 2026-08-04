@@ -22,7 +22,10 @@ import { Mux, type Stream, StreamReset } from "./mux";
 const te = new TextEncoder();
 const td = new TextDecoder();
 
-export type TunnelFetch = (input: string, init?: RequestInit) => Promise<Response>;
+export type TunnelFetch = (
+  input: string,
+  init?: RequestInit,
+) => Promise<Response>;
 
 /** Read exactly `n` bytes from the mux byte stream, or `null` at clean EOF before `n`. */
 async function readExact(s: Stream, n: number): Promise<Uint8Array | null> {
@@ -73,7 +76,8 @@ function toWsPath(url: string): string {
 
 function asBytes(data: ArrayBufferLike | ArrayBufferView): Uint8Array {
   if (data instanceof Uint8Array) return data;
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (ArrayBuffer.isView(data))
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   return new Uint8Array(data as ArrayBufferLike);
 }
 
@@ -125,7 +129,10 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
     // Blobs, and FormData/multipart (whose boundary Content-Type the Request sets and we
     // forward). `arrayBuffer()` yields the exact bytes matching that Content-Type.
     const path = toPath(input);
-    const req = new Request(path.startsWith("/") ? `http://app.local${path}` : input, init);
+    const req = new Request(
+      path.startsWith("/") ? `http://app.local${path}` : input,
+      init,
+    );
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
       headers[k] = v;
@@ -134,13 +141,22 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
     const cookie = jar.header(headers.cookie);
     if (cookie) headers.cookie = cookie;
     const body = new Uint8Array(await req.arrayBuffer());
-    const s = mux.open(te.encode(JSON.stringify({ k: "http", method: req.method, path, headers })));
+    const s = mux.open(
+      te.encode(
+        JSON.stringify({ k: "http", method: req.method, path, headers }),
+      ),
+    );
     try {
       if (body.length) await s.write(body);
       await s.end();
       const lenBuf = await readExact(s, 4);
-      if (!lenBuf) throw new TypeError("tunnel: response ended before meta length");
-      const metaLen = new DataView(lenBuf.buffer, lenBuf.byteOffset, 4).getUint32(0, false);
+      if (!lenBuf)
+        throw new TypeError("tunnel: response ended before meta length");
+      const metaLen = new DataView(
+        lenBuf.buffer,
+        lenBuf.byteOffset,
+        4,
+      ).getUint32(0, false);
       const metaBuf = await readExact(s, metaLen);
       if (!metaBuf) throw new TypeError("tunnel: response ended inside meta");
       const meta = JSON.parse(td.decode(metaBuf)) as {
@@ -166,7 +182,8 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
       // Capture the box session cookie so subsequent requests + the terminal WS carry it.
       if (setCookies.length) jar.ingest(setCookies);
       // 204/205/304 must carry a null body per the Fetch spec (Response throws otherwise).
-      const nullBody = meta.status === 204 || meta.status === 205 || meta.status === 304;
+      const nullBody =
+        meta.status === 204 || meta.status === 205 || meta.status === 304;
       return new Response(nullBody ? null : concat(chunks), {
         status: meta.status,
         headers: respHeaders,
@@ -174,7 +191,8 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
     } catch (e) {
       // A reset mid-request (app down, disallowed path, transport closed) surfaces as a
       // network-style failure — the same shape a real `fetch` rejects with.
-      if (e instanceof StreamReset) throw new TypeError("tunnel: stream reset", { cause: e });
+      if (e instanceof StreamReset)
+        throw new TypeError("tunnel: stream reset", { cause: e });
       throw e;
     }
   };
@@ -193,7 +211,11 @@ const CLOSED = 3;
 const WS_CLOSE = 2;
 
 type MsgEvent = { data: string | ArrayBuffer };
-export type CloseEventLike = { code: number; reason: string; wasClean: boolean };
+export type CloseEventLike = {
+  code: number;
+  reason: string;
+  wasClean: boolean;
+};
 
 /**
  * A `WebSocket`-shaped adapter over one WS mux stream. Implements exactly the surface
@@ -235,7 +257,9 @@ export class MuxWebSocket {
   send(data: string | ArrayBufferLike | ArrayBufferView): void {
     if (this.readyState !== OPEN) return; // mirror WebSocket: drop sends when not open
     const isText = typeof data === "string";
-    const payload = isText ? te.encode(data) : asBytes(data as ArrayBufferLike | ArrayBufferView);
+    const payload = isText
+      ? te.encode(data)
+      : asBytes(data as ArrayBufferLike | ArrayBufferView);
     const frame = new Uint8Array(5 + payload.length);
     frame[0] = isText ? 0 : 1;
     new DataView(frame.buffer).setUint32(1, payload.length, false);
@@ -269,7 +293,11 @@ export class MuxWebSocket {
         for (;;) {
           if (this.recv.length < 5) break;
           const len =
-            ((this.recv[1] << 24) | (this.recv[2] << 16) | (this.recv[3] << 8) | this.recv[4]) >>> 0;
+            ((this.recv[1] << 24) |
+              (this.recv[2] << 16) |
+              (this.recv[3] << 8) |
+              this.recv[4]) >>>
+            0;
           if (this.recv.length < 5 + len) break;
           const mtype = this.recv[0];
           const payload = Uint8Array.from(this.recv.slice(5, 5 + len));
@@ -279,8 +307,10 @@ export class MuxWebSocket {
             // optional UTF-8 reason) so TermSocket's NO_RETRY codes (4401/4403/4404/4500)
             // surface as a rejected state instead of an endless reconnect. A close frame
             // is a completed handshake → wasClean.
-            const code = payload.length >= 2 ? ((payload[0] << 8) | payload[1]) : 1005;
-            const reason = payload.length > 2 ? td.decode(payload.subarray(2)) : "";
+            const code =
+              payload.length >= 2 ? (payload[0] << 8) | payload[1] : 1005;
+            const reason =
+              payload.length > 2 ? td.decode(payload.subarray(2)) : "";
             this.fireClose(code, reason, true);
             return;
           }
@@ -342,9 +372,11 @@ export function createTunnel(
     onSend: (frame) => {
       // Copy defensively — the caller may hold the frame past this synchronous emit.
       const f = frame.slice();
-      chain = chain.then(() => send(f)).catch(() => {
-        /* a failed send tears the transport down elsewhere; don't unhandled-reject here */
-      });
+      chain = chain
+        .then(() => send(f))
+        .catch(() => {
+          /* a failed send tears the transport down elsewhere; don't unhandled-reject here */
+        });
     },
   });
   return {

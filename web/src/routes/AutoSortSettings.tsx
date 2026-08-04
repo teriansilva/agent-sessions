@@ -37,8 +37,12 @@ export function AutoSortSettings() {
     if (cfgBlock) setBlock(cfgBlock);
   }
 
-  const [intervalDraft, setIntervalDraft] = useState(String(block.interval_minutes));
-  const [confidenceDraft, setConfidenceDraft] = useState(block.confidence_min.toFixed(2));
+  const [intervalDraft, setIntervalDraft] = useState(
+    String(block.interval_minutes),
+  );
+  const [confidenceDraft, setConfidenceDraft] = useState(
+    block.confidence_min.toFixed(2),
+  );
   const [perPassDraft, setPerPassDraft] = useState(String(block.max_per_pass));
   const [promptDraft, setPromptDraft] = useState(block.prompt);
   const [seeded, setSeeded] = useState(block);
@@ -58,7 +62,10 @@ export function AutoSortSettings() {
     api
       .projectEntities()
       .then((d) => {
-        if (alive) setProjNames(Object.fromEntries(d.projects.map((p) => [p.id, p.name])));
+        if (alive)
+          setProjNames(
+            Object.fromEntries(d.projects.map((p) => [p.id, p.name])),
+          );
       })
       .catch(() => {});
     return () => {
@@ -69,12 +76,16 @@ export function AutoSortSettings() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
-  const [nearMisses, setNearMisses] = useState<NonNullable<AutoSortReport["near_misses"]>>([]);
+  const [nearMisses, setNearMisses] = useState<
+    NonNullable<AutoSortReport["near_misses"]>
+  >([]);
 
   const save = async (partial: Record<string, unknown>) => {
     setError(null);
     try {
-      const r = (await api.setPrefs({ auto_sort: partial })) as { auto_sort?: AutoSortConfig };
+      const r = (await api.setPrefs({ auto_sort: partial })) as {
+        auto_sort?: AutoSortConfig;
+      };
       if (r.auto_sort) setBlock(r.auto_sort);
     } catch (e) {
       setError(
@@ -141,7 +152,9 @@ export function AutoSortSettings() {
       }
     } catch (e) {
       setError(
-        e instanceof ApiError && e.message ? e.message : "Couldn’t run auto-sort — please try again.",
+        e instanceof ApiError && e.message
+          ? e.message
+          : "Couldn’t run auto-sort — please try again.",
       );
     } finally {
       setRunning(false);
@@ -152,10 +165,11 @@ export function AutoSortSettings() {
     <section className={styles.section} aria-labelledby="auto-sort-h">
       <h2 id="auto-sort-h">Auto-sort projects</h2>
       <p className={styles.hint}>
-        When enabled, sessions that aren’t assigned to any project are classified against your
-        existing projects and assigned automatically — reusing the AI endpoint above. It runs in
-        the background and only assigns when it clears the confidence floor; ambiguous sessions
-        are left alone, and a session you’ve assigned yourself is never changed.
+        When enabled, sessions that aren’t assigned to any project are
+        classified against your existing projects and assigned automatically —
+        reusing the AI endpoint above. It runs in the background and only
+        assigns when it clears the confidence floor; ambiguous sessions are left
+        alone, and a session you’ve assigned yourself is never changed.
       </p>
       {error && <p className={styles.err}>{error}</p>}
 
@@ -169,8 +183,8 @@ export function AutoSortSettings() {
       </label>
       {!block.configured && (
         <p className={styles.hint}>
-          Configure the AI endpoint above first — auto-sort reuses it and can’t run until it’s
-          set.
+          Configure the AI endpoint above first — auto-sort reuses it and can’t
+          run until it’s set.
         </p>
       )}
 
@@ -192,8 +206,8 @@ export function AutoSortSettings() {
           <span>minutes</span>
         </div>
         <p className={styles.hint}>
-          How often the background loop checks for unassigned sessions (5–1440). Each run is
-          bounded — a large backlog is sorted across several runs.
+          How often the background loop checks for unassigned sessions (5–1440).
+          Each run is bounded — a large backlog is sorted across several runs.
         </p>
       </div>
 
@@ -216,8 +230,9 @@ export function AutoSortSettings() {
           <span>0 – 1 (lower = more matches)</span>
         </div>
         <p className={styles.hint}>
-          A session is assigned only when the classifier is at least this confident (0.50–0.95).
-          Lower it if confident matches are too rare; raise it to be stricter.
+          A session is assigned only when the classifier is at least this
+          confident (0.50–0.95). Lower it if confident matches are too rare;
+          raise it to be stricter.
         </p>
       </div>
 
@@ -239,8 +254,9 @@ export function AutoSortSettings() {
           <span>per pass (1–50)</span>
         </div>
         <p className={styles.hint}>
-          How many unassigned sessions each run classifies — the background loop and the button
-          below. A larger backlog is cleared across several runs; raise this to sort more at once.
+          How many unassigned sessions each run classifies — the background loop
+          and the button below. A larger backlog is cleared across several runs;
+          raise this to sort more at once.
         </p>
       </div>
 
@@ -276,8 +292,9 @@ export function AutoSortSettings() {
           </button>
         </div>
         <p className={styles.hint}>
-          The classifier instruction. Leave it empty to reset to the default. Make it less
-          conservative if too many sessions come back as “no confident match”.
+          The classifier instruction. Leave it empty to reset to the default.
+          Make it less conservative if too many sessions come back as “no
+          confident match”.
         </p>
       </div>
 
@@ -307,7 +324,8 @@ export function AutoSortSettings() {
           {nearMisses.map((n, i) => (
             <span key={n.id}>
               {i > 0 ? " · " : ""}
-              {projNames[n.project_id] ?? n.project_id} {n.confidence.toFixed(2)}
+              {projNames[n.project_id] ?? n.project_id}{" "}
+              {n.confidence.toFixed(2)}
             </span>
           ))}{" "}
           — lower the threshold to assign them.

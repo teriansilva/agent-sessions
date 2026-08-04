@@ -6,7 +6,9 @@ import { expect, test } from "@playwright/test";
 // and periodically by ButtonGlitch) misses the button — no navigation. This samples the
 // button's hit-area WHILE glitching and asserts every point of the visible button is still
 // hittable. Real-browser only: clip-path hit-testing doesn't exist in jsdom.
-test("New session keeps its full hit-area during the .shine glitch", async ({ page }) => {
+test("New session keeps its full hit-area during the .shine glitch", async ({
+  page,
+}) => {
   await page.goto("/");
   // On mobile the New session link lives in the off-canvas drawer — open it so the button is
   // actually on-screen before we measure its hit-area.
@@ -19,7 +21,9 @@ test("New session keeps its full hit-area during the .shine glitch", async ({ pa
   const link = page.getByRole("link", { name: /new session/i });
   await expect(link).toBeVisible();
   const misses = await page.evaluate(async () => {
-    const el = [...document.querySelectorAll("a")].find((a) => /new session/i.test(a.textContent || ""));
+    const el = [...document.querySelectorAll("a")].find((a) =>
+      /new session/i.test(a.textContent || ""),
+    );
     if (!el) return -1;
     el.classList.add("glitching"); // runs the real hud-btn-glitch keyframes
     const r = el.getBoundingClientRect();

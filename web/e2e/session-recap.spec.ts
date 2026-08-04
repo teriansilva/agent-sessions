@@ -29,7 +29,8 @@ const ROW = {
   title: TITLE,
   sticky: false,
   archived: false,
-  ai_summary: "Refactoring the token-refresh path to remove a double-refresh race.",
+  ai_summary:
+    "Refactoring the token-refresh path to remove a double-refresh race.",
   ai_title: TITLE,
   intervention_required: true,
   intervention_reason: "waiting on permission to edit prod config",
@@ -40,7 +41,9 @@ const ROW = {
 };
 
 test.beforeEach(async ({ page }) => {
-  await setupBench(page, { sessions: [{ engine: ENGINE, uuid: UUID, title: TITLE }] });
+  await setupBench(page, {
+    sessions: [{ engine: ENGINE, uuid: UUID, title: TITLE }],
+  });
   // Override ONLY the list endpoint (not /history or /draft) with a row carrying the recap.
   // Registered after the bench route → it wins for the list call; the narrow regex leaves the
   // bench's /history + /draft handling intact.
@@ -106,13 +109,17 @@ test("the panel header shows the LED, engine box, project and update time (#744)
   // Link state is never colour-only.
   await expect(head.getByRole("img", { name: /^status: / })).toBeVisible();
   // Sentence-case Repaint with an icon, matching Recap / Hand off.
-  await expect(head.getByRole("button", { name: /repaint screen/i })).toContainText("Repaint");
+  await expect(
+    head.getByRole("button", { name: /repaint screen/i }),
+  ).toContainText("Repaint");
 });
 
 // "Only leave the buttons visible if there is no space" — the meta run yields, the actions never
 // do. Asserted on VISIBILITY, not text: `toContainText` reads textContent, which still carries
 // the text of a `display: none` node, so it cannot tell "collapsed" from "present".
-test("the header sheds meta before the buttons as the pane narrows (#744)", async ({ page }) => {
+test("the header sheds meta before the buttons as the pane narrows (#744)", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`/s/${ENGINE}/${UUID}`);
   const head = page.locator('[class*="panelHead"]');
@@ -144,7 +151,9 @@ test("the header sheds meta before the buttons as the pane narrows (#744)", asyn
 // The ladder is a CONTAINER query, so it must fire on the header's own width — a wide viewport
 // with a narrow pane (sidebar open, narrow split) is exactly the case a viewport media query
 // would miss. Viewport stays 1400px throughout; only the pane is squeezed.
-test("the collapse ladder follows the pane width, not the viewport (#744)", async ({ page }) => {
+test("the collapse ladder follows the pane width, not the viewport (#744)", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1400, height: 800 });
   await page.goto(`/s/${ENGINE}/${UUID}`);
   const head = page.locator('[class*="panelHead"]');
@@ -183,7 +192,9 @@ test("the session brief carries the sidebar's identity and an ordered timeline (
   // The SESSION's status, resolved from the row exactly as the sidebar's dot is — this row is
   // flagged for intervention, so the dot says so rather than reporting the socket as "live".
   await expect(
-    dialog.getByRole("img", { name: /intervention required: waiting on permission/i }),
+    dialog.getByRole("img", {
+      name: /intervention required: waiting on permission/i,
+    }),
   ).toBeVisible();
 
   // The recap is a LIST now — one step per line, in order — not one pre-wrapped paragraph.
@@ -193,7 +204,9 @@ test("the session brief carries the sidebar's identity and an ordered timeline (
   await expect(steps.nth(2)).toContainText("Opened PR #482");
 });
 
-test("clicking the backdrop closes the session-brief modal (#481)", async ({ page }) => {
+test("clicking the backdrop closes the session-brief modal (#481)", async ({
+  page,
+}) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
   await page.getByRole("button", { name: /open session brief/i }).click();
   const dialog = page.getByRole("dialog");

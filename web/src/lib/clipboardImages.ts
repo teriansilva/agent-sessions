@@ -7,7 +7,8 @@
  *  dropped the MIME type but the filename still carries an image extension (#530). */
 function isImageFile(f: File): boolean {
   return (
-    f.type.startsWith("image/") || (!f.type && /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(f.name))
+    f.type.startsWith("image/") ||
+    (!f.type && /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(f.name))
   );
 }
 
@@ -15,7 +16,9 @@ function isImageFile(f: File): boolean {
  *  Reads `items` first (the clipboard shape) and falls back to `files` (some browsers /
  *  drops populate only that). Non-image entries are ignored — plain-text paste is left
  *  for the terminal/textarea to handle normally. */
-export function imageFilesFromData(dt: DataTransfer | null | undefined): File[] {
+export function imageFilesFromData(
+  dt: DataTransfer | null | undefined,
+): File[] {
   if (!dt) return [];
   const out: File[] = [];
   const seen = new Set<string>();

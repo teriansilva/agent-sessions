@@ -11,7 +11,10 @@ import { expect, test } from "@playwright/test";
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
-async function mockBackend(page: import("@playwright/test").Page, engines: string[]) {
+async function mockBackend(
+  page: import("@playwright/test").Page,
+  engines: string[],
+) {
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -23,9 +26,13 @@ async function mockBackend(page: import("@playwright/test").Page, engines: strin
       },
     }),
   );
-  await page.route(/\/api\/projects(\?.*)?$/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
 }
 
 test("shell Start opens a bare-uuid /s/shell/<uuid>, not a new- placeholder (#636)", async ({

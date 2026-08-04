@@ -3,18 +3,37 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { ArrowDown, ArrowLeftRight, RotateCw, ScrollText } from "lucide-react";
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../../lib/api";
-import { engineBadge, engineName, projectColor, relTime, shortCwd } from "../../lib/format";
+import {
+  engineBadge,
+  engineName,
+  projectColor,
+  relTime,
+  shortCwd,
+} from "../../lib/format";
 import { createBootReadyGate } from "../../lib/bootReady";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
-import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
+import {
+  imageFilesFromAsyncClipboard,
+  imageFilesFromData,
+} from "../../lib/clipboardImages";
 import { isCopyShortcut, isPasteShortcut } from "../../lib/termKeys";
 import { urlAtCell } from "../../lib/linkHitTest";
-import { decideMouseDown, exceededSlop, forceSelectModifier } from "../../lib/termSelect";
+import {
+  decideMouseDown,
+  exceededSlop,
+  forceSelectModifier,
+} from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
 import { useSessionsStore } from "../../app/sessionsStore";
 import {
@@ -111,12 +130,18 @@ export function Terminal({
   // list has loaded / for a fresh placeholder session. Read-only: it never re-keys the socket.
   const { sessions } = useSessionsStore();
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
-  const [coarse] = useState(() => window.matchMedia?.("(pointer: coarse)")?.matches ?? false);
+  const [coarse] = useState(
+    () => window.matchMedia?.("(pointer: coarse)")?.matches ?? false,
+  );
   // Compose default state (#254): the per-user pref overrides the device heuristic. "auto"
   // (and an unloaded config) keeps the heuristic — expanded on touch, collapsed on desktop.
   const composeMode = useConfig()?.compose_default ?? "auto";
   const composeDefaultOpen =
-    composeMode === "open" ? true : composeMode === "collapsed" ? false : coarse;
+    composeMode === "open"
+      ? true
+      : composeMode === "collapsed"
+        ? false
+        : coarse;
   // Mobile scroll-to-bottom FAB (#187): shown when the viewport has been scrolled
   // up off the live tail. Updated from xterm's onScroll; the click jumps back.
   const [atBottom, setAtBottom] = useState(true);
@@ -141,7 +166,10 @@ export function Terminal({
   // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
   // #554 copy-on-select toast; `ok` false = the clipboard write failed (insecure origin) (#617).
-  const [copied, setCopied] = useState<{ tick: number; ok: boolean }>({ tick: 0, ok: true });
+  const [copied, setCopied] = useState<{ tick: number; ok: boolean }>({
+    tick: 0,
+    ok: true,
+  });
   // Scroll-up lazy-load (#348 Phase 3): pill state (loading / start-of-history / error)
   // + whether the viewport sits at the very top of the scrollback (the end pill only
   // shows there). `histRetryRef` holds the effect-scoped retry closure for the error pill.
@@ -198,21 +226,27 @@ export function Terminal({
   // Compose calls this before its first delivery: `true` (synchronous — the common case, so
   // the established clear→paste→deferred-Enter sequencing is untouched) or a promise that
   // resolves true on readiness / false when `timeoutMs` expires first.
-  const waitInputReady = useCallback((timeoutMs: number): true | Promise<boolean> => {
-    if (inputReadyRef.current) return true;
-    return new Promise<boolean>((resolve) => {
-      const t = setTimeout(() => resolve(false), timeoutMs);
-      readyWaitersRef.current.push(() => {
-        clearTimeout(t);
-        resolve(true);
+  const waitInputReady = useCallback(
+    (timeoutMs: number): true | Promise<boolean> => {
+      if (inputReadyRef.current) return true;
+      return new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(false), timeoutMs);
+        readyWaitersRef.current.push(() => {
+          clearTimeout(t);
+          resolve(true);
+        });
       });
-    });
-  }, []);
+    },
+    [],
+  );
 
   // Send raw input to the PTY (used by the mobile action bar / compose). Returns whether the frame
   // was actually delivered (socket OPEN) — Compose uses this so it never submits a bare Enter after
   // a clear/paste that got dropped mid-reconnect (the empty-compose bug #287).
-  const sendInput = useCallback((d: string) => sockRef.current?.send({ t: "i", d }) ?? false, []);
+  const sendInput = useCallback(
+    (d: string) => sockRef.current?.send({ t: "i", d }) ?? false,
+    [],
+  );
   // Current socket id (bumped each reconnect) so Compose can detect a reconnect between its frames.
   const connEpoch = useCallback(() => sockRef.current?.connectionId ?? -1, []);
   useEffect(() => {
@@ -288,7 +322,9 @@ export function Terminal({
     // reads the SERVER clipboard, printing "no image found in clipboard" on a text paste.
     // Returning false makes xterm skip the key WITHOUT preventDefault, so the browser's
     // native paste still fires → onHostPaste → term.paste(text), one clean paste.
-    const isMac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent || "");
+    const isMac = /mac|iphone|ipad/i.test(
+      navigator.platform || navigator.userAgent || "",
+    );
     term.attachCustomKeyEventHandler((e) => {
       if (isPasteShortcut(e, isMac)) return false;
       // Ctrl+C / Ctrl+Shift+C with an active selection COPIES it (#536) — the Windows
@@ -299,7 +335,9 @@ export function Terminal({
       // SIGINT would be strictly worse than a failed copy. preventDefault so the browser's
       // own copy command doesn't double-fire on the mirrored DOM selection.
       if (isCopyShortcut(e) && term.hasSelection()) {
-        void navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
+        void navigator.clipboard
+          ?.writeText(term.getSelection())
+          .catch(() => {});
         e.preventDefault();
         return false;
       }
@@ -318,7 +356,13 @@ export function Terminal({
      *  Synthetic ⇒ untrusted ⇒ `onTermMouseDown` lets it through to xterm untouched. */
     const dispatchPress = (
       target: EventTarget,
-      src: { screenX: number; screenY: number; clientX: number; clientY: number; detail: number },
+      src: {
+        screenX: number;
+        screenY: number;
+        clientX: number;
+        clientY: number;
+        detail: number;
+      },
       opts: { force: boolean },
     ) =>
       target.dispatchEvent(
@@ -375,7 +419,8 @@ export function Terminal({
     // SelectionService then binds its own move/up listeners and extends from the real mousemoves.
     const onGestureMove = (e: MouseEvent) => {
       if (!pending || !e.isTrusted) return;
-      if (!exceededSlop(pending.clientX, pending.clientY, e.clientX, e.clientY)) return;
+      if (!exceededSlop(pending.clientX, pending.clientY, e.clientX, e.clientY))
+        return;
       const anchor = pending;
       pending = null;
       dispatchPress(anchor.target, anchor, { force: true });
@@ -410,7 +455,9 @@ export function Terminal({
     const computeAtBottom = () => {
       const buf = term.buffer?.active;
       if (!buf) return true;
-      return buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE && computeDomAtBottom();
+      return (
+        buf.baseY - buf.viewportY <= SCROLL_DEAD_ZONE && computeDomAtBottom()
+      );
     };
     const updateAtBottom = () => setAtBottom(computeAtBottom());
 
@@ -452,7 +499,7 @@ export function Terminal({
         codexEraseCarry = new Uint8Array(0);
       }
       const out: number[] = [];
-      for (let i = 0; i < src.length; ) {
+      for (let i = 0; i < src.length;) {
         const remaining = src.length - i;
         const full =
           remaining >= SCROLLBACK_ERASE.length &&
@@ -463,7 +510,9 @@ export function Terminal({
         }
         const partial =
           remaining < SCROLLBACK_ERASE.length &&
-          SCROLLBACK_ERASE.slice(0, remaining).every((v, j) => src[i + j] === v);
+          SCROLLBACK_ERASE.slice(0, remaining).every(
+            (v, j) => src[i + j] === v,
+          );
         if (partial) {
           codexEraseCarry = src.slice(i);
           break;
@@ -471,7 +520,9 @@ export function Terminal({
         out.push(src[i]);
         i++;
       }
-      return !hadCarry && out.length === src.length && codexEraseCarry.length === 0
+      return !hadCarry &&
+        out.length === src.length &&
+        codexEraseCarry.length === 0
         ? b
         : new Uint8Array(out);
     };
@@ -555,7 +606,8 @@ export function Terminal({
           // painted (top rows filled, the rest blank) — repaint that too. The big-bytes
           // gate keeps a legitimately short prompt (few rows, small replay) from jiggling.
           const FRAGMENT_MIN_BYTES = 4096;
-          const fragment = attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
+          const fragment =
+            attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
           if (attachBytes >= 512 && !visibleRowsBlank() && !fragment) return;
           jiggleRows();
         }, 800),
@@ -583,7 +635,10 @@ export function Terminal({
       if (streamBuf.length > STREAM_BUF_CAP) {
         // Trim at a line boundary so a sliced ANSI sequence can't garble a rewrite.
         const cut = streamBuf.indexOf("\n", streamBuf.length - STREAM_BUF_CAP);
-        streamBuf = cut >= 0 ? streamBuf.slice(cut + 1) : streamBuf.slice(-STREAM_BUF_CAP);
+        streamBuf =
+          cut >= 0
+            ? streamBuf.slice(cut + 1)
+            : streamBuf.slice(-STREAM_BUF_CAP);
       }
     };
     setHistState("idle");
@@ -785,9 +840,12 @@ export function Terminal({
       !initialTailLock &&
       term.buffer.active.type === "normal" &&
       !computeAtBottom();
-    const hasDomReaderOffset = () => !!vpEl && vpEl.scrollTop > 0 && !computeDomAtBottom();
+    const hasDomReaderOffset = () =>
+      !!vpEl && vpEl.scrollTop > 0 && !computeDomAtBottom();
     const currentReaderAnchor = (): ViewportAnchor => {
-      const rowHeight = vpEl ? Math.max(1, vpEl.clientHeight / Math.max(1, term.rows || 24)) : 1;
+      const rowHeight = vpEl
+        ? Math.max(1, vpEl.clientHeight / Math.max(1, term.rows || 24))
+        : 1;
       return {
         viewportY:
           vpEl && !computeDomAtBottom()
@@ -810,7 +868,12 @@ export function Terminal({
         readerAnchor = currentReaderAnchor();
         return readerAnchor;
       }
-      if (selectionActive || initialTailLock || term.buffer.active.type !== "normal") return null;
+      if (
+        selectionActive ||
+        initialTailLock ||
+        term.buffer.active.type !== "normal"
+      )
+        return null;
       return readerAnchor;
     };
     const restoreReaderAnchor = (anchor: ViewportAnchor | null) => {
@@ -829,14 +892,21 @@ export function Terminal({
     vpEl?.addEventListener("scroll", onScrolled, { passive: true });
     // Document-level (capture): the coarse-pointer touch layer overlays the terminal
     // OUTSIDE host's subtree, so host-scoped listeners never see mobile gestures.
-    document.addEventListener("wheel", armOnWheel, { passive: true, capture: true });
-    document.addEventListener("touchmove", armOnTouchMove, { passive: true, capture: true });
+    document.addEventListener("wheel", armOnWheel, {
+      passive: true,
+      capture: true,
+    });
+    document.addEventListener("touchmove", armOnTouchMove, {
+      passive: true,
+      capture: true,
+    });
     document.addEventListener("keydown", armOnKeydown, true);
     // #559 (desktop): a trusted left-button press may begin a drag-selection → pin the viewport
     // for the duration of the press (mobile arms the same pin from onLongPress below). isTrusted so
     // our own synthetic selection twin / click replay doesn't re-arm it; button 0 only.
     const onSelMouseDown = (e: MouseEvent) => {
-      if (e.isTrusted && e.button === 0 && eventInTermArea(e.target)) beginSelectionPin();
+      if (e.isTrusted && e.button === 0 && eventInTermArea(e.target))
+        beginSelectionPin();
     };
     const onSelMouseUp = () => endSelectionPin();
     document.addEventListener("mousedown", onSelMouseDown, true);
@@ -888,7 +958,8 @@ export function Terminal({
           const displayBytes = stripCodexLiveScrollbackErase(b);
           if (!displayBytes.byteLength) return;
           recordOutput(displayBytes); // feed the lazy-load rewrite buffer (#348 Phase 3)
-          if (rewriting) rewriteQueue.push(displayBytes); // never interleave into a rewrite (#348)
+          if (rewriting)
+            rewriteQueue.push(displayBytes); // never interleave into a rewrite (#348)
           else {
             // Follow the live tail ONLY when the viewport is already sitting on it (measured
             // before the write) — so streaming output never yanks the reader out of scrollback,
@@ -900,7 +971,10 @@ export function Terminal({
             // #559: never follow while a selection is in progress — new output must not yank the
             // view (and the highlighted text) away from under an active selection.
             const anchor = captureReaderAnchor();
-            const follow = !anchor && (initialTailLock || computeAtBottom()) && !selectionActive;
+            const follow =
+              !anchor &&
+              (initialTailLock || computeAtBottom()) &&
+              !selectionActive;
             term.write(displayBytes, () => {
               if (follow) term.scrollToBottom();
               else restoreReaderAnchor(anchor);
@@ -964,7 +1038,8 @@ export function Terminal({
       fit.fit();
       if (force) lastCols = lastRows = 0; // bypass the dedupe so the new pty is sized
       sendResize();
-      if (readerAnchor) requestAnimationFrame(() => restoreReaderAnchor(readerAnchor));
+      if (readerAnchor)
+        requestAnimationFrame(() => restoreReaderAnchor(readerAnchor));
     };
     onConnected = () => refit(true);
     // Coalesce resize bursts (#227): mobile's address-bar show/hide fires a stream of
@@ -1049,7 +1124,8 @@ export function Terminal({
     // dirtying the VT mirror. Coarse-pointer devices get double the budget; the QUIET
     // path still connects desktops and settled mobiles after ~130ms.
     const coarse =
-      typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches;
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(pointer: coarse)")?.matches;
     const MAX_FRAMES = coarse ? 180 : 90; // ~3s mobile / ~1.5s desktop
     let settleRaf = 0;
     let lastC = -1;
@@ -1112,7 +1188,12 @@ export function Terminal({
       const fab = fabRef.current;
       if (fab) {
         const fr = fab.getBoundingClientRect();
-        if (cx >= fr.left && cx <= fr.right && cy >= fr.top && cy <= fr.bottom) {
+        if (
+          cx >= fr.left &&
+          cx <= fr.right &&
+          cy >= fr.top &&
+          cy <= fr.bottom
+        ) {
           // #559: app-consuming → forward to tail. #584: on a fresh attach the up-distance was never
           // tracked, so send a generous bounded burst (jumpToTail clamps at the agent's bottom).
           const notches = appTailUnknownRef.current
@@ -1233,13 +1314,20 @@ export function Terminal({
     };
     document.addEventListener("mouseup", copyOnSelectSettle);
 
-    const { detach: detachTouch, stopMomentum, jumpToTail } = attachTouchScroll(surfaceEl, term, {
+    const {
+      detach: detachTouch,
+      stopMomentum,
+      jumpToTail,
+    } = attachTouchScroll(surfaceEl, term, {
       onTap,
       onLongPress,
       // #559: one notch of touch scroll was forwarded to an app-consuming session — track how far
       // off the tail the agent is so the FAB shows and the jump-to-tail is sized (−1 = up).
       onAppScroll: (dir) => {
-        appScrollNotchesRef.current = Math.max(0, appScrollNotchesRef.current + (dir < 0 ? 1 : -1));
+        appScrollNotchesRef.current = Math.max(
+          0,
+          appScrollNotchesRef.current + (dir < 0 ? 1 : -1),
+        );
         setAppScrolledUp(appScrollNotchesRef.current > 0);
       },
     });
@@ -1319,7 +1407,9 @@ export function Terminal({
     : "";
   const projectStyle =
     row?.project.kind === "project"
-      ? ({ "--proj": row.project.color || projectColor(row.project.id) } as CSSProperties)
+      ? ({
+          "--proj": row.project.color || projectColor(row.project.id),
+        } as CSSProperties)
       : undefined;
   // Session-brief modal (#481): the recap icon in the header opens it; the trigger element is
   // captured at click time so focus returns to it on close (no ref read during render).
@@ -1329,7 +1419,9 @@ export function Terminal({
   // non-agent shell engine and for a still-unreconciled placeholder id (no transcript
   // under that id yet — the source of a handoff is its real, scanned identity).
   const [handoffOpen, setHandoffOpen] = useState(false);
-  const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(null);
+  const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(
+    null,
+  );
   const canHandoff = engine !== "shell" && !id.startsWith("new-");
   const scrollToTail = useCallback(() => {
     // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
@@ -1421,9 +1513,16 @@ export function Terminal({
           {row && (
             <span className={styles.headMeta}>
               {projectLabel && (
-                <span className={styles.headProject} style={projectStyle} title={projectLabel}>
+                <span
+                  className={styles.headProject}
+                  style={projectStyle}
+                  title={projectLabel}
+                >
                   {row.project.kind === "project" && (
-                    <span className={styles.headProjectDot} aria-hidden="true" />
+                    <span
+                      className={styles.headProjectDot}
+                      aria-hidden="true"
+                    />
                   )}
                   {projectLabel}
                 </span>
@@ -1534,7 +1633,11 @@ export function Terminal({
         {copied.tick !== 0 && (
           <div
             key={copied.tick}
-            className={copied.ok ? styles.copiedToast : `${styles.copiedToast} ${styles.copyFailed}`}
+            className={
+              copied.ok
+                ? styles.copiedToast
+                : `${styles.copiedToast} ${styles.copyFailed}`
+            }
             role="status"
             aria-live="polite"
             data-copied-toast=""
@@ -1549,7 +1652,11 @@ export function Terminal({
             prepend can't shift them. */}
         {histState === "loading" && (
           <div className={styles.histPillRow}>
-            <span className={styles.histPill} role="status" data-hist-pill="loading">
+            <span
+              className={styles.histPill}
+              role="status"
+              data-hist-pill="loading"
+            >
               <span className={styles.histSpin} aria-hidden="true" />
               loading older history…
             </span>

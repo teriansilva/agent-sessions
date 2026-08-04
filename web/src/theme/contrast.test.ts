@@ -58,7 +58,9 @@ for (const [name, selector] of Object.entries(THEMES)) {
   // --accent, never white. Keep that pair AA. (#211)
   test(`${name}: --on-accent on --accent meets WCAG AA (>=4.5:1)`, () => {
     const b = block(selector);
-    expect(ratio(token(b, "on-accent"), token(b, "accent"))).toBeGreaterThanOrEqual(4.5);
+    expect(
+      ratio(token(b, "on-accent"), token(b, "accent")),
+    ).toBeGreaterThanOrEqual(4.5);
   });
 }
 
@@ -70,5 +72,7 @@ test("CTA derives from the accent and stays AA (>=4.5:1)", () => {
   const root = block(":root {");
   expect(root).toMatch(/--cta-bg-1:\s*var\(--accent\)/);
   expect(root).toMatch(/--cta-text:\s*var\(--on-accent\)/);
-  expect(ratio(token(root, "on-accent"), token(root, "accent"))).toBeGreaterThanOrEqual(4.5);
+  expect(
+    ratio(token(root, "on-accent"), token(root, "accent")),
+  ).toBeGreaterThanOrEqual(4.5);
 });

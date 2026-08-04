@@ -32,7 +32,9 @@ export function SentMessagesModal({
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   // Per-row transient feedback for Copy — the clipboard can fail (insecure origin) and must say so.
-  const [copied, setCopied] = useState<{ id: string; ok: boolean } | null>(null);
+  const [copied, setCopied] = useState<{ id: string; ok: boolean } | null>(
+    null,
+  );
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -94,9 +96,14 @@ export function SentMessagesModal({
           {entries.map((e) => (
             <li key={e.id} className={styles.msg}>
               <div className={styles.meta}>
-                <span className={styles.when}>{relTime(Math.floor(e.ts / 1000))}</span>
+                <span className={styles.when}>
+                  {relTime(Math.floor(e.ts / 1000))}
+                </span>
                 {!e.confirmed && (
-                  <span className={styles.badge} title="This send never reached the socket">
+                  <span
+                    className={styles.badge}
+                    title="This send never reached the socket"
+                  >
                     Unconfirmed
                   </span>
                 )}
@@ -107,7 +114,8 @@ export function SentMessagesModal({
               <p className={styles.body}>{e.text}</p>
               {e.attachments.length > 0 && (
                 <p className={styles.attachments}>
-                  {e.attachments.length} attachment{e.attachments.length === 1 ? "" : "s"}
+                  {e.attachments.length} attachment
+                  {e.attachments.length === 1 ? "" : "s"}
                 </p>
               )}
               <div className={styles.acts}>
@@ -119,16 +127,26 @@ export function SentMessagesModal({
                   <RotateCcw size={12} aria-hidden="true" />
                   Restore
                 </button>
-                <button type="button" className={styles.act} onClick={() => copy(e)}>
+                <button
+                  type="button"
+                  className={styles.act}
+                  onClick={() => copy(e)}
+                >
                   <Copy size={12} aria-hidden="true" />
-                  {copied?.id === e.id ? (copied.ok ? "Copied" : "Copy failed") : "Copy"}
+                  {copied?.id === e.id
+                    ? copied.ok
+                      ? "Copied"
+                      : "Copy failed"
+                    : "Copy"}
                 </button>
               </div>
             </li>
           ))}
         </ul>
 
-        <p className={styles.foot}>Kept on this device · newest first · cleared on sign-out</p>
+        <p className={styles.foot}>
+          Kept on this device · newest first · cleared on sign-out
+        </p>
       </div>
     </div>,
     document.body,

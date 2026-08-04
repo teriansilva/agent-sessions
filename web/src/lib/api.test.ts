@@ -9,7 +9,9 @@ test("loginRedirectUrl encodes the current location as the next param", () => {
   expect(loginRedirectUrl({ pathname: "/s/claude/abc", search: "?x=1" })).toBe(
     "/login?next=%2Fs%2Fclaude%2Fabc%3Fx%3D1",
   );
-  expect(loginRedirectUrl({ pathname: "/", search: "" })).toBe("/login?next=%2F");
+  expect(loginRedirectUrl({ pathname: "/", search: "" })).toBe(
+    "/login?next=%2F",
+  );
 });
 
 // #619: sent prompt text must not outlive the session on a shared device. The cleanup has to live
@@ -19,11 +21,18 @@ test("logout clears the sent-message history", async () => {
   csrf.name = "csrf-token";
   csrf.content = "t";
   document.head.appendChild(csrf);
-  vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null, { status: 204 }))));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve(new Response(null, { status: 204 }))),
+  );
   const assign = vi.fn();
   vi.stubGlobal("location", { assign, pathname: "/", search: "" });
 
-  appendSent({ text: "a secret prompt", attachments: [], session: "claude:s1" });
+  appendSent({
+    text: "a secret prompt",
+    attachments: [],
+    session: "claude:s1",
+  });
   expect(readSent()).toHaveLength(1);
 
   await api.logout();

@@ -37,7 +37,9 @@ export function PulseSettings() {
     if (cfgBlock) setBlock(cfgBlock);
   }
 
-  const [intervalDraft, setIntervalDraft] = useState(String(block.interval_minutes));
+  const [intervalDraft, setIntervalDraft] = useState(
+    String(block.interval_minutes),
+  );
   const [windowDraft, setWindowDraft] = useState(String(block.window_days));
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
@@ -48,14 +50,18 @@ export function PulseSettings() {
 
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
   const save = async (partial: Record<string, unknown>) => {
     setError(null);
     try {
-      const r = (await api.setPrefs({ pulse: partial })) as { pulse?: PulseConfig };
+      const r = (await api.setPrefs({ pulse: partial })) as {
+        pulse?: PulseConfig;
+      };
       if (r.pulse) setBlock(r.pulse);
       refreshConfig();
       clearTimeout(savedTimer.current);
@@ -76,7 +82,9 @@ export function PulseSettings() {
     const n = Number(intervalDraft);
     if (!Number.isInteger(n) || n < 5 || n > 1440) {
       setIntervalDraft(String(block.interval_minutes));
-      setError("The interval must be a whole number between 5 and 1440 minutes.");
+      setError(
+        "The interval must be a whole number between 5 and 1440 minutes.",
+      );
       return;
     }
     setError(null);
@@ -86,7 +94,9 @@ export function PulseSettings() {
     const n = Number(windowDraft);
     if (!Number.isInteger(n) || n < 1 || n > 30) {
       setWindowDraft(String(block.window_days));
-      setError("The recent window must be a whole number between 1 and 30 days.");
+      setError(
+        "The recent window must be a whole number between 1 and 30 days.",
+      );
       return;
     }
     setError(null);
@@ -106,8 +116,15 @@ export function PulseSettings() {
     try {
       const art = await api.pulseScan({ depth: block.scan_depth });
       const n = art.cards.length;
-      const base = n === 0 ? "No recent work to surface." : `Curated ${n} session${n === 1 ? "" : "s"}.`;
-      setResult(art.synthesis_skipped ? `${base} Synthesis skipped (endpoint not configured).` : base);
+      const base =
+        n === 0
+          ? "No recent work to surface."
+          : `Curated ${n} session${n === 1 ? "" : "s"}.`;
+      setResult(
+        art.synthesis_skipped
+          ? `${base} Synthesis skipped (endpoint not configured).`
+          : base,
+      );
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 409
@@ -123,11 +140,12 @@ export function PulseSettings() {
     <section className={styles.section} aria-labelledby="pulse-h">
       <h2 id="pulse-h">Pulse overview</h2>
       <p className={styles.hint}>
-        Pulse curates your recent sessions into a ranked, jump-back-in overview (open it from the{" "}
-        <strong>Pulse</strong> chip in the top bar). It scans on demand or on a background loop;
-        results are cached so the page loads instantly. <strong>Fast</strong> depth is local and
-        free; <strong>Medium</strong>/<strong>Slow</strong> add AI synthesis using the review
-        endpoint above. Changes save automatically.
+        Pulse curates your recent sessions into a ranked, jump-back-in overview
+        (open it from the <strong>Pulse</strong> chip in the top bar). It scans
+        on demand or on a background loop; results are cached so the page loads
+        instantly. <strong>Fast</strong> depth is local and free;{" "}
+        <strong>Medium</strong>/<strong>Slow</strong> add AI synthesis using the
+        review endpoint above. Changes save automatically.
       </p>
       {error && <p className={styles.err}>{error}</p>}
       {saved && (
@@ -164,7 +182,8 @@ export function PulseSettings() {
           <span>minutes</span>
         </div>
         <p className={styles.hint}>
-          How often the background loop refreshes (5–1440). A scan is skipped when nothing changed.
+          How often the background loop refreshes (5–1440). A scan is skipped
+          when nothing changed.
         </p>
       </div>
 
@@ -206,8 +225,8 @@ export function PulseSettings() {
         </select>
         {!block.configured && block.scan_depth !== "fast" && (
           <p className={styles.hint}>
-            The AI review endpoint above isn’t configured — Medium/Slow scans degrade to Fast
-            curation until it’s set.
+            The AI review endpoint above isn’t configured — Medium/Slow scans
+            degrade to Fast curation until it’s set.
           </p>
         )}
       </div>

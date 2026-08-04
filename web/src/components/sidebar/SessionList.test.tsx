@@ -33,7 +33,13 @@ vi.mock("../../lib/api", async (importOriginal) => {
 // their own suites; here we stub them with a sentinel dialog so we can assert SessionList's
 // wiring — that the menu item mounts the right modal with the row's engine-qualified id.
 vi.mock("../terminal/HandoffModal", () => ({
-  HandoffModal: ({ sessionId, onClose }: { sessionId: string; onClose: () => void }) => (
+  HandoffModal: ({
+    sessionId,
+    onClose,
+  }: {
+    sessionId: string;
+    onClose: () => void;
+  }) => (
     <div role="dialog" aria-label="handoff-mock" data-session={sessionId}>
       <button type="button" onClick={onClose}>
         close-handoff
@@ -42,7 +48,13 @@ vi.mock("../terminal/HandoffModal", () => ({
   ),
 }));
 vi.mock("../terminal/SessionRecapModal", () => ({
-  SessionRecapModal: ({ sessionId, onClose }: { sessionId: string; onClose: () => void }) => (
+  SessionRecapModal: ({
+    sessionId,
+    onClose,
+  }: {
+    sessionId: string;
+    onClose: () => void;
+  }) => (
     <div role="dialog" aria-label="recap-mock" data-session={sessionId}>
       <button type="button" onClick={onClose}>
         close-recap
@@ -62,7 +74,11 @@ function sess(id: string, title: string, engine = "claude"): Session {
     uuid: id.split(":")[1],
     short_uuid: id.slice(0, 8),
     cwd: "/home/m/claude",
-    project: { kind: "folder" as const, id: "/home/m/claude", name: "/home/m/claude" },
+    project: {
+      kind: "folder" as const,
+      id: "/home/m/claude",
+      name: "/home/m/claude",
+    },
     last_mtime: Math.floor(Date.now() / 1000),
     first_user_message: "",
     title,
@@ -71,7 +87,10 @@ function sess(id: string, title: string, engine = "claude"): Session {
   };
 }
 
-function pageOf(sessions: Session[], over: Partial<SessionsPage> = {}): SessionsPage {
+function pageOf(
+  sessions: Session[],
+  over: Partial<SessionsPage> = {},
+): SessionsPage {
   return {
     sessions,
     next_offset: null,
@@ -104,7 +123,10 @@ async function openRowMenu(user: ReturnType<typeof userEvent.setup>) {
 
 test("renders session rows from the API", async () => {
   mockSessions.mockResolvedValue(
-    pageOf([sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")], { total: 2 }),
+    pageOf(
+      [sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")],
+      { total: 2 },
+    ),
   );
   render(
     <MemoryRouter>
@@ -120,7 +142,9 @@ test("renders session rows from the API", async () => {
 // pins that, so a stray "a" can't leak even if a future edit re-adds the fallback.
 test("an empty (server-normalized) title shows the (untitled) placeholder, not the raw first message (#284)", async () => {
   mockSessions.mockResolvedValue(
-    pageOf([{ ...sess("claude:u1abc", ""), first_user_message: "a" }], { total: 1 }),
+    pageOf([{ ...sess("claude:u1abc", ""), first_user_message: "a" }], {
+      total: 1,
+    }),
   );
   render(
     <MemoryRouter>
@@ -135,9 +159,16 @@ test("an entity-assigned row keeps its project chip; the launch-folder chip is d
   const inProject = {
     ...sess("claude:p", "Assigned"),
     cwd: "/home/m/work/api",
-    project: { kind: "project" as const, id: "p-1234", name: "SampleProject", color: "" },
+    project: {
+      kind: "project" as const,
+      id: "p-1234",
+      name: "SampleProject",
+      color: "",
+    },
   };
-  mockSessions.mockResolvedValue(pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }));
+  mockSessions.mockResolvedValue(
+    pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }),
+  );
   render(
     <MemoryRouter>
       <SessionList />
@@ -148,19 +179,30 @@ test("an entity-assigned row keeps its project chip; the launch-folder chip is d
   const assignedRow = screen.getByRole("link", { name: /Assigned/ });
   expect(within(assignedRow).getByText(/SampleProject/)).toBeInTheDocument();
   // …but the launch-folder chip is gone (#508 declutter — meta line is engine · project · time).
-  expect(within(assignedRow).queryByText(/~\/work\/api/)).not.toBeInTheDocument();
+  expect(
+    within(assignedRow).queryByText(/~\/work\/api/),
+  ).not.toBeInTheDocument();
   // The unassigned row now shows neither an entity nor a folder path.
   const unassignedRow = screen.getByRole("link", { name: /Unassigned/ });
   expect(within(unassignedRow).queryByText(/SampleProject/)).not.toBeInTheDocument();
-  expect(within(unassignedRow).queryByText(/~\/claude/)).not.toBeInTheDocument();
+  expect(
+    within(unassignedRow).queryByText(/~\/claude/),
+  ).not.toBeInTheDocument();
 });
 
 test("the project chip shows a color dot for a colored entity (#361), fed by the --proj var (#285)", async () => {
   const colored = {
     ...sess("claude:p", "Colored"),
-    project: { kind: "project" as const, id: "p-1", name: "SampleProject", color: "#5fd7ff" },
+    project: {
+      kind: "project" as const,
+      id: "p-1",
+      name: "SampleProject",
+      color: "#5fd7ff",
+    },
   };
-  mockSessions.mockResolvedValue(pageOf([colored, sess("claude:q", "Plain")], { total: 2 }));
+  mockSessions.mockResolvedValue(
+    pageOf([colored, sess("claude:q", "Plain")], { total: 2 }),
+  );
   const { container } = render(
     <MemoryRouter>
       <SessionList />
@@ -183,7 +225,9 @@ test("every row gets a stable project accent — explicit colour or the key hash
     ...sess("claude:p", "Assigned"),
     project: { kind: "project" as const, id: "p-2", name: "Two", color: "" },
   };
-  mockSessions.mockResolvedValue(pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }));
+  mockSessions.mockResolvedValue(
+    pageOf([inProject, sess("claude:q", "Unassigned")], { total: 2 }),
+  );
   render(
     <MemoryRouter initialEntries={["/s/claude/p"]}>
       <SessionList />
@@ -194,7 +238,9 @@ test("every row gets a stable project accent — explicit colour or the key hash
   const assigned = screen.getByRole("link", { name: /Assigned/ });
   expect(assigned.style.getPropertyValue("--proj")).toBe(projectColor("p-2"));
   const unassigned = screen.getByRole("link", { name: /Unassigned/ });
-  expect(unassigned.style.getPropertyValue("--proj")).toBe(projectColor("/home/m/claude"));
+  expect(unassigned.style.getPropertyValue("--proj")).toBe(
+    projectColor("/home/m/claude"),
+  );
   // The rail is a decorative layer inside the row — and the active-session cue (#18)
   // still marks the open row independently of the project accent.
   expect(assigned.querySelector('[class*="projRail"]')).not.toBeNull();
@@ -204,7 +250,10 @@ test("every row gets a stable project accent — explicit colour or the key hash
 
 test("marks the row matching the current URL as the active session (#18)", async () => {
   mockSessions.mockResolvedValue(
-    pageOf([sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")], { total: 2 }),
+    pageOf(
+      [sess("claude:a", "First"), sess("opencode:b", "Second", "opencode")],
+      { total: 2 },
+    ),
   );
   render(
     <MemoryRouter initialEntries={["/s/claude/a"]}>
@@ -246,13 +295,17 @@ test("shows the empty state when there are no sessions", async () => {
 });
 
 test("renders a Load more control when there are more pages", async () => {
-  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")], { total: 5, next_offset: 1 }));
+  mockSessions.mockResolvedValue(
+    pageOf([sess("claude:a", "First")], { total: 5, next_offset: 1 }),
+  );
   render(
     <MemoryRouter>
       <SessionList />
     </MemoryRouter>,
   );
-  expect(await screen.findByRole("button", { name: /load more/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: /load more/i }),
+  ).toBeInTheDocument();
 });
 
 test("renaming a row calls api.rename and updates the title in place", async () => {
@@ -281,7 +334,11 @@ test("renders the tag before the AI summary; a tagged row with no summary still 
   mockSessions.mockResolvedValue(
     pageOf(
       [
-        { ...sess("claude:a", "Auth"), tag: "🔥 hot", ai_summary: "Wiring the pbkdf2 check" },
+        {
+          ...sess("claude:a", "Auth"),
+          tag: "🔥 hot",
+          ai_summary: "Wiring the pbkdf2 check",
+        },
         { ...sess("claude:b", "Fresh"), tag: "todo" }, // tagged, not reviewed yet
       ],
       { total: 2 },
@@ -295,7 +352,9 @@ test("renders the tag before the AI summary; a tagged row with no summary still 
   await screen.findByText("Auth");
   // The tag leads the summary line, joined by " · " (it renders BEFORE the summary).
   const tag = screen.getByText("🔥 hot");
-  expect(tag.parentElement?.textContent).toBe("🔥 hot · Wiring the pbkdf2 check");
+  expect(tag.parentElement?.textContent).toBe(
+    "🔥 hot · Wiring the pbkdf2 check",
+  );
   // A tagged-but-unreviewed row still shows its tag, so the line is never empty.
   const todo = screen.getByText("todo");
   expect(todo.parentElement?.textContent).toBe("todo");
@@ -322,7 +381,9 @@ test("Set tag… opens the inline editor and saves via api.setTag, updating the 
 
 test("archiving a row calls api.archive and removes it from the active list", async () => {
   const user = userEvent.setup();
-  mockSessions.mockResolvedValue(pageOf([sess("claude:a", "Doomed")], { total: 1 }));
+  mockSessions.mockResolvedValue(
+    pageOf([sess("claude:a", "Doomed")], { total: 1 }),
+  );
   mockArchive.mockResolvedValue({ id: "claude:a", archived: true });
   render(
     <MemoryRouter>
@@ -333,7 +394,9 @@ test("archiving a row calls api.archive and removes it from the active list", as
   await openRowMenu(user);
   await user.click(screen.getByRole("menuitem", { name: /archive session/i }));
   expect(mockArchive).toHaveBeenCalledWith("claude:a");
-  await waitFor(() => expect(screen.queryByText("Doomed")).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByText("Doomed")).not.toBeInTheDocument(),
+  );
 });
 
 // ---- favorite, relocated into the ⋯ menu (#508, was the standalone star of #122) ----
@@ -351,7 +414,9 @@ test("favoriting from the row menu toggles sticky and shows the ★ prefix (#508
   await screen.findByText("First");
   // No standalone favorite button anymore — it lives in the ⋯ menu, and an unfavorited
   // row shows no ★ prefix.
-  expect(screen.queryByRole("button", { name: "Favorite" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Favorite" }),
+  ).not.toBeInTheDocument();
   expect(screen.queryByTitle("Favorited")).not.toBeInTheDocument();
 
   await openRowMenu(user);
@@ -360,16 +425,25 @@ test("favoriting from the row menu toggles sticky and shows the ★ prefix (#508
   // The amber ★ prefix appears on the now-favorited row; re-opening the menu offers Unfavorite.
   expect(await screen.findByTitle("Favorited")).toBeInTheDocument();
   await openRowMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Unfavorite session" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("menuitem", { name: "Unfavorite session" }),
+  ).toBeInTheDocument();
   // Favoriting from the menu must not navigate the row.
   expect(onNavigate).not.toHaveBeenCalled();
-  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute("aria-current");
+  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute(
+    "aria-current",
+  );
 });
 
 test("a favorited row shows the ★ prefix and unfavorites from the menu (#508)", async () => {
   const user = userEvent.setup();
-  mockSessions.mockResolvedValue(pageOf([{ ...sess("claude:a", "Pinned"), sticky: true }]));
-  vi.mocked(api.unfavorite).mockResolvedValue({ id: "claude:a", sticky: false });
+  mockSessions.mockResolvedValue(
+    pageOf([{ ...sess("claude:a", "Pinned"), sticky: true }]),
+  );
+  vi.mocked(api.unfavorite).mockResolvedValue({
+    id: "claude:a",
+    sticky: false,
+  });
   render(
     <MemoryRouter>
       <SessionList />
@@ -380,10 +454,14 @@ test("a favorited row shows the ★ prefix and unfavorites from the menu (#508)"
   expect(screen.getByTitle("Favorited")).toBeInTheDocument();
 
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Unfavorite session" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Unfavorite session" }),
+  );
   expect(api.unfavorite).toHaveBeenCalledWith("claude:a");
   // The ★ prefix clears once the row is unfavorited.
-  await waitFor(() => expect(screen.queryByTitle("Favorited")).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByTitle("Favorited")).not.toBeInTheDocument(),
+  );
 });
 
 // #156 / #211 4b: every row has a status LED, but only a working row carries the meaningful
@@ -459,7 +537,9 @@ const AI_CONFIG = {
 } as unknown as AppConfig;
 
 function renderWithAi(ui: React.ReactElement) {
-  return render(<ConfigCtx.Provider value={AI_CONFIG}>{ui}</ConfigCtx.Provider>);
+  return render(
+    <ConfigCtx.Provider value={AI_CONFIG}>{ui}</ConfigCtx.Provider>,
+  );
 }
 
 test("renders the AI summary line and the intervention badge with its reason (#356)", async () => {
@@ -481,7 +561,9 @@ test("renders the AI summary line and the intervention badge with its reason (#3
       <SessionList />
     </MemoryRouter>,
   );
-  expect(await screen.findByText("Editing systemd limits; tests rerunning")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Editing systemd limits; tests rerunning"),
+  ).toBeInTheDocument();
   const badge = screen.getByRole("img", { name: /intervention required/i });
   expect(badge).toHaveAttribute("title", "waiting on permission prompt");
   // Fresh review (no newer activity) → no stale hint.
@@ -525,9 +607,13 @@ test("an excluded session shows the exclusion marker instead of a summary (#356)
       <SessionList />
     </MemoryRouter>,
   );
-  expect(await screen.findByText("Excluded from AI review")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Excluded from AI review"),
+  ).toBeInTheDocument();
   expect(screen.queryByText("should not show")).not.toBeInTheDocument();
-  expect(screen.queryByRole("img", { name: /intervention required/i })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("img", { name: /intervention required/i }),
+  ).not.toBeInTheDocument();
 });
 
 test("Review now calls the API and folds the result into the row (#356)", async () => {
@@ -550,7 +636,9 @@ test("Review now calls the API and folds the result into the row (#356)", async 
   );
   await screen.findByText("untitled work");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Review session now" }),
+  );
   expect(api.reviewNow).toHaveBeenCalledWith("claude:a");
   // Title precedence: the AI title becomes the display title for an untitled session.
   expect(await screen.findByText("Refit the pipeline")).toBeInTheDocument();
@@ -582,14 +670,22 @@ test("Review now success toasts the fresh summary and is dismissible (#392)", as
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Review session now" }),
+  );
   // The outcome lands in the polite live region so screen readers announce it too.
   const region = await screen.findByRole("status");
   await waitFor(() =>
-    expect(within(region).getByText(/Deploy verified live/)).toBeInTheDocument(),
+    expect(
+      within(region).getByText(/Deploy verified live/),
+    ).toBeInTheDocument(),
   );
-  await user.click(within(region).getByRole("button", { name: /dismiss review result/i }));
-  expect(within(region).queryByText(/Deploy verified live/)).not.toBeInTheDocument();
+  await user.click(
+    within(region).getByRole("button", { name: /dismiss review result/i }),
+  );
+  expect(
+    within(region).queryByText(/Deploy verified live/),
+  ).not.toBeInTheDocument();
 });
 
 test("Review now failure toasts the server error detail and keeps the last good summary (#392)", async () => {
@@ -617,11 +713,15 @@ test("Review now failure toasts the server error detail and keeps the last good 
   );
   await screen.findByText("Last good summary");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Review session now" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Review session now" }),
+  );
   const region = await screen.findByRole("status");
   await waitFor(() =>
     expect(
-      within(region).getByText(/Review failed — review endpoint timed out after 120s/),
+      within(region).getByText(
+        /Review failed — review endpoint timed out after 120s/,
+      ),
     ).toBeInTheDocument(),
   );
   // The failure never overwrites the last good row summary (#356 fail-soft holds).
@@ -631,7 +731,10 @@ test("Review now failure toasts the server error detail and keeps the last good 
 test("the exclude toggle flips review_excluded via the API (#356)", async () => {
   const user = userEvent.setup();
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
-  vi.mocked(api.reviewExclude).mockResolvedValue({ id: "claude:a", review_excluded: true });
+  vi.mocked(api.reviewExclude).mockResolvedValue({
+    id: "claude:a",
+    review_excluded: true,
+  });
   renderWithAi(
     <MemoryRouter>
       <SessionList />
@@ -639,9 +742,13 @@ test("the exclude toggle flips review_excluded via the API (#356)", async () => 
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Exclude from AI review" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Exclude from AI review" }),
+  );
   expect(api.reviewExclude).toHaveBeenCalledWith("claude:a", true);
-  expect(await screen.findByText("Excluded from AI review")).toBeInTheDocument();
+  expect(
+    await screen.findByText("Excluded from AI review"),
+  ).toBeInTheDocument();
 });
 
 test("AI review menu items stay hidden while the endpoint is unconfigured (#356/#384)", async () => {
@@ -655,13 +762,21 @@ test("AI review menu items stay hidden while the endpoint is unconfigured (#356/
   await screen.findByText("First");
   await openRowMenu(user);
   // Lean menu: favorite + rename + archive — no AI-review items, no separator group.
-  expect(screen.queryByRole("menuitem", { name: "Review session now" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("menuitem", { name: "Review session now" }),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("menuitem", { name: "Exclude from AI review" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByRole("menuitem", { name: "Favorite session" })).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", { name: "Rename session" })).toBeInTheDocument();
-  expect(screen.getByRole("menuitem", { name: "Archive session" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("menuitem", { name: "Favorite session" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("menuitem", { name: "Rename session" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("menuitem", { name: "Archive session" }),
+  ).toBeInTheDocument();
 });
 
 // #384: the ⋯ trigger sits beside the NavLink, so opening the menu must neither
@@ -677,10 +792,14 @@ test("opening the row menu does not navigate or close the drawer (#384)", async 
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  expect(screen.getByRole("menu", { name: "Session actions" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("menu", { name: "Session actions" }),
+  ).toBeInTheDocument();
   expect(onNavigate).not.toHaveBeenCalled();
   // The row link is still not aria-current — no navigation happened.
-  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute("aria-current");
+  expect(screen.getByRole("link", { name: /First/ })).not.toHaveAttribute(
+    "aria-current",
+  );
 });
 
 // #384: configured install — the full action set renders inside one menu, grouped
@@ -711,7 +830,9 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
   ]);
   expect(menu.querySelector('[role="separator"]')).not.toBeNull();
   // Exactly one trigger per row — the old four-button cluster is gone.
-  expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
+  expect(
+    screen.getAllByRole("button", { name: "Session actions" }),
+  ).toHaveLength(1);
 });
 
 // #597 follow-up: the header's "Session brief" + "Hand off…" are mirrored into the ⋯ menu so
@@ -727,7 +848,9 @@ test("the ⋯ menu opens the session brief for the row (#597 follow-up)", async 
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Open session brief" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Open session brief" }),
+  );
   const dlg = await screen.findByRole("dialog", { name: "recap-mock" });
   expect(dlg).toHaveAttribute("data-session", "claude:a");
 });
@@ -742,7 +865,11 @@ test("the ⋯ menu hands off the row's session to another engine (#597 follow-up
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Hand off session to another engine" }));
+  await user.click(
+    screen.getByRole("menuitem", {
+      name: "Hand off session to another engine",
+    }),
+  );
   const dlg = await screen.findByRole("dialog", { name: "handoff-mock" });
   expect(dlg).toHaveAttribute("data-session", "claude:a");
 });
@@ -757,9 +884,13 @@ test("a shell session offers the brief but not Hand off (#597 follow-up)", async
   );
   await screen.findByText("Term");
   await openRowMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Open session brief" })).toBeInTheDocument();
   expect(
-    screen.queryByRole("menuitem", { name: "Hand off session to another engine" }),
+    screen.getByRole("menuitem", { name: "Open session brief" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("menuitem", {
+      name: "Hand off session to another engine",
+    }),
   ).toBeNull();
 });
 
@@ -770,10 +901,21 @@ test("Move to project: picking an entity assigns it and updates the row (#424 Ph
   mockSessions.mockResolvedValue(pageOf([sess("claude:a", "First")]));
   vi.mocked(api.projectEntities).mockResolvedValue({
     projects: [
-      { id: "p-1", name: "SampleProject", color: "#5fd7ff", folders: [], archived: false, created_at: 0, session_count: 3 },
+      {
+        id: "p-1",
+        name: "SampleProject",
+        color: "#5fd7ff",
+        folders: [],
+        archived: false,
+        created_at: 0,
+        session_count: 3,
+      },
     ],
   });
-  vi.mocked(api.setSessionProject).mockResolvedValue({ id: "claude:a", project_id: "p-1" });
+  vi.mocked(api.setSessionProject).mockResolvedValue({
+    id: "claude:a",
+    project_id: "p-1",
+  });
   render(
     <MemoryRouter>
       <SessionList />
@@ -781,16 +923,22 @@ test("Move to project: picking an entity assigns it and updates the row (#424 Ph
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Move session to a project" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Move session to a project" }),
+  );
 
-  const dialog = await screen.findByRole("dialog", { name: /move to project/i });
+  const dialog = await screen.findByRole("dialog", {
+    name: /move to project/i,
+  });
   await user.click(within(dialog).getByRole("button", { name: /SampleProject/ }));
 
   expect(api.setSessionProject).toHaveBeenCalledWith("claude:a", "p-1");
   // The row now carries the entity chip; the picker has closed.
   expect(await screen.findByText("SampleProject")).toBeInTheDocument();
   await waitFor(() =>
-    expect(screen.queryByRole("dialog", { name: /move to project/i })).not.toBeInTheDocument(),
+    expect(
+      screen.queryByRole("dialog", { name: /move to project/i }),
+    ).not.toBeInTheDocument(),
   );
 });
 
@@ -805,11 +953,15 @@ test("Move to project: Escape closes the picker without assigning (#424 Phase 5b
   );
   await screen.findByText("First");
   await openRowMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Move session to a project" }));
+  await user.click(
+    screen.getByRole("menuitem", { name: "Move session to a project" }),
+  );
   await screen.findByRole("dialog", { name: /move to project/i });
   await user.keyboard("{Escape}");
   await waitFor(() =>
-    expect(screen.queryByRole("dialog", { name: /move to project/i })).not.toBeInTheDocument(),
+    expect(
+      screen.queryByRole("dialog", { name: /move to project/i }),
+    ).not.toBeInTheDocument(),
   );
   expect(api.setSessionProject).not.toHaveBeenCalled();
 });
@@ -818,7 +970,12 @@ test("Move to project: Escape closes the picker without assigning (#424 Phase 5b
 
 test("a handed-off-to row shows the inbound provenance badge", async () => {
   vi.mocked(api.sessions).mockResolvedValue(
-    pageOf([{ ...sess("codex:t1", "Fix auth race", "codex"), handoff_from: "claude:s1" }]),
+    pageOf([
+      {
+        ...sess("codex:t1", "Fix auth race", "codex"),
+        handoff_from: "claude:s1",
+      },
+    ]),
   );
   render(
     <MemoryRouter initialEntries={["/s/codex/t1"]}>
@@ -843,7 +1000,9 @@ test("a source row shows the muted outbound marker", async () => {
 });
 
 test("a row with no handoff shows no provenance badge", async () => {
-  vi.mocked(api.sessions).mockResolvedValue(pageOf([sess("claude:a", "Plain session")]));
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([sess("claude:a", "Plain session")]),
+  );
   render(
     <MemoryRouter initialEntries={["/s/claude/a"]}>
       <SessionList />
@@ -856,7 +1015,12 @@ test("a row with no handoff shows no provenance badge", async () => {
 test("the row menu routes to the handoff peer", async () => {
   const user = userEvent.setup();
   vi.mocked(api.sessions).mockResolvedValue(
-    pageOf([{ ...sess("codex:t1", "Fix auth race", "codex"), handoff_from: "claude:s1" }]),
+    pageOf([
+      {
+        ...sess("codex:t1", "Fix auth race", "codex"),
+        handoff_from: "claude:s1",
+      },
+    ]),
   );
   render(
     <MemoryRouter initialEntries={["/s/codex/t1"]}>
@@ -868,13 +1032,19 @@ test("the row menu routes to the handoff peer", async () => {
   const menu = await openRowMenu(user);
   // The backlink lives in the ⋯ menu, not nested in the row's NavLink (an anchor may not
   // contain interactive content) — tap-through per the issue's provenance goal.
-  await user.click(within(menu).getByRole("menuitem", { name: /open the session this was handed off from/i }));
+  await user.click(
+    within(menu).getByRole("menuitem", {
+      name: /open the session this was handed off from/i,
+    }),
+  );
   expect(screen.getByTestId("loc")).toHaveTextContent("/s/claude/s1");
 });
 
 test("a row with no handoff has no peer menu item", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.sessions).mockResolvedValue(pageOf([sess("claude:a", "Plain session")]));
+  vi.mocked(api.sessions).mockResolvedValue(
+    pageOf([sess("claude:a", "Plain session")]),
+  );
   render(
     <MemoryRouter initialEntries={["/s/claude/a"]}>
       <SessionList />
@@ -882,7 +1052,9 @@ test("a row with no handoff has no peer menu item", async () => {
   );
   await screen.findByText("Plain session");
   const menu = await openRowMenu(user);
-  expect(within(menu).queryByRole("menuitem", { name: /handed off/i })).toBeNull();
+  expect(
+    within(menu).queryByRole("menuitem", { name: /handed off/i }),
+  ).toBeNull();
 });
 
 test("a chained session shows BOTH provenance relationships (#703 review)", async () => {
@@ -903,11 +1075,19 @@ test("a chained session shows BOTH provenance relationships (#703 review)", asyn
     </MemoryRouter>,
   );
   // `from || to` used to hide the outbound half of a chain — both must show.
-  expect(await screen.findByTitle(/handed off from claude · claude:s1/i)).toBeVisible();
-  expect(screen.getByTitle(/handed off to opencode · opencode:t2/i)).toBeVisible();
+  expect(
+    await screen.findByTitle(/handed off from claude · claude:s1/i),
+  ).toBeVisible();
+  expect(
+    screen.getByTitle(/handed off to opencode · opencode:t2/i),
+  ).toBeVisible();
   // …and both peers are reachable.
   const menu = await openRowMenu(user);
-  expect(within(menu).getByRole("menuitem", { name: /handed off from/i })).toBeVisible();
-  await user.click(within(menu).getByRole("menuitem", { name: /handed off to/i }));
+  expect(
+    within(menu).getByRole("menuitem", { name: /handed off from/i }),
+  ).toBeVisible();
+  await user.click(
+    within(menu).getByRole("menuitem", { name: /handed off to/i }),
+  );
   expect(screen.getByTestId("loc")).toHaveTextContent("/s/opencode/t2");
 });

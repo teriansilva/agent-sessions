@@ -43,19 +43,25 @@ async function wheelOverTerminal(page: import("@playwright/test").Page) {
   // The socket must be OPEN (sends before readyState 1 are dropped) — gate on the
   // connect-time resize frame landing in __sent rather than a fixed delay.
   await page.waitForFunction(
-    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
   await page.locator(".xterm").hover();
   await page.mouse.wheel(0, 120);
   await page.waitForTimeout(80);
-  return page.evaluate(() => (window as unknown as { __sent: string[] }).__sent);
+  return page.evaluate(
+    () => (window as unknown as { __sent: string[] }).__sent,
+  );
 }
 
 test("alt-screen modes replayed on attach → a wheel scroll reports SGR mouse to the PTY (#397)", async ({
   page,
 }, testInfo) => {
   // Wheel mouse-reporting is a desktop pointer concern; the mobile project has no wheel.
-  test.skip(testInfo.project.name === "mobile", "wheel is a desktop-only concern");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "wheel is a desktop-only concern",
+  );
   await page.addInitScript(STUB(true));
   await page.goto("/s/claude/mode-replay-on");
   const sent = await wheelOverTerminal(page);
@@ -67,7 +73,10 @@ test("alt-screen modes replayed on attach → a wheel scroll reports SGR mouse t
 test("without the mode replay, the same wheel scroll reports nothing — the #397 bug", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "wheel is a desktop-only concern");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "wheel is a desktop-only concern",
+  );
   await page.addInitScript(STUB(false));
   await page.goto("/s/claude/mode-replay-off");
   const sent = await wheelOverTerminal(page);

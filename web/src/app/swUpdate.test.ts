@@ -20,7 +20,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  Object.defineProperty(window, "location", { configurable: true, value: realLocation });
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: realLocation,
+  });
   // jsdom has no navigator.serviceWorker by default; drop any fake a test installed.
   delete (navigator as { serviceWorker?: unknown }).serviceWorker;
 });

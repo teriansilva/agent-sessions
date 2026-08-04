@@ -360,3 +360,74 @@ test("Ask: a follow-up replays the prior turns as history (#522)", async () => {
     { role: "assistant", content: "First answer." },
   ]);
 });
+
+test("a card shows what the orchestrator last did here, when nothing is pending (#777)", async () => {
+  // The Activity block was a second list of near-identical boxes above the cards. The session's
+  // last action rides its own card now.
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "idle",
+          last_action: {
+            id: "a1",
+            state: "expired",
+            ts: Math.floor(Date.now() / 1000) - 3600,
+            tier: "yolo",
+            session_id: "claude:c1",
+            engine: "claude",
+            title: "Docs pass",
+            project: "infra",
+            project_id: "p1",
+            verb: "escalate",
+            confidence: 0.9,
+            rationale: "needs a call",
+            evidence: "none",
+            repeats: 7,
+          },
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  expect(await screen.findByText("ESCALATE")).toBeInTheDocument();
+  expect(screen.getByText("expired")).toBeInTheDocument();
+  expect(screen.getByText("×7")).toBeInTheDocument();
+});
+
+test("a card with a live action shows its controls, not a history line (#777)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          title: "Docs pass",
+          state: "needs_you",
+          pending_action: {
+            id: "a1",
+            state: "proposed",
+            ts: Math.floor(Date.now() / 1000),
+            tier: "suggest",
+            session_id: "claude:c1",
+            engine: "claude",
+            title: "Docs pass",
+            project: "infra",
+            project_id: "p1",
+            verb: "continue",
+            confidence: 0.9,
+            rationale: "stopped mid-edit",
+            evidence: "none",
+          },
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  // The decision control, and no settled summary beside it.
+  expect(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("expired")).toBeNull();
+});

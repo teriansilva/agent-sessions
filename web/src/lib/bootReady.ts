@@ -67,7 +67,8 @@ export function createBootReadyGate(onReady: () => void): BootReadyGate {
       if (done) return;
       // Scan BEFORE arming the timer, so a chunk carrying ?2004h re-arms with the short window.
       const hay = carry + latin1.decode(chunk);
-      if (!pasteEnableSeen && hay.includes(PASTE_ENABLE)) pasteEnableSeen = true;
+      if (!pasteEnableSeen && hay.includes(PASTE_ENABLE))
+        pasteEnableSeen = true;
       carry = hay.slice(-CARRY);
 
       // The ceiling runs from the first byte and is never restarted; the quiet window restarts on

@@ -106,7 +106,10 @@ export function appendSent(entry: {
   session: string | null;
 }): string | null {
   const id = newId();
-  const next = fit([{ id, ts: Date.now(), confirmed: false, ...entry }, ...readSent()]);
+  const next = fit([
+    { id, ts: Date.now(), confirmed: false, ...entry },
+    ...readSent(),
+  ]);
   return write(next) ? id : null;
 }
 

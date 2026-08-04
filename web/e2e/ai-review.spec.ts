@@ -53,7 +53,10 @@ const SESSIONS = {
   ],
   next_offset: null,
   total: 1,
-  facets: { projects: [{ kind: "folder", id: "/home/u/infra", name: "/home/u/infra" }], engines: ["claude"] },
+  facets: {
+    projects: [{ kind: "folder", id: "/home/u/infra", name: "/home/u/infra" }],
+    engines: ["claude"],
+  },
 };
 
 test.beforeEach(async ({ page }) => {
@@ -69,15 +72,25 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
   // The auto-sort section resolves near-miss project names via /api/projects on mount.
-  await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/projects($|\?)/, (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
   await page.route("**/api/sessions**", (r) => r.fulfill({ json: SESSIONS }));
   await page.route("**/api/ai-review/models**", (r) =>
-    r.fulfill({ json: { models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"] } }),
+    r.fulfill({
+      json: { models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"] },
+    }),
   );
 });
 
@@ -91,10 +104,14 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   });
 
   await page.goto("/settings/ai-review");
-  await expect(page.getByRole("heading", { name: "AI endpoint" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "AI endpoint" }),
+  ).toBeVisible();
 
   // Endpoint config renders from /api/config; the key is write-only (empty field + SET badge).
-  await expect(page.getByLabel(/Endpoint base URL/i)).toHaveValue("https://ai.example.io/v1");
+  await expect(page.getByLabel(/Endpoint base URL/i)).toHaveValue(
+    "https://ai.example.io/v1",
+  );
   const key = page.getByLabel(/API key/i);
   await expect(key).toHaveValue("");
   await expect(page.getByText("set", { exact: true })).toBeVisible();
@@ -103,7 +120,9 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toHaveValue("minimax-m2.7");
   await model.selectOption("qwen3-vl");
-  await expect.poll(() => prefsBody).toEqual({ ai_review: { model: "qwen3-vl" } });
+  await expect
+    .poll(() => prefsBody)
+    .toEqual({ ai_review: { model: "qwen3-vl" } });
 
   // Prompt editor: save a draft. Scope to the Session review section — the Auto-sort section
   // below it has its own Save/Reset for the classifier prompt (#459).
@@ -112,7 +131,9 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   await expect(prompt).toHaveValue("custom prompt");
   await prompt.fill("watch my fleet");
   await review.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(() => prefsBody).toEqual({ ai_review: { prompt: "watch my fleet" } });
+  await expect
+    .poll(() => prefsBody)
+    .toEqual({ ai_review: { prompt: "watch my fleet" } });
 });
 
 test("settings: a plain visit with a stored config stays quiet — no phantom dirty/validating state (#543)", async ({
@@ -120,7 +141,9 @@ test("settings: a plain visit with a stored config stays quiet — no phantom di
 }) => {
   await page.goto("/settings/ai-review");
   // Mount probe done: the dropdown is populated through the proxy.
-  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue("minimax-m2.7");
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
+    "minimax-m2.7",
+  );
   // The status line reports explicit actions only — a plain visit must show neither the
   // save-style validation lifecycle nor an unsaved-changes warning (#543).
   await expect(page.getByText(/Validating endpoint/i)).toBeHidden();
@@ -128,7 +151,10 @@ test("settings: a plain visit with a stored config stays quiet — no phantom di
   await expect(page.getByText(/Unsaved changes/i)).toBeHidden();
   // The write-only key field opts out of password-manager autofill — browsers ignore
   // "off" and would fill the app's login password here, dirtying the form.
-  await expect(page.getByLabel(/API key/i)).toHaveAttribute("autocomplete", "new-password");
+  await expect(page.getByLabel(/API key/i)).toHaveAttribute(
+    "autocomplete",
+    "new-password",
+  );
 });
 
 test("settings: Remove key clears the stored secret and refetches /api/config", async ({
@@ -170,7 +196,10 @@ test("settings: Remove key clears the stored secret and refetches /api/config", 
 test("sidebar: summary line + amber intervention badge with the reason as tooltip", async ({
   page,
 }, testInfo) => {
-  test.skip(testInfo.project.name === "mobile", "sidebar is off-canvas on mobile — desktop covers the row surface");
+  test.skip(
+    testInfo.project.name === "mobile",
+    "sidebar is off-canvas on mobile — desktop covers the row surface",
+  );
   await page.goto("/");
   await expect(
     page.getByText("Editing systemd limits; tests rerunning after thread cap"),
@@ -180,11 +209,19 @@ test("sidebar: summary line + amber intervention badge with the reason as toolti
   await expect(badge).toHaveAttribute("title", "waiting on permission prompt");
 });
 
-test("mobile: AI Review settings panel renders at phone width", async ({ page }, testInfo) => {
+test("mobile: AI Review settings panel renders at phone width", async ({
+  page,
+}, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone-width layout check");
-  await page.route("**/api/prefs", (r) => r.fulfill({ json: { ai_review: AI_REVIEW } }));
+  await page.route("**/api/prefs", (r) =>
+    r.fulfill({ json: { ai_review: AI_REVIEW } }),
+  );
   await page.goto("/settings/ai-review");
-  await expect(page.getByRole("heading", { name: "AI endpoint" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "AI endpoint" }),
+  ).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Model" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "Review prompt" })).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Review prompt" }),
+  ).toBeVisible();
 });

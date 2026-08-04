@@ -31,7 +31,8 @@ test("empty compose Send sends a bare Return to submit console-typed input (#474
   // Wait for the socket to OPEN — frames sent before readyState 1 are dropped. The connect-time
   // resize frame appearing in __sent is the signal (see terminal-paste.spec.ts / #304).
   await page.waitForFunction(
-    () => ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
+    () =>
+      ((window as unknown as { __sent?: unknown[] }).__sent?.length ?? 0) > 0,
   );
 
   // The Send button only renders when the compose box is open (collapsed by default on desktop,
@@ -47,10 +48,14 @@ test("empty compose Send sends a bare Return to submit console-typed input (#474
   // A single bare Return must reach the PTY...
   await page.waitForFunction(
     (frame) =>
-      ((window as unknown as { __sent?: string[] }).__sent ?? []).some((f) => f.includes(frame)),
+      ((window as unknown as { __sent?: string[] }).__sent ?? []).some((f) =>
+        f.includes(frame),
+      ),
     ENTER_FRAME,
   );
-  const sent = await page.evaluate(() => (window as unknown as { __sent: string[] }).__sent);
+  const sent = await page.evaluate(
+    () => (window as unknown as { __sent: string[] }).__sent,
+  );
   // ...and the destructive content path must NOT have run (no clear, no bracketed paste).
   expect(sent.some((f) => f.includes(CLEAR_SEQ))).toBe(false);
   expect(sent.some((f) => f.includes(PASTE_START))).toBe(false);

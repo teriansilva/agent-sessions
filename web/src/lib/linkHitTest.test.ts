@@ -65,7 +65,10 @@ describe("urlAtCell", () => {
   });
 
   test("only the tapped logical line is considered — neighbours don't leak in", () => {
-    const buf = bufOf(["https://one.example/x", "plain text", "https://two.example/y"], 40);
+    const buf = bufOf(
+      ["https://one.example/x", "plain text", "https://two.example/y"],
+      40,
+    );
     expect(urlAtCell(buf, 1, 3, 40)).toBeNull();
     expect(urlAtCell(buf, 2, 3, 40)).toBe("https://two.example/y");
   });

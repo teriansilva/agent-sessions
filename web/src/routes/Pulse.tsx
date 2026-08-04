@@ -146,6 +146,30 @@ function Card({
           {pendingLabel(pending)}
         </p>
       )}
+      {/* What the orchestrator last DID here (#777). The Activity block used to be a second
+          list of near-identical boxes above the cards; this is the same information on the
+          row it belongs to. Only when nothing is pending — a live action has its own controls
+          directly above, and a settled summary beside them would read as a contradiction. */}
+      {!card.pending_action && card.last_action && (
+        <p className={styles.lastAction}>
+          <span className={styles.lastVerb}>
+            {card.last_action.verb.toUpperCase()}
+          </span>
+          <span>{card.last_action.state}</span>
+          <span className={styles.sep} aria-hidden="true">
+            ·
+          </span>
+          <span>{relTime(card.last_action.ts)}</span>
+          {(card.last_action.repeats ?? 1) > 1 && (
+            <span
+              className={styles.lastRepeats}
+              title={`${card.last_action.repeats} actions on this session`}
+            >
+              ×{card.last_action.repeats}
+            </span>
+          )}
+        </p>
+      )}
       {intervention && card.intervention_reason && (
         <p className={styles.reason}>{card.intervention_reason}</p>
       )}

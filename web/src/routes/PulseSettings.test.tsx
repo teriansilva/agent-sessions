@@ -7,7 +7,8 @@ import type { AppConfig, PulseConfig } from "../types/api";
 import { PulseSettings } from "./PulseSettings";
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return { ...actual, api: { setPrefs: vi.fn(), pulseScan: vi.fn() } };
 });
 
@@ -22,8 +23,16 @@ function block(over: Partial<PulseConfig> = {}): PulseConfig {
   };
 }
 
-function renderPanel(b: PulseConfig | undefined = block(), refresh: () => void = () => {}) {
-  const config = { csrf: "t", new_session_engines: [], terminal_backend: "ws", pulse: b } as AppConfig;
+function renderPanel(
+  b: PulseConfig | undefined = block(),
+  refresh: () => void = () => {},
+) {
+  const config = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    pulse: b,
+  } as AppConfig;
   return render(
     <ConfigRefreshCtx.Provider value={refresh}>
       <ConfigCtx.Provider value={config}>
@@ -34,13 +43,17 @@ function renderPanel(b: PulseConfig | undefined = block(), refresh: () => void =
 }
 
 beforeEach(() => {
-  vi.mocked(api.setPrefs).mockReset().mockResolvedValue({ pulse: block({ auto_enabled: true }) });
+  vi.mocked(api.setPrefs)
+    .mockReset()
+    .mockResolvedValue({ pulse: block({ auto_enabled: true }) });
   vi.mocked(api.pulseScan).mockReset();
 });
 
 test("toggling auto-scan persists pulse.auto_enabled (#441 P6)", async () => {
   renderPanel(block({ auto_enabled: false }));
-  await userEvent.click(screen.getByRole("checkbox", { name: /scan automatically/i }));
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /scan automatically/i }),
+  );
   expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { auto_enabled: true } });
 });
 
@@ -65,7 +78,9 @@ test("the window commits on blur within bounds; out-of-range reverts (#441 P6)",
 test("a successful save flashes a Saved note and refreshes the config context", async () => {
   const refresh = vi.fn();
   renderPanel(block({ auto_enabled: false }), refresh);
-  await userEvent.click(screen.getByRole("checkbox", { name: /scan automatically/i }));
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /scan automatically/i }),
+  );
   expect(await screen.findByText("Saved.")).toBeInTheDocument();
   // Without the refresh, ConfigCtx keeps the app-load values and a remount of the panel
   // (switching Settings tabs and back) would show the pre-save state as if the save was lost.
@@ -77,13 +92,17 @@ test("Enter commits a number field the same way blur does", async () => {
   const input = screen.getByLabelText(/scan every/i);
   await userEvent.clear(input);
   await userEvent.type(input, "15{Enter}");
-  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { interval_minutes: 15 } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    pulse: { interval_minutes: 15 },
+  });
 });
 
 test("changing the depth select persists pulse.scan_depth (#441 P6)", async () => {
   renderPanel(block({ scan_depth: "fast" }));
   await userEvent.selectOptions(screen.getByLabelText(/scan depth/i), "medium");
-  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { scan_depth: "medium" } });
+  expect(api.setPrefs).toHaveBeenCalledWith({
+    pulse: { scan_depth: "medium" },
+  });
 });
 
 test("a non-fast depth with an unconfigured endpoint warns it degrades (#441 P6)", () => {
@@ -121,5 +140,7 @@ test("Scan now reports the curated count + a degraded scan (#441 P6)", async () 
   renderPanel(block());
   await userEvent.click(screen.getByRole("button", { name: /scan now/i }));
   expect(api.pulseScan).toHaveBeenCalledWith({ depth: "fast" });
-  expect(await screen.findByText(/curated 1 session.*synthesis skipped/i)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/curated 1 session.*synthesis skipped/i),
+  ).toBeInTheDocument();
 });

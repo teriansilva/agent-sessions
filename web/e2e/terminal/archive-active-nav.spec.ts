@@ -18,8 +18,8 @@ const SESSIONS = [{ engine: "claude", uuid: "aaa", title: "Archive Me" }];
 const wsReadyState = (page: import("@playwright/test").Page) =>
   page.evaluate(
     () =>
-      (window as unknown as { __BENCH_LAST_WS__?: { readyState?: number } }).__BENCH_LAST_WS__
-        ?.readyState ?? null,
+      (window as unknown as { __BENCH_LAST_WS__?: { readyState?: number } })
+        .__BENCH_LAST_WS__?.readyState ?? null,
   );
 
 test.beforeEach(async ({ page }) => {

@@ -15,7 +15,9 @@ export const WIDTH_STEP = 16; // arrow-key nudge
  *  hard-capped at HARD_MAX_W. Falls back to the hard cap when window isn't measurable yet. */
 export function maxSidebarW(): number {
   const vw = typeof window !== "undefined" ? window.innerWidth : 0;
-  return vw > 0 ? Math.max(MIN_W, Math.min(HARD_MAX_W, vw - PANE_MIN)) : HARD_MAX_W;
+  return vw > 0
+    ? Math.max(MIN_W, Math.min(HARD_MAX_W, vw - PANE_MIN))
+    : HARD_MAX_W;
 }
 
 /** Clamp a candidate width to [MIN_W, maxSidebarW()] and round to a whole pixel. */
