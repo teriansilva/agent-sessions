@@ -58,6 +58,7 @@ from .auth import (
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
+from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
@@ -463,6 +464,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Upload route (save a pasted/dropped file to the shared uploads dir). Registered
     # before the SPA catch-all.
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+
+    # File panel (#783): bounded read-only directory listing + file read under $HOME. GET-only
+    # (no CSRF surface); containment lives in files.py, which is a security boundary.
+    files_routes.register(app, logged_in=_logged_in)
 
     # SPA shell + history fallback. The ``/{spa_path}`` catch-all is registered LAST so it
     # never shadows the API/ws/auth routes above. ``_WEB_DIST`` / ``_SPA_RESERVED`` stay

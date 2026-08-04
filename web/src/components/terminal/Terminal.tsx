@@ -2,7 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ArrowLeftRight, RotateCw, ScrollText } from "lucide-react";
+import { ArrowDown, ArrowLeftRight, PanelRight, RotateCw, ScrollText } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
@@ -49,6 +49,7 @@ import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
 import { HandoffModal } from "./HandoffModal";
+import { HeadActions, type HeadAction } from "./HeadActions";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 
@@ -99,10 +100,20 @@ export function Terminal({
   id,
   fresh,
   onReconcileId,
+  filesOpen,
+  onToggleFiles,
+  filesDisabledReason,
 }: {
   engine: string;
   id: string;
   fresh?: FreshSession;
+  /** File panel (#783). The panel itself is owned by SessionView (it lays out beside this pane);
+   *  the terminal only carries its trigger, because the pane head is where the trigger belongs. */
+  filesOpen?: boolean;
+  onToggleFiles?: (trigger?: HTMLElement | null) => void;
+  /** When set, the Files action renders DISABLED with this as its tooltip rather than vanishing
+   *  — a session still resolving its cwd should say so, not silently lose the control. */
+  filesDisabledReason?: string;
   /** Server reconciled to the real engine-qualified id (#127, opencode new-session).
    *  The owner converges the URL/sidebar without tearing down the socket. */
   onReconcileId?: (sid: string) => void;
@@ -1492,6 +1503,62 @@ export function Terminal({
     forceNextConnectRef.current = true;
     setTakeoverEpoch((n) => n + 1);
   }, []);
+  // Order: Files leads (the new primary affordance); Repaint stays ahead of the fold because
+  // burying the recovery control when the screen is blank would be the wrong trade.
+  // An array LITERAL with conditional entries, not an imperative `push` — mutating an array during
+  // render made the compiler treat the captured callbacks (which read refs) as render-time ref
+  // access. The compiler memoizes this for us, so no manual useMemo either.
+  const headActions: HeadAction[] = [
+    // Files leads: it is the new primary affordance.
+    ...(onToggleFiles ? [{
+      id: "files",
+      label: "Files",
+      aria: "Browse session files",
+      title: filesDisabledReason ?? "Browse this session's files and folders",
+      icon: <PanelRight size={13} aria-hidden="true" />,
+      active: filesOpen,
+      disabled: Boolean(filesDisabledReason),
+      run: (trigger?: HTMLElement | null) => onToggleFiles(trigger),
+    }] : []),
+    // Repaint stays ahead of the fold: burying the recovery control when the screen is blank
+    // would be the wrong trade.
+    ...(role === "owner" ? [{
+      id: "repaint",
+      label: "Repaint",
+      aria: "Repaint screen",
+      title:
+        "Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent",
+      icon: <RotateCw size={13} aria-hidden="true" />,
+      disabled: status.kind !== "connected",
+      // An inline arrow, not `run: repaint`: handing the ref-reading callback across as a value
+      // makes the compiler treat it as ref access during render. Same shape Compose uses for
+      // KeyBar's actions.
+      run: () => repaint(),
+    }] : []),
+    {
+      id: "recap",
+      label: "Recap",
+      aria: "Open session brief",
+      title: "Session brief: full title, summary, and a chronological recap of this session",
+      icon: <ScrollText size={13} aria-hidden="true" />,
+      run: (trigger?: HTMLElement | null) => {
+        setRecapTrigger(trigger ?? (document.activeElement as HTMLElement | null));
+        setRecapOpen(true);
+      },
+    },
+    ...(canHandoff ? [{
+      id: "handoff",
+      label: "Hand off",
+      aria: "Hand off session to another engine",
+      title: "Hand off: start a new session in another engine, seeded with this session's context",
+      icon: <ArrowLeftRight size={13} aria-hidden="true" />,
+      run: (trigger?: HTMLElement | null) => {
+        setHandoffTrigger(trigger ?? (document.activeElement as HTMLElement | null));
+        setHandoffOpen(true);
+      },
+    }] : []),
+  ];
+
   return (
     <div className={styles.wrap}>
       {/* Panel header (#211 4c, re-cut in #744): a HUD meta run — semantic LED, engine box,
@@ -1536,56 +1603,15 @@ export function Terminal({
             </span>
           )}
         </span>
-        {/* flex:none — the buttons are the last thing standing when the pane narrows; the meta
-            run above absorbs every pixel of shrink (#744). */}
-        <div className={styles.headActions}>
-          {/* Repaint (#485): owner-only, non-destructive recovery for a mid-session blank/fragment —
-              nudges the agent to redraw without killing it. Hidden for read-only secondaries (the
-              server drops their resize frames anyway); disabled until the socket is connected. */}
-          {role === "owner" && (
-            <button
-              type="button"
-              className={styles.restartBtn}
-              onClick={repaint}
-              disabled={status.kind !== "connected"}
-              title="Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent"
-              aria-label="Repaint screen"
-            >
-              <RotateCw size={13} aria-hidden="true" />
-              Repaint
-            </button>
-          )}
-          <button
-            type="button"
-            className={styles.restartBtn}
-            onClick={(e) => {
-              setRecapTrigger(e.currentTarget);
-              setRecapOpen(true);
-            }}
-            title="Session brief: full title, summary, and a chronological recap of this session"
-            aria-label="Open session brief"
-            aria-haspopup="dialog"
-          >
-            <ScrollText size={13} aria-hidden="true" />
-            Recap
-          </button>
-          {canHandoff && (
-            <button
-              type="button"
-              className={styles.restartBtn}
-              onClick={(e) => {
-                setHandoffTrigger(e.currentTarget);
-                setHandoffOpen(true);
-              }}
-              title="Hand off: start a new session in another engine, seeded with this session's context"
-              aria-label="Hand off session to another engine"
-              aria-haspopup="dialog"
-            >
-              <ArrowLeftRight size={13} aria-hidden="true" />
-              Hand off
-            </button>
-          )}
-        </div>
+        {/* Actions with measured overflow (#783). A fourth labelled button breaks the header's
+            own measured contract (see Terminal.module.css), so trailing actions fold into a "…"
+            menu that still carries full labels — the KeyBar idiom, not an icon-only shrink. */}
+        <HeadActions
+          className={styles.headActions}
+          btnClassName={styles.restartBtn}
+          labelClassName={styles.headActionLabel}
+          actions={headActions}
+        />
       </div>
       {recapOpen && (
         <SessionRecapModal

@@ -471,3 +471,29 @@
     transform: translateX(-50%);
   }
 }
+
+/* Touch targets (#783). The head gains a fourth action, and a 44px `::after` hit box on a 20px
+ * chip in a 26px bar would OVERLAP its neighbour (6px gap) and reach down over the terminal — a
+ * computed-size assertion passes while the tap fires the wrong action. Growing the bar on coarse
+ * pointers is the honest fix: real targets, real spacing, no overlap. Costs 18px of terminal
+ * height on a phone, which is the right trade against a tap that silently does the wrong thing. */
+@media (pointer: coarse) {
+  .panelHead {
+    height: 44px;
+  }
+  /* Icon-only on touch, and ONLY on touch. The rule above ("an icon-only chip in a 26px bar is a
+   * worse touch target than a labelled one") was about the 26px bar — with the bar at 44px a
+   * 44x44 icon chip is a proper target, and it is what keeps all four actions ONE TAP away on a
+   * phone. Labelling four chips at 390px does not fit, and the alternative was burying Recap and
+   * Hand off in a menu, which would have regressed shipped behaviour to make room for Files.
+   * The accessible name and tooltip are unchanged, so nothing is lost but the pixels. */
+  .restartBtn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
+    justify-content: center;
+  }
+  .headActionLabel {
+    display: none;
+  }
+}

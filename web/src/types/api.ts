@@ -648,3 +648,57 @@ export interface HandoffCommitted {
   native: string;
   cwd: string;
 }
+
+/** One entry from GET /api/files/list (#783). `kind` is the entry's OWN kind (lstat), so a
+ *  symlink reports "link" and is display-only in phase 1 — never expanded, never opened.
+ *  `link_kind` is present ONLY when `link_contained` is true: an uncontained target's kind is
+ *  not resolved, let alone reported. */
+export interface FileEntry {
+  name: string;
+  path: string;
+  kind: "dir" | "file" | "link";
+  size: number;
+  mtime: number;
+  link_target?: string | null;
+  link_contained?: boolean;
+  link_kind?: "dir" | "file" | null;
+  /** The link is real but its TARGET is not valid UTF-8, so it cannot be shown. Distinct from a
+   *  target that simply could not be read — this one exists and is unrepresentable. */
+  link_unencodable_target?: boolean;
+}
+
+/** GET /api/files/list (#783). One canonical counting rule, shared with the server so the two
+ *  cannot drift: `total` is a number **iff `complete`**; a scan stopped by the entry cap or the
+ *  wall-clock budget reports `complete: false`, `total: null`, `truncated: true`. The dirs-first
+ *  ordering therefore describes the entries actually RETURNED, not the directory. */
+export interface FileListing {
+  path: string;
+  parent: string | null;
+  root: string;
+  entries: FileEntry[];
+  total: number | null;
+  complete: boolean;
+  truncated: boolean;
+  /** Entries omitted because their filename is not valid UTF-8 and cannot survive JSON. POSIX
+   *  names are bytes; `scandir` surfaces undecodable ones as lone surrogates, which would
+   *  otherwise make one file take down the whole listing. Reported so the response is honest
+   *  about what it left out rather than quietly looking smaller than the directory. */
+  unencodable?: number;
+}
+
+/** GET /api/files/read (#783). Binary files return metadata only — no content, ever. */
+export interface FileContent {
+  path: string;
+  size: number;
+  binary: boolean;
+  mime?: string;
+  content?: string;
+  truncated?: boolean;
+}
+
+/** GET /api/files/capabilities (#783) — the panel fails CLOSED when the platform cannot support
+ *  the containment contract, rather than degrading to a weaker check. */
+export interface FileCapabilities {
+  ok: boolean;
+  reason: string;
+}

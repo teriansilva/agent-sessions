@@ -119,6 +119,7 @@ test("the panel header shows the LED, engine box, project and update time (#744)
 // the text of a `display: none` node, so it cannot tell "collapsed" from "present".
 test("the header sheds meta before the buttons as the pane narrows (#744)", async ({
   page,
+  isMobile,
 }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(`/s/${ENGINE}/${UUID}`);
@@ -140,11 +141,30 @@ test("the header sheds meta before the buttons as the pane narrows (#744)", asyn
   // The engine box and the LED are the floor — and every action is still reachable.
   await expect(head.locator('[class*="headEng"]')).toBeVisible();
   await expect(head.getByRole("img", { name: /^status: / })).toBeVisible();
-  await expect(recap).toBeVisible();
-  await expect(head.getByRole("button", { name: /hand off/i })).toBeVisible();
 
-  // Still a real button, not a clipped sliver: it opens the dialog at 300px.
-  await recap.click();
+  // #783 added a FOURTH action (Files), and the two pointer classes answer that differently —
+  // both keep every action reachable, which is what this test is really about.
+  //
+  //  - COARSE: the bar grows to 44px and the chips go icon-only, so all four stay ONE TAP away.
+  //    Nothing folds; the accessible names are unchanged, which is why every other mobile spec
+  //    that queries these buttons by name still passes untouched.
+  //  - FINE: labels stay (a 26px bar makes an icon-only chip a poor target), and four labelled
+  //    chips do not fit 300px — so the ladder gained a rung and the trailing actions fold into a
+  //    "…" menu that still carries their full labels. The route moved; the reach did not.
+  let openRecap = recap;
+  if (!isMobile) {
+    const more = head.getByRole("button", { name: /more session actions/i });
+    await expect(more).toBeVisible();
+    await more.click();
+    openRecap = page.getByRole("menuitem", { name: /open session brief/i });
+    await expect(page.getByRole("menuitem", { name: /hand off/i })).toBeVisible();
+  } else {
+    await expect(head.getByRole("button", { name: /hand off/i })).toBeVisible();
+  }
+  await expect(openRecap).toBeVisible();
+
+  // Still a real control, not a clipped sliver: it opens the dialog at 300px.
+  await openRecap.click();
   await expect(page.getByRole("dialog")).toBeVisible();
 });
 

@@ -5,6 +5,9 @@ import type {
   AppConfig,
   AutoSortReport,
   EnginesResponse,
+  FileCapabilities,
+  FileContent,
+  FileListing,
   Folder,
   FsDir,
   HandoffCommitted,
@@ -351,6 +354,17 @@ export const api = {
   /** Create a folder under a browsed parent (#448), bounded to ~/. Idempotent; returns the path. */
   fsMkdir: (parent: string, name: string) =>
     postJson<{ path: string }>("/api/fs/mkdir", { parent, name }),
+  /** File panel (#783): one directory, bounded by an entry cap AND a wall-clock budget. */
+  filesList: (path?: string, init?: RequestInit) =>
+    getJson<FileListing>(
+      `/api/files/list${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** File panel (#783): one regular file, capped while reading. Binary returns metadata only. */
+  filesRead: (path: string, init?: RequestInit) =>
+    getJson<FileContent>(`/api/files/read?path=${encodeURIComponent(path)}`, init),
+  /** File panel (#783): platform support for the containment contract. Fails closed. */
+  filesCapabilities: () => getJson<FileCapabilities>("/api/files/capabilities"),
   /** Remove the ENTITY only (#361): members revert to folder grouping on the next
    *  resolve — session files are never touched. CSRF-guarded. */
   deleteProject: (id: string) =>

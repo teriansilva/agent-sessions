@@ -32,14 +32,26 @@ def home_root() -> str:
     return os.path.realpath(os.path.expanduser(os.environ.get("AGENT_SESSIONS_FS_ROOT") or "~"))
 
 
-def _contained(path: str) -> str:
+def contained_path(path: str | None) -> str:
     """Realpath of ``path`` (default: home). Must BE home or live under it, else 403. Resolving
-    with realpath collapses ``..`` and symlinks, so a crafted path can't escape the root."""
+    with realpath collapses ``..`` and symlinks, so a crafted path can't escape the root.
+
+    Public since #783: the file panel reuses this exact boundary rather than drawing a second
+    one. Note what it is and isn't — it is a *cheap filter*, not a proof. ``realpath`` then
+    ``open`` is check-then-use, and the panel returns file BYTES, so :mod:`agent_sessions.files`
+    layers open-then-verify (``O_NOFOLLOW`` acquisition + ``fstat`` + ``/proc/self/fd``
+    re-check) on top. Callers that only need a name (the folder picker) are fine with this
+    alone; callers that read content are not.
+    """
     root = home_root()
     real = os.path.realpath(os.path.expanduser(path)) if path and path.strip() else root
     if real != root and not real.startswith(root + os.sep):
         raise FsError("path escapes the home root", status=403)
     return real
+
+
+# Back-compat alias for the pre-#783 private name (still used inside this module).
+_contained = contained_path
 
 
 def list_dirs(path: str | None = None) -> tuple[str, list[dict]]:
@@ -115,4 +127,4 @@ def make_dir(parent: str, name: str) -> str:
     return target
 
 
-__all__ = ["FsError", "home_root", "is_browsable_dir", "list_dirs", "make_dir"]
+__all__ = ["FsError", "contained_path", "home_root", "is_browsable_dir", "list_dirs", "make_dir"]
