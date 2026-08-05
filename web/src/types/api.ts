@@ -702,3 +702,49 @@ export interface FileCapabilities {
   ok: boolean;
   reason: string;
 }
+
+/** One changed path from GET /api/git/status (#784). A single porcelain record can yield TWO of
+ *  these — an `MM` path is a staged edit AND a later unstaged one, which is real git state, so it
+ *  renders in both groups with its own diff side rather than the UI picking a winner. */
+export interface GitEntry {
+  path: string;
+  index: string;
+  worktree: string;
+  kind: "staged" | "changed" | "untracked" | "unmerged";
+  oid: string | null;
+  /** Rename/copy source, when the record carried one. */
+  orig_path?: string;
+}
+
+/** GET /api/git/status (#784). `repo: null` is a normal 200 — "not a repository" is a state.
+ *  `ahead`/`behind` are **null when absent**, which is different from 0: detached HEAD and "no
+ *  upstream" have no divergence to report, and level-with-upstream does. */
+export interface GitStatus {
+  repo: string | null;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  entries: GitEntry[];
+  truncated: boolean;
+}
+
+/** GET /api/git/diff (#784). Assembled from `cat-file` blobs + the descriptor-verified worktree
+ *  read — never `git diff`, because no flag stops a repo-configured `filter.*` clean driver.
+ *  `added`/`removed` are **null when `truncated`**: a count taken from a cut-off prefix is not a
+ *  total, and showing it as one would be a lie the UI could not detect. */
+export interface GitDiff {
+  path: string;
+  repo: string;
+  diff: string;
+  added: number | null;
+  removed: number | null;
+  truncated: boolean;
+  binary: boolean;
+  too_large: boolean;
+  /** Ours-vs-theirs, not worktree-vs-anything: the two sides of an unresolved merge. */
+  conflict?: boolean;
+  /** The pair exceeded the comparison budget, so this is a whole-block replacement rather than a
+   *  line-by-line diff. Said out loud instead of passed off as a real diff. */
+  coarse: boolean;
+}

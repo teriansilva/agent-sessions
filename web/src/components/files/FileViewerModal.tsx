@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import type { FileContent } from "../../types/api";
+import { parseDiff } from "../../lib/diffParse";
+import type { FileContent, GitDiff } from "../../types/api";
 import styles from "./filePanel.module.css";
 
 /** File viewer (#783) — an OVERLAY, never a pane split: opening a file must not evict, resize,
@@ -20,13 +21,69 @@ export function FileViewerModal({
   path,
   onClose,
   returnFocusTo,
+  modes,
+  staged = false,
 }: {
   path: string;
   onClose: () => void;
   returnFocusTo?: HTMLElement | null;
+  /** Which modes apply to THIS row. A mode that does not apply is absent, never a dead control:
+   *  a deleted file has nothing left to read, an untracked one nothing to compare against. */
+  modes?: { diff: boolean; content: boolean; defaultDiff: boolean };
+  staged?: boolean;
 }) {
+  const showDiff = modes?.diff ?? false;
+  const showContent = modes?.content ?? true;
+  const [mode, setMode] = useState<"diff" | "content">(
+    modes?.defaultDiff && modes.diff ? "diff" : "content",
+  );
+  // Tag the response with the request it answers so "loading" is derived, not set synchronously
+  // inside the effect.
+  const sig = `${path}:${staged ? 1 : 0}`;
+  const [diffRes, setDiffRes] = useState<{
+    sig: string;
+    d?: GitDiff;
+    message?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (mode !== "diff") return;
+    let live = true;
+    const ctl = new AbortController();
+    api
+      .gitDiff(path, staged, { signal: ctl.signal })
+      .then((d) => live && setDiffRes({ sig, d }))
+      .catch((e: unknown) => {
+        if (!live || (e instanceof DOMException && e.name === "AbortError"))
+          return;
+        setDiffRes({
+          sig,
+          message:
+            e instanceof ApiError ? e.message : "Could not build the diff.",
+        });
+      });
+    return () => {
+      live = false;
+      ctl.abort();
+    };
+  }, [mode, path, staged, sig]);
+
+  const diff:
+    | { kind: "loading" }
+    | { kind: "ok"; d: GitDiff }
+    | { kind: "error"; message: string } =
+    diffRes?.sig !== sig
+      ? { kind: "loading" }
+      : diffRes.d
+        ? { kind: "ok", d: diffRes.d }
+        : {
+            kind: "error",
+            message: diffRes.message ?? "Could not build the diff.",
+          };
   const [state, setState] = useState<
-    { kind: "loading" } | { kind: "ok"; file: FileContent } | { kind: "error"; message: string }
+    | { kind: "loading" }
+    | { kind: "ok"; file: FileContent }
+    | { kind: "error"; message: string }
   >({ kind: "loading" });
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -40,10 +97,12 @@ export function FileViewerModal({
       .filesRead(path, { signal: ctl.signal })
       .then((file) => live && setState({ kind: "ok", file }))
       .catch((e: unknown) => {
-        if (!live || (e instanceof DOMException && e.name === "AbortError")) return;
+        if (!live || (e instanceof DOMException && e.name === "AbortError"))
+          return;
         setState({
           kind: "error",
-          message: e instanceof ApiError ? e.message : "Could not read this file.",
+          message:
+            e instanceof ApiError ? e.message : "Could not read this file.",
         });
       });
     return () => {
@@ -55,7 +114,8 @@ export function FileViewerModal({
   const close = useCallback(() => {
     onClose();
     // Return focus to whatever opened us — a11y, and it keeps keyboard tree navigation usable.
-    if (returnFocusTo && document.contains(returnFocusTo)) returnFocusTo.focus();
+    if (returnFocusTo && document.contains(returnFocusTo))
+      returnFocusTo.focus();
   }, [onClose, returnFocusTo]);
 
   // Focus in on open.
@@ -103,11 +163,19 @@ export function FileViewerModal({
   }, [close]);
 
   const name = path.split("/").pop() || path;
-  const lines = state.kind === "ok" && !state.file.binary ? (state.file.content ?? "").split("\n") : [];
+  const lines =
+    state.kind === "ok" && !state.file.binary
+      ? (state.file.content ?? "").split("\n")
+      : [];
 
   return createPortal(
     <>
-      <button type="button" className={styles.viewerScrim} aria-label="Dismiss the file viewer" onClick={close} />
+      <button
+        type="button"
+        className={styles.viewerScrim}
+        aria-label="Dismiss the file viewer"
+        onClick={close}
+      />
       <div
         ref={panelRef}
         className={styles.viewer}
@@ -132,26 +200,158 @@ export function FileViewerModal({
           </button>
         </div>
 
+        {showDiff && showContent && (
+          <div className={styles.modeBar} role="group" aria-label="View mode">
+            <button
+              type="button"
+              className={`${styles.modeBtn} ${mode === "diff" ? styles.modeBtnOn : ""}`}
+              aria-pressed={mode === "diff"}
+              onClick={() => setMode("diff")}
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              className={`${styles.modeBtn} ${mode === "content" ? styles.modeBtnOn : ""}`}
+              aria-pressed={mode === "content"}
+              onClick={() => setMode("content")}
+            >
+              Content
+            </button>
+            <span className={styles.modeSpacer} />
+            <span className="hud-tag">
+              {/* Withheld rather than guessed: the server nulls these when the diff was cut off,
+                  because a count taken from a prefix is not a total. */}
+              {diff.kind === "ok" &&
+              diff.d.added !== null &&
+              diff.d.removed !== null
+                ? `+${diff.d.added} −${diff.d.removed}`
+                : diff.kind === "ok" && diff.d.truncated
+                  ? "COUNTS UNAVAILABLE"
+                  : ""}
+            </span>
+          </div>
+        )}
+
         <div className={styles.viewerBody}>
-          {state.kind === "loading" && (
+          {mode === "diff" && diff.kind === "loading" && (
+            <div className={styles.state} role="status">
+              <span className={styles.stateTag}>Diff // Loading</span>
+              Building the diff…
+            </div>
+          )}
+          {mode === "diff" && diff.kind === "error" && (
+            <div className={`${styles.state} ${styles.stateBad}`} role="alert">
+              <span className={styles.stateTag}>Diff // Unavailable</span>
+              {diff.message}
+            </div>
+          )}
+          {/* Which two things are being compared is not guessable from the diff body, and for a
+              conflict it is not the obvious pair — so it is stated rather than left implied. */}
+          {mode === "diff" && diff.kind === "ok" && diff.d.conflict && (
+            <div className={`${styles.state} ${styles.stateWarn}`}>
+              <span className={styles.stateTag}>Diff // Conflict</span>
+              Unresolved merge: this compares <strong>ours</strong> (removed
+              lines) with <strong>theirs</strong> (added lines). The file on
+              disk still has the merge markers — open CONTENT to see it.
+            </div>
+          )}
+          {mode === "diff" && diff.kind === "ok" && diff.d.too_large && (
+            <div className={`${styles.state} ${styles.stateWarn}`}>
+              <span className={styles.stateTag}>Diff // Too large</span>
+              This file is bigger than the panel will compare. Open CONTENT to
+              read it instead.
+            </div>
+          )}
+          {mode === "diff" && diff.kind === "ok" && diff.d.binary && (
+            <div className={styles.state}>
+              <span className={styles.stateTag}>Diff // Not text</span>
+              This file is binary, or not valid UTF-8, so there is no meaningful
+              line diff.
+            </div>
+          )}
+          {mode === "diff" && diff.kind === "ok" && diff.d.coarse && (
+            <div className={`${styles.state} ${styles.stateWarn}`}>
+              <span className={styles.stateTag}>Diff // Coarse</span>
+              These two versions are too different to line up cheaply, so the
+              changed region is shown as a whole-block replacement rather than a
+              line-by-line diff.
+            </div>
+          )}
+          {mode === "diff" &&
+            diff.kind === "ok" &&
+            !diff.d.too_large &&
+            !diff.d.binary && (
+              <div className={styles.diffGrid} data-file-diff="">
+                {parseDiff(diff.d.diff).map((h) => (
+                  <div key={h.header} style={{ display: "contents" }}>
+                    <span className={`${styles.diffNo}`} />
+                    <span className={`${styles.diffNo}`} />
+                    <span
+                      className={`${styles.diffText}`}
+                      style={{ color: "var(--text-3)" }}
+                    >
+                      {h.header}
+                    </span>
+                    {h.lines.map((l, i) => (
+                      <div
+                        key={`${h.header}:${i}`}
+                        className={`${styles.diffLine} ${
+                          l.kind === "add"
+                            ? styles.diffAdd
+                            : l.kind === "del"
+                              ? styles.diffDel
+                              : l.kind === "meta" || l.kind === "nonewline"
+                                ? styles.diffMeta
+                                : ""
+                        }`}
+                      >
+                        <span className={styles.diffNo}>{l.oldNo ?? ""}</span>
+                        <span className={styles.diffNo}>{l.newNo ?? ""}</span>
+                        <span className={styles.diffText}>
+                          {l.kind === "add"
+                            ? "+"
+                            : l.kind === "del"
+                              ? "-"
+                              : " "}
+                          {l.text || " "}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                {parseDiff(diff.d.diff).length === 0 && (
+                  <div
+                    className={styles.state}
+                    style={{ gridColumn: "1 / -1" }}
+                  >
+                    <span className={styles.stateTag}>
+                      Diff // No textual change
+                    </span>
+                    Nothing to show for this path.
+                  </div>
+                )}
+              </div>
+            )}
+          {mode === "content" && state.kind === "loading" && (
             <div className={styles.state} role="status">
               <span className={styles.stateTag}>Viewer // Loading</span>
               Reading the file…
             </div>
           )}
-          {state.kind === "error" && (
+          {mode === "content" && state.kind === "error" && (
             <div className={`${styles.state} ${styles.stateBad}`} role="alert">
               <span className={styles.stateTag}>Viewer // Unavailable</span>
               {state.message}
             </div>
           )}
-          {state.kind === "ok" && state.file.binary && (
+          {mode === "content" && state.kind === "ok" && state.file.binary && (
             <div className={styles.state}>
               <span className={styles.stateTag}>Viewer // Binary file</span>
               {`${name} is binary (${state.file.mime ?? "unknown type"}, ${fmtBytes(state.file.size)}). Not rendered.`}
             </div>
           )}
-          {state.kind === "ok" && !state.file.binary && (
+          {mode === "content" && state.kind === "ok" && !state.file.binary && (
             <div className={styles.code}>
               {lines.map((line, i) => (
                 // Line order is stable for a given render; the index IS the identity here.
@@ -165,15 +365,38 @@ export function FileViewerModal({
         </div>
 
         <div className={styles.viewerFoot}>
+          {/* The footer describes the mode you are actually looking at. It used to report the
+              file's line count and size while the diff was on screen, which is a different fact
+              about a different thing. */}
           <span className="hud-tag">
-            {state.kind === "ok"
-              ? state.file.binary
-                ? "BINARY"
-                : `${lines.length} LINES // ${fmtBytes(state.file.size)}`
-              : "—"}
+            {mode === "diff"
+              ? diff.kind === "ok"
+                ? diff.d.too_large
+                  ? "TOO LARGE TO DIFF"
+                  : diff.d.binary
+                    ? "BINARY // NO LINE DIFF"
+                    : diff.d.coarse
+                      ? "COARSE // WHOLE-BLOCK REPLACEMENT"
+                      : diff.d.conflict
+                        ? // A conflict row opens with staged=false, so the working-tree/index
+                          // wording would contradict the bytes actually being compared.
+                          "OURS (STAGE 2) vs THEIRS (STAGE 3)"
+                        : `${staged ? "INDEX" : "WORKING TREE"} vs ${staged ? "HEAD" : "INDEX"}`
+                : "—"
+              : state.kind === "ok"
+                ? state.file.binary
+                  ? "BINARY"
+                  : `${lines.length} LINES // ${fmtBytes(state.file.size)}`
+                : "—"}
           </span>
           <span className="hud-tag">
-            {state.kind === "ok" && state.file.truncated ? "TRUNCATED // FIRST 1 MB" : "ESC TO CLOSE"}
+            {mode === "diff" && diff.kind === "ok" && diff.d.truncated
+              ? "TRUNCATED // COUNTS WITHHELD"
+              : mode === "content" &&
+                  state.kind === "ok" &&
+                  state.file.truncated
+                ? "TRUNCATED // FIRST 1 MB"
+                : "ESC TO CLOSE"}
           </span>
         </div>
       </div>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, File as FileIcon, Folder, Link2 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
-import type { FileEntry, FileListing } from "../../types/api";
+import type { FileEntry, FileListing, GitEntry } from "../../types/api";
 import styles from "./filePanel.module.css";
 
 /** A directory's fetch state. `stale` keeps the LAST GOOD listing visible when a refresh fails —
@@ -29,8 +29,12 @@ export function FileTree({
   onRootListing,
   onOpenFile,
   refreshTick,
+  gitEntries,
 }: {
   root: string;
+  /** Status letters come from the SAME feed the GIT tab renders, so browsing and reviewing can
+   *  never disagree about what changed. */
+  gitEntries?: GitEntry[] | null;
   /** Controlled: the panel owns it so it can be persisted across a close/reopen. */
   expanded: Set<string>;
   onToggleExpanded: (path: string) => void;
@@ -138,6 +142,18 @@ export function FileTree({
     walk(root, 0);
     return out;
   }, [dirs, expanded, root]);
+
+  // path -> letter, worktree state winning over index so the tree shows what is on disk.
+  const gitByPath = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of gitEntries ?? []) {
+      const abs = `${root.replace(/\/$/, "")}/${e.path}`;
+      const ch =
+        e.kind === "untracked" ? "?" : e.kind === "unmerged" ? "U" : e.worktree !== "." ? e.worktree : e.index;
+      if (ch && ch !== ".") m.set(abs, ch);
+    }
+    return m;
+  }, [gitEntries, root]);
 
   const rootState = dirs[root];
   // Hand the root's listing up so the panel can use the SERVER's `parent` boundary for Up.
@@ -295,6 +311,15 @@ export function FileTree({
               {isDir ? <Folder size={13} /> : isLink ? <Link2 size={13} /> : <FileIcon size={13} />}
             </span>
             <span className={styles.rowName}>{entry.name}</span>
+            {gitByPath.has(entry.path) && (
+              <span
+                className={styles.gitLetter}
+                title={`git: ${gitByPath.get(entry.path)}`}
+                aria-label={`git status ${gitByPath.get(entry.path)}`}
+              >
+                {gitByPath.get(entry.path)}
+              </span>
+            )}
             {isLink && (
               <span className={styles.rowNote}>
                 → {entry.link_unencodable_target ? "(undisplayable)" : (entry.link_target ?? "?")}

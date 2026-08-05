@@ -476,6 +476,39 @@ def _guess_mime(path: str) -> str:
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
+def read_file_bytes(path: str, *, limit: int = FILES_MAX_READ) -> tuple[str, bytes, int, bool]:
+    """Raw bytes of one regular file — the same containment proof as :func:`read_file`, no decoding.
+
+    :func:`read_file` is a *display* surface: it decodes with ``errors="replace"``, so every
+    invalid byte becomes U+FFFD. Re-encoding that string cannot distinguish a file that was always
+    valid UTF-8 from one that was mangled on the way in — the replacement character is a legal
+    character, and the original bytes are gone. A caller that has to *decide* whether the content
+    is text (#784's diff path, which refuses rather than render a mangled diff) therefore needs the
+    bytes as stored.
+
+    Returns ``(verified_path, data, size, truncated)``. Bounded while reading, so a huge file is
+    never materialised.
+    """
+    _refuse_if_symlink(path)
+    resolved = contained_path(path)
+    fd, st, verified = _open_verified(resolved, directory=False)
+    try:
+        chunks: list[bytes] = []
+        read_total = 0
+        truncated = False
+        while read_total < limit:
+            chunk = os.read(fd, min(_READ_CHUNK, limit - read_total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            read_total += len(chunk)
+        else:
+            truncated = bool(os.read(fd, 1))
+    finally:
+        os.close(fd)
+    return verified, b"".join(chunks), st.st_size, truncated
+
+
 def read_file(path: str) -> dict:
     """One regular file, capped **while reading** so a 3 GB file is never materialised.
 
@@ -546,5 +579,6 @@ __all__ = [
     "run_slot",
     "shutdown_executor_for_test",
     "read_file",
+    "read_file_bytes",
     "reset_capabilities_for_test",
 ]

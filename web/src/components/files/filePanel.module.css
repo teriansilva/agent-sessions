@@ -607,3 +607,156 @@
     font-size: 12.5px;
   }
 }
+
+/* ------------------------------------------------------------------ git tab (#784) */
+
+.branchStrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 2px;
+}
+.branchIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-2);
+}
+.branchName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+.branchMeta {
+  flex: none;
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.groupHead {
+  padding: 10px 10px 4px;
+}
+
+/* Status letters map onto the app's EXISTING status vocabulary rather than a new palette. The
+ * amber `M` sits near the brand accent, so the panel's only accent surface stays the active-tab
+ * underline — and every letter is paired with its own glyph plus a title, never colour alone. */
+.gitLetter {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.gitAdd {
+  color: var(--git-add-fg);
+}
+.gitMod {
+  color: var(--git-mod-fg);
+}
+.gitDel {
+  color: var(--git-del-fg);
+}
+.gitUntracked {
+  color: var(--git-unknown-fg);
+}
+.gitConflict {
+  color: var(--git-del-fg);
+}
+@media (pointer: coarse) {
+  .gitLetter {
+    width: 20px;
+    font-size: 13px;
+  }
+}
+
+/* ------------------------------------------------------------------ diff view */
+
+.diffLine {
+  display: contents;
+}
+.diffNo {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  background: var(--surface-3);
+}
+.diffText {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+.diffAdd .diffText,
+.diffAdd .diffNo {
+  background: var(--diff-add-bg);
+}
+.diffAdd .diffText {
+  color: var(--diff-add-fg);
+}
+.diffDel .diffText,
+.diffDel .diffNo {
+  background: var(--diff-del-bg);
+}
+.diffDel .diffText {
+  color: var(--diff-del-fg);
+}
+.diffMeta .diffText,
+.diffMeta .diffNo {
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+.diffGrid {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.modeBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.modeBtn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.modeBtnOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.modeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.modeSpacer {
+  flex: 1;
+}
+@media (pointer: coarse) {
+  .modeBtn {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 11px;
+  }
+}

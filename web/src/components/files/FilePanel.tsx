@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUp, Home, RefreshCw, X } from "lucide-react";
-import { api } from "../../lib/api";
-import type { FileCapabilities } from "../../types/api";
+import { api, ApiError } from "../../lib/api";
+import type { FileCapabilities, GitEntry, GitStatus } from "../../types/api";
 import { FileTree } from "./FileTree";
+import { GitTab } from "./GitTab";
+import { modesFor } from "./gitModes";
 import { FileViewerModal } from "./FileViewerModal";
 import { loadPanelState, savePanelState } from "./filePanelState";
 import {
@@ -52,7 +54,20 @@ export function FilePanel({
   // The SERVER's boundary, not a string guess: `parent` is null at the contained root.
   const [rootParent, setRootParent] = useState<string | null | undefined>(undefined);
   const [width, setWidth] = useState<number>(() => readStoredW());
-  const [viewer, setViewer] = useState<{ path: string; trigger: HTMLElement | null } | null>(null);
+  const [viewer, setViewer] = useState<{
+    path: string;
+    trigger: HTMLElement | null;
+    modes?: { diff: boolean; content: boolean; defaultDiff: boolean };
+    staged?: boolean;
+  } | null>(null);
+  const [tab, setTab] = useState<"files" | "git">("files");
+  // Response is tagged with the tick it answers, so "loading" is DERIVED rather than set
+  // synchronously inside the effect (which the compiler rightly rejects as a cascading render).
+  const [gitRes, setGitRes] = useState<{
+    tick: number;
+    status: GitStatus | null;
+    error: string | null;
+  }>({ tick: -1, status: null, error: null });
   const [tick, setTick] = useState(0);
   const [caps, setCaps] = useState<FileCapabilities | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -150,6 +165,33 @@ export function FilePanel({
   // returns as null when there is nowhere legal to go. Deriving it by trimming the string
   // produced "/home" at the default root and turned a valid view into an error on one click.
   const canGoUp = Boolean(rootParent);
+  // Git status is fetched for the panel's root, on the same visibility-gated cadence as the tree.
+  // It feeds BOTH the GIT tab and the status letters in the FILES tree, so browsing and reviewing
+  // are one surface rather than two that disagree.
+  useEffect(() => {
+    let live = true;
+    const ctl = new AbortController();
+    api
+      .gitStatus(root, { signal: ctl.signal })
+      .then((s) => live && setGitRes({ tick, status: s, error: null }))
+      .catch((e: unknown) => {
+        if (!live || (e instanceof DOMException && e.name === "AbortError")) return;
+        setGitRes({
+          tick,
+          status: null,
+          error: e instanceof ApiError ? e.message : "Could not read the repository.",
+        });
+      });
+    return () => {
+      live = false;
+      ctl.abort();
+    };
+  }, [root, tick]);
+
+  const git = gitRes.status;
+  const gitError = gitRes.error;
+  const gitLoading = gitRes.tick !== tick;
+
   const goUp = useCallback(() => {
     if (rootParent) {
       setRoot(rootParent);
@@ -234,18 +276,26 @@ export function FilePanel({
       </div>
 
       <div className={styles.tabs} role="tablist" aria-label="File panel tabs">
-        <button type="button" role="tab" aria-selected="true" className={styles.tab}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "files"}
+          className={styles.tab}
+          onClick={() => setTab("files")}
+        >
           Files
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected="false"
+          aria-selected={tab === "git"}
           className={styles.tab}
-          disabled
-          title="The git view lands in phase 2 (#784)"
+          onClick={() => setTab("git")}
         >
           Git
+          {git?.repo && git.entries.length > 0 && (
+            <span className={styles.tabBadge}>{git.entries.length}</span>
+          )}
         </button>
       </div>
 
@@ -306,10 +356,26 @@ export function FilePanel({
           <span className={styles.stateTag}>Files // Unavailable</span>
           {caps.reason}
         </div>
+      ) : tab === "git" ? (
+        <GitTab
+          status={git}
+          loading={gitLoading}
+          error={gitError}
+          onRetry={() => setTick((n) => n + 1)}
+          onOpen={(e: GitEntry, trigger) =>
+            setViewer({
+              path: `${git?.repo ?? root}/${e.path}`,
+              trigger,
+              modes: modesFor(e),
+              staged: e.kind === "staged",
+            })
+          }
+        />
       ) : (
         <FileTree
           key={`${sessionKey}::${root}`}
           root={root}
+          gitEntries={git?.entries ?? null}
           expanded={expanded}
           onToggleExpanded={toggleExpanded}
           onRootListing={(l) => {
@@ -355,8 +421,10 @@ export function FilePanel({
         )}
         {viewer && (
           <FileViewerModal
-            key={viewer.path}
+            key={`${viewer.path}:${viewer.staged ? 1 : 0}`}
             path={viewer.path}
+            modes={viewer.modes}
+            staged={viewer.staged}
             returnFocusTo={viewer.trigger}
             onClose={() => setViewer(null)}
           />
@@ -393,8 +461,10 @@ export function FilePanel({
       </aside>
       {viewer && (
         <FileViewerModal
-          key={viewer.path}
+          key={`${viewer.path}:${viewer.staged ? 1 : 0}`}
           path={viewer.path}
+          modes={viewer.modes}
+          staged={viewer.staged}
           returnFocusTo={viewer.trigger}
           onClose={() => setViewer(null)}
         />

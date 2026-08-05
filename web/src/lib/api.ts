@@ -10,6 +10,8 @@ import type {
   FileListing,
   Folder,
   FsDir,
+  GitDiff,
+  GitStatus,
   HandoffCommitted,
   HandoffMode,
   HandoffPrepared,
@@ -365,6 +367,18 @@ export const api = {
     getJson<FileContent>(`/api/files/read?path=${encodeURIComponent(path)}`, init),
   /** File panel (#783): platform support for the containment contract. Fails closed. */
   filesCapabilities: () => getJson<FileCapabilities>("/api/files/capabilities"),
+  /** GIT tab (#784): repository state for the panel's current root. */
+  gitStatus: (path?: string, init?: RequestInit) =>
+    getJson<GitStatus>(
+      `/api/git/status${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** GIT tab (#784): a unified diff for one path, assembled server-side from blobs. */
+  gitDiff: (path: string, staged: boolean, init?: RequestInit) =>
+    getJson<GitDiff>(
+      `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}`,
+      init,
+    ),
   /** Remove the ENTITY only (#361): members revert to folder grouping on the next
    *  resolve — session files are never touched. CSRF-guarded. */
   deleteProject: (id: string) =>

@@ -21,7 +21,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import files
+from .. import files, gitpanel
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
@@ -74,7 +74,8 @@ def register(app: FastAPI, *, logged_in) -> None:
     async def _file_routes_are_never_cached(request: Request, call_next):
         """Apply the no-store policy at the OUTERMOST boundary of these routes.
 
-        Two escapes had to be closed, in this order:
+        Covers `/api/files/` and `/api/git/` alike: a diff carries file bytes and a status carries
+        absolute paths, so neither may be cached. Two escapes had to be closed, in this order:
 
         * `Depends(logged_in)` raises its own 401 *before* any handler runs, so header code
           inside the handlers could never execute — an auth failure that still names the
@@ -84,7 +85,9 @@ def register(app: FastAPI, *, logged_in) -> None:
           outer error middleware, which knows nothing about this policy. So exceptions are
           caught and rendered HERE, where the headers can still be attached.
         """
-        if not request.url.path.startswith("/api/files/"):
+        if not (
+            request.url.path.startswith("/api/files/") or request.url.path.startswith("/api/git/")
+        ):
             return await call_next(request)
         try:
             response = await call_next(request)
@@ -126,6 +129,39 @@ def register(app: FastAPI, *, logged_in) -> None:
         except Exception:
             raise HTTPException(
                 status_code=500, detail="could not read the file", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    @app.get("/api/git/status")
+    async def git_status(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # Repository state for the panel's current root. `repo: null` is a normal 200 — "not a
+        # repository" is a state, not a failure, and so are unborn/detached/no-upstream.
+        raw = request.query_params.get("path")
+        try:
+            payload = await _run(raw or "", gitpanel.git_status, raw)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not read the repository", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    @app.get("/api/git/diff")
+    async def git_diff(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # Assembled from `cat-file` blobs plus the descriptor-verified worktree read — `git diff`
+        # is never invoked, because no flag stops a repo-configured `filter.*` clean driver.
+        path = request.query_params.get("path")
+        if not path or not path.strip():
+            raise HTTPException(status_code=422, detail="path is required", headers=_NO_STORE)
+        staged = request.query_params.get("staged") in ("1", "true", "yes")
+        try:
+            payload = await _run(path, gitpanel.git_diff_kw, path, staged)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not build the diff", headers=_NO_STORE
             ) from None
         return _json(payload)
 
