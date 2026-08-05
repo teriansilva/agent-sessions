@@ -20,6 +20,11 @@ whole fleet from a laptop or your phone.
   project, with per-row badges + filtering.
 - **Persistent terminals.** Each session runs under its own `dtach` PTY — close the tab, reboot, or
   upgrade the app and reattach to the exact conversation, with clean console-style scroll-up.
+- **Files + git, per session.** A read-only file browser rooted at each session's own working
+  directory, plus a `GIT` tab: branch name, ahead/behind, the working tree's changed paths
+  grouped conflicts/staged/changes/untracked (capped at `GIT_MAX_ENTRIES`, and flagged as
+  truncated past it), and a unified diff one click away. Review what changed without leaving
+  the app — no stage, no commit, no discard.
 - **Pulse + Ask.** An AI-curated "state of your work" across every agent, plus a plain-language
   finder for past sessions ("which session fixed the ws reconnect bug?") — one tap back in. Reuses
   your own OpenAI-compatible endpoint; session content goes nowhere else.
