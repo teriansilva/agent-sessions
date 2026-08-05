@@ -425,6 +425,7 @@ def _validate_actions(
                 action["option"] = opt
             else:
                 action["verb"] = "escalate"  # no usable option → let the operator look
+                action["escalation_reason"] = "degraded"
                 action.pop("option", None)
         elif verb == "answer":
             text = _clamp(item.get("answer"), ANSWER_MAX)
@@ -432,6 +433,7 @@ def _validate_actions(
                 action["answer"] = text
             else:
                 action["verb"] = "escalate"
+                action["escalation_reason"] = "degraded"
         # A delivering verb on a session that has been silent for days is a nudge nobody is
         # waiting for. #755: `continue` was proposed at confidence 0.8 on a session whose work
         # finished six days earlier — the model had `age_hours` in front of it and used it for
@@ -478,8 +480,8 @@ def _validate_actions(
     return assessment, out
 
 
-def _decide(action: dict, cfg: dict) -> str:
-    """The state a fresh proposal starts in, given the operator's tier and threshold.
+def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
+    """The state a fresh proposal starts in, plus **why** it escalated when it did.
 
     * ``off`` — everything is a proposal; nothing is ever queued for delivery.
     * ``suggest`` — deliverable verbs queue for a tap (``proposed``).
@@ -490,24 +492,42 @@ def _decide(action: dict, cfg: dict) -> str:
 
     ``observe`` and ``escalate`` are decisions rather than deliveries, so they land terminal-ish
     immediately and never consult the ceiling.
+
+    The second element is the ``escalation_reason`` — ``None`` unless the state is ``escalated``:
+
+    * ``model`` — the model read the session and chose ``escalate`` itself.
+    * ``degraded`` — ``_validate_actions`` rewrote a `choose` with no usable option, or an
+      `answer` with no text, into an escalation. It marks the action where it does the rewrite,
+      because only that code knows what the model originally asked for; by the time the verb is
+      `escalate` the intent is gone.
+    * ``confidence`` — the yolo threshold gate below.
+
+    **Three paths in, one reporter.** The UI used to append "below threshold" to every escalated
+    row (`ActionRow.tsx`), which is false on two of the three paths — and unreachable on the
+    third at any tier but `yolo`, since nothing below reads `confidence_min`. The fix is not a
+    smarter client: a client cannot know which branch fired. It has to be reported by the
+    function that fires it, which is this one. Deliberately NOT a sibling `_escalation_reason()`
+    re-deriving the branch from `(action, cfg)` — two readers of the same config reaching for
+    the same verdict is precisely how they drift apart.
     """
     verb = action["verb"]
     if verb == "observe":
-        return "observed"
+        return "observed", None
     if verb == "escalate":
-        return "escalated"
+        # `_validate_actions` marks its own rewrites; anything unmarked is the model's own call.
+        return "escalated", action.get("escalation_reason") or "model"
     # An operator who switched orchestration OFF while the model call was in flight must not
     # find an auto-approved action waiting for them. `enabled` is re-read after the call and
     # fences the approval path here, not just the scheduler.
     if not cfg.get("enabled", False):
-        return "proposed"
+        return "proposed", None
     if cfg["autonomy"] != "yolo":
-        return "proposed"
+        return "proposed", None
     if verb not in set(cfg["allowed_verbs"]):
-        return "proposed"  # outside the v1 ceiling → always a tap
+        return "proposed", None  # outside the v1 ceiling → always a tap
     if action["confidence"] < float(cfg["confidence_min"]):
-        return "escalated"
-    return "approved"
+        return "escalated", "confidence"
+    return "approved", None
 
 
 async def run_pass(
@@ -576,7 +596,7 @@ async def run_pass(
     recorded: list[dict] = []
     for action in actions:
         card = sent[action["session_id"]]
-        state = _decide(action, cfg)
+        state, esc_reason = _decide(action, cfg)
         rec: dict = {
             "id": uuid.uuid4().hex,
             "state": state,
@@ -595,6 +615,12 @@ async def run_pass(
             "last_activity": card.get("last_activity"),
             **{k: v for k, v in action.items() if k != "session_id"},
         }
+        # `_decide` is the only writer of this field on the record. The spread above can carry a
+        # `degraded` mark `_validate_actions` left on the action, so clear it first and write back
+        # only what was decided — otherwise the record could disagree with its own state.
+        rec.pop("escalation_reason", None)
+        if esc_reason:
+            rec["escalation_reason"] = esc_reason
         # Only a verb that will actually be delivered needs a precondition to verify later.
         if action["verb"] in DELIVERING_VERBS:
             rec["precondition"] = await asyncio.to_thread(

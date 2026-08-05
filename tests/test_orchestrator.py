@@ -261,25 +261,87 @@ def test_ceiling_survives_a_hand_edited_prefs_file(tmp_path):
 def test_yolo_never_auto_approves_a_verb_outside_the_ceiling():
     cfg = dict(prefs.get_orchestrator())
     cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.5)
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg) == "approved"
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg)[0] == "approved"
     # answer/choose are outside the ceiling → supervised no matter how confident
-    assert orchestrator._decide({"verb": "answer", "confidence": 0.99}, cfg) == "proposed"
-    assert orchestrator._decide({"verb": "choose", "confidence": 0.99}, cfg) == "proposed"
+    assert orchestrator._decide({"verb": "answer", "confidence": 0.99}, cfg)[0] == "proposed"
+    assert orchestrator._decide({"verb": "choose", "confidence": 0.99}, cfg)[0] == "proposed"
 
 
 def test_tier_and_threshold_decide_state():
     cfg = dict(prefs.get_orchestrator())
     cfg.update(enabled=True, allowed_verbs=["continue"], confidence_min=0.75)
     cfg["autonomy"] = "suggest"
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg) == "proposed"
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg)[0] == "proposed"
     cfg["autonomy"] = "yolo"
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg) == "escalated"
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.75}, cfg) == "approved"
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg)[0] == "escalated"
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.75}, cfg)[0] == "approved"
     cfg["autonomy"] = "off"
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg) == "proposed"
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg)[0] == "proposed"
     # decisions, not deliveries — never consult the ceiling
-    assert orchestrator._decide({"verb": "escalate", "confidence": 0.1}, cfg) == "escalated"
-    assert orchestrator._decide({"verb": "observe", "confidence": 0.1}, cfg) == "observed"
+    assert orchestrator._decide({"verb": "escalate", "confidence": 0.1}, cfg)[0] == "escalated"
+    assert orchestrator._decide({"verb": "observe", "confidence": 0.1}, cfg)[0] == "observed"
+
+
+def test_decide_reports_why_it_escalated():
+    """Three paths reach `escalated` and the row has to say which one — the UI appended
+    "below threshold" to all of them, which is false on two and unreachable on the third at
+    any tier but yolo."""
+    cfg = dict(prefs.get_orchestrator())
+    cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.75)
+
+    # the model chose to escalate
+    assert orchestrator._decide({"verb": "escalate", "confidence": 0.9}, cfg) == (
+        "escalated",
+        "model",
+    )
+    # `_validate` rewrote a non-deliverable choose/answer into one — its mark survives
+    assert orchestrator._decide(
+        {"verb": "escalate", "confidence": 0.9, "escalation_reason": "degraded"}, cfg
+    ) == ("escalated", "degraded")
+    # the yolo threshold gate — the ONLY path "below threshold" ever described
+    assert orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg) == (
+        "escalated",
+        "confidence",
+    )
+    # anything not escalated carries no reason at all
+    for action in (
+        {"verb": "continue", "confidence": 0.99},
+        {"verb": "observe", "confidence": 0.1},
+    ):
+        state, reason = orchestrator._decide(action, cfg)
+        assert state != "escalated"
+        assert reason is None
+
+
+def test_validate_actions_marks_the_verb_it_degraded():
+    """The reason has to be set where the rewrite happens: once the verb is `escalate`, what
+    the model originally asked for is gone."""
+    sent = {"claude:11111111-1111-4111-8111-111111111111": {"title": "t"}}
+    sid = next(iter(sent))
+    _, actions = orchestrator._validate_actions(
+        {
+            "actions": [
+                # a `choose` with no usable option number
+                {"session_id": sid, "verb": "choose", "confidence": 0.9},
+            ]
+        },
+        sent,
+    )
+    assert actions[0]["verb"] == "escalate"
+    assert actions[0]["escalation_reason"] == "degraded"
+
+    _, actions = orchestrator._validate_actions(
+        {"actions": [{"session_id": sid, "verb": "answer", "confidence": 0.9, "answer": ""}]},
+        sent,
+    )
+    assert actions[0]["verb"] == "escalate"
+    assert actions[0]["escalation_reason"] == "degraded"
+
+    # A model that escalates on its own is NOT marked — `_decide` reads that absence as "model".
+    _, actions = orchestrator._validate_actions(
+        {"actions": [{"session_id": sid, "verb": "escalate", "confidence": 0.9}]}, sent
+    )
+    assert "escalation_reason" not in actions[0]
 
 
 # --- the pass ---------------------------------------------------------------------------
@@ -317,6 +379,65 @@ def test_run_pass_records_proposals_with_a_precondition(monkeypatch, configured_
     # a deliverable verb binds the screen it was derived from, for Phase 2 to re-verify
     assert set(rec["precondition"]) == {"key", "screen_fingerprint", "prompt_class", "observed_at"}
     assert ledger.get(rec["id"])["state"] == "proposed"
+
+
+def test_run_pass_records_why_an_action_escalated(monkeypatch, configured_ai):
+    """The scheduled writer persists the reason, and persists exactly ONE of it. Both record
+    builders spread the validated action into the record, so the `degraded` mark
+    `_validate_actions` leaves there would otherwise ride along beside the decided value with
+    nothing keeping the two in agreement."""
+    now = time.time()
+    uid = "77777777-7777-4777-8777-777777777777"
+    _setup(monkeypatch, [FakeSession("claude", uid, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "› waiting")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport(
+            {
+                "assessment": "needs a human",
+                "actions": [
+                    # a `choose` with no usable option — degraded, not the model's own escalate
+                    {"session_id": f"claude:{uid}", "verb": "choose", "confidence": 0.9},
+                ],
+            },
+            [],
+        ),
+    )
+    report = asyncio.run(orchestrator.run_pass(now=now))
+    rec = report["actions"][0]
+    assert rec["verb"] == "escalate" and rec["state"] == "escalated"
+    assert rec["escalation_reason"] == "degraded"
+
+    # The record on disk is JSON — one key, one value, no shadow copy from the spread.
+    stored = ledger.get(rec["id"])
+    assert stored["escalation_reason"] == "degraded"
+    assert [k for k in stored if "escalation" in k] == ["escalation_reason"]
+
+
+def test_run_pass_leaves_no_escalation_reason_on_a_proposal(monkeypatch, configured_ai):
+    """The field explains an escalation. Anything else wearing one is a claim about a decision
+    that was never handed to the operator."""
+    now = time.time()
+    uid = "88888888-8888-4888-8888-888888888888"
+    _setup(monkeypatch, [FakeSession("claude", uid, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "› waiting")
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport(
+            {
+                "assessment": "one idle",
+                "actions": [{"session_id": f"claude:{uid}", "verb": "continue", "confidence": 0.9}],
+            },
+            [],
+        ),
+    )
+    report = asyncio.run(orchestrator.run_pass(now=now))
+    rec = report["actions"][0]
+    assert rec["state"] == "proposed"
+    assert "escalation_reason" not in rec
+    assert "escalation_reason" not in ledger.get(rec["id"])
 
 
 def test_run_pass_respects_max_actions_per_pass(monkeypatch, configured_ai):
@@ -565,7 +686,7 @@ def test_non_finite_confidence_is_zero_not_maximum():
         assert action["confidence"] == 0.0, f"{raw} must not become usable confidence"
         cfg = dict(prefs.get_orchestrator())
         cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.5)
-        assert orchestrator._decide(action, cfg) == "escalated"
+        assert orchestrator._decide(action, cfg)[0] == "escalated"
 
 
 def test_concurrent_append_during_compaction_is_not_lost(tmp_path):
@@ -897,7 +1018,7 @@ def test_a_disabled_orchestrator_never_auto_approves():
     the approved state even at yolo with maximum confidence."""
     cfg = dict(prefs.get_orchestrator())
     cfg.update(enabled=False, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.5)
-    assert orchestrator._decide({"verb": "continue", "confidence": 1.0}, cfg) == "proposed"
+    assert orchestrator._decide({"verb": "continue", "confidence": 1.0}, cfg)[0] == "proposed"
 
 
 def test_recap_evidence_resolves_a_reconciled_sidecar_key(monkeypatch, tmp_home):  # noqa: ARG001

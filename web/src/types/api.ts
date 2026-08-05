@@ -232,6 +232,19 @@ export type OrchestratorState =
   | "expired"
   | "indeterminate";
 
+/** The states an action can no longer leave — `orchestrator_ledger.TERMINAL_STATES`, i.e.
+ *  `OrchestratorState` minus that module's `LIVE_STATES`. Note `escalated` is **live**, not
+ *  terminal: it is waiting on the operator, which is why it carries decision controls and rides
+ *  `pending_action` rather than the history line.
+ *
+ *  Split out so a map over settled actions (Pulse's history line) can be typed
+ *  `Record<TerminalActionState, …>`: adding a state to `OrchestratorState` without giving it
+ *  wording is then a **compile error**, not a blank cell nobody notices. */
+export type TerminalActionState = Exclude<
+  OrchestratorState,
+  "proposed" | "approved" | "claimed" | "escalated"
+>;
+
 export type EvidenceKind = "screen" | "transcript_tail" | "recap" | "none";
 
 export interface OrchestratorAction {
@@ -257,6 +270,12 @@ export interface OrchestratorAction {
   evidence: EvidenceKind;
   option?: number;
   answer?: string;
+  /** Why this action is `escalated` — server-decided in `orchestrator._decide`, never inferred
+   *  here and never model-supplied. `model`: the model chose to escalate. `degraded`: it meant
+   *  to deliver but produced no usable option / no answer text. `confidence`: it fell under the
+   *  yolo threshold. Absent on every non-escalated action, and on records written before the
+   *  field existed — which render NO reason rather than a guessed one. */
+  escalation_reason?: "model" | "degraded" | "confidence";
 }
 
 export interface OrchestratorConfig {

@@ -189,12 +189,13 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     recorded: list[dict] = []
     for action in actions:
         card = sent[action["session_id"]]
+        state, esc_reason = orchestrator._decide(action, cfg)
         rec: dict = {
             "id": uuid.uuid4().hex,
             # Tier gating applies to a chat instruction exactly as it does to a scheduled
             # pass. The operator asking for something is not itself an approval — they still
             # see what it resolved to and tap, unless the tier says otherwise.
-            "state": orchestrator._decide(action, cfg),
+            "state": state,
             "ts": now,
             "expires_at": now + int(cfg["proposal_ttl_minutes"]) * 60,
             "tier": cfg["autonomy"],
@@ -206,6 +207,11 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
             "project_id": (card.get("project") or {}).get("id") or "",
             **{k: v for k, v in action.items() if k != "session_id"},
         }
+        # Same single-writer rule as the scheduled pass (`orchestrator.run_pass`): whatever the
+        # spread carried over is discarded, and the decision's own reason is written back.
+        rec.pop("escalation_reason", None)
+        if esc_reason:
+            rec["escalation_reason"] = esc_reason
         if action["verb"] in orchestrator.DELIVERING_VERBS:
             rec["precondition"] = await asyncio.to_thread(
                 orchestrator.precondition_for,

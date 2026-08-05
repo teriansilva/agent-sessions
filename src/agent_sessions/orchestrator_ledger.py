@@ -18,7 +18,7 @@ half-apply a transition.
               │            └─► indeterminate    crashed after the write, before the record
               ├─► approved ─► claimed …         operator tapped approve
               ├─► rejected                      operator declined
-              ├─► escalated                     below threshold; needs the operator
+              ├─► escalated                     needs the operator (see `escalation_reason`)
               ├─► stale                         precondition moved before delivery
               └─► expired                       TTL elapsed untouched
 

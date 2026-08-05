@@ -616,3 +616,88 @@ def test_every_requested_session_being_live_keeps_the_models_wording(monkeypatch
 
     assert len(r["actions"]) == 2
     assert r["answer"] == "Nudged both sessions."
+
+
+def test_a_chat_escalation_records_why_it_escalated(monkeypatch):
+    """The chat writes to the SAME ledger as the scheduled pass, so a reason recorded by only
+    one of them would recreate the missing-suffix bug for new records — with the wording
+    depending on which writer happened to make the action."""
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "That one needs you.",
+                    "actions": [
+                        {
+                            "session_id": KEY,
+                            "verb": "escalate",
+                            "confidence": 0.9,
+                            "rationale": "design call",
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    r = asyncio.run(orchestrator_chat.ask("what should I do about the claude session?"))
+    act = r["actions"][0]
+    assert act["state"] == "escalated"
+    assert act["escalation_reason"] == "model"
+    assert ledger.get(act["id"])["escalation_reason"] == "model"
+
+
+def test_a_chat_action_the_validator_degraded_says_so(monkeypatch):
+    """A `choose` with no usable option number is rewritten to `escalate`. The record has to
+    carry `degraded`, not `model` — the model DID mean to deliver, it just produced nothing
+    deliverable, and those are different things to tell the operator."""
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "Picking for you.",
+                    # no `option` → `_validate_actions` degrades it
+                    "actions": [{"session_id": KEY, "verb": "choose", "confidence": 0.9}],
+                },
+            ]
+        ),
+    )
+    r = asyncio.run(orchestrator_chat.ask("pick the first option"))
+    act = r["actions"][0]
+    assert act["verb"] == "escalate"
+    assert act["state"] == "escalated"
+    assert act["escalation_reason"] == "degraded"
+    assert ledger.get(act["id"])["escalation_reason"] == "degraded"
+
+
+def test_a_chat_proposal_carries_no_escalation_reason(monkeypatch):
+    """`escalation_reason` exists only to explain an escalation. A `proposed` record wearing one
+    would be a claim about a decision that was never handed back."""
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(orchestrator.session_input, "is_live", lambda key: True)
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "Nudged it.",
+                    "actions": [{"session_id": KEY, "verb": "continue", "confidence": 0.9}],
+                },
+            ]
+        ),
+    )
+    r = asyncio.run(orchestrator_chat.ask("keep it going"))
+    act = r["actions"][0]
+    assert act["state"] == "proposed"
+    assert "escalation_reason" not in act
+    assert "escalation_reason" not in ledger.get(act["id"])

@@ -492,6 +492,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Only an escalation puts a label beside the ✕ (it is that row's one control); everywhere
+   * else the button is the glyph alone and the gap collapses to nothing. */
+  gap: 6px;
+  font: inherit;
+  font-size: 0.76rem;
   padding: 6px 12px;
   min-height: 32px;
   min-width: 34px;

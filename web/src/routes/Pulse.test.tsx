@@ -416,7 +416,10 @@ test("a card shows what the orchestrator last did here, when nothing is pending 
   );
   renderPulse();
   expect(await screen.findByText("ESCALATE")).toBeInTheDocument();
-  expect(screen.getByText("expired")).toBeInTheDocument();
+  // #795: the line says what BECAME of the action, not which state the ledger moved it to.
+  // `expired` names a transition in a state machine the operator never sees.
+  expect(screen.getByText("no decision in time")).toBeInTheDocument();
+  expect(screen.queryByText("expired")).not.toBeInTheDocument();
   expect(screen.getByText("×7")).toBeInTheDocument();
 });
 

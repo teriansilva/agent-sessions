@@ -5,7 +5,11 @@ import { api, ApiError } from "../../lib/api";
 import { engineBadge, relTime } from "../../lib/format";
 import type { EvidenceKind, OrchestratorAction } from "../../types/api";
 import styles from "./Orchestrator.module.css";
-import { DELIVERING_FALLBACK, sessionPath } from "../../lib/orchestratorAction";
+import {
+  DELIVERING_FALLBACK,
+  escalationSuffix,
+  sessionPath,
+} from "../../lib/orchestratorAction";
 
 /** Status colour is load-bearing (docs/design.md): amber `degraded` means "needs a decision",
  *  red `down` is reserved for genuine failure. An escalation is NOT an incident. */
@@ -156,6 +160,7 @@ export function ActionRow({
   // REJECTABLE_STATES includes `escalated`.
   const approvable = delivering && waiting;
   const rejectable = waiting || action.state === "escalated";
+  const escSuffix = escalationSuffix(action);
 
   const act = useCallback(
     async (which: "approve" | "reject") => {
@@ -239,6 +244,11 @@ export function ActionRow({
           onClick={() => void act("reject")}
         >
           <X size={13} aria-hidden="true" />
+          {/* An escalation offers NO Approve — there is nothing to deliver — so this is the
+              row's only control, and beside the evidence disclosure a bare ✕ reads as "close
+              that panel" rather than "settle this". Everywhere else Approve stands next to it
+              and the pairing already says what it does, so the glyph stays on its own. */}
+          {action.state === "escalated" && "Dismiss"}
         </button>
       )}
     </div>
@@ -274,7 +284,7 @@ export function ActionRow({
         )}
         <span className={styles.conf}>
           conf {action.confidence.toFixed(2)}
-          {action.state === "escalated" ? " · below threshold" : ""}
+          {escSuffix ? ` · ${escSuffix}` : ""}
         </span>
       </div>
       {action.rationale && <p className={styles.why}>{action.rationale}</p>}

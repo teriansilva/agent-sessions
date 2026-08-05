@@ -98,6 +98,36 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_notifications(tmp_path, monkeypatch) -> None:
+    """Point the notification bell and the push-subscription store at per-test tmp files.
+
+    Measured, not hypothetical: running the orchestrator suite on a machine with a live install
+    wrote 15 rows into the operator's real ``~/.config/agent-sessions/notifications.json`` —
+    `first` / `first message` from the session fixtures, project `/a`, session ids like
+    ``claude:cccccccc-…`` — which then rendered in their bell alongside real escalations. Any
+    test that reaches ``notifications.add`` does it, and the orchestrator ones do so readily
+    (``notify: escalations`` announces on every ``escalated`` record, which is exactly what
+    those tests produce).
+
+    ``tmp_home`` fixes ``$HOME`` but is **opt-in**, and ``_store_path`` resolves ``Path.home()``
+    per call — so every test that does not request ``tmp_home`` writes to the real store. The
+    other stores (prefs, metadata, projects) already have their env overrides pinned; these two
+    were simply missed.
+
+    ``AGENT_SESSIONS_PUSH_SUBS`` is the load-bearing half. ``add`` fans out to every stored
+    subscription when push is configured, so an unisolated run does not merely write a file —
+    it can send a real Web Push to the operator's actual devices from a test fixture."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_NOTIFICATIONS",
+        str(tmp_path / ".config" / "agent-sessions" / "notifications.json"),
+    )
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_PUSH_SUBS",
+        str(tmp_path / ".config" / "agent-sessions" / "push-subscriptions.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scan_cache() -> None:
     """Disable + reset the ``/api/sessions`` scan snapshot cache (#561) for every test.
 

@@ -15,7 +15,7 @@ import { ActionRow } from "../components/pulse/ActionRow";
 import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
 import { engineBadge, engineName, relTime, shortCwd } from "../lib/format";
-import { OPERATOR_PENDING } from "../lib/orchestratorAction";
+import { actionOutcome, OPERATOR_PENDING } from "../lib/orchestratorAction";
 import type {
   OrchestratorAction,
   PulseAskMatch,
@@ -46,6 +46,7 @@ type Facet = { key: string; label: string; n: number };
 const STATE_LABELS: Record<string, string> = Object.fromEntries(
   GROUPS.map((g) => [g.state, g.label]),
 );
+
 
 /** Canonical identity of a card's project — the id, which is unique, with the name only as a
  *  fallback for a card whose project ref predates ids. Never the name alone: `/work/a/app` and
@@ -181,7 +182,7 @@ function Card({
           <span className={styles.lastVerb}>
             {card.last_action.verb.toUpperCase()}
           </span>
-          <span>{card.last_action.state}</span>
+          <span>{actionOutcome(card.last_action.state)}</span>
           <span className={styles.sep} aria-hidden="true">
             ·
           </span>
