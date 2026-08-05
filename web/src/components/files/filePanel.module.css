@@ -1,0 +1,762 @@
+/* File panel (#783). Tokens only — no hardcoded hex, no border-radius, flat fills.
+ *
+ * STACKING, deliberately (the app's existing bands, surveyed before writing a line of this):
+ *   0-3   app chrome / DataFlowCanvas      5-7   terminal internals: 6 = the coarse-pointer
+ *                                                touch-capture overlay, 7 = FAB/status above it
+ *   20-40 mobile drawer + backdrop         50-51 compose bar, RowMenu portal
+ *   60    notification bell / onboarding   200   every modal in the app
+ *
+ * The DOCKED panel is a normal flex sibling of the terminal — it never overlaps it, so it needs
+ * no z-index at all beyond sitting over the pane's decorative corner brackets.
+ *
+ * The SHEET and the VIEWER are portalled to <body> and land in the modal band. That is not
+ * cosmetic: the terminal's `.touchLayer` is `position:absolute; inset:0; z-index:6;
+ * touch-action:none` and it eats touches. Anything rendered inside the pane subtree below that
+ * layer would be untouchable on a phone. Portal + modal band is what makes touch work at all.
+ * Viewer sits one step above the sheet because it opens FROM the sheet.
+ */
+
+.dock {
+  position: relative;
+  z-index: 1; /* over the pane's .hud-cnr decorations, under everything interactive */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: none;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+}
+
+/* Resize gutter — a real focusable separator, matching the shipped sidebar one. */
+.gutter {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--bg-0);
+  border: 0;
+  padding: 0;
+  touch-action: none; /* pointer-drag only; this element is not a scroll surface */
+}
+.gutter:hover .grip,
+.gutter:focus-visible .grip {
+  background: var(--accent);
+}
+.gutter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.grip {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 2px;
+  height: 48px;
+  margin-top: -24px;
+  background: var(--line-strong);
+}
+
+/* ------------------------------------------------------------------ sheet (narrow pane) */
+
+.sheetScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+  /* A tap on the scrim closes. Also stops the scroll chaining to the page behind. */
+  overscroll-behavior: contain;
+}
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  /* 100dvh, not vh — mobile browser chrome would otherwise hide the footer. */
+  height: 100dvh;
+}
+.grabber {
+  flex: none;
+  width: 54px;
+  height: 3px;
+  margin: 8px auto 2px;
+  background: var(--line-strong);
+}
+
+/* ------------------------------------------------------------------ shared chrome */
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.headLabel {
+  flex: none;
+}
+/* A path is case-sensitive, so it must NOT ride the uppercase .hud-tag treatment the rest of the
+   HUD chrome uses — "u/proj" is not "U/PROJ". */
+.headName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.iconBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.iconBtn:hover {
+  background: var(--row-hover);
+  color: var(--text-1);
+}
+.iconBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] {
+  color: var(--text-1);
+}
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent); /* the panel's ONLY accent surface — see design.md */
+}
+.tab:disabled {
+  color: var(--text-3);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.tabBadge {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-2);
+  background: var(--bg-2);
+  padding: 1px 5px;
+}
+
+.crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+.crumbPath {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the TAIL of a long path visible — that's the part you're in */
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.crumbPath:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.crumbs2 {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+.crumbItem {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.crumbSep {
+  flex: none;
+  padding: 0 2px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.crumbBtn {
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.crumbBtn:hover:not(:disabled) {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+.crumbBtn:disabled {
+  color: var(--text-1);
+  cursor: default;
+}
+.crumbBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  .crumbBtn {
+    min-height: 44px;
+    font-size: 12px;
+  }
+}
+
+/* ------------------------------------------------------------------ tree */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Do not chain the scroll to the page/terminal behind — the single most important touch rule
+     for a scrollable overlay. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 12px 0 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  background: var(--row-hover);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.rowSelected {
+  background: var(--row-hover);
+  border-left-color: var(--accent);
+  color: var(--text-1);
+}
+.rowDir {
+  color: var(--text-1);
+}
+.twisty {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--text-3);
+}
+.rowIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+}
+.rowIconDir {
+  color: var(--accent);
+}
+.rowName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowNote {
+  flex: none;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.state {
+  padding: 14px 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.stateWarn {
+  border-left: 3px solid var(--status-degraded);
+}
+.stateBad {
+  border-left: 3px solid var(--status-down);
+}
+.stateTag {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.retry {
+  margin-top: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.retry:hover {
+  border-color: var(--accent);
+}
+
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* Skeleton rows: a loading state that is honest about being one. */
+.skeleton {
+  height: 10px;
+  margin: 8px 10px;
+  background: var(--bg-2);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: filePulse 1.4s ease-in-out infinite;
+  }
+}
+@keyframes filePulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ viewer overlay */
+
+.viewerScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 210; /* above the sheet (201) — the viewer opens FROM it */
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+}
+.viewer {
+  position: fixed;
+  z-index: 211;
+  inset: 5vh 5vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+}
+.viewerHead {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 6px 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.viewerTitles {
+  min-width: 0;
+  flex: 1;
+}
+.viewerName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewerPath {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.viewerBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface-3);
+}
+.code {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.lineNo {
+  padding: 0 10px 0 12px;
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  background: var(--surface-3);
+}
+.lineTxt {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+.viewerFoot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------------------------ touch
+ *
+ * Real targets, not expanded hit boxes. A 44px `::after` on a chip in a 26px bar overlaps its
+ * neighbour and reaches over the terminal — a size assertion passes while the tap fires the
+ * wrong thing. Growing the control is the honest fix. */
+@media (pointer: coarse) {
+  .viewer {
+    inset: 0;
+    border: 0;
+  }
+  .row {
+    min-height: 44px;
+    font-size: 13px;
+  }
+  .tab {
+    min-height: 44px;
+    font-size: 12px;
+  }
+  .iconBtn {
+    width: 44px;
+    height: 44px;
+  }
+  .head,
+  .crumbs {
+    min-height: 44px;
+  }
+  .crumbPath {
+    min-height: 44px;
+    font-size: 11.5px;
+  }
+  .retry {
+    min-height: 44px;
+  }
+  .twisty {
+    width: 22px; /* the twisty is its own tap target on touch: expand without opening */
+  }
+}
+
+/* ------------------------------------------------------------------ session row
+ *
+ * `.terminal-pane` is a flex COLUMN whose children get `flex: 1 1 auto`. The session view
+ * therefore renders one row that fills it: terminal, gutter, panel. `min-width: 0` on the
+ * terminal side is what lets it actually shrink instead of overflowing the pane. */
+.sessionRow {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.sessionTerm {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ head overflow menu
+ *
+ * Portalled to <body>: `.terminal-pane` is `overflow: hidden`, so an in-tree popover is clipped —
+ * the same reason KeyBar portals its own. z-index 55 puts it over the compose bar (50) and the
+ * RowMenu portal (51), under the notification bell (60) and every modal (200). */
+.headMenu {
+  position: fixed;
+  z-index: 55;
+  min-width: 152px;
+  padding: 4px 0;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 38%);
+}
+.headMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+}
+.headMenuItem:hover,
+.headMenuItem:focus-visible {
+  background: var(--row-hover);
+  outline: none;
+}
+@media (pointer: coarse) {
+  .headMenuItem {
+    min-height: 44px;
+    font-size: 12.5px;
+  }
+}
+
+/* ------------------------------------------------------------------ git tab (#784) */
+
+.branchStrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 2px;
+}
+.branchIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-2);
+}
+.branchName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+.branchMeta {
+  flex: none;
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.groupHead {
+  padding: 10px 10px 4px;
+}
+
+/* Status letters map onto the app's EXISTING status vocabulary rather than a new palette. The
+ * amber `M` sits near the brand accent, so the panel's only accent surface stays the active-tab
+ * underline — and every letter is paired with its own glyph plus a title, never colour alone. */
+.gitLetter {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.gitAdd {
+  color: var(--git-add-fg);
+}
+.gitMod {
+  color: var(--git-mod-fg);
+}
+.gitDel {
+  color: var(--git-del-fg);
+}
+.gitUntracked {
+  color: var(--git-unknown-fg);
+}
+.gitConflict {
+  color: var(--git-del-fg);
+}
+@media (pointer: coarse) {
+  .gitLetter {
+    width: 20px;
+    font-size: 13px;
+  }
+}
+
+/* ------------------------------------------------------------------ diff view */
+
+.diffLine {
+  display: contents;
+}
+.diffNo {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  background: var(--surface-3);
+}
+.diffText {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+.diffAdd .diffText,
+.diffAdd .diffNo {
+  background: var(--diff-add-bg);
+}
+.diffAdd .diffText {
+  color: var(--diff-add-fg);
+}
+.diffDel .diffText,
+.diffDel .diffNo {
+  background: var(--diff-del-bg);
+}
+.diffDel .diffText {
+  color: var(--diff-del-fg);
+}
+.diffMeta .diffText,
+.diffMeta .diffNo {
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+.diffGrid {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.modeBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.modeBtn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.modeBtnOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.modeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.modeSpacer {
+  flex: 1;
+}
+@media (pointer: coarse) {
+  .modeBtn {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 11px;
+  }
+}
