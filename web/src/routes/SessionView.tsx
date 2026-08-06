@@ -1,7 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Terminal } from "../components/terminal/Terminal";
+import { Terminal, type TerminalHandle } from "../components/terminal/Terminal";
 import { FilePanel } from "../components/files/FilePanel";
+import { pathToken } from "../lib/pathToken";
 import panel from "../components/files/filePanel.module.css";
 import { useSessionsStore } from "../app/sessionsStore";
 import {
@@ -87,7 +88,9 @@ export function SessionView() {
   // session row exists only under the REAL id, and `fresh` has been dropped. Resolving panel
   // metadata from the frozen key alone therefore lost the cwd the moment the URL converged: the
   // Files action vanished and an open panel closed itself.
-  const row = sessions.find((s) => s.id === sessionKey) ?? sessions.find((s) => s.id === liveKey);
+  const row =
+    sessions.find((s) => s.id === sessionKey) ??
+    sessions.find((s) => s.id === liveKey);
   // The panel needs a real starting directory. A fresh launch carries one in router state before
   // the session row exists; otherwise it comes from the row. Until one of those is true the
   // trigger stays DISABLED rather than opening an empty tree — a session mid-reconcile has no
@@ -98,10 +101,15 @@ export function SessionView() {
   // arrived yet, B's Files trigger would open against A's directory. `shown` is frozen across our
   // own placeholder→real converge and changes only on a real navigation — precisely the
   // invalidation rule this needs.
-  const [seenCwd, setSeenCwd] = useState<{ key: string; cwd: string }>({ key: sessionKey, cwd: "" });
+  const [seenCwd, setSeenCwd] = useState<{ key: string; cwd: string }>({
+    key: sessionKey,
+    cwd: "",
+  });
   const resolvedCwd = row?.cwd || fresh?.cwd || "";
-  if (seenCwd.key !== sessionKey) setSeenCwd({ key: sessionKey, cwd: resolvedCwd });
-  else if (resolvedCwd && resolvedCwd !== seenCwd.cwd) setSeenCwd({ key: sessionKey, cwd: resolvedCwd });
+  if (seenCwd.key !== sessionKey)
+    setSeenCwd({ key: sessionKey, cwd: resolvedCwd });
+  else if (resolvedCwd && resolvedCwd !== seenCwd.cwd)
+    setSeenCwd({ key: sessionKey, cwd: resolvedCwd });
   const cwd = resolvedCwd || (seenCwd.key === sessionKey ? seenCwd.cwd : "");
 
   // Panel state is persisted under the identity the URL has settled on. The TERMINAL keeps the
@@ -127,7 +135,9 @@ export function SessionView() {
     // edge is identifiable: `shown` is still the placeholder we froze, the live key is the id we
     // ourselves reconciled to, and the two differ.
     const isConvergeEdge =
-      files.key === sessionKey && sessionKey !== liveKey && converged.has(liveKey);
+      files.key === sessionKey &&
+      sessionKey !== liveKey &&
+      converged.has(liveKey);
     if (isConvergeEdge) migratePanelState(files.key, panelKey);
     setFiles({ key: panelKey, open: Boolean(loadPanelState(panelKey)?.open) });
   }
@@ -150,6 +160,8 @@ export function SessionView() {
   // ref: it is read during render to build the panel's props.
   const [filesTrigger, setFilesTrigger] = useState<HTMLElement | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
+  // Reaches Compose (which lives inside Terminal) so a panel row can put a path in the draft.
+  const termRef = useRef<TerminalHandle>(null);
   const [paneWidth, setPaneWidth] = useState(0);
   useLayoutEffect(() => {
     const el = rowRef.current;
@@ -167,6 +179,7 @@ export function SessionView() {
     <div className={panel.sessionRow} ref={rowRef}>
       <div className={panel.sessionTerm}>
         <Terminal
+          ref={termRef}
           key={sessionKey}
           engine={shown.engine}
           id={shown.id}
@@ -176,7 +189,9 @@ export function SessionView() {
           // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
           // during reconciliation. Dropping the action made it vanish and reappear, which reads
           // as a glitch rather than as "not ready yet".
-          filesDisabledReason={cwd ? undefined : "This session has not reported a folder yet"}
+          filesDisabledReason={
+            cwd ? undefined : "This session has not reported a folder yet"
+          }
           onToggleFiles={(trigger?: HTMLElement | null) => {
             setFilesTrigger(trigger ?? null);
             setFilesOpen(!filesOpen);
@@ -194,6 +209,12 @@ export function SessionView() {
           paneWidth={paneWidth}
           returnFocusTo={filesTrigger}
           onClose={() => setFilesOpen(false)}
+          onSendPath={(path) => {
+            // The panel knows the path; Compose knows the draft; neither knows the other. The
+            // token is built here because this is the only place that holds BOTH the session cwd
+            // (to relativise against) and the handle that reaches Compose.
+            termRef.current?.insertToken(pathToken(path, cwd));
+          }}
         />
       )}
     </div>

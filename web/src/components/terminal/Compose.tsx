@@ -21,6 +21,7 @@ import {
   useState,
 } from "react";
 import { api } from "../../lib/api";
+import { spliceToken } from "../../lib/pathToken";
 import {
   imageFilesFromAsyncClipboard,
   imageFilesFromData,
@@ -151,10 +152,45 @@ const gumErrorCode = (err: unknown): string => {
 
 /** Imperative handle for parents that want to push files into Compose from outside (e.g.
  *  Terminal forwarding a captured image paste, #157). */
+/** A tap queued behind a dictation handoff (#792): the token AND where it was aimed. Carrying
+ *  only the string threw the caret away, so a path tapped mid-sentence landed at the end. */
+/** Move a queued coordinate across a splice that has already been applied.
+ *
+ *  Before the replaced range it is untouched; after it, it shifts by the length the splice added
+ *  or removed; **inside** it, it no longer points at anything that still exists, so it collapses
+ *  to the caret the splice left behind.
+ */
+function rebasePosition(
+  p: number,
+  from: number,
+  to: number,
+  caret: number,
+  delta: number,
+): number {
+  if (p < from) return p;
+  if (p > to) return p + delta;
+  return caret;
+}
+
+type PendingToken = {
+  token: string;
+  start: number;
+  end: number;
+  /** The caret sat at the END of the draft when the user tapped. That is "append", not "at
+   *  offset N" — and the two stop being the same thing during a handoff, because dictation's
+   *  trailing words arrive after the tap. Appending then means AFTER those words, which is the
+   *  order they were actually spoken in; pinning offset N would wedge the path in front of speech
+   *  that preceded it. A caret placed mid-sentence is a real position and is honoured as one. */
+  atEnd: boolean;
+};
+
 export interface ComposeHandle {
   /** Open Compose (if collapsed) and upload the files as attachment pills — same flow as
    *  a textarea paste, regardless of focus or open state. */
   attachImages: (files: File[]) => void;
+  /** Splice a ready-made token (a file path from the panel, #792) into the draft at the caret,
+   *  replacing any selection. Never sends — the user still writes the sentence and presses send. */
+  insertToken: (token: string) => void;
 }
 
 /** Mobile compose + action bar (the legacy bottom bar). The action row is a single collapsible
@@ -239,6 +275,17 @@ export const Compose = forwardRef<
   // `dictDeadStarts` carry the two re-arm bounds across sessions (see DICTATION_IDLE_STOP_MS).
   const dictWantedRef = useRef(false);
   const dictTextRef = useRef("");
+  /** Whether the LIVE recognizer was armed continuous. `beginRecognition` takes it as a
+   *  parameter, so a re-arm from outside that call (the #792 insert) needs it recorded. */
+  const dictContinuousRef = useRef(true);
+  /** Path tokens queued behind a dictation handoff (#792). `stop()` is asynchronous and the
+   *  engine may still deliver a buffered final result, so tokens are applied only once that tail
+   *  has landed — see `insertToken`.
+   *
+   *  A QUEUE, not a slot: the handoff window is wide enough to tap twice, and "compare A and B"
+   *  is the flow this feature exists for. A single slot silently dropped A. */
+  const pendingTokensRef = useRef<PendingToken[]>([]);
+  const pendingTokenTimerRef = useRef<number | undefined>(undefined);
   const dictLastSpeechRef = useRef(0);
   // #738 hold bookkeeping. `heldPointer` is the pointerId that OWNS the gesture — a second contact's
   // events are ignored, so a stray thumb can neither restart nor release an active hold. `keyHold`
@@ -261,6 +308,10 @@ export const Compose = forwardRef<
   // whose session changed under it; `lastSaved` skips redundant PUTs; `saveTimer` is the
   // debounce; `latest`/`sid` feed the unmount flush without re-running it on every keystroke.
   const dirtyRef = useRef(false);
+  /** Caret position owed to the textarea after an imperative insert (#792). The textarea is
+   *  controlled, so the DOM only carries the new value after React commits — the caret is applied
+   *  in an effect on `text` rather than guessed with a timer. */
+  const pendingCaretRef = useRef<number | null>(null);
   const loadTokenRef = useRef(0);
   const lastSavedRef = useRef<string | null>(null);
   const saveTimerRef = useRef<number | undefined>(undefined);
@@ -348,11 +399,97 @@ export const Compose = forwardRef<
     };
   }, []);
 
+  // Applies the caret owed by `insertToken`, after the commit that carries the new value.
+  useEffect(() => {
+    const caret = pendingCaretRef.current;
+    if (caret == null) return;
+    pendingCaretRef.current = null;
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.focus();
+    ta.setSelectionRange(caret, caret);
+  }, [text]);
+
   const grow = () => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
+  };
+
+  /** Drain every token queued behind a dictation handoff (#792).
+   *
+   *  Each tap is applied where the user aimed it, not at the end. The coordinates were captured
+   *  against the draft as it stood at tap time; dictation's tail arrives appended, so a position
+   *  taken before it stays valid — and it is clamped anyway, because the draft is not this
+   *  function's to trust. Later taps are rebased by the length every earlier splice added, since
+   *  their coordinates were captured against the pre-splice text too.
+   */
+  const applyPendingTokens = () => {
+    if (!pendingTokensRef.current.length) return;
+    const queued = pendingTokensRef.current.map((q) => ({ ...q }));
+    pendingTokensRef.current = [];
+    window.clearTimeout(pendingTokenTimerRef.current);
+    let merged = dictTextRef.current;
+    let caret = merged.length;
+    for (let i = 0; i < queued.length; i += 1) {
+      const q = queued[i];
+      const from = q.atEnd
+        ? merged.length
+        : Math.min(Math.max(q.start, 0), merged.length);
+      const to = q.atEnd
+        ? merged.length
+        : Math.min(Math.max(q.end, from), merged.length);
+      const was = merged.length;
+      const spliced = spliceToken(merged, from, to, q.token);
+      merged = spliced.text;
+      caret = spliced.caret;
+      const delta = merged.length - was;
+      // Rebase what is still queued, PIECEWISE. A single cumulative offset is wrong the moment a
+      // splice REPLACES a selection: a second tap aimed at that same selection had both endpoints
+      // shifted into the middle of the text just inserted, so it overwrote part of it (`src/a.py`
+      // came back as `src/a`). A coordinate inside a replaced range no longer refers to anything —
+      // it collapses to the caret after the replacement, which is where that selection now "is".
+      for (let j = i + 1; j < queued.length; j += 1) {
+        const later = queued[j];
+        later.start = rebasePosition(later.start, from, to, caret, delta);
+        later.end = rebasePosition(later.end, from, to, caret, delta);
+      }
+    }
+    dictTextRef.current = merged;
+    dirtyRef.current = true;
+    setText(merged);
+    pendingCaretRef.current = caret;
+    grow();
+  };
+
+  /** The fallback when the engine never delivers `onend` (#792).
+   *
+   *  Applying the tokens is not enough on its own: the superseded recognizer is still live and
+   *  still anchored on the PRE-insert draft, so one late buffered result rebuilds the draft from
+   *  that old base and erases every path just written. So the session is retired here — dropped
+   *  and replaced — rather than left running behind the text it no longer agrees with.
+   *
+   *  This is the one place a trailing result IS discarded, and deliberately: we waited
+   *  `DICTATION_FINALIZE_MS` for it. The alternative is losing the user's paths to a session that
+   *  may never speak again, which is worse than losing a tail that never arrived.
+   */
+  const forcePendingHandoff = () => {
+    applyPendingTokens();
+    const r = recogRef.current;
+    if (!r) return;
+    const SR = getSpeechRecognition();
+    recogRef.current = null; // supersede FIRST: every handler ignores a stale recognizer
+    r.onresult = null;
+    r.onerror = null;
+    r.onend = null;
+    try {
+      r.abort(); // discard whatever it still owes us; `stop()` would ask for it instead
+    } catch {
+      /* already gone */
+    }
+    if (SR && dictWantedRef.current)
+      beginRecognition(SR, dictContinuousRef.current);
   };
 
   const clearIdleStop = () => window.clearTimeout(dictIdleTimerRef.current);
@@ -493,6 +630,7 @@ export const Compose = forwardRef<
   ) => {
     const r = new SR();
     r.continuous = continuousMode;
+    dictContinuousRef.current = continuousMode;
     r.interimResults = true;
     const lang =
       (typeof navigator !== "undefined" && navigator.language) || "en-US";
@@ -503,6 +641,10 @@ export const Compose = forwardRef<
     // Anchor on what dictation has typed so far, not on the `text` of the render that built this
     // callback: on a re-arm (#736) that closure is a session stale, and using it would drop every
     // utterance before this one. `startDictation` seeds the ref with the live draft.
+    // A token queued by an insert lands HERE, at the handoff: the superseded session has
+    // delivered its tail into `dictTextRef` by now, so the path is appended after the words that
+    // were actually spoken, and the fresh session anchors on the result.
+    applyPendingTokens();
     dictBaseRef.current = dictTextRef.current;
     // Per-recognizer evidence for the #711 collapse: a fresh engine's entries earn their own
     // history, so the collapse never reasons across a session boundary.
@@ -954,6 +1096,56 @@ export const Compose = forwardRef<
       if (!files.length) return;
       if (!open) setOpen(true);
       void uploadFiles(files, true);
+    },
+    insertToken: (token: string) => {
+      if (!token) return;
+      if (!open) setOpen(true);
+      // A LIVE dictation gets a LOSSLESS handoff, not a swap. Dropping the old recognizer's
+      // handlers before `stop()` looks equivalent and is not: `stop()` is asynchronous and the
+      // engine may still deliver a buffered final result — this file already models that with
+      // `deferEnd` — so those words would be captured, then silently thrown away.
+      //
+      // Instead the token is QUEUED, the recognizer is left fully wired, and `stop()` ends
+      // capture while keeping the tail (the same shape as `releaseDictation`, #738). The tail
+      // lands through the normal `onresult`, the session ends, and the re-arm applies the token
+      // on top of the reconciled draft. Dictation intent is untouched, so the mic stays lit.
+      // Captured BEFORE the branch: both paths owe the user the caret they aimed at.
+      const ta = taRef.current;
+      const start = ta ? ta.selectionStart : text.length;
+      const end = ta ? ta.selectionEnd : text.length;
+      if (recogRef.current) {
+        // Queue, never overwrite: a second tap inside the handoff window is an ordinary thing to
+        // do, and it must add to the draft rather than replace what the first one put there.
+        const first = pendingTokensRef.current.length === 0;
+        pendingTokensRef.current.push({
+          token,
+          start,
+          end,
+          atEnd: start === end && start >= text.length,
+        });
+        // If the engine never delivers `onend`, the tokens must not be lost with it.
+        window.clearTimeout(pendingTokenTimerRef.current);
+        pendingTokenTimerRef.current = window.setTimeout(
+          forcePendingHandoff,
+          DICTATION_FINALIZE_MS,
+        );
+        // Only the first tap asks the engine to stop; after that the handoff is already running.
+        if (first) {
+          try {
+            recogRef.current.stop(); // end capture, keep the tail
+          } catch {
+            applyPendingTokens(); // no session to hand off from — apply now
+          }
+        }
+        return;
+      }
+      // Collapsed (no textarea yet) ⇒ the captured positions are the draft end, so this appends.
+      const { text: next, caret } = spliceToken(text, start, end, token);
+      dirtyRef.current = true; // an inserted path is draftable content, exactly like typing
+      dictTextRef.current = next; // so a later dictation press anchors on the full draft
+      setText(next);
+      pendingCaretRef.current = caret;
+      grow();
     },
   }));
 

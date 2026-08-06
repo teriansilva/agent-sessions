@@ -173,7 +173,9 @@
   right: 6px;
   bottom: 0;
   height: 2px;
-  background: var(--accent); /* the panel's ONLY accent surface — see design.md */
+  background: var(
+    --accent
+  ); /* the panel's ONLY accent surface — see design.md */
 }
 .tab:disabled {
   color: var(--text-3);
@@ -758,5 +760,79 @@
     min-height: 44px;
     padding: 0 16px;
     font-size: 11px;
+  }
+}
+
+/* --------------------------------------------------------------- row actions (#792) */
+
+/* The row is now a CONTAINER; this is the control that used to BE the row. It keeps every
+   visual property the row had (the flex line, the mono type, the hover) so nothing moved on
+   screen — only the DOM changed shape, so a second control can sit beside it legally. */
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 0 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  /* Hidden until the row is hovered or something inside it has focus — a control per row would
+     otherwise be a column of icons competing with the filenames. */
+  opacity: 0;
+}
+
+.row:hover .send,
+.row:focus-within .send,
+.send:focus-visible {
+  opacity: 1;
+}
+
+.send:hover,
+.send:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--glass-strong);
+  color: var(--text-1);
+}
+
+/* Confirmation at the point of action: on mobile the compose box is behind the sheet, so the
+   draft changing is not something the user can see when they tap. */
+.sendFlash,
+.sendFlash:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  opacity: 1;
+}
+
+/* A coarse pointer has NO hover, so opacity-on-hover would make the control unreachable — it
+   would exist and never be revealed. Always visible, and at a real touch size. */
+@media (pointer: coarse) {
+  .send {
+    width: 44px;
+    height: 44px;
+    margin-right: 0;
+    opacity: 1;
   }
 }

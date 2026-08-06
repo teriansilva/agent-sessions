@@ -1551,3 +1551,192 @@ test("a failing localStorage never blocks the send (#619)", async () => {
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
   vi.unstubAllGlobals();
 });
+
+// --- Inserting a path token (#792) --------------------------------------------------------------
+
+/** Render with a handle, so a test can drive `insertToken` the way the file panel does. */
+function renderWithHandle() {
+  const ref = createRef<ComposeHandle>();
+  render(<Compose ref={ref} sendInput={sendInput} connEpoch={() => 1} />);
+  return ref;
+}
+
+test("insertToken splices at the caret rather than appending (#792)", async () => {
+  const ref = renderWithHandle();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  fireEvent.change(ta, { target: { value: "look at and tell me why" } });
+  ta.setSelectionRange(8, 8); // between "at " and "and"
+
+  act(() => ref.current!.insertToken("src/a.py"));
+
+  expect(ta.value).toBe("look at src/a.py and tell me why");
+  expect(ta.value).not.toContain("  ");
+  // The caret sits after the token, not after the separator: the user carries on writing.
+  expect(ta.value.slice(0, ta.selectionStart)).toBe("look at src/a.py");
+});
+
+test("a token inserted mid-dictation survives the next result, and speech continues after it (#792)", async () => {
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "look at", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(ta.value).toBe("look at");
+
+  const before = recogCount;
+  act(() => ref.current!.insertToken("src/a.py"));
+
+  // The token is QUEUED behind the handoff, not written straight over the live session — it
+  // lands once the superseded recognizer has finished and the fresh one is armed.
+  await flushRearm();
+  expect(ta.value).toBe("look at src/a.py");
+  expect(recogCount).toBeGreaterThan(before); // a fresh session, anchored on the new draft
+  expect(micChip()).toHaveAttribute("aria-pressed", "true"); // still listening
+
+  act(() =>
+    lastRecog!.emit([{ transcript: "and tell me why", isFinal: true }]),
+  );
+
+  expect(ta.value).toBe("look at src/a.py and tell me why");
+  // And the words spoken BEFORE the insert are not replayed after it.
+  expect(ta.value.match(/look at/g)).toHaveLength(1);
+});
+
+test("a buffered final result arriving after the insert is kept, not dropped (#792)", async () => {
+  // The engine does not stop the instant you ask it to: `stop()` ends capture and may still
+  // deliver one last result. An earlier version of this dropped the recognizer's handlers before
+  // stopping, so those words were captured and then silently discarded — speech the user had
+  // already said, gone. `deferEnd` is how this file models that gap (#738).
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "look at", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true; // the engine will not end until it has delivered its tail
+
+  act(() => ref.current!.insertToken("src/a.py"));
+  expect(old.stop).toHaveBeenCalled();
+
+  // The tail lands on the OLD session, after the insert was requested.
+  act(() => old.emit([{ transcript: "look at closely", isFinal: true }]));
+  expect(ta.value).toBe("look at closely"); // kept, and the token has not jumped ahead of it
+  act(() => old.endSession());
+  await flushRearm();
+
+  // Speech first, then the path — the order in which they actually happened.
+  expect(ta.value).toBe("look at closely src/a.py");
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+
+  act(() => lastRecog!.emit([{ transcript: "and explain", isFinal: true }]));
+  expect(ta.value).toBe("look at closely src/a.py and explain");
+});
+
+test("two paths tapped inside the handoff window both land, in order (#792)", async () => {
+  // "compare A and B" is the flow this feature exists for, and the handoff window is wide enough
+  // to tap twice. A single pending slot silently dropped the first path.
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "compare", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true; // hold the handoff open so both taps land inside it
+
+  act(() => ref.current!.insertToken("src/a.py"));
+  act(() => ref.current!.insertToken("src/b.py"));
+  // Only the first tap asks the engine to stop; the second joins the handoff already running.
+  expect(old.stop).toHaveBeenCalledTimes(1);
+
+  act(() => old.endSession());
+  await flushRearm();
+
+  expect(ta.value).toBe("compare src/a.py src/b.py");
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a late tail after the handoff timeout cannot erase the inserted paths (#792)", async () => {
+  // The fallback fires when the engine never delivers `onend`. Writing the tokens is not enough:
+  // the old recognizer is still live and still anchored on the PRE-insert draft, so one late
+  // buffered result rebuilds from that base and wipes the paths.
+  installSpeech();
+  // `shouldAdvanceTime` keeps RTL's waitFor / userEvent polling alive while the clock is faked;
+  // without it `startVoice`'s waitFor never ticks and the test hangs rather than testing anything.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "compare", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true; // and it will never actually end
+
+  act(() => ref.current!.insertToken("src/a.py"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(DICTATION_FINALIZE_MS + 50);
+  });
+  expect(ta.value).toBe("compare src/a.py"); // the fallback wrote it
+
+  // The stale session finally speaks. It must not be heard.
+  act(() => old.emit([{ transcript: "compare closely", isFinal: true }]));
+
+  expect(ta.value).toBe("compare src/a.py");
+  expect(old.abort).toHaveBeenCalled(); // retired, not merely ignored
+  vi.useRealTimers();
+});
+
+test("a path tapped mid-sentence during dictation lands at the caret (#792)", async () => {
+  // The non-dictation path honoured the caret; the handoff path threw it away and appended.
+  // "at the cursor" has to mean the same thing whether or not the mic is live.
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() =>
+    lastRecog!.emit([{ transcript: "look at and explain", isFinal: true }]),
+  );
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(ta.value).toBe("look at and explain");
+
+  const old = lastRecog!;
+  old.deferEnd = true;
+  ta.setSelectionRange(7, 7); // right after "look at"
+
+  act(() => ref.current!.insertToken("src/a.py"));
+  act(() => old.endSession());
+  await flushRearm();
+
+  expect(ta.value).toBe("look at src/a.py and explain");
+  // ...and dictation is still live, still anchored on the reconciled draft.
+  expect(micChip()).toHaveAttribute("aria-pressed", "true");
+  act(() => lastRecog!.emit([{ transcript: "please", isFinal: true }]));
+  expect(ta.value).toBe("look at src/a.py and explain please");
+});
+
+test("two taps against the same selection do not eat each other (#792)", async () => {
+  // A single cumulative offset is wrong once a splice REPLACES a selection: the second tap's
+  // endpoints were shifted into the middle of the text the first one just inserted, so it
+  // overwrote part of it — `src/a.py` came back as `src/a`.
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() =>
+    lastRecog!.emit([{ transcript: "look at and explain", isFinal: true }]),
+  );
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true;
+  ta.setSelectionRange(8, 11); // select "and"
+
+  act(() => ref.current!.insertToken("src/a.py"));
+  act(() => ref.current!.insertToken("src/b.py"));
+  act(() => old.endSession());
+  await flushRearm();
+
+  expect(ta.value).toBe("look at src/a.py src/b.py explain");
+  // Neither path arrived truncated.
+  expect(ta.value).toContain("src/a.py");
+  expect(ta.value).toContain("src/b.py");
+});

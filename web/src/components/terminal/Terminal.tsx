@@ -2,11 +2,19 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { ArrowDown, ArrowLeftRight, PanelRight, RotateCw, ScrollText } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeftRight,
+  PanelRight,
+  RotateCw,
+  ScrollText,
+} from "lucide-react";
 import {
   type CSSProperties,
+  type Ref,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
 } from "react";
@@ -95,6 +103,16 @@ function headStatus(s: TermStatus): { label: string; led: string } {
 /** The live terminal: an xterm pane bridged to /ws/term/{engine}:{id} via TermSocket.
  *  Output is written verbatim; keystrokes and resize go back as JSON; reconnect +
  *  delta-resume (never-blank) is owned by TermSocket. Remount per session via `key`. */
+/** What a parent can ask the terminal pane to do (#792).
+ *
+ *  SessionView renders the file panel beside this pane but never sees Compose — `composeRef` and
+ *  the `<Compose>` instance both live in here. So the panel's "send this path" travels
+ *  SessionView → Terminal → Compose rather than reaching Compose directly. */
+export interface TerminalHandle {
+  /** Splice a path token into the compose draft at the caret. Never sends. */
+  insertToken: (token: string) => void;
+}
+
 export function Terminal({
   engine,
   id,
@@ -103,6 +121,7 @@ export function Terminal({
   filesOpen,
   onToggleFiles,
   filesDisabledReason,
+  ref,
 }: {
   engine: string;
   id: string;
@@ -117,6 +136,8 @@ export function Terminal({
   /** Server reconciled to the real engine-qualified id (#127, opencode new-session).
    *  The owner converges the URL/sidebar without tearing down the socket. */
   onReconcileId?: (sid: string) => void;
+  /** React 19 passes `ref` as an ordinary prop; the handle is `TerminalHandle`. */
+  ref?: Ref<TerminalHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
@@ -127,6 +148,11 @@ export function Terminal({
   const stopMomentumRef = useRef<() => void>(() => {});
   const sockRef = useRef<TermSocket | null>(null);
   const composeRef = useRef<ComposeHandle>(null);
+  useImperativeHandle(ref, () => ({
+    // Straight pass-through: the panel's token is Compose's business, and Terminal only owns the
+    // ref that reaches it.
+    insertToken: (token: string) => composeRef.current?.insertToken(token),
+  }));
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   // Manual repaint (#485): the live socket effect publishes its rows−1→rows nudge here so the
@@ -1510,53 +1536,72 @@ export function Terminal({
   // access. The compiler memoizes this for us, so no manual useMemo either.
   const headActions: HeadAction[] = [
     // Files leads: it is the new primary affordance.
-    ...(onToggleFiles ? [{
-      id: "files",
-      label: "Files",
-      aria: "Browse session files",
-      title: filesDisabledReason ?? "Browse this session's files and folders",
-      icon: <PanelRight size={13} aria-hidden="true" />,
-      active: filesOpen,
-      disabled: Boolean(filesDisabledReason),
-      run: (trigger?: HTMLElement | null) => onToggleFiles(trigger),
-    }] : []),
+    ...(onToggleFiles
+      ? [
+          {
+            id: "files",
+            label: "Files",
+            aria: "Browse session files",
+            title:
+              filesDisabledReason ?? "Browse this session's files and folders",
+            icon: <PanelRight size={13} aria-hidden="true" />,
+            active: filesOpen,
+            disabled: Boolean(filesDisabledReason),
+            run: (trigger?: HTMLElement | null) => onToggleFiles(trigger),
+          },
+        ]
+      : []),
     // Repaint stays ahead of the fold: burying the recovery control when the screen is blank
     // would be the wrong trade.
-    ...(role === "owner" ? [{
-      id: "repaint",
-      label: "Repaint",
-      aria: "Repaint screen",
-      title:
-        "Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent",
-      icon: <RotateCw size={13} aria-hidden="true" />,
-      disabled: status.kind !== "connected",
-      // An inline arrow, not `run: repaint`: handing the ref-reading callback across as a value
-      // makes the compiler treat it as ref access during render. Same shape Compose uses for
-      // KeyBar's actions.
-      run: () => repaint(),
-    }] : []),
+    ...(role === "owner"
+      ? [
+          {
+            id: "repaint",
+            label: "Repaint",
+            aria: "Repaint screen",
+            title:
+              "Repaint the screen: nudge the agent to redraw its current frame (recovers a blank/fragment) — does not restart the agent",
+            icon: <RotateCw size={13} aria-hidden="true" />,
+            disabled: status.kind !== "connected",
+            // An inline arrow, not `run: repaint`: handing the ref-reading callback across as a value
+            // makes the compiler treat it as ref access during render. Same shape Compose uses for
+            // KeyBar's actions.
+            run: () => repaint(),
+          },
+        ]
+      : []),
     {
       id: "recap",
       label: "Recap",
       aria: "Open session brief",
-      title: "Session brief: full title, summary, and a chronological recap of this session",
+      title:
+        "Session brief: full title, summary, and a chronological recap of this session",
       icon: <ScrollText size={13} aria-hidden="true" />,
       run: (trigger?: HTMLElement | null) => {
-        setRecapTrigger(trigger ?? (document.activeElement as HTMLElement | null));
+        setRecapTrigger(
+          trigger ?? (document.activeElement as HTMLElement | null),
+        );
         setRecapOpen(true);
       },
     },
-    ...(canHandoff ? [{
-      id: "handoff",
-      label: "Hand off",
-      aria: "Hand off session to another engine",
-      title: "Hand off: start a new session in another engine, seeded with this session's context",
-      icon: <ArrowLeftRight size={13} aria-hidden="true" />,
-      run: (trigger?: HTMLElement | null) => {
-        setHandoffTrigger(trigger ?? (document.activeElement as HTMLElement | null));
-        setHandoffOpen(true);
-      },
-    }] : []),
+    ...(canHandoff
+      ? [
+          {
+            id: "handoff",
+            label: "Hand off",
+            aria: "Hand off session to another engine",
+            title:
+              "Hand off: start a new session in another engine, seeded with this session's context",
+            icon: <ArrowLeftRight size={13} aria-hidden="true" />,
+            run: (trigger?: HTMLElement | null) => {
+              setHandoffTrigger(
+                trigger ?? (document.activeElement as HTMLElement | null),
+              );
+              setHandoffOpen(true);
+            },
+          },
+        ]
+      : []),
   ];
 
   return (

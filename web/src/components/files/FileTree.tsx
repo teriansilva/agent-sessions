@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, File as FileIcon, Folder, Link2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  File as FileIcon,
+  Folder,
+  Link2,
+} from "lucide-react";
 import { api, ApiError } from "../../lib/api";
 import type { FileEntry, FileListing, GitEntry } from "../../types/api";
+import { SendPath } from "./SendPath";
 import styles from "./filePanel.module.css";
 
 /** A directory's fetch state. `stale` keeps the LAST GOOD listing visible when a refresh fails —
@@ -28,6 +35,7 @@ export function FileTree({
   onToggleExpanded,
   onRootListing,
   onOpenFile,
+  onSendPath,
   refreshTick,
   gitEntries,
 }: {
@@ -41,10 +49,14 @@ export function FileTree({
   /** Reports the root's listing so the panel can use the SERVER's `parent` boundary. */
   onRootListing: (listing: FileListing) => void;
   onOpenFile: (path: string, trigger: HTMLElement | null) => void;
+  /** Absolute path → the compose draft (#792). Absent ⇒ the action is not rendered at all. */
+  onSendPath?: (path: string) => void;
   refreshTick: number;
 }) {
   // Seeded with the root already loading, so `load` never has to set state synchronously.
-  const [dirs, setDirs] = useState<Record<string, DirState>>(() => ({ [root]: { kind: "loading" } }));
+  const [dirs, setDirs] = useState<Record<string, DirState>>(() => ({
+    [root]: { kind: "loading" },
+  }));
   const [selected, setSelected] = useState<string | null>(null);
   const inFlight = useRef<Set<string>>(new Set());
   const alive = useRef(true);
@@ -60,33 +72,36 @@ export function FileTree({
     };
   }, []);
 
-  const load = useCallback(
-    (path: string) => {
-      if (inFlight.current.has(path)) return; // coalesce: one request per directory at a time
-      inFlight.current.add(path);
-      api
-        .filesList(path)
-        .then((listing) => {
-          if (!alive.current) return; // reply landed after unmount — drop it
-          setDirs((prev) => ({ ...prev, [path]: { kind: "ok", listing } }));
-        })
-        .catch((e: unknown) => {
-          if (!alive.current) return;
-          const message = e instanceof ApiError ? e.message : "Could not read this folder.";
-          setDirs((prev) => {
-            const was = prev[path];
-            const keep = was && (was.kind === "ok" || was.kind === "stale") ? was.listing : null;
-            return {
-              ...prev,
-              // Keep the last good listing rather than blanking the tree on a failed refresh.
-              [path]: keep ? { kind: "stale", listing: keep, message } : { kind: "error", message },
-            };
-          });
-        })
-        .finally(() => inFlight.current.delete(path));
-    },
-    [],
-  );
+  const load = useCallback((path: string) => {
+    if (inFlight.current.has(path)) return; // coalesce: one request per directory at a time
+    inFlight.current.add(path);
+    api
+      .filesList(path)
+      .then((listing) => {
+        if (!alive.current) return; // reply landed after unmount — drop it
+        setDirs((prev) => ({ ...prev, [path]: { kind: "ok", listing } }));
+      })
+      .catch((e: unknown) => {
+        if (!alive.current) return;
+        const message =
+          e instanceof ApiError ? e.message : "Could not read this folder.";
+        setDirs((prev) => {
+          const was = prev[path];
+          const keep =
+            was && (was.kind === "ok" || was.kind === "stale")
+              ? was.listing
+              : null;
+          return {
+            ...prev,
+            // Keep the last good listing rather than blanking the tree on a failed refresh.
+            [path]: keep
+              ? { kind: "stale", listing: keep, message }
+              : { kind: "error", message },
+          };
+        });
+      })
+      .finally(() => inFlight.current.delete(path));
+  }, []);
 
   useEffect(() => {
     load(root);
@@ -104,7 +119,9 @@ export function FileTree({
     (path: string) => {
       if (!expanded.has(path)) {
         // Placeholder set from the click handler (allowed) rather than from inside `load`.
-        setDirs((prev) => (prev[path] ? prev : { ...prev, [path]: { kind: "loading" } }));
+        setDirs((prev) =>
+          prev[path] ? prev : { ...prev, [path]: { kind: "loading" } },
+        );
         load(path);
       }
       onToggleExpanded(path);
@@ -130,13 +147,20 @@ export function FileTree({
         out.push({ kind: "status", dir, depth, state: st });
         return;
       }
-      if (st.kind === "stale") out.push({ kind: "status", dir, depth, state: st });
+      if (st.kind === "stale")
+        out.push({ kind: "status", dir, depth, state: st });
       for (const entry of st.listing.entries) {
         out.push({ kind: "entry", entry, depth });
-        if (entry.kind === "dir" && expanded.has(entry.path)) walk(entry.path, depth + 1);
+        if (entry.kind === "dir" && expanded.has(entry.path))
+          walk(entry.path, depth + 1);
       }
       if (!st.listing.complete || (st.listing.unencodable ?? 0) > 0) {
-        out.push({ kind: "status", dir, depth, state: { kind: "ok", listing: st.listing } });
+        out.push({
+          kind: "status",
+          dir,
+          depth,
+          state: { kind: "ok", listing: st.listing },
+        });
       }
     };
     walk(root, 0);
@@ -149,7 +173,13 @@ export function FileTree({
     for (const e of gitEntries ?? []) {
       const abs = `${root.replace(/\/$/, "")}/${e.path}`;
       const ch =
-        e.kind === "untracked" ? "?" : e.kind === "unmerged" ? "U" : e.worktree !== "." ? e.worktree : e.index;
+        e.kind === "untracked"
+          ? "?"
+          : e.kind === "unmerged"
+            ? "U"
+            : e.worktree !== "."
+              ? e.worktree
+              : e.index;
       if (ch && ch !== ".") m.set(abs, ch);
     }
     return m;
@@ -157,7 +187,10 @@ export function FileTree({
 
   const rootState = dirs[root];
   // Hand the root's listing up so the panel can use the SERVER's `parent` boundary for Up.
-  const rootListing = rootState?.kind === "ok" || rootState?.kind === "stale" ? rootState.listing : null;
+  const rootListing =
+    rootState?.kind === "ok" || rootState?.kind === "stale"
+      ? rootState.listing
+      : null;
   useEffect(() => {
     if (rootListing) onRootListing(rootListing);
   }, [rootListing, onRootListing]);
@@ -174,7 +207,12 @@ export function FileTree({
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const buttons = Array.from(
-          listRef.current?.querySelectorAll<HTMLButtonElement>("[data-file-row]") ?? [],
+          // The ROW is a container now (#792) and a <div> cannot take focus — querying
+          // `[data-file-row]` returned elements whose `.focus()` silently did nothing, which is
+          // how arrow navigation broke. Target the row's own control instead.
+          listRef.current?.querySelectorAll<HTMLButtonElement>(
+            "[data-row-main]",
+          ) ?? [],
         );
         const i = buttons.indexOf(e.currentTarget);
         const next = buttons[i + (e.key === "ArrowDown" ? 1 : -1)];
@@ -186,12 +224,15 @@ export function FileTree({
 
   return (
     <div className={styles.body} ref={listRef} data-file-tree="">
-      {rootState && rootState.kind !== "loading" && rootState.kind !== "error" && rows.length === 0 && (
-        <div className={styles.state}>
-          <span className={styles.stateTag}>Files // Empty folder</span>
-          This folder has nothing in it. Not a loading state, not an error.
-        </div>
-      )}
+      {rootState &&
+        rootState.kind !== "loading" &&
+        rootState.kind !== "error" &&
+        rows.length === 0 && (
+          <div className={styles.state}>
+            <span className={styles.stateTag}>Files // Empty folder</span>
+            This folder has nothing in it. Not a loading state, not an error.
+          </div>
+        )}
 
       {rows.map((row) => {
         if (row.kind === "status") {
@@ -201,7 +242,11 @@ export function FileTree({
             return (
               <div key={key} role="status" style={{ paddingLeft: pad }}>
                 {[0, 1, 2].map((i) => (
-                  <div key={i} className={styles.skeleton} style={{ width: `${60 - i * 10}%` }} />
+                  <div
+                    key={i}
+                    className={styles.skeleton}
+                    style={{ width: `${60 - i * 10}%` }}
+                  />
                 ))}
               </div>
             );
@@ -217,7 +262,11 @@ export function FileTree({
                 <span className={styles.stateTag}>Files // Unavailable</span>
                 {row.state.message}
                 <div>
-                  <button type="button" className={styles.retry} onClick={() => load(row.dir)}>
+                  <button
+                    type="button"
+                    className={styles.retry}
+                    onClick={() => load(row.dir)}
+                  >
                     Retry
                   </button>
                 </div>
@@ -247,15 +296,18 @@ export function FileTree({
               {!listing.complete && (
                 <>
                   <span className={styles.stateTag}>Files // Truncated</span>
-                  This folder has more entries than the panel scans. Showing the first{" "}
-                  {listing.entries.length}.
+                  This folder has more entries than the panel scans. Showing the
+                  first {listing.entries.length}.
                 </>
               )}
               {(listing.unencodable ?? 0) > 0 && (
                 <>
-                  <span className={styles.stateTag}>Files // Undisplayable names</span>
-                  {listing.unencodable} entr{listing.unencodable === 1 ? "y is" : "ies are"} hidden:
-                  the filename is not valid UTF-8, so it cannot be shown safely.
+                  <span className={styles.stateTag}>
+                    Files // Undisplayable names
+                  </span>
+                  {listing.unencodable} entr
+                  {listing.unencodable === 1 ? "y is" : "ies are"} hidden: the
+                  filename is not valid UTF-8, so it cannot be shown safely.
                 </>
               )}
             </div>
@@ -266,69 +318,97 @@ export function FileTree({
         const isLink = entry.kind === "link";
         const open = expanded.has(entry.path);
         return (
-          <button
+          // The row is a CONTAINER, not a control (#792). It used to be the button itself, but a
+          // second action cannot be nested inside a button — invalid HTML, and touch gets two
+          // overlapping targets with undefined precedence. Two siblings instead.
+          <div
             key={entry.path}
-            type="button"
             data-file-row=""
             data-kind={entry.kind}
             className={`${styles.row} ${isDir ? styles.rowDir : ""} ${
               selected === entry.path ? styles.rowSelected : ""
             }`}
-            style={{ paddingLeft: 8 + depth * 12 }}
-            aria-expanded={isDir ? open : undefined}
-            // A link is display-only in phase 1 — it announces itself rather than pretending
-            // to be openable and then failing.
-            aria-disabled={isLink || undefined}
-            title={
-              isLink
-                ? `Symlink → ${
-                    entry.link_unencodable_target
-                      ? "(target name is not valid UTF-8)"
-                      : (entry.link_target ?? "?")
-                  } (not followed)`
-                : entry.path
-            }
-            onKeyDown={(e) => onRowKey(e, entry)}
-            onClick={(e) => {
-              if (isDir) {
-                toggle(entry.path);
-              } else if (entry.kind === "file") {
-                setSelected(entry.path);
-                onOpenFile(entry.path, e.currentTarget);
-              }
-            }}
           >
-            <span className={styles.twisty} aria-hidden="true">
-              {isDir ? (
-                open ? (
-                  <ChevronDown size={12} />
-                ) : (
-                  <ChevronRight size={12} />
-                )
-              ) : null}
-            </span>
-            <span className={`${styles.rowIcon} ${isDir ? styles.rowIconDir : ""}`} aria-hidden="true">
-              {isDir ? <Folder size={13} /> : isLink ? <Link2 size={13} /> : <FileIcon size={13} />}
-            </span>
-            <span className={styles.rowName}>{entry.name}</span>
-            {gitByPath.has(entry.path) && (
+            <button
+              type="button"
+              data-row-main=""
+              className={styles.rowMain}
+              style={{ paddingLeft: 8 + depth * 12 }}
+              aria-expanded={isDir ? open : undefined}
+              // A link is display-only in phase 1 — it announces itself rather than pretending
+              // to be openable and then failing.
+              aria-disabled={isLink || undefined}
+              title={
+                isLink
+                  ? `Symlink → ${
+                      entry.link_unencodable_target
+                        ? "(target name is not valid UTF-8)"
+                        : (entry.link_target ?? "?")
+                    } (not followed)`
+                  : entry.path
+              }
+              onKeyDown={(e) => onRowKey(e, entry)}
+              onClick={(e) => {
+                if (isDir) {
+                  toggle(entry.path);
+                } else if (entry.kind === "file") {
+                  setSelected(entry.path);
+                  onOpenFile(entry.path, e.currentTarget);
+                }
+              }}
+            >
+              <span className={styles.twisty} aria-hidden="true">
+                {isDir ? (
+                  open ? (
+                    <ChevronDown size={12} />
+                  ) : (
+                    <ChevronRight size={12} />
+                  )
+                ) : null}
+              </span>
               <span
-                className={styles.gitLetter}
-                title={`git: ${gitByPath.get(entry.path)}`}
-                aria-label={`git status ${gitByPath.get(entry.path)}`}
+                className={`${styles.rowIcon} ${isDir ? styles.rowIconDir : ""}`}
+                aria-hidden="true"
               >
-                {gitByPath.get(entry.path)}
+                {isDir ? (
+                  <Folder size={13} />
+                ) : isLink ? (
+                  <Link2 size={13} />
+                ) : (
+                  <FileIcon size={13} />
+                )}
               </span>
+              <span className={styles.rowName}>{entry.name}</span>
+              {gitByPath.has(entry.path) && (
+                <span
+                  className={styles.gitLetter}
+                  title={`git: ${gitByPath.get(entry.path)}`}
+                  aria-label={`git status ${gitByPath.get(entry.path)}`}
+                >
+                  {gitByPath.get(entry.path)}
+                </span>
+              )}
+              {isLink && (
+                <span className={styles.rowNote}>
+                  →{" "}
+                  {entry.link_unencodable_target
+                    ? "(undisplayable)"
+                    : (entry.link_target ?? "?")}
+                </span>
+              )}
+            </button>
+            {/* A directory has no path worth naming to an agent, and a symlink is display-only in
+              phase 1 — so the action exists only where it means something. */}
+            {onSendPath && entry.kind === "file" && (
+              <SendPath
+                path={entry.path}
+                name={entry.name}
+                onSendPath={onSendPath}
+              />
             )}
-            {isLink && (
-              <span className={styles.rowNote}>
-                → {entry.link_unencodable_target ? "(undisplayable)" : (entry.link_target ?? "?")}
-              </span>
-            )}
-          </button>
+          </div>
         );
       })}
-
     </div>
   );
 }

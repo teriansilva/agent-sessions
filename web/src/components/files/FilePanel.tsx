@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUp, Home, RefreshCw, X } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
@@ -38,6 +38,7 @@ export function FilePanel({
   paneWidth,
   onClose,
   returnFocusTo,
+  onSendPath,
 }: {
   sessionKey: string;
   cwd: string;
@@ -45,14 +46,21 @@ export function FilePanel({
   onClose: () => void;
   /** The control that opened the panel. Sheet mode is modal, so closing must hand focus back. */
   returnFocusTo?: HTMLElement | null;
+  /** Absolute path → the compose draft (#792). Owned by SessionView, which is the only place
+   *  holding both the session cwd and a handle that reaches Compose. */
+  onSendPath?: (path: string) => void;
 }) {
   // Lazy initializer, not a ref read during render: seed the root from the persisted state once.
-  const [root, setRoot] = useState<string>(() => loadPanelState(sessionKey)?.root || cwd);
+  const [root, setRoot] = useState<string>(
+    () => loadPanelState(sessionKey)?.root || cwd,
+  );
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(loadPanelState(sessionKey)?.expanded ?? []),
   );
   // The SERVER's boundary, not a string guess: `parent` is null at the contained root.
-  const [rootParent, setRootParent] = useState<string | null | undefined>(undefined);
+  const [rootParent, setRootParent] = useState<string | null | undefined>(
+    undefined,
+  );
   const [width, setWidth] = useState<number>(() => readStoredW());
   const [viewer, setViewer] = useState<{
     path: string;
@@ -79,15 +87,37 @@ export function FilePanel({
   // button, the scrim, Escape — must hand focus back to whatever opened the panel.
   const close = useCallback(() => {
     onClose();
-    if (returnFocusTo && document.contains(returnFocusTo)) returnFocusTo.focus();
+    if (returnFocusTo && document.contains(returnFocusTo))
+      returnFocusTo.focus();
   }, [onClose, returnFocusTo]);
+
+  /** Send a path to the draft, then get out of the way if we are covering the draft (#792).
+   *
+   *  Keyed on the panel MODE rather than on pointer coarseness: the sheet is what sits over the
+   *  compose box, and a narrow desktop pane gets the sheet too. Closing on "coarse pointer" would
+   *  have left that case showing a confirmation the user cannot see, and would have closed a
+   *  touch-driven DOCK that never covered anything. */
+  const sendPath = useMemo(
+    () =>
+      onSendPath
+        ? (path: string) => {
+            onSendPath(path);
+            if (mode === "sheet") close();
+          }
+        : undefined,
+    [onSendPath, mode, close],
+  );
 
   useEffect(() => {
     let live = true;
     api
       .filesCapabilities()
       .then((c) => live && setCaps(c))
-      .catch(() => live && setCaps({ ok: false, reason: "Could not reach the file service." }));
+      .catch(
+        () =>
+          live &&
+          setCaps({ ok: false, reason: "Could not reach the file service." }),
+      );
     return () => {
       live = false;
     };
@@ -175,11 +205,15 @@ export function FilePanel({
       .gitStatus(root, { signal: ctl.signal })
       .then((s) => live && setGitRes({ tick, status: s, error: null }))
       .catch((e: unknown) => {
-        if (!live || (e instanceof DOMException && e.name === "AbortError")) return;
+        if (!live || (e instanceof DOMException && e.name === "AbortError"))
+          return;
         setGitRes({
           tick,
           status: null,
-          error: e instanceof ApiError ? e.message : "Could not read the repository.",
+          error:
+            e instanceof ApiError
+              ? e.message
+              : "Could not read the repository.",
         });
       });
     return () => {
@@ -205,7 +239,9 @@ export function FilePanel({
   const crumbs = (() => {
     const base = rootBase && root.startsWith(rootBase) ? rootBase : root;
     const rest = root.slice(base.length).split("/").filter(Boolean);
-    const out = [{ path: base, label: base.split("/").filter(Boolean).pop() || "/" }];
+    const out = [
+      { path: base, label: base.split("/").filter(Boolean).pop() || "/" },
+    ];
     let acc = base;
     for (const seg of rest) {
       acc = `${acc}/${seg}`;
@@ -233,7 +269,8 @@ export function FilePanel({
   const onGutterMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!dragging.current) return;
-      const right = e.currentTarget.parentElement?.getBoundingClientRect().right ?? 0;
+      const right =
+        e.currentTarget.parentElement?.getBoundingClientRect().right ?? 0;
       setWidth(clampW(right - e.clientX, paneWidth));
     },
     [paneWidth],
@@ -250,7 +287,10 @@ export function FilePanel({
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       e.preventDefault();
-      const next = clampW(width + (e.key === "ArrowLeft" ? WIDTH_STEP : -WIDTH_STEP), paneWidth);
+      const next = clampW(
+        width + (e.key === "ArrowLeft" ? WIDTH_STEP : -WIDTH_STEP),
+        paneWidth,
+      );
       setWidth(next);
       storeW(next);
     },
@@ -306,7 +346,11 @@ export function FilePanel({
           onClick={goUp}
           disabled={!canGoUp}
           aria-label="Go to the parent folder"
-          title={canGoUp ? "Go to the parent folder" : "This is the top of the browsable root"}
+          title={
+            canGoUp
+              ? "Go to the parent folder"
+              : "This is the top of the browsable root"
+          }
         >
           <ArrowUp size={14} aria-hidden="true" />
         </button>
@@ -362,6 +406,7 @@ export function FilePanel({
           loading={gitLoading}
           error={gitError}
           onRetry={() => setTick((n) => n + 1)}
+          onSendPath={sendPath}
           onOpen={(e: GitEntry, trigger) =>
             setViewer({
               path: `${git?.repo ?? root}/${e.path}`,
@@ -384,11 +429,14 @@ export function FilePanel({
           }}
           refreshTick={tick}
           onOpenFile={(path, trigger) => setViewer({ path, trigger })}
+          onSendPath={sendPath}
         />
       )}
 
       <div className={styles.foot}>
-        <span className="hud-tag">{root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}</span>
+        <span className="hud-tag">
+          {root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}
+        </span>
         <span className="hud-tag">READ ONLY</span>
       </div>
     </>
@@ -456,7 +504,12 @@ export function FilePanel({
       >
         <span className={styles.grip} aria-hidden="true" />
       </div>
-      <aside className={styles.dock} style={{ width: w }} data-file-panel="dock" aria-label="Files">
+      <aside
+        className={styles.dock}
+        style={{ width: w }}
+        data-file-panel="dock"
+        aria-label="Files"
+      >
         {inner}
       </aside>
       {viewer && (
