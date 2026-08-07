@@ -741,3 +741,169 @@ test("with no evidence to disclose the controls still render (#781)", async () =
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /show recap/i })).toBeNull();
 });
+
+// ---------------------------------------------------------------------------------------
+// #803 — unadopted cwds group under the synthetic `Default` project instead of getting one
+// chip each, labelled with the raw absolute path.
+//
+// The realistic folder-ref shape is the whole point of these fixtures: the server's
+// `projects.resolve()` returns `Ref(kind="folder", id=cwd, name=cwd)`, so `name` IS the full
+// path. Every earlier Pulse fixture gave folder refs a short synthetic name ("alpha"), which is
+// exactly why no test caught a filter row four rows deep.
+
+/** A folder ref as the SERVER actually emits it — `name === id === cwd`. */
+function folderRef(cwd: string) {
+  return { kind: "folder" as const, id: cwd, name: cwd };
+}
+
+const SCRATCH_A =
+  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-208de4e6";
+const SCRATCH_B =
+  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-388f297b";
+
+function projectChips() {
+  const group = screen.getByRole("group", { name: /project/i });
+  return Array.from(group.querySelectorAll("button")).map(
+    (b) => b.textContent?.trim() ?? "",
+  );
+}
+
+test("unadopted cwds collapse into one Default chip, never a raw path (#803)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:s1",
+          state: "idle",
+          cwd: SCRATCH_A,
+          project: folderRef(SCRATCH_A),
+        }),
+        card({
+          id: "claude:s2",
+          state: "idle",
+          cwd: SCRATCH_B,
+          project: folderRef(SCRATCH_B),
+        }),
+        card({
+          id: "claude:s3",
+          state: "idle",
+          cwd: "/home/u/battlelab",
+          project: { kind: "project", id: "p-1", name: "Battlelab" },
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  await screen.findByRole("group", { name: /project/i });
+  const chips = projectChips();
+  // One Default chip carrying the SUMMED count of both scratch dirs — not two chips of 1.
+  expect(chips).toContain("Default 2");
+  expect(chips.filter((c) => c.startsWith("Default"))).toHaveLength(1);
+  // The entity chip is untouched.
+  expect(chips).toContain("Battlelab 1");
+  // No chip anywhere in the row is labelled with a filesystem path.
+  expect(chips.some((c) => c.includes("/"))).toBe(false);
+});
+
+test("selecting Default filters to exactly the unadopted cards (#803)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:s1",
+          title: "Scratch one",
+          state: "idle",
+          cwd: SCRATCH_A,
+          project: folderRef(SCRATCH_A),
+        }),
+        card({
+          id: "claude:s2",
+          title: "Scratch two",
+          state: "idle",
+          cwd: SCRATCH_B,
+          project: folderRef(SCRATCH_B),
+        }),
+        card({
+          id: "claude:s3",
+          title: "Real work",
+          state: "idle",
+          cwd: "/home/u/battlelab",
+          project: { kind: "project", id: "p-1", name: "Battlelab" },
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  const chip = await screen.findByRole("button", { name: /^Default 2$/ });
+  await userEvent.click(chip);
+  // EXACT set, not "at least one": a later refactor that splits Default into two buckets, or
+  // that lets an entity leak in, has to fail here rather than pass with a plausible subset.
+  const titles = screen
+    .getAllByRole("listitem")
+    .map((li) => li.textContent ?? "");
+  expect(titles).toHaveLength(2);
+  expect(titles.some((t) => t.includes("Scratch one"))).toBe(true);
+  expect(titles.some((t) => t.includes("Scratch two"))).toBe(true);
+  expect(titles.some((t) => t.includes("Real work"))).toBe(false);
+});
+
+test("two entities sharing a name still get two chips (#754 regression, #803)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:a",
+          state: "idle",
+          cwd: "/work/a/app",
+          project: { kind: "project", id: "p-a", name: "app" },
+        }),
+        card({
+          id: "claude:b",
+          state: "idle",
+          cwd: "/work/b/app",
+          project: { kind: "project", id: "p-b", name: "app" },
+        }),
+        card({
+          id: "claude:c",
+          state: "idle",
+          cwd: SCRATCH_A,
+          project: folderRef(SCRATCH_A),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  await screen.findByRole("group", { name: /project/i });
+  const chips = projectChips();
+  // Collapsing folder refs must not collapse same-named ENTITIES: still two chips, still told
+  // apart by their parent directory.
+  expect(chips).toContain("app · a 1");
+  expect(chips).toContain("app · b 1");
+  expect(chips).toContain("Default 1");
+});
+
+test("a folder ref with no usable id still routes to Default (#803)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        // `resolve()` always sets a folder ref's id to the cwd, but the client must not depend
+        // on that — a degenerate ref belongs in Default, not in a nameless chip of its own.
+        card({
+          id: "claude:s1",
+          state: "idle",
+          cwd: "/tmp/x",
+          project: { kind: "folder", id: "", name: "" },
+        }),
+        card({
+          id: "claude:s2",
+          state: "idle",
+          cwd: "/home/u/battlelab",
+          project: { kind: "project", id: "p-1", name: "Battlelab" },
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  await screen.findByRole("group", { name: /project/i });
+  expect(projectChips()).toContain("Default 1");
+});

@@ -19,6 +19,15 @@ const LONG =
   "AGENT_SESSIONS_FORCE_PASSWORD_CHANGE_supercalifragilistic_0123456789_abcdefghij";
 const T = 1_700_000_000;
 
+// #803: a folder ref as the SERVER emits it — `projects.resolve()` returns
+// `Ref(kind="folder", id=cwd, name=cwd)`, so a chip labelled with `name` is the whole path. The
+// two cards below carry short synthetic names ("webapp", "superstatus") that the server never
+// produces, which is why this spec passed while the live filter row ran off the side of the
+// phone. The realistic row is what actually exercises the overflow: `.chip` is
+// `white-space: nowrap`, so a ~110-char label cannot wrap.
+const SCRATCH =
+  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-208de4e6";
+
 const OVERVIEW = {
   cache_version: 1,
   generated_at: T - 60,
@@ -60,6 +69,41 @@ const OVERVIEW = {
       reviewed_at: T - 300,
       live: true,
       state: "in_flight",
+      synthesis: null,
+    },
+    // Unadopted cwd with the REAL folder-ref shape (`name === id === cwd`). Before #803 this
+    // became its own chip labelled with the full path; now it joins `Default`.
+    {
+      id: "codex:ghi",
+      engine: "codex",
+      title: "Probe session in a scratch dir",
+      cwd: SCRATCH,
+      project: { kind: "folder", id: SCRATCH, name: SCRATCH },
+      last_activity: T - 400,
+      ai_summary: null,
+      intervention_required: false,
+      intervention_reason: "",
+      reviewed_at: T - 400,
+      live: false,
+      state: "idle",
+      synthesis: null,
+    },
+    // An adopted project keeps the filter row on screen once the three folder refs above
+    // collapse into one `Default` chip — without it the row would fall below its
+    // "more than one project or engine" render threshold and this spec would stop covering it.
+    {
+      id: "claude:jkl",
+      engine: "claude",
+      title: "Real work in an adopted project",
+      cwd: "/home/u/battlelab",
+      project: { kind: "project", id: "p-bl", name: "Battlelab", color: "" },
+      last_activity: T - 500,
+      ai_summary: null,
+      intervention_required: false,
+      intervention_reason: "",
+      reviewed_at: T - 500,
+      live: false,
+      state: "idle",
       synthesis: null,
     },
   ],

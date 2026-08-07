@@ -14,7 +14,11 @@ import { pendingLabel } from "../lib/pendingLabel";
 import { ActionRow } from "../components/pulse/ActionRow";
 import { Orchestrator } from "../components/pulse/Orchestrator";
 import { api, ApiError } from "../lib/api";
+// `shortCwd` is for the CARD BODY only — it rewrites a `/home/<user>/` prefix and nothing else,
+// so it does not shorten a `/tmp/…` path at all. It is not the fix for a raw-path filter chip
+// (#803); the chips group under `Default` instead. Don't reach for it in the label path.
 import { engineBadge, engineName, relTime, shortCwd } from "../lib/format";
+import { DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME } from "../lib/overviewGraph";
 import { actionOutcome, OPERATOR_PENDING } from "../lib/orchestratorAction";
 import type {
   OrchestratorAction,
@@ -47,12 +51,22 @@ const STATE_LABELS: Record<string, string> = Object.fromEntries(
   GROUPS.map((g) => [g.state, g.label]),
 );
 
-
-/** Canonical identity of a card's project — the id, which is unique, with the name only as a
- *  fallback for a card whose project ref predates ids. Never the name alone: `/work/a/app` and
- *  `/work/b/app` are two projects that share one name. */
+/** Canonical identity of a card's project group.
+ *
+ *  For a PROJECT ENTITY: the id, which is unique, with the name only as a fallback for a card
+ *  whose ref predates ids. Never the name alone: `/work/a/app` and `/work/b/app` are two
+ *  projects that share one name.
+ *
+ *  For anything else — the `kind:"folder"` fallback a session gets when no project has adopted
+ *  its cwd — the synthetic **Default** project (#445), exactly as `/api/sessions` facets and the
+ *  overview graph already group it. A folder ref's `id` *is* the cwd, so keying on it gave every
+ *  scratch directory its own chip labelled with a ~110-char absolute path (#803). Grouping here
+ *  rather than at the two call sites is deliberate: the facet builder and the card filter share
+ *  this function, so they cannot disagree about what a chip contains. */
 function projectKey(c: PulseCard): string {
-  return c.project?.id || c.project?.name || "";
+  if (c.project?.kind === "project")
+    return c.project.id || c.project.name || "";
+  return DEFAULT_PROJECT_ID;
 }
 
 /** Two projects with the same name are told apart by their parent directory. If they share that
@@ -529,11 +543,16 @@ export default function Pulse() {
   // and never vanishes because of the current selection — the same rule `/api/sessions` facets
   // follow. Filters are view state only and are never persisted, so a reload shows everything.
   //
-  // Keyed by `project.id`, never by the display name: names are not unique — two checkouts both
+  // Keyed by `projectKey`, never by the display name: names are not unique — two checkouts both
   // called `app` under different parents are two different projects, and keying by name merged
   // them into one chip that then showed both. When two projects genuinely share a label the
   // parent directory disambiguates the *text*; the key stays the id either way, so filtering is
   // correct even in the residual case where the parents collide too.
+  //
+  // Unadopted sessions all land on ONE `Default` chip (#803, via `projectKey`) — same grouping
+  // the sidebar dropdown and the overview map have used since #445. A folder ref's `name` is the
+  // full cwd by design (the server's `resolve()` leaves shortening to clients), so labelling a
+  // chip with it put a ~110-char path in the filter row, one per scratch directory.
   const facets = useMemo(() => {
     const cards = overview?.cards ?? [];
     const projects = new Map<
@@ -548,7 +567,10 @@ export default function Pulse() {
         if (cur) cur.n += 1;
         else
           projects.set(key, {
-            label: c.project?.name || key,
+            label:
+              key === DEFAULT_PROJECT_ID
+                ? DEFAULT_PROJECT_NAME
+                : c.project?.name || key,
             n: 1,
             cwd: c.cwd || "",
           });
@@ -558,14 +580,21 @@ export default function Pulse() {
     const ambiguous = new Map<string, number>();
     for (const v of projects.values())
       ambiguous.set(v.label, (ambiguous.get(v.label) ?? 0) + 1);
+    // Count desc, tiebreak label — and `Default` takes its place in that ranking like any other
+    // chip. The sidebar instead sorts entities by name and pins Default last (`routes/sessions.py`);
+    // the difference is deliberate, not drift. These chips are count-ranked, so burying a 6-count
+    // Default under a 2-count project would break the only reading the row offers.
     const bySize = (a: Facet, b: Facet) =>
       b.n - a.n || a.label.localeCompare(b.label);
     return {
       projects: [...projects.entries()]
         .map(([key, v]) => ({
           key,
+          // Default is never disambiguated by a parent directory: it is one bucket spanning many
+          // cwds, so `v.cwd` (whichever card landed first) would name only one of them. A user
+          // project that happens to be called "Default" still gets its own suffix.
           label:
-            (ambiguous.get(v.label) ?? 0) > 1
+            key !== DEFAULT_PROJECT_ID && (ambiguous.get(v.label) ?? 0) > 1
               ? disambiguate(v.label, v.cwd)
               : v.label,
           n: v.n,

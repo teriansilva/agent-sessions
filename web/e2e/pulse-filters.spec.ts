@@ -282,3 +282,80 @@ test("a scan that invalidates the selection does not leave a blank page", async 
     0,
   );
 });
+
+// #803 — a folder ref as the SERVER actually emits it. `projects.resolve()` returns
+// `Ref(kind="folder", id=cwd, name=cwd)`, so `name` IS the full path; every fixture above gives
+// folder refs a short synthetic name ("webapp"), which is precisely why the four-row filter row
+// on the live instance was invisible to this suite.
+function folderRef(cwd: string) {
+  return { kind: "folder", id: cwd, name: cwd };
+}
+
+const SCRATCH_A =
+  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-208de4e6";
+const SCRATCH_B =
+  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-388f297b";
+
+const UNADOPTED = [
+  card({
+    id: "claude:sc1",
+    title: "Scratch one",
+    cwd: SCRATCH_A,
+    project: folderRef(SCRATCH_A),
+  }),
+  card({
+    id: "claude:sc2",
+    title: "Scratch two",
+    cwd: SCRATCH_B,
+    project: folderRef(SCRATCH_B),
+  }),
+  card({
+    id: "codex:real",
+    engine: "codex",
+    title: "Real work",
+    cwd: "/home/u/battlelab",
+    project: proj("p-bl", "Battlelab"),
+  }),
+];
+
+test("unadopted scratch dirs collapse into one Default chip, and nothing scrolls sideways (#803)", async ({
+  page,
+}) => {
+  await page.unroute(/\/api\/pulse$/);
+  await page.route(/\/api\/pulse$/, (r) =>
+    r.fulfill({ json: overview(UNADOPTED) }),
+  );
+  await page.goto("/pulse");
+  await expect(page.getByText("Real work")).toBeVisible();
+
+  // 1. One Default chip carrying the SUMMED count — not one chip per scratch directory.
+  await expect(
+    page.getByRole("button", { name: /^Default\s+2$/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Battlelab\s+1$/ }),
+  ).toBeVisible();
+
+  // 2. No chip in the row is labelled with a filesystem path. This is the assertion that goes
+  //    red on the unfixed code, where each cwd became its own ~110-char chip.
+  const labels = await page
+    .getByRole("group", { name: /project/i })
+    .getByRole("button")
+    .allTextContents();
+  expect(labels.filter((l) => l.includes("/"))).toEqual([]);
+
+  // 3. The merge gate (§ Phase B): the page must not scroll sideways. `.chip` is
+  //    `white-space: nowrap`, so a 110-char label cannot wrap and forces the document wider than
+  //    the viewport — which is what this pins down, on the mobile project as well as desktop.
+  const overflow = await page.evaluate(() => {
+    const de = document.documentElement;
+    return de.scrollWidth - de.clientWidth;
+  });
+  expect(overflow).toBeLessThanOrEqual(0);
+
+  // Selecting Default filters to EXACTLY the unadopted cards — not a plausible subset.
+  await page.getByRole("button", { name: /^Default\s+2$/ }).click();
+  await expect(page.getByText("Scratch one")).toBeVisible();
+  await expect(page.getByText("Scratch two")).toBeVisible();
+  await expect(page.getByText("Real work")).toHaveCount(0);
+});
