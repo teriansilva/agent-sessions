@@ -207,6 +207,11 @@ def add(
                 # as new — only the pointer moves, under this same lock.
                 if action_id:
                     r["action_id"] = action_id
+                    # The situation is live again, so the row is an alert again. Without this a
+                    # row retired when its previous action expired would stay invisible while
+                    # the equivalence check above keeps suppressing new ones — the situation
+                    # would be unresolved, re-proposed every TTL, and announced nowhere.
+                    r["retired"] = False
                     _write(p, rows)
                 return None
         rec = {
@@ -225,13 +230,131 @@ def add(
             "activity_at": activity_at if isinstance(activity_at, int | float) else None,
         }
         rows.append(rec)
-        _write(p, rows[-NOTIFY_MAX:])
+        _write(p, _evict(rows))
         return rec
 
 
+def _evict(rows: list[dict]) -> list[dict]:
+    """Trim to ``NOTIFY_MAX``, dropping retired rows before live ones.
+
+    A plain ``rows[-NOTIFY_MAX:]`` evicts by age alone, so a settled row the operator can no
+    longer act on can push out an escalation that is still waiting on them. Retired rows are
+    only kept for the dedupe memo, which makes them the cheapest thing in the store to lose.
+    """
+    if len(rows) <= NOTIFY_MAX:
+        return rows
+    over = len(rows) - NOTIFY_MAX
+    drop: set[int] = set()
+    for i, r in enumerate(rows):  # oldest first — `rows` is append-ordered
+        if len(drop) >= over:
+            break
+        if r.get("retired"):
+            drop.add(i)
+    kept = [r for i, r in enumerate(rows) if i not in drop]
+    return kept[-NOTIFY_MAX:]
+
+
+def _terminal_action_ids(rows: list[dict]) -> set[str]:
+    """Of the actionable rows in ``rows``, which point at an action that has already settled?
+
+    Read WITHOUT the notifications lock held — see :func:`listing`.
+
+    Fails toward SHOWING, in three separate ways, because hiding an escalation the operator
+    never saw is the one outcome this module exists to prevent: a row with no ``action_id``, an
+    id the ledger has never heard of, and a ledger that cannot be read at all are all treated as
+    "still live". A single corrupt ledger record must not empty the bell.
+    """
+    wanted = {
+        str(r.get("action_id"))
+        for r in rows
+        if r.get("escalation") is True and not r.get("retired") and r.get("action_id")
+    }
+    if not wanted:
+        return set()
+    try:
+        from . import orchestrator_ledger as ledger
+
+        latest = ledger.latest_by_id()
+        return {
+            aid
+            for aid in wanted
+            if (rec := latest.get(aid)) is not None and rec.get("state") in ledger.TERMINAL_STATES
+        }
+    except Exception:  # noqa: BLE001 — an unreadable ledger must not retire anything
+        log.debug("notifications: could not reconcile against the ledger", exc_info=True)
+        return set()
+
+
+def retire_for_actions(
+    action_ids: list[str] | set[str],
+    path: Path | None = None,
+    *,
+    escalations_only: bool = True,
+) -> int:
+    """Retire the bell rows raised for actions that have settled. Returns the count retired.
+
+    Retiring is a flag, not a delete, and that distinction is the whole safety of this change.
+    A row does double duty: it is the operator's alert AND the "I already told you about this"
+    memo that :func:`add` matches on to stop one unresolved situation being announced every TTL
+    (#760). Deleting on settlement would drop the memo and bring that volume regression back, so
+    the row stays in the store and only leaves the *view*.
+
+    ``escalations_only`` separates the two callers, and they genuinely want different things:
+
+    * **Automatic** settlement (the ledger hook, read-time reconciliation) leaves everything else
+      alone. Under ``notify: all`` the store also carries informational notices of what was done
+      autonomously; those are a log rather than a queue, nothing waits on them, and clearing them
+      because the action ended would delete the operator's only record that it happened.
+    * **An explicit decision** in Pulse — approve or reject — clears whatever was raised for that
+      action, informational row included. The operator has dealt with it; leaving a row behind is
+      the second dismissal, in a second place, that this whole area exists to remove.
+    """
+    ids = {str(a) for a in action_ids if a}
+    if not ids:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read(p)
+        n = 0
+        for r in rows:
+            if r.get("retired") or r.get("action_id") not in ids:
+                continue
+            if escalations_only and r.get("escalation") is not True:
+                continue
+            r["retired"] = True
+            n += 1
+        if n:
+            _write(p, rows)
+        return n
+
+
 def listing(path: Path | None = None) -> dict:
-    rows = sorted(_read(path or _notifications_path()), key=lambda r: -float(r.get("ts") or 0))
-    return {"notifications": rows, "unread": sum(1 for r in rows if not r.get("read"))}
+    """The bell: rows still awaiting the operator, plus the unread count over that same set.
+
+    Both halves come from ONE filtered list. Computing the count separately is how a badge ends
+    up disagreeing with the list it labels, and the operator trusts the badge.
+
+    **Reconciles on read.** A row whose action has already settled is retired here, so the bell
+    heals itself from a settlement path nobody instrumented, from a notifications-store write
+    that failed after the ledger write succeeded, and from rows that predate this behaviour —
+    no migration required. Expiry is only ever *read* from the ledger, never inferred from the
+    clock: :func:`orchestrator_ledger.expire_due` owns that decision, and guessing it here would
+    let the bell hide something the ledger still considers live.
+
+    The ledger read happens BEFORE the lock is taken. `listing` is the one path that holds the
+    notifications lock and wants ledger data, so taking them in that order under the lock would
+    invert against the settlement hook and risk a deadlock.
+    """
+    p = path or _notifications_path()
+    rows = _read(p)
+    stale = _terminal_action_ids(rows)
+    if stale:
+        retire_for_actions(stale, p)
+        rows = _read(p)
+    visible = sorted(
+        (r for r in rows if not r.get("retired")), key=lambda r: -float(r.get("ts") or 0)
+    )
+    return {"notifications": visible, "unread": sum(1 for r in visible if not r.get("read"))}
 
 
 def mark_read(ids: list[str] | None = None, path: Path | None = None) -> int:

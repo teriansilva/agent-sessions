@@ -304,6 +304,35 @@ def get(action_id: str, path: Path | None = None) -> dict | None:
     return latest_by_id(path).get(action_id)
 
 
+def _settled(action_id: str, state: str) -> None:
+    """The single settlement boundary: an action just reached a terminal state, so the bell row
+    that was raised for it is no longer something the operator can act on.
+
+    Hooked here rather than at the call sites because there are five of them and they keep
+    growing — approve, reject, the expiry sweep, actuator outcomes, startup recovery — and every
+    one that forgot this left an alert pointing at an action nobody can resolve. Both mutation
+    entry points funnel through :func:`transition` / :func:`compare_and_set`, so hooking the
+    two of them covers every path, present and future.
+
+    Two ordering rules, both load-bearing:
+
+    * **After the durable append, never inside the lock.** The ledger write has already
+      succeeded and is the record of truth. Holding the ledger lock across a notifications
+      write would also take the two stores' locks in the opposite order from
+      ``notifications.listing``, which reads this ledger — a deadlock waiting for load.
+    * **Best-effort.** A notifications failure must not fail, or undo, a settled transition.
+      ``notifications.listing`` reconciles anything missed on the next read, which is what makes
+      swallowing the error safe rather than lossy.
+    """
+    if state not in TERMINAL_STATES:
+        return
+    # Suppressed on purpose: the ledger write stands, and `listing` heals on the next read.
+    with contextlib.suppress(Exception):
+        from . import notifications
+
+        notifications.retire_for_actions([action_id])
+
+
 def transition(action_id: str, state: str, path: Path | None = None, **extra) -> dict | None:
     """Record a state change for an existing action. Returns the merged record, or ``None``
     when the id is unknown (a transition for an action that never existed is dropped rather
@@ -316,7 +345,9 @@ def transition(action_id: str, state: str, path: Path | None = None, **extra) ->
         rec = {"id": action_id, "state": state, **extra}
         rec.setdefault("ts", time.time())
         _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
-        return {**cur, **rec}
+        merged = {**cur, **rec}
+    _settled(action_id, state)
+    return merged
 
 
 def compare_and_set(
@@ -348,7 +379,9 @@ def compare_and_set(
         # settlement keeps the WHY that the operator sees in the feed.
         rec.update({k: v for k, v in fields.items() if v is not None})
         _append_locked(p, rec, json.dumps(rec, sort_keys=True, default=str) + "\n")
-        return {**cur, **rec}
+        merged = {**cur, **rec}
+    _settled(action_id, to_state)
+    return merged
 
 
 def claim(action_id: str, from_states: frozenset[str], path: Path | None = None) -> dict | None:

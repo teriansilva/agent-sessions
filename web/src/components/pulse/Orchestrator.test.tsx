@@ -14,6 +14,7 @@ import { MemoryRouter } from "react-router-dom";
 import { ActionRow } from "./ActionRow";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError } from "../../lib/api";
+import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import type { OrchestratorAction, OrchestratorConfig } from "../../types/api";
 import { Orchestrator } from "./Orchestrator";
 
@@ -624,4 +625,54 @@ test("a collapsed row says how many actions it stands for", async () => {
     </MemoryRouter>,
   );
   expect(screen.getByText("×11")).toBeInTheDocument();
+});
+
+test("a 409 that settles the action also invalidates the bell (#800)", async () => {
+  // A 409 IS a resolution: the server has terminally settled the action and already retired its
+  // bell row. The api client only announces on the fulfilled path, so without an explicit signal
+  // here the badge keeps counting an alert the server has dropped, for up to a 60s poll.
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+    delivering_verbs: ["continue", "choose", "answer"],
+  });
+  vi.mocked(api.approveAction).mockRejectedValue(
+    new ApiError(409, "the session moved on", action({ state: "stale" })),
+  );
+  const seen = vi.fn();
+  window.addEventListener(ACTION_RESOLVED_EVENT, seen);
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  );
+
+  await waitFor(() => expect(seen).toHaveBeenCalled());
+  window.removeEventListener(ACTION_RESOLVED_EVENT, seen);
+});
+
+test("a 409 carrying only a detail is not a resolution and must not invalidate", async () => {
+  // The counterpart guard: `{detail}` with no settled record means the action is still live.
+  // Firing the event there would tell the bell to drop an alert that still needs the operator.
+  vi.mocked(api.orchestrator).mockResolvedValue({
+    config: config(),
+    pending: [action()],
+    feed: [],
+    expired_now: 0,
+    delivering_verbs: ["continue", "choose", "answer"],
+  });
+  vi.mocked(api.approveAction).mockRejectedValue(
+    new ApiError(409, "another caller claimed this action first"),
+  );
+  const seen = vi.fn();
+  window.addEventListener(ACTION_RESOLVED_EVENT, seen);
+  renderIt();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  );
+
+  await waitFor(() => expect(screen.getByText(/not sent/i)).toBeInTheDocument());
+  expect(seen).not.toHaveBeenCalled();
+  window.removeEventListener(ACTION_RESOLVED_EVENT, seen);
 });

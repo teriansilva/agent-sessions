@@ -37,6 +37,7 @@ import type {
   UpdateSettings,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
+import { announceActionResolved } from "./actionEvents";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -542,14 +543,14 @@ export const api = {
       "POST",
       `/api/pulse/actions/${enc(id)}/approve`,
       {},
-    ),
+    ).then(announceActionResolved),
   /** Decline an action (#726 Phase 2). Terminal — the ledger keeps it as history. */
   rejectAction: (id: string) =>
     mutateJson<OrchestratorAction>(
       "POST",
       `/api/pulse/actions/${enc(id)}/reject`,
       {},
-    ),
+    ).then(announceActionResolved),
   /** In-app notifications (#726 Phase 3) — the channel that always works, regardless of push
    *  permission or platform. */
   notifications: () => getJson<NotificationList>("/api/pulse/notifications"),

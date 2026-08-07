@@ -2,6 +2,7 @@ import { Check, ChevronDown, MonitorPlay, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
+import { announceActionResolved } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { EvidenceKind, OrchestratorAction } from "../../types/api";
 import styles from "./Orchestrator.module.css";
@@ -194,6 +195,13 @@ export function ActionRow({
           if (rec?.id && rec?.state) {
             onNote?.(msg);
             onResolved?.(rec as OrchestratorAction);
+            // A 409 IS a resolution: the server has already settled this action terminally and
+            // retired its bell row. The api client only announces on the fulfilled path, so
+            // without this the badge keeps counting an alert the server has already dropped
+            // until the next 60s poll. Announced here rather than in `api` because this is
+            // where the record is shape-checked — a 409 carrying only `{detail}` is not a
+            // resolution and must not fire it.
+            announceActionResolved(rec);
           } else {
             setNote(msg);
           }

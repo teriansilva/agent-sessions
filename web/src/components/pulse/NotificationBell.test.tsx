@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
+import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { NotificationBell } from "./NotificationBell";
 
 /** #750 gave the panel two mount paths — an anchored dropdown inside the bell's wrapper on
@@ -115,4 +116,26 @@ test("the drawer isolates the app root while open and lifts it on close (#750)",
   } finally {
     root.remove();
   }
+});
+
+test("resolving an action refreshes the bell in the same tab (#800)", async () => {
+  // The server retires the alert the moment the action settles, but the bell polls on a 60s
+  // timer — so without this the badge keeps counting an escalation the operator just decided,
+  // on the very screen where they decided it.
+  mockWidth(false);
+  const list = vi
+    .spyOn(api, "notifications")
+    .mockResolvedValue({ notifications: [NOTIFICATION], unread: 1 });
+  render(
+    <MemoryRouter>
+      <NotificationBell />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getByText("1")).toBeTruthy());
+
+  // …the action is resolved elsewhere in the tab, and the server now returns an empty bell.
+  list.mockResolvedValue({ notifications: [], unread: 0 });
+  window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+
+  await waitFor(() => expect(screen.queryByText("1")).toBeNull());
 });

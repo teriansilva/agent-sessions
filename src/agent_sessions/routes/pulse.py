@@ -52,6 +52,21 @@ from .. import (
 FEED_LIMIT = 100
 
 
+def _retire_decided(action_id: str) -> int:
+    """Clear the bell rows for an action the operator has just decided in Pulse.
+
+    ``escalations_only=False`` here and nowhere else. Automatic settlement is careful to leave
+    `notify: all` informational notices alone — they are the operator's only record of what was
+    done autonomously. But a deliberate Approve or Reject is the operator saying they are done
+    with this action, so whatever was raised for it goes; leaving a row behind is exactly the
+    second dismissal, in a second place, that #757 set out to remove.
+
+    Still a retire rather than a delete: the row stays as the #760 "already told you" memo, so a
+    decided-but-unchanged situation is not re-announced on the next pass (#800).
+    """
+    return notifications.retire_for_actions([action_id], escalations_only=False)
+
+
 def _attach_pending(overview: dict) -> dict:
     """Give each card the live orchestrator action on its session, if any.
 
@@ -434,14 +449,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse(
                 {"detail": rec.get("detail") or "the session moved on", **rec}, status_code=409
             )
-        # Delivering it retires the alert too. Rejecting already did this; approving did not, so
-        # a successfully delivered escalation stayed in the bell and still needed the second
-        # manual dismissal this change exists to remove. Strictly after a terminal delivery —
-        # the 409 stale/expired path above returns first, and `NotDeliverable` never reaches
-        # here, so a failed approval can never destroy the operator's only pointer to an action
-        # that is still live.
+        # Delivering it retires the alert too. Strictly after a terminal delivery — the 409
+        # stale/expired path above returns first, and `NotDeliverable` never reaches here, so a
+        # failed approval can never clear the operator's only pointer to an action still live.
+        #
+        # RETIRE, never delete (#800). This used to call `dismiss_for_action`, which physically
+        # removed the row — and the row is also the "already told you" memo that stops one
+        # unresolved situation being announced every TTL (#760). Deleting it on a manual decision
+        # therefore restarted that loop for exactly the actions the operator had dealt with.
+        # Belt-and-braces with the ledger's own settlement hook: `deliver` normally settles
+        # through a CAS that retires this already, but the route must not depend on which
+        # internal path produced the record it is about to return.
         with contextlib.suppress(Exception):
-            await asyncio.to_thread(notifications.dismiss_for_action, action_id)
+            await asyncio.to_thread(_retire_decided, action_id)
         return JSONResponse(rec)
 
     @app.post("/api/pulse/actions/{action_id}/reject")
@@ -467,13 +487,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "rejected",
         )
         if rec is not None:
-            # Deciding it here retires the alert too. The bell and the ledger are separate
-            # stores, so without this the operator dealt with the escalation and then had to
-            # dismiss it a second time, in a second place. Strictly after a successful CAS —
-            # the 404 and 409 paths below must never destroy an alert for an action that is
-            # still live or already delivered.
+            # Deciding it here retires the alert too — the operator must not have to dismiss it
+            # a second time, in a second place. Strictly after a successful CAS: the 404 and 409
+            # paths below must never clear an alert for an action still live or already
+            # delivered. Retire rather than delete, for the #760 reason spelled out on the
+            # approve path above.
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(notifications.dismiss_for_action, action_id)
+                await asyncio.to_thread(_retire_decided, action_id)
             return JSONResponse(rec)
         # Distinguish "never existed" from "too late" — the operator needs to know which.
         cur = await asyncio.to_thread(orchestrator_ledger.get, action_id)

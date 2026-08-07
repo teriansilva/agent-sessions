@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
+import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
@@ -91,9 +92,14 @@ export function NotificationBell() {
     };
     tick();
     const t = setInterval(tick, POLL_MS);
+    // Resolving an action retires its alert server-side, but the badge would keep counting it
+    // until the next poll — up to a minute, on the screen where the operator just decided it.
+    // Same defensive `tick` as the timer, for the same reason.
+    window.addEventListener(ACTION_RESOLVED_EVENT, tick);
     return () => {
       live = false;
       clearInterval(t);
+      window.removeEventListener(ACTION_RESOLVED_EVENT, tick);
     };
   }, []);
 

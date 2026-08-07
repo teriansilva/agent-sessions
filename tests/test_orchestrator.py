@@ -2695,3 +2695,56 @@ def test_the_card_count_tracks_sessions_not_ledger_history(auth_cfg, fake_jsonl,
     _login(c, auth_cfg)
     cards = c.get("/api/pulse").json()["cards"]
     assert len(cards) == 2, f"30 historical actions produced {len(cards)} cards"
+
+
+def test_a_manual_decision_hides_the_row_but_keeps_the_dedupe_memo(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):  # noqa: ARG001
+    """Rejecting in Pulse must hide the alert WITHOUT destroying the #760 memo.
+
+    The route used to call `dismiss_for_action`, which physically removes the row — and the row
+    is also what stops one unresolved situation being announced every TTL. So a manual decision
+    restarted the re-announce loop for exactly the actions the operator had already dealt with:
+    the situation is unchanged, the next pass re-escalates it, and with no memo left the bell
+    speaks again. Endpoint-level on purpose — the ledger-level tests cannot see the route.
+    """
+    from agent_sessions import notifications
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    idle = 1_700_000_000.0
+    ledger.append(
+        {"id": "act-A", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
+    )
+    notifications.add(
+        title="mine",
+        project="p",
+        session_id="claude:aaa",
+        engine="claude",
+        action_id="act-A",
+        escalation=True,
+        activity_at=idle,
+    )
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/pulse/actions/act-A/reject",
+        headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+    )
+    assert r.status_code == 200 and r.json()["state"] == "rejected"
+    assert notifications.listing()["notifications"] == [], "the alert must leave the bell"
+
+    stored = notifications._read(notifications._notifications_path())
+    assert len(stored) == 1 and stored[0]["retired"] is True, "the memo must survive the decision"
+
+    # …and the memo must still do its job when the same unchanged situation is re-proposed.
+    again = notifications.add(
+        title="reworded by the model",
+        project="p",
+        session_id="claude:aaa",
+        engine="claude",
+        action_id="act-B",
+        escalation=True,
+        activity_at=idle,
+    )
+    assert again is None, "a decided situation was announced all over again"
