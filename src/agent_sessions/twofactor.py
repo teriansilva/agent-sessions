@@ -17,7 +17,9 @@ Security properties (the point of this module):
   **consumed atomically** — the matched hash is removed under an exclusive lock on use.
 - **Anti-replay survives a restart**: the last consumed TOTP step (the 30s timecode) is
   persisted; a login verify rejects any step ≤ the stored cursor, so bouncing the service
-  cannot reopen a just-used code window.
+  cannot reopen a just-used code window. That rejection reports :data:`TOTP_REPLAYED`, so
+  the login page can tell a spent code from a wrong one (#814) — with two tabs open, the
+  operator's *correct* code is routinely the one that gets refused.
 - **Serialized writes**: every read-modify-write (consume a recovery code, advance the
   replay cursor, confirm enrollment) takes an exclusive ``flock`` on a sidecar lock file,
   then writes the data atomically (``0600`` temp file + ``os.replace`` — the same shape as
@@ -51,9 +53,20 @@ from .auth import hash_password, verify_password
 # untouched, so codes keep working (release-noted).
 ISSUER = "BattleLab"
 RECOVERY_COUNT = 10
+# Entropy per recovery code, and the display grouping. Generation (_gen_recovery_codes),
+# formatting (_format_recovery) and the shape test (_looks_like_recovery) all derive from
+# these two, so the minted format and the accepted format cannot drift apart (#815).
+RECOVERY_BYTES = 6  # → 12 hex chars, rendered xxxx-xxxx-xxxx
+RECOVERY_GROUP = 4  # hex chars per hyphen-separated block
 STEP_SECONDS = 30
 # ±1 step (30s) skew tolerance, per RFC 6238 guidance.
 WINDOW = 1
+
+# Outcomes of a login TOTP check. A *replayed* code is valid-but-spent, which the login page
+# has to report differently from a wrong one (#814).
+TOTP_OK = "ok"
+TOTP_REPLAYED = "replayed"
+TOTP_INVALID = "invalid"
 
 
 class TwoFactorStoreError(Exception):
@@ -149,12 +162,31 @@ def _normalize_recovery(code: str) -> str:
     return "".join((code or "").split()).replace("-", "").lower()
 
 
+def _looks_like_recovery(candidate: str) -> bool:
+    """Whether a *normalized* code could be one this module minted: exactly the hex string
+    :func:`_gen_recovery_codes` produces.
+
+    A cheap shape test, so a 6-digit TOTP never reaches the PBKDF2 comparison loop (#815) —
+    a miss there costs ``RECOVERY_COUNT`` full key derivations (measured at 5.25s on the
+    production host), which is what made the login page look hung after a wrong code. The
+    test reveals nothing: the submitter already knows which shape they sent.
+    """
+    return len(candidate) == RECOVERY_BYTES * 2 and all(c in "0123456789abcdef" for c in candidate)
+
+
+def _format_recovery(raw: str) -> str:
+    """Group a raw hex token into ``RECOVERY_GROUP``-sized blocks: ``xxxx-xxxx-xxxx``.
+
+    Derived from the token it is handed rather than fixed offsets, so the display format
+    follows :data:`RECOVERY_BYTES` instead of silently truncating a longer token — which
+    would mint codes :func:`_looks_like_recovery` then rejects.
+    """
+    return "-".join(raw[i : i + RECOVERY_GROUP] for i in range(0, len(raw), RECOVERY_GROUP))
+
+
 def _gen_recovery_codes() -> tuple[list[str], list[str]]:
     """Return (plaintext codes shown once, their PBKDF2 hashes for storage)."""
-    plain: list[str] = []
-    for _ in range(RECOVERY_COUNT):
-        raw = secrets.token_hex(6)  # 48 bits
-        plain.append(f"{raw[:4]}-{raw[4:8]}-{raw[8:12]}")
+    plain = [_format_recovery(secrets.token_hex(RECOVERY_BYTES)) for _ in range(RECOVERY_COUNT)]
     hashes = [hash_password(_normalize_recovery(c)) for c in plain]
     return plain, hashes
 
@@ -254,24 +286,39 @@ def check_totp(code: str, path: Path | None = None, now: int | None = None) -> b
     return _match_step(data["secret"], code, now=now) is not None
 
 
-def verify_totp_for_login(code: str, path: Path | None = None, now: int | None = None) -> bool:
-    """Verify a login TOTP and advance the persisted replay cursor. Rejects any step ≤ the
-    stored cursor (replay protection that survives a restart)."""
+def login_totp_outcome(code: str, path: Path | None = None, now: int | None = None) -> str:
+    """Verify a login TOTP, advancing the persisted replay cursor on success.
+
+    Returns :data:`TOTP_OK` (cursor advanced), :data:`TOTP_REPLAYED` (the code is valid but
+    its step was already consumed — the caller must say "already used", not "invalid"), or
+    :data:`TOTP_INVALID`. Any step ≤ the stored cursor is refused; that protection survives
+    a restart because the cursor is on disk.
+
+    :data:`TOTP_REPLAYED` means *cursor-rejected* (``step <= last_step``), which covers both
+    resubmitting the code just consumed and submitting the older of the two codes still
+    inside the ±1 window after the newer one was accepted.
+
+    Named for its outcome rather than ``verify_*`` deliberately: it returns a string, so a
+    stale ``if verify_...(code):`` call site would read as *truthy* for a failed check — an
+    auth-bypass shape. Renaming makes any missed caller raise instead of silently passing.
+    """
     path = path or default_path()
 
     def _mut(data: dict):
         if not (data.get("enabled") and data.get("secret")):
-            return False, False
+            return TOTP_INVALID, False
         step = _match_step(data["secret"], code, now=now)
-        if step is None or step <= int(data.get("last_step") or 0):
-            return False, False
+        if step is None:
+            return TOTP_INVALID, False
+        if step <= int(data.get("last_step") or 0):
+            return TOTP_REPLAYED, False
         data["last_step"] = step
-        return True, True
+        return TOTP_OK, True
 
     try:
         return _with_lock(path, _mut)
     except TwoFactorStoreError:
-        return False  # corrupt store can't verify → fail closed (login stays blocked)
+        return TOTP_INVALID  # corrupt store can't verify → fail closed (login stays blocked)
 
 
 def verify_recovery_for_login(code: str, path: Path | None = None) -> bool:
@@ -279,8 +326,8 @@ def verify_recovery_for_login(code: str, path: Path | None = None) -> bool:
     (atomically, under the lock) and return True. Each code works at most once."""
     path = path or default_path()
     candidate = _normalize_recovery(code)
-    if not candidate:
-        return False
+    if not _looks_like_recovery(candidate):
+        return False  # not one of ours — don't pay RECOVERY_COUNT key derivations (#815)
 
     def _mut(data: dict):
         if not data.get("enabled"):

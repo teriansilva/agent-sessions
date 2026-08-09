@@ -8,6 +8,8 @@ secret/codes), forced-password-change precedence, and AUTH_MODE=none disabling 2
 
 from __future__ import annotations
 
+import json
+
 import pyotp
 import pytest
 from fastapi.testclient import TestClient
@@ -284,3 +286,86 @@ def test_none_mode_2fa_unavailable(none_cfg):
     # Enrollment / management are N/A in `none` mode → 404.
     assert c.post("/api/2fa/enroll", headers=hdr).status_code == 404
     assert c.post("/api/2fa/disable", json={}, headers=hdr).status_code == 404
+
+
+def _enroll_at(clock, twofa_env, monkeypatch):
+    """Enable 2FA on a frozen clock; return the enroll info."""
+    monkeypatch.setattr(twofactor.time, "time", lambda: clock["now"])
+    setup = _client(twofa_env)
+    _login(setup, twofa_env)
+    hdr = {"X-CSRF-Token": _csrf(setup), "Origin": twofa_env.origin}
+    info = setup.post("/api/2fa/enroll", headers=hdr).json()
+    confirm = pyotp.TOTP(info["secret"]).at(clock["now"])
+    assert setup.post("/api/2fa/confirm", json={"code": confirm}, headers=hdr).status_code == 204
+    return info
+
+
+def test_replayed_code_reports_already_used_not_invalid(twofa_env, monkeypatch):
+    """#814 at the route: the second tab's *correct* code gets a message it can act on."""
+    clock = {"now": 1_700_000_000}
+    info = _enroll_at(clock, twofa_env, monkeypatch)
+    clock["now"] += twofactor.STEP_SECONDS  # next step — the confirm code can't be reused
+    shared = pyotp.TOTP(info["secret"]).at(clock["now"])
+    post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
+
+    tab1 = _client(twofa_env)
+    _login(tab1, twofa_env)
+    assert tab1.post("/login/totp", data={"code": shared, "next": "/"}, **post).status_code == 303
+    cursor = json.loads(twofactor.default_path().read_text())["last_step"]
+
+    # The replay must never reach the PBKDF2 recovery loop — a "recovery count unchanged"
+    # assertion alone would pass even if it did, since a 6-digit code can't match anyway.
+    calls: list[str] = []
+    monkeypatch.setattr(
+        twofactor, "verify_recovery_for_login", lambda c, *a, **k: calls.append(c) or False
+    )
+
+    tab2 = _client(twofa_env)  # same 30s code, one tick later
+    _login(tab2, twofa_env)
+    r = tab2.post("/login/totp", data={"code": shared, "next": "/"}, **post)
+    assert r.status_code == 401
+    assert "already used" in r.text
+    assert "invalid code" not in r.text
+    assert calls == []  # replay short-circuits before recovery verification
+    # Fails closed: no session cookie minted, no API access, cursor untouched.
+    assert "agent_sessions" not in tab2.cookies
+    assert tab2.get("/api/config", follow_redirects=False).status_code == 401
+    assert json.loads(twofactor.default_path().read_text())["last_step"] == cursor
+    assert twofactor.recovery_remaining() == twofactor.RECOVERY_COUNT
+
+
+def test_replays_count_toward_the_same_lockout(twofa_env, monkeypatch):
+    """A replay is still a failed attempt — it must not be a free retry channel."""
+    clock = {"now": 1_700_000_000}
+    info = _enroll_at(clock, twofa_env, monkeypatch)
+    clock["now"] += twofactor.STEP_SECONDS
+    shared = pyotp.TOTP(info["secret"]).at(clock["now"])
+    post = dict(headers={"Origin": twofa_env.origin}, follow_redirects=False)
+
+    winner = _client(twofa_env)
+    _login(winner, twofa_env)
+    assert winner.post("/login/totp", data={"code": shared, "next": "/"}, **post).status_code == 303
+
+    loser = _client(twofa_env)
+    _login(loser, twofa_env)
+    for _ in range(10):  # _TOTP_MAX_FAILS
+        r = loser.post("/login/totp", data={"code": shared, "next": "/"}, **post)
+        assert r.status_code == 401 and "already used" in r.text
+    assert loser.post("/login/totp", data={"code": shared, "next": "/"}, **post).status_code == 429
+
+
+def test_wrong_code_still_reports_invalid(twofa_env):
+    """The new message must not swallow the genuine-wrong-code case."""
+    setup = _client(twofa_env)
+    _enable_2fa(setup, twofa_env)
+    c = _client(twofa_env)
+    _login(c, twofa_env)
+    r = c.post(
+        "/login/totp",
+        data={"code": "000000", "next": "/"},
+        headers={"Origin": twofa_env.origin},
+        follow_redirects=False,
+    )
+    assert r.status_code == 401
+    assert "invalid code" in r.text
+    assert "already used" not in r.text

@@ -7,6 +7,8 @@ race), 0600 file perms, and the host clear() escape hatch.
 
 from __future__ import annotations
 
+import json
+import re
 import threading
 
 import pyotp
@@ -36,7 +38,7 @@ def _enroll_and_confirm(store, now=T0):
 def test_disabled_by_default(store):
     assert twofactor.is_enabled(store) is False
     assert twofactor.check_totp("000000", store) is False
-    assert twofactor.verify_totp_for_login("000000", store) is False
+    assert twofactor.login_totp_outcome("000000", store) == twofactor.TOTP_INVALID
 
 
 def test_enrollment_is_two_phase_and_confirm_only(store):
@@ -76,25 +78,25 @@ def test_login_verify_then_replay_rejected(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS  # next step (the confirm code can't be reused)
     code = pyotp.TOTP(info["secret"]).at(later)
-    assert twofactor.verify_totp_for_login(code, store, now=later) is True
-    assert twofactor.verify_totp_for_login(code, store, now=later) is False  # replay rejected
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_REPLAYED
 
 
 def test_confirm_code_cannot_be_replayed_at_login(store):
     """Seeding the cursor with the confirm step blocks reusing that same code to log in."""
     info = _enroll_and_confirm(store, now=T0)
     confirm_code = pyotp.TOTP(info["secret"]).at(T0)
-    assert twofactor.verify_totp_for_login(confirm_code, store, now=T0) is False
+    assert twofactor.login_totp_outcome(confirm_code, store, now=T0) == twofactor.TOTP_REPLAYED
 
 
 def test_replay_cursor_persists_across_reload(store):
     info = _enroll_and_confirm(store, now=T0)
     later = T0 + twofactor.STEP_SECONDS
     code = pyotp.TOTP(info["secret"]).at(later)
-    assert twofactor.verify_totp_for_login(code, store, now=later) is True
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
     # Simulate a process restart: nothing in-memory, only the file. The just-used step must
     # still be rejected (the cursor is persisted, not held in RAM).
-    assert twofactor.verify_totp_for_login(code, store, now=later) is False
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_REPLAYED
 
 
 def test_recovery_codes_one_time_use(store):
@@ -138,7 +140,7 @@ def test_check_totp_does_not_consume_or_advance(store):
     # step (check_totp must not advance the replay cursor).
     assert twofactor.check_totp(code, store, now=later) is True
     assert twofactor.check_totp(code, store, now=later) is True
-    assert twofactor.verify_totp_for_login(code, store, now=later) is True
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
 
 
 def test_regenerate_recovery_replaces_codes(store):
@@ -180,7 +182,7 @@ def test_corrupt_store_fails_closed(store):
     # locked until the file is cleared / 2FA disabled with the password).
     store.write_text("this is not json {{{")
     assert twofactor.is_enabled(store) is True
-    assert twofactor.verify_totp_for_login("123456", store) is False
+    assert twofactor.login_totp_outcome("123456", store) == twofactor.TOTP_INVALID
     assert twofactor.verify_recovery_for_login("aaaa-bbbb-cccc", store) is False
     assert twofactor.check_totp("123456", store) is False
 
@@ -207,3 +209,84 @@ def test_clear_2fa_cli(store, capsys):
     assert cli.main(["clear-2fa"]) == 0
     assert "2FA disabled" in capsys.readouterr().out
     assert twofactor.is_enabled(store) is False
+
+
+def test_replay_is_reported_apart_from_invalid(store):
+    """#814: a spent-but-correct code must not read as a wrong one.
+
+    Two login tabs share one 30s code — whichever submits second is the operator's *correct*
+    code being refused, and "invalid code" sends them hunting a problem that fixes itself on
+    the next tick.
+    """
+    info = _enroll_and_confirm(store, now=T0)
+    later = T0 + twofactor.STEP_SECONDS
+    code = pyotp.TOTP(info["secret"]).at(later)
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_OK
+    assert twofactor.login_totp_outcome(code, store, now=later) == twofactor.TOTP_REPLAYED
+    # A genuinely wrong code stays INVALID...
+    assert twofactor.login_totp_outcome("000000", store, now=later) == twofactor.TOTP_INVALID
+    # ...and neither refusal moves the cursor past the one step that was actually consumed.
+    assert json.loads(store.read_text())["last_step"] == later // twofactor.STEP_SECONDS
+
+
+def test_totp_shaped_code_never_touches_the_recovery_hashes(store, monkeypatch):
+    """#815: a 6-digit TOTP can't be a recovery code, so it must cost zero key derivations.
+
+    Pinned by counting comparisons, not wall-clock. Before the shape gate one wrong code
+    walked all RECOVERY_COUNT hashes — 5.25s of PBKDF2 on the production host, which made
+    the login page look hung and drove the resubmit that then failed as a replay (#814).
+    """
+    _enroll_and_confirm(store)
+    calls: list[str] = []
+    real = twofactor.verify_password
+
+    def counting(candidate, hashed):
+        calls.append(candidate)
+        return real(candidate, hashed)
+
+    monkeypatch.setattr(twofactor, "verify_password", counting)
+
+    assert twofactor.verify_recovery_for_login("123456", store) is False
+    assert calls == []  # zero derivations for a TOTP-shaped code
+    # A recovery-*shaped* miss still compares against every stored hash — the gate narrows
+    # the input, it doesn't weaken recovery-code brute-force cost.
+    assert twofactor.verify_recovery_for_login("dead-beef-cafe", store) is False
+    assert len(calls) == twofactor.RECOVERY_COUNT
+
+
+def test_shape_gate_accepts_every_minted_code(store):
+    """The gate is derived from the generator, so the two can't drift apart."""
+    info = _enroll_and_confirm(store)
+    for code in info["recovery_codes"]:
+        assert twofactor._looks_like_recovery(twofactor._normalize_recovery(code)) is True
+    # And a real code still verifies through the gate in its forgiving normalized forms.
+    assert twofactor.verify_recovery_for_login(info["recovery_codes"][0].upper(), store) is True
+    for junk in ("", "123456", "12345678901", "1234567890123", "zzzz-zzzz-zzzz"):
+        assert twofactor._looks_like_recovery(twofactor._normalize_recovery(junk)) is False
+
+
+@pytest.mark.parametrize("nbytes", [4, 6, 8])
+def test_generator_and_shape_gate_share_one_length_contract(store, monkeypatch, nbytes):
+    """#815: move the entropy constant and both sides must move with it.
+
+    The regression Hermes caught: the shape gate derived its length from RECOVERY_BYTES
+    while the formatter hard-cut three 4-char groups, so raising the constant minted codes
+    that were then rejected as "not one of ours" (and silently dropped entropy).
+    """
+    monkeypatch.setattr(twofactor, "RECOVERY_BYTES", nbytes)
+    _enroll_and_confirm(store)
+    codes = twofactor.regenerate_recovery(store)
+    assert codes is not None
+    for code in codes:
+        normalized = twofactor._normalize_recovery(code)
+        assert len(normalized) == nbytes * 2  # no truncation of the minted token
+        assert twofactor._looks_like_recovery(normalized) is True
+    # A freshly minted code still logs in at a non-default length.
+    assert twofactor.verify_recovery_for_login(codes[0], store) is True
+
+
+def test_default_recovery_code_format_is_unchanged(store):
+    """The shipped format stays xxxx-xxxx-xxxx — operators' stored codes keep working."""
+    info = _enroll_and_confirm(store)
+    for code in info["recovery_codes"]:
+        assert re.fullmatch(r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}", code)

@@ -278,8 +278,20 @@ def register(
             return fail("too many attempts — try again later", status=429)
 
         code = code.strip()
-        ok = twofactor.verify_totp_for_login(code) or twofactor.verify_recovery_for_login(code)
-        if not ok:
+        outcome = twofactor.login_totp_outcome(code)
+        if outcome == twofactor.TOTP_REPLAYED:
+            # A correct code whose 30s step is already spent — a second tab, or a resubmit.
+            # "invalid code" sends the operator hunting a problem that fixes itself on the
+            # next tick (#814). A spent TOTP is not a recovery code either, so skip that path.
+            _totp_note_fail()
+            return fail("that code was already used — wait for the next one")
+        # Explicit per-outcome branching, never truthiness: `outcome` is a string, so an
+        # unrecognised value must fall through to failure rather than read as authenticated.
+        authenticated = outcome == twofactor.TOTP_OK
+        if not authenticated and outcome == twofactor.TOTP_INVALID:
+            # Only a code that matched no live TOTP step can be a recovery code.
+            authenticated = twofactor.verify_recovery_for_login(code)
+        if not authenticated:
             _totp_note_fail()
             return fail("invalid code")
         _totp_reset()
