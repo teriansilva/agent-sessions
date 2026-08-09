@@ -769,19 +769,61 @@ export function Terminal({
     // #559: while a text selection is actively being made (desktop mouse-drag or mobile
     // long-press select-mode), pin the viewport so neither the browser/xterm drag-select edge
     // auto-scroll nor live-output follow drifts the view out from under the selection — the
-    // reported "selecting text scrolls the terminal around." `beginSelectionPin` records the
-    // scrollTop to hold; `onScrolled` snaps back to it, and the live-output `follow` is gated on
-    // `!selectionActive`. Released on selection end (mouseup / exit select mode).
+    // reported "selecting text scrolls the terminal around." Released on selection end
+    // (mouseup / exit select mode); the live-output `follow` is gated on `!selectionActive`.
+    //
+    // #812: the pin holds the BUFFER position, not just the DOM `scrollTop`, and that is the
+    // whole fix. xterm's drag-select edge auto-scroll does not touch `scrollTop` — it fires
+    // `onRequestScrollLines`, which moves `ydisp` (the buffer's viewport line) and lets the DOM
+    // follow. So a pin that only rewrote `scrollTop` was arguing with the wrong layer: the
+    // buffer kept walking toward the top on its ~50 ms tick while we shoved the element back,
+    // and the rendered viewport juddered once per tick before the buffer won outright.
+    //
+    // Traced, 25 ms sampling of `.xterm-viewport.scrollTop` through one 500 ms drag:
+    //
+    //     pass  1305→945→1305→765→1305→405→1305→225→1305→0→1305
+    //     FAIL  1305→585→1305→45→1305→0
+    //
+    // Every run bounced; the failures were just the ones whose last tick landed displaced. So
+    // restore `ydisp` — the source of truth — and the DOM never has a wrong value to show.
+    // `term.onScroll` fires synchronously on a `scrollLines` scroll, before the queued render,
+    // so the corrected position is what gets painted rather than a corrected-next-frame one.
     let selectionActive = false;
     let selectionPinTop = 0;
+    let selectionPinY = 0;
+    // `scrollToLine` re-enters `onScrolled` through `term.onScroll`; without this the restore
+    // would recurse once per correction.
+    let restoringPin = false;
     type ViewportAnchor = { viewportY: number; scrollTop: number };
     let readerAnchor: ViewportAnchor | null = null;
     const beginSelectionPin = () => {
       selectionActive = true;
       selectionPinTop = vpEl?.scrollTop ?? 0;
+      selectionPinY = term.buffer.active.viewportY;
     };
     const endSelectionPin = () => {
       selectionActive = false;
+    };
+    /** Put both layers back where the selection started. Returns whether anything moved. */
+    const restoreSelectionPin = (): boolean => {
+      if (restoringPin) return false;
+      let moved = false;
+      restoringPin = true;
+      try {
+        // Buffer first: the DOM value is derived from it, so correcting `scrollTop` against a
+        // moved `ydisp` is undone by the next render.
+        if (term.buffer.active.viewportY !== selectionPinY) {
+          term.scrollToLine(selectionPinY);
+          moved = true;
+        }
+        if (vpEl && vpEl.scrollTop !== selectionPinTop) {
+          vpEl.scrollTop = selectionPinTop;
+          moved = true;
+        }
+      } finally {
+        restoringPin = false;
+      }
+      return moved;
     };
     const atTopNow = () => {
       const buf = term.buffer.active;
@@ -848,12 +890,12 @@ export function Terminal({
       }
     };
     const onScrolled = () => {
-      // #559: hold the viewport still while a selection is in progress — drag-select edge
-      // auto-scroll (or a stray follow) just tried to move it; snap straight back to where the
-      // selection began so the highlighted text stays under the finger/cursor.
-      if (selectionActive && vpEl && vpEl.scrollTop !== selectionPinTop) {
-        vpEl.scrollTop = selectionPinTop;
-        return;
+      // #559/#812: hold the viewport still while a selection is in progress — drag-select edge
+      // auto-scroll (or a stray follow) just tried to move it; put BOTH the buffer line and the
+      // element back to where the selection began, so the highlighted text stays under the
+      // finger/cursor. Restoring only the element left the buffer moved and the view juddering.
+      if (selectionActive) {
+        if (restoreSelectionPin()) return;
       }
       if (
         sawOutput &&

@@ -150,10 +150,34 @@ test("drag-selecting past the top edge does not auto-scroll the viewport", async
   await page.mouse.move(box.x + 20, box.y + box.height * 0.6);
   await page.mouse.down();
   const before = await vpScrollTop(page);
+
+  // #812: sample THROUGHOUT the drag, not just at the end. The pin used to rewrite `scrollTop`
+  // while xterm's edge auto-scroll moved the buffer underneath it, so the viewport bounced once
+  // per ~50 ms tick and only *sometimes* ended up displaced — an endpoint-only assertion passed
+  // ~19 runs in 20 against an implementation that visibly juddered on every one of them.
+  await page.evaluate(() => {
+    const w = window as unknown as { __vpTrace: number[] };
+    w.__vpTrace = [];
+    const el = document.querySelector(".xterm-viewport") as HTMLElement | null;
+    const id = window.setInterval(() => {
+      if (el) w.__vpTrace.push(el.scrollTop);
+    }, 25);
+    (window as unknown as { __vpStop: () => void }).__vpStop = () =>
+      window.clearInterval(id);
+  });
+
   await page.mouse.move(box.x + 140, box.y - 40, { steps: 6 });
   await page.waitForTimeout(500); // let several auto-scroll ticks fire
   const after = await vpScrollTop(page);
+  const trace = await page.evaluate(() => {
+    (window as unknown as { __vpStop: () => void }).__vpStop();
+    return (window as unknown as { __vpTrace: number[] }).__vpTrace;
+  });
   await page.mouse.up();
 
   expect(after).toBe(before); // pinned — the drag did not auto-scroll the viewport
+  expect(trace.length).toBeGreaterThan(4); // the sampler actually ran
+  // …and it never moved AT ALL along the way. `toEqual` over the distinct values so a failure
+  // prints the shape of the drift (e.g. 1305→945→1305→…) rather than one mismatched number.
+  expect([...new Set(trace)]).toEqual([before]);
 });
