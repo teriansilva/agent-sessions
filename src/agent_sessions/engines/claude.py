@@ -24,6 +24,7 @@ class ClaudeProvider:
     id_pattern = base._CLAUDE_UUID_RE
     supports_new = True  # ws new-session via new_launch_argv
     supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
+    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
     # Cross-engine handoff target (#597): a fresh claude TUI accepts the seed as a bracketed
     # paste on its PTY input (never argv — the shell-free/no-argv-seed contract).
     supports_seed_start = True

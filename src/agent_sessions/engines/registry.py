@@ -69,6 +69,26 @@ def supports_orchestrator_input(prov: base.EngineProvider | None) -> bool:
     return bool(getattr(prov, "supports_orchestrator_input", False))
 
 
+def expects_raw_tty(prov: base.EngineProvider | None) -> bool:
+    """Does this engine run a TUI that puts its PTY into raw mode and keeps it there? (#804)
+
+    **Default-deny**, for the same reason as ``supports_orchestrator_input`` above. This flag
+    authorises writing termios to a live session's terminal, and the one engine that must never
+    be written to looks exactly like the ones that must — ``shell`` (#636) is a bare ``bash -l``
+    whose terminal is cooked *by design* between commands, so "repairing" it would break the
+    operator's own line editing. A flag that defaulted on would silently include the next
+    agentless engine somebody adds. The failure mode has to be "a new engine's PTY is left
+    alone until someone says it's a raw TUI", never the reverse.
+
+    Separate from ``supports_orchestrator_input`` on purpose: that one asks whether the app may
+    author *content* for an engine, this one asks what its terminal is supposed to look like.
+    They agree today and would be tempting to collapse — but an engine could accept orchestrator
+    input without running a raw TUI, and overloading one flag for both would make that engine
+    unrepresentable.
+    """
+    return bool(getattr(prov, "expects_raw_tty", False))
+
+
 def orchestrator_input_engines() -> set[str]:
     """Engine ids the orchestrator may write to — the default-deny set above, resolved once so
     callers can filter a card list without touching providers per row."""

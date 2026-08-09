@@ -37,7 +37,7 @@ import threading
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 from concurrent.futures import ThreadPoolExecutor
 
-from . import perfstats, scrollback, session_input, sessionlock
+from . import perfstats, scrollback, session_input, sessionlock, tty_health
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -274,6 +274,67 @@ async def _force_repaint(
         await asyncio.sleep(_NUDGE_GAP_S)
         _set_winsize(master, rows, cols)
         proc.send_signal(signal.SIGWINCH)
+
+
+class _InputGate:
+    """Holds owner keystrokes while the PTY raw-mode repair is in flight (#805 review r2).
+
+    The repair runs concurrently with ``pump_in`` and it ends in ``TCSAFLUSH`` — which is
+    correct for the *stale* backlog the cooked terminal accumulated, but indiscriminate about
+    when those bytes arrived. A keystroke the operator types in the 150 ms confirm window is
+    written into a still-canonical terminal, sits in its line buffer, and is then thrown away by
+    the very flush that heals the session. The operator sees their first keystroke after
+    attaching vanish.
+
+    So input written while the probe runs is queued rather than dropped, and replayed once the
+    terminal can actually receive it. The distinction the flush cannot make — *typed before the
+    repair* (stale, discard) versus *typed during it* (intentional, keep) — is one this gate can,
+    because it sits on the only path owner bytes take.
+    """
+
+    __slots__ = ("_held", "_queue")
+
+    def __init__(self, held: bool) -> None:
+        self._held = held
+        self._queue: list[bytes] = []
+
+    @property
+    def held(self) -> bool:
+        return self._held
+
+    def hold(self, data: bytes) -> bool:
+        """Queue ``data`` and return True, or return False if the caller should write it now."""
+        if not self._held:
+            return False
+        self._queue.append(data)
+        return True
+
+    def release(self) -> list[bytes]:
+        """Open the gate; hand back everything queued, in arrival order. Idempotent."""
+        self._held = False
+        queued, self._queue = self._queue, []
+        return queued
+
+
+async def _repair_tty(buf_key: str | None) -> None:
+    """Heal a PTY stuck out of raw mode before this viewer types into it (#804).
+
+    Cooked, the line discipline eats every keystroke and the operator watches ``^[[B`` pile up
+    while the agent hears nothing — so the check belongs exactly here, at the attach.
+
+    **The whole probe goes through ``to_thread``, not just its reads.** ``webterm.run`` is an
+    event-loop coroutine serving every websocket in the process, and ``tty_health.ensure_raw``
+    walks ``/proc`` and sleeps for its confirm read. Calling it inline would stall every session
+    this process serves for the duration — the #678 treadmill, in a new place. Pinned by
+    ``test_webterm.py::test_attach_tty_repair_never_blocks_the_event_loop``.
+
+    Best-effort in the strongest sense: a health check must never be able to fail an attach, so
+    every exception is swallowed and the viewer connects regardless.
+    """
+    if not buf_key:
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(tty_health.ensure_raw, buf_key)
 
 
 def _nudge_plan(have: int, blank_attach: bool) -> float | None:
@@ -677,6 +738,12 @@ async def run(
     seed_hold = {"active": seed_key is not None}
     seed_queue: list[bytes] = []
 
+    # Owner input is gated until the PTY raw-mode probe finishes (#805 r2): the probe ends in
+    # TCSAFLUSH, which would otherwise swallow the very keystrokes the operator typed while it
+    # ran. Held only when there is something to repair (a buf_key); released in _nudge_repaint's
+    # finally, so a cancelled or failed probe can never strand the operator's bytes.
+    input_gate = _InputGate(bool(buf_key))
+
     def _release_seed_hold(*, delivered: bool) -> None:
         if not seed_hold["active"]:
             return
@@ -689,7 +756,10 @@ async def run(
             _note_submit(buf_key, queued)
 
     def _write_owner_input(data: bytes) -> None:
-        # Queue while a seed is pending; otherwise write straight through under the lock.
+        # Queue while the PTY repair is in flight, then while a seed is pending; otherwise write
+        # straight through under the lock.
+        if input_gate.hold(data):
+            return
         if seed_hold["active"]:
             seed_queue.append(data)
             return
@@ -808,6 +878,16 @@ async def run(
                 _write_owner_input(msg["bytes"])
 
     async def _nudge_repaint() -> None:
+        # A viewer is about to type, so this is the moment a PTY stuck out of raw mode has to be
+        # caught (#804). Runs BEFORE the `_nudge_plan` early-return: a session that needs no
+        # repaint can still need its terminal back. Owner input is gated across the probe and
+        # replayed after it (#805 r2) — the repair's TCSAFLUSH must discard the cooked terminal's
+        # stale backlog, never the keystrokes typed while we were fixing it.
+        try:
+            await _repair_tty(buf_key)
+        finally:
+            for chunk in input_gate.release():
+                _write_owner_input(chunk)
         # When and how long to wait before the forced repaint (#304/#349/#443, and #652 T-P1:
         # fire immediately for a fresh attach) is decided by `_nudge_plan` — see its docstring.
         settle = _nudge_plan(have, blank_attach)

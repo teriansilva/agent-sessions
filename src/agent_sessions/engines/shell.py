@@ -47,6 +47,7 @@ class ShellProvider:
     # server-authored "continue" nudge would be EXECUTED as a shell command. The registry
     # predicate already default-denies; this is explicit so the reason is at the site.
     supports_orchestrator_input = False
+    expects_raw_tty = False  # bash -l is cooked BY DESIGN between commands (#804)
 
     def is_present(self) -> bool:
         # Always usable where bash exists (effectively every Linux host); also present when the

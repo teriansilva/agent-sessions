@@ -50,6 +50,7 @@ from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
 from .registry import (  # noqa: F401 — public re-exports
     all_providers,
     canonical_key,
+    expects_raw_tty,
     get,
     invalidate_scan_cache,
     is_new_session_placeholder,
@@ -82,6 +83,7 @@ __all__ = [
     "scan_all",
     "scan_all_cached",
     "supports_orchestrator_input",
+    "expects_raw_tty",
     "orchestrator_input_engines",
     "invalidate_scan_cache",
     "set_scan_cache_ttl",

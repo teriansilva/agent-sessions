@@ -8,9 +8,17 @@ exposed without the same gate as the HTTP routes.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import sys
+import time
+from unittest import mock
+
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from agent_sessions import webterm
 from agent_sessions.auth import hash_password  # noqa: F401  (kept for parity w/ conftest)
 from agent_sessions.main import create_app
 
@@ -1639,3 +1647,155 @@ def test_ws_busy_still_returns_retryable_4409(fake_jsonl, auth_cfg):
     finally:
         lk.release()
     assert code == 4409  # unchanged, still retryable
+
+
+# --- PTY raw-mode repair on attach (#804) --------------------------------------------------
+
+
+def test_attach_tty_repair_never_blocks_the_event_loop():
+    """The repair probe walks /proc and sleeps; inline it would stall every session (#678).
+
+    `webterm.run` is an event-loop coroutine shared by every websocket in the process, so the
+    whole probe — not merely its individual reads — has to be handed to a worker thread. This
+    asserts both halves of that: the loop keeps servicing other tasks while the probe runs, and
+    the probe really did execute somewhere other than the loop's own thread.
+    """
+    import threading
+
+    loop_thread = threading.current_thread()
+    ran_on: dict = {}
+    ticks = {"n": 0}
+
+    def _slow_probe(key):
+        ran_on["thread"] = threading.current_thread()
+        ran_on["key"] = key
+        time.sleep(0.25)
+        return "verdict"
+
+    async def _ticker():
+        while True:
+            ticks["n"] += 1
+            await asyncio.sleep(0.01)
+
+    async def _drive():
+        t = asyncio.create_task(_ticker())
+        try:
+            await webterm._repair_tty("codex:11111111-2222-3333-4444-555555555555")
+        finally:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _slow_probe):
+        asyncio.run(_drive())
+
+    assert ran_on["key"] == "codex:11111111-2222-3333-4444-555555555555"
+    assert ran_on["thread"] is not loop_thread, "probe ran on the event loop thread"
+    assert ticks["n"] > 5, f"event loop was starved during the probe (only {ticks['n']} ticks)"
+
+
+def test_attach_tty_repair_is_skipped_without_a_buffer_key():
+    with mock.patch.object(webterm.tty_health, "ensure_raw") as m:
+        asyncio.run(webterm._repair_tty(None))
+    m.assert_not_called()
+
+
+def test_attach_tty_repair_never_fails_an_attach():
+    """A health check must not be able to stop a viewer connecting."""
+
+    def _boom(_key):
+        raise RuntimeError("procfs went sideways")
+
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _boom):
+        asyncio.run(webterm._repair_tty("codex:11111111-2222-3333-4444-555555555555"))
+
+
+def test_the_input_gate_passes_through_once_released():
+    gate = webterm._InputGate(True)
+    assert gate.held is True
+    assert gate.hold(b"a") is True
+    assert gate.release() == [b"a"]
+    assert gate.held is False
+    assert gate.hold(b"b") is False, "after release, input must go straight to the PTY"
+    assert gate.release() == [], "release is idempotent and drains nothing twice"
+
+
+def test_an_ungated_attach_needs_no_queue():
+    """No buf_key ⇒ nothing to repair ⇒ input must never be delayed."""
+    gate = webterm._InputGate(False)
+    assert gate.hold(b"a") is False
+    assert gate.release() == []
+
+
+_ECHO_CHILD = """
+import os, time
+os.write(1, b"READY\\r\\n")
+d = os.read(0, 64)
+os.write(1, b"ECHO[" + d + b"]\\r\\n")
+time.sleep(0.4)
+"""
+
+
+def _timestamping_ws(collected, frames):
+    """Fake WS that sends `frames` then blocks, and timestamps every byte the PTY emits."""
+
+    class FakeWS:
+        def __init__(self):
+            self._pending = list(frames)
+
+        async def receive(self):
+            if self._pending:
+                await asyncio.sleep(0.05)
+                return {"text": self._pending.pop(0)}
+            await asyncio.sleep(10)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            collected.append((time.monotonic(), b))
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    return FakeWS()
+
+
+def test_attach_holds_owner_input_until_the_pty_repair_finishes(tmp_path):
+    """Ordering regression for #805 r2, driven through the real `webterm.run` attach path.
+
+    The repair ends in TCSAFLUSH — right for the stale backlog a cooked terminal accumulated,
+    blind to when a byte arrived. A keystroke typed inside the confirm window would land in the
+    still-canonical line buffer and be discarded by the very flush that heals the session, so
+    the operator's first keystroke after attaching vanishes. Owner input is therefore gated
+    across the probe and replayed after it.
+
+    Asserted against the child's echo, not against a stand-in for the write path: the byte must
+    not reach the PTY until the probe has returned. Against an ungated build the echo arrives
+    while the probe is still sleeping and this fails.
+    """
+    probe = {}
+
+    def _slow_probe(_key):
+        probe["start"] = time.monotonic()
+        time.sleep(0.4)
+        probe["end"] = time.monotonic()
+
+    collected: list[tuple[float, bytes]] = []
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _slow_probe):
+        asyncio.run(
+            webterm.run(
+                _timestamping_ws(collected, [json.dumps({"t": "i", "d": "X\n"})]),
+                [sys.executable, "-c", _ECHO_CHILD],
+                cwd=str(tmp_path),
+                buf_key="codex:11111111-2222-3333-4444-555555555555",
+            )
+        )
+
+    assert "end" in probe, "the repair probe never ran; this test proves nothing"
+    echoes = [t for t, b in collected if b"ECHO[" in b]
+    assert echoes, f"child never echoed the keystroke; got {[b for _, b in collected]!r}"
+    assert (
+        echoes[0] > probe["end"]
+    ), "owner input reached the PTY before the repair finished — TCSAFLUSH would eat it"

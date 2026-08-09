@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import os
 import pty
+import termios
 import threading
 import time
 from unittest import mock
@@ -34,6 +35,7 @@ from agent_sessions import (
     prefs,
     scrollback,
     session_input,
+    tty_health,
 )
 from agent_sessions import (
     orchestrator_ledger as ledger,
@@ -1252,3 +1254,197 @@ def test_ingest_cannot_land_between_the_epoch_read_and_byte_one(pty_pair, monkey
         "a screen change completed while the first byte was being written — the fence observes "
         "the screen but does not reserve it, so byte one can land in a prompt that just moved"
     )
+
+
+# --- the PTY raw-mode gate at the write boundary (#804 / #805 r2) --------------------------
+
+
+def test_a_pty_that_reverts_during_the_readiness_wait_is_refused_not_delivered(pty_pair):
+    """`delivered` must mean the agent can receive it, not merely that a write() returned.
+
+    The early raw-mode check happens before `_wait_quiet`, which can burn seconds. A PTY that
+    reverts to canonical inside that window swallows the payload into a line buffer — and the
+    ledger would record `delivered` for a turn that never happens. Same shape as every other
+    stale-authorization bug: re-check at the write boundary, not before the wait.
+    """
+    master, _slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    verdicts = iter(
+        [
+            tty_health.Verdict(tty_health.HEALTHY, "raw", "/dev/pts/9"),
+            tty_health.Verdict(tty_health.STUCK, "repair failed (EIO)", "/dev/pts/9"),
+        ]
+    )
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: next(verdicts)):
+        out = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert out.state == "refused"
+    assert "consuming input" in out.detail
+
+
+def test_a_pty_that_becomes_unresolvable_after_being_resolvable_is_refused(pty_pair):
+    """Resolvable-then-not is a state change under us, not ignorance — do not claim delivery."""
+    master, _slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    verdicts = iter(
+        [
+            tty_health.Verdict(tty_health.HEALTHY, "raw", "/dev/pts/9"),
+            tty_health.Verdict(tty_health.UNKNOWN, "no live master", None),
+        ]
+    )
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: next(verdicts)):
+        out = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert out.state == "refused"
+    assert "changed" in out.detail
+
+
+def test_a_pty_that_was_never_resolvable_still_delivers(pty_pair):
+    """Refusing on plain ignorance would trade a rare false `delivered` for constant false failure.
+
+    An unresolvable PTY is exactly what every delivery before #804 knew about every session, so
+    it is not new evidence of anything and must not become a new way to fail.
+    """
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    unknown = tty_health.Verdict(tty_health.UNKNOWN, "no live master", None)
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: unknown):
+        out = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert out.ok
+    assert b"continue" in os.read(slave, 1024)
+
+
+def test_a_healthy_pty_at_both_checks_delivers(pty_pair):
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    healthy = tty_health.Verdict(tty_health.HEALTHY, "raw", "/dev/pts/9")
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: healthy):
+        out = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert out.ok
+    assert b"continue" in os.read(slave, 1024)
+
+
+def test_a_pty_that_reverts_while_waiting_for_the_write_lock_is_refused(pty_pair):
+    """#805 r3: the last unbounded wait before byte one is the write lock itself.
+
+    `send_input` clears raw mode before `borrow_writer`, but `_write_all` can then wait the
+    whole remaining delivery timeout for `pump_in` or the seed writer to release the shared
+    lock. A terminal that reverts inside that wait takes the payload into a line buffer while
+    `os.write` reports success — the same false `delivered` the earlier gates exist to
+    prevent, moved behind a different wait.
+
+    Both `ensure_raw` calls are stubbed healthy (naming the REAL pty), and the pty is actually
+    cooked — so only the under-lock `still_raw` probe can catch it, and nothing else in the
+    path can accidentally pass this test.
+    """
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    healthy = tty_health.Verdict(
+        tty_health.HEALTHY, "raw", os.ttyname(slave), rdev=os.fstat(slave).st_rdev
+    )
+    mode = termios.tcgetattr(slave)
+    mode[3] |= termios.ICANON | termios.ECHO  # reverted while we queued for the lock
+    termios.tcsetattr(slave, termios.TCSANOW, mode)
+
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: healthy):
+        out = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert out.state == "refused"
+    assert "prove" in out.detail
+
+
+def test_still_raw_reads_the_real_terminal(pty_pair):
+    _master, slave = pty_pair
+    dev, rdev = os.ttyname(slave), os.fstat(slave).st_rdev
+
+    tty_health._restore_input_raw(slave)
+    assert tty_health.still_raw(dev, rdev) is True
+
+    mode = termios.tcgetattr(slave)
+    mode[3] |= termios.ICANON | termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, mode)
+    assert tty_health.still_raw(dev, rdev) is False
+
+    assert tty_health.still_raw(dev, rdev + 1) is None, "a recycled pts must not answer"
+
+
+def test_the_bound_pty_probe_runs_while_the_fence_lock_is_held(pty_pair):
+    """#805 r4(a): the probe must be taken INSIDE `_lock`, not before queueing for it.
+
+    Waiting for `_lock` is not an I/O-free instant — `policy_transaction()` and
+    `session_transaction()` hold it across their caller's body, and those bodies do persisted
+    writes (`prefs._mutate`, `metadata.patch`). A probe taken before that wait describes the
+    past exactly like every earlier version of this gate did.
+
+    This asserts the ORDERING rather than replaying the race, deliberately. The discriminating
+    window — after the old probe, before the old fence — exists only in the unfixed code and
+    offers no hook to synchronise on; and `send_input` itself takes `_lock` early via
+    `current_policy_epoch()`, so a test that simply holds `_lock` blocks the sender *before* the
+    probe in both placements and proves nothing (that was this test's first version). What is
+    both deterministic and exactly the property under review is: when the probe runs, the fence
+    is already held. Nothing else holds `_lock` in this test, so `locked()` is true iff the
+    sender holds it.
+    """
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    tty_health._restore_input_raw(slave)
+    healthy = tty_health.Verdict(
+        tty_health.HEALTHY, "raw", os.ttyname(slave), rdev=os.fstat(slave).st_rdev
+    )
+    seen: dict = {}
+
+    def _probe(_dev, _rdev):
+        seen["lock_held"] = session_input._lock.locked()
+        return True
+
+    with (
+        mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: healthy),
+        mock.patch.object(session_input.tty_health, "still_raw", _probe),
+    ):
+        res = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert res.ok
+    assert seen.get("lock_held") is True, (
+        "the PTY probe ran before the fence was held — its verdict can go stale "
+        "during an I/O-bound wait for _lock"
+    )
+
+
+def test_a_bound_pty_that_stops_resolving_at_the_fence_is_refused(pty_pair):
+    """#805 r4(b): `None` from the bound probe is a state change, not ignorance.
+
+    The closure exists ONLY because this delivery already resolved and bound a concrete
+    (device, rdev). If that identity stops verifying, the PTY we proved is gone — which is the
+    same shape as the early-resolvable → final-unresolvable refusal, not the never-resolvable
+    case the availability policy deliberately tolerates.
+
+    Reproduced for real via the identity check rather than a stub: the bound rdev no longer
+    matches the device, so `_open_pts` rejects it and `still_raw` returns `None`.
+    """
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    tty_health._restore_input_raw(slave)
+    bound_elsewhere = tty_health.Verdict(
+        tty_health.HEALTHY, "raw", os.ttyname(slave), rdev=os.fstat(slave).st_rdev + 1
+    )
+
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: bound_elsewhere):
+        res = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert res.state == "refused"
+    assert "prove" in res.detail
+
+
+def test_a_never_resolvable_pty_still_delivers_after_the_fence_move(pty_pair):
+    """The narrowing survives the move: no closure is created, so nothing new can refuse."""
+    master, slave = pty_pair
+    session_input.register_writer(KEY, master, threading.Lock(), "headless")
+    unknown = tty_health.Verdict(tty_health.UNKNOWN, "no live master", None)
+
+    with mock.patch.object(session_input.tty_health, "ensure_raw", lambda k: unknown):
+        res = session_input.send_input(KEY, b"continue\r", require_quiet=False)
+
+    assert res.ok
+    assert b"continue" in os.read(slave, 1024)

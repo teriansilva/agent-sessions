@@ -40,6 +40,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 
+from . import tty_health
+
 # A pty write with confirmed room accepts at least this much without blocking; a blocking
 # write never returns short, so a larger chunk could still block past the deadline.
 WRITE_CHUNK = 256
@@ -355,6 +357,14 @@ def send_input(
     writer = current_writer(key)
     if writer is None:
         return Outcome("not_live", "no writer owns this session")
+    # A PTY stuck out of raw mode accepts our bytes and gives them to the line discipline, not to
+    # the agent (#804) — so the write "succeeds", the ledger records `delivered`, and nothing
+    # happens. Repair before the readiness waits below, since a cooked terminal is exactly the
+    # state in which "quiet" means the opposite of ready. Best-effort: an unresolvable or
+    # ambiguous PTY is left alone and the delivery proceeds as it always did. This is the EARLY
+    # check; it is re-made at the write boundary below, because the waits in between are long
+    # enough for the terminal to revert underneath it (#805 r2).
+    early_tty = tty_health.ensure_raw(key)
     # The generation every check below is made AGAINST. Bind it now: the precondition's verdict
     # ("no viewer, screen still looks right") describes THIS writer, so if the registry is
     # swapped before we write, that verdict says nothing about the new owner. Without this the
@@ -376,6 +386,29 @@ def send_input(
         ok, reason = precondition()
         if not ok:
             return Outcome("stale", reason)
+
+    # Raw mode is re-established HERE, at the write boundary — not merely before the waits
+    # above (#805 r2). `_wait_quiet` alone can burn QUIET_WAIT_MAX_S, and a PTY that reverts
+    # inside that window takes our bytes into a canonical line buffer while the ledger records
+    # `delivered` — a delivery that provably did not happen. Same lesson as the confirm-window
+    # race in `tty_health`: an authorization computed before a wait says nothing after it.
+    #
+    # What this refuses is deliberately narrow. Proven-cooked-and-unrepairable is a refusal:
+    # we know the bytes cannot land. *Unresolvable* is not, because it is no worse than what
+    # every delivery before this change knew — refusing there would trade a rare false
+    # `delivered` for a common false failure. The one exception is a PTY that WAS resolvable at
+    # the early check and is not now: that is not ignorance, it is a change of state under us.
+    final_tty = tty_health.ensure_raw(key)
+    if final_tty.status == tty_health.STUCK and not final_tty.repaired:
+        return Outcome("refused", f"the session's PTY is consuming input ({final_tty.detail})")
+    if early_tty.device is not None and final_tty.device != early_tty.device:
+        return Outcome("refused", "the session's PTY changed while waiting for it to go quiet")
+    # Re-asked once more under the write lock — see `_write_all`. Bound to the exact device
+    # this verdict describes, so a recycled pts number cannot answer for it.
+    tty_probe = None
+    if final_tty.device is not None and final_tty.rdev is not None:
+        _dev, _rdev = final_tty.device, final_tty.rdev
+        tty_probe = lambda: tty_health.still_raw(_dev, _rdev)  # noqa: E731
 
     # Re-resolve AFTER the waits: an attach/detach may have flipped ownership while we waited,
     # and writing to the fd we looked up before the wait would be writing to a dead owner.
@@ -409,6 +442,7 @@ def send_input(
             policy_epoch=policy_epoch,
             policy_fingerprint=policy_fingerprint,
             final_guard=final_guard,
+            tty_probe=tty_probe,
         )
     finally:
         with contextlib.suppress(OSError):
@@ -428,6 +462,7 @@ def _write_all(
     policy_epoch: int = 0,
     policy_fingerprint: Callable[[], object] | None = None,
     final_guard: Callable[[], tuple[bool, str]] | None = None,
+    tty_probe: Callable[[], bool | None] | None = None,
 ) -> Outcome:
     """The chunked write itself, against an fd the caller has already pinned.
 
@@ -494,6 +529,32 @@ def _write_all(
                     # detach — must take `_lock` to bump the epoch, so none of it can
                     # interleave with the send.
                     with _lock:
+                        # The PTY proof lives INSIDE the fence (#805 r4), not before it.
+                        #
+                        # It was one line above until the review disproved the reason it was
+                        # there: I claimed acquiring `_lock` was an I/O-free instant. It is
+                        # not. `policy_transaction()` and `session_transaction()` hold `_lock`
+                        # across the caller's whole body, and those bodies do persisted
+                        # writes — `prefs._mutate(...)` and `metadata.patch(...)`. So queueing
+                        # for `_lock` is a real, file-I/O-bound wait, and a probe taken before
+                        # it describes the past exactly like every earlier version did.
+                        #
+                        # No deadlock is reintroduced: the hazard the module warns about is
+                        # reading PREFS under `_lock` (that inverts against the prefs flock).
+                        # `still_raw` touches one pty device and nothing else.
+                        #
+                        # `is not True` — not `is False`. A closure exists ONLY because this
+                        # delivery already resolved and bound a concrete (device, rdev), so
+                        # `None` here means that bound PTY stopped being resolvable, which is
+                        # a state change under us, not the ignorance the never-resolvable
+                        # policy tolerates. That distinction is the whole reason the closure
+                        # is bound rather than re-resolved.
+                        if tty_probe is not None and tty_probe() is not True:
+                            return Outcome(
+                                "refused",
+                                "could not prove the session's PTY still accepts input at the "
+                                "write boundary",
+                            )
                         cur = _writers.get(key) if key else None
                         # Fail CLOSED on an absent writer: the previous form only compared
                         # tokens when `cur is not None`, so a released session read as

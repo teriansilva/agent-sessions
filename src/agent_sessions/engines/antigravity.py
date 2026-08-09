@@ -161,6 +161,7 @@ class AntigravityProvider:
     # codex/opencode (#315 / #449). Resume still pins the existing id via ``--conversation``.
     supports_new = True
     supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
+    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
     new_session_reconciles = True
 
     def is_present(self) -> bool:

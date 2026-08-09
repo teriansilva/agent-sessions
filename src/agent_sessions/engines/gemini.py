@@ -41,6 +41,7 @@ class GeminiProvider:
     id_pattern = base._GEMINI_UUID_RE
     supports_new = True  # new session with a pinned id via `gemini --session-id <uuid>`
     supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
+    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
 
     def is_present(self) -> bool:
         return base._gemini_tmp_dir().is_dir() or shutil.which("gemini") is not None
