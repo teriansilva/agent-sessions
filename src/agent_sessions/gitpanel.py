@@ -466,17 +466,22 @@ def _read_capped(path: str, limit: int) -> str | None:
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def _copy_nofollow(src: str, dst: str, limit: int) -> bool:
+def _copy_nofollow(src: str, dst: str, limit: int, *, keep_mtime: bool = False) -> bool:
     """Copy a metadata file through a verified descriptor. False ⇒ absent, a symlink, or too big.
 
     `shutil.copyfile` follows symlinks and stats the name rather than the handle, so a metadata
     file swapped for a link between the check and the copy would be read from wherever it pointed.
+
+    ``keep_mtime`` carries the SOURCE's timestamps onto the copy. That is load-bearing for the
+    index — see ``sanitized_gitdir`` — and harmless for everything else, so it is opt-in rather
+    than the default.
     """
     fd = _open_nofollow(src)
     if fd is None:
         return False
     try:
-        if os.fstat(fd).st_size > limit:
+        st = os.fstat(fd)
+        if st.st_size > limit:
             return False
         with open(dst, "wb") as out:
             while True:
@@ -484,6 +489,8 @@ def _copy_nofollow(src: str, dst: str, limit: int) -> bool:
                 if not chunk:
                     break
                 out.write(chunk)
+        if keep_mtime:
+            os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
     except OSError:
         return False
     finally:
@@ -628,8 +635,25 @@ def sanitized_gitdir(repo: Repo):
         # git would compare the worktree against an empty index and report a plausible, wrong set
         # of changes (measured: one path listed twice, as both a staged delete and an addition).
         index = os.path.join(repo.gitdir, "index")
+        # `keep_mtime` is CORRECTNESS here, not tidiness (#797).
+        #
+        # git can usually decide a file is unchanged from `stat` alone, by comparing it against
+        # the stat cached in the index. That shortcut is unsound for an edit made in the same
+        # timestamp granule as the index write — same size, same mtime, different content — so
+        # git guards it: any entry whose mtime is >= the INDEX FILE's own mtime is "racily
+        # clean" and gets re-hashed instead of trusted.
+        #
+        # A fresh copy has a fresh mtime, which makes every entry look comfortably older than
+        # the index and switches that guard off. The result is git reporting **no change for a
+        # file that changed** — measured: a same-size edit made in the same second as the commit
+        # is reported as modified when the panel runs within that second, and as clean once a
+        # second has passed (6/6 reproducible). That is the panel's worst possible failure, and
+        # it reached the Git tab as an intermittent "this file has no recorded change" 404.
+        #
+        # Carrying the source's timestamps over makes the snapshot's racy-clean arithmetic
+        # identical to the real gitdir's, which is the whole intent of the copy.
         if os.path.lexists(index) and not _copy_nofollow(
-            index, os.path.join(tmp, "index"), GIT_MAX_INDEX_BYTES
+            index, os.path.join(tmp, "index"), GIT_MAX_INDEX_BYTES, keep_mtime=True
         ):
             raise GitError("this repository's index could not be read safely", status=400)
 

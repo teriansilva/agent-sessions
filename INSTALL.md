@@ -106,9 +106,32 @@ Set at install time (persisted into `env`):
 | `AGENT_SESSIONS_REF` | Pin an exact tag/branch/sha. |
 | `AGENT_SESSIONS_REPO` | Source repo URL (for private mirrors). |
 | `AGENT_SESSIONS_NO_SERVICE=1` | Install without touching systemd. |
+| `AGENT_SESSIONS_SCOPE_PROPERTIES` | Per-session systemd scope limits (default `TasksMax=2048`). See below. |
 
 The engine CLI binary paths are recorded automatically by `doctor`; you don't normally set them by
 hand.
+
+### Per-session resource limits
+
+On a host with a systemd user manager, each session's agent runs in its own transient scope, so a
+runaway session exhausts its **own** budget rather than the host's. The default budget is
+`TasksMax=2048`; `AGENT_SESSIONS_SCOPE_PROPERTIES` overrides it with space-separated
+`Key=Value` systemd properties:
+
+```sh
+# ~/.local/share/agent-sessions/env — then: systemctl --user restart agent-sessions
+AGENT_SESSIONS_SCOPE_PROPERTIES=TasksMax=2048 MemoryHigh=8G
+```
+
+Two things to know:
+
+- **It replaces the default, it does not merge** — restate `TasksMax=` when adding a property.
+- **Upgrades preserve it.** `install.sh` only adds keys that are absent from `env`, so a tuned
+  value survives a reinstall.
+
+Memory properties are deliberately not defaulted (agents legitimately run heavy builds); opt in
+after checking that your host delegates the `memory` controller to the user manager. Full detail,
+including why the task budget is what it is: [`docs/session-handling.md`](docs/session-handling.md).
 
 ## Put it behind nginx
 

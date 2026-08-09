@@ -814,6 +814,37 @@ def test_diff_of_an_unstaged_change(repo):
     assert d["truncated"] is False
 
 
+def test_a_same_second_edit_is_still_seen_a_second_later(repo):
+    """The index snapshot must not defeat git's racily-clean guard (#797).
+
+    git decides "unchanged" from `stat` alone when the worktree file matches the stat cached in
+    the index. For an edit made in the same timestamp granule as the index write — same size,
+    same mtime, different content — that shortcut is unsound, so git re-hashes any entry whose
+    mtime is >= the INDEX FILE's own mtime instead of trusting it.
+
+    `sanitized_gitdir` copies the index, and a fresh copy has a fresh mtime — which makes every
+    entry look safely older than the index and switches the guard off. git then reports **no
+    change for a file that changed**: reproduced 6/6 by editing `a.txt` in the same second as
+    the commit and asking a second later (within the same second it passed, which is why this
+    surfaced as a load-dependent flake rather than a steady failure).
+
+    The three tests that flaked in CI all share the same-size shape this asserts; the mechanism
+    is a real panel defect, so this is a correctness regression rather than test hygiene.
+    """
+    # Same LENGTH as the committed content, so size cannot betray the change — and written
+    # immediately after the `repo` fixture's commit, so it lands in the same whole second.
+    (repo / "a.txt").write_text("one\nTWO\n")
+    assert int((repo / "a.txt").stat().st_mtime) == int((repo / ".git" / "index").stat().st_mtime)
+
+    # Cross the one-second boundary: this is what a loaded CI run does for free between the
+    # fixture and the assertion, and it is the only thing that separates green from red.
+    time.sleep(1.2)
+    gitpanel.reset_flights_for_test()
+
+    d = gitpanel.git_diff(str(repo / "a.txt"), staged=False)
+    assert d["added"] == 1 and d["removed"] == 1, d
+
+
 def test_untracked_offers_no_diff(repo):
     (repo / "u.txt").write_text("x\n")
     d = gitpanel.git_diff(str(repo / "u.txt"), staged=False)

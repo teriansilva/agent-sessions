@@ -112,6 +112,156 @@ def test_quick_seed_strips_control_bytes_paste_breakout(fake_jsonl, monkeypatch)
     assert "before" in seed and "after" in seed
 
 
+# ---- provenance must never evict the payload (#718) ------------------------------------------
+
+
+def _nested_path(nbytes: int) -> str:
+    """A filesystem-plausible path of about ``nbytes`` bytes — long, but nothing a real
+    checkout under a deeply nested home could not produce."""
+    seg = "/verylongdirectorysegmentname"
+    return (seg * (nbytes // len(seg) + 1))[:nbytes]
+
+
+def test_quick_keeps_the_newest_turn_when_both_paths_are_enormous(fake_jsonl, monkeypatch):
+    """4089-byte `cwd` AND locator used to consume the whole 8192-byte cap: `_cap` keeps the
+    PREFIX, so the seed arrived with no `## Recent turns` and no turn in it at all — while
+    `meta.turns` still said 1."""
+    from agent_sessions import transcript
+
+    turns = [transcript.Turn(role="user", text="THE NEWEST TURN", kind="text")]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(4089))
+
+    seed, meta = handoff.build_quick_seed(
+        "claude", _SRC, cwd=_nested_path(4089), include_source_ref=True
+    )
+    assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
+    assert "## Recent turns" in seed
+    assert "THE NEWEST TURN" in seed
+    assert meta["turns"] == 1
+    # Provenance is still THERE — bounded, not dropped — and visibly shortened.
+    assert "- workdir:" in seed and "- transcript:" in seed
+    assert handoff.PATH_TRUNC_MARKER in seed
+
+
+def _head_value(seed: str, label: str) -> str:
+    """The value on the `- <label>: ` line, or `""` when the line is absent."""
+    for line in seed.splitlines():
+        if line.startswith(f"- {label}: "):
+            return line[len(f"- {label}: ") :]
+    return ""
+
+
+def test_a_long_workdir_cannot_starve_the_transcript_locator(fake_jsonl, monkeypatch):
+    """Serving `workdir` greedily out of the shared budget left the locator 0 bytes, so the
+    document carried a bare `- transcript: ` **and** the line telling the target agent the
+    transcript is "at the location above" — defeating `include_source_ref` in exactly the
+    long-path case this budget exists for (Hermes on #811)."""
+    from agent_sessions import transcript
+
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda e: (lambda native, home: [transcript.Turn(role="user", text="hi", kind="text")]),
+    )
+    loc = _nested_path(6000) + "/the-real-transcript.jsonl"
+    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: loc)
+
+    seed, _ = handoff.build_quick_seed(
+        "claude", _SRC, cwd=_nested_path(6000), include_source_ref=True
+    )
+    value = _head_value(seed, "transcript")
+    assert value, "the transcript line was emitted with no location"
+    assert value != handoff.PATH_TRUNC_MARKER, "the location is only the truncation marker"
+    # …and it is the INFORMATIVE end, which is the whole point of keeping the tail.
+    assert value.endswith("/the-real-transcript.jsonl")
+    # The workdir did not vanish either — both are bounded, neither is starved.
+    assert _head_value(seed, "workdir")
+
+
+def test_a_locator_that_cannot_be_rendered_drops_its_line_and_its_guidance(monkeypatch):
+    """An empty label is worse than an absent one: the "read it only if you need more context"
+    guidance would point at a location that is not there.
+
+    Asserted on `_head_lines` rather than through a built seed on purpose — with the budget
+    split in place, a cap small enough to starve the locator is also small enough for `_cap` to
+    remove the line anyway, so a seed-level assertion would pass for the wrong reason.
+    """
+    monkeypatch.setattr(handoff, "_head_provenance_budget", lambda: 4)  # < marker + a tail
+    head = "\n".join(
+        handoff._head_lines(
+            "claude", _SRC, "", _nested_path(6000), transcript_loc=_nested_path(6000)
+        )
+    )
+    assert "- transcript:" not in head
+    assert "location above" not in head
+    # The same rule applies to workdir — neither is ever emitted as a bare label.
+    assert "- workdir:" not in head
+
+
+def test_no_provenance_line_is_ever_emitted_empty(monkeypatch):
+    """Sweep the budget across the boundary where each value stops being renderable: at every
+    size, a `- workdir:` / `- transcript:` line that EXISTS carries something after the colon."""
+    for budget in range(0, 40):
+        monkeypatch.setattr(handoff, "_head_provenance_budget", lambda b=budget: b)
+        lines = handoff._head_lines(
+            "claude", _SRC, "", _nested_path(500), transcript_loc=_nested_path(500)
+        )
+        for label in ("workdir", "transcript"):
+            assert f"- {label}: " not in lines, f"empty {label} line at budget={budget}"
+
+
+def test_a_long_path_keeps_its_informative_tail(fake_jsonl, monkeypatch):
+    """Shortening keeps the END of a path: the repo and file are what identify it, the head is
+    usually a shared prefix."""
+    from agent_sessions import transcript
+
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda e: (lambda native, home: [transcript.Turn(role="user", text="hi", kind="text")]),
+    )
+    cwd = _nested_path(4000) + "/the-actual-repo"
+    seed, _ = handoff.build_quick_seed("claude", _SRC, cwd=cwd)
+    assert "/the-actual-repo" in seed
+
+
+def test_the_header_can_never_take_more_than_its_share_of_the_cap(fake_jsonl, monkeypatch):
+    """The bound is a FRACTION of the cap, so it holds at an operator-tuned cap too."""
+    from agent_sessions import transcript
+
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 1024)
+    turns = [transcript.Turn(role="user", text="PAYLOAD", kind="text")]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(9000))
+
+    seed, meta = handoff.build_quick_seed(
+        "claude", _SRC, cwd=_nested_path(9000), include_source_ref=True
+    )
+    assert len(seed.encode()) <= 1024
+    assert "PAYLOAD" in seed and meta["turns"] == 1
+
+
+def test_meta_turns_counts_what_was_rendered_not_what_was_selected(fake_jsonl, monkeypatch):
+    """`meta.turns` is the reader's only signal that a seed is short, so it must describe the
+    document that exists — not the tail the builder started from.
+
+    The trim loop stops at ONE turn however small the cap is, so at the ``MIN_CAP_BYTES`` floor
+    the fixed header (261 bytes here) already exceeds the cap and `_cap` cuts the body away
+    entirely. That used to be reported as `turns: 1` — a document claiming to carry a turn it
+    does not contain.
+    """
+    from agent_sessions import transcript
+
+    turns = [transcript.Turn(role="user", text="THE ONLY TURN", kind="text")]
+    monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
+    monkeypatch.setattr(handoff, "SEED_CAP_BYTES", handoff.MIN_CAP_BYTES)  # 256 < 261
+
+    seed, meta = handoff.build_quick_seed("claude", _SRC)
+    assert "THE ONLY TURN" not in seed  # there is genuinely no room for it
+    assert meta["turns"] == 0, "meta claimed a turn the capped document does not carry"
+
+
 # ---- capability matrix ------------------------------------------------------------------------
 
 
@@ -1455,6 +1605,60 @@ def test_ai_seed_cap_holds_for_an_oversized_title(fake_jsonl, monkeypatch):
     seed, meta = asyncio.run(handoff.build_ai_seed("claude", _SRC, title="T" * 40_000))
     assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
     assert meta["bytes"] <= meta["cap"]
+
+
+def test_ai_seed_keeps_its_state_when_both_paths_are_enormous(fake_jsonl, monkeypatch):
+    """The AI half of #718: the state IS the brief, and a 4089-byte `cwd` + locator pushed it
+    out of an 8192-byte document that still reported `bytes=8192, turns=1`."""
+    from agent_sessions import review, transcript
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(4089))
+
+    seed, meta = asyncio.run(
+        handoff.build_ai_seed("claude", _SRC, cwd=_nested_path(4089), include_source_ref=True)
+    )
+    assert len(seed.encode()) <= handoff.SEED_CAP_BYTES
+    assert "## State" in seed
+    assert "single-flight lock" in seed
+    assert meta["mode"] == "ai"
+
+
+def test_ai_locator_resolution_does_not_block_the_event_loop(fake_jsonl, monkeypatch):
+    """Transcript extraction was already offloaded; the locator was not — and production
+    locators do recursive globbing plus a 0.5 s SQLite probe. A blocking one stalls every other
+    request on the loop, not just this one."""
+    from agent_sessions import review, transcript
+
+    monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
+
+    def _slow_locator(native, home):
+        time.sleep(0.25)  # stands in for the glob + sqlite probe
+        return "/store/x.jsonl"
+
+    monkeypatch.setitem(transcript._LOCATORS, "claude", _slow_locator)
+
+    async def _drive():
+        beats: list[float] = []
+
+        async def heartbeat():
+            while True:
+                t0 = time.monotonic()
+                await asyncio.sleep(0.01)
+                beats.append(time.monotonic() - t0)
+
+        hb = asyncio.create_task(heartbeat())
+        try:
+            await handoff.build_ai_seed("claude", _SRC, include_source_ref=True)
+        finally:
+            hb.cancel()
+        return beats
+
+    beats = asyncio.run(_drive())
+    assert beats, "the heartbeat never ran"
+    # The locator sleeps 250 ms. On the loop, one beat absorbs all of it; off the loop the
+    # worst beat stays in the low tens of ms even on a busy host.
+    assert max(beats) < 0.15, f"the event loop stalled for {max(beats):.3f}s during the locator"
 
 
 def test_generated_seeds_never_exceed_the_cap_at_any_size(fake_jsonl, monkeypatch):

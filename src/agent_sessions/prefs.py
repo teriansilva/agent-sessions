@@ -5,19 +5,26 @@ Deliberately a *separate* file from the session metadata sidecar (metadata.py) a
 env file (boot config / secrets): this is per-app UI state, not session data or secrets.
 
 Single-admin app → a flat ``{"theme": …}`` document, no per-user keying. Concurrent
-writers serialize on ``fcntl.flock`` (same approach as metadata.py). Reads tolerate a
+writers serialize on an exclusive ``flock`` (``atomicjson.json_write_lock``). Reads tolerate a
 missing/empty/corrupt file by returning defaults.
+
+**Every write is atomic** (``atomicjson.atomic_write_json``, #728). The document used to be
+truncated in place and rewritten, which cost two things this file cannot afford: a failed write
+in that window erased it — and it carries the operator's AI-review API key, not just UI
+preferences — and an unlocked reader landing in the window parsed an empty file and silently
+returned *defaults*, so a concurrent read during any save could report the AI review disabled
+and no endpoint configured. Serialising first and ``os.replace``-ing means a reader sees the
+whole old document or the whole new one, and never needs the lock to be correct.
 """
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import json
 import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 
 # Mirror of web/src/theme/themes.ts THEME_IDS. Kept in sync by
 # tests/test_prefs.py (server) + the SPA registry test (client).
@@ -87,14 +94,13 @@ def is_valid_accent(value: object) -> bool:
 
 
 def _load(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        with path.open() as fh:
-            raw = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    """The stored document, or ``{}``.
+
+    Lock-free on purpose: with every writer going through ``atomic_write_json`` there is no
+    torn state to read, so the `JSONDecodeError → defaults` fallback below now only fires for a
+    document that is genuinely corrupt — never for one that merely happens to be mid-save.
+    """
+    return read_json_doc(path)
 
 
 def coerce_str_list(value: object, cap: int = 2000) -> list[str]:
@@ -139,33 +145,17 @@ def _set(key: str, value: object, path: Path | None = None):
     """Persist a single pref key. Read-modify-write under an exclusive flock so a concurrent
     writer (or a different key) can't clobber the rest of the document.
 
-    The file is explicitly chmod'd to 0600 on every write (#356): prefs.json now carries a
-    secret (the AI-review API key), and the historical create path inherited the process
-    umask — so a pre-existing world-readable file stays readable forever unless we assert
-    the tight mode ourselves. Owner-only is correct for every other pref too."""
+    The file is written 0600 (#356): prefs.json carries a secret (the AI-review API key), and
+    the historical create path inherited the process umask — so a pre-existing world-readable
+    file would stay readable forever unless we assert the tight mode ourselves. The atomic
+    write now does that structurally: every save installs a *new* 0600 inode, so a document
+    created world-readable by an older build is tightened by the next write rather than needing
+    a chmod that races the write it is protecting."""
     path = path or _default_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    with path.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            fh.seek(0)
-            try:
-                data = json.load(fh)
-                if not isinstance(data, dict):
-                    data = {}
-            except json.JSONDecodeError:
-                data = {}
-            data[key] = value
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        data[key] = value
+        atomic_write_json(path, data)
     return value
 
 
@@ -179,29 +169,11 @@ def _mutate(key: str, merge, path: Path | None = None):
     the block to persist; everything between the read and the write happens under the lock.
     """
     path = path or _default_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    with path.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            fh.seek(0)
-            try:
-                data = json.load(fh)
-                if not isinstance(data, dict):
-                    data = {}
-            except json.JSONDecodeError:
-                data = {}
-            value = merge(data.get(key))
-            data[key] = value
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        value = merge(data.get(key))
+        data[key] = value
+        atomic_write_json(path, data)
     return value
 
 
@@ -338,32 +310,19 @@ def migrate_overview_excluded(path: Path | None = None) -> list[str] | None:
     path = path or _default_path()
     if not path.exists():
         return None
-    with path.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            try:
-                data = json.load(fh)
-                if not isinstance(data, dict):
-                    return None
-            except json.JSONDecodeError:
-                return None
-            if "overview_excluded" not in data:
-                return None  # already migrated (or never legacy) → never rewrite
-            merged = coerce_str_list(data.get("projects_hidden"))
-            seen = set(merged)
-            for cwd in coerce_str_list(data.pop("overview_excluded")):
-                if cwd not in seen:
-                    seen.add(cwd)
-                    merged.append(cwd)
-            data["projects_hidden"] = merged
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-            return merged
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        if "overview_excluded" not in data:
+            return None  # already migrated (or never legacy) → never rewrite
+        merged = coerce_str_list(data.get("projects_hidden"))
+        seen = set(merged)
+        for cwd in coerce_str_list(data.pop("overview_excluded")):
+            if cwd not in seen:
+                seen.add(cwd)
+                merged.append(cwd)
+        data["projects_hidden"] = merged
+        atomic_write_json(path, data)
+        return merged
 
 
 # Project-visibility mode (#335). "all" = the legacy denylist (`projects_hidden`): every project
@@ -514,32 +473,19 @@ def migrate_default_project_id(owner_id_for_cwd, path: Path | None = None) -> st
     path = path or _default_path()
     if not path.exists():
         return None
-    with path.open("r+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            try:
-                data = json.load(fh)
-                if not isinstance(data, dict):
-                    return None
-            except json.JSONDecodeError:
-                return None
-            if "default_project_id" in data:
-                return None  # already migrated (or explicitly set) → never rewrite
-            cwd = data.get("default_project")
-            if not isinstance(cwd, str) or not cwd:
-                return None
-            owner = owner_id_for_cwd(cwd)
-            if not owner:
-                return None  # unadopted → keep the cwd fallback, write nothing
-            data["default_project_id"] = owner
-            fh.seek(0)
-            fh.truncate()
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.flush()
-            os.fsync(fh.fileno())
-            return owner
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        if "default_project_id" in data:
+            return None  # already migrated (or explicitly set) → never rewrite
+        cwd = data.get("default_project")
+        if not isinstance(cwd, str) or not cwd:
+            return None
+        owner = owner_id_for_cwd(cwd)
+        if not owner:
+            return None  # unadopted → keep the cwd fallback, write nothing
+        data["default_project_id"] = owner
+        atomic_write_json(path, data)
+        return owner
 
 
 def get_project_names(path: Path | None = None) -> dict[str, str]:

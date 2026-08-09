@@ -42,6 +42,8 @@ import os
 import time
 from pathlib import Path
 
+from .atomicjson import fsync_dir
+
 # Terminal states — an action here will never transition again, so compaction may drop it
 # once it falls out of the history tail.
 TERMINAL_STATES: frozenset[str] = frozenset(
@@ -130,6 +132,8 @@ def _append_locked(p: Path, rec: dict, line: str) -> dict:
     # 0600 from creation, not chmod-after: the ledger carries rationales about the operator's
     # work, and a widened-then-narrowed window is still a window.
     payload = line.encode("utf-8")
+    # Whether THIS call creates the file decides if the directory needs syncing below (#728).
+    created = not p.exists()
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         # POSIX permits a SHORT write, and a single `os.write` that returns fewer bytes leaves
@@ -153,6 +157,14 @@ def _append_locked(p: Path, rec: dict, line: str) -> dict:
         os.fsync(fd)
     finally:
         os.close(fd)
+    if created:
+        # `fsync(fd)` makes the BYTES durable; it says nothing about the directory entry that
+        # names them. Without this, power loss right after the very first append can leave a
+        # ledger whose contents were synced and whose link never existed — an at-most-once
+        # guarantee that survives process death but not power loss (#728). Only on creation:
+        # every later append writes into an already-durable name, so syncing the directory per
+        # append would be pure cost.
+        fsync_dir(p.parent)
     return rec
 
 
@@ -486,6 +498,11 @@ def _compact_locked(p: Path, history_max: int) -> int:
     finally:
         os.close(fd)
     os.replace(tmp, p)
+    # The rename is a NAMESPACE change and needs its own sync (#728): the compacted bytes are
+    # durable above, but after power loss the directory can still name the pre-compaction inode
+    # — the docstring's "a crash during compaction leaves the previous ledger intact, never a
+    # half-written one" was true for process death and not for power loss.
+    fsync_dir(p.parent)
     return len(keep)
 
 

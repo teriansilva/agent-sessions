@@ -157,8 +157,26 @@ const gumErrorCode = (err: unknown): string => {
 /** Move a queued coordinate across a splice that has already been applied.
  *
  *  Before the replaced range it is untouched; after it, it shifts by the length the splice added
- *  or removed; **inside** it, it no longer points at anything that still exists, so it collapses
- *  to the caret the splice left behind.
+ *  or removed; **strictly inside** it, it no longer points at anything that still exists, so it
+ *  collapses to the caret the splice left behind.
+ *
+ *  The two boundaries are the whole difficulty, and they need to know WHICH endpoint they are
+ *  (#809). A range is half-open `[start, end)`, so `from` and `to` each mean two different things
+ *  depending on the side they are approached from:
+ *
+ *  * A later selection ENDING at `from` (`abc |def` with `def` consumed) is entirely before the
+ *    splice and must stay there. Collapsing it to the caret stretched it over the text the splice
+ *    had just inserted, and the second splice then deleted that text — `src/b.py src/a.py ghi`
+ *    came back as `src/b.py ghi`.
+ *  * A later selection STARTING at `to` is entirely after the splice, so it shifts by `delta`.
+ *  * The SAME selection tapped twice has `start == from` **and** `end == to`, and both endpoints
+ *    do belong inside a non-empty replaced range — so both still collapse to the caret and the
+ *    second token lands where the first one left off (#792).
+ *
+ *  Hence: `start` is inside when `from <= p < to`, `end` is inside when `from < p <= to`. For an
+ *  empty splice (`from === to`, a pure caret insert) neither is inside: `start` lands after the
+ *  inserted token and `end` before it, and the caller's `end = max(end, start)` clamp turns that
+ *  inverted pair into an insertion point after the token — which is the order the taps happened in.
  */
 function rebasePosition(
   p: number,
@@ -166,9 +184,13 @@ function rebasePosition(
   to: number,
   caret: number,
   delta: number,
+  edge: "start" | "end",
 ): number {
   if (p < from) return p;
   if (p > to) return p + delta;
+  // On a boundary: inside only if this endpoint's half-open side owns it.
+  if (p === from && edge === "end") return p;
+  if (p === to && edge === "start") return p + delta;
   return caret;
 }
 
@@ -452,8 +474,8 @@ export const Compose = forwardRef<
       // it collapses to the caret after the replacement, which is where that selection now "is".
       for (let j = i + 1; j < queued.length; j += 1) {
         const later = queued[j];
-        later.start = rebasePosition(later.start, from, to, caret, delta);
-        later.end = rebasePosition(later.end, from, to, caret, delta);
+        later.start = rebasePosition(later.start, from, to, caret, delta, "start");
+        later.end = rebasePosition(later.end, from, to, caret, delta, "end");
       }
     }
     dictTextRef.current = merged;

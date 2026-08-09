@@ -17,8 +17,8 @@ sidebar row always agree.
 
 Cache (``pulse-cache.json``, next to ``prefs.json``):
 
-* Written atomically (temp file + ``os.replace``, ``0600``) — a single-flight scan is the
-  only writer, so no flock is needed.
+* Written atomically via ``atomicjson.atomic_write_json`` (temp + fsync + ``os.replace`` +
+  parent-dir fsync, ``0600``) — a single-flight scan is the only writer, so no flock is needed.
 * ``cache_version`` guards the artifact shape: a mismatch is a cache **miss** (the stale
   artifact is ignored, never mis-rendered against newer card/banner code).
 * ``input_fingerprint`` (sha256 over the in-window session set) is what a future background
@@ -35,7 +35,7 @@ import os
 import time
 from pathlib import Path
 
-from . import engines, metadata, projects, review
+from . import atomicjson, engines, metadata, projects, review
 
 # Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
@@ -340,15 +340,10 @@ def empty_overview(window_days: int = WINDOW_DAYS_DEFAULT, depth: str = DEFAULT_
 
 
 def _write_cache(artifact: dict, path: Path | None = None) -> None:
-    path = path or _cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w") as fh:
-        json.dump(artifact, fh, indent=2, sort_keys=True)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    # Via the shared helper (#728): same temp + fsync + replace as before, plus the parent-dir
+    # fsync the hand-rolled version was missing, and 0600 from creation rather than a chmod
+    # after the umask has already had its say.
+    atomicjson.atomic_write_json(path or _cache_path(), artifact)
 
 
 def load_cache(path: Path | None = None) -> dict | None:

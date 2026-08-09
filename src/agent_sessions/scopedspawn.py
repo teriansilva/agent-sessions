@@ -94,14 +94,29 @@ def available() -> bool:
     return ok
 
 
+#: Per-session task budget. Well below the broker's own ``TasksMax=8192``, so the stated intent
+#: — exhaust your OWN scope, never the host — still holds.
+#:
+#: Raised from 512 (#785). 512 was not a theoretical ceiling that ordinary work stays under: a
+#: journal scan found **8 real sessions** hitting `cgroup: fork rejected by pids controller` in
+#: five days, and one of them (2026-08-04 01:27:54) is the same second in which a `node` process
+#: inside that scope sent SIGINT to `systemd --user`, which activated `exit.target` and tore down
+#: every user unit on the host for 5h45m. The signal is the far more serious defect and is not
+#: fixed here — a cgroup scope bounds resources, not signals, and closing that needs either
+#: systemd ≥ 256 (`PrivatePIDs=`) or a dedicated UID (see the issue). But an agent that routinely
+#: runs out of PIDs is the state from which that misfire was reached, and it is also just broken
+#: for the user: `fork()` starts returning EAGAIN mid-task.
+DEFAULT_TASKS_MAX = 2048
+
+
 def _properties() -> list[str]:
     """Validated ``-p Key=Value`` pairs from AGENT_SESSIONS_SCOPE_PROPERTIES.
 
-    Default budget: a per-session TasksMax well below the broker's own ceiling, so a
+    Default budget: ``DEFAULT_TASKS_MAX``, well below the broker's own ceiling, so a
     fork bomb in one session exhausts its own scope, not the host. Memory properties
     are deliberately NOT defaulted — sessions legitimately run heavy builds; operators
     opt in (after probing controller delegation on staging, #346)."""
-    raw = os.environ.get("AGENT_SESSIONS_SCOPE_PROPERTIES", "TasksMax=512")
+    raw = os.environ.get("AGENT_SESSIONS_SCOPE_PROPERTIES", f"TasksMax={DEFAULT_TASKS_MAX}")
     out: list[str] = []
     for token in raw.split():
         if _PROP_RE.match(token):

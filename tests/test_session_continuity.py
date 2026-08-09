@@ -33,22 +33,47 @@ def _runtime(tmp_path, monkeypatch):
     yield tmp_path / "pty"
 
 
-def _wait_for_sock(path, timeout=2.0) -> bool:
-    """Spin until the sock exists and a connect() succeeds, or timeout."""
+# Deadlines here are generous ON PURPOSE (#624). These tests share a runner box with up to
+# three concurrent ~20-minute `pr-validate` suites, and at load average 27 a 300 ms bet on
+# "the master has come up AND the spawner has been reaped" simply loses — `pr-validate` then
+# goes red on PRs that never touched the backend (measured twice in the same second on
+# 2026-07-10, on a JSX-string-only diff and an unrelated PR).
+#
+# A longer deadline cannot mask a regression, because the invariant is one-directional: a
+# master that died with its spawner never comes back to life, so polling can only remove false
+# NEGATIVES. On an idle host every wait below returns on its first poll and costs nothing.
+_STARTUP_TIMEOUT_S = 10.0
+_SURVIVAL_TIMEOUT_S = 5.0
+
+
+def _wait_until(pred, timeout: float, interval: float = 0.05) -> bool:
+    """Poll ``pred`` until true or the deadline passes. Returns whether it became true."""
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if path.exists():
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.settimeout(0.1)
-            try:
-                s.connect(str(path))
-                return True
-            except OSError:
-                pass
-            finally:
-                s.close()
-        time.sleep(0.05)
-    return False
+    while True:
+        if pred():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def _wait_for_sock(path, timeout=_STARTUP_TIMEOUT_S) -> bool:
+    """Spin until the sock exists and a connect() succeeds, or timeout."""
+
+    def _connectable() -> bool:
+        if not path.exists():
+            return False
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.1)
+        try:
+            s.connect(str(path))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+
+    return _wait_until(_connectable, timeout)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -131,14 +156,15 @@ def test_dtach_master_survives_spawner_death():
         # (e.g. systemctl --user restart agent-sessions). With KillMode=process the
         # broker's main PID dies but dtach + its child are not in the kill scope.
         spawner.terminate()
-        spawner.wait(timeout=2)
+        spawner.wait(timeout=_SURVIVAL_TIMEOUT_S)
 
-        # Give the dtach client a moment to notice spawner death; the MASTER stays up.
-        time.sleep(0.3)
-        assert sock.exists(), "sock file vanished after spawner died"
-        assert ptybridge.session_exists(
-            "test", "survive"
-        ), "session_exists reports dead despite live master"
+        # Wait for the CONDITION, not for a fixed number of milliseconds: the dtach client
+        # needs a moment to notice the spawner died, and how long that takes is a property of
+        # host load, not of the invariant under test. The MASTER stays up.
+        assert _wait_until(
+            lambda: sock.exists() and ptybridge.session_exists("test", "survive"),
+            _SURVIVAL_TIMEOUT_S,
+        ), "master died with the spawner — KillMode/start_new_session/setsid escape failed"
 
         # The child — the analogue of `claude --resume <uuid>` — is still alive. Match OUR
         # marker: a bare "sleep 60" would also match a concurrent run's child and pass falsely.
@@ -178,15 +204,18 @@ def test_dtach_a_attaches_to_a_surviving_master():
     )
     os.close(slave_fd)  # parent only needs the master end
     try:
-        assert _wait_for_sock(sock)
+        # Two distinct failure modes, two distinct messages (#624). They used to collapse into
+        # one assertion that reported "died with the spawner" for a master which had simply not
+        # finished starting — a misdiagnosis that sent people at `start_new_session` when the
+        # real answer was host load.
+        assert _wait_for_sock(sock), "master never came up (start-up, not survival)"
         spawner.terminate()
-        spawner.wait(timeout=2)
-        time.sleep(0.3)
+        spawner.wait(timeout=_SURVIVAL_TIMEOUT_S)
         # Sanity: the master must actually be alive at this point, otherwise the dtach -a
         # below would correctly fail and we'd be testing the wrong thing.
-        assert ptybridge.session_exists(
-            "test", "reattach"
-        ), "master died with the spawner — KillMode/start_new_session/setsid escape failed"
+        assert _wait_until(
+            lambda: ptybridge.session_exists("test", "reattach"), _SURVIVAL_TIMEOUT_S
+        ), "master came up, then died with the spawner — KillMode/start_new_session escape failed"
 
         # New broker would now spawn `dtach -a <sock>` — verify that works. Like -c,
         # dtach -a wants a tty; production gives it openpty(), we mirror that here.

@@ -311,7 +311,7 @@ from one `TasksMax` budget. On LAUNCH the built dtach argv is now wrapped by
 ```
 systemd-run --user --scope --collect --quiet \
   --unit as-<engine>-<sid8>-<nonce>.scope \
-  -p TasksMax=512 … -- dtach -c <sock> -z -E -r winch <agent argv…>
+  -p TasksMax=2048 … -- dtach -c <sock> -z -E -r winch <agent argv…>
 ```
 
 - `--scope` fork/execs the payload in-process, so the PTY wiring, the
@@ -332,8 +332,45 @@ systemd-run --user --scope --collect --quiet \
 | Env | Default | Meaning |
 |---|---|---|
 | `AGENT_SESSIONS_SESSION_SCOPES` | `1` | `0` disables scoping entirely (logged once as *disabled (config)*). |
-| `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=512` | Space-separated `Key=Value` systemd properties applied per scope. Strictly validated (`Key=Value` charset) so env contents can never inject argv tokens. Memory limits are deliberately not defaulted — opt in after verifying controller delegation on staging. |
+| `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=2048` | Space-separated `Key=Value` systemd properties applied per scope. Strictly validated (`Key=Value` charset) so env contents can never inject argv tokens. Memory limits are deliberately not defaulted — opt in after verifying controller delegation on staging. |
 | `AGENT_SESSIONS_SYSTEMD_RUN_BIN` | `systemd-run` | Override for tests/unusual installs. |
+
+**Setting `AGENT_SESSIONS_SCOPE_PROPERTIES` replaces the default outright — it does not merge.**
+So an operator adding a memory limit must restate the task budget:
+
+```sh
+# in $PREFIX/env (~/.local/share/agent-sessions/env), then: systemctl --user restart agent-sessions
+AGENT_SESSIONS_SCOPE_PROPERTIES=TasksMax=2048 MemoryHigh=8G
+```
+
+`install.sh` preserves existing keys in that file across upgrades, so a tuned value survives a
+reinstall. A token that isn't a bare `Key=Value` is dropped with a warning rather than passed on.
+
+#### Why the task budget is 2048 (#785)
+
+It was `512`, and that was not a ceiling only a runaway process could reach: on one production
+host a journal scan found **eight** real sessions hitting `cgroup: fork rejected by pids
+controller` in five days — agents running out of PIDs during ordinary work, with `fork()`
+returning `EAGAIN` mid-task. 2048 keeps the property that matters: it is still far below the
+broker unit's own `TasksMax=8192`, so a fork bomb exhausts its own scope and not the host.
+
+**A scope bounds resources, not signals — and that hole is still open.** In one observed outage a
+process inside a session scope sent `SIGINT` to the `systemd --user` manager; systemd reads that
+as "end this session", activated `exit.target`, and took down **every** user unit on the host for
+5h45m. A cgroup does not stop this: session processes run as the same UID as the broker and the
+user manager, so signalling them is permitted. Closing it needs a real isolation boundary — a
+private PID namespace (`PrivatePIDs=`, systemd ≥ 256) or a dedicated UID for session scopes — and
+neither is implemented yet.
+
+Until then, operators running the broker under a systemd **user** manager should make the manager
+survive that class of accident:
+
+```sh
+sudo systemctl edit user@$(id -u).service     # [Service] \n Restart=always
+```
+
+`Linger=yes` alone does **not** help: linger keeps the manager alive across logout, but an
+explicit `exit.target` stops it, and nothing restarts it until the next login.
 
 ### Fallback ladder (self-hosted installs, non-systemd hosts)
 

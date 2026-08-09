@@ -1740,3 +1740,46 @@ test("two taps against the same selection do not eat each other (#792)", async (
   expect(ta.value).toContain("src/a.py");
   expect(ta.value).toContain("src/b.py");
 });
+
+test("a queued selection ending where an earlier one began keeps that path (#809)", async () => {
+  // The regression #794 shipped: `[0,4)` ends exactly where the consumed `[4,7)` began, and the
+  // boundary was read as "inside the replaced range". Rebasing stretched the second selection
+  // over `src/a.py`, and the second splice then deleted it — `src/b.py ghi`, one path short.
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "abc def ghi", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true;
+  ta.setSelectionRange(4, 7); // "def"
+  act(() => ref.current!.insertToken("src/a.py"));
+  ta.setSelectionRange(0, 4); // "abc " — disjoint, and it ENDS at the first splice's start
+  act(() => ref.current!.insertToken("src/b.py"));
+  act(() => old.endSession());
+  await flushRearm();
+
+  expect(ta.value).toBe("src/b.py src/a.py ghi");
+});
+
+test("a queued selection starting where an earlier one ended keeps that path (#809)", async () => {
+  // The mirror image: `[4,7)` starts exactly where the consumed `[0,4)` ended. Both boundaries
+  // have to stay outside the replaced range for a disjoint half-open selection.
+  installSpeech();
+  const ref = renderWithHandle();
+  await startVoice();
+  act(() => lastRecog!.emit([{ transcript: "abc def ghi", isFinal: true }]));
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const old = lastRecog!;
+  old.deferEnd = true;
+  ta.setSelectionRange(0, 4); // "abc "
+  act(() => ref.current!.insertToken("src/b.py"));
+  ta.setSelectionRange(4, 7); // "def" — disjoint, and it STARTS at the first splice's end
+  act(() => ref.current!.insertToken("src/a.py"));
+  act(() => old.endSession());
+  await flushRearm();
+
+  expect(ta.value).toBe("src/b.py src/a.py ghi");
+});

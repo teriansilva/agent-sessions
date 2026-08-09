@@ -51,7 +51,28 @@ def test_wrap_structure_and_payload_preserved(monkeypatch):
     # the payload argv survives verbatim after the `--` separator
     assert argv[argv.index("--") + 1 :] == ARGV
     # default per-session task budget present as a -p property
-    assert "TasksMax=512" in argv
+    assert f"TasksMax={scopedspawn.DEFAULT_TASKS_MAX}" in argv
+
+
+def test_the_default_task_budget_has_headroom_over_real_sessions(monkeypatch):
+    """#785: 512 was hit by 8 real sessions in five days — `fork()` returning EAGAIN mid-task,
+    and the state the 2026-08-04 stray-SIGINT outage was reached from. The budget still has to
+    stay well under the broker's own ceiling, or "exhaust your own scope, not the host" stops
+    being true."""
+    monkeypatch.setattr(scopedspawn, "_probe", lambda: True)
+    assert scopedspawn.DEFAULT_TASKS_MAX >= 2048
+    assert scopedspawn.DEFAULT_TASKS_MAX < 8192  # the unit's own TasksMax
+    argv, _ = scopedspawn.wrap(ARGV, engine="claude", session_id="abc")
+    assert "TasksMax=512" not in argv
+
+
+def test_an_operator_override_still_wins(monkeypatch):
+    """The escape hatch is the supported way to tune this, so it must beat the new default."""
+    monkeypatch.setattr(scopedspawn, "_probe", lambda: True)
+    monkeypatch.setenv("AGENT_SESSIONS_SCOPE_PROPERTIES", "TasksMax=256")
+    argv, _ = scopedspawn.wrap(ARGV, engine="claude", session_id="abc")
+    assert "TasksMax=256" in argv
+    assert f"TasksMax={scopedspawn.DEFAULT_TASKS_MAX}" not in argv
 
 
 def test_unit_names_never_collide_on_rapid_relaunch(monkeypatch):

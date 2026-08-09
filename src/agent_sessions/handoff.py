@@ -154,6 +154,53 @@ def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
 # `_cap` return a document that was ALL title — #703 review round 2).
 HEAD_TITLE_MAX = 200
 
+# The same lesson, for the two PATH-shaped header values (#718). `cwd` and the source locator
+# are bounded only by PATH_MAX, and `_cap` keeps the document's PREFIX — so a pair of ~4 KB
+# filesystem-plausible paths consumed the whole 8192-byte cap and the seed arrived with no
+# `## Recent turns` and no `## State` at all, while `meta.turns` still claimed a turn was in
+# there. Provenance is framing; it must never be able to evict the thing being handed off.
+#
+# Expressed as a FRACTION of the cap rather than a constant, because the cap is operator
+# tunable: at any cap the header's optional lines can take at most this share, so at least the
+# remainder is always left for the body.
+HEAD_PROVENANCE_FRACTION = 4  # ⇒ at most 1/4 of the cap, leaving ≥ 3/4 for the payload
+#: Appended to a path that had to be shortened, so a truncated location reads as truncated
+#: rather than as a real path that happens not to exist.
+PATH_TRUNC_MARKER = "…"
+#: The least tail worth rendering. `…n` is not a location — it is a marker plus one byte of a
+#: path, which tells a reader nothing and still occupies a labelled line. Below this the line is
+#: dropped entirely instead.
+PATH_MIN_TAIL_BYTES = 16
+
+
+def _head_provenance_budget() -> int:
+    """Bytes the optional (path-shaped) header lines may occupy, in total."""
+    return max(0, SEED_CAP_BYTES // HEAD_PROVENANCE_FRACTION)
+
+
+def _fit_path(value: str, budget: int) -> str:
+    """``value`` shortened to ``budget`` bytes keeping the TAIL, or ``""`` if it cannot fit.
+
+    The tail is the informative end of a path — the repo and the file — where the head is
+    usually a long shared prefix, so a shortened `…/agent-sessions/src/handoff.py` still tells
+    a reader what it needs. Bytes, not characters: the cap this feeds is a byte cap, and the
+    slice decodes with ``errors="ignore"`` so a multibyte character split by the cut is dropped
+    rather than mojibaked.
+
+    **Empty rather than a fragment.** A budget too small to hold the marker plus a usable tail
+    can only produce something like ``…n`` — a marker and one byte of a path, which tells a
+    reader nothing while still occupying a labelled line. It returns ``""`` instead, and the
+    caller drops the whole line (Hermes on #811).
+    """
+    raw = value.encode("utf-8")
+    if len(raw) <= budget:
+        return value
+    marker = PATH_TRUNC_MARKER.encode("utf-8")
+    if budget < len(marker) + PATH_MIN_TAIL_BYTES:
+        return ""
+    tail = raw[-(budget - len(marker)) :].decode("utf-8", "ignore")
+    return PATH_TRUNC_MARKER + tail if tail else ""
+
 
 def resolve_source_location(engine: str, native: str, *, include: bool) -> str | None:
     """Where the source session keeps its full transcript, or ``None`` (#716).
@@ -181,6 +228,18 @@ def _head_lines(
     ``- session:`` is ALWAYS present — the engine-qualified id is pure provenance and costs the
     receiving agent nothing. ``- transcript:`` is opt-in (#716), because *following* it is what
     spends tokens, and it appears only when the locator resolved this exact session.
+
+    The two path-shaped values share ONE budget (``_head_provenance_budget``) rather than
+    getting a cap each, so two long paths cannot add up to the thing one long path is
+    prevented from doing (#718).
+
+    The share is reserved **before** it is spent, not first-come. Serving ``workdir`` greedily
+    let a long-but-valid cwd take the entire budget, so the locator was fitted into 0 bytes and
+    the document emitted a bare ``- transcript: `` — followed by the line telling the receiving
+    agent the full transcript is "at the location above" (Hermes on #811). That defeats
+    ``include_source_ref`` in exactly the long-path case #718 exists to repair. Either line is
+    dropped outright when its value cannot be rendered usefully, along with the guidance that
+    depends on it: an empty label is worse than an absent one.
     """
     head = [
         f"# Handoff — continued from a {engine} session",
@@ -195,15 +254,23 @@ def _head_lines(
     if title:
         one_line = " ".join(_clean(title).split())[:HEAD_TITLE_MAX]
         head.append(f"- task: {one_line}")
+    budget = _head_provenance_budget()
+    # Half is ring-fenced for the locator whenever there is one, so `workdir` cannot starve it.
+    loc_share = budget // 2 if transcript_loc else 0
     if cwd:
-        head.append(f"- workdir: {_clean(cwd)}")
+        fitted = _fit_path(_clean(cwd), max(0, budget - loc_share))
+        if fitted:
+            budget -= len(fitted.encode("utf-8"))
+            head.append(f"- workdir: {fitted}")
     if transcript_loc:
-        head += [
-            f"- transcript: {_clean(transcript_loc)}",
-            "",
-            "The brief below is capped. The full transcript is at the location above — read it"
-            " only if you need more context than the brief gives you.",
-        ]
+        fitted = _fit_path(_clean(transcript_loc), max(0, budget))
+        if fitted:
+            head += [
+                f"- transcript: {fitted}",
+                "",
+                "The brief below is capped. The full transcript is at the location above — read"
+                " it only if you need more context than the brief gives you.",
+            ]
     return head
 
 
@@ -228,14 +295,17 @@ def build_quick_seed(
     # Resolved once — `_doc` re-renders the header on every trim iteration below.
     loc = resolve_source_location(engine, native, include=include_source_ref)
 
-    def _doc(rows: list[tuple[str, str]]) -> str:
+    def _parts(rows: list[tuple[str, str]]) -> tuple[str, list[str]]:
         head = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
             "",
             "## Recent turns",
             "",
         ]
-        body = [f"[{role}] {text}" for role, text in rows]
-        return "\n".join(head + body) + "\n"
+        return "\n".join(head), [f"[{role}] {text}" for role, text in rows]
+
+    def _doc(rows: list[tuple[str, str]]) -> str:
+        head_text, body = _parts(rows)
+        return "\n".join([head_text, *body]) + "\n"
 
     doc = _doc(tail)
     # Drop OLDEST turns first — the tail is what a taking-over agent needs most.
@@ -247,14 +317,36 @@ def build_quick_seed(
     # HEADER at all — an oversized first_user_message title produced a 20 KB "capped" doc
     # (PR #703 review round 2). Every generated document now exits through `_cap`, so the
     # advertised cap is the real one whatever the input shape.
-    doc = _cap(doc)
+    capped = _cap(doc)
     meta = {
         "mode": "quick",
-        "turns": len(tail),
-        "bytes": len(doc.encode("utf-8")),
+        # What was RENDERED, not what was selected (#718). The trim loop above stops at one
+        # turn, so a final `_cap` can still cut into (or, at a pathological cap, past) the body
+        # — and `meta.turns` claiming turns the document does not contain is the reader's only
+        # signal that the seed is short, so it has to be measured rather than assumed.
+        "turns": _rendered_turns(*_parts(tail), len(capped.encode("utf-8"))),
+        "bytes": len(capped.encode("utf-8")),
         "cap": SEED_CAP_BYTES,
     }
-    return doc, meta
+    return capped, meta
+
+
+def _rendered_turns(head_text: str, body: list[str], capped_bytes: int) -> int:
+    """How many of ``body``'s turn lines actually survive a document capped to ``capped_bytes``.
+
+    A turn counts as rendered once ANY of it is inside the cap: a truncated final turn is still
+    content the taking-over agent reads, where a turn whose first byte falls beyond the cut is
+    simply not there. Offsets are recomputed from the same join ``_doc`` uses, so this measures
+    the document that was actually produced rather than re-deriving a parallel one.
+    """
+    offset = len(head_text.encode("utf-8"))
+    rendered = 0
+    for line in body:
+        if offset >= capped_bytes:
+            break
+        rendered += 1
+        offset += len(("\n" + line).encode("utf-8"))
+    return rendered
 
 
 def _ai_input(texts: list[tuple[str, str]]) -> str:
@@ -334,7 +426,15 @@ async def build_ai_seed(
     state, open_items, next_steps = _ai_shape_guard(obj)
     # AFTER the endpoint call, deliberately (#716): the transcript location must never appear in
     # the payload sent to the review endpoint — only the target engine is meant to receive it.
-    loc = resolve_source_location(engine, native, include=include_source_ref)
+    #
+    # …and OFF the event loop (#718). The transcript extraction above is already offloaded, but
+    # this call was not, and it is not cheap: production locators do recursive filesystem
+    # globbing and an OpenCode SQLite probe with a 0.5 s timeout. Measured, a 250 ms blocking
+    # locator delayed a concurrent 10 ms heartbeat to 251 ms — the whole broker stalls, not just
+    # this request.
+    loc = await asyncio.to_thread(
+        resolve_source_location, engine, native, include=include_source_ref
+    )
     lines = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
         "",
         "## State",
@@ -349,6 +449,11 @@ async def build_ai_seed(
     doc = _cap(doc)
     return doc, {
         "mode": "ai",
+        # Unlike Quick, AI renders no turns — it renders ONE summary derived from all of them,
+        # so this is "turns the brief covers" and stays `len(texts)` whatever the cap does. What
+        # the cap could previously destroy was `## State` itself, and that is now structural:
+        # the header's path-shaped lines are bounded to a fraction of the cap (#718), so the
+        # state section can no longer be pushed out of a document by a long `cwd`/locator.
         "turns": len(texts),
         "bytes": len(doc.encode("utf-8")),
         "cap": SEED_CAP_BYTES,
