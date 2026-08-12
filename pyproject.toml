@@ -23,7 +23,7 @@ dependencies = [
     "python-multipart==0.0.31",
     "pyotp==2.9.0",  # TOTP 2FA (RFC 6238) — tiny, pure-Python (issue #116)
     "httpx==0.28.1",  # AI-review proxy to the OpenAI-compatible endpoint (issue #356)
-    "cryptography==49.0.0",  # Home Free E2E handshake: X25519/HKDF/AES-GCM/Ed25519 (#27)
+    "cryptography==50.0.0",  # Home Free E2E handshake: X25519/HKDF/AES-GCM/Ed25519 (#27)
     "websockets==16.0",  # Home Free agent relay client (already pulled by uvicorn[standard])
     "segno==1.6.1",  # QR cross-device sign-in: server-side QR SVG, pure-Python zero-dep (#650)
 ]
