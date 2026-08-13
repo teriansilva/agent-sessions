@@ -33,6 +33,30 @@ def is_injected_context(text: str) -> bool:
     return text.startswith(_INJECTED_CONTEXT_PREFIXES)
 
 
+def is_subagent_meta(payload: dict) -> bool:
+    """True when a ``session_meta`` payload describes a SPAWNED SUBAGENT thread (#821).
+
+    codex ≥ 0.145 (``multi_agent_version: v2``) gives every subagent its own rollout file,
+    whose meta carries the **parent's** ``cwd`` *and* the parent's conversation head — so an
+    unfiltered scan renders one real session as N near-identical sidebar rows. Two independent
+    markers, both observed on 0.145.0 and 0.147.0::
+
+        "source": {"subagent": {"thread_spawn": {…, "agent_nickname": "Galileo"}}}
+        "thread_source": "subagent"
+
+    Either alone is enough, so renaming one in a future codex can't quietly resurrect the rows.
+    A top-level session instead has a **string** ``source`` (``cli`` / ``exec`` / ``vscode``);
+    rollouts predating the fields have neither, and absent means top-level.
+
+    Deliberately NOT keyed on ``parent_thread_id`` / ``forked_from_id``: a plain fork or a
+    compaction of a REAL session sets those too, and hiding one of those would lose a session.
+    """
+    if payload.get("thread_source") == "subagent":
+        return True
+    source = payload.get("source")
+    return isinstance(source, dict) and "subagent" in source
+
+
 def _codex_text(content) -> str:
     """First text chunk of a codex message ``content`` (str or list of parts)."""
     if isinstance(content, str):
@@ -82,6 +106,11 @@ class CodexProvider:
         rollout carries no user_message event. The message is returned RAW — it feeds the
         ``/api/sessions`` search haystack; ``metadata.display_title`` normalizes it into
         the bounded sidebar title (Hermes on PR #672).
+
+        ``None`` also means "this rollout is not a listable session" — which is how the
+        subagent exclusion (#821) reaches BOTH readers at once: ``scan`` (no row) and
+        ``_rollout_uuids_in_cwd`` (never adopted as a new session's id), with no second
+        call site to drift.
         """
         cwd = first_user = fallback = ""
         try:
@@ -91,11 +120,19 @@ class CodexProvider:
                     if not line:
                         continue
                     try:
-                        payload = json.loads(line).get("payload") or {}
+                        record = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(record, dict):
+                        continue
+                    payload = record.get("payload") or {}
                     if not isinstance(payload, dict):
                         continue
+                    # A spawned subagent thread is not a session (#821). Checked on the
+                    # session_meta record only — that's where codex writes the markers —
+                    # and before the cwd capture, since the two live on the same record.
+                    if record.get("type") == "session_meta" and is_subagent_meta(payload):
+                        return None
                     if not cwd and payload.get("cwd"):
                         cwd = str(payload["cwd"])
                     if not first_user and payload.get("type") == "user_message":
@@ -172,8 +209,11 @@ class CodexProvider:
         A missing sessions dir is a valid empty baseline (fresh codex) → ``set()``, NOT a
         failure. cwd-scoped so an unrelated new session elsewhere can't be mistaken for ours.
         A rollout whose ``cwd`` head isn't written yet / is malformed (``_meta`` → ``None``)
-        is excluded, so it stays *pending* rather than being misattributed. A transient walk
-        failure returns ``None`` so the caller skips reconciliation (never adopts on a bad read).
+        is excluded, so it stays *pending* rather than being misattributed. So is a **subagent**
+        rollout (#821) — a session that spawns one the moment it starts writes two rollouts into
+        our cwd inside the poll window, and only one of them is the session we launched. A
+        transient walk failure returns ``None`` so the caller skips reconciliation (never
+        adopts on a bad read).
         """
         root = base._codex_sessions_dir()
         if not root.exists():
@@ -189,7 +229,7 @@ class CodexProvider:
                 continue
             meta = self._meta(path)
             if meta is None:
-                continue  # cwd not yet readable → excluded (stays pending)
+                continue  # subagent, or cwd not yet readable → excluded (never adopted)
             if meta[0] == cwd:
                 out.add(m.group(1))
         return out
