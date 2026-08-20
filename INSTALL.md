@@ -175,6 +175,62 @@ journalctl --user -u agent-sessions.service -f           # logs
 To stop **automatic updates only**, turn the toggle off under Settings → System → Updates,
 or set `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
 
+## Home Free access key — rotate, show, disable
+
+If you enabled streamed remote access (`AGENT_SESSIONS_REMOTE=stream`), the **access key is
+the only gate on the box** — enabling stream mode sets the app to `AGENT_SESSIONS_AUTH_MODE=none`
+behind a loopback bind, so anyone holding the console name + key has full control. Treat it
+like a root password. Three maintenance commands manage its life; each acts on the existing
+install, is safe to re-run, and **never** performs an install:
+
+```sh
+sh install.sh --homefree-show-credentials   # print the current console name + access key
+sh install.sh --homefree-rotate-key         # issue a new key (console name unchanged)
+sh install.sh --homefree-disable            # stop streaming; take the key out of live config
+```
+
+- **Rotate** when a key may have been seen by anyone else. The new key is generated,
+  written `0600` and validated **before** the old one stops being live, so a rotation that
+  fails leaves the working credential in place rather than an unreachable box. The
+  superseded key is kept at `homefree/access_key.prev` (`0600`) so you can roll back;
+  devices holding the old key must be re-entered with the new one.
+- **Disable** stops and disables `agent-sessions-homefree.service` and moves the key to
+  `homefree/access_key.disabled`. It touches nothing else — `agent-sessions.service`,
+  your sessions, transcripts and engine data are all left alone. Re-enable by re-running
+  the installer with `AGENT_SESSIONS_REMOTE=stream`, which issues a **fresh** key.
+- **They run one at a time.** Rotate and disable take a lock (`homefree/.lifecycle.lock`) for
+  the whole operation — state inspection, key files, service action and the final message.
+  Individually careful steps still compose badly: a disable and a rotate running together can
+  leave the box streaming under a fresh key moments after reporting streaming off, and two
+  rotations can leave `access_key.prev` naming a key that was never live. A second command
+  refuses immediately and changes nothing. Enabling streaming takes the same lock, since it
+  writes the key and starts the unit too. A lock left by a crashed run is taken over only once
+  its owner is provably gone — one that names *no* owner is refused rather than taken, because
+  "still starting up" and "crashed" are indistinguishable from outside.
+
+  The lock is held around the Home Free **setup step**, not the whole installer: holding it
+  across the package and web builds would turn an unrelated slow step into a lockout of these
+  commands, and nothing else the installer does touches Home Free key or service state.
+- **Rotation will not proceed without a working way back.** The roll-back copy of the current
+  key is written, verified and installed *before* the live key is replaced; if any of that
+  fails the rotation aborts with the old key still live, rather than replacing it and
+  reporting a roll-back that does not exist.
+- **Both refuse rather than half-work when the agent cannot be reached.** Rotation and
+  disable only take effect once the running agent restarts or stops — it reads the access key
+  at startup and holds it in memory, so changing the file underneath a live agent revokes
+  nothing. Where `systemctl --user` manages the unit, a failed `stop`/`disable`/`restart` fails
+  the whole command. Where there is **no user systemd** (a container, a non-service install, an
+  agent you started by hand), the command looks for a running agent first and refuses *before*
+  touching the key if one is found, telling you how to stop it. If neither `pgrep` nor `ps` can
+  answer, it also refuses — an unverifiable claim of revocation is not a revocation. On a box
+  where you can confirm by hand that no agent is running, re-run with
+  `AGENT_SESSIONS_HOMEFREE_AGENT_STOPPED=1`.
+- **Disable does not restore password auth.** Flipping `AGENT_SESSIONS_AUTH_MODE=none` back
+  would lock out an operator who has no password set, so the command leaves app auth as it
+  found it and says so. The app stays loopback-bound (unreachable off-box), but any *local*
+  account can reach it without a password. To restore password auth: remove that line from
+  `~/.local/share/agent-sessions/env`, set a password, and restart the service.
+
 ## Lost the password?
 
 Reset from the host — never pass the password on the command line (it leaks via shell history /

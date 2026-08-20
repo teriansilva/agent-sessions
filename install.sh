@@ -62,6 +62,19 @@ UNIT="$UNIT_DIR/$APP.service"
 REMOTE="${AGENT_SESSIONS_REMOTE:-}"
 HOMEFREE_DIR="$PREFIX/homefree"
 HOMEFREE_UNIT="$UNIT_DIR/$APP-homefree.service"
+# The live credential the agent reads, plus the two off-to-the-side states the lifecycle
+# flags move it through (#612). Named here so every function agrees on one spelling.
+HOMEFREE_NAME_FILE="$HOMEFREE_DIR/console_name"
+HOMEFREE_KEY_FILE="$HOMEFREE_DIR/access_key"
+HOMEFREE_PREV_KEY="$HOMEFREE_DIR/access_key.prev"          # rotation's superseded key
+HOMEFREE_DISABLED_KEY="$HOMEFREE_DIR/access_key.disabled"  # quarantined by --homefree-disable
+HOMEFREE_MODE=""  # "systemd" | "none": decided once per run by homefree_select_mode
+HOMEFREE_LOCKDIR="$HOMEFREE_DIR/.lifecycle.lock"   # serializes rotate/disable end to end
+HOMEFREE_LOCK_HELD=""
+# A Home Free agent as this user: an interpreter running the module, NOT any command line that
+# merely mentions it. Defined once so the detector and the recovery command an operator is told
+# to run can never drift apart — a `pkill` looser than the detector would kill bystanders.
+HOMEFREE_AGENT_RE='^[^[:space:]]*python[0-9.]*[[:space:]].*-m[[:space:]]+agent_sessions[.]homefree([[:space:]]|$)'
 # Streamed mode targets the BattleLab public relay + connect page by default, so a plain
 # `AGENT_SESSIONS_REMOTE=stream` install is turnkey. Both are overridable via env for
 # self-hosters running their own relay / connect page.
@@ -703,6 +716,22 @@ homefree_print_credentials() {
 }
 
 homefree_setup() {
+  # Enabling/re-enabling streaming writes the access key and starts the unit, so it mutates
+  # exactly what rotate and disable mutate and belongs inside the same fence. Without this a
+  # reinstall could recreate the key and restart streaming while a disable was reporting it
+  # off, or invalidate the snapshot a rotation had already acted on.
+  #
+  # Scoped deliberately to the Home Free setup step rather than the whole installer: the lock
+  # guards Home Free key/service state, and holding it across an entire install (npm, pip, a
+  # web build) would turn an unrelated slow step into a lockout of the security commands.
+  homefree_lock_acquire "enabling Home Free"
+  _homefree_setup_locked
+  _rc=$?
+  homefree_lock_release
+  return $_rc
+}
+
+_homefree_setup_locked() {
   # App-only stream mode requires the app to be private to the box. The agent proxies to and
   # signs Origin for exact 127.0.0.1:$PORT; aliases such as localhost/::1 are rejected rather
   # than silently enabling a terminal fallback.
@@ -723,6 +752,368 @@ homefree_setup() {
     log "start the agent with:  $CURRENT/venv/bin/python -m agent_sessions.homefree"
   fi
   homefree_print_credentials "$_name" "$_key"
+}
+
+# --- Home Free credential lifecycle (#612) ---------------------------------------------
+# Operator entry points for the access key AFTER setup: rotate it, switch streaming off, or
+# read it back. None of them runs an install; all three are idempotent, so a re-run (or a
+# config-management tool applying the same state twice) is a no-op rather than a surprise.
+#
+# The ordering rule that matters throughout is lockout-safety. The access key is the ONLY
+# gate on a streamed box — `homefree_enable_app_auth` sets AGENT_SESSIONS_AUTH_MODE=none —
+# so a half-finished rotation that has invalidated the old key without a working new one
+# leaves a machine nobody can reach. Every step below therefore writes and validates the
+# replacement first and swaps last.
+
+homefree_key_valid() {  # a generated key: >= 32 chars of lowercase base32 / hex, nothing else
+  _k="$1"
+  [ -n "$_k" ] || return 1
+  [ "${#_k}" -ge 32 ] || return 1
+  case "$_k" in *[!a-z0-9]*) return 1 ;; esac
+  return 0
+}
+
+homefree_lock_acquire() {
+  # Serialize the WHOLE lifecycle transaction — preflight, key-file transitions, service
+  # action, banner — not the individual steps. Every step is careful on its own, and that is
+  # not enough: they are only correct as a unit. A disable and a rotate running together
+  # interleave into states neither can produce alone, and two rotations cost the roll-back.
+  #
+  # mkdir(2) is the lock because it is atomic on every POSIX filesystem and needs no
+  # util-linux on a minimal container. $1 names the operation for the message.
+  [ -d "$HOMEFREE_DIR" ] || mkdir -p "$HOMEFREE_DIR" 2>/dev/null || true
+  if mkdir "$HOMEFREE_LOCKDIR" 2>/dev/null; then
+    homefree_lock_publish "$1"
+    return 0
+  fi
+
+  # The directory exists. Who owns it?
+  _owner="$(cat "$HOMEFREE_LOCKDIR/pid" 2>/dev/null || true)"
+  case "$_owner" in
+    '' | *[!0-9]*)
+      # No readable owner. This is EITHER a live holder that has created the directory but
+      # not yet published its PID, OR a crash — and from here those are indistinguishable.
+      # Refusing is the only safe reading: treating "no owner yet" as "stale" is precisely
+      # how a second command walks through a live fence, which is what a review probe did.
+      # Fail closed and let the operator resolve it; a retry a second later usually does.
+      die "$1 refused: the Home Free lifecycle lock at $HOMEFREE_LOCKDIR exists but names no owner. Another command may be starting up, or a previous one died before recording itself — those look identical from here, and guessing wrong would run two key operations at once. Re-run in a moment; if it persists, remove that directory by hand once you are sure nothing is running. Nothing has been changed."
+      ;;
+  esac
+  if kill -0 "$_owner" 2>/dev/null; then
+    die "$1 refused: another Home Free lifecycle command (PID $_owner) is already running. These commands change the same key and the same service, so they run one at a time. Wait for it to finish and re-run. Nothing has been changed."
+  fi
+
+  # A provably dead owner: take over. Re-created rather than reused, so ownership is
+  # republished under this PID. If two takeovers race, exactly one mkdir wins and the other
+  # refuses — losing the race is not a licence to proceed.
+  rm -rf "$HOMEFREE_LOCKDIR" 2>/dev/null || true
+  mkdir "$HOMEFREE_LOCKDIR" 2>/dev/null \
+    || die "$1 refused: could not take over the Home Free lifecycle lock at $HOMEFREE_LOCKDIR (another command took it first). Nothing has been changed."
+  homefree_lock_publish "$1"
+}
+
+homefree_lock_publish() {
+  # Record ownership, and treat a failure to record it as a failure to lock. A lock nobody
+  # can attribute is worse than no lock at all: the next arrival cannot tell it from a crash.
+  echo $$ > "$HOMEFREE_LOCKDIR/pid" 2>/dev/null || {
+    rm -rf "$HOMEFREE_LOCKDIR" 2>/dev/null || true
+    die "$1 refused: could not record ownership of the Home Free lifecycle lock at $HOMEFREE_LOCKDIR. Nothing has been changed."
+  }
+  HOMEFREE_LOCK_HELD=1
+  # `die` exits without unwinding, so the trap is what stops a refusal from stranding the
+  # lock. INT/TERM must also TERMINATE: releasing the fence and then carrying on would leave
+  # the rest of the operation running outside it, which is the one thing the lock forbids.
+  trap 'homefree_lock_release' EXIT
+  trap 'homefree_lock_release; exit 130' INT
+  trap 'homefree_lock_release; exit 143' TERM
+}
+
+homefree_lock_release() {
+  [ -n "$HOMEFREE_LOCK_HELD" ] || return 0
+  HOMEFREE_LOCK_HELD=""
+  # Remove only a lock this process still owns. Blindly clearing whatever occupies the path
+  # would drop a fence somebody else legitimately took over after we were declared dead.
+  _held="$(cat "$HOMEFREE_LOCKDIR/pid" 2>/dev/null || true)"
+  [ "$_held" = "$$" ] || return 0
+  rm -rf "$HOMEFREE_LOCKDIR" 2>/dev/null || true
+}
+
+homefree_select_mode() {
+  # Decide ONCE per run whether this box manages the agent through systemd, then cache it.
+  #
+  # This has to be a single decision, not a question asked repeatedly. Probing per call means
+  # the answer can change mid-operation — a user manager that goes away between the preflight
+  # and the action (logout, session teardown, a DBus restart) flips a run that was committed
+  # to "systemd will stop this for me" into "there is nothing to stop, report success". That
+  # is the same false assurance the preflight exists to prevent, arriving through the back
+  # door. Caught in review on this PR.
+  [ -z "$HOMEFREE_MODE" ] || return 0
+  if [ "${AGENT_SESSIONS_NO_SERVICE:-0}" != 1 ] && systemctl --user >/dev/null 2>&1; then
+    HOMEFREE_MODE=systemd
+  else
+    HOMEFREE_MODE=none
+  fi
+}
+
+homefree_service_do() {
+  # Run a systemctl --user verb on the homefree unit, per the mode chosen for this run.
+  # Returns non-zero when the run is systemd-managed and the action did not take.
+  #
+  #   * mode "none"    — there is no unit to act on, and the preflight has already proved no
+  #     agent is running, so doing nothing IS the correct outcome. An install that never had
+  #     a service must not start failing because a unit it never created cannot be stopped.
+  #   * mode "systemd" — the run is committed. Every failure from here is a failure, the
+  #     manager having vanished included. Rotate and disable are security operations whose
+  #     effect depends entirely on the agent restarting or stopping; the agent holds the key
+  #     in memory, so a swallowed failure means the command prints "disabled" or "rotated"
+  #     while the old key is still serving traffic. Re-probing availability here and calling
+  #     a failed probe a no-op is exactly the hole this shape closes.
+  homefree_select_mode
+  [ "$HOMEFREE_MODE" = systemd ] || return 0
+  systemctl --user "$1" "$APP-homefree.service" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+homefree_agent_state() {
+  # Is a Home Free relay agent running as this user?  Echoes: running | stopped | unknown
+  #
+  # Only ever consulted on the NO-SYSTEMD path. Where a user systemd exists the unit is the
+  # control surface and `homefree_service_do` already fails loudly when a verb does not take.
+  # Where it does not, there is no unit to ask — and the agent may well have been started by
+  # hand, because the installer itself prints that command when it cannot create a service
+  # ("start the agent with: .../python -m agent_sessions.homefree").
+  #
+  # The pattern is ANCHORED ON THE INTERPRETER, not on a bare mention of the module name. A
+  # loose substring match treats any process whose command line merely contains the string as
+  # a live agent — an operator grepping the installer, an editor with this file open, a
+  # config-management run. Those are false "running" answers, and while failing closed on one
+  # is safe, a check that cries wolf on `grep` is a check people learn to override by reflex.
+  # Requiring "<path ending in python> ... -m agent_sessions.homefree" matches how the agent
+  # is actually launched, by both the unit and the manual command printed above.
+  #
+  # `unknown` is a real third answer, not a failure to try. A box where neither probe works
+  # cannot be inspected, and reporting `stopped` there would be the exact false assurance this
+  # check exists to prevent.
+  if [ "${AGENT_SESSIONS_HOMEFREE_AGENT_STOPPED:-0}" = 1 ]; then
+    echo stopped; return 0   # operator asserts it by hand; see the `unknown` message below
+  fi
+  _uid="$(id -u 2>/dev/null || true)"
+  if [ -n "$_uid" ] && command -v pgrep >/dev/null 2>&1; then
+    # pgrep's own contract carries the distinction: 0 = matched, 1 = matched nothing,
+    # >= 2 = pgrep itself failed. Only the first two are answers; anything else falls
+    # through to ps, because "the tool broke" is not evidence that nothing is running.
+    _rc=0
+    pgrep -u "$_uid" -f "$HOMEFREE_AGENT_RE" >/dev/null 2>&1 || _rc=$?
+    case "$_rc" in
+      0) echo running; return 0 ;;
+      1) echo stopped; return 0 ;;
+    esac
+  fi
+  if [ -n "$_uid" ] && command -v ps >/dev/null 2>&1; then
+    if _args="$(ps -u "$_uid" -o args= 2>/dev/null)"; then
+      if printf '%s\n' "$_args" | grep -Eq "$HOMEFREE_AGENT_RE"; then
+        echo running
+      else
+        echo stopped
+      fi
+      return 0
+    fi
+  fi
+  echo unknown
+}
+
+homefree_require_manageable_agent() {
+  # Preflight for the two security operations, run BEFORE any key state is mutated.
+  # $1 = what the caller was about to do, named in the refusal.
+  #
+  # With user systemd present there is nothing to check: the unit is the control surface, and
+  # `homefree_service_do` fails closed on a verb that does not take.
+  #
+  # Without it there is no unit — and a running agent has ALREADY read the access key into
+  # memory. Replacing or quarantining the file underneath it changes nothing about what it is
+  # currently serving, so a command that went ahead and printed success would be telling the
+  # operator that a live credential is dead. That is strictly worse than an error. Refuse
+  # while nothing has been touched, and say exactly what to do instead.
+  homefree_select_mode
+  [ "$HOMEFREE_MODE" != systemd ] || return 0
+  case "$(homefree_agent_state)" in
+    stopped) return 0 ;;
+    running)
+      die "$1 refused: this box has no user systemd to manage $APP-homefree.service, and a Home Free agent is still RUNNING. It read the access key at startup and holds it in memory, so changing the key file underneath it would revoke nothing while reporting success. Stop it first with: pkill -u $(id -u 2>/dev/null) -f '$HOMEFREE_AGENT_RE'  --- that is the same anchored pattern this check uses, so it cannot match a bystander that merely mentions the module. Then re-run. Nothing has been changed."
+      ;;
+  esac
+  die "$1 refused: this box has no user systemd to manage $APP-homefree.service, and neither pgrep nor ps could report whether a Home Free agent is still running. A running agent holds the access key in memory, so this command cannot confirm the change would take effect, and revocation that cannot be confirmed must not be reported as revocation. Stop any running agent, then re-run with AGENT_SESSIONS_HOMEFREE_AGENT_STOPPED=1 to confirm none is running. Nothing has been changed."
+}
+
+homefree_rotate_key() {
+  # The lock is taken BEFORE any state is inspected: a preflight that read the world outside
+  # it would already be acting on a snapshot another command could invalidate.
+  homefree_lock_acquire "rotating the access key"
+  _homefree_rotate_key_locked
+  _rc=$?
+  homefree_lock_release
+  return $_rc
+}
+
+_homefree_rotate_key_locked() {
+  [ -f "$HOMEFREE_KEY_FILE" ] || {
+    if [ -f "$HOMEFREE_DISABLED_KEY" ]; then
+      die "Home Free is disabled — nothing to rotate. Re-enable with AGENT_SESSIONS_REMOTE=stream (which issues a fresh key)."
+    fi
+    die "Home Free is not set up on this box — nothing to rotate. Enable it with AGENT_SESSIONS_REMOTE=stream."
+  }
+  # The console name is the box's identity to the relay and to whoever already has it
+  # written down; a key rotation is not a rename, so it is read and preserved, never regenerated.
+  _name="$(cat "$HOMEFREE_NAME_FILE" 2>/dev/null || true)"
+  [ -n "$_name" ] || die "Home Free console name is missing or empty at $HOMEFREE_NAME_FILE — refusing to rotate against a broken install."
+
+  # Nothing has been generated or moved yet — this is the last point at which a refusal
+  # costs nothing, so the "can this change actually take effect?" question is asked here.
+  homefree_require_manageable_agent "rotating the access key"
+
+  # Generate → write 0600 → VALIDATE → only then swap. `umask 077` covers the window between
+  # creation and chmod; the chmod then makes the mode explicit rather than umask-dependent.
+  _new="$HOMEFREE_KEY_FILE.new.$$"
+  ( umask 077; homefree_gen_key > "$_new" ) || { rm -f "$_new"; die "could not generate a replacement access key"; }
+  chmod 600 "$_new" 2>/dev/null || true
+  _newkey="$(cat "$_new" 2>/dev/null || true)"
+  homefree_key_valid "$_newkey" || { rm -f "$_new"; die "the generated access key failed validation — the existing key is untouched and still works"; }
+
+  # Keep the superseded key. A rotation the operator regrets (credentials pasted into a
+  # device that then went offline) is otherwise unrecoverable, and this file is 0600 inside
+  # an already-0700 directory. It is the previous key, not a second live one: the agent
+  # only ever reads $HOMEFREE_KEY_FILE.
+  # Written through a 0600 temp file, VERIFIED to hold the live key, and only then installed
+  # by rename(2). A best-effort `cp` that was allowed to fail meant rotation could replace the
+  # live key and print "previous key kept at ..." when no such file existed — the operator is
+  # then told a roll-back exists for a credential that is already gone, which is worse than
+  # having no roll-back at all. The rotation aborts here rather than make a promise it cannot
+  # keep, and it aborts while the live key is still untouched. Caught in review on this PR.
+  _prevtmp="$HOMEFREE_PREV_KEY.tmp"   # fixed name: the lifecycle lock makes this single-writer
+  ( umask 077; cat "$HOMEFREE_KEY_FILE" > "$_prevtmp" ) \
+    || { rm -rf "$_prevtmp" 2>/dev/null || true; rm -f "$_new" 2>/dev/null || true; die "could not write the roll-back copy of the current access key to $_prevtmp — the live key is untouched and still works. Nothing was changed."; }
+  chmod 600 "$_prevtmp" 2>/dev/null || true
+  if [ "$(cat "$_prevtmp" 2>/dev/null)" != "$(cat "$HOMEFREE_KEY_FILE" 2>/dev/null)" ]; then
+    rm -rf "$_prevtmp" 2>/dev/null || true; rm -f "$_new" 2>/dev/null || true
+    die "the roll-back copy of the current access key did not match the live key — refusing to rotate without a working way back. The live key is untouched and still works."
+  fi
+  # POSIX `mv -f file DIR` SUCCEEDS by moving the file *inside* DIR. If $HOMEFREE_PREV_KEY is
+  # a directory (or a symlink to one), the rotation would then swap the live key and announce
+  # a roll-back at a path that is not the file it names. Reject a destination that is not a
+  # plain regular file before the move, and verify what actually landed after it — the promise
+  # printed at the end is only worth what this check proves. Caught in review on this PR.
+  if [ -L "$HOMEFREE_PREV_KEY" ] || { [ -e "$HOMEFREE_PREV_KEY" ] && [ ! -f "$HOMEFREE_PREV_KEY" ]; }; then
+    rm -rf "$_prevtmp" 2>/dev/null || true; rm -f "$_new" 2>/dev/null || true
+    die "$HOMEFREE_PREV_KEY exists but is not a regular file — refusing to rotate, because the roll-back copy could not be stored where the success message says it is. Remove or move that path and re-run. The live key is untouched and still works."
+  fi
+  mv -f "$_prevtmp" "$HOMEFREE_PREV_KEY" \
+    || { rm -rf "$_prevtmp" 2>/dev/null || true; rm -f "$_new" 2>/dev/null || true; die "could not install the roll-back copy at $HOMEFREE_PREV_KEY — the live key is untouched and still works. Nothing was changed."; }
+  if [ -L "$HOMEFREE_PREV_KEY" ] || [ ! -f "$HOMEFREE_PREV_KEY" ] \
+    || [ "$(cat "$HOMEFREE_PREV_KEY" 2>/dev/null)" != "$(cat "$HOMEFREE_KEY_FILE" 2>/dev/null)" ]; then
+    rm -f "$_new" 2>/dev/null || true
+    die "the roll-back copy at $HOMEFREE_PREV_KEY is not a readable regular file holding the current access key — refusing to rotate without a working way back. The live key is untouched and still works."
+  fi
+  chmod 600 "$HOMEFREE_PREV_KEY" 2>/dev/null || true
+  # rename(2) within one directory — the live key is either wholly the old one or wholly the
+  # new one, never absent. This single call is the moment the old key stops being live.
+  mv -f "$_new" "$HOMEFREE_KEY_FILE" || { rm -f "$_new"; die "could not install the replacement access key — the existing key is untouched"; }
+  chmod 600 "$HOMEFREE_KEY_FILE" 2>/dev/null || true
+
+  # Restart only AFTER the new material is in place and validated, so the agent never comes
+  # back up against a key that is missing or half-written.
+  # A failed restart here is NOT cosmetic: the new key is on disk but the running agent is
+  # still authenticating with the old one, so the operator would be told to use a key that
+  # does not work — locked out of their own box. Die instead of printing the success banner,
+  # and say exactly what state things are in.
+  homefree_service_do restart || die "the new access key was written, but restarting $APP-homefree.service FAILED — the RUNNING agent is still using the OLD key, so the new one will not work until the service restarts. Check 'systemctl --user status $APP-homefree.service'. The previous key is at $HOMEFREE_PREV_KEY."
+  note "Home Free access key rotated. The console name is unchanged."
+  log "Devices holding the previous key must be re-entered with the new one."
+  log "Previous key kept at $HOMEFREE_PREV_KEY (0600) in case you need to roll back."
+  homefree_print_credentials "$_name" "$_newkey"
+}
+
+homefree_disable() {
+  homefree_lock_acquire "disabling Home Free"
+  _homefree_disable_locked
+  _rc=$?
+  homefree_lock_release
+  return $_rc
+}
+
+_homefree_disable_locked() {
+  # Deliberately narrow: this turns OFF the relay agent and takes the key out of the live
+  # config. It does NOT touch $APP.service, the app's env, sessions, transcripts, or engine
+  # data — disabling remote access must never be a way to lose local state.
+  # "Off" is decided by the LIVE KEY, not by the unit file — the unit is deliberately kept
+  # so the operator can re-enable, so its presence says nothing about whether streaming is on.
+  homefree_require_manageable_agent "disabling Home Free"
+  if [ ! -f "$HOMEFREE_KEY_FILE" ]; then
+    # Still converge systemd: a previous run may have quarantined the key and then failed
+    # before reaching the service, and "already disabled" should end with it actually stopped.
+    homefree_service_do stop || die "$APP-homefree.service could not be stopped — Home Free is NOT disabled. Check 'systemctl --user status $APP-homefree.service'."
+    homefree_service_do disable || die "$APP-homefree.service could not be disabled — it may start again at login. Check 'systemctl --user status $APP-homefree.service'."
+    log "Home Free is already disabled (no active access key) — nothing to change."
+    return 0
+  fi
+  # Stop FIRST, and abort if it fails — before the key is touched. Quarantining the file while
+  # the agent is still running achieves nothing: the agent already read the key at startup and
+  # holds it in memory, so the box stays remotely reachable with a credential the operator has
+  # been told is revoked. Moving the key would only destroy the evidence of which key that is.
+  # Revocation you cannot confirm must not be reported as revocation.
+  homefree_service_do stop || die "$APP-homefree.service could not be stopped — the access key has NOT been revoked and the agent may still be serving with it. Nothing was changed. Check 'systemctl --user status $APP-homefree.service' and re-run."
+  homefree_service_do disable || die "$APP-homefree.service was stopped but could not be disabled, so it may start again at login. The access key has NOT been quarantined. Check 'systemctl --user status $APP-homefree.service' and re-run."
+  # Only now, with the agent provably down, is the key taken out of the live config.
+  # Quarantined rather than deleted: `disable` should be reversible by an operator who meant
+  # `stop`. Either way it is out of the live config — the agent reads only
+  # $HOMEFREE_KEY_FILE, and that path no longer exists.
+  mv -f "$HOMEFREE_KEY_FILE" "$HOMEFREE_DISABLED_KEY" || die "could not quarantine the access key at $HOMEFREE_KEY_FILE"
+  chmod 600 "$HOMEFREE_DISABLED_KEY" 2>/dev/null || true
+  note "Home Free streaming is disabled. The relay agent is stopped and will not start at login."
+  log "The access key is quarantined at $HOMEFREE_DISABLED_KEY (0600) and is no longer live."
+  log "Your local install is untouched: $APP.service, sessions, transcripts and engine data are unchanged."
+  # Said plainly rather than silently fixed. Enabling stream mode set AGENT_SESSIONS_AUTH_MODE=none,
+  # and flipping that back here would lock out an operator who has no password set — so this
+  # command leaves app auth exactly as it found it (its stated contract) and tells the operator
+  # what that means instead of deciding for them.
+  if grep -q '^AGENT_SESSIONS_AUTH_MODE=none' "$ENVF" 2>/dev/null; then
+    note "NOTE: this box still runs with AGENT_SESSIONS_AUTH_MODE=none (set when streaming was enabled)."
+    log "It is bound to loopback, so it is not reachable off-box — but any LOCAL account can now"
+    log "reach the app with no password. To restore password auth: remove that line from"
+    log "$ENVF, set a password, and restart $APP.service."
+  fi
+}
+
+homefree_show_credentials() {
+  if [ ! -f "$HOMEFREE_KEY_FILE" ]; then
+    [ -f "$HOMEFREE_DISABLED_KEY" ] \
+      && die "Home Free is disabled — there is no active access key. Re-enable with AGENT_SESSIONS_REMOTE=stream (which issues a fresh key)."
+    die "Home Free is not set up on this box. Enable it with AGENT_SESSIONS_REMOTE=stream."
+  fi
+  _name="$(cat "$HOMEFREE_NAME_FILE" 2>/dev/null || true)"
+  _key="$(cat "$HOMEFREE_KEY_FILE" 2>/dev/null || true)"
+  [ -n "$_name" ] && [ -n "$_key" ] \
+    || die "Home Free credentials at $HOMEFREE_DIR are incomplete — re-run with AGENT_SESSIONS_REMOTE=stream to repair."
+  # Read-only: prints what already exists and generates nothing. Reuses the setup banner so
+  # the "this key grants full control" warnings travel with the key every time it is shown.
+  homefree_print_credentials "$_name" "$_key"
+}
+
+homefree_lifecycle_dispatch() {
+  # Maintenance flags short-circuit the installer entirely — they operate on an install that
+  # already exists and must never build a release as a side effect.
+  #
+  # Only `--homefree-*` spellings are claimed here. An unrecognised one is fatal rather than
+  # ignored: these are security-relevant commands, and silently installing the app because
+  # `--homefree-rotatekey` was mistyped is the worst possible response. Any OTHER argument is
+  # left alone, preserving the previous behaviour of a script that parsed no arguments at all.
+  case "${1:-}" in
+    --homefree-rotate-key)       homefree_rotate_key; exit 0 ;;
+    --homefree-disable)          homefree_disable; exit 0 ;;
+    --homefree-show-credentials) homefree_show_credentials; exit 0 ;;
+    --homefree-*)
+      die "unknown option '$1' — expected --homefree-rotate-key, --homefree-disable or --homefree-show-credentials" ;;
+    *) return 0 ;;
+  esac
 }
 
 homefree_prompt_remote() {  # echo "stream" or "selfhost"; only prompts on a real tty
@@ -842,6 +1233,9 @@ prefs.get_onboarded() is None and prefs.set_onboarded(sys.argv[1] == "True")' "$
 }
 
 main() {
+  # Maintenance flags first: they act on an existing install and exit without building
+  # anything (#612). A no-flag invocation falls straight through to the install path.
+  homefree_lifecycle_dispatch "${1:-}"
   # Fresh vs upgrade (#675): key off a *completed* prior install — a valid `current`
   # symlink whose target exists — not the mere presence of `releases/`. A failed first
   # install can leave an empty `releases/` behind (the trap removes only the half-built
