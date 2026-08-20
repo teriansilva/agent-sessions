@@ -4,13 +4,17 @@ archive/unarchive, new-session — including CSRF/origin gating."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import stat
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
 from agent_sessions.main import create_app
+from agent_sessions.routes import upload as upload_route
 
 
 def _client(cfg):
@@ -856,6 +860,108 @@ def test_upload_requires_csrf(auth_cfg, tmp_home):
         headers={"Origin": auth_cfg.origin},  # no X-CSRF-Token
     )
     assert r.status_code == 403
+
+
+def test_upload_dir_is_0700_and_file_is_0600_from_first_write(auth_cfg, tmp_home):
+    """Modes come from the code, not from the umask (#612 Phase 4).
+
+    The umask is set as permissively as possible (0) for the duration, so a route that relied on
+    the process default would produce 0755/0644 here and fail. That is the point: it makes the
+    old `mkdir()` + `write_bytes()` shape red rather than accidentally green on a host whose
+    umask happened to be tight.
+
+    The umask is process-wide, so restoring it is not optional — a leak would leave every later
+    test creating world-writable files. An earlier revision of this test also monkeypatched
+    `os.umask` itself, which meant the `finally` called the *stub* and the process stayed at
+    `000` (caught by Hermes in review). There is nothing to stub: the route never calls
+    `umask`, it sets modes explicitly, which is the property under test.
+    """
+    old = os.umask(0)
+    try:
+        c = _client(auth_cfg)
+        csrf = _login(c, auth_cfg)
+        r = c.post(
+            "/api/upload",
+            files={"file": ("secret.log", b"token=abc123", "text/plain")},
+            headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+        )
+        assert r.status_code == 200
+        p = Path(r.json()["path"])
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+        assert stat.S_IMODE(p.parent.stat().st_mode) == 0o700
+    finally:
+        os.umask(old)
+
+
+def test_upload_mode_test_does_not_leak_the_process_umask(auth_cfg, tmp_home):
+    """The umask this file borrows is given back — pinned, not assumed.
+
+    A leaked `umask(0)` is invisible where it happens and surfaces as an unrelated test
+    creating permissive files much later, which is about the worst debugging shape there is.
+    This runs the mode test's own body and then asserts the process umask is back, so the leak
+    cannot return unnoticed. Reintroducing the stub makes it fail with exactly the message
+    review reported: `leaked process umask 0o0`.
+    """
+    before = os.umask(0o022)
+    os.umask(before)  # read-only probe: umask() has no getter
+    test_upload_dir_is_0700_and_file_is_0600_from_first_write(auth_cfg, tmp_home)
+    after = os.umask(0o022)
+    os.umask(after)
+    assert after == before, f"upload mode test leaked process umask {oct(after)}"
+
+
+def test_upload_corrects_a_pre_existing_world_readable_dir(auth_cfg, tmp_home):
+    """An install that already has a 0755 uploads dir gets it tightened, not left alone.
+
+    `mkdir(exist_ok=True)` ignores its `mode` argument when the directory exists, so every
+    install created before this change would otherwise keep its old mode forever. This is the
+    upgrade path, and it is the half a fresh-install test cannot cover.
+    """
+    stale = tmp_home / ".agent-sessions" / "uploads"
+    stale.mkdir(parents=True)
+    stale.chmod(0o755)
+    assert stat.S_IMODE(stale.stat().st_mode) == 0o755
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/upload",
+        files={"file": ("x.txt", b"hi", "text/plain")},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert stat.S_IMODE(stale.stat().st_mode) == 0o700
+
+
+def test_upload_same_name_same_second_does_not_clobber(auth_cfg, tmp_home):
+    """Two uploads of one basename inside the same second keep both files.
+
+    A behaviour-preservation guard for the rewrite: the loop moved from `while dest.exists()`
+    to a retry around `O_CREAT | O_EXCL`, and this pins that same-second collisions still get
+    distinct names. Freezing the timestamp makes the collision deterministic rather than hoping
+    both requests land in the same second.
+
+    It does **not** demonstrate the TOCTOU narrowing that `O_EXCL` also buys — the old shape
+    passes this too, because sequentially the first file does exist by the time the second
+    request checks. The race needs a creation landing *between* the old code's check and its
+    write, which is not reachable through the route once the window is gone. That improvement is
+    structural, and claimed as such rather than as something these assertions prove.
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    with mock.patch.object(upload_route.time, "strftime", return_value="20260812-120000"):
+        first = c.post(
+            "/api/upload", files={"file": ("a.txt", b"first", "text/plain")}, headers=hdr
+        )
+        second = c.post(
+            "/api/upload", files={"file": ("a.txt", b"second", "text/plain")}, headers=hdr
+        )
+    assert first.status_code == second.status_code == 200
+    p1, p2 = Path(first.json()["path"]), Path(second.json()["path"])
+    assert p1 != p2
+    assert p1.read_bytes() == b"first"
+    assert p2.read_bytes() == b"second"
 
 
 def test_upload_empty_is_422(auth_cfg, tmp_home):
