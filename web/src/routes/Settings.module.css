@@ -822,6 +822,32 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }
+/* A disabled control must LOOK disabled (#834). The model select/input is locked while the
+ * endpoint above has unsaved edits (#394); with no rule here it rendered identically to a
+ * live control, so the lock was only discoverable by clicking and getting nothing. */
+.aiInput:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+/* The stored-key readout that stands in for an input once a key is on file (#834) — a
+ * static element, so a password manager has nothing to fill. Matches the input's box so the
+ * row doesn't reflow when "Replace key" swaps one for the other. */
+.aiSecretReadout {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--border, #2f2658);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .aiKeyBadge {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 9px;
@@ -840,6 +866,28 @@
 .aiModelRow > input {
   flex: 1;
   min-width: 0;
+}
+/* The API-key row (#834). It carries a field plus up to two actions — one more than the
+ * model row it used to borrow — which at phone width squeezed the key readout down to
+ * "*****…". Wrapping is the fix: the field claims a full line and the buttons drop below it
+ * rather than the field collapsing. */
+.aiKeyRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.aiKeyRow > input,
+.aiKeyRow > .aiSecretReadout {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+/* Touch targets ≥44px (docs/design.md §8) — the desktop 35px ghost buttons are too small to
+ * hit reliably, and "Remove key" sitting next to "Replace key" makes a mis-tap expensive. */
+@media (pointer: coarse) {
+  .aiKeyRow button {
+    min-height: 44px;
+  }
 }
 .aiIntervalRow {
   display: flex;
@@ -862,6 +910,17 @@
   gap: 8px;
   margin-top: 10px;
   flex-wrap: wrap;
+  /* Without this the row stretches the button to the status line's margin box, so the button
+   * visibly grew 36px → 41px the moment the form went dirty (#834). */
+  align-items: center;
+}
+/* Closes a field group after its action row. The endpoint's Save & validate commits the two
+ * fields ABOVE it, but the collapsed 10px margin below it left the button nearer to MODEL
+ * than to what it saves — it read as the dropdown's button (#834). */
+.aiGroupEnd {
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .aiToggle {
   display: flex;

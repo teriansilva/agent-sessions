@@ -66,6 +66,23 @@ export function AiReviewSettings() {
   // Drafts for commit-on-blur fields (typing must not spam the server).
   const [urlDraft, setUrlDraft] = useState(block.base_url);
   const [keyDraft, setKeyDraft] = useState("");
+  // Reveal-to-edit for the stored secret (#834). With a key on file the panel renders a
+  // static masked readout, NOT an input — an input is a password-manager magnet: browsers
+  // offer to save whatever is typed into a `type=password` field and refill it on every
+  // later visit, which left a plain visit permanently "Unsaved changes" and put the refilled
+  // value one click from overwriting a working key. `autocomplete="new-password"` (#543) is
+  // a hint a browser may ignore; a field that isn't on the page can't be filled at all.
+  const [keyEditing, setKeyEditing] = useState(false);
+  /** The live key draft, readable from an async continuation. `saveEndpoint` awaits the
+   *  server, and by then the state it closed over is stale — so deciding "is the field
+   *  still showing what I submitted?" has to read the CURRENT value, not the captured one.
+   *  Kept current by an effect (writing a ref during render is banned here); a keystroke
+   *  commits long before a network round-trip resolves, and if it somehow didn't, the
+   *  fallback is the old clear-anyway behaviour rather than anything worse. */
+  const keyDraftRef = useRef(keyDraft);
+  useEffect(() => {
+    keyDraftRef.current = keyDraft;
+  }, [keyDraft]);
   const [intervalDraft, setIntervalDraft] = useState(
     String(block.interval_minutes),
   );
@@ -120,7 +137,9 @@ export function AiReviewSettings() {
       } catch (e) {
         setError(
           e instanceof ApiError && e.status === 422
-            ? "That value was rejected — check the endpoint URL and numbers."
+            ? // The server names the field and the bound it broke; the canned line is the
+              //   fallback for a 422 with no `detail` (#834).
+              e.message || "That value was rejected — check the endpoint URL and numbers."
             : "Couldn’t save — please try again.",
         );
         return false;
@@ -206,11 +225,22 @@ export function AiReviewSettings() {
   };
 
   // --- explicit endpoint save (#394): blur NEVER persists the URL or the key ---
-  const keyEdit = keyDraft.trim();
+  // With no key on file there is nothing to protect, so the input shows straight away;
+  // once one is stored it takes an explicit "Replace key" to put a fillable field on the
+  // page (#834). A draft can only exist while that field is shown, so a plain visit is
+  // structurally incapable of being dirty.
+  const keyInputShown = !block.api_key_set || keyEditing;
+  const keyEdit = keyInputShown ? keyDraft.trim() : "";
   const endpointDirty =
     urlDraft.trim() !== block.base_url ||
     (keyEdit !== "" && keyEdit !== KEY_MASK);
   const busy = endpoint.kind === "saving" || endpoint.kind === "validating";
+  /** A failed save/validation reports the reason (below) — but the reason describes the
+   *  values that were rejected, so the next edit to either field retires it. Without this,
+   *  showing the error ahead of the dirty warning would leave a stale verdict pinned to
+   *  text the user has already changed. */
+  const clearEndpointError = () =>
+    setEndpoint((s) => (s.kind === "error" ? { kind: "idle" } : s));
   /** Persist base URL + key together, then validate immediately via the /models probe.
    *  The mask/blank key is the "unchanged" sentinel and is never sent (#356). */
   const saveEndpoint = async () => {
@@ -218,6 +248,9 @@ export function AiReviewSettings() {
     setError(null);
     const patch: Record<string, unknown> = { base_url: urlDraft.trim() };
     if (keyEdit && keyEdit !== KEY_MASK) patch.api_key = keyEdit;
+    // What this save is actually storing. The continuation below only clears the field if
+    // the draft is STILL this — see `keyDraftRef` (Hermes on #836).
+    const submittedKey = keyEdit;
     setEndpoint({ kind: "saving" });
     let next: AiReviewConfig | undefined;
     try {
@@ -235,7 +268,16 @@ export function AiReviewSettings() {
       });
       return;
     }
-    setKeyDraft(""); // write-only: the field clears once the key is stored
+    // Write-only: the field clears once the key is stored, and folds back to the masked
+    // readout (#834) — but ONLY if it still holds what this save submitted. The controls
+    // stay editable for the whole request (the /models probe can run for minutes against a
+    // slow gateway, so locking them is worse), which means the user can type a newer key
+    // while this one is in flight. Clearing unconditionally discarded it (Hermes on #836).
+    // A newer draft is left standing and the form stays dirty, so one more Save stores it.
+    if (keyDraftRef.current.trim() === submittedKey) {
+      setKeyDraft("");
+      setKeyEditing(false);
+    }
     probedOnce.current = true; // this save owns the probe — don't double-fetch
     if (next) {
       setBlock(next);
@@ -253,6 +295,7 @@ export function AiReviewSettings() {
    *  action. The echo flips `api_key_set` (and `configured`) to false. */
   const removeKey = () => {
     setKeyDraft("");
+    setKeyEditing(false); // no stored key ⇒ the input shows unconditionally again
     setEndpoint({ kind: "idle" });
     setModels({ kind: "idle" });
     probedOnce.current = false;
@@ -326,15 +369,24 @@ export function AiReviewSettings() {
       />
     );
 
-  // One status line under the Save button: the in-flight save/validation wins, then
-  // dirty edits (any prior result describes values the user is replacing), then the
-  // last validation outcome. A quiet (mount-probe) ok renders nothing — the line only
-  // ever reports explicit user actions and real errors (#543).
+  // One status line under the Save button: the in-flight save/validation wins, then a
+  // FAILURE, then dirty edits (any prior success describes values the user is replacing),
+  // then the last validation outcome. A quiet (mount-probe) ok renders nothing — the line
+  // only ever reports explicit user actions and real errors (#543).
+  //
+  // The error MUST outrank the dirty warning (#834). A rejected save deliberately keeps the
+  // typed key so the user doesn't lose it, which keeps the form dirty — so with `dirty` first
+  // the error branch was unreachable after any failed save, and every failure rendered as a
+  // bare "● Unsaved changes" with the server's reason silently dropped. `clearEndpointError`
+  // is what keeps this honest: the verdict retires the moment the rejected text is edited, so
+  // the dirty warning still owns the "you have pending edits" case.
   const endpointNote =
     endpoint.kind === "saving" ? (
       <p className={styles.hint}>Saving…</p>
     ) : endpoint.kind === "validating" ? (
       <p className={styles.hint}>Validating endpoint…</p>
+    ) : endpoint.kind === "error" ? (
+      <p className={styles.err}>✗ {endpoint.message}</p>
     ) : endpointDirty ? (
       <p className={styles.warn}>
         ● Unsaved changes — Save applies and validates them.
@@ -346,8 +398,6 @@ export function AiReviewSettings() {
           ? `✓ Endpoint validated — ${endpoint.count} model${endpoint.count === 1 ? "" : "s"} available.`
           : "✓ Endpoint saved — it doesn’t list models; enter the model id manually."}
       </p>
-    ) : endpoint.kind === "error" ? (
-      <p className={styles.err}>✗ {endpoint.message}</p>
     ) : endpoint.kind === "incomplete" ? (
       <p className={styles.hint}>
         Saved. Set both the base URL and an API key to validate.
@@ -378,7 +428,10 @@ export function AiReviewSettings() {
             spellCheck={false}
             placeholder="https://ai.example.io/v1"
             value={urlDraft}
-            onChange={(e) => setUrlDraft(e.target.value)}
+            onChange={(e) => {
+              setUrlDraft(e.target.value);
+              clearEndpointError();
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -389,34 +442,76 @@ export function AiReviewSettings() {
         </div>
 
         <div className={styles.aiField}>
-          <label className={styles.aiFieldLabel} htmlFor="ai-api-key">
+          {/* `htmlFor` only when there IS an input to point at — with the key stored the
+              field is a static readout, and a label bound to a non-labelable element is
+              worse than none. */}
+          <label
+            className={styles.aiFieldLabel}
+            {...(keyInputShown ? { htmlFor: "ai-api-key" } : {})}
+          >
             API key
             {block.api_key_set && (
               <span className={styles.aiKeyBadge}>set</span>
             )}
           </label>
-          <div className={styles.aiModelRow}>
-            <input
-              id="ai-api-key"
-              className={styles.aiInput}
-              type="password"
-              // "off" is ignored by password managers — Chrome autofills the app's LOGIN
-              // password here on a plain visit, dirtying the form and one click away from
-              // overwriting the stored API key (#543). "new-password" suppresses the fill.
-              autoComplete="new-password"
-              spellCheck={false}
-              placeholder={
-                block.api_key_set ? `${KEY_MASK} (write-only)` : "sk-…"
-              }
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void saveEndpoint();
-                }
-              }}
-            />
+          <div className={styles.aiKeyRow}>
+            {keyInputShown ? (
+              <input
+                id="ai-api-key"
+                className={styles.aiInput}
+                type="password"
+                // Belt to the reveal-to-edit braces (#834): "off" is ignored by password
+                // managers and even "new-password" (#543) is only a hint — these are the
+                // vendor opt-outs 1Password / LastPass / Bitwarden honour. They matter only
+                // while this transient field exists; a plain visit renders no input at all.
+                autoComplete="new-password"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                spellCheck={false}
+                placeholder={block.api_key_set ? "new key" : "sk-…"}
+                value={keyDraft}
+                onChange={(e) => {
+                  setKeyDraft(e.target.value);
+                  clearEndpointError();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void saveEndpoint();
+                  }
+                }}
+              />
+            ) : (
+              // Static readout, deliberately NOT an input: nothing here can be autofilled,
+              // so a plain visit can neither go dirty nor overwrite the stored key (#834).
+              <span className={styles.aiSecretReadout}>{KEY_MASK} stored</span>
+            )}
+            {block.api_key_set &&
+              (keyInputShown ? (
+                <button
+                  type="button"
+                  className={styles.secBtnGhost}
+                  onClick={() => {
+                    setKeyDraft("");
+                    setKeyEditing(false);
+                    clearEndpointError();
+                  }}
+                  title="Keep the stored API key"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.secBtnGhost}
+                  onClick={() => setKeyEditing(true)}
+                  title="Enter a new API key"
+                >
+                  Replace key
+                </button>
+              ))}
             {block.api_key_set && (
               <button
                 type="button"
@@ -429,13 +524,16 @@ export function AiReviewSettings() {
             )}
           </div>
           <p className={styles.hint}>
-            Write-only: the stored key is never shown. It is saved only by “Save
-            &amp; validate” — never on blur. Use “Remove key” to delete the
-            stored secret.
+            {keyInputShown
+              ? "Write-only: the stored key is never shown. It is saved only by “Save & validate” — never on blur."
+              : "Write-only: the stored key is never shown. Use “Replace key” to enter a new one, or “Remove key” to delete the stored secret."}
           </p>
         </div>
 
-        <div className={styles.aiActions}>
+        {/* `aiGroupEnd` seals the connection group: this button commits the two fields ABOVE
+            it, and with only the shared 10px gap below it read as the MODEL field's own save
+            control (#834). */}
+        <div className={`${styles.aiActions} ${styles.aiGroupEnd}`}>
           <button
             type="button"
             className={`${styles.secBtn} shine`}
@@ -467,11 +565,15 @@ export function AiReviewSettings() {
             </button>
           </div>
           <p className={styles.hint}>
-            {block.configured
-              ? models.kind === "unsupported"
-                ? "The endpoint doesn’t list models — enter the model id manually."
-                : "Loaded from the endpoint’s /models — picking a model saves it immediately."
-              : "Set the base URL and API key first to load the model list."}
+            {modelLocked
+              ? // The control is disabled while the endpoint above has uncommitted edits
+                // (#394) — say so, rather than leaving a dead control to be discovered (#834).
+                "Locked while the endpoint above has edits that haven’t been saved — this list belongs to the saved endpoint. Save & validate to unlock."
+              : block.configured
+                ? models.kind === "unsupported"
+                  ? "The endpoint doesn’t list models — enter the model id manually."
+                  : "Loaded from the endpoint’s /models — picking a model saves it immediately."
+                : "Set the base URL and API key first to load the model list."}
           </p>
         </div>
 

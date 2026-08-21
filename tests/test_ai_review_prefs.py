@@ -198,3 +198,50 @@ def test_api_prefs_validates_and_masks(auth_cfg, tmp_home, monkeypatch):
     r = _post_prefs(c, auth_cfg, csrf, {"interval_minutes": -3})
     assert r.status_code == 422
     assert SECRET not in r.text
+
+
+def test_concurrent_partial_saves_never_revert_a_stored_key(tmp_home, monkeypatch):
+    """A key save acknowledged with 200 must survive a concurrent partial write (#834).
+
+    `set_ai_review` used to read the current block OUTSIDE the write lock and then `_set`
+    the merged result — the read-modify-write race `_mutate`'s docstring warns about. Two
+    partial saves that both read the same base document (a second tab, the onboarding
+    wizard, a model pick racing the key) each merged their own field onto a stale copy, so
+    whichever committed last erased the other: the brand-new key silently reverted to the
+    previous one while the UI showed "✓ Endpoint validated".
+    """
+    import threading
+
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
+    prefs.set_ai_review({"base_url": "https://ai.example.io/v1", "api_key": "sk-OLD"})
+
+    # Force the interleaving: both writers read the document, then the KEY writer commits
+    # first and the MODEL writer commits last, so a stale merge would restore "sk-OLD".
+    barrier = threading.Barrier(2)
+    real_read = prefs.read_json_doc
+
+    def read_then_wait(path):
+        doc = real_read(path)
+        try:
+            barrier.wait(timeout=5)
+        except threading.BrokenBarrierError:  # pragma: no cover — lock already serialized us
+            pass
+        threading.Event().wait(0.02 if threading.current_thread().name == "key" else 0.2)
+        return doc
+
+    monkeypatch.setattr(prefs, "read_json_doc", read_then_wait)
+    writers = [
+        threading.Thread(target=prefs.set_ai_review, args=({"api_key": "sk-NEW"},), name="key"),
+        threading.Thread(target=prefs.set_ai_review, args=({"model": "m9"},), name="model"),
+    ]
+    for t in writers:
+        t.start()
+    for t in writers:
+        t.join(timeout=15)
+        assert not t.is_alive(), "a prefs writer deadlocked"
+
+    stored = prefs.get_ai_review()
+    assert stored["api_key"] == "sk-NEW", "the acknowledged key save was silently reverted"
+    assert stored["model"] == "m9", "the concurrent partial save was lost"
+    # The untouched field is still intact — the merge is partial, not a whole-block replace.
+    assert stored["base_url"] == "https://ai.example.io/v1"

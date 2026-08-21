@@ -98,7 +98,16 @@ beforeEach(() => {
   });
 });
 
+/** With a key on file the panel shows a static readout, not an input — a field that isn't
+ *  on the page can't be autofilled (#834). Click "Replace key" to put one there. */
+async function revealKeyField(user: ReturnType<typeof userEvent.setup>) {
+  const replace = screen.queryByRole("button", { name: /replace key/i });
+  if (replace) await user.click(replace);
+  return screen.getByLabelText(/API key/i);
+}
+
 test("renders the config from /api/config and never echoes a key (write-only)", async () => {
+  const user = userEvent.setup();
   renderPanel();
   expect(
     await screen.findByRole("heading", { name: "AI endpoint" }),
@@ -106,11 +115,13 @@ test("renders the config from /api/config and never echoes a key (write-only)", 
   expect(screen.getByLabelText(/Endpoint base URL/i)).toHaveValue(
     "https://ai.example.io/v1",
   );
-  // The key field is empty (value never round-trips); a SET badge marks a stored key.
-  const key = screen.getByLabelText(/API key/i);
+  // A stored key shows as a readout + SET badge, with no fillable field at all (#834)…
+  expect(screen.getByText("set")).toBeInTheDocument();
+  expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
+  // …and the field revealed by "Replace key" is empty (the value never round-trips).
+  const key = await revealKeyField(user);
   expect(key).toHaveValue("");
   expect(key).toHaveAttribute("type", "password");
-  expect(screen.getByText("set")).toBeInTheDocument();
 });
 
 test("model dropdown loads via the server-side proxy; picking one saves it", async () => {
@@ -156,21 +167,24 @@ test("a plain visit with a stored config stays quiet — no dirty note, no statu
   expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/Validating endpoint/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/Endpoint validated/i)).not.toBeInTheDocument();
-  expect(screen.getByLabelText(/API key/i)).toHaveValue("");
+  // Structurally quiet: with a key stored there is no input to hold a phantom draft (#834).
+  expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: /save & validate/i }),
   ).toBeDisabled();
 });
 
-test("the API-key field opts out of password-manager autofill (#543)", () => {
-  // autocomplete="off" is ignored for stored credentials — Chrome fills the app's login
-  // password into the field on load, dirtying the form one click away from overwriting
-  // the stored API key. "new-password" is the standard suppression signal.
+test("the API-key field opts out of password-manager autofill (#543)", async () => {
+  // autocomplete="off" is ignored for stored credentials — a browser fills a saved password
+  // into the field on load, dirtying the form one click away from overwriting the stored API
+  // key. "new-password" is the standard suppression signal; it rides the transient field the
+  // "Replace key" reveal puts on the page (#834), alongside the vendor opt-outs.
+  const user = userEvent.setup();
   renderPanel();
-  expect(screen.getByLabelText(/API key/i)).toHaveAttribute(
-    "autocomplete",
-    "new-password",
-  );
+  const key = await revealKeyField(user);
+  expect(key).toHaveAttribute("autocomplete", "new-password");
+  expect(key).toHaveAttribute("data-1p-ignore");
+  expect(key).toHaveAttribute("data-lpignore");
 });
 
 test("a failed mount probe still surfaces the gateway error on a plain visit (#543)", async () => {
@@ -203,7 +217,7 @@ test("Save & validate persists URL+key together, probes /models, and confirms", 
   const url = screen.getByLabelText(/Endpoint base URL/i);
   await user.clear(url);
   await user.type(url, "https://other.example/v1");
-  const key = screen.getByLabelText(/API key/i);
+  const key = await revealKeyField(user);
   await user.type(key, "sk-new-key");
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   await waitFor(() =>
@@ -219,10 +233,50 @@ test("Save & validate persists URL+key together, probes /models, and confirms", 
   await waitFor(() =>
     expect(api.aiReviewModels).toHaveBeenLastCalledWith({ refresh: true }),
   );
-  await waitFor(() => expect(key).toHaveValue("")); // write-only: cleared after save
+  // Write-only: the draft is cleared AND the field folds back to the readout (#834), so
+  // there is nothing left on the page for a password manager to refill.
+  await waitFor(() =>
+    expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument(),
+  );
   expect(
     await screen.findByText(/Endpoint validated — 3 models available/i),
   ).toBeInTheDocument();
+});
+
+test("a key typed WHILE a save is in flight survives that save's success (#836)", async () => {
+  // The endpoint controls stay editable for the whole request on purpose — the /models
+  // probe can run for minutes against a slow gateway, so locking them would be worse. That
+  // means the user can type a newer key before the response lands, and the success
+  // continuation used to clear the field unconditionally, silently discarding it.
+  const user = userEvent.setup();
+  let release: (v: unknown) => void = () => {};
+  vi.mocked(api.setPrefs).mockReturnValueOnce(
+    new Promise((r) => {
+      release = r;
+    }) as ReturnType<typeof api.setPrefs>,
+  );
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" });
+  await user.type(await revealKeyField(user), "sk-first");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+  await screen.findByText(/Saving…/i);
+
+  // …the user thinks better of it and types a different key while A is in flight.
+  const field = screen.getByLabelText(/API key/i);
+  await user.clear(field);
+  await user.type(field, "sk-second");
+
+  release({ ai_review: aiBlock() }); // A finally succeeds
+  await waitFor(() =>
+    expect(screen.queryByText(/Saving…/i)).not.toBeInTheDocument(),
+  );
+
+  // The newer key is still there, still unsaved — one more Save stores it. Not discarded.
+  expect(screen.getByLabelText(/API key/i)).toHaveValue("sk-second");
+  expect(screen.getByText(/Unsaved changes/i)).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /save & validate/i }),
+  ).toBeEnabled();
 });
 
 test("the URL and key fields never persist on blur", async () => {
@@ -233,7 +287,7 @@ test("the URL and key fields never persist on blur", async () => {
   await user.clear(url);
   await user.type(url, "https://other.example/v1");
   await user.tab(); // blur the URL — nothing saved
-  const key = screen.getByLabelText(/API key/i);
+  const key = await revealKeyField(user);
   await user.type(key, "sk-typed-but-not-saved");
   await user.tab(); // blur the key — NEVER persisted on blur (#394)
   expect(api.setPrefs).not.toHaveBeenCalled();
@@ -249,13 +303,43 @@ test("a failed validation shows the gateway's error verbatim (#382)", async () =
     .mockRejectedValueOnce(new ApiError(502, gw)); // save-time probe: new key rejected
   renderPanel();
   await screen.findByRole("combobox", { name: "Model" });
-  await user.type(screen.getByLabelText(/API key/i), "not-a-virtual-key");
+  await user.type(await revealKeyField(user), "not-a-virtual-key");
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   expect(await screen.findByText(`✗ ${gw}`)).toBeInTheDocument();
   // The model field falls back to free-text entry; the config itself stayed saved.
   expect(screen.getByLabelText("Model").getAttribute("placeholder")).toBe(
     "model id",
   );
+});
+
+test("a REJECTED save reports the server's reason — the dirty warning never buries it (#834)", async () => {
+  // The reported bug. A rejected save keeps the typed key on purpose, so the form stays
+  // dirty — and with `endpointDirty` tested ahead of the error state the error branch was
+  // unreachable: every failure rendered as a bare "● Unsaved changes" and the user read it
+  // as "it can't save a new key", with no reason anywhere on the page.
+  const user = userEvent.setup();
+  vi.mocked(api.setPrefs).mockRejectedValueOnce(
+    new ApiError(422, "ai_review.base_url must be an http(s) URL"),
+  );
+  renderPanel();
+  await screen.findByRole("combobox", { name: "Model" });
+  await user.type(await revealKeyField(user), "sk-rejected");
+  await user.click(screen.getByRole("button", { name: /save & validate/i }));
+
+  expect(
+    await screen.findByText("✗ ai_review.base_url must be an http(s) URL"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Unsaved changes/i)).not.toBeInTheDocument();
+  // The typed key survives, so a retry doesn't mean retyping the secret.
+  expect(screen.getByLabelText(/API key/i)).toHaveValue("sk-rejected");
+
+  // The verdict belongs to the rejected values: the next edit retires it and the dirty
+  // warning takes over again, so a stale error can't stay pinned to text that changed.
+  await user.type(screen.getByLabelText(/Endpoint base URL/i), "x");
+  expect(
+    screen.queryByText(/ai_review\.base_url must be an http/),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText(/Unsaved changes/i)).toBeInTheDocument();
 });
 
 test("dirty endpoint edits show the unsaved note and lock the model control", async () => {
@@ -272,7 +356,7 @@ test("dirty endpoint edits show the unsaved note and lock the model control", as
   );
   const saveBtn = screen.getByRole("button", { name: /save & validate/i });
   expect(saveBtn).toBeDisabled(); // nothing edited yet
-  await user.type(screen.getByLabelText(/API key/i), "sk-fresh");
+  await user.type(await revealKeyField(user), "sk-fresh");
   expect(
     screen.getByText(/Unsaved changes — Save applies and validates/i),
   ).toBeInTheDocument();
@@ -303,7 +387,7 @@ test("dirty endpoint drafts survive a model auto-save while a validated config e
   const url = screen.getByLabelText(/Endpoint base URL/i);
   await user.clear(url);
   await user.type(url, "https://other.example/v1");
-  await user.type(screen.getByLabelText(/API key/i), "sk-unsaved-edit");
+  await user.type(await revealKeyField(user), "sk-unsaved-edit");
   await user.selectOptions(select, "m-b");
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { model: "m-b" } }),
@@ -339,7 +423,7 @@ test("the masked sentinel round-trips as 'unchanged' — never sent as the key",
   const url = screen.getByLabelText(/Endpoint base URL/i);
   await user.clear(url);
   await user.type(url, "https://other.example/v1");
-  await user.type(screen.getByLabelText(/API key/i), "********");
+  await user.type(await revealKeyField(user), "********");
   await user.click(screen.getByRole("button", { name: /save & validate/i }));
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({

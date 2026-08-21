@@ -121,6 +121,26 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
+/** A GET whose failures carry the server's `detail` string, the read-side twin of
+ *  `mutateJson` (#834). Scoped to the endpoints whose error text IS the answer — the
+ *  /models proxy relays the gateway's own message (#382), and "GET /api/ai-review/models
+ *  → 502" in its place tells the operator nothing about why their endpoint was rejected.
+ *  Plain `getJson` stays the default: most GETs have no useful `detail` to surface. */
+async function getJsonWithDetail<T>(path: string): Promise<T> {
+  const r = await apiFetch(path, { credentials: "same-origin" });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `GET ${path} → ${r.status}`);
+  }
+  return (await r.json()) as T;
+}
+
 // CSRF token for mutations, fetched once via /api/config and cached. The browser
 // adds the Origin header on same-origin POSTs; the server checks both.
 let csrfToken = "";
@@ -289,8 +309,12 @@ export const api = {
   setAccent: (accent: string) =>
     postJson<{ accent: string }>("/api/prefs", { accent }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
+  /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
+   *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url
+   *  must be an http(s) URL" tells the operator what to change, where "POST /api/prefs →
+   *  422" tells them nothing. The AI endpoint form renders it verbatim. */
   setPrefs: (partial: Record<string, unknown>) =>
-    postJson<Record<string, unknown>>("/api/prefs", partial),
+    mutateJson<Record<string, unknown>>("POST", "/api/prefs", partial),
   /** First-run onboarding (#463): mark the wizard complete (or skipped) so it never shows
    *  again. Persists `onboarded: true` via the prefs store. CSRF-guarded. */
   completeOnboarding: () =>
@@ -485,8 +509,10 @@ export const api = {
   /** AI review (#356): server-proxied model listing from the configured endpoint — the
    *  API key never reaches the browser. 400 = not configured, 502 = endpoint can't list
    *  (the Settings dropdown falls back to free-text entry). */
+  /** The endpoint-validation probe (#394): `getJsonWithDetail` so a 502 arrives as the
+   *  gateway's own message — the panel renders it verbatim (#382, #834). */
   aiReviewModels: (opts?: { refresh?: boolean }) =>
-    getJson<{ models: string[] }>(
+    getJsonWithDetail<{ models: string[] }>(
       `/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`,
     ),
   /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
