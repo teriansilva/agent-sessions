@@ -21,3 +21,6 @@ env
 
 # local dev venv for Home Free work
 .venv-hf/
+
+# scripts/build-docs-site output
+dist-docs/

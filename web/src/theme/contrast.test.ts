@@ -2,15 +2,22 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "vitest";
 
-// Parses the SHIPPED index.css and enforces WCAG-AA contrast on each theme's palette, so a
+// Parses the SHIPPED palette (tokens.css) and enforces WCAG-AA contrast on each theme, so a
 // future palette tweak can't silently drop below readable. Dark is the bare `:root` default;
 // dark/light also live in `:root[data-theme="…"]`. We check body text/bg per theme, plus the
 // CTA contract: since #211 Phase 2 the filled CTAs derive from the brand accent
 // (--cta-bg-1 = var(--accent), --cta-text = var(--on-accent)), so their contrast IS the
 // on-accent/accent pair already checked per theme.
 
-// vitest runs from web/; the stylesheet under test is web/src/index.css.
-const css = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
+// vitest runs from web/; the palette under test is web/src/tokens.css, which index.css imports
+// (#829 — the docs site imports the same file, so there is one set of values, not two).
+// Comments are stripped BEFORE any selector lookup: block() finds the first textual match, and
+// tokens.css's header comment names `:root[data-theme="dark"]` — leaving comments in would point
+// the dark assertions at the bare :root block and quietly test the wrong palette.
+const css = readFileSync(resolve(process.cwd(), "src/tokens.css"), "utf8").replace(
+  /\/\*[\s\S]*?\*\//g,
+  "",
+);
 
 function block(selector: string): string {
   // Grab the first `{ … }` body following the selector.
