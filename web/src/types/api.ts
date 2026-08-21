@@ -97,6 +97,27 @@ export interface AiReviewConfig {
   default_prompt: string;
 }
 
+/** One row of the prompt catalog (#824) — `GET /api/prompts`.
+ *
+ *  `value` is what the operator typed and `guard_suffix` is the clause the SERVER appends to
+ *  a guarded prompt at call time: separate fields on purpose, so the editor never contains
+ *  text the operator cannot change (and a client that echoed it back would have it stripped
+ *  server-side anyway). Storage bindings are deliberately absent — the client edits by id. */
+export interface PromptEntry {
+  id: string;
+  /** Feature heading the row sits under — the catalog's only grouping hint. */
+  group: string;
+  label: string;
+  description: string;
+  contract: string;
+  max_chars: number;
+  guarded: boolean;
+  guard_suffix: string | null;
+  value: string;
+  default: string;
+  is_default: boolean;
+}
+
 /** AI auto-sort config (#424 Phase 6) — the PUBLIC view from /api/config. Opt-in; reuses the
  *  ai_review endpoint, so it holds no secret of its own. Tuning knobs added in #459. */
 export interface AutoSortConfig {

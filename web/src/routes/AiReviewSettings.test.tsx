@@ -369,26 +369,12 @@ test("a save that leaves the config incomplete reports it instead of probing", a
   expect(api.aiReviewModels).not.toHaveBeenCalled(); // nothing to validate yet
 });
 
-test("prompt Save persists the draft; Reset to default saves the server default", async () => {
-  const user = userEvent.setup();
+test("the review prompt is edited in the Prompts catalog, not here (#824)", async () => {
   renderPanel();
-  const area = screen.getByRole("textbox", { name: "Review prompt" });
-  expect(area).toHaveValue("custom prompt");
-  await user.clear(area);
-  await user.type(area, "my new prompt");
-  await user.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({
-      ai_review: { prompt: "my new prompt" },
-    }),
-  );
-  await user.click(screen.getByRole("button", { name: /reset to default/i }));
-  await waitFor(() =>
-    expect(api.setPrefs).toHaveBeenCalledWith({
-      ai_review: { prompt: DEFAULT_PROMPT },
-    }),
-  );
-  expect(area).toHaveValue(DEFAULT_PROMPT);
+  // One editor per value: this panel owns the ENDPOINT, the catalog owns the prompts.
+  expect(screen.queryByRole("textbox", { name: "Review prompt" })).toBeNull();
+  const link = screen.getByRole("link", { name: /prompts → tail review/i });
+  expect(link).toHaveAttribute("href", "#prompt-tail_review");
 });
 
 test("excluded sessions list re-includes a session", async () => {

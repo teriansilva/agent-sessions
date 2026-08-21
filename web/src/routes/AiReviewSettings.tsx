@@ -72,10 +72,9 @@ export function AiReviewSettings() {
   const [timeoutDraft, setTimeoutDraft] = useState(
     block.request_timeout == null ? "" : String(block.request_timeout),
   );
-  const [promptDraft, setPromptDraft] = useState(block.prompt);
   const [seeded, setSeeded] = useState<AiReviewConfig | null>(null);
   if (seeded !== block) {
-    // Unrelated save echoes (model, interval, timeout, prompt, enable toggle) must not
+    // Unrelated save echoes (model, interval, timeout, enable toggle) must not
     // clobber an unsaved endpoint edit (Hermes on #396): a URL draft that is dirty
     // against BOTH the outgoing and the incoming block keeps the user's text. The
     // endpoint's own Save & validate echoes the draft back as `base_url`, so that path
@@ -91,7 +90,6 @@ export function AiReviewSettings() {
     setTimeoutDraft(
       block.request_timeout == null ? "" : String(block.request_timeout),
     );
-    setPromptDraft(block.prompt);
   }
 
   const [error, setError] = useState<string | null>(null);
@@ -550,36 +548,13 @@ export function AiReviewSettings() {
         </div>
 
         <div className={styles.aiField}>
-          <label className={styles.aiFieldLabel} htmlFor="ai-review-prompt">
-            Review prompt
-          </label>
-          <textarea
-            id="ai-review-prompt"
-            className={`${styles.aiInput} ${styles.aiPrompt}`}
-            aria-label="Review prompt"
-            value={promptDraft}
-            onChange={(e) => setPromptDraft(e.target.value)}
-          />
-          <div className={styles.aiActions}>
-            <button
-              type="button"
-              className={`${styles.secBtn} shine`}
-              disabled={promptDraft === block.prompt}
-              onClick={() => void save({ prompt: promptDraft })}
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              className={styles.secBtnGhost}
-              onClick={() => {
-                setPromptDraft(block.default_prompt);
-                void save({ prompt: block.default_prompt });
-              }}
-            >
-              Reset to default
-            </button>
-          </div>
+        <p className={styles.hint}>
+          The review prompt now lives in{" "}
+          <a className={styles.nameLink} href="#prompt-tail_review">
+            Prompts → Tail review
+          </a>{" "}
+          below, alongside every other prompt this app sends.
+        </p>
         </div>
 
         <div className={styles.aiField}>

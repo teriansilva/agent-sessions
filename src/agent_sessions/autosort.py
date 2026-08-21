@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 
-from . import engines, metadata, prefs, projects, review
+from . import engines, metadata, prefs, projects, prompts, review
 
 log = logging.getLogger("agent_sessions.autosort")
 
@@ -75,19 +75,17 @@ def _projects_for_prompt(project_index: dict[str, projects.Project]) -> list[dic
     ]
 
 
-async def _classify(
-    cand: dict, projects_payload: list[dict], prompt: str
-) -> tuple[str | None, float]:
+async def _classify(cand: dict, projects_payload: list[dict]) -> tuple[str | None, float]:
     """Ask the gateway which project the session belongs to, using the operator-set classifier
-    ``prompt`` (#459). Returns ``(project_id|None, confidence)``; a malformed reply degrades to
-    ``(None, 0.0)``."""
+    prompt (#459, registry-owned since #824). Returns ``(project_id|None, confidence)``; a
+    malformed reply degrades to ``(None, 0.0)``."""
     user = {
         "session": {"cwd": cand["cwd"], "title": cand["title"], "summary": cand["summary"]},
         "projects": projects_payload,
     }
     obj = await review.complete_json(
         [
-            {"role": "system", "content": prompt},
+            {"role": "system", "content": prompts.effective("auto_sort")},
             {"role": "user", "content": json.dumps(user)},
         ]
     )
@@ -112,7 +110,6 @@ async def run_sort(*, cap: int | None = None) -> dict:
     ever ASSIGNS; it never clears or changes an existing ``project_id``."""
     cfg = prefs.get_auto_sort()
     conf_min = float(cfg["confidence_min"])
-    prompt = str(cfg["prompt"])
     limit = int(cfg["max_per_pass"]) if cap is None else cap
 
     project_index = projects.load()
@@ -129,7 +126,7 @@ async def run_sort(*, cap: int | None = None) -> dict:
     for i, cand in enumerate(window):
         scanned += 1
         try:
-            pid, conf = await _classify(cand, projects_payload, prompt)
+            pid, conf = await _classify(cand, projects_payload)
         except review.NotConfiguredError:
             return _report(
                 assigned,

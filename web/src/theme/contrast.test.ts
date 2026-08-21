@@ -142,6 +142,27 @@ for (const [name, selector, ground] of [
     }
   });
 
+  test(`${name}: failure text meets WCAG AA on the surfaces it is painted on`, () => {
+    // #824: the over-cap counter and inline save errors are 10.5-12px text. `--status-down`
+    // straight measures 2.8:1 on a dark row — a signal colour is not a text colour, so
+    // `--danger-text` exists and is pinned here on BOTH grounds it can land on: a settings row
+    // (--surface-2) and the panel itself (--panel).
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => rawToken(themed.includes(`--${n}:`) ? themed : root, n);
+    const lookup = (n: string): string => {
+      const v = pick(n);
+      return v.startsWith("#") ? v : resolveMix(v, lookup);
+    };
+    const fg = resolveMix(pick("danger-text"), lookup);
+    for (const groundToken of ["surface-2", "panel"]) {
+      expect(
+        ratio(fg, lookup(groundToken)),
+        `${name} --danger-text on --${groundToken}`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   test(`${name}: diff foreground/background pairs meet WCAG AA`, () => {
     const root = block(":root {");
     const themed = block(selector);

@@ -52,6 +52,12 @@
   --git-add-fg: var(--status-up);
   --git-mod-fg: var(--status-degraded);
   --git-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  /* Failure TEXT (form errors, over-cap counters). `--status-down` is a signal colour sized
+     for LEDs and rules; as small text on a dark panel it measures 2.8:1, well under AA.
+     Lightened toward --text-1 by the same 55% recipe as the git letters above, which keeps it
+     recognisably the down hue at 5.5:1. Borders may still use the raw token — they are not
+     text. Locked by contrast.test.ts. */
+  --danger-text: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
   --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 75%, var(--text-1));
   --diff-add-bg: color-mix(in srgb, var(--status-up) 14%, transparent);
   --diff-add-fg: var(--status-up);
@@ -156,6 +162,7 @@
   --git-add-fg: color-mix(in srgb, var(--status-up) 50%, var(--text-1));
   --git-mod-fg: color-mix(in srgb, var(--status-degraded) 45%, var(--text-1));
   --git-del-fg: var(--status-down);
+  --danger-text: var(--status-down); /* 6.0:1 on --surface-2, 5.5:1 on --panel */
   --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 80%, var(--text-1));
   --diff-add-fg: color-mix(in srgb, var(--status-up) 20%, var(--text-1));
   --diff-del-fg: color-mix(in srgb, var(--status-down) 20%, var(--text-1));

@@ -62,6 +62,7 @@ from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
+from .routes import prompts as prompts_routes
 from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
@@ -445,6 +446,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     history_routes.register(app, logged_in=_logged_in)
     # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Prompt catalog (#824): the one read/write surface for every AI system prompt.
+    prompts_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Cross-engine handoff (#597): prepare (seed preview + handle) / commit (mint + bind).
     handoff_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Pulse — recent-work overview (#441 Phase 2): cached overview + manual scan. Needs the

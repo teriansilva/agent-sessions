@@ -73,19 +73,6 @@ AI_STATE_MAX = 800
 AI_ITEM_MAX = 200
 AI_ITEMS_MAX = 8
 
-AI_SYSTEM_PROMPT = (
-    "You write handoff briefs between AI coding-agent sessions. You are given the tail of a "
-    "transcript from one agent session. Summarize it so a DIFFERENT agent, with no other "
-    "context, can take the work over.\n"
-    "Reply with ONLY a JSON object of this exact shape:\n"
-    '{"state": "<what has been done so far and where the work stands, 2-5 sentences>", '
-    '"open_items": ["<unresolved item>", ...], '
-    '"next_steps": ["<concrete next action>", ...]}\n'
-    "Be concrete and factual: name files, commands, errors, and decisions from the transcript. "
-    "Never invent work that is not in the transcript. Use at most 8 items per list; use an "
-    "empty list when there are none."
-)
-
 
 class HandoffError(RuntimeError):
     """A handoff request the server refuses. ``status`` maps to the HTTP response."""
@@ -412,14 +399,14 @@ async def build_ai_seed(
     the endpoint is absent or its answer is unusable — the route turns those into the
     documented degrade-to-Quick-with-a-notice path.
     """
-    from . import review  # late import: review pulls httpx + prefs; keep handoff import-light
+    from . import prompts, review  # late import: review pulls httpx; keep handoff import-light
 
     texts = await asyncio.to_thread(_source_texts, engine, native)
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
     obj = await review.complete_json(
         [
-            {"role": "system", "content": AI_SYSTEM_PROMPT},
+            {"role": "system", "content": prompts.effective("handoff_brief")},
             {"role": "user", "content": _ai_input(texts)},
         ]
     )

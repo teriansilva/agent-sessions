@@ -35,7 +35,7 @@ import os
 import time
 from pathlib import Path
 
-from . import atomicjson, engines, metadata, projects, review
+from . import atomicjson, engines, metadata, projects, prompts, review
 
 # Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
@@ -70,25 +70,6 @@ BANNER_DIGEST_CAP = 40
 # roomier — still bounded so the prompt/render stay sane.
 BANNER_MAX = 700
 SESSION_LINE_MAX = 160
-
-_BANNER_SYSTEM_PROMPT = (
-    "You write a short chronological recap of a developer's recent coding-agent work across "
-    "several sessions, shown at the top of their work overview. You are given the curated "
-    "session list (state, title, summary, age). Write 2-4 sentences of plain prose in rough "
-    "chronological order: what was worked on earlier, then what is in flight now, ending with "
-    "what needs the user's attention or what is pending. Be specific and concise — no preamble, "
-    "no markdown, no bullet points. "
-    'Reply with ONLY a JSON object: {"banner": "<2-4 sentence chronological recap, max 600 '
-    'chars>"}.'
-)
-
-_SESSION_SYSTEM_PROMPT = (
-    "You summarize ONE coding-agent session in a single line: its current state and the most "
-    "useful next step for the user. You are given the session's title, state, last-activity age, "
-    "and a summary — which may be a short chronological recap of what happened, one step per "
-    "line. Be specific and concise — no preamble, no markdown. "
-    'Reply with ONLY a JSON object: {"line": "<one line, max 140 chars>"}.'
-)
 
 
 def _one_line(value: object, cap: int) -> str | None:
@@ -270,7 +251,7 @@ async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
         try:
             obj = await review.complete_json(
                 [
-                    {"role": "system", "content": _SESSION_SYSTEM_PROMPT},
+                    {"role": "system", "content": prompts.effective("pulse_session_line")},
                     {"role": "user", "content": json.dumps(user)},
                 ]
             )
@@ -290,7 +271,7 @@ async def _synthesize_banner(cards: list[dict], *, window_days: int, now: float)
     try:
         obj = await review.complete_json(
             [
-                {"role": "system", "content": _BANNER_SYSTEM_PROMPT},
+                {"role": "system", "content": prompts.effective("pulse_banner")},
                 {"role": "user", "content": json.dumps(digest)},
             ]
         )

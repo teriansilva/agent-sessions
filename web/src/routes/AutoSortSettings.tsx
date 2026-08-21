@@ -44,14 +44,12 @@ export function AutoSortSettings() {
     block.confidence_min.toFixed(2),
   );
   const [perPassDraft, setPerPassDraft] = useState(String(block.max_per_pass));
-  const [promptDraft, setPromptDraft] = useState(block.prompt);
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
     setSeeded(block);
     setIntervalDraft(String(block.interval_minutes));
     setConfidenceDraft(block.confidence_min.toFixed(2));
     setPerPassDraft(String(block.max_per_pass));
-    setPromptDraft(block.prompt);
   }
 
   // Project id → name, so a near-miss reads "superstatus 0.62", not a raw entity id. Loaded
@@ -261,40 +259,14 @@ export function AutoSortSettings() {
       </div>
 
       <div className={styles.aiField}>
-        <label className={styles.aiFieldLabel} htmlFor="auto-sort-prompt">
-          Auto-sort prompt
-        </label>
-        <textarea
-          id="auto-sort-prompt"
-          className={`${styles.aiInput} ${styles.aiPrompt}`}
-          aria-label="Auto-sort prompt"
-          value={promptDraft}
-          onChange={(e) => setPromptDraft(e.target.value)}
-        />
-        <div className={styles.aiActions}>
-          <button
-            type="button"
-            className={`${styles.secBtn} shine`}
-            disabled={promptDraft === block.prompt}
-            onClick={() => void save({ prompt: promptDraft })}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            className={styles.secBtnGhost}
-            onClick={() => {
-              setPromptDraft(block.default_prompt);
-              void save({ prompt: block.default_prompt });
-            }}
-          >
-            Reset to default
-          </button>
-        </div>
         <p className={styles.hint}>
-          The classifier instruction. Leave it empty to reset to the default.
-          Make it less conservative if too many sessions come back as “no
-          confident match”.
+          The classifier instruction now lives in{" "}
+          <a className={styles.nameLink} href="#prompt-auto_sort">
+            Prompts → Project classifier
+          </a>{" "}
+          below, alongside every other prompt this app sends. Make it less
+          conservative there if too many sessions come back as “no confident
+          match”.
         </p>
       </div>
 

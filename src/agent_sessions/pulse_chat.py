@@ -37,7 +37,7 @@ import json
 import re
 import time
 
-from . import engines, pulse, review
+from . import engines, prompts, pulse, review
 
 # --- request bounds (#522, server-owned) ----------------------------------------------
 QUERY_MAX = 2_000
@@ -59,28 +59,6 @@ STAGE2_TAIL_CHARS = 4_000
 MATCHES_MAX = 8
 ANSWER_MAX = 600
 WHY_MAX = 160
-
-_STAGE1_SYSTEM_PROMPT = (
-    "You help a developer find their past AI-coding sessions. You are given their question "
-    "(and possibly prior conversation turns) plus a catalog of sessions: id, title, project, "
-    "working-directory tail, a summary (which may be a short chronological recap of what "
-    "happened, one step per line), age in hours. Pick the sessions that best "
-    "answer the question, best match first, and answer in one short sentence. Only use ids "
-    "that appear in the catalog; return an empty matches list when nothing fits. "
-    'Reply with ONLY a JSON object: {"answer": "<one short sentence, max 500 chars>", '
-    '"matches": [{"id": "<catalog id>", "why": "<one line, max 140 chars>"}]}.'
-)
-
-_STAGE2_SYSTEM_PROMPT = (
-    "You verify which of several candidate AI-coding sessions actually answer the "
-    "developer's question. You are given the question and, per candidate: id, title, the "
-    "catalog-stage reason, and an excerpt of the session's actual transcript. Confirm, "
-    "re-rank, or drop candidates based on what the transcripts really contain, best match "
-    "first, and refine the one-sentence answer. Only use ids from the candidate list; "
-    "return an empty matches list when none truly fit. "
-    'Reply with ONLY a JSON object: {"answer": "<one short sentence, max 500 chars>", '
-    '"matches": [{"id": "<candidate id>", "why": "<one line, max 140 chars>"}]}.'
-)
 
 # Tokens shorter than this are noise ("a", "on", "ws" survives at 2 — keep it permissive).
 _WORD_RE = re.compile(r"[a-z0-9_\-./]{2,}")
@@ -181,7 +159,11 @@ def bound_history(history: object) -> list[dict]:
             continue
         text = content.strip()[:HISTORY_TURN_CHARS_MAX]
         if text:
-            turns.append({"role": role, "content": text})
+            # The role is written as one of two LITERALS rather than passed through from the
+            # client payload. Same values, but now the message that lands on the wire is
+            # provably never a system message — readable as such by a reader and by the
+            # registry ratchet, which cannot otherwise know what `role` holds here.
+            turns.append({"role": "user" if role == "user" else "assistant", "content": text})
     return turns[-HISTORY_TURNS_MAX:]
 
 
@@ -264,8 +246,13 @@ async def _stage2_refine(
     try:
         obj = await review.complete_json(
             [
-                {"role": "system", "content": _STAGE2_SYSTEM_PROMPT},
-                *history,
+                {"role": "system", "content": prompts.effective("ask_verify")},
+                # Sanitized AT the sink, not upstream: bound_history's role gate (user/assistant
+                # only) is what keeps client-supplied turns from smuggling in a system message,
+                # and applying it here means that fact is readable from the call site — by a
+                # reviewer and by the registry ratchet. It is idempotent, so re-running it on
+                # already-bounded turns is free.
+                *bound_history(history),
                 {"role": "user", "content": json.dumps(user)},
             ]
         )
@@ -308,8 +295,8 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     }
     obj = await review.complete_json(
         [
-            {"role": "system", "content": _STAGE1_SYSTEM_PROMPT},
-            *turns,
+            {"role": "system", "content": prompts.effective("ask_catalog")},
+            *bound_history(turns),
             {"role": "user", "content": json.dumps(user)},
         ]
     )

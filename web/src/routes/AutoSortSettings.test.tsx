@@ -112,28 +112,12 @@ test("sessions-per-run commits on blur within bounds; out-of-range reverts (#459
   expect(api.setPrefs).not.toHaveBeenCalled();
 });
 
-test("the auto-sort prompt saves and resets to default (#459)", async () => {
-  renderPanel(
-    block({
-      enabled: true,
-      prompt: "SORT PROMPT",
-      default_prompt: "DEFAULT SORT PROMPT",
-    }),
-  );
-  const ta = screen.getByLabelText(/auto-sort prompt/i);
-  await userEvent.type(ta, " extra");
-  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    auto_sort: { prompt: "SORT PROMPT extra" },
-  });
-
-  vi.mocked(api.setPrefs).mockClear();
-  await userEvent.click(
-    screen.getByRole("button", { name: /reset to default/i }),
-  );
-  expect(api.setPrefs).toHaveBeenCalledWith({
-    auto_sort: { prompt: "DEFAULT SORT PROMPT" },
-  });
+test("the classifier prompt is edited in the Prompts catalog, not here (#824)", () => {
+  renderPanel(block({ enabled: true }));
+  expect(screen.queryByLabelText(/auto-sort prompt/i)).toBeNull();
+  expect(
+    screen.getByRole("link", { name: /prompts → project classifier/i }),
+  ).toHaveAttribute("href", "#prompt-auto_sort");
 });
 
 test("'Auto-sort now' is disabled until enabled AND the endpoint is configured (#424)", () => {

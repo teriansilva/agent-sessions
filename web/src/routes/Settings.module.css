@@ -1017,3 +1017,156 @@
   border-radius: 0;
   padding: 1px 6px;
 }
+
+/* --- Prompt catalog (#824) --------------------------------------------------------------
+ * Eleven collapsed rows in one panel. No radius, no gradients (docs/design.md), 44px rows,
+ * and the error treatment is a flat status-down rule + text rather than an LED — these are
+ * failures of THIS panel, not session state, and a status LED means session state. */
+.promptNote {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+}
+.promptGroup {
+  margin: 16px 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.promptRow {
+  margin-bottom: 6px;
+  padding: 4px 10px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+}
+.promptToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px; /* touch target (docs/design.md §8) */
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.promptChev {
+  flex: none;
+  width: 10px;
+  font-size: 11px;
+  color: var(--text-3, var(--text-muted));
+}
+.promptMain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.promptTitle {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.promptDesc {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.promptBadge {
+  flex: none;
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  border: 1px solid var(--badge-bg);
+}
+.promptBadgeGuard {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.promptContract {
+  margin: 8px 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-muted));
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+}
+.promptState {
+  margin-left: auto;
+}
+.promptLockLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.promptLockLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.promptLocked {
+  margin: 0;
+  padding: 7px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-muted));
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.promptOver {
+  border-color: var(--status-down);
+}
+.promptInlineError {
+  margin: 8px 0 0;
+  padding: 4px 0 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+}
+.promptError {
+  padding: 9px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--surface-2);
+  border: 1px solid var(--status-down);
+  border-left-width: 3px;
+}
+.promptCount {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--text-3, var(--text-muted));
+}
+.promptOverText {
+  font-weight: 700;
+  color: var(--danger-text);
+}

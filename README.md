@@ -30,6 +30,10 @@ whole fleet from a laptop or your phone.
   your own OpenAI-compatible endpoint; session content goes nowhere else.
 - **AI review + auto-sort.** A one-line AI summary on each session flags what needs you, and new
   sessions file themselves into the right project.
+- **Every prompt is yours.** All eleven system prompts — the recap, the handoff brief, Pulse, the
+  orchestrator — are editable in Settings, with the JSON shape each one must return and a
+  one-tap reset. The two that can act on a session keep a server-appended clause that says
+  session output is untrusted; that part isn't editable, by design.
 - **Home Free.** Your box dials *out* to a blind relay — open the Connect page in any browser and
   drive the full app from your phone. End-to-end encrypted (X25519 → AES-256-GCM); the relay sees
   only ciphertext. No VPN, no port-forwarding.

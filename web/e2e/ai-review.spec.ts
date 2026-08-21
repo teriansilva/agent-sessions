@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 // Real-browser checks for the AI session review surface (#356 PR 1, manual slice):
 // the Settings → AI Review panel (write-only key, model dropdown via the server proxy,
-// prompt save) and the sidebar row (summary line + amber intervention badge). Network is
+// link into the prompt catalog) and the sidebar row (summary line + amber intervention badge). Network is
 // fully mocked — the suite never talks to a backend or a real AI endpoint.
 
 const AI_REVIEW = {
@@ -124,16 +124,13 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
     .poll(() => prefsBody)
     .toEqual({ ai_review: { model: "qwen3-vl" } });
 
-  // Prompt editor: save a draft. Scope to the Session review section — the Auto-sort section
-  // below it has its own Save/Reset for the classifier prompt (#459).
+  // The prompt itself is no longer edited here (#824) — this panel owns the endpoint, the
+  // Prompts catalog owns every prompt. What stays is the link into the right row.
   const review = page.getByRole("region", { name: "Session review" });
-  const prompt = review.getByRole("textbox", { name: "Review prompt" });
-  await expect(prompt).toHaveValue("custom prompt");
-  await prompt.fill("watch my fleet");
-  await review.getByRole("button", { name: "Save", exact: true }).click();
-  await expect
-    .poll(() => prefsBody)
-    .toEqual({ ai_review: { prompt: "watch my fleet" } });
+  await expect(review.getByRole("textbox", { name: "Review prompt" })).toHaveCount(0);
+  await expect(
+    review.getByRole("link", { name: /Prompts → Tail review/i }),
+  ).toHaveAttribute("href", "#prompt-tail_review");
 });
 
 test("settings: a plain visit with a stored config stays quiet — no phantom dirty/validating state (#543)", async ({
@@ -222,6 +219,6 @@ test("mobile: AI Review settings panel renders at phone width", async ({
   ).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Model" })).toBeVisible();
   await expect(
-    page.getByRole("textbox", { name: "Review prompt" }),
+    page.getByRole("link", { name: /Prompts → Tail review/i }),
   ).toBeVisible();
 });

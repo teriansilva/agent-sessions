@@ -36,7 +36,7 @@ from pathlib import Path
 
 import httpx
 
-from . import metadata, prefs, scrollback, transcript
+from . import metadata, prefs, prompts, scrollback, transcript
 
 # Output field caps — server-owned, applied AFTER parsing so an over-long model reply is
 # truncated rather than rejected (the shape is the contract; the length is hygiene).
@@ -78,18 +78,6 @@ def recap_input_chars(cfg: dict | None = None) -> int:
     except (KeyError, TypeError, ValueError):
         return RECAP_INPUT_CHARS
 
-
-RECAP_SYSTEM_PROMPT = (
-    "You write a brief for a developer returning to a coding-agent session. From the session "
-    "transcript (you may see the beginning and the most recent part, with the middle elided) "
-    "plus any live terminal tail, write a SHORT CHRONOLOGICAL recap of what happened: 3 to 6 "
-    "terse past-tense steps in the order they occurred, each on its own line, with the LAST "
-    "line stating the current state or what is pending. The client renders the lines as a "
-    "numbered timeline, so do NOT number or bullet them yourself, and write no preamble and no "
-    "headings. Inside a line you may use **bold** for the leading action verb and backticks for "
-    "file names, commands and identifiers — no other markdown. Reply with ONLY a JSON object: "
-    '{"recap": "<chronological recap, max ~900 chars, one step per line>"}.'
-)
 
 # Leading ordinal/bullet glyphs to strip from a recap line (#744). The <ol> in the session brief
 # supplies the ordinal, so a model that numbers its steps anyway would render "1. 1. …". Matches
@@ -634,17 +622,14 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     body = {
         "model": cfg["model"],
         "messages": [
-            {"role": "system", "content": cfg["prompt"]},
+            {"role": "system", "content": prompts.effective("tail_review")},
             {"role": "user", "content": text},
         ],
         "temperature": 0,
         "stream": False,
     }
     try:
-        async with _client(request_timeout(cfg)) as client:
-            r = await client.post(
-                _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
-            )
+        r = await _post_chat(cfg, body)
     except httpx.HTTPError as e:
         # Never echo the exception repr — httpx errors can embed request headers.
         raise ReviewError(f"review endpoint unreachable ({type(e).__name__})") from None
@@ -682,7 +667,7 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
         if recap_fp != meta.recap_fingerprint:
             obj = await complete_json(
                 [
-                    {"role": "system", "content": RECAP_SYSTEM_PROMPT},
+                    {"role": "system", "content": prompts.effective("session_recap")},
                     {"role": "user", "content": recap_text},
                 ]
             )
@@ -710,6 +695,54 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
 _JSON_MODE_REFUSED: frozenset[int] = frozenset({400, 422, 501})
 
 
+async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = False):
+    """THE chat-completions transport. Every request to the endpoint goes through here.
+
+    Centralized so the registry check has exactly one place to stand (#824): a second POST
+    written elsewhere would be a second door, and a static check of call sites cannot close a
+    door it was never told about. Callers own their body and their response handling; this owns
+    the wire — and the invariant that a system message on it came from the registry.
+    """
+    _assert_registered_system_prompts(body.get("messages") or [])
+    url = _base(cfg) + "/chat/completions"
+    async with _client(request_timeout(cfg)) as client:
+        r = await client.post(url, json=body, headers=_headers(cfg))
+        # Not every OpenAI-compatible server implements `response_format`, and one that does
+        # not typically rejects the whole request. Degrade to the unconstrained call rather
+        # than making a working endpoint unusable — the tolerant `_extract_json` in the caller
+        # is still there for exactly that case.
+        if retry_without_json_mode and r.status_code in _JSON_MODE_REFUSED:
+            body.pop("response_format", None)
+            _assert_registered_system_prompts(body.get("messages") or [])
+            r = await client.post(url, json=body, headers=_headers(cfg))
+        return r
+
+
+def _assert_registered_system_prompts(messages: list[dict]) -> None:
+    """Every system message leaving this process comes from the prompt registry (#824).
+
+    The AST ratchet in ``tests/test_prompts_registry.py`` catches a hardcoded prompt at review
+    time, but it reasons about NAMES — and a name can be rebound, so it can only ever be a
+    guard against accident. This is the guarantee itself, checked on the payload rather than on
+    the source that built it: a system message whose text is not one the registry can currently
+    produce never reaches the endpoint, however it was assembled.
+
+    Cost is one prefs read per model call, against a request that takes seconds.
+    """
+    system = [
+        m.get("content") for m in messages if isinstance(m, dict) and m.get("role") == "system"
+    ]
+    if not system:
+        return
+    allowed = prompts.effective_set()
+    for content in system:
+        if content not in allowed:
+            raise ReviewError(
+                "refusing to send a system prompt that did not come from the registry — "
+                "every system message must be prompts.effective('<id>') (#824)"
+            )
+
+
 async def complete_json(messages: list[dict], *, model: str | None = None) -> dict:
     """One bounded, non-streaming chat completion against the configured AI-review endpoint,
     returning the parsed JSON object (#424 Phase 6 — reused by the auto-sorter). Reuses the
@@ -734,19 +767,7 @@ async def complete_json(messages: list[dict], *, model: str | None = None) -> di
         "response_format": {"type": "json_object"},
     }
     try:
-        async with _client(request_timeout(cfg)) as client:
-            r = await client.post(
-                _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
-            )
-            # Not every OpenAI-compatible server implements `response_format`, and one that
-            # does not typically rejects the whole request. Degrade to the unconstrained call
-            # rather than making a working endpoint unusable — the tolerant `_extract_json`
-            # below is still there for exactly that case.
-            if r.status_code in _JSON_MODE_REFUSED:
-                body.pop("response_format", None)
-                r = await client.post(
-                    _base(cfg) + "/chat/completions", json=body, headers=_headers(cfg)
-                )
+        r = await _post_chat(cfg, body, retry_without_json_mode=True)
     except httpx.HTTPError as e:
         raise ReviewError(f"endpoint unreachable ({type(e).__name__})") from None
     if r.status_code != 200:

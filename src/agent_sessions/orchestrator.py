@@ -47,6 +47,7 @@ from . import (
     metadata,
     notifications,
     prefs,
+    prompts,
     pulse,
     review,
     scrollback,
@@ -566,7 +567,7 @@ async def run_pass(
     payload = {"sessions": [_digest_entry(c, now) for c in slice_]}
     obj = await review.complete_json(
         [
-            {"role": "system", "content": str(cfg["prompt"])},
+            {"role": "system", "content": prompts.effective("orchestrator_pass")},
             {"role": "user", "content": json.dumps(payload)},
         ]
     )

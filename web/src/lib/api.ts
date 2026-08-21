@@ -19,6 +19,7 @@ import type {
   DraftAttachment,
   ProjectArchiveReport,
   ProjectEntity,
+  PromptEntry,
   Evidence,
   EvidenceKind,
   OrchestratorAction,
@@ -272,6 +273,15 @@ export const api = {
   /** Persist the auto-update opt-in and/or release channel (#538). CSRF-guarded. */
   setUpdateSettings: (body: { auto_update?: boolean; channel?: string }) =>
     postJson<UpdateSettings>("/api/update/settings", body),
+  /** The AI prompt catalog (#824). Off /api/config on purpose: ~11 prompts x (value +
+   *  default) is boot-path weight for data only Settings reads. */
+  prompts: () => getJson<{ prompts: PromptEntry[] }>("/api/prompts"),
+  /** Save one prompt by id, or restore its shipped default. The server resolves the id to
+   *  its storage binding; the client never sends one. CSRF-guarded. */
+  savePrompt: (id: string, value: string) =>
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, { value }),
+  resetPrompt: (id: string) =>
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, { reset: true }),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) =>
     postJson<{ theme: string }>("/api/prefs", { theme }),

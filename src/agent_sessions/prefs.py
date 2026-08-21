@@ -562,11 +562,14 @@ def _valid_base_url(value: object) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
-def get_ai_review(path: Path | None = None) -> dict:
-    """The full stored `ai_review` block (INCLUDING the API key) with defaults applied and
-    every field coerced to its type. Server-side use only — HTTP surfaces must go through
-    `public_ai_review()` so the key never leaves the process."""
-    raw = _load(path or _default_path()).get("ai_review")
+def _coerce_ai_review(raw: object) -> dict:
+    """Defaults + per-field type/bounds coercion for a raw stored `ai_review` block.
+
+    Split out of `get_ai_review` so the SETTER can coerce the block it read *inside* the
+    file lock (#824): merging from a pre-lock read is the read-modify-write race `_mutate`
+    exists to close — two concurrent partial saves (an endpoint edit and a prompt edit, say)
+    would each write a full block built from the same stale base, and the later write would
+    silently revert the earlier one."""
     out = dict(_AI_REVIEW_DEFAULTS)
     if isinstance(raw, dict):
         for k in ("base_url", "api_key", "model", "prompt"):
@@ -591,6 +594,13 @@ def get_ai_review(path: Path | None = None) -> dict:
     if not str(out["prompt"]).strip():
         out["prompt"] = DEFAULT_AI_REVIEW_PROMPT  # empty prompt can never strand reviews
     return out
+
+
+def get_ai_review(path: Path | None = None) -> dict:
+    """The full stored `ai_review` block (INCLUDING the API key) with defaults applied and
+    every field coerced to its type. Server-side use only — HTTP surfaces must go through
+    `public_ai_review()` so the key never leaves the process."""
+    return _coerce_ai_review(_load(path or _default_path()).get("ai_review"))
 
 
 def public_ai_review(path: Path | None = None) -> dict:
@@ -658,8 +668,19 @@ def validate_ai_review_patch(patch: object) -> str | None:
 
 def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     """Merge a VALIDATED partial block into the stored one (masked-sentinel key handling)
-    and persist. Returns the new full block (server-side view, including the key)."""
-    cur = get_ai_review(path)
+    and persist. Returns the new full block (server-side view, including the key).
+
+    The read-merge-write happens inside `_mutate`'s exclusive lock (#824), so an endpoint
+    edit and a concurrent prompt save (which writes `ai_review.prompt` through the registry)
+    can no longer clobber each other."""
+
+    def merge(raw: object) -> dict:
+        return _merge_ai_review(_coerce_ai_review(raw), patch)
+
+    return _mutate("ai_review", merge, path)
+
+
+def _merge_ai_review(cur: dict, patch: dict) -> dict:
     new = dict(cur)
     for k in (
         "enabled",
@@ -680,7 +701,6 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
             new["api_key"] = ""  # explicit clear
         elif isinstance(v, str) and v.strip() not in ("", AI_REVIEW_KEY_MASK):
             new["api_key"] = v.strip()  # only a real new value replaces the stored key
-    _set("ai_review", new, path)
     return new
 
 
@@ -721,11 +741,9 @@ _AUTO_SORT_DEFAULTS: dict[str, object] = {
 }
 
 
-def get_auto_sort(path: Path | None = None) -> dict:
-    """The stored `auto_sort` block with defaults applied + types coerced (#424 Phase 6,
-    tunables #459). An empty/whitespace prompt coerces back to the default so a blank field
-    can never strand the classifier."""
-    raw = _load(path or _default_path()).get("auto_sort")
+def _coerce_auto_sort(raw: object) -> dict:
+    """Defaults + coercion for a raw stored `auto_sort` block — split out so the setter can
+    merge under the lock (#824), same reasoning as `_coerce_ai_review`."""
     out = dict(_AUTO_SORT_DEFAULTS)
     if isinstance(raw, dict):
         if isinstance(raw.get("enabled"), bool):
@@ -756,6 +774,13 @@ def get_auto_sort(path: Path | None = None) -> dict:
     if not str(out["prompt"]).strip():
         out["prompt"] = DEFAULT_AUTO_SORT_PROMPT
     return out
+
+
+def get_auto_sort(path: Path | None = None) -> dict:
+    """The stored `auto_sort` block with defaults applied + types coerced (#424 Phase 6,
+    tunables #459). An empty/whitespace prompt coerces back to the default so a blank field
+    can never strand the classifier."""
+    return _coerce_auto_sort(_load(path or _default_path()).get("auto_sort"))
 
 
 def public_auto_sort(path: Path | None = None) -> dict:
@@ -822,14 +847,17 @@ def validate_auto_sort_patch(patch: object) -> str | None:
 def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
     """Merge a VALIDATED partial block into the stored one and persist (#424 Phase 6, tunables
     #459). An emptied prompt falls back to the default so it's never stranded."""
-    new = dict(get_auto_sort(path))
-    for k in ("enabled", "interval_minutes", "confidence_min", "max_per_pass", "prompt"):
-        if k in patch:
-            new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
-    if not str(new["prompt"]).strip():
-        new["prompt"] = DEFAULT_AUTO_SORT_PROMPT
-    _set("auto_sort", new, path)
-    return new
+
+    def merge(raw: object) -> dict:
+        new = _coerce_auto_sort(raw)
+        for k in ("enabled", "interval_minutes", "confidence_min", "max_per_pass", "prompt"):
+            if k in patch:
+                new[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
+        if not str(new["prompt"]).strip():
+            new["prompt"] = DEFAULT_AUTO_SORT_PROMPT
+        return new
+
+    return _mutate("auto_sort", merge, path)
 
 
 # --- Pulse recent-work overview (#441 Phase 3) -----------------------------------------

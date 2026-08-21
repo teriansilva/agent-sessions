@@ -42,6 +42,7 @@ import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
+import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
@@ -1941,6 +1942,9 @@ export function Settings() {
             <AutoSortSettings />
             <PulseSettings />
             <OrchestratorSettings />
+            {/* Every system prompt, in one catalog (#824) — including the three that used to
+                have an inline editor in the panels above. */}
+            <PromptsSettings />
           </>
         )}
 

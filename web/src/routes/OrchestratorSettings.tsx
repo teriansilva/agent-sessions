@@ -297,6 +297,18 @@ export function OrchestratorSettings() {
         </p>
       </div>
 
+      <div className={styles.aiField}>
+        <p className={styles.hint}>
+          What the orchestrator is asked on each pass lives in{" "}
+          <a className={styles.nameLink} href="#prompt-orchestrator_pass">
+            Prompts → Scheduled pass
+          </a>{" "}
+          below (and the chat’s router and instruct prompts alongside it). The
+          rule that session output is untrusted is appended by the server and is
+          not editable there.
+        </p>
+      </div>
+
       <PushDevices />
 
       <div className={styles.aiField}>
