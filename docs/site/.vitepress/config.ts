@@ -30,6 +30,12 @@ export default defineConfig({
     "Documentation for BattleLab (agent-sessions) — the self-hosted command deck for AI coding agents. Every feature, and the whole security model.",
   lang: "en-US",
   cleanUrls: true,
+  // SECURITY-NOTES.md is a note to maintainers about this project's dependency advisories, and
+  // it lives here so it sits beside the package.json it describes. VitePress turns every .md
+  // under srcDir into a route, which published it at /SECURITY-NOTES — a page in no nav, in the
+  // sitemap, and reachable by search. Excluded rather than moved: next to the manifest is where
+  // a reader of that manifest will look for it.
+  srcExclude: ["SECURITY-NOTES.md"],
   appearance: "dark",
   // A dead @include or a link to a page that does not exist fails the build rather than shipping
   // a 404 into the sidebar — the structural half of "docs cannot drift" (#828).
