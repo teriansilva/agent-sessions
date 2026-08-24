@@ -80,7 +80,12 @@ HTTP_MODULES = frozenset({"review", "webpush", "appproxy"})
 # Any verb counts here: `post`, `request`, `stream`, `send` — these modules do nothing else.
 HTTP_VERBS = frozenset({"post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
-    ("review", TRANSPORT_FUNC): 2,  # THE chat-completions transport + its json-mode retry
+    # THE chat-completions transport and its two ORDERED degrade retries (#841): attempt 1
+    # carries both optional fields; a refusal drops `chat_template_kwargs` (the thinking
+    # opt-out) and retries; a further refusal drops `response_format` and retries again. Three
+    # doors, deliberately counted — this number is an inventory of outbound calls, so bumping
+    # it is a statement that a third call was added on purpose, never a ratchet refresh.
+    ("review", TRANSPORT_FUNC): 3,
     ("webpush", "send"): 1,  # Web Push delivery to the browser's push service — no prompts
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
 }

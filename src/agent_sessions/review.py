@@ -1,7 +1,9 @@
 """AI session review engine (#356).
 
 One bounded, non-streaming chat completion per review against the user-configured
-OpenAI-compatible endpoint (prefs `ai_review` block). The input has four parts (#611): a
+OpenAI-compatible endpoint (prefs `ai_review` block) — up to three requests on the wire when
+the endpoint rejects an optional field and the ordered degrade in ``_post_chat`` has to isolate
+which one (#841); a cooperating endpoint costs exactly one. The input has four parts (#611): a
 bounded ``## Session`` context header naming the engine and the agent's last-output age; the
 engine's saved transcript (via the engine-agnostic ``transcript`` adapters, resolved through
 ``engines.logical_key`` so a reconciled placeholder still finds its store); the current
@@ -631,14 +633,17 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     try:
         r = await _post_chat(cfg, body)
     except httpx.HTTPError as e:
-        # Never echo the exception repr — httpx errors can embed request headers.
-        raise ReviewError(f"review endpoint unreachable ({type(e).__name__})") from None
+        raise _transport_error(e, cfg, subject="review endpoint") from None
     if r.status_code != 200:
         raise ReviewError(f"review endpoint returned HTTP {r.status_code}")
     try:
         payload = r.json()
+    except ValueError:
+        raise ReviewError("review endpoint returned an unexpected response shape") from None
+    _reject_if_truncated(payload, subject="review endpoint")
+    try:
         content = payload["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
+    except (KeyError, IndexError, TypeError):
         raise ReviewError("review endpoint returned an unexpected response shape") from None
     result = _shape_guard(_extract_json(str(content)))
     # Write against the RESOLVED sidecar key (Hermes on PR #367): for a reconciled
@@ -689,10 +694,94 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     }
 
 
-# Statuses that mean "this server does not accept `response_format`" rather than "your request
+# Statuses that mean "this server does not accept an optional field" rather than "your request
 # was bad". 400 and 422 are what an endpoint without JSON mode returns for an unknown field;
-# 501 is the explicit "not implemented".
+# 501 is the explicit "not implemented". Shared by both optional fields below — a server that
+# rejects unknown keys rejects them the same way whichever one it choked on, which is exactly
+# why the degrade has to be ordered rather than inferring the offender from the status.
 _JSON_MODE_REFUSED: frozenset[int] = frozenset({400, 422, 501})
+
+# Ask a reasoning model not to think (#841). The reviewer wants a ~60-token JSON object and
+# throws the reasoning away, but the model spends the generation on it first: measured against
+# the live endpoint, the same review payload took >305s with thinking on (1118 reasoning tokens
+# for 34 tokens of answer) and 22.5s with it off. At 3-4 tok/s per stream under concurrency
+# that is the difference between finishing inside `request_timeout` and reporting the endpoint
+# as unreachable.
+#
+# It is a literal server-side flag — never operator or model text — and it never touches
+# `messages`, so the registry guarantee in `_assert_registered_system_prompts` is untouched.
+_NO_THINKING: dict = {"enable_thinking": False}
+
+# Endpoints that answered an explicit REJECTION to `chat_template_kwargs`, so the field is not
+# sent to them again (one probe, not a 400-plus-retry on every call).
+#
+# There is deliberately no "accepted" state. Nothing here consumes one, and a 200 could not
+# establish it anyway: a server that silently IGNORES the field also answers 200, and one that
+# ignores it simply keeps thinking — exactly today's behaviour, which is the fallback this is
+# designed to preserve. (Proving thinking is actually off needs response-side evidence and a
+# stable backend identity; that is #843, and it is why the `max_tokens` cap does not live here.)
+_thinking_refused: set[tuple[str, str, str]] = set()
+
+
+def _capability_key(cfg: dict, model: object) -> tuple[str, str, str]:
+    """Identity for the capability memo: endpoint, the model ACTUALLY on the wire, and a
+    fingerprint of the credential.
+
+    Keyed on the outgoing model rather than ``cfg["model"]`` because ``complete_json`` takes a
+    ``model=`` override — one backend's rejection must not suppress the field for another. The
+    credential fingerprint makes a re-pointed endpoint re-probe instead of inheriting the
+    previous deployment's verdict; the key itself is never stored, only its digest.
+    """
+    key_fp = hashlib.sha256(str(cfg.get("api_key") or "").encode()).hexdigest()[:12]
+    return (_base(cfg), str(model or cfg.get("model") or ""), key_fp)
+
+
+def _with_thinking_opt_out(body: dict) -> dict:
+    """A COPY of `body` carrying the thinking opt-out, merged into any existing
+    `chat_template_kwargs` rather than replacing it."""
+    out = dict(body)
+    extra = dict(out.get("chat_template_kwargs") or {})
+    extra.update(_NO_THINKING)
+    out["chat_template_kwargs"] = extra
+    return out
+
+
+def _transport_error(e: Exception, cfg: dict, *, subject: str) -> ReviewError:
+    """Classify a transport failure — never echoing the exception repr, because httpx errors
+    can embed request headers and those carry the API key.
+
+    A timeout is NOT unreachability. `endpoint unreachable (ReadTimeout)` is what this module
+    said while the endpoint was answering every request it was given, and it sent a live
+    diagnosis down the wrong path (#841). Matching `httpx.TimeoutException` — the base class of
+    ReadTimeout, WriteTimeout, PoolTimeout and ConnectTimeout — rather than a hand-listed set,
+    so a subtype nobody thought to enumerate cannot silently inherit the wrong wording again.
+    """
+    if isinstance(e, httpx.TimeoutException):
+        return ReviewError(f"{subject} did not answer within {request_timeout(cfg):.0f}s")
+    if isinstance(e, httpx.ConnectError):
+        return ReviewError(f"{subject} unreachable")
+    return ReviewError(f"{subject} request failed ({type(e).__name__})")
+
+
+def _reject_if_truncated(payload: object, *, subject: str) -> None:
+    """A completion cut off at the token limit is not a result.
+
+    `finish_reason == "length"` is the trigger REGARDLESS of what `content` looks like. A
+    generation can stop on a boundary that still yields parseable JSON, and that partial would
+    otherwise pass the shape guard and be persisted as though it were a full answer — a
+    plausible wrong review is worse than an honest failure, and fail-soft (#356) means the last
+    good value survives instead. On a reasoning model the truncated content is routinely EMPTY
+    as well (the budget went to thinking), which used to surface as "unexpected response shape".
+
+    Shape problems themselves stay the caller's existing error to raise, so a malformed payload
+    falls through untouched.
+    """
+    try:
+        finish = payload["choices"][0].get("finish_reason")  # type: ignore[index]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return
+    if finish == "length":
+        raise ReviewError(f"{subject} returned a truncated completion (finish_reason=length)")
 
 
 async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = False):
@@ -702,19 +791,46 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
     written elsewhere would be a second door, and a static check of call sites cannot close a
     door it was never told about. Callers own their body and their response handling; this owns
     the wire — and the invariant that a system message on it came from the registry.
+
+    ONE request when the endpoint accepts what it is sent; up to three when it rejects an
+    optional field, because a refusal names none of them and the degrade has to isolate one per
+    step (#841). Callers see only the final response either way. The count is pinned as an
+    inventory in ``tests/test_prompts_registry.py``'s ``POST_SITES``.
     """
     _assert_registered_system_prompts(body.get("messages") or [])
     url = _base(cfg) + "/chat/completions"
+    key = _capability_key(cfg, body.get("model"))
+    # Every attempt builds its OWN body. The previous version degraded by mutating the caller's
+    # dict (`body.pop(...)`), which aliased state the caller still owned; with two optional
+    # fields and a memo that reads back what was sent, that stops being harmless.
+    sent_no_thinking = key not in _thinking_refused
+    attempt = _with_thinking_opt_out(body) if sent_no_thinking else dict(body)
     async with _client(request_timeout(cfg)) as client:
-        r = await client.post(url, json=body, headers=_headers(cfg))
+        r = await client.post(url, json=attempt, headers=_headers(cfg))
+        if r.status_code not in _JSON_MODE_REFUSED:
+            return r
+        # A refusal names no field, so the degrade is ORDERED and each step isolates exactly
+        # one. Drop the thinking option first: if the retry then succeeds, that field was the
+        # offender and this endpoint is marked so it is not sent again.
+        if sent_no_thinking:
+            attempt = dict(body)
+            _assert_registered_system_prompts(attempt.get("messages") or [])
+            r = await client.post(url, json=attempt, headers=_headers(cfg))
+            if r.status_code not in _JSON_MODE_REFUSED:
+                _thinking_refused.add(key)
+                return r
+            # Still refused with the thinking option already gone. That proves something about
+            # `response_format` and NOTHING about a field absent from this request, so the memo
+            # records nothing here — over-concluding would disable the opt-out permanently
+            # against an endpoint that never objected to it.
         # Not every OpenAI-compatible server implements `response_format`, and one that does
         # not typically rejects the whole request. Degrade to the unconstrained call rather
         # than making a working endpoint unusable — the tolerant `_extract_json` in the caller
         # is still there for exactly that case.
-        if retry_without_json_mode and r.status_code in _JSON_MODE_REFUSED:
-            body.pop("response_format", None)
-            _assert_registered_system_prompts(body.get("messages") or [])
-            r = await client.post(url, json=body, headers=_headers(cfg))
+        if retry_without_json_mode:
+            attempt = {k: v for k, v in attempt.items() if k != "response_format"}
+            _assert_registered_system_prompts(attempt.get("messages") or [])
+            r = await client.post(url, json=attempt, headers=_headers(cfg))
         return r
 
 
@@ -769,12 +885,17 @@ async def complete_json(messages: list[dict], *, model: str | None = None) -> di
     try:
         r = await _post_chat(cfg, body, retry_without_json_mode=True)
     except httpx.HTTPError as e:
-        raise ReviewError(f"endpoint unreachable ({type(e).__name__})") from None
+        raise _transport_error(e, cfg, subject="endpoint") from None
     if r.status_code != 200:
         raise ReviewError(f"endpoint returned HTTP {r.status_code}")
     try:
-        content = r.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
+        payload = r.json()
+    except ValueError:
+        raise ReviewError("endpoint returned an unexpected response shape") from None
+    _reject_if_truncated(payload, subject="endpoint")
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
         raise ReviewError("endpoint returned an unexpected response shape") from None
     return _extract_json(str(content))
 

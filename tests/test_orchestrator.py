@@ -2478,9 +2478,18 @@ def test_an_endpoint_without_json_mode_still_works(monkeypatch, configured_ai): 
 
     monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
     assert asyncio.run(review.complete_json([{"role": "user", "content": "x"}])) == {"ok": True}
-    assert len(seen) == 2, "should retry once, without the constraint"
-    assert "response_format" in seen[0]
-    assert "response_format" not in seen[1]
+    # THREE attempts since #841, because the degrade is ordered and isolates one optional
+    # field per step: a 400 names none of them, so the thinking opt-out is dropped first and
+    # `response_format` only after that retry ALSO fails. This endpoint rejects
+    # `response_format` either way, so the middle attempt buys no success — and deliberately
+    # teaches the memo nothing, because it failed for a reason that says nothing about the
+    # field that was removed. The cost is one extra round-trip per call against an endpoint
+    # that refuses unknown fields outright; the alternative is concluding that such an
+    # endpoint refuses the thinking option when it may never have objected to it.
+    assert len(seen) == 3
+    assert "response_format" in seen[0] and "chat_template_kwargs" in seen[0]
+    assert "response_format" in seen[1] and "chat_template_kwargs" not in seen[1]
+    assert "response_format" not in seen[2] and "chat_template_kwargs" not in seen[2]
 
 
 def test_a_real_endpoint_error_is_not_retried_as_a_json_mode_refusal(monkeypatch, configured_ai):  # noqa: ARG001
