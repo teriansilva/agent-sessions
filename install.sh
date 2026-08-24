@@ -22,6 +22,24 @@ set -eu
 
 APP=agent-sessions
 REPO_URL="${AGENT_SESSIONS_REPO:-https://github.com/teriansilva/agent-sessions.git}"
+
+# ---- release signing trust root (#832) ---------------------------------------------
+# EMBEDDED, and deliberately NOT read from the clone being verified. A signer list taken
+# from the candidate authenticates nothing: whoever rewrote the ref supplies both the code
+# and the list that vouches for it, so the check passes every time. This copy travels with
+# install.sh itself — on a fresh install fetched over TLS from the landing origin (a
+# different host from the git remote), and on an update carried by the already-verified
+# running release.
+#
+# ONE entry covers every FUTURE release, which a per-release manifest cannot do.
+#
+# Kept byte-identical to scripts/release-signers by tests/test_release_signing.py.
+# Consumed from Phase 2 onward (#832); inert here by design.
+RELEASE_SIGNERS='release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW+gor5BTHMCjx6GWhCOJXdmR9Lei9elkzV7j++zbX agent-sessions release signing'
+# Signatures are REQUIRED for any release strictly newer than this. The LAST UNSIGNED
+# release is recorded rather than the first signed one because it is a fact today, whereas
+# the first signed version number is a guess about a cut nobody has made yet.
+RELEASE_LAST_UNSIGNED='v0.19.2'
 REF="${AGENT_SESSIONS_REF:-}"
 # Track whether the channel was set explicitly (env) vs defaulted: the UI persists a channel
 # choice in the env file (#538), and a re-run without the env var must follow that choice

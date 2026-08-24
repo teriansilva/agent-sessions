@@ -231,6 +231,49 @@ sh install.sh --homefree-disable            # stop streaming; take the key out o
   account can reach it without a password. To restore password auth: remove that line from
   `~/.local/share/agent-sessions/env`, set a password, and restart the service.
 
+## Release signing
+
+<!-- signing-enforcement: off -->
+> **Status: not active yet.** This release ships the trust root only. Nothing verifies anything
+> today — `install.sh` carries `RELEASE_SIGNERS` as a constant and has no signature check, and no
+> release has been signed yet. Signing arrives in #832 Phase 1 and the installer starts enforcing
+> in Phase 2. Until then this section describes what is being built, so the mechanism can be
+> reviewed before it has teeth.
+
+Once active, release **tags** will be signed and the installer will verify the signature before
+building anything.
+
+The reason for a signature rather than a checksum list is that **one key covers every future
+release**. A list must name each release, so a copy installed months ago can only vouch for
+releases *older* than itself — exactly backwards for an updater. A key does not expire that way.
+
+The trust root will be read from the copy you already trust — the `install.sh` you ran, or the
+release currently installed — and never from the code being verified. A signer list taken from
+the thing it vouches for proves nothing.
+
+Enforcement starts at a recorded cutover (`scripts/release-trust.json`), so existing unsigned
+releases keep working; only releases newer than that require a signature.
+
+Inspect the trust root shipped with this release:
+
+```sh
+cat scripts/release-signers
+```
+
+and, once signed releases exist, check one by hand:
+
+```sh
+git -c gpg.ssh.allowedSignersFile=scripts/release-signers verify-tag <tag>
+```
+
+Exit `0` plus `Good "git" signature for release@agent-sessions` is the only success. `Good "git"
+signature` *without* a named principal means the signature is valid but the key is untrusted — a
+check grepping for `Good.*signature` would accept anyone's key.
+
+**What signing will and will not cover.** It proves the release tag was created by a holder of the
+release key. It says nothing about the dependencies, the toolchain, or the machine that built the
+release. Verification requires `ssh-keygen` (`openssh-client`).
+
 ## Lost the password?
 
 Reset from the host — never pass the password on the command line (it leaks via shell history /

@@ -23,6 +23,7 @@ docs/implementation-workflow.md    export-ignore
 docs/visual-review.md              export-ignore
 docs/PROGRESS.md                   export-ignore
 docs/releasing.md                  export-ignore
+docs/release-signing.md            export-ignore
 docs/design.md                     export-ignore
 
 # Internal landing/marketing page for the hosted instance (battlelab + edge/proxy refs).

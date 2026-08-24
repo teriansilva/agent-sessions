@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "namespace": "git",
+  "signers_file": "scripts/release-signers",
+  "last_unsigned_release": "v0.19.2",
+  "_comment": "Signatures are REQUIRED for any release strictly newer than last_unsigned_release. Recording the last UNSIGNED release rather than the first signed one is deliberate: the former is a fact today, the latter is a guess about a version number nobody has cut yet."
+}
