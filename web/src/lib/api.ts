@@ -12,6 +12,8 @@ import type {
   FsDir,
   GitDiff,
   GitStatus,
+  UploadBatch,
+  UploadResult,
   HandoffCommitted,
   HandoffMode,
   HandoffPrepared,
@@ -163,6 +165,33 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
 /** A CSRF-guarded JSON mutation that surfaces the server's `detail` string in the thrown
  *  ApiError (#361): folder-adoption conflicts (409) carry an explanation the Projects
  *  manager shows inline — the generic "PATCH … → 409" would tell the user nothing. */
+/** A CSRF-guarded multipart mutation.
+ *
+ *  `Content-Type` is deliberately NOT set: the browser derives it from the `FormData`, boundary
+ *  included, and setting it by hand produces a header whose boundary does not match the body.
+ *  Through the Home Free tunnel this still works because `tunnel.fetch` normalizes the body via a
+ *  `Request` and sends `await req.arrayBuffer()`, which preserves that generated header. */
+async function postForm<T>(path: string, form: FormData): Promise<T> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: form,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = `POST ${path} → ${r.status}`;
+    try {
+      const body = (await r.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* a non-JSON error body: keep the generic message */
+    }
+    throw new ApiError(r.status, detail);
+  }
+  return (await r.json()) as T;
+}
+
 async function mutateJson<T>(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
@@ -414,6 +443,38 @@ export const api = {
       `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}`,
       init,
     ),
+  /** FILES panel (#807): mint a batch reservation from a manifest, so an over-budget folder drop
+   *  fails before a single byte moves. */
+  filesUploadBatch: (files: { relpath: string; size: number }[]) =>
+    // `mutateJson`, not `postJson`: the server names the limit it refused on ("that drop is
+    // 310 MB — the limit is 250 MB") and the generic wrapper replaced it with
+    // `POST /api/files/upload/batch → 413`, which tells the operator nothing.
+    mutateJson<UploadBatch>("POST", "/api/files/upload/batch", { files }),
+  /** FILES panel (#807): the operator chose Skip on a collision. Terminal, so the server can
+   *  settle that manifest entry — going quiet left the batch holding its slot for the whole TTL. */
+  filesUploadSkip: (batchId: string, relpath: string) =>
+    mutateJson<{ skipped: boolean }>("POST", "/api/files/upload/skip", {
+      batch_id: batchId,
+      relpath,
+    }),
+  /** FILES panel (#807): one file into the browsed directory. One file per REQUEST — the relay
+   *  buffers a whole body in browser and agent memory, so a folder is many bounded requests. */
+  filesUpload: (
+    dir: string,
+    relpath: string,
+    file: File,
+    opts: { onCollision?: "fail" | "keep_both" | "replace"; batchId?: string } = {},
+  ) => {
+    const form = new FormData();
+    // Order matters and is part of the route's contract: the server opens the destination when
+    // the FILE part starts, so `dir`/`relpath` must already have been parsed by then.
+    form.append("dir", dir);
+    form.append("relpath", relpath);
+    form.append("on_collision", opts.onCollision ?? "fail");
+    if (opts.batchId) form.append("batch_id", opts.batchId);
+    form.append("file", file, relpath.split("/").pop() || "upload");
+    return postForm<UploadResult>("/api/files/upload", form);
+  },
   /** Remove the ENTITY only (#361): members revert to folder grouping on the next
    *  resolve — session files are never touched. CSRF-guarded. */
   deleteProject: (id: string) =>

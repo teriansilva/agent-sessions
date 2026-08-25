@@ -470,7 +470,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     # File panel (#783): bounded read-only directory listing + file read under $HOME. GET-only
     # (no CSRF surface); containment lives in files.py, which is a security boundary.
-    files_routes.register(app, logged_in=_logged_in)
+    files_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # SPA shell + history fallback. The ``/{spa_path}`` catch-all is registered LAST so it
     # never shadows the API/ws/auth routes above. ``_WEB_DIST`` / ``_SPA_RESERVED`` stay

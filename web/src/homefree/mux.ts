@@ -90,6 +90,7 @@ export class Stream {
   private _sendWindow: number;
   private _sendWaiters: Array<() => void> = [];
   private _sendEnded = false;
+  private _sendCancelled = false;
   private _recvBuf: number[] = [];
   private _recvEof = false;
   private _recvReset: number | null = null;
@@ -102,13 +103,34 @@ export class Stream {
     this._sendWindow = mux.initialWindow;
   }
 
+  /** Stop sending the rest of this stream's outbound data — WITHOUT resetting it.
+   *
+   *  A reset also wakes a writer blocked on the send window, but it tears the stream down, and
+   *  the fetch adapter maps that to a generic network failure. When the peer has already
+   *  answered early (a proxy refusing an over-cap body with a real 413 envelope), the remaining
+   *  request body is pointless but the RESPONSE still has to arrive intact — so the send side is
+   *  cancelled cooperatively and the receive side is left alone. */
+  cancelSend(): void {
+    this._sendCancelled = true;
+    while (this._sendWaiters.length) this._sendWaiters.shift()!();
+    // The send side is finished either way, so record the half-close: otherwise a cancelled
+    // upload's stream is never eligible to be dropped and it leaks for the tunnel's lifetime.
+    if (!this._sendEnded) {
+      this._sendEnded = true;
+      this._mux._emit(encodeFrame(this.id, END));
+    }
+    this._maybeDrop();
+  }
+
   async write(data: Uint8Array): Promise<void> {
     if (this._sendEnded) throw new StreamReset(0);
     let off = 0;
     while (off < data.length) {
+      if (this._sendCancelled) return;
       while (this._sendWindow <= 0) {
         if (this._recvReset !== null) throw new StreamReset(this._recvReset);
         await new Promise<void>((r) => this._sendWaiters.push(r));
+        if (this._sendCancelled) return;
       }
       const n = Math.min(
         data.length - off,
@@ -125,6 +147,27 @@ export class Stream {
     if (!this._sendEnded) {
       this._sendEnded = true;
       this._mux._emit(encodeFrame(this.id, END));
+      this._maybeDrop();
+    }
+  }
+
+  /** Free the stream once BOTH directions are done.
+   *
+   *  END alone never dropped anything, so every completed stream stayed in the mux's map for the
+   *  life of the tunnel along with whatever it had buffered. Invisible for a small JSON
+   *  round-trip; very visible for uploads, where a proxy answering an over-cap request early
+   *  stops reading and leaves roughly one flow-control window of request bytes unread per
+   *  rejection (#807). A half-close on each side is the point at which neither can be needed. */
+  private _maybeDrop(): void {
+    // Both directions half-closed AND the receive buffer drained. The "drained" clause is not
+    // tidiness: dropping on END alone threw away response bytes the consumer had not read yet,
+    // which broke every round-trip. A stream is only free once nobody can still need it.
+    if (
+      this._sendEnded &&
+      (this._recvEof || this._recvReset !== null) &&
+      this._recvBuf.length === 0
+    ) {
+      this._mux._drop(this.id);
     }
   }
 
@@ -152,6 +195,7 @@ export class Stream {
     const credit = new Uint8Array(4);
     new DataView(credit.buffer).setUint32(0, n, false);
     this._mux._emit(encodeFrame(this.id, WINDOW, credit)); // replenish
+    this._maybeDrop(); // the last read of a finished stream is what frees it
     return out;
   }
 
@@ -162,6 +206,7 @@ export class Stream {
   _onEnd(): void {
     this._recvEof = true;
     this._dataReady.set();
+    this._maybeDrop();
   }
   _onWindow(credit: number): void {
     this._sendWindow += credit;

@@ -146,9 +146,24 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
         JSON.stringify({ k: "http", method: req.method, path, headers }),
       ),
     );
+    // The request body and the response are pumped CONCURRENTLY, and the order matters (#807).
+    // Writing the whole body and END *before* the first read deadlocks against an early
+    // response: the mux grants only a 256 KiB send window, so a proxy that answers mid-upload
+    // (an over-cap 413) leaves this blocked in `write` — it never reaches the read that would
+    // have told it to stop. Starting the reader alongside the writer makes an early envelope
+    // observable while the body is still going out.
+    let writeFailed: unknown = null;
+    const writer = (async () => {
+      try {
+        if (body.length) await s.write(body);
+        await s.end();
+      } catch (e) {
+        // Never rejects: a send failure surfaces through the READ below, which is the side that
+        // knows whether we got a real answer. An unhandled rejection here would be noise.
+        writeFailed = e;
+      }
+    })();
     try {
-      if (body.length) await s.write(body);
-      await s.end();
       const lenBuf = await readExact(s, 4);
       if (!lenBuf)
         throw new TypeError("tunnel: response ended before meta length");
@@ -159,6 +174,12 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
       ).getUint32(0, false);
       const metaBuf = await readExact(s, metaLen);
       if (!metaBuf) throw new TypeError("tunnel: response ended inside meta");
+      // An envelope is here, so the rest of the request body can only be wasted bandwidth —
+      // and if the peer stopped consuming, the writer is parked on a window that will never
+      // reopen. Cancelling the send (not resetting the stream) unblocks it and leaves the
+      // response readable. On a normal request the writer has long since finished and this is
+      // a no-op.
+      s.cancelSend();
       const meta = JSON.parse(td.decode(metaBuf)) as {
         status: number;
         headers?: [string, string][];
@@ -191,9 +212,14 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
     } catch (e) {
       // A reset mid-request (app down, disallowed path, transport closed) surfaces as a
       // network-style failure — the same shape a real `fetch` rejects with.
+      s.cancelSend();
       if (e instanceof StreamReset)
         throw new TypeError("tunnel: stream reset", { cause: e });
       throw e;
+    } finally {
+      // Settle the writer on every path so a cancelled upload cannot outlive its request.
+      await writer;
+      void writeFailed;
     }
   };
 }

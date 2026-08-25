@@ -109,6 +109,46 @@ class Stream:
         if not self._send_ended:
             self._send_ended = True
             self._mux._emit(_encode(self.id, END))
+            self._maybe_drop()
+
+    def _maybe_drop(self) -> None:
+        """Free the stream once BOTH directions are done.
+
+        END alone never dropped anything, so a stream that completed normally stayed in the mux's
+        map for the life of the tunnel — and with it whatever it had buffered. That is invisible
+        for a small JSON round-trip and very visible for uploads: a proxy that answers an
+        over-cap request early stops reading, so ~one flow-control window of request bytes sits
+        unread in `_recv_buf` per rejected upload, and repeated rejections accumulate (#807).
+        A half-close on each side is exactly the point at which neither can be needed again.
+        """
+        # Both directions half-closed AND the receive buffer drained. The "drained" clause is not
+        # tidiness: dropping on END alone discarded response bytes the consumer had not read yet.
+        if (
+            self._send_ended
+            and (self._recv_eof or self._recv_reset is not None)
+            and not self._recv_buf
+        ):
+            self._mux._drop(self.id)
+
+    async def discard(self, limit: int = 1 << 20) -> None:
+        """Stop caring about the rest of this stream's inbound data, and free it.
+
+        For the side that has already ANSWERED and will never read the request body again — the
+        app proxy refusing an over-cap upload. Reading and dropping also replenishes the peer's
+        window, so a writer parked on flow control is released rather than left hanging; `limit`
+        keeps a client that ignores the early response from making this unbounded.
+        """
+        seen = 0
+        while not self._recv_eof and self._recv_reset is None and seen < limit:
+            chunk = await self.read()
+            if not chunk:
+                break
+            seen += len(chunk)
+        self._recv_buf.clear()
+        if not self._send_ended:
+            self._send_ended = True
+            self._mux._emit(_encode(self.id, END))
+        self._mux._drop(self.id)
 
     def reset(self, code: int = 0) -> None:
         """Abort the stream in both directions."""
@@ -134,6 +174,12 @@ class Stream:
         out = bytes(self._recv_buf[:n])
         del self._recv_buf[:n]
         self._mux._emit(_encode(self.id, WINDOW, n.to_bytes(4, "big")))  # replenish
+        # The last read of a finished stream is what frees it. The browser mirror already does
+        # this; without it the INITIATOR retained every completed stream while the responder
+        # dropped its side — a one-sided leak on the ORDINARY response path, not just the
+        # early-413 one. (Claimed fixed once before against a mis-typed target string; the edit
+        # silently did nothing and a `grep -c` "confirmed" two pre-existing matches elsewhere.)
+        self._maybe_drop()
         return out
 
     # ── mux-internal callbacks ────────────────────────────────────────
@@ -143,6 +189,7 @@ class Stream:
 
     def _on_end(self) -> None:
         self._recv_eof = True
+        self._maybe_drop()
         self._data_ready.set()
 
     def _on_window(self, credit: int) -> None:

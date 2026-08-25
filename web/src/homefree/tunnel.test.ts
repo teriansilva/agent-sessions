@@ -432,3 +432,93 @@ function concat(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+// ------------------------- early response mid-upload (#807) -------------------------
+//
+// The deadlock this exists to stop: `tunnelFetch` used to write the ENTIRE request body and END
+// before it started reading response metadata, while the mux grants only INITIAL_WINDOW (256 KiB)
+// of send credit. A proxy that answers early — the appproxy body cap synthesizing a 413 — stops
+// consuming, the window never reopens, and the browser sits blocked in `write` forever, never
+// reaching the read that would have told it to stop. Resetting the stream wakes the writer but is
+// mapped to a generic network failure, which is exactly the unnamed error #807 forbids.
+
+/** An agent that reads ONE chunk, then answers `status` without draining the rest — the shape of
+ *  a proxy refusing an over-cap body. It deliberately does not replenish the send window. */
+function refuseEarly(status: number, detail: string) {
+  return wire(async (_i, s) => {
+    await s.read();
+    await httpReply(
+      s,
+      status,
+      [["content-type", "application/json"]],
+      te.encode(JSON.stringify({ detail })),
+    );
+  });
+}
+
+/** Reject if `p` has not settled within `ms` — "resolves promptly" is the actual claim, and a
+ *  bare `await` on a deadlocked promise fails as a suite-level timeout instead of a test. */
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), ms)),
+  ]);
+}
+
+test("an early 413 reaches the caller when the body is MORE than one flow-control window", async () => {
+  const { tunnel } = refuseEarly(413, "request body is larger than 32 bytes");
+  // 1 MiB against a 256 KiB window: the writer MUST block, which is the whole point of the case.
+  const body = new Uint8Array(1024 * 1024);
+  const resp = await within(
+    tunnel.fetch("/api/files/upload", { method: "POST", body }),
+    4000,
+    "an over-cap upload hung instead of resolving with its 413",
+  );
+  expect(resp.status).toBe(413);
+  expect((await resp.json()).detail).toContain("larger than");
+});
+
+test("the early refusal is a NAMED status, never a transport failure", async () => {
+  const { tunnel } = refuseEarly(413, "too big");
+  const resp = await within(
+    tunnel.fetch("/api/files/upload", { method: "POST", body: new Uint8Array(600 * 1024) }),
+    4000,
+    "hung",
+  );
+  // A `TypeError: tunnel: stream reset` here would mean the proxy reset instead of answering —
+  // indistinguishable from a broken tunnel, which is what makes it the wrong mechanism.
+  expect(resp.ok).toBe(false);
+  expect(resp.status).toBe(413);
+});
+
+test("a body under one window still round-trips normally", async () => {
+  // The concurrent pumping must not change the ordinary case: the agent drains everything and
+  // answers after END, exactly as before.
+  const { tunnel } = wire(async (_i, s) => {
+    const got = await drain(s);
+    await httpReply(s, 200, [], te.encode(JSON.stringify({ bytes: got.length })));
+  });
+  const resp = await within(
+    tunnel.fetch("/api/files/upload", { method: "POST", body: new Uint8Array(1000) }),
+    4000,
+    "hung",
+  );
+  expect(resp.status).toBe(200);
+  expect((await resp.json()).bytes).toBe(1000);
+});
+
+test("a large body the agent DOES drain arrives whole", async () => {
+  // Proves `cancelSend` only fires after an envelope — a slow-but-honest agent must still
+  // receive every byte, or the fix would silently truncate real uploads.
+  const { tunnel } = wire(async (_i, s) => {
+    const got = await drain(s);
+    await httpReply(s, 200, [], te.encode(JSON.stringify({ bytes: got.length })));
+  });
+  const n = 900 * 1024;
+  const resp = await within(
+    tunnel.fetch("/api/files/upload", { method: "POST", body: new Uint8Array(n) }),
+    8000,
+    "hung",
+  );
+  expect((await resp.json()).bytes).toBe(n);
+});

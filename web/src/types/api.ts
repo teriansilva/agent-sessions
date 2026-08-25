@@ -769,6 +769,33 @@ export interface GitStatus {
   truncated: boolean;
 }
 
+/** POST /api/files/upload/batch (#807): a server-side reservation minted from an immutable
+ *  manifest. ADMISSION only — an over-budget drop fails here before a byte moves; the bound that
+ *  actually holds is charged per chunk while streaming. */
+export interface UploadBatch {
+  batch_id: string;
+  files: number;
+  bytes: number;
+  files_limit: number;
+  bytes_limit: number;
+  file_limit: number;
+}
+
+/** POST /api/files/upload (#807): one file, landed. */
+export interface UploadResult {
+  path: string;
+  name: string;
+  relpath: string;
+  bytes: number;
+  batch: {
+    batch_id: string;
+    files_used: number;
+    bytes_used: number;
+    files_limit: number;
+    bytes_limit: number;
+  } | null;
+}
+
 /** GET /api/git/diff (#784). Assembled from `cat-file` blobs + the descriptor-verified worktree
  *  read — never `git diff`, because no flag stops a repo-configured `filter.*` clean driver.
  *  `added`/`removed` are **null when `truncated`**: a count taken from a cut-off prefix is not a

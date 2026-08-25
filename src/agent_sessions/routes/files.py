@@ -21,7 +21,8 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import files, gitpanel
+from .. import files, filewrite, gitpanel
+from . import fileupload
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
@@ -69,7 +70,7 @@ async def _run(key: str, fn, *args):
         raise
 
 
-def register(app: FastAPI, *, logged_in) -> None:
+def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _file_routes_are_never_cached(request: Request, call_next):
         """Apply the no-store policy at the OUTERMOST boundary of these routes.
@@ -164,6 +165,80 @@ def register(app: FastAPI, *, logged_in) -> None:
                 status_code=500, detail="could not build the diff", headers=_NO_STORE
             ) from None
         return _json(payload)
+
+    @app.post("/api/files/upload/batch")
+    async def files_upload_batch(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Mint a reservation from an immutable manifest (#807). ADMISSION only: an over-budget
+        # folder drop fails here, before a single byte moves, which is the whole point of asking
+        # for a manifest. It is a client claim, so it never bounds the stream — `Batch.take_bytes`
+        # does, per chunk.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422, detail="a JSON object is required", headers=_NO_STORE
+            )
+        try:
+            payload = filewrite.create_batch(body.get("files"), fileupload.owner_of(request))
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        return _json(payload)
+
+    @app.post("/api/files/upload/skip")
+    async def files_upload_skip(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # The operator chose Skip on a collision. Without this the client simply went quiet, the
+        # manifest entry stayed pending, and the batch held its slot for the full idle TTL —
+        # eight Skip drops locked the ninth out. A skip is a terminal outcome and says so.
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422, detail="a JSON object is required", headers=_NO_STORE
+            )
+        try:
+            batch = filewrite.get_batch(body.get("batch_id"), fileupload.owner_of(request))
+            # Bound to the ENTRY the operator answered. The relpath used to be accepted and
+            # ignored, so one Skip could settle a batch whose sibling was still streaming.
+            relpath = body.get("relpath")
+            batch.skip_file(relpath if isinstance(relpath, str) else "")
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        return _json({"skipped": True, "batch": batch.snapshot()})
+
+    @app.post("/api/files/upload")
+    async def files_upload(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """One file into the directory the panel is showing (#807).
+
+        Deliberately **not** ``file: UploadFile = File(...)``. FastAPI resolves that only after
+        Starlette has parsed the entire multipart request, and in the pinned Starlette a file part
+        is spooled to a ``SpooledTemporaryFile`` until EOF — so a chunked or false-length request
+        writes unbounded bytes to temporary disk before the route's first line runs, and the 413
+        arrives after the damage. The existing ``/api/upload`` route has exactly that shape.
+
+        So the parser is driven from ``request.stream()`` here, bytes are counted **as they
+        arrive**, and file bytes go straight to a descriptor. Nothing is ever spooled, and the
+        refusal happens mid-stream rather than after it.
+        """
+        try:
+            return await fileupload.ingest(request)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="the upload failed", headers=_NO_STORE
+            ) from None
 
     @app.get("/api/files/capabilities")
     async def files_capabilities(_user: str = Depends(logged_in)) -> JSONResponse:

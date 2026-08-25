@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import struct
 
 import httpx
@@ -43,6 +44,10 @@ import websockets
 from .mux import Stream, StreamReset
 
 # Hop-by-hop headers must not be forwarded across a proxy (RFC 7230 §6.1).
+#: Hard ceiling on one proxied request body, with headroom over the app's own 25 MiB per-file
+#: upload cap for multipart framing (#807). Env-overridable for an operator with a larger need.
+MAX_REQUEST_BODY = int(os.environ.get("HF_MAX_REQUEST_BODY") or 32 * 1024 * 1024)
+
 _HOP = frozenset(
     {
         "connection",
@@ -134,13 +139,60 @@ class AppProxyTarget:
                 out[key] = self.origin
         return out
 
+    async def _send_meta(self, stream: Stream, status: int, payload: bytes) -> None:
+        """Write one response envelope in the normal `meta_len | meta | body` frame shape.
+
+        Used for the synthesized refusals below as well as the real proxied response, so a
+        browser cannot tell the difference — which is the point: the caller gets a NAMED status,
+        not a transport failure it has to guess at.
+        """
+        meta = json.dumps(
+            {
+                "status": status,
+                "headers": [
+                    ["content-type", "application/json"],
+                    ["cache-control", "no-store"],
+                ],
+            }
+        ).encode()
+        await stream.write(struct.pack(">I", len(meta)) + meta)
+        await stream.write(payload)
+        await stream.end()
+
     async def _proxy_http(self, stream: Stream, info: dict, path: str) -> None:
+        # The whole request body is accumulated before forwarding (this proxy speaks to a
+        # loopback app that would happily have streamed it), so without a cap a hostile or buggy
+        # stream balloons the AGENT's memory. #807 pushes the first real bytes through here, so
+        # the cap lands with it.
+        #
+        # It is deliberately NOT the per-file cap: a 25 MiB file is a LARGER request once
+        # multipart boundaries, part headers and the other fields are counted. HF_MAX_REQUEST_BODY
+        # carries explicit headroom so a legitimate at-the-limit upload is never rejected by the
+        # transport pretending to be the route.
         body = bytearray()
         while True:
             chunk = await stream.read()
             if not chunk:
                 break
             body += chunk
+            if len(body) > MAX_REQUEST_BODY:
+                # NOT a reset. A reset does wake the browser's blocked writer, but the adapter
+                # maps it to a generic network failure — exactly the unnamed error this must not
+                # produce. Writing a real envelope instead lets `tunnel.fetch` (which now reads
+                # concurrently with its write) observe a named 413 mid-upload and stop sending.
+                await self._send_meta(
+                    stream,
+                    413,
+                    json.dumps(
+                        {"detail": f"request body is larger than {MAX_REQUEST_BODY} bytes"}
+                    ).encode(),
+                )
+                # Having answered, this stream will never be read again — release it explicitly.
+                # Simply returning left it in the mux's map holding roughly one flow-control
+                # window of unread request bytes, and repeated rejected uploads accumulated them
+                # for the life of the tunnel (#807).
+                await stream.discard()
+                return
         headers = self._rewrite_headers(info.get("headers", {}))
         method = info.get("method", "GET")
 

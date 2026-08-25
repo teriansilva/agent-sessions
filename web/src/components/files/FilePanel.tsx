@@ -5,6 +5,10 @@ import { api, ApiError } from "../../lib/api";
 import type { FileCapabilities, GitEntry, GitStatus } from "../../types/api";
 import { FileTree } from "./FileTree";
 import { GitTab } from "./GitTab";
+import { UploadControl } from "./UploadControl";
+import { UploadQueue } from "./UploadQueue";
+import { filesFromDataTransfer, type PlannedFile } from "./uploadPlan";
+import { useUploads } from "./useUploads";
 import { modesFor } from "./gitModes";
 import { FileViewerModal } from "./FileViewerModal";
 import { loadPanelState, savePanelState } from "./filePanelState";
@@ -83,6 +87,42 @@ export function FilePanel({
 
   const mode = panelMode(paneWidth);
 
+  // Uploads (#807). The tree refreshes the affected directory when the batch settles, so the
+  // panel shows what actually landed rather than what was asked for.
+  const uploads = useUploads(() => setTick((n) => n + 1));
+
+  /** Start a batch into `dir`. Entries are read from the DataTransfer synchronously by the
+   *  caller; the walk itself is async and safe to await here. */
+  const startDrop = useCallback(
+    async (dir: string, dt: DataTransfer) => {
+      let picked;
+      try {
+        picked = await filesFromDataTransfer(dt);
+      } catch (e) {
+        // `readEntries` can reject — an unreadable folder, a permission the browser withdraws
+        // mid-walk. The caller discards this promise, so an uncaught rejection meant the drop
+        // produced NOTHING: no queue, no refusal, no row. A traversal failure is an outcome and
+        // has to be shown like any other.
+        uploads.refuse(
+          e instanceof Error && e.message
+            ? `That folder could not be read: ${e.message}`
+            : "That folder could not be read.",
+        );
+        return;
+      }
+      if (picked.length) await uploads.start(dir, picked);
+      else uploads.refuse("Nothing in that drop could be read.");
+    },
+    [uploads],
+  );
+
+  const startPicked = useCallback(
+    (picked: PlannedFile[]) => {
+      void uploads.start(root, picked);
+    },
+    [uploads, root],
+  );
+
   // Declared before the effects that use it: sheet mode is modal, so every close path — the
   // button, the scrim, Escape — must hand focus back to whatever opened the panel.
   const close = useCallback(() => {
@@ -160,8 +200,16 @@ export function FilePanel({
   useEffect(() => {
     if (mode !== "sheet") return;
     const onKey = (e: KeyboardEvent) => {
-      // The viewer stacks above the sheet and owns the keyboard while it is open.
-      if (document.querySelector("[data-file-viewer]")) return;
+      // The viewer stacks above the sheet and owns the keyboard while it is open — and so do the
+      // upload menu and the collision prompt (#807). Without this, Escape in either closed the
+      // whole PANEL: both handlers are capture-phase on `document`, so registration order wins
+      // and this one is registered first. Caught by the mobile e2e, invisible to jsdom.
+      if (
+        document.querySelector(
+          "[data-file-viewer], [data-upload-menu], [data-collision-prompt]",
+        )
+      )
+        return;
       if (e.key === "Escape") {
         e.stopPropagation();
         close();
@@ -393,6 +441,11 @@ export function FilePanel({
         >
           <RefreshCw size={14} aria-hidden="true" />
         </button>
+        {/* Only on the FILES tab: uploading targets the browsed directory, and the GIT tab is
+            not browsing one. */}
+        {tab === "files" && (
+          <UploadControl disabled={uploads.busy || Boolean(caps && !caps.ok)} onFiles={startPicked} />
+        )}
       </div>
 
       {caps && !caps.ok ? (
@@ -430,14 +483,19 @@ export function FilePanel({
           refreshTick={tick}
           onOpenFile={(path, trigger) => setViewer({ path, trigger })}
           onSendPath={sendPath}
+          onDropFiles={(dir, dt) => void startDrop(dir, dt)}
         />
       )}
+
+      <UploadQueue uploads={uploads} />
 
       <div className={styles.foot}>
         <span className="hud-tag">
           {root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}
         </span>
-        <span className="hud-tag">READ ONLY</span>
+        {/* `READ ONLY` became a lie the moment upload shipped (#807). It is REPLACED rather than
+            deleted, because the remaining boundary is still worth saying out loud. */}
+        <span className="hud-tag">NO MOVE / RENAME / DELETE / EDIT</span>
       </div>
     </>
   );

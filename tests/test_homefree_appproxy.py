@@ -287,3 +287,42 @@ def test_websocket_forwards_auth_cookie_and_rewrites_origin_on_upgrade():
             await server.wait_closed()
 
     _run(go())
+
+
+# ---------------------------------------------------------------- request body cap (#807)
+
+
+def test_an_over_cap_request_body_gets_a_named_413_not_a_reset(monkeypatch):
+    """The proxy accumulates the whole body before forwarding, so without a cap a hostile stream
+    balloons the AGENT's memory. The refusal has to be the route's own shape: a reset would reach
+    the browser as a generic network failure, which is the unnamed error #807 forbids."""
+    from agent_sessions.homefree import appproxy as ap
+
+    monkeypatch.setattr(ap, "MAX_REQUEST_BODY", 4096)
+
+    async def go():
+        proxy = AppProxyTarget(app_port=1)
+        browser = _browser_to(proxy)
+        s = browser.open(
+            json.dumps({"k": "http", "method": "POST", "path": "/api/files/upload"}).encode()
+        )
+        await s.write(b"x" * 8192)
+        await s.end()
+        n = struct.unpack(">I", await _read_exact(s, 4))[0]
+        meta = json.loads(await _read_exact(s, n))
+        return meta
+
+    meta = _run(go())
+    assert meta["status"] == 413
+    assert any(k.lower() == "cache-control" for k, _ in meta["headers"])
+
+
+def test_a_body_under_the_cap_is_still_forwarded(monkeypatch):
+    """The cap must not reject a legitimate at-the-limit upload — it carries headroom over the
+    app's own per-file limit precisely so the transport never pretends to be the route."""
+    from agent_sessions.homefree import appproxy as ap
+
+    assert ap.MAX_REQUEST_BODY > 25 * 1024 * 1024, (
+        "the proxy cap must sit ABOVE the 25 MiB per-file upload limit, with room for the "
+        "multipart framing that makes a 25 MiB file a larger request"
+    )

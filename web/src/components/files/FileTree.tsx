@@ -36,6 +36,7 @@ export function FileTree({
   onRootListing,
   onOpenFile,
   onSendPath,
+  onDropFiles,
   refreshTick,
   gitEntries,
 }: {
@@ -51,6 +52,10 @@ export function FileTree({
   onOpenFile: (path: string, trigger: HTMLElement | null) => void;
   /** Absolute path → the compose draft (#792). Absent ⇒ the action is not rendered at all. */
   onSendPath?: (path: string) => void;
+  /** Files dropped ONTO a directory (#807). The target is the row under the cursor, not the
+   *  panel as a whole — dropping into `src/lib` should not require navigating there first.
+   *  Absent ⇒ the tree takes no drops at all. */
+  onDropFiles?: (dir: string, dt: DataTransfer) => void;
   refreshTick: number;
 }) {
   // Seeded with the root already loading, so `load` never has to set state synchronously.
@@ -58,6 +63,9 @@ export function FileTree({
     [root]: { kind: "loading" },
   }));
   const [selected, setSelected] = useState<string | null>(null);
+  /** The directory a drop would land in right now — the ROW under the cursor, or the tree root
+   *  when the pointer is over the panel but not over a directory row (#807). */
+  const [dropDir, setDropDir] = useState<string | null>(null);
   const inFlight = useRef<Set<string>>(new Set());
   const alive = useRef(true);
   const listRef = useRef<HTMLDivElement>(null);
@@ -222,8 +230,47 @@ export function FileTree({
     [expanded, toggle],
   );
 
+  /** A drag carrying FILES, as opposed to a text selection or an internal row drag. */
+  const isFileDrag = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
+  const dropHandlers = (dir: string) =>
+    onDropFiles
+      ? {
+          onDragOver: (e: React.DragEvent) => {
+            if (!isFileDrag(e)) return;
+            // `preventDefault` on dragover is what marks this a valid drop target; without it
+            // the browser opens the file instead, navigating away from the app entirely.
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "copy";
+            setDropDir(dir);
+          },
+          onDragLeave: (e: React.DragEvent) => {
+            e.stopPropagation();
+            setDropDir((cur) => (cur === dir ? null : cur));
+          },
+          onDrop: (e: React.DragEvent) => {
+            if (!isFileDrag(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setDropDir(null);
+            // Handed over SYNCHRONOUSLY: a `DataTransferItemList` is emptied when this handler
+            // returns, so reading entries after an await yields null for every item — a folder
+            // drop that silently produces nothing.
+            onDropFiles(dir, e.dataTransfer);
+          },
+        }
+      : {};
+
   return (
-    <div className={styles.body} ref={listRef} data-file-tree="">
+    <div
+      className={`${styles.body} ${dropDir === root ? styles.dropRoot : ""}`}
+      ref={listRef}
+      data-file-tree=""
+      data-drop-dir={dropDir ?? undefined}
+      {...dropHandlers(root)}
+    >
       {rootState &&
         rootState.kind !== "loading" &&
         rootState.kind !== "error" &&
@@ -325,9 +372,15 @@ export function FileTree({
             key={entry.path}
             data-file-row=""
             data-kind={entry.kind}
+            data-drop-target={isDir && dropDir === entry.path ? "" : undefined}
             className={`${styles.row} ${isDir ? styles.rowDir : ""} ${
               selected === entry.path ? styles.rowSelected : ""
-            }`}
+            } ${isDir && dropDir === entry.path ? styles.dropRow : ""}`}
+            // Only a DIRECTORY row is a drop target. A file row lets the event bubble to the
+            // tree, which lands the drop in the folder being browsed — dropping "onto a file"
+            // has no meaning, and silently uploading INTO its parent is the least surprising
+            // reading of the gesture.
+            {...(isDir ? dropHandlers(entry.path) : {})}
           >
             <button
               type="button"
