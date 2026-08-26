@@ -165,6 +165,10 @@ def test_opencode_fail_soft_missing_db(tmp_home, monkeypatch):
 def test_opencode_binary_without_db_is_present_and_launchable(tmp_home, monkeypatch):
     monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_DB", raising=False)
+    # Exercise the known-install-dir fallback, not an opencode from the runner's PATH.
+    # Without this isolation the test is host-dependent and resolves the operator's real
+    # binary before the fixture under the temporary HOME.
+    monkeypatch.setenv("PATH", str(tmp_home / "bin"))
     oc = tmp_home / ".opencode" / "bin" / "opencode"
     oc.parent.mkdir(parents=True)
     oc.write_text("#!/bin/sh\n")

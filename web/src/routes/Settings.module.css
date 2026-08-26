@@ -1229,3 +1229,157 @@
   font-weight: 700;
   color: var(--danger-text);
 }
+
+/* Per-agent usage (#839). The meter is a bar, not a gauge or a ring: the design system has no
+   radius and no gradients, and a straight bar reads at a glance on a phone. */
+.agent {
+  flex-direction: column;
+  align-items: stretch;
+}
+.agentHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.budgetBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.budgetField,
+.budgetToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.budgetToggle input {
+  min-width: 20px;
+  min-height: 20px;
+}
+/* The LABEL is the hit area, so the label is what has to be 44px — the comment here used to
+   claim that while nothing enforced it, leaving a 20px target. docs/design.md §8: ≥44px. */
+.budgetToggle {
+  min-height: 44px;
+}
+.budgetPct,
+.budgetTokens {
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-2, var(--bg));
+  color: var(--text-1);
+  padding: 6px 8px;
+  min-height: 44px; /* touch target (docs/design.md §8) */
+  font-variant-numeric: tabular-nums;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+}
+.budgetPct {
+  width: 64px;
+}
+.budgetTokens {
+  width: 120px;
+}
+.budgetRefresh {
+  margin-left: auto;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  padding: 8px 12px;
+  min-height: 44px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.budgetRefresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.budgetError {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--danger-text);
+}
+.usage {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usageRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  overflow: hidden;
+}
+.meterFill {
+  display: block;
+  height: 100%;
+  background: var(--status-unknown);
+}
+/* Status colour is the signal, never the brand accent (docs/design.md). */
+.meter_ok .meterFill {
+  background: var(--status-up);
+}
+.meter_warn .meterFill {
+  background: var(--status-degraded);
+}
+.meter_over .meterFill {
+  background: var(--status-down);
+}
+.meter_none .meterFill {
+  background: var(--status-unknown);
+}
+.usagePct {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: right;
+}
+.pct_warn {
+  color: var(--status-degraded);
+}
+.pct_over {
+  color: var(--danger-text);
+}
+.pct_none {
+  color: var(--text-muted);
+}
+.usageSource {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  min-width: 48px;
+}
+.usageCaption {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.usageStale {
+  opacity: 0.85;
+}
+.usageInputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+}

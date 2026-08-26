@@ -72,6 +72,9 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
 
 def test_engines_marks_binary_only_opencode_installed(auth_cfg, tmp_home, monkeypatch):
     monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
+    # Force discovery through the isolated HOME rather than a live opencode on the
+    # machine running the suite (PATH has higher precedence than known install dirs).
+    monkeypatch.setenv("PATH", str(tmp_home / "bin"))
     oc_bin = tmp_home / ".opencode" / "bin" / "opencode"
     oc_bin.parent.mkdir(parents=True)
     oc_bin.write_text("#!/bin/sh\n")

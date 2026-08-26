@@ -18,6 +18,8 @@ import {
   useEffect,
   useMemo,
   useRef,
+  type Dispatch,
+  type SetStateAction,
   useState,
 } from "react";
 import {
@@ -32,6 +34,7 @@ import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
+import { stalenessNote, tone, usageCaption } from "../lib/agentUsage";
 import {
   buildProjectTree,
   flattenTree,
@@ -51,6 +54,8 @@ import { useAccent } from "../theme/accentStore";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type {
+  AgentUsageResponse,
+  AgentUsageRow,
   EngineInfo,
   ProjectEntity,
   SystemInfo,
@@ -144,8 +149,21 @@ function SettingsTablist({ active }: { active: SettingsTabId }) {
 
 /** Connected agents (discovery): every known engine with a presence dot, a "can start
  *  new" badge, and the resolved binary path. */
+/** Connected agents + what each one has spent (#839).
+ *
+ *  One list, not two. The operator's question — "how much of this agent is left?" — is about
+ *  the same row that already says whether the agent is installed, and splitting it into a second
+ *  panel would make them scan two lists for one answer.
+ *
+ *  The section never probes on render: it shows the last answers, each labelled with when it was
+ *  taken, and asking again is an explicit button. A settings page that spawns six CLIs when you
+ *  open it is a settings page that hangs.
+ */
 function ConnectedAgents() {
   const [engines, setEngines] = useState<EngineInfo[] | null>(null);
+  const [usage, setUsage] = useState<AgentUsageResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -155,40 +173,436 @@ function ConnectedAgents() {
       .catch(() => {
         /* unauthenticated/offline — leave it blank */
       });
+    api
+      .agentUsage()
+      .then((d) => alive && setUsage(d))
+      .catch(() => {
+        /* usage is additive: the agent list still renders without it */
+      });
     return () => {
       alive = false;
     };
   }, []);
 
+  const rows = usage?.agents ?? [];
+  const byEngine = new Map(rows.map((r) => [r.engine, r]));
+  const budgets = usage?.budgets;
+  const threshold = budgets?.threshold_pct ?? 90;
+
+  // Saves are **serialized**, not merely sequence-numbered.
+  //
+  // Every save returns the WHOLE snapshot, so two in flight are last-response-wins: tick the
+  // checkbox, type a limit, and whichever PATCH the network answers last decides what the panel
+  // shows. A client-side counter cannot fix that, because request-START order is not server
+  // SETTLEMENT order — partial PATCHes merge under the server's lock, so the request that
+  // started first can settle last and carry the newest authoritative document. Discarding it as
+  // "superseded" would throw away the only correct snapshot.
+  //
+  // One at a time removes the question: each PATCH is sent only after the previous has settled,
+  // so the last response IS the newest state, by construction.
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+
+  // The numeric fields are CONTROLLED, with the operator's in-progress text held here and
+  // dropped once the server has answered. Uncontrolled inputs cannot be reconciled at all: a
+  // rejected save, or an authoritative newer snapshot, would leave the box showing a number the
+  // server never accepted, with nothing on screen able to correct it.
+  // A field's in-progress text, and who owns it.
+  //
+  // Three things have to be true at once and none of them can be inferred from the rendered
+  // snapshot, because saves queue:
+  //
+  //  * the box shows what the operator last typed, not what the server last said;
+  //  * a blur is compared against the latest value ASKED for, so "change away then back" is not
+  //    mistaken for a no-op while the change-away is still in flight;
+  //  * when a request settles, it clears only what IT submitted — a stale response must not drag
+  //    the box back, and a failed one must not release a field a newer request has claimed.
+  //
+  // Ownership is a **revision token**, not the value. Matching values are not proof of ownership:
+  // queue 80 → 70 → 80 and the first 80's failure sees the newest intent is also 80, releases the
+  // third request's claim, and the operator's next choice then compares equal to the stored
+  // snapshot — no compensating PATCH, and the queued 80 becomes the durable value. Tokens have no
+  // ABA problem by construction.
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const fieldValue = (key: string, stored: number) =>
+    draft[key] ?? (stored ? String(stored) : "");
+  const rev = useRef(0);
+  const owner = useRef<Record<string, number>>({});
+  const intent = useRef<Record<string, number>>({});
+  const intended = (key: string, stored: number) =>
+    intent.current[key] ?? stored;
+
+  /** Record that this request now speaks for these fields, and return its token. */
+  function claim(values: Record<string, number>): number {
+    const token = ++rev.current;
+    for (const [k, v] of Object.entries(values)) {
+      owner.current[k] = token;
+      intent.current[k] = v;
+    }
+    return token;
+  }
+
+  /** Hand the fields back — only those this request still owns.
+   *
+   *  Success and failure do the same thing here, which is the point: either way this request is
+   *  finished speaking for the field, so the box goes back to rendering the server's value and
+   *  the next blur is compared against it. Releasing on failure is also what makes a rejected
+   *  save retryable with the same number; without it the retry compares equal to the failed
+   *  request's own intent and is never sent. */
+  function release(token: number, fields: string[]) {
+    const mine = fields.filter((k) => owner.current[k] === token);
+    if (!mine.length) return;
+    for (const k of mine) {
+      delete owner.current[k];
+      delete intent.current[k];
+    }
+    setDraft((d) => {
+      if (!mine.some((k) => k in d)) return d;
+      const out = { ...d };
+      for (const k of mine) delete out[k];
+      return out;
+    });
+  }
+
+  /** Discard a field's in-progress TEXT, and nothing else.
+   *
+   *  Used for input the server would refuse, so nothing is sent for it — which is exactly why
+   *  it must not touch `owner`/`intent`: those describe what has been **asked of the server**,
+   *  and typing something invalid asks nothing. An earlier version cleared them too, on the
+   *  stated assumption that no request could be outstanding. That assumption was wrong — saves
+   *  are serialized, so one is frequently still queued — and it lost the claim: submit 80, then
+   *  type an invalid 0 before it settles; the box snaps back to the stored 90, but with the 80's
+   *  claim erased, accepting that 90 compares equal to the stored snapshot and queues nothing.
+   *  The outstanding 80 then lands as the durable value.
+   *
+   *  Leaving the claim alone makes that case work: the box shows 90, `intended` still reads 80,
+   *  so blurring 90 is a real change and a compensating PATCH goes out. */
+  const dropDraft = (key: string) =>
+    setDraft((d) => {
+      if (!(key in d)) return d;
+      const out = { ...d };
+      delete out[key];
+      return out;
+    });
+
+  function save(
+    patch: Parameters<typeof api.setAgentBudgets>[0],
+    /** field → the numeric value THIS request is asking for. */
+    values: Record<string, number> = {},
+  ): Promise<void> {
+    const token = claim(values);
+    const fields = Object.keys(values);
+    const run = chain.current.then(
+      async () => {
+        setErr("");
+        try {
+          setUsage(await api.setAgentBudgets(patch));
+        } catch (e) {
+          // The server names what it refused and why; showing "failed" instead would leave the
+          // operator to guess which field it disliked (#834).
+          setErr(e instanceof Error ? e.message : "could not save");
+        } finally {
+          release(token, fields);
+        }
+      },
+      () => undefined,
+    );
+    chain.current = run;
+    return run;
+  }
+
+  async function refresh() {
+    setErr("");
+    setBusy(true);
+    // Behind the same chain: a refresh returns a full snapshot too, so it must not overtake a
+    // save that has not settled yet.
+    const run = chain.current.then(
+      async () => {
+        try {
+          setUsage(await api.agentUsageRefresh());
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : "could not refresh");
+        }
+      },
+      () => undefined,
+    );
+    chain.current = run;
+    await run;
+    setBusy(false);
+  }
+
   return (
     <section className={styles.section} aria-labelledby="agents-h">
       <h2 id="agents-h">Connected agents</h2>
       <p className={styles.hint}>
-        The AI-coding CLIs BattleLab can discover on this host.
+        The AI-coding CLIs BattleLab can discover on this host, and what each
+        one has spent. Percentages marked <em>plan</em> come from the agent
+        itself; the rest are counted against a limit you set.
       </p>
+
+      {budgets && (
+        <div className={styles.budgetBar}>
+          <label className={styles.budgetField}>
+            Alert at
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={fieldValue("threshold", threshold)}
+              className={styles.budgetPct}
+              aria-label="Alert threshold, percent"
+              onChange={(e) => {
+                // Read the value BEFORE the updater runs: `currentTarget` is null by the time
+                // React invokes a deferred state updater.
+                const v = e.currentTarget.value;
+                setDraft((d) => ({ ...d, threshold: v }));
+              }}
+              onBlur={(e) => {
+                const text = e.currentTarget.value;
+                const v = Math.round(Number(text));
+                if (
+                  Number.isFinite(v) &&
+                  v >= 1 &&
+                  v <= 100 &&
+                  v !== intended("threshold", threshold)
+                ) {
+                  void save({ threshold_pct: v }, { threshold: v });
+                } else {
+                  // Not a value the server would take — snap back rather than leave the box
+                  // showing a number that was never persisted.
+                  dropDraft("threshold");
+                }
+              }}
+            />
+            %
+          </label>
+          <label className={styles.budgetToggle}>
+            <input
+              type="checkbox"
+              // Same pending-intent rule as the numeric fields, and for the same reason: saves
+              // queue, so a checkbox controlled purely by the server snapshot still shows the
+              // OLD value while a PATCH is in flight. Two quick clicks then both computed
+              // `!oldValue` and enqueued the same write twice — the second toggle was silently
+              // lost. The draft holds what the operator has actually asked for.
+              checked={
+                draft.notify !== undefined
+                  ? draft.notify === "1"
+                  : budgets.notify
+              }
+              onChange={(e) => {
+                const next = e.currentTarget.checked;
+                // The draft carries the pending intent for the checkbox exactly as it does for
+                // the numeric fields, so two quick clicks send off-then-on rather than the same
+                // write twice. `save` claims the field, so the settling request releases it.
+                setDraft((d) => ({ ...d, notify: next ? "1" : "0" }));
+                void save({ notify: next }, { notify: next ? 1 : 0 });
+              }}
+            />
+            Notify me
+          </label>
+          <button
+            type="button"
+            className={styles.budgetRefresh}
+            onClick={() => void refresh()}
+            disabled={busy}
+          >
+            {busy ? "Asking…" : "Ask the agents"}
+          </button>
+        </div>
+      )}
+      {err && (
+        <p className={styles.budgetError} role="alert">
+          {err}
+        </p>
+      )}
+
       {engines === null ? (
         <p className={styles.hint}>…</p>
       ) : (
         <ul className={styles.agents} aria-label="Connected agents">
           {engines.map((e) => (
             <li key={e.id} className={styles.agent}>
-              <span
-                className={`${styles.dot} ${e.present ? styles.dotOn : styles.dotOff}`}
-                aria-hidden="true"
-              />
-              <span className={styles.agentName}>{engineName(e.id)}</span>
-              <span className={styles.agentState}>
-                {e.present ? "installed" : "not found"}
-              </span>
-              {e.supports_new && (
-                <span className={styles.newBadge}>can start new</span>
+              <div className={styles.agentHead}>
+                <span
+                  className={`${styles.dot} ${e.present ? styles.dotOn : styles.dotOff}`}
+                  aria-hidden="true"
+                />
+                <span className={styles.agentName}>{engineName(e.id)}</span>
+                <span className={styles.agentState}>
+                  {e.present ? "installed" : "not found"}
+                </span>
+                {e.supports_new && (
+                  <span className={styles.newBadge}>can start new</span>
+                )}
+                <span className={styles.agentBin}>{e.bin ?? "—"}</span>
+              </div>
+              {/* NOT gated on `e.present`: that flag means "a binary is on PATH", and codex
+                  reports its quota from its own rollout store with no binary needed — gating
+                  on it hid the meter on exactly the host this was screenshotted on. Any engine
+                  reaching this list is already `is_present()` (binary OR store); `shell` has no
+                  row here at all because it is absent from `ENGINES`. */}
+              {byEngine.has(e.id) && (
+                <AgentUsageMeter
+                  row={byEngine.get(e.id)!}
+                  threshold={threshold}
+                  present={e.present}
+                  onSave={save}
+                  fieldValue={fieldValue}
+                  setDraft={setDraft}
+                  dropDraft={dropDraft}
+                  intended={intended}
+                  setIntent={(k, v) => {
+                    intent.current[k] = v;
+                  }}
+                />
               )}
-              <span className={styles.agentBin}>{e.bin ?? "—"}</span>
             </li>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+/** One agent's meter + whichever inputs its source actually needs.
+ *
+ *  A `plan` agent gets no inputs at all — it reports a real quota against a real plan, and
+ *  offering a "limit" box there would invite the operator to configure a number the agent
+ *  already knows better. */
+function AgentUsageMeter({
+  row,
+  threshold,
+  present,
+  onSave,
+  fieldValue,
+  setDraft,
+  dropDraft,
+  intended,
+  setIntent,
+}: {
+  row: AgentUsageRow;
+  threshold: number;
+  /** Whether a binary was found on PATH — NOT whether there is usage to show. */
+  present: boolean;
+  onSave: (
+    p: {
+      engines: Record<string, { limit_tokens?: number; manual_used?: number }>;
+    },
+    values: Record<string, number>,
+  ) => void;
+  fieldValue: (key: string, stored: number) => string;
+  setDraft: Dispatch<SetStateAction<Record<string, string>>>;
+  /** Discard this field's in-progress text — never its outstanding claim. */
+  dropDraft: (key: string) => void;
+  /** The value this field was most recently asked to be — not what the snapshot renders. */
+  intended: (key: string, stored: number) => number;
+  setIntent: (key: string, value: number) => void;
+}) {
+  const pct = row.used_pct;
+  const t = tone(pct, threshold);
+  const note = stalenessNote(row);
+  const width = pct === null ? 0 : Math.max(0, Math.min(100, pct));
+
+  return (
+    <div className={styles.usage}>
+      <div className={styles.usageRow}>
+        <div
+          className={`${styles.meter} ${styles[`meter_${t}`]}`}
+          role="meter"
+          aria-valuenow={pct ?? undefined}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${row.engine} usage`}
+        >
+          <span className={styles.meterFill} style={{ width: `${width}%` }} />
+        </div>
+        <span className={`${styles.usagePct} ${styles[`pct_${t}`]}`}>
+          {pct === null ? "—" : `${Math.round(pct)}%`}
+        </span>
+        <span className={styles.usageSource}>{row.source}</span>
+      </div>
+      <p className={styles.usageCaption}>
+        {/* "codex · not found · 21% of its weekly plan" reads as a contradiction without this.
+            Both halves are true: the rollouts on this host record real usage, and the binary
+            isn't installed any more. Say which one the number came from. */}
+        {!present && pct !== null && row.source !== "manual" && (
+          <span className={styles.usageStale}>from its stored history · </span>
+        )}
+        {usageCaption(row)}
+        {note && <span className={styles.usageStale}> · {note}</span>}
+      </p>
+      {row.source !== "plan" && (
+        <div className={styles.usageInputs}>
+          <label className={styles.budgetField}>
+            Limit
+            <input
+              type="number"
+              min={0}
+              step={1000}
+              value={fieldValue(`${row.engine}:limit_tokens`, row.limit_tokens)}
+              placeholder="tokens"
+              className={styles.budgetTokens}
+              aria-label={`${row.engine} token limit`}
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                setDraft((d) => ({ ...d, [`${row.engine}:limit_tokens`]: v }));
+              }}
+              onBlur={(e) => {
+                const text = e.currentTarget.value;
+                const v = Math.round(Number(text) || 0);
+                if (
+                  v !==
+                    intended(`${row.engine}:limit_tokens`, row.limit_tokens) &&
+                  v >= 0
+                ) {
+                  setIntent(`${row.engine}:limit_tokens`, v);
+                  onSave(
+                    { engines: { [row.engine]: { limit_tokens: v } } },
+                    { [`${row.engine}:limit_tokens`]: v },
+                  );
+                } else {
+                  dropDraft(`${row.engine}:limit_tokens`);
+                }
+              }}
+            />
+          </label>
+          {row.source !== "tokens" && (
+            <label className={styles.budgetField}>
+              Used
+              <input
+                type="number"
+                min={0}
+                step={1000}
+                value={fieldValue(`${row.engine}:manual_used`, row.manual_used)}
+                placeholder="tokens"
+                className={styles.budgetTokens}
+                aria-label={`${row.engine} tokens used`}
+                onChange={(e) => {
+                  const v = e.currentTarget.value;
+                  setDraft((d) => ({ ...d, [`${row.engine}:manual_used`]: v }));
+                }}
+                onBlur={(e) => {
+                  const text = e.currentTarget.value;
+                  const v = Math.round(Number(text) || 0);
+                  if (
+                    v !==
+                      intended(`${row.engine}:manual_used`, row.manual_used) &&
+                    v >= 0
+                  ) {
+                    setIntent(`${row.engine}:manual_used`, v);
+                    onSave(
+                      { engines: { [row.engine]: { manual_used: v } } },
+                      { [`${row.engine}:manual_used`]: v },
+                    );
+                  } else {
+                    dropDraft(`${row.engine}:manual_used`);
+                  }
+                }}
+              />
+            </label>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

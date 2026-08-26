@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .atomicjson import fsync_dir
+
 log = logging.getLogger("agent_sessions.notifications")
 
 NOTIFY_MAX = 200  # bounded ring — the bell is a recent-activity surface, not an archive
@@ -112,12 +114,24 @@ def _write(path: Path, rows: list[dict]) -> None:
     # cost is nil and it keeps _write correct if it is ever called unlocked.
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # A buffered writer, not a bare `os.write`: `os.write` is permitted to write FEWER bytes
+    # than it was given and simply return the count. Unchecked, that installs a truncated
+    # document — `_read` then fails to parse it and returns `[]`, so the bell silently empties
+    # while every caller was told the write succeeded. `BufferedWriter.write` writes everything
+    # or raises, which is the property this needs (#839 review).
     try:
-        os.write(fd, json.dumps(rows, indent=2, sort_keys=True).encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        with os.fdopen(fd, "wb", closefd=True) as fh:
+            fh.write(json.dumps(rows, indent=2, sort_keys=True).encode())
+            fh.flush()
+            os.fsync(fh.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
     os.replace(tmp, path)
+    # The rename itself has to reach disk, or a crash can leave the directory entry pointing at
+    # neither document.
+    fsync_dir(path.parent)
 
 
 # --- notifications ----------------------------------------------------------------------

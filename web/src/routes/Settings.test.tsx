@@ -1,11 +1,18 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
-import type { AppConfig } from "../types/api";
+import type { AgentUsageResponse, AppConfig } from "../types/api";
 import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { AccentCtx } from "../theme/accentStore";
@@ -22,6 +29,9 @@ vi.mock("../lib/api", async () => {
       setTheme: vi.fn(),
       setAccent: vi.fn(),
       engines: vi.fn(),
+      agentUsage: vi.fn(),
+      agentUsageRefresh: vi.fn(),
+      setAgentBudgets: vi.fn(),
       system: vi.fn(),
       updateCheck: vi.fn(),
       updateApply: vi.fn(),
@@ -132,6 +142,36 @@ beforeEach(() => {
         bin: "/usr/local/bin/claude",
       },
       { id: "codex", present: false, supports_new: false, bin: null },
+    ],
+  });
+  vi.mocked(api.agentUsage).mockResolvedValue({
+    budgets: { threshold_pct: 90, notify: true, engines: {} },
+    agents: [
+      {
+        engine: "claude",
+        source: "plan",
+        at: Date.now() / 1000,
+        checked_at: Date.now() / 1000,
+        stale: false,
+        limit_tokens: 0,
+        manual_used: 0,
+        used_pct: 93,
+        plan: "max",
+        windows: [
+          { label: "session", used_pct: 4, resets_at: null },
+          { label: "week (all models)", used_pct: 93, resets_at: null },
+        ],
+      },
+      {
+        engine: "codex",
+        source: "none",
+        at: 0,
+        checked_at: null,
+        stale: false,
+        limit_tokens: 0,
+        manual_used: 0,
+        used_pct: null,
+      },
     ],
   });
   vi.mocked(api.system).mockResolvedValue({
@@ -438,6 +478,550 @@ test("renders the Connected agents section with each engine + new-session badge"
   expect(screen.getByText(/can start new/i)).toBeInTheDocument();
   // absent engine shows "not found"
   expect(screen.getByText("not found")).toBeInTheDocument();
+});
+
+test("shows what an agent has spent on the row that already names it (#839)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  // The window nearest its limit, not the first one the agent listed.
+  expect(screen.getByText(/week \(all models\)/)).toBeInTheDocument();
+  expect(screen.queryByText("4%")).not.toBeInTheDocument();
+  const meter = screen.getByRole("meter", { name: /claude usage/i });
+  expect(meter).toHaveAttribute("aria-valuenow", "93");
+  // The SOURCE is on the row itself — scoped, because the section hint also says "plan".
+  // A plan percentage and a counter the operator typed are different claims, and a panel
+  // that renders them identically is lying by omission.
+  expect(within(meter.parentElement!).getByText("plan")).toBeInTheDocument();
+});
+
+test("an agent that reports nothing shows no percentage, not a zero (#839)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  // codex reports nothing and has no limit set: an em dash, never "0%" — which would read
+  // as "this agent has used nothing".
+  const meter = screen.getByRole("meter", { name: /codex usage/i });
+  expect(meter).not.toHaveAttribute("aria-valuenow");
+  // Scoped to the meter row: the absent-binary placeholder is also an em dash.
+  expect(within(meter.parentElement!).getByText("—")).toBeInTheDocument();
+  expect(screen.getByText(/reports no usage/)).toBeInTheDocument();
+});
+
+test("a plan agent is offered no limit box to set (#839)", async () => {
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  // claude reports a real quota against a real plan; a "limit" input there would invite the
+  // operator to configure a number the agent already knows better.
+  expect(
+    screen.queryByRole("spinbutton", { name: /claude token limit/i }),
+  ).not.toBeInTheDocument();
+  // codex has no engine-reported figure, so its counter IS the operator's to set.
+  expect(
+    screen.getByRole("spinbutton", { name: /codex token limit/i }),
+  ).toBeInTheDocument();
+});
+
+test("saving a limit sends only that agent's field (#839)", async () => {
+  vi.mocked(api.setAgentBudgets).mockResolvedValue({
+    budgets: {
+      threshold_pct: 90,
+      notify: true,
+      engines: { codex: { limit_tokens: 5000 } },
+    },
+    agents: [],
+  });
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  const input = screen.getByRole("spinbutton", { name: /codex token limit/i });
+  fireEvent.change(input, { target: { value: "5000" } });
+  fireEvent.blur(input);
+  await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalled());
+  // Per-engine, per-field: a panel saving one agent's limit must not carry another's.
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[0][0]).toEqual({
+    engines: { codex: { limit_tokens: 5000 } },
+  });
+});
+
+test("saves are serialized, so the last response is the newest state (#839)", async () => {
+  // Every save returns the WHOLE snapshot, so two in flight are last-response-wins. A client
+  // sequence counter cannot fix that: partial PATCHes merge under the server's lock, so the
+  // request that STARTED first can SETTLE last and carry the newest authoritative document —
+  // discarding it as "superseded" would throw away the only correct snapshot.
+  //
+  // Serializing removes the question. This asserts the mechanism: the second PATCH is not even
+  // issued until the first has settled.
+  const deferred: ((v: AgentUsageResponse) => void)[] = [];
+  vi.mocked(api.setAgentBudgets).mockImplementation(
+    () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const snapshot = (notifyValue: boolean): AgentUsageResponse => ({
+    budgets: { threshold_pct: 90, notify: notifyValue, engines: {} },
+    agents: [],
+  });
+
+  fireEvent.click(screen.getByRole("checkbox", { name: /notify me/i })); // save #1
+  const limit = screen.getByRole("spinbutton", { name: /codex token limit/i });
+  fireEvent.change(limit, { target: { value: "7000" } });
+  fireEvent.blur(limit); // save #2
+  await waitFor(() => expect(deferred.length).toBe(1));
+  // Still one: the second is queued behind it, not racing it.
+  expect(deferred.length).toBe(1);
+
+  await act(async () => {
+    deferred[0](snapshot(true));
+  });
+  await waitFor(() => expect(deferred.length).toBe(2));
+  await act(async () => {
+    deferred[1](snapshot(false));
+  });
+
+  // The last response settled last, so the panel shows it.
+  const box = screen.getByRole("checkbox", {
+    name: /notify me/i,
+  }) as HTMLInputElement;
+  expect(box.checked).toBe(false);
+});
+
+test("two quick notify toggles send off then on, not off twice (#839)", async () => {
+  // The checkbox was controlled purely by the server snapshot, so while the first PATCH was in
+  // flight it still rendered the OLD value — and the second click computed `!old` again,
+  // enqueuing the same write twice. The operator's second toggle was silently lost.
+  const deferred: ((v: AgentUsageResponse) => void)[] = [];
+  vi.mocked(api.setAgentBudgets).mockImplementation(
+    () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const box = screen.getByRole("checkbox", {
+    name: /notify me/i,
+  }) as HTMLInputElement;
+  expect(box.checked).toBe(true);
+
+  fireEvent.click(box); // → off
+  await waitFor(() => expect(deferred.length).toBe(1));
+  expect(box.checked).toBe(false); // the pending intent shows immediately
+
+  fireEvent.click(box); // → back on, while the first is still in flight
+  expect(box.checked).toBe(true);
+
+  await act(async () => {
+    deferred[0]({
+      budgets: { threshold_pct: 90, notify: false, engines: {} },
+      agents: [],
+    });
+  });
+  await waitFor(() => expect(deferred.length).toBe(2));
+
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[0][0]).toEqual({
+    notify: false,
+  });
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[1][0]).toEqual({
+    notify: true,
+  });
+});
+
+test.each([
+  ["alert threshold", (v: string) => ({ threshold_pct: Number(v) })],
+] as const)(
+  "a change-away-then-back on %s still reaches the server (#839)",
+  async (label, expected) => {
+    // Threshold is 90. Type 80, blur (PATCH queued). Type 90, blur again — compared against the
+    // rendered snapshot (still 90) that second blur looks like a no-op, so nothing compensates
+    // and the queued 80 commits. The comparison has to be against the latest INTENT.
+    const deferred: ((v: AgentUsageResponse) => void)[] = [];
+    vi.mocked(api.setAgentBudgets).mockImplementation(
+      () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
+    );
+    renderSettings("dark", "#ffb000", "/settings/system");
+    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+    const input = screen.getByRole("spinbutton", {
+      name: new RegExp(label, "i"),
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "80" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(deferred.length).toBe(1));
+
+    fireEvent.change(input, { target: { value: "90" } });
+    fireEvent.blur(input);
+
+    await act(async () => {
+      deferred[0]({
+        budgets: { threshold_pct: 80, notify: true, engines: {} },
+        agents: [],
+      });
+    });
+
+    await waitFor(() => expect(deferred.length).toBe(2));
+    expect(vi.mocked(api.setAgentBudgets).mock.calls[0][0]).toEqual(
+      expected("80"),
+    );
+    expect(vi.mocked(api.setAgentBudgets).mock.calls[1][0]).toEqual(
+      expected("90"),
+    );
+  },
+);
+
+test("a change-away-then-back on a per-agent limit still reaches the server (#839)", async () => {
+  const deferred: ((v: AgentUsageResponse) => void)[] = [];
+  vi.mocked(api.setAgentBudgets).mockImplementation(
+    () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const limit = screen.getByRole("spinbutton", {
+    name: /codex token limit/i,
+  }) as HTMLInputElement;
+  // Stored is 0 (unset). Ask for 5000, then back to 0 while the first is in flight.
+  fireEvent.change(limit, { target: { value: "5000" } });
+  fireEvent.blur(limit);
+  await waitFor(() => expect(deferred.length).toBe(1));
+  fireEvent.change(limit, { target: { value: "0" } });
+  fireEvent.blur(limit);
+
+  await act(async () => {
+    deferred[0]({
+      budgets: {
+        threshold_pct: 90,
+        notify: true,
+        engines: { codex: { limit_tokens: 5000 } },
+      },
+      agents: [],
+    });
+  });
+  await waitFor(() => expect(deferred.length).toBe(2));
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[1][0]).toEqual({
+    engines: { codex: { limit_tokens: 0 } },
+  });
+});
+
+test("a rejected save can be retried with the same value (#839)", async () => {
+  // The field snaps back to the stored number after a rejection, so the operator types the same
+  // thing again — and it compared equal to the intent the FAILED request had left behind, so
+  // nothing was sent. A transient 500 made that value permanently unsettable.
+  vi.mocked(api.setAgentBudgets).mockRejectedValueOnce(
+    new Error("boom, try again"),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const input = screen.getByRole("spinbutton", {
+    name: /alert threshold/i,
+  }) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "80" } });
+  fireEvent.blur(input);
+  await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(input.value).toBe("90")); // snapped back to stored
+
+  vi.mocked(api.setAgentBudgets).mockResolvedValue({
+    budgets: { threshold_pct: 80, notify: true, engines: {} },
+    agents: [],
+  });
+  fireEvent.change(input, { target: { value: "80" } });
+  fireEvent.blur(input);
+  await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[1][0]).toEqual({
+    threshold_pct: 80,
+  });
+});
+
+test("a failed older save does not erase a newer queued intent (#839)", async () => {
+  // The sequence that makes rolling back by field NAME lose data — and it is silent:
+  //   stored 90 → submit 80 → queue 70 → the 80 request FAILS.
+  // A name-keyed rollback deletes the *70* intent. The operator then types 90, which matches the
+  // stored snapshot, so no compensating PATCH is queued — and the in-flight 70 commits over
+  // their latest choice. Rolling back by VALUE keeps the failed request from reclaiming a field
+  // a newer one already owns.
+  const deferred: {
+    resolve: (v: AgentUsageResponse) => void;
+    reject: (e: Error) => void;
+  }[] = [];
+  vi.mocked(api.setAgentBudgets).mockImplementation(
+    () =>
+      new Promise<AgentUsageResponse>((resolve, reject) =>
+        deferred.push({ resolve, reject }),
+      ),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const input = screen.getByRole("spinbutton", {
+    name: /alert threshold/i,
+  }) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "80" } });
+  fireEvent.blur(input); // #1 → 80, in flight
+  await waitFor(() => expect(deferred.length).toBe(1));
+  fireEvent.change(input, { target: { value: "70" } });
+  fireEvent.blur(input); // #2 → 70, queued behind it
+
+  await act(async () => {
+    deferred[0].reject(new Error("the 80 request failed"));
+  });
+  await waitFor(() => expect(deferred.length).toBe(2));
+
+  // Back to 90 — the operator's latest choice, while 70 is still in flight.
+  fireEvent.change(input, { target: { value: "90" } });
+  fireEvent.blur(input);
+
+  // Saves are serialized, so the compensating PATCH is QUEUED here rather than sent; letting
+  // the 70 request settle releases it. The failure this guards is that it is never queued at
+  // all, because the failed 80 deleted the 70 intent and 90 then looked like a no-op.
+  await act(async () => {
+    deferred[1].resolve({
+      budgets: { threshold_pct: 70, notify: true, engines: {} },
+      agents: [],
+    });
+  });
+
+  await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(api.setAgentBudgets).mock.calls[2][0]).toEqual({
+    threshold_pct: 90,
+  });
+});
+
+test.each([
+  [
+    "alert threshold",
+    "90",
+    ["80", "70", "80"],
+    "90",
+    (v: number) => ({ threshold_pct: v }),
+  ],
+  [
+    "codex token limit",
+    "",
+    ["800", "700", "800"],
+    "900",
+    (v: number) => ({ engines: { codex: { limit_tokens: v } } }),
+  ],
+  [
+    "codex tokens used",
+    "",
+    ["800", "700", "800"],
+    "900",
+    (v: number) => ({ engines: { codex: { manual_used: v } } }),
+  ],
+] as const)(
+  "ABA: a failed request does not release a newer claim on %s (#839)",
+  async (label, _stored, [a1, b1, a2], finalValue, expected) => {
+    // Matching VALUES are not proof of ownership. Queue A → B → A; when the first A fails, a
+    // value-keyed check sees the newest intent is also A, releases the third request's claim,
+    // and the operator's next choice then compares equal to the stored snapshot — no
+    // compensating PATCH, and the queued A becomes the durable value. Ownership is a revision
+    // token, which has no ABA problem by construction.
+    const deferred: {
+      resolve: (v: AgentUsageResponse) => void;
+      reject: (e: Error) => void;
+    }[] = [];
+    vi.mocked(api.setAgentBudgets).mockImplementation(
+      () =>
+        new Promise<AgentUsageResponse>((resolve, reject) =>
+          deferred.push({ resolve, reject }),
+        ),
+    );
+    renderSettings("dark", "#ffb000", "/settings/system");
+    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+    const input = screen.getByRole("spinbutton", {
+      name: new RegExp(label, "i"),
+    }) as HTMLInputElement;
+    for (const v of [a1, b1, a2]) {
+      fireEvent.change(input, { target: { value: v } });
+      fireEvent.blur(input);
+    }
+    await waitFor(() => expect(deferred.length).toBe(1));
+
+    // The FIRST request fails while the third (same value) still owns the field.
+    await act(async () => {
+      deferred[0].reject(new Error("the first one failed"));
+    });
+
+    fireEvent.change(input, { target: { value: finalValue } });
+    fireEvent.blur(input);
+
+    // Saves are serialized: drain the queued ones so the compensating PATCH is sent.
+    for (let i = 1; i < 4; i++) {
+      await waitFor(() => expect(deferred.length).toBeGreaterThan(i - 1));
+      if (!deferred[i]) break;
+      await act(async () => {
+        deferred[i].resolve({
+          budgets: { threshold_pct: 90, notify: true, engines: {} },
+          agents: [],
+        });
+      });
+    }
+
+    await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalledTimes(4));
+    const calls = vi.mocked(api.setAgentBudgets).mock.calls;
+    expect(calls[3][0]).toEqual(expected(Number(finalValue)));
+  },
+);
+
+test.each([
+  ["alert threshold", "80", "0", "90", (v: number) => ({ threshold_pct: v })],
+  [
+    "codex token limit",
+    "800",
+    "-5",
+    "900",
+    (v: number) => ({ engines: { codex: { limit_tokens: v } } }),
+  ],
+  [
+    "codex tokens used",
+    "800",
+    "-5",
+    "900",
+    (v: number) => ({ engines: { codex: { manual_used: v } } }),
+  ],
+] as const)(
+  "invalid input does not surrender an outstanding claim on %s (#839)",
+  async (label, submitted, invalid, corrected, expected) => {
+    // Typing something the server would refuse asks the server nothing — so it must not touch
+    // the claim of a request that IS outstanding. Clearing it there loses the field: the box
+    // snaps back to the stored value, and accepting that value then compares equal to the stored
+    // snapshot, so nothing compensates and the in-flight request lands as the durable value.
+    const deferred: {
+      resolve: (v: AgentUsageResponse) => void;
+      reject: (e: Error) => void;
+    }[] = [];
+    vi.mocked(api.setAgentBudgets).mockImplementation(
+      () =>
+        new Promise<AgentUsageResponse>((resolve, reject) =>
+          deferred.push({ resolve, reject }),
+        ),
+    );
+    renderSettings("dark", "#ffb000", "/settings/system");
+    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+    const input = screen.getByRole("spinbutton", {
+      name: new RegExp(label, "i"),
+    }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: submitted } });
+    fireEvent.blur(input); // in flight
+    await waitFor(() => expect(deferred.length).toBe(1));
+
+    // Invalid, so nothing is sent and the box snaps back.
+    fireEvent.change(input, { target: { value: invalid } });
+    fireEvent.blur(input);
+    expect(api.setAgentBudgets).toHaveBeenCalledTimes(1);
+
+    // The operator now settles on a real value while the first is still outstanding.
+    fireEvent.change(input, { target: { value: corrected } });
+    fireEvent.blur(input);
+
+    await act(async () => {
+      deferred[0].resolve({
+        budgets: { threshold_pct: 90, notify: true, engines: {} },
+        agents: [],
+      });
+    });
+
+    await waitFor(() => expect(api.setAgentBudgets).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.setAgentBudgets).mock.calls[1][0]).toEqual(
+      expected(Number(corrected)),
+    );
+  },
+);
+
+test("an older queued save does not clear a newer edit to the same field (#839)", async () => {
+  // Saves queue, so an old response can arrive while the operator has already typed something
+  // else into the same box. Clearing on the field NAME alone reverted the visible input to the
+  // value the settled request had submitted, while the newer one was still pending.
+  const deferred: ((v: AgentUsageResponse) => void)[] = [];
+  vi.mocked(api.setAgentBudgets).mockImplementation(
+    () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const limit = screen.getByRole("spinbutton", {
+    name: /codex token limit/i,
+  }) as HTMLInputElement;
+  fireEvent.change(limit, { target: { value: "7000" } });
+  fireEvent.blur(limit); // request #1 submits "7000"
+  await waitFor(() => expect(deferred.length).toBe(1));
+
+  // The operator keeps typing while #1 is still in flight.
+  fireEvent.change(limit, { target: { value: "8000" } });
+  expect(limit.value).toBe("8000");
+
+  // #1 settles. It must not drag the box back to what IT submitted.
+  await act(async () => {
+    deferred[0]({
+      budgets: {
+        threshold_pct: 90,
+        notify: true,
+        engines: { codex: { limit_tokens: 7000 } },
+      },
+      agents: [],
+    });
+  });
+  expect(limit.value).toBe("8000");
+});
+
+test("a save the server REJECTS stops masking the stored value (#839)", async () => {
+  // Distinct from the out-of-range case below, which never reaches the server: this value looks
+  // fine to the client and is refused by the server. Keeping the draft would leave the field
+  // asserting a number that was never persisted, discoverable only by reloading.
+  vi.mocked(api.setAgentBudgets).mockRejectedValue(
+    new Error(
+      "agent_budgets.engines.codex.limit_tokens must be a whole number",
+    ),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const limit = screen.getByRole("spinbutton", {
+    name: /codex token limit/i,
+  }) as HTMLInputElement;
+  fireEvent.change(limit, { target: { value: "12345" } });
+  fireEvent.blur(limit);
+
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(/limit_tokens/),
+  );
+  // Back to the stored value (unset here), not the refused one.
+  await waitFor(() => expect(limit.value).toBe(""));
+});
+
+test("a numeric field is reconciled by the server, not left as typed (#839)", async () => {
+  // The fields were uncontrolled, so nothing could correct them: a rejected save left the box
+  // showing a number the server never accepted, with no way back.
+  vi.mocked(api.setAgentBudgets).mockRejectedValue(
+    new Error("agent_budgets rejected"),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+
+  const input = screen.getByRole("spinbutton", {
+    name: /alert threshold/i,
+  }) as HTMLInputElement;
+  // Out of range: the server would refuse it, so the panel snaps back rather than displaying it.
+  fireEvent.change(input, { target: { value: "0" } });
+  fireEvent.blur(input);
+  await waitFor(() => expect(input.value).toBe("90"));
+  expect(api.setAgentBudgets).not.toHaveBeenCalled();
+});
+
+test("a rejected budget save says why, in the server's words (#839)", async () => {
+  vi.mocked(api.setAgentBudgets).mockRejectedValue(
+    new Error(
+      "agent_budgets.threshold_pct must be an integer between 1 and 100",
+    ),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  const input = screen.getByRole("spinbutton", { name: /alert threshold/i });
+  fireEvent.change(input, { target: { value: "55" } });
+  fireEvent.blur(input);
+  // "Could not save" would leave the operator guessing which field the server disliked (#834).
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(/threshold_pct/),
+  );
 });
 
 test("renders the System section with humanized fields", async () => {

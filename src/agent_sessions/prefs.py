@@ -1198,3 +1198,169 @@ def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
     # and writes under policy the operator has withdrawn.
     with session_input.policy_transaction():
         return _mutate("orchestrator", merge, path)
+
+
+# --- Per-agent usage budgets (#839) ----------------------------------------------------
+# What the operator configures, and *only* that. The agents report their own usage
+# (`agent_usage.py`), so nothing here stores a measurement that came from an engine: a
+# `plan` engine needs no configuration at all beyond the alert threshold, a `tokens`
+# engine needs a limit to compare its count against, and an engine that reports nothing
+# needs both the limit and the count.
+
+#: Alert when an agent passes this share of its budget. The issue's default.
+BUDGET_THRESHOLD_DEFAULT = 90
+BUDGET_THRESHOLD_MIN = 1
+BUDGET_THRESHOLD_MAX = 100
+
+#: A token limit is a plain count. The ceiling is not a policy — it is the largest value that
+#: survives a JSON round-trip and arithmetic without becoming `inf` or losing precision. A
+#: hand-edited prefs file carrying `1e400` or a 400-digit integer must not reach a division.
+BUDGET_TOKENS_MAX = 2**53
+
+_AGENT_BUDGET_DEFAULTS: dict[str, object] = {
+    "threshold_pct": BUDGET_THRESHOLD_DEFAULT,
+    "notify": True,
+    "engines": {},
+}
+
+#: Per-engine keys. `limit_tokens` is the denominator for a `tokens`/`manual` engine (0 = unset,
+#: i.e. "show the count, alert on nothing"); `manual_used` is the operator's own counter for an
+#: engine that reports nothing at all.
+_ENGINE_BUDGET_KEYS: tuple[str, ...] = ("limit_tokens", "manual_used")
+
+
+def _budget_count(v: object) -> int | None:
+    """Coerce one stored count, or None if it isn't one.
+
+    Deliberately strict about what a hand-edited file may contain: `bool` is an `int` in Python
+    and would silently mean 0/1, a float can be `inf`/`nan` and would poison every later
+    comparison, and an unbounded integer can be arbitrarily large. Anything that isn't a plain
+    in-range whole number is discarded rather than clamped — a value we can't trust the meaning
+    of shouldn't become a limit the operator never set.
+    """
+    if isinstance(v, bool) or not isinstance(v, int | float):
+        return None
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")) or v != int(v):
+            return None
+        v = int(v)
+    return v if 0 <= v <= BUDGET_TOKENS_MAX else None
+
+
+def _coerce_agent_budgets(raw: object) -> dict:
+    """Defaults + coercion for one stored `agent_budgets` block.
+
+    Split out from `get_agent_budgets` so `set_agent_budgets` can coerce the document it read
+    *inside* `_mutate`'s lock. Calling the getter from the merge would re-read the file outside
+    that lock, which is precisely the read-modify-write race `_mutate` exists to close.
+    """
+    out: dict[str, object] = {
+        "threshold_pct": BUDGET_THRESHOLD_DEFAULT,
+        "notify": True,
+        "engines": {},
+    }
+    if not isinstance(raw, dict):
+        return out
+    t = raw.get("threshold_pct")
+    if (
+        isinstance(t, int)
+        and not isinstance(t, bool)
+        and BUDGET_THRESHOLD_MIN <= t <= BUDGET_THRESHOLD_MAX
+    ):
+        out["threshold_pct"] = t
+    if isinstance(raw.get("notify"), bool):
+        out["notify"] = raw["notify"]
+    engines = raw.get("engines")
+    if isinstance(engines, dict):
+        clean: dict[str, dict] = {}
+        for engine, cfg in engines.items():
+            if not isinstance(engine, str) or not isinstance(cfg, dict):
+                continue
+            row = {}
+            for k in _ENGINE_BUDGET_KEYS:
+                n = _budget_count(cfg.get(k))
+                if n is not None:
+                    row[k] = n
+            if row:
+                clean[engine] = row
+        out["engines"] = clean
+    return out
+
+
+def get_agent_budgets(path: Path | None = None) -> dict:
+    """The stored `agent_budgets` block with defaults applied and every field coerced (#839)."""
+    return _coerce_agent_budgets(_load(path or _default_path()).get("agent_budgets"))
+
+
+def validate_agent_budgets_patch(patch: object) -> str | None:
+    """Server-side schema check for a partial `agent_budgets` write: an error string (→ 422) or
+    None. Unknown keys are rejected so a typo can't silently no-op."""
+    if not isinstance(patch, dict):
+        return "agent_budgets must be an object"
+    unknown = set(patch) - set(_AGENT_BUDGET_DEFAULTS)
+    if unknown:
+        return f"unknown agent_budgets fields: {sorted(unknown)}"
+    if "threshold_pct" in patch:
+        t = patch["threshold_pct"]
+        if (
+            not isinstance(t, int)
+            or isinstance(t, bool)
+            or not (BUDGET_THRESHOLD_MIN <= t <= BUDGET_THRESHOLD_MAX)
+        ):
+            return (
+                f"agent_budgets.threshold_pct must be an integer between "
+                f"{BUDGET_THRESHOLD_MIN} and {BUDGET_THRESHOLD_MAX}"
+            )
+    if "notify" in patch and not isinstance(patch["notify"], bool):
+        return "agent_budgets.notify must be a boolean"
+    if "engines" in patch:
+        engines = patch["engines"]
+        if not isinstance(engines, dict):
+            return "agent_budgets.engines must be an object"
+        for engine, cfg in engines.items():
+            if not isinstance(engine, str) or not engine:
+                return "agent_budgets.engines keys must be engine ids"
+            if not isinstance(cfg, dict):
+                return f"agent_budgets.engines.{engine} must be an object"
+            extra = set(cfg) - set(_ENGINE_BUDGET_KEYS)
+            if extra:
+                return f"unknown agent_budgets.engines.{engine} fields: {sorted(extra)}"
+            for k in _ENGINE_BUDGET_KEYS:
+                if k in cfg and _budget_count(cfg[k]) is None:
+                    return (
+                        f"agent_budgets.engines.{engine}.{k} must be a whole number "
+                        f"between 0 and {BUDGET_TOKENS_MAX}"
+                    )
+    return None
+
+
+def set_agent_budgets(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block into the stored one and persist (#839).
+
+    Per-engine rows merge *per engine*, not wholesale: a panel saving one agent's limit must not
+    erase another agent's. Writing `0` clears a field, and an engine left with no fields drops
+    out of the block entirely — that is how the operator removes a limit they no longer want.
+    """
+
+    def merge(raw):
+        cur = _coerce_agent_budgets(raw)
+        if "threshold_pct" in patch:
+            cur["threshold_pct"] = patch["threshold_pct"]
+        if "notify" in patch:
+            cur["notify"] = patch["notify"]
+        if "engines" in patch:
+            engines = dict(cur["engines"])
+            for engine, cfg in patch["engines"].items():
+                row = dict(engines.get(engine) or {})
+                for k in _ENGINE_BUDGET_KEYS:
+                    if k in cfg:
+                        row[k] = int(cfg[k])
+                row = {k: v for k, v in row.items() if v}
+                if row:
+                    engines[engine] = row
+                else:
+                    engines.pop(engine, None)
+            cur["engines"] = engines
+        return cur
+
+    return _mutate("agent_budgets", merge, path)

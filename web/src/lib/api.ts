@@ -1,6 +1,8 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type {
+  AgentBudgets,
+  AgentUsageResponse,
   AiActivity,
   AppConfig,
   AutoSortReport,
@@ -280,6 +282,16 @@ export const api = {
   version: () => getJson<{ version: string }>("/api/version"),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
+
+  /** Per-agent usage + budgets (#839). The GET never probes — it serves the last answers,
+   *  each labelled with when it was taken. */
+  agentUsage: () => getJson<AgentUsageResponse>("/api/agents/usage"),
+  /** Ask the agents now. `mutateJson` so the 409 ("a refresh is already running") reaches
+   *  the operator as itself rather than as a bare status code (#834). */
+  agentUsageRefresh: () =>
+    mutateJson<AgentUsageResponse>("POST", "/api/agents/usage/refresh"),
+  setAgentBudgets: (patch: Partial<AgentBudgets>) =>
+    patchJson<AgentUsageResponse>("/api/agents/budgets", patch),
   /** Cross-engine handoff prepare (#597): build the seed for a source session in `mode`
    *  and return {handle, preview, meta}. Side-effect-free — cancel by letting the
    *  short-TTL handle expire. An "ai" request degrades to the quick tail server-side when
@@ -328,9 +340,13 @@ export const api = {
   /** Save one prompt by id, or restore its shipped default. The server resolves the id to
    *  its storage binding; the client never sends one. CSRF-guarded. */
   savePrompt: (id: string, value: string) =>
-    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, { value }),
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, {
+      value,
+    }),
   resetPrompt: (id: string) =>
-    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, { reset: true }),
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, {
+      reset: true,
+    }),
   /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
   setTheme: (theme: string) =>
     postJson<{ theme: string }>("/api/prefs", { theme }),
@@ -428,7 +444,10 @@ export const api = {
     ),
   /** File panel (#783): one regular file, capped while reading. Binary returns metadata only. */
   filesRead: (path: string, init?: RequestInit) =>
-    getJson<FileContent>(`/api/files/read?path=${encodeURIComponent(path)}`, init),
+    getJson<FileContent>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+      init,
+    ),
   /** File panel (#783): platform support for the containment contract. Fails closed. */
   filesCapabilities: () => getJson<FileCapabilities>("/api/files/capabilities"),
   /** GIT tab (#784): repository state for the panel's current root. */
@@ -463,7 +482,10 @@ export const api = {
     dir: string,
     relpath: string,
     file: File,
-    opts: { onCollision?: "fail" | "keep_both" | "replace"; batchId?: string } = {},
+    opts: {
+      onCollision?: "fail" | "keep_both" | "replace";
+      batchId?: string;
+    } = {},
   ) => {
     const form = new FormData();
     // Order matters and is part of the route's contract: the server opens the destination when

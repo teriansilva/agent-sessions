@@ -42,6 +42,7 @@ from . import (
     security_headers,
     session_stream,
     update_loop,
+    usage_loop,
 )
 from . import (
     handoff as handoff_mod,
@@ -70,6 +71,7 @@ from .routes import spa as spa_routes
 from .routes import system as system_routes
 from .routes import terminal as terminal_routes
 from .routes import upload as upload_routes
+from .routes import usage as usage_routes
 
 # Re-export the post-login redirect sanitizer (now owned by routes/auth.py) under its
 # historical name here, so tests that call main._safe_next still resolve it (#265).
@@ -248,6 +250,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
         cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
+        # Per-agent usage (#839): asks each engine what it has spent, on an interval, off the
+        # event loop. Env kill-switch AGENT_SESSIONS_USAGE_LOOP=0; nothing else gates it,
+        # because reading a quota is not a model call and costs no tokens.
+        usage_task = asyncio.create_task(usage_loop.run())
         try:
             yield
         finally:
@@ -259,6 +265,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 orchestrator_task,
                 update_task,
                 cap_sweep_task,
+                usage_task,
             ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -471,6 +478,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # File panel (#783): bounded read-only directory listing + file read under $HOME. GET-only
     # (no CSRF surface); containment lives in files.py, which is a security boundary.
     files_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+
+    # Per-agent usage + budgets (#839): the read is cheap and always available; probing the
+    # agents is behind the explicit POST.
+    usage_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # SPA shell + history fallback. The ``/{spa_path}`` catch-all is registered LAST so it
     # never shadows the API/ws/auth routes above. ``_WEB_DIST`` / ``_SPA_RESERVED`` stay

@@ -590,6 +590,57 @@ export interface EngineInfo {
   bin: string | null;
 }
 
+/** One agent's usage, as the agent itself reports it (#839).
+ *
+ *  `source` is the whole contract, and the UI must not paper over it:
+ *  - `plan`    — the agent's own quota percentage. Authoritative; the operator configures nothing.
+ *  - `tokens`  — a token count from the engine's own store, meaningful only against `limit_tokens`.
+ *  - `manual`  — the operator's own counter, for an agent that reports nothing.
+ *  - `none`    — nothing reported and nothing configured. Not "0%".
+ */
+export interface AgentUsageWindow {
+  label: string;
+  used_pct: number;
+  resets_at: number | null;
+}
+
+export interface AgentUsageRow {
+  engine: string;
+  source: "plan" | "tokens" | "manual" | "none";
+  windows?: AgentUsageWindow[];
+  tokens?: {
+    in?: number;
+    out?: number;
+    cache_read?: number;
+    cache_write?: number;
+  } | null;
+  window_days?: number | null;
+  plan?: string | null;
+  /** When the figures were taken. 0 = never asked. */
+  at: number;
+  /** When the last attempt happened, which differs from `at` after a failed refresh. */
+  checked_at: number | null;
+  /** Why the last refresh failed. The figures are still the last good ones. */
+  error?: string | null;
+  stale: boolean;
+  limit_tokens: number;
+  manual_used: number;
+  /** The one number a threshold is tested against, or null when there isn't one. */
+  used_pct: number | null;
+}
+
+export interface AgentBudgets {
+  threshold_pct: number;
+  notify: boolean;
+  engines: Record<string, { limit_tokens?: number; manual_used?: number }>;
+}
+
+export interface AgentUsageResponse {
+  agents: AgentUsageRow[];
+  budgets: AgentBudgets;
+  refreshing?: boolean;
+}
+
 export interface EnginesResponse {
   engines: EngineInfo[];
 }

@@ -245,8 +245,18 @@ def _decode_cwd(dirname: str) -> str:
     return "/" + dirname[1:].replace("-", "/")
 
 
-def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
-    """Single pass over a JSONL: return (real_cwd_or_None, first_user_message).
+def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str, bool]:
+    """Single pass over a JSONL: return ``(real_cwd_or_None, first_user_message, headless)``.
+
+    ``headless`` is True for a **headless one-shot** — a transcript whose user records carry
+    ``entrypoint: "sdk-cli"``, which is what `claude -p "…"` writes. Those are not sessions anyone
+    can attach to: they run, print, and exit, leaving a transcript that the sidebar would otherwise
+    list forever beside real work. #839's usage probe runs one every few minutes, so without this
+    the feature would manufacture hundreds of phantom rows a day — but the noise predates it, since
+    any SDK-driven `claude -p` on this host lands in the list today.
+
+    Same shape as the codex provider's subagent discriminator: an in-stream marker the engine
+    itself writes, checked before the row is built.
 
     Claude Code records carry the true ``cwd`` (e.g. ``/home/u/claude/demoapp.io``),
     which is authoritative — unlike the lossy directory name. We grab the first
@@ -265,6 +275,8 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if rec.get("entrypoint") == "sdk-cli":
+                    return None, "", True
                 if cwd is None and isinstance(rec.get("cwd"), str) and rec["cwd"]:
                     cwd = rec["cwd"]
                 if not first_msg and rec.get("type") == "user":
@@ -284,8 +296,8 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str]:
                 if cwd is not None and first_msg:
                     break
     except OSError:
-        return None, ""
-    return cwd, first_msg
+        return None, "", False
+    return cwd, first_msg, False
 
 
 def _walk(root: Path, archived: bool) -> Iterable[Session]:
@@ -303,7 +315,9 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
                 st = jsonl.stat()
             except OSError:
                 continue
-            real_cwd, first_msg = _read_session_meta(jsonl)
+            real_cwd, first_msg, headless = _read_session_meta(jsonl)
+            if headless:
+                continue
             cwd = real_cwd or decoded
             yield Session(
                 engine="claude",

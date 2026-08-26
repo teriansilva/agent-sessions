@@ -98,6 +98,20 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_agent_usage(tmp_path, monkeypatch) -> None:
+    """Point the per-agent usage store (#839) at a per-test tmp file.
+
+    Same reason as prefs and the bell: on a machine with a live install the real store holds this
+    operator's actual plan percentages, and a test asserting "nothing reported yet" would pass or
+    fail depending on whose laptop ran it. Autouse so no test can reach the real file by
+    forgetting to override the env var."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_AGENT_USAGE",
+        str(tmp_path / ".config" / "agent-sessions" / "agent-usage.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_notifications(tmp_path, monkeypatch) -> None:
     """Point the notification bell and the push-subscription store at per-test tmp files.
 

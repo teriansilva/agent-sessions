@@ -400,7 +400,7 @@ def test_first_user_message_skips_local_command_wrappers(tmp_path):
             {"type": "user", "message": {"content": "the real question"}},
         ],
     )
-    cwd, first = scanner._read_session_meta(p)
+    cwd, first, _headless = scanner._read_session_meta(p)
     assert cwd == "/x"
     assert first == "the real question"
 
@@ -417,6 +417,94 @@ def test_first_user_message_wrapper_only_yields_empty(tmp_path):
             }
         ],
     )
-    cwd, first = scanner._read_session_meta(p)
+    cwd, first, _headless = scanner._read_session_meta(p)
     assert cwd == "/x"
     assert first == ""
+
+
+def test_headless_one_shot_is_not_a_session(fake_jsonl):
+    """`claude -p "…"` leaves a transcript, but there is no session to attach to (#839).
+
+    Captured from a real `claude -p "/usage"` on this host: the user record carries
+    ``entrypoint: "sdk-cli"``. The usage probe runs one of these every few minutes, so without
+    the filter the feature would manufacture hundreds of sidebar rows a day — though the noise
+    predates it, since any SDK-driven `claude -p` on this host lands in the list today.
+    """
+    proj = fake_jsonl / ".claude" / "projects" / "-tmp"
+    proj.mkdir(parents=True, exist_ok=True)
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _write_jsonl(
+        proj / f"{uuid}.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": "/tmp",
+                "entrypoint": "sdk-cli",
+                "message": {"content": "/usage"},
+            },
+            {"type": "assistant", "message": {"content": "Current session: 5% used"}},
+        ],
+    )
+    assert uuid not in {r.uuid for r in scanner.scan(home=fake_jsonl)}
+
+
+def test_an_interactive_session_in_the_same_folder_is_still_listed(fake_jsonl):
+    """The filter keys on the engine's own marker, not on the folder a probe happens to run in
+    — filtering by cwd would swallow real work started from /tmp."""
+    proj = fake_jsonl / ".claude" / "projects" / "-tmp"
+    proj.mkdir(parents=True, exist_ok=True)
+    uuid = "abababab-cdcd-efef-0101-232323232323"
+    _write_jsonl(
+        proj / f"{uuid}.jsonl",
+        [{"type": "user", "cwd": "/tmp", "message": {"content": "real work in /tmp"}}],
+    )
+    rows = {r.uuid: r for r in scanner.scan(home=fake_jsonl)}
+    assert uuid in rows
+    assert rows[uuid].first_user_message == "real work in /tmp"
+
+
+def test_headless_marker_wins_over_a_usable_first_record(fake_jsonl):
+    """The marker is honoured on the very record that would otherwise end the scan.
+
+    `_read_session_meta` stops as soon as it has a cwd and a message, so a marker checked after
+    those two would never be reached on a transcript whose FIRST real record carries both — which
+    is exactly the shape `claude -p "<a real prompt>"` writes. The check therefore runs before
+    them, and this pins that: the record below satisfies the break condition on its own.
+    """
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    proj.mkdir(parents=True, exist_ok=True)
+    uuid = "beefbeef-1111-2222-3333-444444444444"
+    _write_jsonl(
+        proj / f"{uuid}.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": "/home/user/claude/repo-a",
+                "entrypoint": "sdk-cli",
+                "message": {"content": "summarise this repository"},
+            },
+        ],
+    )
+    assert uuid not in {r.uuid for r in scanner.scan(home=fake_jsonl)}
+
+
+def test_an_interactive_entrypoint_is_not_filtered(fake_jsonl):
+    """Only `sdk-cli` is headless. Interactive records carry `entrypoint: "cli"`, and rejecting
+    on the mere PRESENCE of the field would empty the sidebar."""
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    proj.mkdir(parents=True, exist_ok=True)
+    uuid = "cafecafe-5555-6666-7777-888888888888"
+    _write_jsonl(
+        proj / f"{uuid}.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": "/home/user/claude/repo-a",
+                "entrypoint": "cli",
+                "message": {"content": "a real interactive prompt"},
+            },
+        ],
+    )
+    rows = {r.uuid: r for r in scanner.scan(home=fake_jsonl)}
+    assert uuid in rows
+    assert rows[uuid].first_user_message == "a real interactive prompt"
