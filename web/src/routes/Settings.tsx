@@ -51,6 +51,13 @@ import { ProjectsManagerCard } from "./ProjectsManager";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
 import { useAccent } from "../theme/accentStore";
+import {
+  DEFAULT_TERM_FONT_SIZE,
+  stepTermFontSize,
+  TERM_FONT_SIZE_MAX,
+  TERM_FONT_SIZE_MIN,
+} from "../theme/termSize";
+import { useTermSize } from "../theme/termSizeStore";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type {
@@ -2046,6 +2053,7 @@ function ScrollbackCacheCard() {
 export function Settings() {
   const { theme, setTheme } = useTheme();
   const { accent, setAccent } = useAccent();
+  const { size: termFontSize, setSize: setTermFontSize } = useTermSize();
   // Draft for the free-text hex field — committed on Enter/blur so mid-typing (e.g. a
   // transient valid #rgb prefix) doesn't churn the live accent or the server. When the
   // accent changes elsewhere (a preset, the colour well, another device) we reflect it into
@@ -2243,6 +2251,70 @@ export function Settings() {
                   }}
                   onBlur={commitHex}
                 />
+              </div>
+
+              <h3 className={styles.subhead} id="termsize-h">
+                Terminal text size
+              </h3>
+              <p className={styles.hint}>
+                Sets how many columns the agent sees. Smaller text means a wider
+                terminal, which is what a column-laid-out TUI like opencode
+                needs — on a phone the shipped 13&nbsp;px leaves it only about
+                50 columns. Saved per device, so a phone and a desktop can
+                differ.
+              </p>
+              <div className={styles.termSize}>
+                <div
+                  className={styles.termSizeStepper}
+                  role="group"
+                  aria-labelledby="termsize-h"
+                >
+                  <button
+                    type="button"
+                    className={styles.termSizeStep}
+                    aria-label="Smaller terminal text"
+                    disabled={termFontSize <= TERM_FONT_SIZE_MIN}
+                    onClick={() =>
+                      setTermFontSize(stepTermFontSize(termFontSize, -1))
+                    }
+                  >
+                    &minus;
+                  </button>
+                  {/* aria-live so the value is announced on each step — the buttons keep focus,
+                      so without it a screen-reader user gets no feedback that anything changed. */}
+                  <output
+                    className={styles.termSizeValue}
+                    aria-live="polite"
+                  >{`${termFontSize} px`}</output>
+                  <button
+                    type="button"
+                    className={styles.termSizeStep}
+                    aria-label="Bigger terminal text"
+                    disabled={termFontSize >= TERM_FONT_SIZE_MAX}
+                    onClick={() =>
+                      setTermFontSize(stepTermFontSize(termFontSize, 1))
+                    }
+                  >
+                    +
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className={styles.termSizeReset}
+                  disabled={termFontSize === DEFAULT_TERM_FONT_SIZE}
+                  onClick={() => setTermFontSize(DEFAULT_TERM_FONT_SIZE)}
+                >
+                  {`Reset to ${DEFAULT_TERM_FONT_SIZE} px`}
+                </button>
+                {/* A sample at the chosen size, NOT a column count: Settings can be routed with
+                    no terminal mounted, so any number here would be a guess. The live count
+                    belongs to the in-session quick zoom, where term.cols is authoritative. */}
+                <p
+                  className={styles.termSizeSample}
+                  style={{ fontSize: `${termFontSize}px` }}
+                >
+                  Build · Qwen 3.8 27B (GX10 pair) · 0O1lI
+                </p>
               </div>
 
               <h3 className={styles.subhead} id="compose-h">

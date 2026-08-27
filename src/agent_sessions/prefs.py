@@ -19,6 +19,7 @@ whole old document or the whole new one, and never needs the lock to be correct.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from pathlib import Path
@@ -45,6 +46,15 @@ DEFAULT_COMPOSE = "auto"
 DEFAULT_ACCENT = "#ffb000"
 _HEX6_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 _HEX3_RE = re.compile(r"^#?([0-9a-fA-F]{3})$")
+
+# Terminal text size (#859). Not cosmetic: the xterm font size IS the column count the agent
+# lays out against, and at the shipped 13 px a 412 px phone gives it only 50 columns — where a
+# column-laid-out TUI (opencode) collapses. Keep in sync with web/src/theme/termSize.ts; the
+# shared fixture that pins the two implementations against each other is
+# tests/fixtures/term_font_size_cases.json.
+TERM_FONT_SIZE_MIN = 8
+TERM_FONT_SIZE_MAX = 20
+DEFAULT_TERM_FONT_SIZE = 13
 
 
 def _default_path() -> Path:
@@ -91,6 +101,50 @@ def is_valid_accent(value: object) -> bool:
         return False
     s = value.strip()
     return bool(_HEX6_RE.match(s)) or bool(_HEX3_RE.match(s))
+
+
+def coerce_term_font_size(value: object) -> int:
+    """Narrow any input to a usable terminal font size — the READ boundary, lenient by design.
+
+    A numeric value is rounded then clamped, so neither a hand-edited prefs.json nor a stale
+    value from an older build can strand the terminal at 2 px; anything that isn't a number
+    falls back to the default. The write boundary (POST /api/prefs) is the strict one: it
+    rejects with 422 rather than coercing, exactly as `is_valid_accent` gates `coerce_accent`.
+
+    ``bool`` is excluded explicitly. ``isinstance(True, int)`` is True in Python, so a bare
+    int test would let ``true`` through the type gate and read it as 1 — which would then
+    *clamp* to 8 rather than fall back to the default. It must fail on type, not by accident.
+
+    Rounding is spelled ``floor(x + 0.5)``, never ``round()``: ``round()`` is banker's
+    (``round(10.5) == 10``) while JS ``Math.round(10.5) === 11``, so the client and server
+    would silently disagree on every half value. The domain is positive, so floor(x + 0.5)
+    agrees with the TypeScript side by construction.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return DEFAULT_TERM_FONT_SIZE
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return DEFAULT_TERM_FONT_SIZE  # NaN / ±inf would survive the clamp as themselves
+        n = math.floor(value + 0.5)
+    else:
+        # An int is handled WITHOUT any float conversion, and that is the whole point of the
+        # branch: `math.isfinite()` and `float(x)` both raise OverflowError on a big int, so a
+        # hand-edited prefs.json carrying 10**1000 made this helper throw — and with it
+        # GET /api/config, i.e. the SPA could not boot. A Python int is always finite and
+        # always integral, so it needs neither check; it clamps directly, however large.
+        n = value
+    return min(TERM_FONT_SIZE_MAX, max(TERM_FONT_SIZE_MIN, n))
+
+
+def is_valid_term_font_size(value: object) -> bool:
+    """True only for an int already in canonical form — the strict WRITE gate for
+    POST /api/prefs. Booleans are rejected on type (see coerce_term_font_size); a float is
+    rejected even when integral (``12.0``), so the wire contract is unambiguous."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and TERM_FONT_SIZE_MIN <= value <= TERM_FONT_SIZE_MAX
+    )
 
 
 def _load(path: Path) -> dict:
@@ -254,6 +308,20 @@ def set_accent(accent: str, path: Path | None = None) -> str:
     """Persist the brand accent, normalized to lowercase #rrggbb (invalid input → default).
     Preserves other keys (e.g. theme)."""
     return _set("accent", coerce_accent(accent), path)
+
+
+def get_term_font_size(path: Path | None = None) -> int:
+    """The persisted terminal font size in px, or the default when unset/unreadable/invalid."""
+    return coerce_term_font_size(_load(path or _default_path()).get("term_font_size"))
+
+
+def set_term_font_size(size: object, path: Path | None = None) -> int:
+    """Persist the terminal font size. Preserves other keys (e.g. theme/accent).
+
+    Coerces rather than raising so a direct caller can't write an out-of-range value into the
+    document; the route validates with `is_valid_term_font_size` first and 422s, so a bad
+    value never reaches here over HTTP."""
+    return _set("term_font_size", coerce_term_font_size(size), path)
 
 
 def get_overview_expanded(path: Path | None = None) -> list[str]:

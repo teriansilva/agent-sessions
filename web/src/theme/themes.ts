@@ -33,10 +33,14 @@ export interface TerminalAnsiPalette {
   brightWhite: string;
 }
 
-/** xterm.js theme subset we set (background/foreground/cursor + selection + ANSI 16). */
+/** xterm.js theme subset we set (background/foreground/cursor + selection + ANSI 16).
+ *
+ *  Deliberately WITHOUT a font size (#859): the size is an independent axis owned by
+ *  theme/termSize.ts, because a theme is about colour and a size is about how many columns
+ *  the agent gets. Owning it here as well would give the value two owners and make flipping
+ *  dark->light silently reset the operator's zoom. */
 export interface TerminalTheme {
   fontFamily: string;
-  fontSize: number;
   background: string;
   foreground: string;
   cursor: string;
@@ -108,7 +112,6 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
       "BattleLab tactical-HUD — near-black ground, phosphor-amber accent.",
     terminal: {
       fontFamily: MONO,
-      fontSize: 13,
       background: "#0d0e10",
       foreground: "#e8e9ec",
       cursor: "#ffb000",
@@ -122,7 +125,6 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
     description: "BattleLab daylight — paper-grey ground, same amber accent.",
     terminal: {
       fontFamily: MONO,
-      fontSize: 13,
       background: "#f2f3f5",
       foreground: "#14161a",
       cursor: "#ffb000",

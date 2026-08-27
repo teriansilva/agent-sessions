@@ -507,6 +507,10 @@ export interface AppConfig {
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
    *  applied at load. Absent on older servers (→ client default phosphor-amber). */
   accent?: string;
+  /** Terminal font size in px (#859), which on a phone IS the agent's column count.
+   *  Seeds a device with no local choice; the localStorage cache wins over it. Absent on
+   *  older servers (→ client default 13). */
+  term_font_size?: number;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
   /** Session-list sort order (#506): "recent_activity" (newest update first, default) or

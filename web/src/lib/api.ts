@@ -356,6 +356,13 @@ export const api = {
   /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
   setAccent: (accent: string) =>
     postJson<{ accent: string }>("/api/prefs", { accent }),
+  /** Persist the terminal font size in px (#859). CSRF-guarded. The server is STRICT here —
+   *  a non-integer or out-of-range value is a 422, not a clamp — so callers send an
+   *  already-coerced value from `coerceTermFontSize`. */
+  setTermFontSize: (size: number) =>
+    postJson<{ term_font_size: number }>("/api/prefs", {
+      term_font_size: size,
+    }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
    *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url
@@ -527,18 +534,34 @@ export const api = {
    *  and the server re-reads inside its lock: a file the session agent edited while the dialog
    *  was open no longer matches, so the confirmed bytes are what gets discarded — or nothing is.
    *  Binding to the pathname alone meant "discard whatever is there when the command runs". */
-  gitDiscard: (path: string, paths: string[], expect?: Record<string, string>) =>
-    mutateJson<GitWriteResult>("POST", "/api/git/discard", { path, paths, expect }),
+  gitDiscard: (
+    path: string,
+    paths: string[],
+    expect?: Record<string, string>,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/discard", {
+      path,
+      paths,
+      expect,
+    }),
   /** `expect` is the whole staged SET (`staged_fp`), not the listed rows: `git commit` records
    *  the index, so a file staged after the panel read it would otherwise ride along unseen. */
   gitCommit: (path: string, message: string, expect?: string) =>
-    mutateJson<GitWriteResult>("POST", "/api/git/commit", { path, message, expect }),
+    mutateJson<GitWriteResult>("POST", "/api/git/commit", {
+      path,
+      message,
+      expect,
+    }),
   /** Current branch to a server-resolved target; never --force, never a client refspec. */
   gitPush: (path: string, remote?: string, expect?: string) =>
     // `expect` is the target the panel DISPLAYED. The server refuses if it has since resolved
     // elsewhere, so a config change between the preflight and the click cannot silently redirect
     // the push somewhere the operator was never shown.
-    mutateJson<GitWriteResult>("POST", "/api/git/push", { path, remote, expect }),
+    mutateJson<GitWriteResult>("POST", "/api/git/push", {
+      path,
+      remote,
+      expect,
+    }),
   /** FILES panel (#807): mint a batch reservation from a manifest, so an over-budget folder drop
    *  fails before a single byte moves. */
   filesUploadBatch: (files: { relpath: string; size: number }[]) =>

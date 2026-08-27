@@ -135,6 +135,18 @@ test("the header sheds meta before the buttons as the pane narrows (#744)", asyn
   await expect(updated).toBeHidden();
   await expect(project).toBeVisible();
   await expect(recap).toBeVisible();
+  // 420px is a REAL phone width (a Pixel 7 is 412), so this is the one that describes what a
+  // human actually sees. #859 took the action count from four to six, and on coarse all six
+  // still fit as icon-only chips here — nothing folds, everything stays one tap away.
+  if (isMobile) {
+    await expect(head.getByRole("button", { name: /hand off/i })).toBeVisible();
+    await expect(
+      head.getByRole("button", { name: /smaller terminal text/i }),
+    ).toBeVisible();
+    await expect(
+      head.getByRole("button", { name: /bigger terminal text/i }),
+    ).toBeVisible();
+  }
 
   await page.setViewportSize({ width: 300, height: 720 });
   await expect(project).toBeHidden();
@@ -142,25 +154,42 @@ test("the header sheds meta before the buttons as the pane narrows (#744)", asyn
   await expect(head.locator('[class*="headEng"]')).toBeVisible();
   await expect(head.getByRole("img", { name: /^status: / })).toBeVisible();
 
-  // #783 added a FOURTH action (Files), and the two pointer classes answer that differently —
-  // both keep every action reachable, which is what this test is really about.
+  // #783 added a FOURTH action (Files); #859 added a fifth and sixth (the terminal quick zoom).
+  // What this test is really about is REACH — every action stays available at every width — and
+  // both pointer classes now answer that the same way at this floor.
   //
-  //  - COARSE: the bar grows to 44px and the chips go icon-only, so all four stay ONE TAP away.
-  //    Nothing folds; the accessible names are unchanged, which is why every other mobile spec
-  //    that queries these buttons by name still passes untouched.
-  //  - FINE: labels stay (a 26px bar makes an icon-only chip a poor target), and four labelled
-  //    chips do not fit 300px — so the ladder gained a rung and the trailing actions fold into a
-  //    "…" menu that still carries their full labels. The route moved; the reach did not.
-  let openRecap = recap;
-  if (!isMobile) {
-    const more = head.getByRole("button", { name: /more session actions/i });
-    await expect(more).toBeVisible();
-    await more.click();
-    openRecap = page.getByRole("menuitem", { name: /open session brief/i });
-    await expect(page.getByRole("menuitem", { name: /hand off/i })).toBeVisible();
-  } else {
-    await expect(head.getByRole("button", { name: /hand off/i })).toBeVisible();
-  }
+  //  - FINE: labels stay (a 26px bar makes an icon-only chip a poor target), and labelled chips
+  //    have never fitted 300px, so the trailing actions fold into a "…" menu carrying their
+  //    full labels.
+  //  - COARSE: the bar grows to 44px and the chips go icon-only. Four of those fitted 300px, so
+  //    nothing used to fold here. Six do not — measured: the bar seats three plus the "…" — so
+  //    the coarse ladder gained the rung the fine one already had. This is arithmetic, not a
+  //    regression: at 420px (asserted above, and wider than any real phone) all six are still
+  //    inline, and at 300px every one of them is still one tap away inside the menu.
+  //
+  // The quick-zoom pair is deliberately LAST in Terminal.tsx's action array so that wherever
+  // only some actions fold, it is the newest pair and never Hand off (see the comment there).
+  const more = head.getByRole("button", { name: /more session actions/i });
+  await expect(more).toBeVisible();
+  await more.click();
+
+  // Assert REACH, not position. Which actions fold differs by pointer class — coarse seats
+  // three icon-only chips plus the "…", fine seats two labelled ones — so pinning any given
+  // action to the bar or to the menu would encode one class's arithmetic as the contract.
+  // What must hold for both is that with the menu open, every action is one tap away
+  // somewhere: still on the bar, or inside the menu.
+  const reachable = (name: RegExp) =>
+    page
+      .getByRole("menuitem", { name })
+      .or(head.getByRole("button", { name }))
+      .first();
+  await expect(reachable(/hand off/i)).toBeVisible();
+  await expect(reachable(/smaller terminal text/i)).toBeVisible();
+  const recapItem = page.getByRole("menuitem", { name: /open session brief/i });
+  const foldedRecap = await recapItem.isVisible().catch(() => false);
+  // The menu is a portalled overlay, so a still-inline chip cannot be clicked underneath it.
+  if (!foldedRecap) await page.keyboard.press("Escape");
+  const openRecap = foldedRecap ? recapItem : recap;
   await expect(openRecap).toBeVisible();
 
   // Still a real control, not a clipped sliver: it opens the dialog at 300px.

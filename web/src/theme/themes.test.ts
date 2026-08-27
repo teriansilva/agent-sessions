@@ -28,7 +28,6 @@ test("each theme is self-consistent with a usable terminal palette", () => {
     ]) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i);
     }
-    expect(t.terminal.fontSize).toBeGreaterThan(0);
     expect(t.terminal.fontFamily).toMatch(/monospace/);
   }
 });

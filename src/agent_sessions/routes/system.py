@@ -57,6 +57,73 @@ def _dtach_master_sock(parts: list[bytes]) -> str | None:
         return None
 
 
+def _preflight_prefs(payload: dict) -> None:
+    """Validate EVERY key in a /api/prefs payload BEFORE any of them is written.
+
+    Without this the handler validates and writes key by key, so a request whose *second* key
+    is invalid returns 422 having already persisted the first — the caller is told the write
+    failed while half of it survived. Demonstrated on `{"theme": "light", "accent": "BAD"}`,
+    both of which long predate the terminal text size (#859); the flaw is the endpoint's shape,
+    not any one key's, so it is fixed here for all of them rather than for the newest one.
+
+    Checks run in the same order as the writes below, so the `detail` a mixed-invalid payload
+    reports is unchanged. The per-key checks in the handler are deliberately left in place as
+    defence in depth: this pass and those writes are edited by different people at different
+    times, and a key added to one but not the other must still fail closed.
+    """
+
+    def bad(detail: str) -> HTTPException:
+        return HTTPException(status_code=422, detail=detail)
+
+    if "theme" in payload and payload["theme"] not in prefs.THEMES:
+        raise bad("unknown theme")
+    if "accent" in payload and not prefs.is_valid_accent(payload["accent"]):
+        raise bad("invalid accent")
+    if "term_font_size" in payload and not prefs.is_valid_term_font_size(payload["term_font_size"]):
+        raise bad("invalid term_font_size")
+    if "compose_default" in payload and payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
+        raise bad("unknown compose_default")
+    if (
+        "session_list_order" in payload
+        and payload["session_list_order"] not in prefs.SESSION_LIST_ORDERS
+    ):
+        raise bad("unknown session_list_order")
+    if "projects_mode" in payload and payload["projects_mode"] not in prefs.PROJECT_MODES:
+        raise bad("unknown projects_mode")
+    for key in ("default_project", "default_project_id"):
+        if key in payload and not isinstance(payload[key], str):
+            raise bad(f"{key} must be a string")
+    for key in (
+        "overview_expanded",
+        "projects_hidden",
+        "projects_included",
+        "project_roots",
+        "folder_exclusions",
+    ):
+        if key in payload:
+            v = payload[key]
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise bad(f"{key} must be a list of strings")
+    for key, validator in (
+        ("ai_review", prefs.validate_ai_review_patch),
+        ("auto_sort", prefs.validate_auto_sort_patch),
+        ("pulse", prefs.validate_pulse_patch),
+        ("orchestrator", prefs.validate_orchestrator_patch),
+    ):
+        if key in payload:
+            err = validator(payload[key])
+            if err is not None:
+                raise bad(err)
+    if "project_names" in payload:
+        v = payload["project_names"]
+        if not isinstance(v, dict) or not all(
+            isinstance(k, str) and isinstance(val, str) for k, val in v.items()
+        ):
+            raise bad("project_names must be an object of string→string")
+    if "onboarded" in payload and not isinstance(payload["onboarded"], bool):
+        raise bad("onboarded must be a boolean")
+
+
 def register(
     app: FastAPI,
     *,
@@ -279,6 +346,10 @@ def register(
                 # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
                 # Applied at load like the theme; localStorage is the device cache.
                 "accent": prefs.get_accent(),
+                # Terminal text size in px (#859). Seeds a device that has no local choice
+                # yet; localStorage is the device cache and WINS over this, which is what
+                # keeps a phone at 10 px while the desktop stays at 13 px.
+                "term_font_size": prefs.get_term_font_size(),
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
@@ -355,6 +426,9 @@ def register(
             raise HTTPException(status_code=422, detail="invalid JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
+        # Validate the WHOLE payload before writing any of it (#859 review): a 422 must mean
+        # nothing was persisted, not that the keys before the bad one already landed.
+        _preflight_prefs(payload)
         out: dict[str, object] = {}
         if "theme" in payload:
             if payload["theme"] not in prefs.THEMES:
@@ -364,6 +438,14 @@ def register(
             if not prefs.is_valid_accent(payload["accent"]):
                 raise HTTPException(status_code=422, detail="invalid accent")
             out["accent"] = prefs.set_accent(payload["accent"])
+        if "term_font_size" in payload:
+            # Strict on write, lenient on read (#859) — the same split as accent's
+            # is_valid_accent / coerce_accent. Rejecting rather than clamping keeps this
+            # endpoint's stated contract ("unknown value → 422, never silently coerced on
+            # write") and means a client bug surfaces instead of being silently rounded away.
+            if not prefs.is_valid_term_font_size(payload["term_font_size"]):
+                raise HTTPException(status_code=422, detail="invalid term_font_size")
+            out["term_font_size"] = prefs.set_term_font_size(payload["term_font_size"])
         if "compose_default" in payload:
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")

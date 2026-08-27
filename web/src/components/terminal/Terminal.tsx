@@ -3,6 +3,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
+  AArrowDown,
+  AArrowUp,
   ArrowDown,
   ArrowLeftRight,
   PanelRight,
@@ -53,6 +55,12 @@ import {
 import { type FreshSession, termWsUrl } from "../../lib/termUrl";
 import { appConsumesWheel, attachTouchScroll } from "../../lib/touchScroll";
 import { useAccent } from "../../theme/accentStore";
+import {
+  stepTermFontSize,
+  TERM_FONT_SIZE_MAX,
+  TERM_FONT_SIZE_MIN,
+} from "../../theme/termSize";
+import { useTermSize } from "../../theme/termSizeStore";
 import { THEMES, xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
@@ -160,8 +168,25 @@ export function Terminal({
   // WITHOUT killing the process (unlike RESTART). Reset to a no-op on teardown so a stale click
   // can't resize a disposed socket.
   const jiggleRef = useRef<() => void>(() => {});
+  // #859: the debounced refit, published by the live socket effect for the SAME reason
+  // jiggleRef is — the size effect must reach the existing debounce without joining that
+  // effect's identity-only dep array, which would tear down and rebuild xterm and the
+  // WebSocket on every tap of the stepper. Reset to a no-op on teardown so a late size
+  // change can't refit a disposed terminal.
+  const refitSoonRef = useRef<() => void>(() => {});
   const { theme } = useTheme();
   const { accent } = useAccent();
+  const { size: termFontSize, setSize: setTermFontSize } = useTermSize();
+  // The size the socket effect reads when CONSTRUCTING xterm. A ref, not a dep: a fresh
+  // terminal must open at the current size, but a size *change* must never re-key the
+  // socket. Declared before that effect so this sync runs first in the same commit.
+  const termFontSizeRef = useRef(termFontSize);
+  useEffect(() => {
+    termFontSizeRef.current = termFontSize;
+  });
+  // Live column count for the quick-zoom readout (#859). Fed by xterm's own resize event, so
+  // it tracks a rotation or a sidebar toggle, not just a stepper tap.
+  const [cols, setCols] = useState(0);
   // Resolve the human session title for the panel header (#232) from the shared store the
   // sidebar fills (matched by engine+uuid). Falls back to a short id before the
   // list has loaded / for a fresh placeholder session. Read-only: it never re-keys the socket.
@@ -304,7 +329,8 @@ export function Terminal({
     const t0 = THEMES[theme].terminal;
     const term = new Xterm({
       cursorBlink: true,
-      fontSize: t0.fontSize,
+      // #859: the size is its own axis now (theme/termSize.ts), not a theme field.
+      fontSize: termFontSizeRef.current,
       // Lines of live (dtach-stream) scroll-up the browser retains while connected — distinct
       // from the rendered transcript. 50k keeps a deep session in reach; xterm stores lines
       // compactly so the memory cost is modest. Pairs with the server ring (_MAX_BUF) that backs
@@ -1135,8 +1161,15 @@ export function Terminal({
       }, 120);
     };
 
+    refitSoonRef.current = refitSoon;
+
     term.onData((d) => sock.send({ t: "i", d }));
     term.onResize(sendResize);
+    // A separate listener, not folded into sendResize: that one dedupes on (cols, rows) and
+    // returns early, which is right for the pty and wrong for a readout that must also be
+    // correct on the very first fit.
+    term.onResize(({ cols: c }) => setCols(c));
+    setCols(term.cols);
 
     // Paste over the terminal (#157 + #181):
     // - Image paste → forward to Compose as an attachment pill (opens Compose if
@@ -1424,6 +1457,7 @@ export function Terminal({
       vpEl?.removeEventListener("scroll", onScrolled);
       clearJiggle();
       jiggleRef.current = () => {}; // stale REPAINT click must not resize a disposed socket (#485)
+      refitSoonRef.current = () => {}; // …and neither must a late size change (#859)
       document.removeEventListener("wheel", armOnWheel, true);
       document.removeEventListener("touchmove", armOnTouchMove, true);
       document.removeEventListener("keydown", armOnKeydown, true);
@@ -1455,19 +1489,25 @@ export function Terminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, id, takeoverEpoch]);
 
-  // Re-theme the live terminal on theme/accent change WITHOUT tearing it down. Colours apply
-  // immediately; if the font/size changed, fit() recomputes the grid and xterm's
-  // onResize handler (wired above) pushes the new dimensions to the pty. The cursor tracks
-  // the brand accent (#211 Phase 2).
+  // Re-theme AND re-size the live terminal WITHOUT tearing it down. Colours apply immediately;
+  // a font change recomputes the grid, and xterm's onResize handler (wired above) pushes the
+  // new dimensions to the pty — SIGWINCH, so the agent re-lays-out at the new width. The cursor
+  // tracks the brand accent (#211 Phase 2).
+  //
+  // The refit goes through `refitSoonRef` — the DEBOUNCED path the socket effect owns — never a
+  // raw fit(). A theme flip is rare, but the #859 stepper is tapped repeatedly, and one SIGWINCH
+  // per tap is exactly the resize storm #227/#349 exist to coalesce: a repaint-heavy TUI piles
+  // those frames into scrollback as duplicated/garbled content. One debounce implementation for
+  // every caller, and the socket effect's dep array stays identity-only.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const t = THEMES[theme].terminal;
     term.options.theme = { ...xtermTheme(theme), cursor: accent };
     term.options.fontFamily = t.fontFamily;
-    term.options.fontSize = t.fontSize;
-    fitRef.current?.fit();
-  }, [theme, accent]);
+    term.options.fontSize = termFontSize;
+    refitSoonRef.current();
+  }, [theme, accent, termFontSize]);
 
   const text = statusText(status);
   const head = headStatus(status);
@@ -1644,6 +1684,35 @@ export function Terminal({
           },
         ]
       : []),
+    // Quick zoom (#859). On a phone the font size IS the agent's column count, so this is the
+    // difference between a TUI that lays its panels out and one that collapses to a 3-character
+    // label column. It lives here rather than only in Settings because the moment you need it is
+    // the moment you are looking at the unreadable pane.
+    //
+    // LAST IN THE ARRAY, deliberately — do not promote it. HeadActions folds from the END (#783),
+    // and #744's coarse-pointer contract is that every action stays ONE TAP away on touch. Six
+    // icon-only chips do not fit a 300px pane, so something must fold there; putting the newest,
+    // least critical pair last means it is these two and never Hand off. Inserting them earlier
+    // pushed Hand off into the overflow and turned session-recap.spec.ts red — which is the
+    // contract working, not a stale test.
+    {
+      id: "text-smaller",
+      label: "Smaller text",
+      aria: "Smaller terminal text",
+      title: `Smaller terminal text — a wider terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
+      icon: <AArrowDown size={13} aria-hidden="true" />,
+      disabled: termFontSize <= TERM_FONT_SIZE_MIN,
+      run: () => setTermFontSize(stepTermFontSize(termFontSize, -1)),
+    },
+    {
+      id: "text-bigger",
+      label: "Bigger text",
+      aria: "Bigger terminal text",
+      title: `Bigger terminal text — a narrower terminal for the agent${cols ? ` (now ${cols} columns)` : ""}`,
+      icon: <AArrowUp size={13} aria-hidden="true" />,
+      disabled: termFontSize >= TERM_FONT_SIZE_MAX,
+      run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
+    },
   ];
 
   return (

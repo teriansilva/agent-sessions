@@ -1383,3 +1383,86 @@
   gap: 12px;
   margin-top: 4px;
 }
+
+/* Terminal text size (#859). The stepper is the one control here whose value is not a colour
+ * or a mode but a NUMBER the operator nudges, so it gets a real stepper rather than a radio
+ * row. 44px minimum on both axes per docs/design.md — this is tapped on a phone, usually
+ * while squinting at an unreadable pane, which is the worst possible moment for a 30px hit
+ * target. Pinned at runtime by the Playwright geometry check, not by this declaration alone. */
+.termSize {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+}
+.termSizeStepper {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+}
+.termSizeStep {
+  flex: none;
+  width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.termSizeStep:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.termSizeStep:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.termSizeValue {
+  flex: 1;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  background: var(--bg-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--text);
+}
+.termSizeReset {
+  min-height: 44px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+.termSizeReset:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.termSizeReset:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* The sample line renders at the CHOSEN size, so it must not inherit .hint's size. Mono,
+ * because what you are judging is agent output. */
+.termSizeSample {
+  margin: 2px 0 0;
+  padding: 7px 9px;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-muted);
+  white-space: pre;
+  overflow-x: auto;
+}

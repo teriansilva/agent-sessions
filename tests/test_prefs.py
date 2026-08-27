@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from agent_sessions import prefs
@@ -778,3 +781,195 @@ def test_config_echoes_default_project_id_and_prefs_accepts_it(auth_cfg, tmp_hom
     # Stored verbatim — a since-deleted id is the picker's problem, not a 422.
     assert c.post("/api/prefs", json={"default_project_id": "gone"}, headers=hdr).status_code == 200
     assert c.post("/api/prefs", json={"default_project_id": 5}, headers=hdr).status_code == 422
+
+
+# ---- terminal text size (#859) -------------------------------------------------------
+#
+# The read/write tables are driven by tests/fixtures/term_font_size_cases.json, which the
+# Vitest suite reads too (web/src/theme/termSize.test.ts). One list, both languages: the
+# edge cases here are precisely the ones where two hand-written suites drift — half-values
+# (Python round() is banker's, JS Math.round is half-up) and booleans (isinstance(True, int)
+# is True). A case added to the JSON is automatically enforced on both sides.
+
+_CASES = json.loads((Path(__file__).parent / "fixtures" / "term_font_size_cases.json").read_text())
+
+
+def test_term_font_size_fixture_matches_the_constants():
+    # If someone widens the range in prefs.py but not in the fixture (or termSize.ts), the
+    # shared table stops describing the code — catch that here rather than in a confusing
+    # per-case failure.
+    assert _CASES["min"] == prefs.TERM_FONT_SIZE_MIN
+    assert _CASES["max"] == prefs.TERM_FONT_SIZE_MAX
+    assert _CASES["default"] == prefs.DEFAULT_TERM_FONT_SIZE
+
+
+def test_coerce_term_font_size_shared_read_table():
+    for case in _CASES["read"]:
+        got = prefs.coerce_term_font_size(case["in"])
+        assert got == case["out"], f"{case['in']!r} → {got}, expected {case['out']}: {case['why']}"
+
+
+def test_coerce_term_font_size_python_only_edges():
+    # Values JSON cannot carry, so they can't live in the shared fixture.
+    assert prefs.coerce_term_font_size(float("nan")) == 13
+    assert prefs.coerce_term_font_size(float("inf")) == 13
+    assert prefs.coerce_term_font_size(float("-inf")) == 13
+    # An integral FLOAT still reads fine (12.0 → 12); it is only the strict WRITE gate that
+    # rejects it. Read is lenient, write is strict — the same split as coerce/is_valid_accent.
+    assert prefs.coerce_term_font_size(12.0) == 12
+
+
+def test_is_valid_term_font_size_shared_write_table():
+    for v in _CASES["write_accepted"]:
+        assert prefs.is_valid_term_font_size(v) is True, v
+    for v in _CASES["write_rejected"]:
+        assert prefs.is_valid_term_font_size(v) is False, v
+
+
+def test_is_valid_term_font_size_rejects_integral_float():
+    # 12.0 cannot live in the shared fixture: Python json gives float 12.0 but JS JSON.parse
+    # gives the integer 12, so the two languages would disagree about the case itself.
+    assert prefs.is_valid_term_font_size(12.0) is False
+
+
+def test_default_term_font_size_when_unset(tmp_path):
+    assert prefs.get_term_font_size(tmp_path / "p.json") == 13
+
+
+def test_term_font_size_round_trip(tmp_path):
+    p = tmp_path / "p.json"
+    assert prefs.set_term_font_size(10, p) == 10
+    assert prefs.get_term_font_size(p) == 10
+
+
+def test_term_font_size_read_clamps_a_hostile_stored_value(tmp_path):
+    # The failure this guards: a hand-edited prefs.json (or an older build's value) must not
+    # be able to strand the terminal at an unreadable size.
+    p = tmp_path / "p.json"
+    p.write_text(json.dumps({"term_font_size": 2}))
+    assert prefs.get_term_font_size(p) == 8
+    p.write_text(json.dumps({"term_font_size": "huge"}))
+    assert prefs.get_term_font_size(p) == 13
+
+
+def test_config_exposes_term_font_size(auth_cfg, tmp_home):
+    prefs.set_term_font_size(10)
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["term_font_size"] == 10
+
+
+def test_config_default_term_font_size(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["term_font_size"] == 13
+
+
+def test_set_term_font_size_endpoint_persists(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"term_font_size": 9}, headers=hdrs)
+    assert r.status_code == 200 and r.json() == {"term_font_size": 9}
+    assert c.get("/api/config").json()["term_font_size"] == 9
+
+
+def test_set_term_font_size_rejected_shapes_are_422_and_persist_nothing(auth_cfg, tmp_home):
+    # Strict on write: the endpoint 422s rather than clamping, so a client bug surfaces
+    # instead of being silently rounded away — and nothing is written on the way out.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"term_font_size": 11}, headers=hdrs).status_code == 200
+    for bad in _CASES["write_rejected"] + [12.0]:
+        r = c.post("/api/prefs", json={"term_font_size": bad}, headers=hdrs)
+        assert r.status_code == 422, f"{bad!r} should be rejected, got {r.status_code}"
+        assert c.get("/api/config").json()["term_font_size"] == 11, bad
+
+
+def test_set_term_font_size_without_clobbering_theme_or_accent(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    assert c.post("/api/prefs", json={"theme": "light"}, headers=hdrs).status_code == 200
+    assert c.post("/api/prefs", json={"accent": "#00aaff"}, headers=hdrs).status_code == 200
+    assert c.post("/api/prefs", json={"term_font_size": 16}, headers=hdrs).status_code == 200
+    cfg = c.get("/api/config").json()
+    assert cfg["term_font_size"] == 16 and cfg["theme"] == "light" and cfg["accent"] == "#00aaff"
+
+
+# ---- #859 review findings: hostile ints, atomic rejection ----------------------------
+
+
+def test_coerce_term_font_size_survives_a_huge_int(tmp_path):
+    """A bignum must clamp, not raise.
+
+    `math.isfinite()` and `float()` both raise OverflowError on an int too large to convert,
+    so a hand-edited `prefs.json` carrying 10**1000 used to take down `GET /api/config` with a
+    500 — i.e. the SPA could not boot. "Reads never throw" is the contract; this is the case
+    that broke it.
+    """
+    assert prefs.coerce_term_font_size(10**1000) == 20
+    assert prefs.coerce_term_font_size(-(10**1000)) == 8
+    assert prefs.coerce_term_font_size(10**20) == 20
+
+
+def test_config_survives_a_huge_stored_term_font_size(auth_cfg, tmp_home, monkeypatch):
+    # Write through the isolated prefs path the conftest sets (AGENT_SESSIONS_PREFS), not a
+    # guessed location — a file the app never reads would make this test pass vacuously.
+    import os
+
+    path = Path(os.environ["AGENT_SESSIONS_PREFS"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"term_font_size": 10**1000}))
+    assert prefs.get_term_font_size() == 20, "the store must read the file this test wrote"
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.get("/api/config")
+    assert r.status_code == 200, "a corrupt pref must never stop the SPA booting"
+    assert r.json()["term_font_size"] == 20
+
+
+def test_a_rejected_payload_persists_nothing(auth_cfg, tmp_home):
+    """A 422 must mean NOTHING was written — not that the keys before the bad one landed.
+
+    The handler validates and writes key by key, so before the pre-flight pass a request whose
+    second key was invalid returned 422 having already persisted the first. Not specific to
+    term_font_size: `{"theme", "accent"}` behaved the same way and both long predate #859.
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    before = c.get("/api/config").json()
+
+    for payload in (
+        {"term_font_size": 9, "compose_default": "INVALID"},  # the reported repro
+        {"theme": "light", "accent": "NOT-A-COLOUR"},  # the same shape, pre-#859 keys
+        {"accent": "#00aaff", "session_list_order": "nonsense"},
+        {"term_font_size": 9, "onboarded": "yes"},
+        {"compose_default": "open", "term_font_size": 99},  # bad key LAST
+        {"term_font_size": 9, "project_names": {"a": 1}},
+        {"theme": "light", "projects_hidden": ["ok", 7]},
+    ):
+        r = c.post("/api/prefs", json=payload, headers=hdrs)
+        assert r.status_code == 422, payload
+        after = c.get("/api/config").json()
+        for key in ("theme", "accent", "term_font_size", "compose_default", "session_list_order"):
+            assert after[key] == before[key], f"{payload} leaked {key}"
+
+
+def test_a_fully_valid_multi_key_payload_still_writes_every_key(auth_cfg, tmp_home):
+    # The pre-flight must not become a second gate that quietly drops valid work.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/prefs",
+        json={"theme": "light", "accent": "#00aaff", "term_font_size": 16, "onboarded": True},
+        headers=hdrs,
+    )
+    assert r.status_code == 200
+    cfg = c.get("/api/config").json()
+    assert cfg["theme"] == "light"
+    assert cfg["accent"] == "#00aaff"
+    assert cfg["term_font_size"] == 16
