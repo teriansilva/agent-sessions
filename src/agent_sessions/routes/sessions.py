@@ -21,6 +21,7 @@ from .. import (
     engines,
     fsbrowse,
     metadata,
+    missions,
     perfstats,
     prefs,
     project_dirs,
@@ -133,6 +134,21 @@ def _scope_filter():
         )
 
     return keep
+
+
+def _reserve_or_refuse(session_key: str) -> str:
+    """Take the right to mutate this session's provider state, or refuse the request.
+
+    **Fails CLOSED.** An earlier version of this boundary returned "no objection" when the
+    ownership store could not be read, on the reasoning that a store being down must not take the
+    session routes with it. That is right for a *presentation* read and wrong here: what is gated
+    is terminating a process group and moving a transcript, and "we could not check" must never
+    authorise that. A 503 is retryable; an agent killed out from under a mission is not.
+    """
+    try:
+        return missions.reserve_session(session_key, "session-route")
+    except missions.MissionError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from None
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -553,32 +569,50 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 continue
             try:
                 prov, native = engines.parse_key(key)
-                if archive_members:
-                    # Free each member's live runtime footprint before recording the archive
-                    # (#523/#631) — project archive used to skip this, leaving every member's
-                    # dtach master + agent running. Best-effort per member (mirrors
-                    # ``archive_older``) so one teardown hiccup never aborts the batch; unarchive
-                    # NEVER reaps (it restores a session).
-                    with contextlib.suppress(Exception):
-                        await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
-                    # Background-agent guard (#631, Hermes): even inside a PROJECT archive, never
-                    # ``shutil.move`` a Claude transcript a live process still owns. cleanup can't
-                    # reap a background agent (it has no app-owned master), so the JSONL is still
-                    # open — report the member failed and leave it in the live tree (mirrors the
-                    # single-session archive's 409). The batch stays retryable; the rest archive.
-                    if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
-                        results.append(
-                            {
-                                "id": key,
-                                "result": failed,
-                                "reason": "running background agent — not archivable",
-                            }
-                        )
-                        continue
-                    prov.archive(native)
-                else:
-                    prov.unarchive(native)
-                results.append({"id": key, "result": done})
+                # Mission-owned members are reported, not archived (#846) — the batch already has
+                # a per-member failure shape, and skipping silently would be the "clean sweep"
+                # this route is careful not to claim elsewhere. A RESERVATION rather than a check,
+                # for the same reason the single-session route takes one.
+                try:
+                    member_hold = missions.reserve_session(key, "project-archive")
+                except missions.MissionError as e:
+                    results.append({"id": key, "result": failed, "reason": str(e)})
+                    continue
+                # EVERY exit from here releases the reservation — including the background-agent
+                # `continue` below, which is exactly the path that leaked it in `archive_older`.
+                try:
+                    async with missions.holding(key, member_hold):
+                        if archive_members:
+                            # Free each member's live runtime footprint before recording the
+                            # archive (#523/#631) — project archive used to skip this, leaving
+                            # every member's dtach master + agent running. Best-effort per member
+                            # (mirrors ``archive_older``) so one teardown hiccup never aborts the
+                            # batch; unarchive NEVER reaps (it restores a session).
+                            with contextlib.suppress(Exception):
+                                await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                            # Background-agent guard (#631, Hermes): even inside a PROJECT
+                            # archive, never ``shutil.move`` a Claude transcript a live process
+                            # still owns. cleanup can't reap a background agent (it has no
+                            # app-owned master), so the JSONL is still open — report the member
+                            # failed and leave it in the live tree (mirrors the single-session
+                            # archive's 409). The batch stays retryable; the rest archive.
+                            if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(
+                                native
+                            ):
+                                results.append(
+                                    {
+                                        "id": key,
+                                        "result": failed,
+                                        "reason": "running background agent — not archivable",
+                                    }
+                                )
+                                continue
+                            prov.archive(native)
+                        else:
+                            prov.unarchive(native)
+                        results.append({"id": key, "result": done})
+                finally:
+                    missions.release_session(key, member_hold)
             except (archive.ArchiveError, engines.EngineError, NotImplementedError) as e:
                 results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
         engines.invalidate_scan_cache()  # members' JSONLs moved → next list must re-walk (#561)
@@ -922,6 +956,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             prov, native = engines.parse_key(sid)
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
+        # Mission ownership is a boundary this route predates (#846), and a read-only check could
+        # not hold it: a mission can adopt the session between the check and the provider call.
+        # RESERVE it instead — one transaction, held through settlement, and the mission teardown
+        # path takes the same reservation, so the two exclude each other.
+        key = f"{prov.engine_id}:{native}"
+        reservation = _reserve_or_refuse(key)
+        try:
+            # Renewed while the work runs: `cleanup_runtime` waits on a process group and
+            # `prov.archive` moves a file, neither of which finishes on a schedule. Without the
+            # heartbeat the reservation's expiry was a bet on duration, and losing it handed the
+            # same session to a second worker mid-move.
+            async with missions.holding(key, reservation):
+                return await _archive_reserved(prov, native, key)
+        finally:
+            missions.release_session(key, reservation)
+
+    async def _archive_reserved(prov, native, key) -> JSONResponse:
         # Reclaim the session's live runtime footprint BEFORE recording the archive (#523):
         # kill the dtach master + agent group, clear scrollback/VT + owner lease, unlink the
         # stale socket, release the single-writer lock. Terminate-first so a still-running
@@ -947,7 +998,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
             ) from None
         engines.invalidate_scan_cache()  # Claude moved the JSONL → next list must re-walk (#561)
-        return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": True})
+        return JSONResponse({"id": key, "archived": True})
 
     @app.post("/api/sessions/{sid}/unarchive")
     async def unarchive_session(
@@ -957,16 +1008,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             prov, native = engines.parse_key(sid)
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
+        # Same boundary in the other direction: restoring a session a mission's archive has
+        # leased moves the provider files underneath that mission's settlement.
+        key = f"{prov.engine_id}:{native}"
+        reservation = _reserve_or_refuse(key)
         try:
-            prov.unarchive(native)
+            async with missions.holding(key, reservation):
+                prov.unarchive(native)
         except archive.ArchiveError as e:
             raise HTTPException(status_code=404, detail=str(e)) from None
         except NotImplementedError:
             raise HTTPException(
                 status_code=400, detail=f"unarchive not supported for engine {prov.engine_id}"
             ) from None
+        finally:
+            missions.release_session(key, reservation)
         engines.invalidate_scan_cache()  # membership changed → next list must re-walk (#561)
-        return JSONResponse({"id": f"{prov.engine_id}:{native}", "archived": False})
+        return JSONResponse({"id": key, "archived": False})
 
     @app.post("/api/sessions/archive-older")
     async def archive_older(
@@ -997,18 +1055,36 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if s.archived or (s.last_mtime or 0) >= cutoff:
                 continue
             try:
-                prov, native = engines.parse_key(engines.session_key(s))
-                # Free runtime resources before recording the archive (#523), best-effort
-                # per session so one teardown hiccup never aborts the batch.
-                with contextlib.suppress(Exception):
-                    await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
-                # Background-agent guard (#631): never move a Claude transcript a live process
-                # still owns (a background agent) — skip it, exactly as single/project archive do.
-                if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+                key = engines.session_key(s)
+                prov, native = engines.parse_key(key)
+                # A bulk sweep must never reach past a mission's boundary (#846). Reserved, not
+                # checked — a sweep is exactly where a slow loop makes a stale check dangerous.
+                try:
+                    hold = missions.reserve_session(key, "archive-older")
+                except missions.MissionError:
                     skipped += 1
                     continue
-                prov.archive(native)
-                archived += 1
+                # EVERY exit from here releases the reservation. The background-agent branch
+                # below `continue`d past the release, so a session this request explicitly
+                # declined to touch stayed locked for the whole reservation window — blocking
+                # ordinary archive, unarchive and adopt on a session nothing was doing anything to.
+                try:
+                    async with missions.holding(key, hold):
+                        # Free runtime resources before recording the archive (#523), best-effort
+                        # per session so one teardown hiccup never aborts the batch.
+                        with contextlib.suppress(Exception):
+                            await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                        # Background-agent guard (#631): never move a Claude transcript a live
+                        # process still owns — skip it, exactly as single/project archive do.
+                        if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(
+                            native
+                        ):
+                            skipped += 1
+                            continue
+                        prov.archive(native)
+                        archived += 1
+                finally:
+                    missions.release_session(key, hold)
             except (NotImplementedError, archive.ArchiveError, engines.EngineError):
                 skipped += 1  # provider can't archive / lost the file → leave it, keep going
         if archived:

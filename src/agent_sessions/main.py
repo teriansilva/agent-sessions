@@ -32,6 +32,8 @@ from . import (
     autosort_loop,
     engines,
     metadata,
+    mission_archive,
+    missions,
     orchestrator_loop,
     owner,
     prefs,
@@ -63,6 +65,7 @@ from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
+from .routes import missions as missions_routes
 from .routes import prompts as prompts_routes
 from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
@@ -250,6 +253,45 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
         cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
+
+        # Reconcile any mission archive OR unarchive a crash left half-applied, THEN prune (#846).
+        # Both tear down or restore sessions, which are external effects that cannot be held in a
+        # transaction — so the durable per-operation state is re-driven here rather than leaving a
+        # mission stuck mid-flight with its agents still running. Idempotent by construction, and
+        # bounded-retry rather than one shot: a transient store or provider error at boot would
+        # otherwise fence the mission for the life of the process.
+        #
+        # **Sequenced, not concurrent.** Retention deletes closed missions, and a mission being
+        # recovered is closed — run them together and the pruner can delete the very journal the
+        # recovery pass is working from, taking the roster that named the agents it was about to
+        # reap. The store refuses that either way (retention skips a mission with an operation
+        # stamp), but ordering them means the two never even contend.
+        #
+        # A task, not an await, so a slow store never delays the app from serving.
+        async def _mission_maintenance():
+            await mission_archive.recover_with_retry()
+            # Discharge any scrub a busy reader left owed at the last shutdown. Sensitive text
+            # sits on disk until this runs, so boot is the backstop for an obligation the
+            # process that created it could not collect.
+            with contextlib.suppress(Exception):
+                await missions.run_admitted(missions.scrub_if_pending)
+            # `instruction` / `brief` are verbatim operator text, so the window is a backstop on
+            # how long any of it survives by default. Boot is the whole cadence in Phase 1 — the
+            # app restarts on every auto-update — and a periodic pass rides the mission supervisor
+            # when that lands (#840 Phase 5).
+            try:
+                await missions.run_admitted(missions.retention_pass)
+            except missions.ScrubFailed as e:
+                # The rows are gone; the log could not be truncated because something was reading
+                # it. Logged rather than suppressed: the bytes are still on disk until the next
+                # scrub, and silently swallowing that is the same "claimed a deletion that did not
+                # happen" this pass exists to avoid. The next delete or boot completes it.
+                log.warning("mission retention: %s", e)
+            except Exception as e:  # noqa: BLE001 — never take the app down over housekeeping
+                log.warning("mission retention failed: %s", type(e).__name__)
+
+        mission_task = asyncio.create_task(_mission_maintenance())
+
         # Per-agent usage (#839): asks each engine what it has spent, on an interval, off the
         # event loop. Env kill-switch AGENT_SESSIONS_USAGE_LOOP=0; nothing else gates it,
         # because reading a quota is not a model call and costs no tokens.
@@ -265,6 +307,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 orchestrator_task,
                 update_task,
                 cap_sweep_task,
+                mission_task,
                 usage_task,
             ):
                 task.cancel()
@@ -460,6 +503,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Pulse — recent-work overview (#441 Phase 2): cached overview + manual scan. Needs the
     # registry for the live "in flight" overlay; the shared /api/ai/activity is in system.py.
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
+    # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
+    missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).

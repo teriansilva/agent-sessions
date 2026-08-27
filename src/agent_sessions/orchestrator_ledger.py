@@ -38,11 +38,14 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import time
 from pathlib import Path
 
 from .atomicjson import fsync_dir
+
+log = logging.getLogger("agent_sessions.orchestrator_ledger")
 
 # Terminal states — an action here will never transition again, so compaction may drop it
 # once it falls out of the history tail.
@@ -199,6 +202,45 @@ def _read_all_at(p: Path) -> list[dict]:
     return out
 
 
+def lookup(action_id: str, path: Path | None = None) -> tuple[str, dict | None]:
+    """Tri-state read of one action: ``("found", rec)`` / ``("absent", None)`` /
+    ``("unreadable", None)``.
+
+    :func:`read_all` maps *every* ``OSError`` to an empty history — the right call for a feed,
+    which must degrade rather than disappear, and the wrong one for anybody asking "does this
+    action still exist?". Those callers get "no rows" for a transiently unreadable file and
+    conclude the row was compacted away, which is a permanent answer to a temporary problem.
+
+    **Reads exactly once.** A probe read followed by a second parsing read reintroduces the very
+    hole it was meant to close: the probe succeeds, the second read fails, and the suppressed
+    ``OSError`` becomes "absent" again. The bytes are read here and parsed here.
+
+    An absent FILE is a genuine absence (a ledger nothing has written yet has no rows). A file
+    that exists and will not read is unreadable, and the caller must not draw a conclusion from it.
+    """
+    p = _path(path)
+    if not p.exists():
+        return "absent", None
+    try:
+        raw = p.read_text(errors="replace")
+    except OSError:
+        return "unreadable", None
+    merged: dict | None = None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # torn tail or hand-edit — skip, never raise
+        if isinstance(rec, dict) and rec.get("id") == action_id:
+            # Merge forward, exactly as `_latest_by_id_locked` does: a transition event needn't
+            # restate the whole proposal.
+            merged = rec if merged is None else {**merged, **rec}
+    return ("found", merged) if merged is not None else ("absent", None)
+
+
 def latest_by_id(path: Path | None = None) -> dict[str, dict]:
     """Current state per action id — the newest event wins. Insertion order follows first
     appearance, so a caller iterating gets stable, roughly chronological output."""
@@ -316,7 +358,7 @@ def get(action_id: str, path: Path | None = None) -> dict | None:
     return latest_by_id(path).get(action_id)
 
 
-def _settled(action_id: str, state: str) -> None:
+def _settled(action_id: str, state: str, record: dict | None = None) -> None:
     """The single settlement boundary: an action just reached a terminal state, so the bell row
     that was raised for it is no longer something the operator can act on.
 
@@ -343,6 +385,21 @@ def _settled(action_id: str, state: str) -> None:
         from . import notifications
 
         notifications.retire_for_actions([action_id])
+    # Freeze the mission timeline's settlement projection (#846, #840 §2). Compaction bounds
+    # this ledger to a GLOBAL tail (`HISTORY_MAX`), which is right for a feed and wrong for a
+    # mission that outlives it: without a projection, a six-week-old mission would keep its
+    # `approval` event while the row carrying the verb, rationale and outcome had already been
+    # compacted away, and the timeline would render a decision with no content. Written once,
+    # here, for the same two reasons the retire above is: this is the ONE boundary every
+    # settlement path reaches, and both mutation entry points funnel through it.
+    #
+    # Best-effort and outside the lock, on the same rules — a missions failure must never fail,
+    # or undo, a settled ledger transition, and taking the missions write lock while holding the
+    # ledger's would order two stores' locks against a reader that takes them the other way.
+    with contextlib.suppress(Exception):
+        from . import missions
+
+        missions.record_settlement(action_id, record or {"id": action_id, "state": state})
 
 
 def transition(action_id: str, state: str, path: Path | None = None, **extra) -> dict | None:
@@ -358,7 +415,7 @@ def transition(action_id: str, state: str, path: Path | None = None, **extra) ->
         rec.setdefault("ts", time.time())
         _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
         merged = {**cur, **rec}
-    _settled(action_id, state)
+    _settled(action_id, state, merged)
     return merged
 
 
@@ -392,7 +449,7 @@ def compare_and_set(
         rec.update({k: v for k, v in fields.items() if v is not None})
         _append_locked(p, rec, json.dumps(rec, sort_keys=True, default=str) + "\n")
         merged = {**cur, **rec}
-    _settled(action_id, to_state)
+    _settled(action_id, to_state, merged)
     return merged
 
 
@@ -462,20 +519,78 @@ def recover_claimed(path: Path | None = None) -> list[str]:
 
 def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
     """Rewrite the ledger to the current state of every live action plus a bounded tail of
-    terminal ones. Returns the number of records kept.
+    terminal ones. Returns the number of records kept — **0 if the pass was declined**.
 
     Atomic (temp + ``os.replace``): a crash during compaction leaves the previous ledger
     intact, never a half-written one.
+
+    **A row is never destroyed before the projection that outlives it is durable (#846).** This is
+    the only place a ledger row is ever removed, so it is the only place that can make that
+    promise. The projection therefore happens **inside the same lock hold, over the same snapshot
+    that is about to be rewritten**, and a failure to project **declines the compaction** rather
+    than proceeding. Two earlier shapes were both wrong: projecting outside the lock let a
+    concurrent terminal append change which rows were dropped, so a newly-doomed referenced action
+    went unprojected; and swallowing the projection error let compaction destroy the row anyway.
+
+    Declining is safe: ``COMPACT_AT_LINES`` is a trigger, not a bound, so the file simply compacts
+    on a later pass once the missions store is available again.
     """
     p = _path(path)
     if not p.exists():
         return 0
     with _locked(p):
-        return _compact_locked(p, history_max)
+        rows = list(_latest_by_id_locked(p).values())
+        doomed = _doomed(rows, history_max)
+        if not _project(doomed):
+            log.warning(
+                "ledger: compaction declined — could not durably project %d settled action(s) "
+                "a mission timeline still references",
+                len(doomed),
+            )
+            return 0
+        return _compact_locked(p, history_max, rows=rows)
 
 
-def _compact_locked(p: Path, history_max: int) -> int:
-    rows = list(_latest_by_id_locked(p).values())
+def _doomed(rows: list[dict], history_max: int) -> list[dict]:
+    """The terminal rows this compaction will drop. The SAME partition ``_compact_locked`` uses —
+    computed once, from one snapshot, and handed to both, so the two cannot disagree."""
+    done = [r for r in rows if r.get("state") not in LIVE_STATES]
+    done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    return done[max(0, history_max) :]
+
+
+def _project(doomed: list[dict]) -> bool:
+    """Freeze a mission-side projection of every doomed action a mission timeline references.
+
+    Returns True when there is nothing to do or everything referenced was written. Returns
+    **False** when the missions store could not be consulted or could not be written, which
+    declines the compaction — the caller must not destroy evidence it failed to preserve.
+
+    Scoped to *referenced* ids on purpose: the ledger carries far more actions than any mission
+    points at, and copying the rest into the missions store would put bounded model text there
+    with no mission to own it and no retention window over it.
+    """
+    if not doomed:
+        return True
+    try:
+        from . import missions
+
+        ids = [r["id"] for r in doomed if isinstance(r.get("id"), str)]
+        referenced = missions.referenced_action_ids(ids)
+        if not referenced:
+            return True
+        wanted = [r for r in doomed if r.get("id") in referenced]
+        missions.record_settlements(wanted)
+        return True
+    except Exception as e:  # noqa: BLE001 — a decline, not a crash: compaction is housekeeping
+        log.warning("ledger: could not project settlements (%s)", type(e).__name__)
+        return False
+
+
+def _compact_locked(p: Path, history_max: int, *, rows: list[dict] | None = None) -> int:
+    # `rows` is passed in by `compact` so the partition that was PROJECTED is byte-identical to
+    # the one that is rewritten. Re-reading here would reopen the window the projection closed.
+    rows = list(_latest_by_id_locked(p).values()) if rows is None else rows
     live = [r for r in rows if r.get("state") in LIVE_STATES]
     done = [r for r in rows if r.get("state") not in LIVE_STATES]
     done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)

@@ -142,6 +142,25 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_missions_db(tmp_path, monkeypatch) -> None:
+    """Point the missions store (#846) at a per-test tmp file, never the operator's real one.
+
+    Same rule as prefs / metadata / notifications: ``_db_path`` reads the env per call, so the
+    override is enough and no file is created until something writes. The schema-migration cache
+    is keyed by path and is process-global, so it is cleared here too — otherwise a second test
+    reusing a path string would skip the migration for a file that no longer exists."""
+    from agent_sessions import missions
+
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_MISSIONS_DB",
+        str(tmp_path / ".config" / "agent-sessions" / "missions.db"),
+    )
+    missions.reset_schema_cache_for_test()
+    yield
+    missions.reset_schema_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_scan_cache() -> None:
     """Disable + reset the ``/api/sessions`` scan snapshot cache (#561) for every test.
 

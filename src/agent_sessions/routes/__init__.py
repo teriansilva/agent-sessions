@@ -6,6 +6,6 @@ keyword args. Behavior is identical to the inline definitions — same paths, de
 status codes, and bodies.
 """
 
-from . import scrollback, sessions, system, upload, usage
+from . import missions, scrollback, sessions, system, upload, usage
 
-__all__ = ["scrollback", "sessions", "system", "upload", "usage"]
+__all__ = ["missions", "scrollback", "sessions", "system", "upload", "usage"]
