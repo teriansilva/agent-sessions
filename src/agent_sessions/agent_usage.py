@@ -314,7 +314,12 @@ def parse_claude_usage(text: str, now: float | None = None) -> Report:
 
 
 def _parse_human_reset(text: str | None, now: float) -> float | None:
-    """``Aug 30, 5pm`` → epoch seconds, in the local zone, rolling to next year if needed.
+    """``Aug 30, 5pm`` → epoch seconds, in the local zone, resolved to the NEAREST year.
+
+    The clause carries no year, so the year is inferred: of the adjacent candidates the one
+    closest to ``now`` wins, which may deliberately be the previous or current year rather than
+    the next. This replaced "roll forward if it looks past", which fired on anything more than a
+    day stale and put a reset printed yesterday a full year out.
 
     Best-effort by design: the percentage is the load-bearing number and a reset time that cannot
     be parsed becomes ``None`` rather than failing the whole report. The agent prints its own
@@ -329,10 +334,17 @@ def _parse_human_reset(text: str | None, now: float) -> float | None:
             parsed = time.strptime(f"{raw} {lt.tm_year}", f"{fmt} %Y")
         except ValueError:
             continue
-        stamp = time.mktime(parsed)
-        if stamp < now - 86400:  # printed in December, read in January
-            stamp = time.mktime(parsed[:0] + (parsed[0] + 1,) + parsed[1:])
-        return stamp
+        # The clause carries no year, so the year is a guess — and it must be the guess that
+        # lands NEAREST to now, not "next year if it looks past".
+        #
+        # Rolling forward on `stamp < now - 86400` was written for a December reading opened in
+        # January, but it fires on any reset merely a day stale: a fixture saying `Aug 26`, read
+        # on Aug 27, jumped to Aug 26 of the FOLLOWING year — 363 days out. That is how this test
+        # passed on one day and failed the next, with nothing changed but the date.
+        candidates = [
+            time.mktime(parsed[:0] + (parsed[0] + delta,) + parsed[1:]) for delta in (-1, 0, 1)
+        ]
+        return min(candidates, key=lambda c: abs(c - now))
     return None
 
 

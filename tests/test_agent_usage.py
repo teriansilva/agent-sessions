@@ -56,15 +56,18 @@ def test_claude_usage_reset_times_are_in_the_future():
     """The reset clause carries no year (`Aug 26, 1:10pm`), so it is resolved against *now* —
     and a naive parse lands it in 1900.
 
-    **`now` is pinned, and that is a fix rather than a convenience.** Reading the real clock
-    made this a time bomb: the clauses carry no year, so once the wall clock passes Aug 26 the
-    parser *correctly* rolls them forward to the NEXT year — putting them ~365 days out and
-    blowing the 40-day bound. It passed for a few weeks after the fixture was captured and then
-    failed on every PR in the repo, for a reason that had nothing to do with any diff.
+    **`now` is pinned, and that is a fix rather than a convenience.** Reading the real clock made
+    this a time bomb: it passed for a few weeks after the fixture was captured and then failed on
+    every PR in the repo, for a reason that had nothing to do with any diff. Pinning keeps the
+    assertion pointed at what it is actually about — inferring the right year for a year-less
+    date — instead of at what today happens to be. The bound stays tight, because a loose one
+    would stop catching the 1900 case this exists to catch.
 
-    Pinning keeps the assertion pointed at what it is actually about — inferring the right year
-    for a year-less date — instead of at what today happens to be. The bound stays tight,
-    because a loose one would stop catching the 1900 case this exists to catch.
+    What the clock exposed was also a real defect, and it is fixed rather than merely pinned
+    away: the parser used to roll ANY apparently-past date into the next year, so a reset printed
+    yesterday came back ~365 days out and would have been shown to the operator that way. It now
+    resolves to the NEAREST adjacent year — see `test_a_reset_a_day_stale_does_not_jump_a_YEAR`
+    below, which pins exactly that.
     """
     now = _CLAUDE_FIXTURE_NOW
     rep = au.parse_claude_usage(_fixture("claude-usage.txt"), now=now)
@@ -72,6 +75,31 @@ def test_claude_usage_reset_times_are_in_the_future():
     assert resets, "fixture has reset clauses"
     for r in resets:
         assert now - 86400 < r < now + 40 * 86400, r
+
+
+def test_a_reset_a_day_stale_does_not_jump_a_YEAR():
+    """The year is a guess, and it has to be the guess NEAREST to now.
+
+    Pinning the test's clock stops the suite aging, but it does not touch what the operator sees.
+    Rolling forward whenever the stamp looked past was written for a December reading opened in
+    January, and it fired on anything more than 24h old: a reset printed `Aug 26` and read on
+    Aug 27 resolved to Aug 26 of the FOLLOWING year — rendered as a limit that resets next
+    summer. That is not the clock being awkward, it is a wrong answer.
+
+    Picking the nearest candidate year handles the December case in both directions and cannot
+    produce the jump.
+    """
+    # Read one day AFTER the printed reset: the nearest year is this one, in the recent past.
+    now = time.mktime((2026, 8, 27, 12, 0, 0, 0, 0, -1))
+    got = au._parse_human_reset("Aug 26, 1:10pm", now)
+    assert got is not None
+    assert abs(got - now) < 2 * 86400, f"a day-stale reset jumped to {got}"
+
+    # And the case the roll-forward existed for still works: printed in December, read in January.
+    jan = time.mktime((2027, 1, 3, 9, 0, 0, 0, 0, -1))
+    dec = au._parse_human_reset("Dec 31, 5pm", jan)
+    assert dec is not None
+    assert abs(dec - jan) < 10 * 86400, f"a December reading resolved to {dec}"
 
 
 def test_claude_usage_survives_output_that_says_nothing():
