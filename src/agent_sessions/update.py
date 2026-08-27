@@ -12,10 +12,36 @@ read **live** (env file first, process env fallback) — a Settings toggle appli
 service restart, because the running service's ``os.environ`` snapshot predates the write.
 ``autoupdate()`` / ``apply_manual()`` share one single-flight lock so the daily loop and the
 manual "Update now" can never spawn two installers concurrently.
+
+Release verification (#612)
+---------------------------
+A git tag is a **movable pointer**. ``latest_ref`` picks the highest ``v*`` tag off the
+remote, so anyone able to write to the forge can re-point an existing release tag at a
+different commit, and every install tracking ``stable`` would take that code silently — no
+diff, no review, no version change. ``scripts/release-manifest.json`` is the committed trust
+root that closes it: it records what each tag pointed at when it was cut, and
+``verify_release_tag`` refuses to update when the remote disagrees.
+
+**A tag the manifest does not know about is allowed through, deliberately.** The manifest
+ships *inside* the repo, so the copy a running build holds is the one that was current when
+*that* build was cut and can never contain an entry for a release tagged afterwards. Failing
+closed on an unknown tag would therefore not be strict — it would mean **no install ever
+auto-updates again**, because every genuine update is by construction a tag the running
+build has not heard of. What this buys instead is precise and worth stating plainly:
+
+* **Caught:** retroactive mutation of any release this build knows about — the attack where
+  an old, already-reviewed tag is quietly re-pointed.
+* **Not caught:** a brand-new tag published after this build was cut. Nothing shipped in an
+  older artifact can vouch for a newer one; that needs signature verification over the tag
+  object, which the issue anticipates as the eventual replacement.
+
+So this is a real narrowing, not a complete answer, and it is not presented as one.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import shutil
 import subprocess
@@ -25,6 +51,8 @@ from pathlib import Path
 
 from . import discover, envfile
 from .version import get_version
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_REPO = "https://github.com/teriansilva/agent-sessions.git"
 
@@ -42,6 +70,11 @@ _SPAWN_COOLDOWN_S = 15 * 60
 # Recent-runtime status of the last SCHEDULED pass (#538): in-memory by design — a status
 # hint for the Settings card, not an audit log. Resets on restart.
 _LAST_AUTO: dict[str, object] | None = None
+# Why the last update was refused by release verification (#612), or None. A refusal is
+# otherwise invisible — `apply()` returning False reads identically to "no installer here" —
+# and a silently-not-updating install is exactly what an attacker who moved a tag would want
+# nobody to notice. Surfaced on `check()` so the Settings card can show it.
+_LAST_BLOCK: str | None = None
 
 
 def _repo_url() -> str:
@@ -144,6 +177,228 @@ def latest_ref(channel: str, repo_url: str) -> str | None:
         return None
 
 
+def manifest_path() -> Path | None:
+    """The committed trust root, read from the RUNNING build's own tree, or None.
+
+    Deliberately **not** fetched from the remote: a manifest downloaded from the same place
+    as the thing it vouches for proves nothing. Its authority comes entirely from having
+    shipped inside an artifact that is already installed and running.
+
+    Two layouts, in order. On an install the package lives in ``<rel>/venv/lib/...`` while
+    the source tree sits beside it at ``<rel>/src``, so a path relative to ``__file__``
+    would point into site-packages and find nothing — the same reason ``installer_path()``
+    resolves through ``current/src`` rather than ``__file__``. The second candidate is the
+    dev/source checkout, where ``__file__`` IS in the repo.
+    """
+    for p in (
+        _home() / "current" / "src" / "scripts" / "release-manifest.json",
+        Path(__file__).resolve().parents[2] / "scripts" / "release-manifest.json",
+    ):
+        if p.exists():
+            return p
+    return None
+
+
+def remote_key(url: str) -> str:
+    """A remote's canonical manifest key: host + path, no scheme, no ``.git``, lowercased.
+
+    Must stay identical to ``scripts/gen-release-manifest``'s copy, or every lookup misses and
+    the whole trust root silently verifies nothing.
+    """
+    s = (url or "").strip()
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    s = s.split("@", 1)[-1]  # scp-style user@host:path
+    s = s.replace(":", "/", 1) if "/" not in s.split(":", 1)[0] else s
+    s = s.rstrip("/")
+    if s.lower().endswith(".git"):
+        s = s[: -len(".git")]
+    return s.lower()
+
+
+def load_manifest() -> dict[str, dict[str, dict[str, str]]]:
+    """``{tag: {remote_key: {"object": sha, "commit": sha}}}`` — empty when unreadable.
+
+    An empty mapping means "verify nothing", which is the pre-#612 behaviour. That is the
+    right degradation for a *source* checkout or an old release that predates the file: it
+    cannot make an install less safe than it already was, and the alternative — refusing to
+    update without a manifest — would strand exactly those installs.
+
+    **Entries are keyed by remote (schema 2), and that is a correctness requirement rather
+    than a generalisation.** A release has one identity per remote that publishes it: this
+    project's public mirror is a *snapshot* publish, so its tag for a given version is a
+    different object, at a different commit, from the forge's tag of the same name. A schema-1
+    manifest (flat ``{tag: {object, commit}}``) generated against one remote and checked
+    against another reports every legitimate release as **moved** — and because the updater
+    refuses on a mismatch, that is a fleet-wide auto-update outage, not a false alarm. It stayed
+    latent only because a manifest lacking an entry for the *current* release degrades open,
+    and the current release is the only tag an update ever targets. Found in review on #819.
+
+    Anything that is not schema 2 is ignored, which degrades open rather than mis-comparing.
+    """
+    p = manifest_path()
+    if p is None:
+        return {}
+    try:
+        with p.open(encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("version") != 2:
+        return {}
+    rel = doc.get("releases")
+    if not isinstance(rel, dict):
+        return {}
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for tag, per_remote in rel.items():
+        if not isinstance(tag, str) or not isinstance(per_remote, dict):
+            continue
+        entries = {
+            k: v for k, v in per_remote.items() if isinstance(k, str) and isinstance(v, dict)
+        }
+        if entries:
+            out[tag] = entries
+    return out
+
+
+def remote_tag_shas(tag: str, repo_url: str) -> dict[str, str]:
+    """``{"object": sha, "commit": sha}`` for ``tag`` on the remote, or ``{}`` if unresolvable.
+
+    Queried as ``<tag>*`` so the **peeled** ``refs/tags/<tag>^{}`` line comes back too: for an
+    annotated tag ``refs/tags/<tag>`` names the tag object, not the commit, and the peeled
+    line is the only way to see the commit without fetching. A lightweight tag has no peeled
+    line, and there ``object`` already is the commit.
+    """
+    git = shutil.which("git")
+    if not git or not tag:
+        return {}
+    try:
+        out = subprocess.run(  # noqa: S603
+            [git, "ls-remote", "--tags", repo_url, f"{tag}*"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if out.returncode != 0:
+        return {}
+    shas: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        ref = ref.strip()
+        if ref == f"refs/tags/{tag}":
+            shas["object"] = sha.strip()
+        elif ref == f"refs/tags/{tag}^{{}}":
+            shas["commit"] = sha.strip()
+    if "object" in shas:
+        shas.setdefault("commit", shas["object"])  # lightweight tag: no peeled line
+    return shas
+
+
+def verify_release_tag(
+    tag: str, repo_url: str, remote: dict[str, str] | None = None
+) -> tuple[bool, str]:
+    """``(ok, reason)`` for updating to ``tag``. See the module docstring for the threat model.
+
+    Fails closed **only** on a genuine contradiction: the manifest knows this tag and the
+    remote now points it somewhere else. Unknown tags, a missing manifest, and an
+    unresolvable remote all pass — each is an absence of evidence, and turning absence into
+    refusal here breaks every legitimate update rather than blocking an attack.
+    """
+    per_remote = load_manifest().get(tag)
+    if not per_remote:
+        return True, "not in manifest (newer than this build) — not verified"
+    # Compare like with like. A tag's identity is per remote: the public mirror is a snapshot
+    # publish, so its object and commit for a version differ from the forge's. Checking one
+    # remote's record against another's tag would report every legitimate release as moved,
+    # which the updater turns into a refusal — an outage, not a false alarm (#819 review).
+    key = remote_key(repo_url)
+    entry = per_remote.get(key)
+    if not entry:
+        return True, f"no trust record for remote {key!r} — not verified"
+    remote = remote_tag_shas(tag, repo_url) if remote is None else remote
+    if not remote:
+        return True, "remote tag could not be resolved — not verified"
+    for field in ("object", "commit"):
+        want, got = entry.get(field), remote.get(field)
+        if want and got and want != got:
+            return False, (
+                f"{tag} has moved: the manifest records {field} {want} but the remote now "
+                f"reports {got}. Refusing to update — a released tag should never change."
+            )
+    return True, "verified against the release manifest"
+
+
+def verified_commit(tag: str, repo_url: str, remote: dict[str, str] | None = None) -> str | None:
+    """The single commit ``tag`` is allowed to resolve to, or ``None`` if nothing pins it.
+
+    This is what closes the gap between *checking* a tag and *building* it. Verification and
+    the installer's clone are two independent lookups of a mutable name, so a tag that moves
+    between them passes the check and builds the moved commit anyway. Handing the installer an
+    immutable SHA lets it confirm, after the clone and before any build step, that it fetched
+    the object that was actually verified.
+
+    The manifest wins when it knows the tag: it is the reviewed record of what that release
+    was, whereas the remote is the thing an attacker would have rewritten. (When both exist
+    and disagree, :func:`verify_release_tag` has already refused, so this never has to choose
+    between two contradictory answers.) For a tag the manifest has never heard of — every
+    genuinely new release, per the bootstrap problem in the module docstring — the remote's
+    own answer still pins the clone to what *this* process resolved, which is strictly better
+    than a bare tag name even though it is not a reviewed value.
+    """
+    entry = load_manifest().get(tag)
+    if entry and entry.get("commit"):
+        return entry["commit"]
+    if remote is None:
+        remote = remote_tag_shas(tag, repo_url)
+    return remote.get("commit") or None
+
+
+def select_stable_target(repo_url: str) -> tuple[str | None, str | None, str]:
+    """``(tag, commit, reason)`` for a stable self-update — **both values or neither**.
+
+    One remote lookup feeds every decision, because resolving a mutable name more than once
+    is how a verified answer and a built answer come apart (the same defect this whole change
+    exists to close). The tag and the commit it resolved to are chosen together and travel
+    together.
+
+    **Why this fails closed while the manifest check degrades open** — the two absences are
+    not the same kind of absence, and treating them alike is what made the earlier version
+    wrong:
+
+    * A **missing manifest entry** is structural. A running build's manifest can never contain
+      a release cut after it, so refusing there would mean no install ever auto-updates again.
+      Nothing an attacker does creates that condition; it is the ordinary state of every new
+      release. Degrading open is the only workable answer.
+    * A **missing tag or commit lookup** is transient and *attacker-influenceable*. Someone who
+      can write tags can make the lookup come back empty — delete the tag, briefly break the
+      ref — and then recreate or repoint it before the installer clones. Degrading open there
+      is not tolerance of missing evidence, it is an unauthenticated build triggered on demand.
+      Refusing costs only a postponed update, which the next cycle retries.
+    """
+    tag = latest_ref("stable", repo_url)
+    if not tag:
+        return None, None, "no release tag could be resolved on the remote — not updating"
+    remote = remote_tag_shas(tag, repo_url)
+    ok, reason = verify_release_tag(tag, repo_url, remote=remote)
+    if not ok:
+        return None, None, reason
+    commit = verified_commit(tag, repo_url, remote=remote)
+    if not commit:
+        return (
+            None,
+            None,
+            (
+                f"{tag} could not be resolved to a commit, so the build cannot be bound to what "
+                f"was verified. Refusing to update — this is recoverable and will retry."
+            ),
+        )
+    return tag, commit, reason
+
+
 def _semver_key(tag: str) -> tuple[int, ...]:
     parts = tag.lstrip("v").split(".")
     out = []
@@ -194,7 +449,15 @@ def check() -> dict[str, object]:
     else:
         norm = latest.lstrip("v") if latest else latest
         available = bool(latest) and norm != cur
-    return {"current": cur, "channel": channel, "latest": latest, "update_available": available}
+    info: dict[str, object] = {
+        "current": cur,
+        "channel": channel,
+        "latest": latest,
+        "update_available": available,
+    }
+    if _LAST_BLOCK:
+        info["blocked"] = _LAST_BLOCK
+    return info
 
 
 def installer_path() -> Path | None:
@@ -204,16 +467,43 @@ def installer_path() -> Path | None:
 
 def apply() -> bool:
     """Run the installer detached to upgrade to the channel's latest (no user input).
-    Returns False if the installer isn't found (e.g. a dev checkout, not an install)."""
-    global _SPAWNED_AT
+    Returns False if the installer isn't found (e.g. a dev checkout, not an install), or if
+    the target release tag fails manifest verification (#612)."""
+    global _SPAWNED_AT, _LAST_BLOCK
     inst = installer_path()
     if inst is None:
         return False
+    # Verify BEFORE spawning, because after the spawn we have no say: the installer resolves
+    # the ref itself and this process is about to be restarted by it. `stable` only — `main`
+    # tracks a branch by design and has no tag to verify.
+    target: str | None = None
+    pin: str | None = None
+    if _channel() == "stable":
+        target, pin, reason = select_stable_target(_repo_url())
+        # Both or neither: an installer spawned without a commit to check against is an
+        # unverified build, because install.sh deliberately skips the comparison when
+        # AGENT_SESSIONS_EXPECT_COMMIT is empty. Refusing here is cheap and self-correcting.
+        if not target or not pin:
+            _LAST_BLOCK = reason
+            log.error("update refused: %s", reason)
+            return False
+        _LAST_BLOCK = None
     sh = shutil.which("sh") or "/bin/sh"
     env = {**os.environ, "AGENT_SESSIONS_REPO": _repo_url(), "AGENT_SESSIONS_CHANNEL": _channel()}
-    # Self-update always moves to the CHANNEL's latest — never a pinned ref. Drop any
-    # inherited AGENT_SESSIONS_REF (which the installer would otherwise prefer).
+    # Self-update always moves to the CHANNEL's latest, so an *inherited* AGENT_SESSIONS_REF
+    # (which the installer would otherwise prefer) must never survive into the child.
     env.pop("AGENT_SESSIONS_REF", None)
+    env.pop("AGENT_SESSIONS_EXPECT_COMMIT", None)
+    # ...but the ref this process just resolved and verified is exactly what the child must
+    # build, so it is passed forward deliberately. Without it the installer runs its own
+    # `ls-remote` and resolves the highest tag a second time, and everything checked above
+    # describes a lookup the build never used: a tag that moved in between, or a higher tag
+    # published in between, is picked up unverified. Pinning the NAME closes the second case;
+    # pinning the immutable COMMIT closes the first, because a moved tag then clones an object
+    # the installer can see is not the one that was verified, and it refuses before building.
+    if target and pin:
+        env["AGENT_SESSIONS_REF"] = target
+        env["AGENT_SESSIONS_EXPECT_COMMIT"] = pin
     subprocess.Popen(  # noqa: S603
         [sh, str(inst)],
         env=env,

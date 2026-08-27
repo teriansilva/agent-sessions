@@ -782,3 +782,287 @@ def test_migration_respects_an_existing_env_choice(tmp_path):
     assert code == 0
     assert "AGENT_SESSIONS_AUTOUPDATE=0" in env_text
     assert "AGENT_SESSIONS_AUTOUPDATE=1" not in env_text
+
+
+# ---- vendored-Node supply chain (#612 Phase 1) ---------------------------------
+
+
+def _ensure_node_harness(
+    tmp_path, *, payload: bytes, node_version: str = "22.14.0", script: str | None = None
+):
+    """Run `ensure_node` verbatim (extracted from install.sh) against a fake `curl` that
+    serves `payload`, and return (exit_code, stdout+stderr, toolchain_dir).
+
+    The stubs are deliberately minimal so the checksum branch is what is under test:
+    `have` reports no system node/npm (forcing the vendor path) but a real `sha256sum`,
+    `_pkg_install` fails (no distro rescue), and `tar` is a stub that records the fact it
+    ran. That last one is the point of the harness — the assertion that matters is not just
+    "it exited nonzero" but "extraction never happened".
+    """
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+
+    blob = tmp_path / "payload.bin"
+    blob.write_bytes(payload)
+    curl = bindir / "curl"
+    # `curl -fsSL <url> -o <dest>` — copy the canned payload to whatever -o names.
+    curl.write_text(
+        "#!/bin/sh\n"
+        'while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { shift; dest="$1"; }; shift; done\n'
+        f'cp "{blob}" "$dest"\n'
+    )
+    curl.chmod(0o755)
+    tar = bindir / "tar"
+    tar.write_text(f'#!/bin/sh\ntouch "{tmp_path}/EXTRACTED"\nexit 0\n')
+    tar.chmod(0o755)
+
+    s = script if script is not None else INSTALL_SH.read_text()
+    driver = tmp_path / "driver.sh"
+    driver.write_text(
+        "#!/bin/sh\nset -u\n"
+        f'PREFIX="{prefix}"\n'
+        f'NODE_VERSION="{node_version}"\n'
+        "NODE_MIN_MAJOR=20\nNPM=npm\nNODE_BIN=node\n"
+        "log() { printf '  %s\\n' \"$*\"; }\n"
+        "die() { printf 'error: %s\\n' \"$*\" >&2; exit 1; }\n"
+        # No system node/npm → take the vendor path. Everything else resolves normally, so
+        # the real sha256sum is used and the digest comparison is genuine.
+        'have() { case "$1" in node|npm) return 1 ;;\n'
+        '  *) command -v "$1" >/dev/null 2>&1 ;; esac; }\n'
+        "_pkg_install() { return 1; }\n"
+        + _extract_fn(s, "_sha256")
+        + "\n"
+        + _extract_fn(s, "ensure_node")
+        + "\nensure_node\n"
+    )
+    env = {**_clean_env(), "PATH": f"{bindir}:{os.environ['PATH']}"}
+    proc = subprocess.run(["sh", str(driver)], env=env, capture_output=True, text=True)
+    return proc.returncode, proc.stdout + proc.stderr, prefix / ".toolchain"
+
+
+def test_vendored_node_refuses_a_tampered_tarball_before_extraction(tmp_path):
+    """A Node tarball whose digest does not match the pin is refused, and `tar` never runs.
+
+    This is the half a "did it exit nonzero" assertion misses: failing *after* unpacking
+    would already have written an attacker's files into the toolchain dir, and the installer
+    puts that dir on `PATH`. Ordering is the guarantee, so ordering is what is asserted.
+    """
+    code, out, _ = _ensure_node_harness(tmp_path, payload=b"not the real node tarball")
+    assert code != 0
+    assert "checksum mismatch" in out
+    assert not (tmp_path / "EXTRACTED").exists(), "tar ran on an unverified tarball"
+
+
+def test_vendored_node_refuses_an_unpinned_version(tmp_path):
+    """`AGENT_SESSIONS_NODE_VERSION` pointing at a version with no pin fails closed.
+
+    An override that silently skipped verification would be a hole wide enough to drive the
+    whole attack through — set the env var, serve any tarball. There is no pin for it, so
+    there is no install; the operator's escape hatch is a real system Node, which is
+    preferred over vendoring anyway and never reaches this code.
+    """
+    code, out, _ = _ensure_node_harness(tmp_path, payload=b"x", node_version="23.0.0")
+    assert code != 0
+    assert "no pinned checksum for Node 23.0.0" in out
+    assert not (tmp_path / "EXTRACTED").exists()
+
+
+def test_vendored_node_accepts_the_pinned_digest(tmp_path):
+    """The positive control: a payload whose digest IS the pin gets through to extraction.
+
+    Without this, both tests above would pass against a harness that could never succeed at
+    all — the classic way a fail-closed test suite ends up proving nothing.
+    """
+    import hashlib
+
+    # We cannot serve the real 100 MB tarball, so instead run the script verbatim with ONE
+    # substitution: the x64 pin is swapped for the digest of the payload we do serve. Every
+    # other line — the download, `_sha256`, the comparison, the ordering — is the shipped code.
+    payload = b"pretend-node-tarball"
+    both_arch_pins = (
+        "9d942932535988091034dc94cc5f42b6dc8784d6366df3a36c4c9ccb3996f0c2",  # x64
+        "8cf30ff7250f9463b53c18f89c6c606dfda70378215b2c905d0a9a8b08bd45e0",  # arm64
+    )
+    script = INSTALL_SH.read_text()
+    for pin in both_arch_pins:  # patch both so the test runs on either arch
+        script = script.replace(pin, hashlib.sha256(payload).hexdigest())
+
+    code, out, _ = _ensure_node_harness(tmp_path, payload=payload, script=script)
+    assert "checksum mismatch" not in out
+    assert (tmp_path / "EXTRACTED").exists(), "a matching digest must reach extraction"
+    assert code == 0
+
+
+def test_install_sh_pins_every_vendored_node_asset():
+    """Both supported Linux assets carry a pin, and verification precedes extraction.
+
+    Mirrors the equivalent assertion `test_install_sh_self_contained_toolchain` already makes
+    for the vendored CPython, so the two vendored toolchains cannot drift apart in rigour.
+    """
+    s = INSTALL_SH.read_text()
+    for sha in ("9d942932", "8cf30ff7"):
+        assert sha in s, f"missing pinned Node checksum {sha}"
+    assert s.index("Node download checksum mismatch") < s.index("could not unpack Node")
+
+
+def test_main_channel_prints_a_non_production_warning():
+    """Selecting the development channel says so; `stable` stays quiet (#612 Phase 1).
+
+    `main` was already env-var-only opt-in — `CHANNEL` defaults to `stable` and nothing but an
+    explicit `AGENT_SESSIONS_CHANNEL=main` selects it — so the gap was never the gate, it was
+    that the choice was silent. An install tracking a moving branch auto-updates to whatever
+    HEAD says, with no release cut between the commit and the running service.
+    """
+    s = INSTALL_SH.read_text()
+    report = _extract_fn(s, "preflight_report")
+    assert 'CHANNEL" = main' in report
+    assert "Not for production." in report
+    # Still opt-in, not merely warned about: the default is stable and nothing else flips it.
+    assert 'CHANNEL="${AGENT_SESSIONS_CHANNEL:-stable}"' in s
+
+
+def _channel_notice(tmp_path, channel: str) -> str:
+    """`preflight_report` output for the given channel, with the prereq probes stubbed out."""
+    s = INSTALL_SH.read_text()
+    driver = tmp_path / f"driver-{channel}.sh"
+    driver.write_text(
+        "#!/bin/sh\nset -u\n"
+        f'CHANNEL="{channel}"\nPY=/usr/bin/true\nNODE_VERSION=0\n'
+        "log() { printf '  %s\\n' \"$*\"; }\n"
+        "note() { printf '\\n%s\\n' \"$*\"; }\n"
+        + _extract_fn(s, "preflight_report")
+        + "\npreflight_report\n"
+    )
+    proc = subprocess.run(["sh", str(driver)], env=_clean_env(), capture_output=True, text=True)
+    return proc.stdout + proc.stderr
+
+
+def test_channel_notice_fires_only_for_main(tmp_path):
+    """Behavioural companion to the structural test above — the warning actually prints."""
+    assert "Not for production." in _channel_notice(tmp_path, "main")
+    assert "Not for production." not in _channel_notice(tmp_path, "stable")
+
+
+# ---- a tag that moves between verification and clone is never built (#612, review) ----
+
+
+def _tag_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    """A local git repo tagged `v9.9.9`, then re-tagged onto a second commit.
+
+    Returns (repo, first_sha, second_sha). This is the attack modelled concretely: the
+    verifier resolved `v9.9.9` to `first_sha`, and by the time the installer clones, the
+    same name points at `second_sha`.
+    """
+    repo = tmp_path / "remote"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@e",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@e",
+            },
+        )
+
+    git("init", "-q", "-b", "main")
+    (repo / "marker").write_text("reviewed\n")
+    git("add", "-A")
+    git("commit", "-qm", "the reviewed release")
+    git("tag", "v9.9.9")
+    first = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "v9.9.9^{}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    (repo / "marker").write_text("swapped\n")
+    git("add", "-A")
+    git("commit", "-qm", "what the attacker wants built")
+    git("tag", "-f", "v9.9.9")  # the tag MOVES — same name, different bytes
+    second = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "v9.9.9^{}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert first != second
+    return repo, first, second
+
+
+def _build_release(tmp_path: Path, repo: Path, *, expect: str, py: str = "python3"):
+    """Run build_release verbatim against a local repo, pinned to `expect`."""
+    body = INSTALL_SH.read_text().replace('\nmain "$@"\n', "\n")
+    src = tmp_path / "install_src.sh"
+    src.write_text(body)
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    return subprocess.run(
+        ["sh", "-c", f'. "{src}"; PY={py}; build_release v9.9.9'],
+        capture_output=True,
+        text=True,
+        env={
+            **_clean_env(),
+            "AGENT_SESSIONS_HOME": str(prefix),
+            "AGENT_SESSIONS_REPO": str(repo),
+            "AGENT_SESSIONS_EXPECT_COMMIT": expect,
+            "AGENT_SESSIONS_NO_SERVICE": "1",
+        },
+    )
+
+
+def test_a_tag_moved_after_verification_is_never_built(tmp_path):
+    """The deterministic regression the review asked for: change the remote, prove no build.
+
+    Verification and the clone are two independent lookups of a mutable name. Without the
+    commit pin, everything checked describes bytes the build never used — the check passes
+    and the moved commit is installed anyway. Here the tag is genuinely moved on a real repo
+    between the two, which is the whole attack in four git commands.
+    """
+    repo, first, second = _tag_repo(tmp_path)
+    # PY points nowhere so that UNFIXED code fails fast at the venv instead of doing a real
+    # build — the assertions below are on the *message*, which is what discriminates the two.
+    r = _build_release(tmp_path, repo, expect=first, py="/nonexistent/python")
+
+    assert r.returncode != 0, "the moved tag was built"
+    out = r.stdout + r.stderr
+    assert "refusing to build" in out
+    assert first in out and second in out, "the refusal must name both commits"
+    assert "Nothing was built" in out
+    # The build is what must not happen: the guard fires before `mkdir -p "$RELEASES"`, so
+    # the releases directory should not exist at all.
+    assert not (tmp_path / "prefix" / "releases").exists()
+
+
+def test_the_matching_commit_passes_the_gate_and_proceeds_to_build(tmp_path):
+    """Positive control: without it, both halves would pass against a gate that never opens.
+
+    The build is stopped immediately after the gate by pointing PY at a python that does not
+    exist, so this stays cheap — no venv, no pip, no npm. What it proves is that the failure
+    has *moved past* the commit check, which is the only thing being asserted.
+    """
+    repo, _first, second = _tag_repo(tmp_path)
+    r = _build_release(tmp_path, repo, expect=second, py="/nonexistent/python")
+
+    assert r.returncode != 0  # it fails later, at the venv — but it got there
+    out = r.stdout + r.stderr
+    assert "refusing to build" not in out, "the gate rejected the commit it had verified"
+
+
+def test_an_unpinned_install_is_unaffected(tmp_path):
+    """A hand-run install has no prior verification to bind to, and must not start failing.
+
+    Empty EXPECT_COMMIT means nobody claimed a commit — nothing to contradict, so nothing to
+    refuse. Same degradation as the manifest check: fail closed only on a real disagreement.
+    """
+    repo, _first, _second = _tag_repo(tmp_path)
+    r = _build_release(tmp_path, repo, expect="", py="/nonexistent/python")
+    assert "refusing to build" not in (r.stdout + r.stderr)

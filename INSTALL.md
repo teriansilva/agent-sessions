@@ -90,6 +90,35 @@ Choose an option [1]:
 - Is **idempotent**: re-running builds a new release, flips `current`, keeps the prior releases
   (3 by default) for rollback, and **leaves existing credentials untouched**.
 
+### Vendored toolchain — what is trusted, and how
+
+The installer prefers what the host already has. Only when there is no usable system Python
+(>= 3.11) or Node (>= 20) does it vendor a private one into `~/.local/share/agent-sessions/.toolchain`
+— rootless, no system change.
+
+**Both vendored downloads are SHA-256 pinned in `install.sh` and verified before they are
+unpacked.** A `curl | sh` install auto-proceeds with no tty, so a mutable release URL protected
+by TLS alone is not a sufficient trust root: TLS proves you reached `nodejs.org` / the
+`python-build-standalone` release, not that the bytes there are the bytes that were reviewed.
+Verification is **fail-closed** at every branch:
+
+| Condition | Behaviour |
+|---|---|
+| Digest matches the pin | Unpack and use |
+| Digest does not match | **Refuse**, delete the download, exit non-zero — before `tar` runs |
+| No `sha256sum` / `shasum` on the host | **Refuse** — an unverifiable download is not a fallback |
+| No pin for that version/arch | **Refuse** — see below |
+
+The pins live beside the version constants they belong to (`NODE_VERSION`, `PY_VERSION` +
+`PBS_TAG`); bump them together. Because a pin is per version, **`AGENT_SESSIONS_NODE_VERSION`
+pointing at an unpinned version fails closed** rather than silently skipping verification — an
+override that disabled the check would be a hole wide enough to drive the whole attack through.
+If you need a different Node, install it on the host: a system Node >= 20 is preferred over
+vendoring and never reaches this path.
+
+Beyond the toolchain, an install is a `git clone` of a ref from `AGENT_SESSIONS_REPO` over
+HTTPS, and the transport is the trust root for the source itself.
+
 ## Configuration (env vars)
 
 Set at install time (persisted into `env`):
@@ -152,6 +181,55 @@ Self-update moves to the **channel's latest** release, flips `current`, restarts
 - **Re-run the installer:** also upgrades; it keeps your persisted auto-update/channel
   settings. An old `agent-sessions-update.timer` from a pre-Settings install is migrated
   automatically (opt-in preserved, legacy units removed).
+
+### Channels — `stable` is the production one
+
+| Channel | Tracks | Use for |
+|---|---|---|
+| `stable` (**default**) | the highest `vX.Y.Z` tag on the remote | production |
+| `main` | the development branch HEAD | development only |
+
+`main` is **opt-in only** — nothing selects it but an explicit `AGENT_SESSIONS_CHANNEL=main`,
+and the installer prints a non-production notice when it is in effect. The distinction is not
+cosmetic: on `main` an auto-update takes whatever HEAD says at the moment it runs, so a commit
+reaches your running service with no release cut between the two. On `stable` an update only
+moves when a version is tagged.
+
+### Release verification on `stable`
+
+A git tag is a **movable pointer**. Anyone able to write to the repo could re-point an existing
+release tag at different code, and every install tracking `stable` would take it — no diff, no
+review, no version change. `scripts/release-manifest.json` is a committed record of what each
+tag pointed at when it was cut: before an update runs, the target tag is re-resolved on the
+remote and compared, and **a tag that has moved refuses the update**. The reason is surfaced on
+the update status rather than failing silently.
+
+The check and the build name the **same object**. Resolving a tag and cloning it are two
+separate lookups of a mutable name, so verifying one and building the other would leave the
+gap wide open — a tag moved in between (or a higher tag published in between) would pass the
+check and install anyway. The updater therefore hands the installer both the verified tag and
+its immutable commit, and the installer refuses to build a clone that resolved to anything
+else. Nothing pins a hand-run install, which has no prior verification to bind to.
+
+An **auto-update that cannot obtain both the tag and its commit does not run.** That is the one
+place this feature fails closed rather than degrading open, and the asymmetry is deliberate: an
+unknown *manifest entry* is structural (a build's manifest can never list a release cut after
+it, so refusing would stop every install updating forever), whereas an empty *remote lookup* is
+transient and can be induced by whoever can write tags — break the ref, let an unpinned update
+spawn, repoint it before the clone. Refusing there costs only a postponed update, and the next
+cycle retries; the reason is surfaced on the update status.
+
+A tag the manifest does *not* know about **proceeds**, and that is deliberate. The manifest
+ships inside the repo, so a running build's copy can never contain an entry for a release cut
+afterwards — failing closed there would not be strict, it would mean no install ever
+auto-updates again. Stated plainly:
+
+- **Caught:** retroactive mutation of a release your build already knows about.
+- **Not caught:** a brand-new tag published after your build was cut. Vouching for that needs
+  signature verification over the tag object, which is not implemented yet.
+
+Regenerate after cutting a release with `python3 scripts/gen-release-manifest`. A stale manifest
+is safe — unknown tags pass, so it simply verifies less.
 
 ## Rollback & emergency-disable
 

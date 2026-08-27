@@ -41,6 +41,9 @@ RELEASE_SIGNERS='release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW
 # the first signed version number is a guess about a cut nobody has made yet.
 RELEASE_LAST_UNSIGNED='v0.19.2'
 REF="${AGENT_SESSIONS_REF:-}"
+# The commit $REF must resolve to, set by the self-updater from the tag it verified
+# (update.py). Empty for a hand-run install, which has no prior verification to bind to.
+EXPECT_COMMIT="${AGENT_SESSIONS_EXPECT_COMMIT:-}"
 # Track whether the channel was set explicitly (env) vs defaulted: the UI persists a channel
 # choice in the env file (#538), and a re-run without the env var must follow that choice
 # (adopt_persisted_channel) instead of silently flipping a main-channel install to stable.
@@ -140,10 +143,34 @@ ensure_node() {
   tdir="$PREFIX/.toolchain"
   ndir="$tdir/node-v$NODE_VERSION-linux-$na"
   if [ ! -x "$ndir/bin/npm" ]; then
+    # Supply-chain pin, the same contract ensure_python already applies to the vendored CPython
+    # (#612): the expected SHA-256 per supported asset, from that release's SHASUMS256.txt. A
+    # `curl | sh` install — which auto-proceeds with no tty — must NOT trust a mutable release
+    # URL on TLS alone, so the tarball is verified BEFORE it is unpacked and refused on
+    # mismatch. These pins are tied to NODE_VERSION above; bump them together when it changes.
+    #
+    # AGENT_SESSIONS_NODE_VERSION overriding NODE_VERSION lands in the `*)` case and dies, by
+    # design: an unpinned version is exactly the input this verification exists to reject. An
+    # operator who wants a different Node installs it on the host — a system Node >=
+    # $NODE_MIN_MAJOR is preferred over vendoring and never reaches this path.
+    #
+    # Resolved INSIDE this branch, not beside the arch case, so it gates only the download. A
+    # host that already has some other vendored Node from before this change keeps working on
+    # re-run; verification applies to bytes we are about to fetch, which is all a tarball digest
+    # can speak to anyway.
+    case "$NODE_VERSION-$na" in
+      22.14.0-x64)   want_node_sha=9d942932535988091034dc94cc5f42b6dc8784d6366df3a36c4c9ccb3996f0c2 ;;
+      22.14.0-arm64) want_node_sha=8cf30ff7250f9463b53c18f89c6c606dfda70378215b2c905d0a9a8b08bd45e0 ;;
+      *) die "no pinned checksum for Node $NODE_VERSION ($na) — install Node >= $NODE_MIN_MAJOR on the host and re-run" ;;
+    esac
     mkdir -p "$tdir"
     log "fetching a self-contained Node $NODE_VERSION ($na) for the UI build…"
     curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$na.tar.gz" \
       -o "$tdir/node.tar.gz" || die "could not download Node $NODE_VERSION"
+    got_node_sha="$(_sha256 "$tdir/node.tar.gz")"
+    [ -n "$got_node_sha" ] || { rm -f "$tdir/node.tar.gz"; die "no sha256 tool (sha256sum/shasum) to verify the Node download — install one and re-run"; }
+    [ "$got_node_sha" = "$want_node_sha" ] \
+      || { rm -f "$tdir/node.tar.gz"; die "Node download checksum mismatch (expected $want_node_sha, got $got_node_sha) — refusing to use it"; }
     tar -xzf "$tdir/node.tar.gz" -C "$tdir" || die "could not unpack Node"
     rm -f "$tdir/node.tar.gz"
   fi
@@ -470,6 +497,17 @@ preflight_report() {
   log "  python   ${PY:-MISSING} ($("${PY:-python3}" -V 2>&1 | awk '{print $2}'))"
   log "  node     $(command -v node || echo '(vendored)') ($(node -v 2>/dev/null || echo "v$NODE_VERSION vendored"))"
   log "  dtach    $(command -v dtach || echo 'MISSING — terminal pane degraded')"
+  log "  channel  $CHANNEL"
+  # #612: `main` is already opt-in (CHANNEL defaults to stable, and only an explicit
+  # AGENT_SESSIONS_CHANNEL=main selects it) — what was missing is that the choice was silent.
+  # An install that tracks a moving branch takes whatever HEAD says at each auto-update, with
+  # no release review between the commit and the running service, so it should say so out loud
+  # rather than leave the operator to infer it from a one-word line above.
+  if [ "$CHANNEL" = main ]; then
+    note "NOTE: channel 'main' tracks the development branch, not tagged releases."
+    log "Auto-updates will follow main HEAD — unreviewed by a release cut. Not for production."
+    log "Use AGENT_SESSIONS_CHANNEL=stable (the default) for a release-tracking install."
+  fi
 }
 
 resolve_ref() {
@@ -491,6 +529,27 @@ build_release() {
       || { git clone -q "$REPO_URL" "$tmp/src"; git -C "$tmp/src" checkout -q "$ref"; }
   else
     git clone -q --depth 1 "$REPO_URL" "$tmp/src"
+  fi
+  # Bind what was cloned to what was verified, BEFORE anything is built from it.
+  #
+  # $REF is a tag: a mutable pointer resolved once by the verifier and again, independently,
+  # by the clone above. A tag moved between those two lookups passes verification and then
+  # delivers different bytes — which is the entire attack the manifest exists to stop, walking
+  # in through the gap between the check and the build. Comparing the cloned commit to the
+  # verified one makes the two lookups one decision.
+  #
+  # Empty $EXPECT_COMMIT means nobody claimed a commit — nothing to contradict, so nothing to
+  # refuse. That is now a HAND-RUN install only: `update.select_stable_target()` picks the tag
+  # and its commit together and refuses the spawn outright when either is missing, so a
+  # self-update can no longer reach this line without a pin. (It used to be able to, which is
+  # what this comment described.) A human running install.sh directly is choosing their own
+  # ref and is not the threat model this comparison addresses.
+  #
+  # So the comparison fails closed only on a genuine disagreement between two lookups.
+  full_sha="$(git -C "$tmp/src" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$EXPECT_COMMIT" ] && [ "$full_sha" != "$EXPECT_COMMIT" ]; then
+    rm -rf "$tmp"
+    die "refusing to build $ref: it was verified as commit $EXPECT_COMMIT but the clone resolved it to ${full_sha:-<unknown>}. A released tag that changed between verification and checkout is exactly what must not be installed. Nothing was built."
   fi
   sha="$(git -C "$tmp/src" rev-parse --short HEAD)"
   mkdir -p "$RELEASES"
