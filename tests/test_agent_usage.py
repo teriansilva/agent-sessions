@@ -47,10 +47,26 @@ def test_claude_usage_keeps_a_window_that_states_no_reset():
     assert by_label["session"].resets_at is not None
 
 
+#: A moment just before the earliest reset clause in `claude-usage.txt` ("Aug 26, 1:10pm",
+#: Europe/Bucharest). Pinned rather than read from the clock — see the test below.
+_CLAUDE_FIXTURE_NOW = 1787724000.0  # 2026-08-26T09:00:00+03:00
+
+
 def test_claude_usage_reset_times_are_in_the_future():
     """The reset clause carries no year (`Aug 26, 1:10pm`), so it is resolved against *now* —
-    and a naive parse lands it in 1900."""
-    now = time.time()
+    and a naive parse lands it in 1900.
+
+    **`now` is pinned, and that is a fix rather than a convenience.** Reading the real clock
+    made this a time bomb: the clauses carry no year, so once the wall clock passes Aug 26 the
+    parser *correctly* rolls them forward to the NEXT year — putting them ~365 days out and
+    blowing the 40-day bound. It passed for a few weeks after the fixture was captured and then
+    failed on every PR in the repo, for a reason that had nothing to do with any diff.
+
+    Pinning keeps the assertion pointed at what it is actually about — inferring the right year
+    for a year-less date — instead of at what today happens to be. The bound stays tight,
+    because a loose one would stop catching the 1900 case this exists to catch.
+    """
+    now = _CLAUDE_FIXTURE_NOW
     rep = au.parse_claude_usage(_fixture("claude-usage.txt"), now=now)
     resets = [w.resets_at for w in rep.windows if w.resets_at]
     assert resets, "fixture has reset clauses"
