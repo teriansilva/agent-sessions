@@ -1097,3 +1097,247 @@
     font-size: 12px;
   }
 }
+
+/* ------------------------------------------------------------------ git write side (#806)
+ *
+ * The branch strip becomes the menu trigger and the two network facts gain their controls, so
+ * both are PINNED out of the scrolling body — scrolling away from "which branch am I on" while
+ * staging is the state where a mis-click costs the most. */
+.gitHead {
+  flex: none;
+}
+.branchTrigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+.branchTrigger:hover,
+.branchTrigger:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+.branchTrigger:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A row of small controls. Wraps rather than overflowing: at 360px the chip and both buttons do
+ * not fit on one line, and a horizontal scrollbar inside a panel is the worse of the two. */
+.ctrlRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+/* A disabled control keeps its TITLE, which carries the refusal reason — greying it out without
+ * saying why is the failure mode this panel exists to avoid. */
+/* Amber on the primary action only, so the tab keeps one accent surface — but FILLED, not
+ * amber text. Measured: `color: var(--accent)` on the light theme's ground is 1.83:1, nowhere
+ * near the 4.5 AA floor, because the accent is a light hue and the token is theme-shared
+ * (`index.css` says so directly: "Dark can use the status hues directly; light cannot"). The
+ * design system's own answer for a primary surface is the CTA pair, which is ~11:1 on both. */
+.ctrlPrimary:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.ctrlPrimary:hover:not(:disabled),
+.ctrlPrimary:focus-visible:not(:disabled) {
+  background: var(--cta-bg-2);
+  color: var(--cta-text);
+}
+
+.groupBtn {
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.groupBtn:hover:not(:disabled),
+.groupBtn:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--accent);
+  outline: none;
+}
+.groupBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Row affordances. Panel width leaves no room for labels, so each is a glyph carrying its own
+ * `title` + `aria-label` — and each grows to a real 44px target on a coarse pointer. */
+.rowAct {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.rowAct:hover:not(:disabled),
+.rowAct:focus-visible {
+  color: var(--accent);
+  background: var(--row-hover);
+  outline: none;
+}
+.rowAct:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.rowAct:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.rowActBad:hover:not(:disabled),
+.rowActBad:focus-visible {
+  color: var(--git-del-fg);
+}
+
+/* Commit + push, pinned above the panel foot. */
+.gitFoot {
+  flex: none;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.commitBox {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  resize: vertical;
+}
+.commitBox:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.commitBox:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.footNote {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+/* Branch menu extras, on top of the shared `.headMenu` popover chrome. */
+.menuHead {
+  padding: 8px 12px 4px;
+  border-top: 1px solid var(--line);
+}
+.menuSep {
+  margin: 4px 0;
+  border-top: 1px solid var(--line);
+}
+.menuItemText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The panel is a full-screen SHEET at 201 on a phone, and the shared `.headMenu` chrome sits at
+ * 55 — so an un-raised branch menu renders BEHIND the sheet: invisible, and every tap on it lands
+ * on the sheet instead. Caught by the mobile e2e, not by any DOM-emulator test. The viewer already
+ * established this band (`.viewerScrim` 210, "above the sheet — the viewer opens FROM it"); the
+ * menu takes the slot just under it. */
+.branchForm {
+  display: block;
+  padding: 10px 12px;
+}
+.branchFormLabel {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.branchInput {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.branchInput:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.branchFormRow {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* The discard confirmation. Modal band, like the file viewer it sits beside. */
+
+@media (pointer: coarse) {
+  .ctrlBtn {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+  .groupBtn {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+  /* The glyph controls are the ones a mis-tap costs most on, so they take a full 44px square
+     rather than a 44px box around a 22px hit area. */
+  .rowAct {
+    width: 44px;
+    min-height: 44px;
+  }
+  .branchTrigger {
+    min-height: 44px;
+  }
+  .commitBox {
+    font-size: 16px; /* iOS zooms the viewport on focus below 16px */
+  }
+}
+
+/* The discard confirmation reuses `.confirm` (defined alongside the upload collision prompt in
+ * #807) and changes only the one thing that must differ: this dialog is about DESTROYING work,
+ * so its border carries the deletion colour. A modifier rather than a second `.confirm` block —
+ * two definitions of one class would let source order decide whether the destructive signal
+ * survives, and status colour is load-bearing in this panel. */
+.confirmDanger {
+  border-color: var(--git-del-fg);
+}

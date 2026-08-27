@@ -194,10 +194,14 @@ test("groups render conflict-first, with branch and divergence", async ({
   page,
 }) => {
   await openGit(page);
-  await expect(page.locator("[data-git-tab]")).toContainText(
+  // Read from the PANEL, not from `[data-git-tab]`: since #806 the branch strip and the
+  // divergence chip are pinned in their own head outside the scrolling body, so that the branch
+  // you are about to stage against cannot scroll off screen. The facts are unchanged — only
+  // which element holds them.
+  await expect(page.locator("[data-file-panel]")).toContainText(
     "devopsagent/git-tab",
   );
-  await expect(page.locator("[data-git-tab]")).toContainText("AHEAD 2");
+  await expect(page.locator("[data-file-panel]")).toContainText("AHEAD 2");
   // A conflict blocks everything else, so it must be the first row on screen — an ordering claim
   // that only means anything against real layout.
   const first = page.locator("[data-git-row]").first();

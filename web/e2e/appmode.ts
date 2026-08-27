@@ -1,9 +1,16 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
+
+import {
+  hermeticGitEnv,
+  killGroupsAndWait,
+  removeTree,
+  withTempHome,
+  STARTUP_BUDGET_MS,
+} from "./harness";
 
 /** A real app-mode stack for the Home Free E2E (#579, #806, #807).
  *
@@ -50,15 +57,14 @@ export interface Stack {
   /** Everything the three children printed. A failure in CI is otherwise undiagnosable: the
    *  interesting error is usually in the agent's log, not in the browser. */
   logs: Record<string, string>;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 function git(cwd: string, ...args: string[]): void {
-  execFileSync("git", args, {
-    cwd,
-    stdio: "pipe",
-    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
-  });
+  // `hermeticGitEnv` strips EVERY `GIT_*`, not just the two config ones: `GIT_DIR` or
+  // `GIT_WORK_TREE` in the caller's shell would send this fixture's `git init` and commit at a
+  // repository that is not the throwaway one.
+  execFileSync("git", args, { cwd, stdio: "pipe", env: hermeticGitEnv() });
 }
 
 /** Wait for a line matching `re` on a child's stdout/stderr, or reject with what it did print. */
@@ -80,6 +86,27 @@ function waitForLine(child: ChildProcess, re: RegExp, what: string, ms = 45_000)
       clearTimeout(timer);
       rej(new Error(`${what} exited early (${code}). Output:\n${buf}`));
     });
+    // Node emits `error` — NOT `exit` — for ENOENT / EAGAIN / EMFILE. With no listener that is an
+    // UNCAUGHT exception, which takes the whole runner down before `withTempHome`'s catch can
+    // kill the groups already started or remove the temp home. Rejecting turns it into an
+    // ordinary failure that the cleanup fence handles like any other.
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      rej(new Error(`${what} failed to start: ${String(e)}\nOutput:\n${buf}`));
+    });
+  });
+}
+
+/** Attach an `error` listener the instant a child exists.
+ *
+ *  A ChildProcess `error` with no listener is an UNCAUGHT exception — Node's rule for
+ *  EventEmitter — so ENOENT/EAGAIN/EMFILE would take the whole runner down before the cleanup
+ *  fence could kill the groups already started or remove the temp home. The waiters reject on it
+ *  too; this is the belt, covering the window before any waiter has subscribed.
+ */
+function guardSpawn(child: ChildProcess, key: string): void {
+  child.on("error", (e) => {
+    process.stderr.write(`[${key}] spawn error: ${String(e)}\n`);
   });
 }
 
@@ -99,8 +126,14 @@ async function waitForHttp(
 ): Promise<void> {
   const deadline = Date.now() + ms;
   let exited: number | null = null;
+  let spawnError: string | null = null;
   child.on("exit", (code) => {
     exited = code ?? -1;
+  });
+  // See `waitForLine`: an unhandled `error` is an uncaught exception, not a rejected promise, and
+  // it kills the runner before the cleanup fence gets to run.
+  child.on("error", (e) => {
+    spawnError = String(e);
   });
   for (;;) {
     try {
@@ -108,6 +141,9 @@ async function waitForHttp(
       if (r.status < 500) return;
     } catch {
       /* not up yet */
+    }
+    if (spawnError !== null) {
+      throw new Error(`${key} failed to start: ${spawnError}. Output:\n${logs[key]}`);
     }
     if (exited !== null) {
       throw new Error(`${key} exited (${exited}) before serving ${url}. Output:\n${logs[key]}`);
@@ -136,7 +172,21 @@ function freePort(): Promise<number> {
 
 /** Boot app + relay + agent against a throwaway HOME holding one seeded session and one repo. */
 export async function startStack(): Promise<Stack> {
-  const home = mkdtempSync(join(tmpdir(), "bl-appmode-"));
+  // Declared before the fence so `killAll` can reach them from the failure path.
+  const procs: ChildProcess[] = [];
+  /** Kill every group started so far and WAIT for them to be gone. Safe to call twice, and
+   *  never by name — a `pgrep -f "agent-sessions serve"` would also match the operator's OWN
+   *  running service. Awaiting is what makes the subsequent delete safe rather than a race. */
+  const killAll = () => killGroupsAndWait(procs);
+
+  // EVERYTHING below runs inside the fence, seeding included. The previous shape created the
+  // temp home, built a git repository in it, and only then opened a try/catch around the process
+  // spawns — so a setup command that failed leaked `/tmp/bl-appmode-*` on every run. Handing the
+  // directory in through a callback makes "nothing fallible happens outside the fence" a property
+  // of the structure rather than a rule to remember.
+  return withTempHome(
+    "bl-appmode-",
+    async (home) => {
   const repo = join(home, "proj");
 
   // A real repository — the branch switch under test moves a real ref on real disk.
@@ -158,7 +208,6 @@ export async function startStack(): Promise<Stack> {
     `${JSON.stringify({ type: "user", cwd: repo, message: { content: "app-mode e2e" } })}\n`,
   );
 
-  const procs: ChildProcess[] = [];
   const logs: Record<string, string> = { relay: "", app: "", agent: "" };
 
   // Everything `AGENT_SESSIONS_*` is STRIPPED from the inherited environment and set explicitly
@@ -192,34 +241,13 @@ export async function startStack(): Promise<Stack> {
     AGENT_SESSIONS_PROJECTS: join(home, "projects.json"),
   };
 
-  /** Kill every group started so far and remove the temp home. Safe to call twice. */
-  const teardown = () => {
-    for (const c of procs) {
-      try {
-        if (c.pid) process.kill(-c.pid, "SIGKILL");
-      } catch {
-        /* group already gone */
-      }
-      try {
-        c.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    }
-    rmSync(home, { recursive: true, force: true });
-  };
-
-  try {
-    return await boot();
-  } catch (e) {
-    // Any failure AFTER the first spawn used to leak its detached group and the temp home — and
-    // the very first CI boot failure did exactly that. A partial start now cleans up after
-    // itself, so a red regression cannot slowly exhaust a shared runner.
-    teardown();
-    throw e;
-  }
+  return await boot();
 
   async function boot(): Promise<Stack> {
+  // ONE budget for the whole boot, not three independent ones. Each wait below gets what is
+  // LEFT of it, so three slow steps cannot add up past the hook that is waiting on us.
+  const bootStarted = Date.now();
+  const left = () => Math.max(1_000, STARTUP_BUDGET_MS - (Date.now() - bootStarted));
   // 1. The relay (blind), on an ephemeral port it reports back.
   const relay = spawn("uv", ["run", "python", "tests/appmode/relay.py", "--port", "0"], {
     cwd: REPO_ROOT,
@@ -230,8 +258,9 @@ export async function startStack(): Promise<Stack> {
     detached: true,
   });
   procs.push(relay);
+  guardSpawn(relay, "relay");
   capture(relay, "relay");
-  const relayPort = Number(await waitForLine(relay, /RELAY_PORT=(\d+)/, "test relay", 120_000));
+  const relayPort = Number(await waitForLine(relay, /RELAY_PORT=(\d+)/, "test relay", left()));
 
   // 2. The real app.
   const appPort = await freePort();
@@ -245,8 +274,9 @@ export async function startStack(): Promise<Stack> {
     },
   );
   procs.push(app);
+  guardSpawn(app, "app");
   capture(app, "app");
-  await waitForHttp(`http://127.0.0.1:${appPort}/healthz`, app, logs, "app");
+  await waitForHttp(`http://127.0.0.1:${appPort}/healthz`, app, logs, "app", left());
 
   // 3. The real agent, dialling the relay and bridging to the app.
   const agent = spawn("uv", ["run", "python", "-m", "agent_sessions.homefree"], {
@@ -264,8 +294,9 @@ export async function startStack(): Promise<Stack> {
     },
   });
   procs.push(agent);
+  guardSpawn(agent, "agent");
   capture(agent, "agent");
-  await waitForLine(agent, /registered console/, "home-free agent registration", 120_000);
+  await waitForLine(agent, /registered console/, "home-free agent registration", left());
 
   return {
     home,
@@ -273,27 +304,21 @@ export async function startStack(): Promise<Stack> {
     relayPort,
     appPort,
     logs,
-    stop: () => {
-      for (const p of procs) {
-        // Kill the GROUP (negative pid), not the direct child. `uv run` is a launcher: signalling
-        // it leaves the python it exec'd running forever. Never match these back by name — a
-        // `pgrep -f "agent-sessions serve"` also matches the operator's OWN running service, and
-        // killing that takes their live BattleLab down.
-        try {
-          if (p.pid) process.kill(-p.pid, "SIGKILL");
-        } catch {
-          /* group already gone */
-        }
-        try {
-          p.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      }
-      rmSync(home, { recursive: true, force: true });
+    stop: async () => {
+      // AWAIT the group kill before deleting. `uv run` is a launcher, so the signal goes to the
+      // group; and `process.kill()` returns before the processes are actually gone, so deleting
+      // straight after it raced its own children — measured, a PASSING run left a temp home
+      // behind containing the agent's `.claude.json`, written after the delete had walked past.
+      await killAll();
+      // `removeTree` stays as the belt: bounded, best-effort, never throws.
+      removeTree(home);
     },
   };
   }
+    },
+    // Runs before the temp home is removed: a child still holding it as its cwd has to go first.
+    killAll,
+  );
 }
 
 /** Drive the real connect page all the way to a mounted SPA over the tunnel. */

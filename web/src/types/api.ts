@@ -805,6 +805,11 @@ export interface GitEntry {
   oid: string | null;
   /** Rename/copy source, when the record carried one. */
   orig_path?: string;
+  /** What this row IS, not what it is called — see `entry_fingerprint` server-side. The panel
+   *  echoes it back on a write so the operation acts on the bytes that were displayed; the
+   *  session agent shares this worktree and never takes the panel's lock, so binding to the
+   *  pathname alone meant "act on whatever is there when the command runs". */
+  fp: string;
 }
 
 /** GET /api/git/status (#784). `repo: null` is a normal 200 — "not a repository" is a state.
@@ -818,6 +823,11 @@ export interface GitStatus {
   behind: number | null;
   entries: GitEntry[];
   truncated: boolean;
+  /** The whole staged SET as of this read. A commit records the index, not the listed rows, so
+   *  this is what a commit binds to — a per-row check cannot see a file ADDED to the index. */
+  staged_fp: string;
+  /** The set of paths making the tree dirty — the precondition `switch` refuses on. */
+  dirty_fp: string;
 }
 
 /** POST /api/files/upload/batch (#807): a server-side reservation minted from an immutable
@@ -865,4 +875,65 @@ export interface GitDiff {
   /** The pair exceeded the comparison budget, so this is a whole-block replacement rather than a
    *  line-by-line diff. Said out loud instead of passed off as a real diff. */
   coarse: boolean;
+}
+
+/** GET /api/git/branches (#806): what the branch menu lists. A **read**, so it comes off the read
+ *  path's sanitized gitdir like every other read — the write side never grows its own listing. */
+export interface GitBranches {
+  repo: string | null;
+  current: string | null;
+  local: string[];
+  remote: string[];
+}
+
+/** GET /api/git/push-target (#806): the dry preflight the PUSH control renders *before* the
+ *  operator commits to a write. Ambiguity comes back as `ok:false` + `candidates` rather than an
+ *  error, because the control has to DRAW the refusal — enforcement still lives on the POST. */
+export interface GitPushTarget {
+  ok: boolean;
+  reason: string | null;
+  branch: string | null;
+  remote: string | null;
+  /** `origin/devopsagent/git-write` — the resolved name, never a hardcoded `origin`. */
+  target: string | null;
+  /** Opaque expectation the POST must echo back. Pins the destination the preflight RESOLVED,
+   *  not just its label — `remote.<n>.pushurl` can move while `origin/master` stays true. */
+  expect: string | null;
+  candidates: string[];
+  set_upstream: boolean;
+}
+
+/** Every `/api/git/*` write answers with the post-write status, so the panel settles from the
+ *  server rather than from an optimistic guess (#806). A git operation that appears to have
+ *  worked and did not is worse than a spinner. */
+export interface GitWriteResult {
+  /** `discard` only: `{path: [blob-oid, ...]}` for every version of the bytes that were
+   *  REPLACED. The server displaces the file with `rename` before writing anything, so each set
+   *  of bytes that occupied the name is in the object database — usually one, more than one only
+   *  when something else was writing at the same moment. Recover with `git cat-file -p <oid>`. */
+  recoverable?: Record<string, string[]>;
+  /** `push` only: the commit the REMOTE received. Present even when local settlement failed. */
+  pushed?: string;
+  /** `push` and `pull`: whether the LOCAL bookkeeping finished after the durable change landed.
+   *  `false` means the remote/branch update SUCCEEDED and only the local part did not — a retry
+   *  is safe and idempotent, which is a different action from retrying a failed operation. */
+  settled?: boolean;
+  settle_error?: string | null;
+  /** Null when the post-write status read itself failed. The operation still happened — this
+   *  says only that the panel could not re-read the repository afterwards, so the caller must
+   *  KEEP the status it already had rather than adopting an absence as the new truth. */
+  status: GitStatus | null;
+  /** Present on the operations that have something specific to report. */
+  branch?: string;
+  remote?: string;
+  target?: string;
+  set_upstream?: boolean;
+  commit?: string;
+  files?: number;
+  paths?: string[];
+  discarded?: string[];
+  deleted?: string;
+  created?: boolean;
+  staged?: boolean;
+  upstream?: string;
 }

@@ -12,8 +12,11 @@ import type {
   FileListing,
   Folder,
   FsDir,
+  GitBranches,
   GitDiff,
+  GitPushTarget,
   GitStatus,
+  GitWriteResult,
   UploadBatch,
   UploadResult,
   HandoffCommitted,
@@ -462,6 +465,80 @@ export const api = {
       `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}`,
       init,
     ),
+  /** GIT tab (#806): local + remote-tracking refs for the branch menu. Read-only. */
+  gitBranches: (path?: string, init?: RequestInit) =>
+    getJson<GitBranches>(
+      `/api/git/branches${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** GIT tab (#806): which remote a push WOULD go to, resolved server-side. A read — it resolves
+   *  and reports, and changes nothing, so the control can render `PUSH -> origin` truthfully. */
+  gitPushTarget: (path: string, remote?: string, init?: RequestInit) =>
+    getJson<GitPushTarget>(
+      `/api/git/push-target?path=${encodeURIComponent(path)}${remote ? `&remote=${encodeURIComponent(remote)}` : ""}`,
+      init,
+    ),
+  // --- the write side (#806). Every one is POST + CSRF + Origin-checked; none has a force
+  // variant, and each surfaces the server's own refusal text, because the refusal IS the feature:
+  // "409 dirty tree" and "423 the agent is running git" are different facts and read as such.
+  gitFetch: (path: string, remote?: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/fetch", { path, remote }),
+  /** Fast-forward only. A diverged branch comes back 409 with the numbers, never a merge. */
+  gitPull: (path: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/pull", { path }),
+  /** Refuses a dirty tree — `git switch` silently carries uncommitted work across (measured). */
+  gitSwitch: (
+    path: string,
+    branch: string,
+    create = false,
+    start?: string,
+    expect?: string,
+  ) =>
+    // `expect` is the `dirty_fp` the panel last displayed. `switch` CARRIES uncommitted work
+    // across, so a tree that went dirty after the menu opened would drag those edits onto the
+    // other branch; the server re-checks inside its lock and refuses.
+    mutateJson<GitWriteResult>("POST", "/api/git/switch", {
+      path,
+      branch,
+      create,
+      start,
+      expect,
+    }),
+  /** `git branch -d` only: an unmerged branch is refused, and no force variant exists. */
+  gitBranchDelete: (path: string, branch: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/branch/delete", {
+      path,
+      branch,
+    }),
+  /** Whole files, either direction. Never by hunk. */
+  gitStage: (
+    path: string,
+    paths: string[],
+    staged: boolean,
+    expect?: Record<string, string>,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/stage", {
+      path,
+      paths,
+      staged,
+      expect,
+    }),
+  /** The one destructive call. `expect` carries the `fp` of each row the confirmation showed,
+   *  and the server re-reads inside its lock: a file the session agent edited while the dialog
+   *  was open no longer matches, so the confirmed bytes are what gets discarded — or nothing is.
+   *  Binding to the pathname alone meant "discard whatever is there when the command runs". */
+  gitDiscard: (path: string, paths: string[], expect?: Record<string, string>) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/discard", { path, paths, expect }),
+  /** `expect` is the whole staged SET (`staged_fp`), not the listed rows: `git commit` records
+   *  the index, so a file staged after the panel read it would otherwise ride along unseen. */
+  gitCommit: (path: string, message: string, expect?: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/commit", { path, message, expect }),
+  /** Current branch to a server-resolved target; never --force, never a client refspec. */
+  gitPush: (path: string, remote?: string, expect?: string) =>
+    // `expect` is the target the panel DISPLAYED. The server refuses if it has since resolved
+    // elsewhere, so a config change between the preflight and the click cannot silently redirect
+    // the push somewhere the operator was never shown.
+    mutateJson<GitWriteResult>("POST", "/api/git/push", { path, remote, expect }),
   /** FILES panel (#807): mint a batch reservation from a manifest, so an over-budget folder drop
    *  fails before a single byte moves. */
   filesUploadBatch: (files: { relpath: string; size: number }[]) =>

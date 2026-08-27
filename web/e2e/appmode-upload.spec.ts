@@ -33,8 +33,11 @@ test.beforeAll(async () => {
   stack = await startStack();
 });
 
-test.afterAll(() => {
-  stack?.stop();
+test.afterAll(async () => {
+  // AWAITED: `stop()` became async when the harness started waiting for the killed process
+  // groups to actually be gone before deleting the temp home (#806). Not awaiting it here would
+  // race the delete against the children again — the exact bug that await was added to fix.
+  await stack?.stop();
 });
 
 test("a picked file crosses the relay, lands on disk, and shows up in the tree", async ({

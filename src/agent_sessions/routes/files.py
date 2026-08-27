@@ -21,7 +21,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import files, filewrite, gitpanel
+from .. import files, filewrite, gitpanel, gitwrite
 from . import fileupload
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -239,6 +239,150 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise HTTPException(
                 status_code=500, detail="the upload failed", headers=_NO_STORE
             ) from None
+
+    @app.get("/api/git/branches")
+    async def git_branches(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # A READ, so it stays on the read path's sanitized gitdir like every other read.
+        raw = request.query_params.get("path")
+        try:
+            payload = await _run(raw or "", gitpanel.git_branches, raw)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not list the branches", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    @app.get("/api/git/push-target")
+    async def git_push_target(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # The dry preflight (#806 Phase 3): which remote a push WOULD go to, resolved server-side
+        # so the control can render `PUSH -> origin` before the operator commits to it. A GET
+        # because it is a read — it resolves and reports, and changes nothing. Ambiguity comes
+        # back as `ok:false` + candidates rather than an error, because the control has to RENDER
+        # the refusal; the POST is where that same ambiguity is actually enforced.
+        raw = request.query_params.get("path")
+        if not raw or not raw.strip():
+            raise HTTPException(status_code=422, detail="path is required", headers=_NO_STORE)
+        remote = request.query_params.get("remote")
+        try:
+            payload = await _run(raw, gitwrite.push_target, raw, remote)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not resolve the push target", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    async def _write(request: Request, fn, *keys):
+        """Shared body for every git WRITE route (#806).
+
+        Three properties, none of them incidental:
+
+        * The verb is POST and `csrf_guard` is a dependency on each route — these are the first
+          state-changing routes in this surface, and a write reachable by GET would be reachable by
+          an image tag.
+        * The work runs off-loop on the file panel's OWN pool under its admission slot, exactly
+          like the reads, so a slow network fetch cannot stall the event loop or outrun the budget.
+        * `FsError` carries its own status (409 for a refusal, 423 for a busy repository, 422 for a
+          rejected name), so a refusal reaches the client as the reason it actually is rather than
+          as a generic failure. That distinction IS the feature — see the issue's refusal states.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422, detail="a JSON object is required", headers=_NO_STORE
+            )
+        path = body.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise HTTPException(status_code=422, detail="path is required", headers=_NO_STORE)
+        # A key may name ALTERNATIVE spellings, first present wins — see `/api/git/switch`.
+        args = [
+            next((body[k] for k in spec.split("|") if body.get(k) is not None), None)
+            for spec in keys
+        ]
+        try:
+            payload = await _run(path, fn, path, *args)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="the git operation failed", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    @app.post("/api/git/fetch")
+    async def git_fetch(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        return await _write(request, gitwrite.git_fetch, "remote")
+
+    @app.post("/api/git/pull")
+    async def git_pull(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Fast-forward only. A diverged branch is a 409 with the numbers, never an attempted merge.
+        return await _write(request, gitwrite.git_pull)
+
+    @app.post("/api/git/switch")
+    async def git_switch(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Refuses a dirty tree: `git switch` silently carries uncommitted work across (measured).
+        # #806 documents the start point as `from`; the first implementation read only `start`, so
+        # a caller following the published contract silently created from HEAD instead. Both
+        # spellings are accepted and normalised, because breaking either would be worse than
+        # carrying one alias.
+        return await _write(
+            request, gitwrite.git_switch, "branch", "create", "from|start", "expect"
+        )
+
+    @app.post("/api/git/branch/delete")
+    async def git_branch_delete(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # `-d` only — an unmerged branch is refused, and no force variant exists to reach for.
+        return await _write(request, gitwrite.git_branch_delete, "branch")
+
+    @app.post("/api/git/stage")
+    async def git_stage(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Whole files only, in either direction. Staging runs the repo's own clean filter — an
+        # accepted, documented residual (gitwrite.git_stage), not an oversight.
+        return await _write(request, gitwrite.git_stage, "paths", "staged", "expect")
+
+    @app.post("/api/git/discard")
+    async def git_discard(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # The one destructive route. Every path must appear in a status the server re-reads
+        # inside the call, so a tampered request cannot widen the blast radius past the
+        # confirmation the operator actually saw.
+        return await _write(request, gitwrite.git_discard, "paths", "expect")
+
+    @app.post("/api/git/commit")
+    async def git_commit(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # No amend, no --no-verify (hooks are already neutralized), author from the operator's
+        # own git identity.
+        return await _write(request, gitwrite.git_commit, "message", "expect")
+
+    @app.post("/api/git/push")
+    async def git_push(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # Current branch to a server-resolved target; never --force, never a client refspec.
+        # `expect` carries the target the panel DISPLAYED and is REQUIRED: a config change
+        # between the preflight and the click is a refusal rather than a silent redirect, and an
+        # omitted binding is a 422 rather than a quiet fallback to re-resolving. Optional would
+        # mean any stale client keeps the behaviour the binding exists to remove.
+        return await _write(request, gitwrite.git_push, "remote", "expect")
 
     @app.get("/api/files/capabilities")
     async def files_capabilities(_user: str = Depends(logged_in)) -> JSONResponse:

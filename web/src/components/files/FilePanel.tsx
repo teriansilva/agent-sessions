@@ -73,13 +73,23 @@ export function FilePanel({
     staged?: boolean;
   } | null>(null);
   const [tab, setTab] = useState<"files" | "git">("files");
-  // Response is tagged with the tick it answers, so "loading" is DERIVED rather than set
-  // synchronously inside the effect (which the compiler rightly rejects as a cascading render).
+  // Response is tagged with the tick AND the root it answers, so "loading" is DERIVED rather
+  // than set synchronously inside the effect (which the compiler rightly rejects as a cascading
+  // render).
+  //
+  // The root half is not symmetry for its own sake. A refresh bumps `tick`, so a stale response
+  // was already ignored — but moving the panel to another folder does NOT bump the tick, so
+  // between the navigation and the new status arriving `gitLoading` stayed false and the PREVIOUS
+  // repository's rows kept rendering under the new `root`. Every control in the GIT tab targets
+  // the current root, so a discard clicked on one of those rows sent the new root with the old
+  // repo's path — and if both repositories have a file by that name, the server's fresh-path
+  // check passes and the wrong repository's work is destroyed.
   const [gitRes, setGitRes] = useState<{
+    root: string;
     tick: number;
     status: GitStatus | null;
     error: string | null;
-  }>({ tick: -1, status: null, error: null });
+  }>({ root: "", tick: -1, status: null, error: null });
   const [tick, setTick] = useState(0);
   const [caps, setCaps] = useState<FileCapabilities | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -201,12 +211,15 @@ export function FilePanel({
     if (mode !== "sheet") return;
     const onKey = (e: KeyboardEvent) => {
       // The viewer stacks above the sheet and owns the keyboard while it is open — and so do the
-      // upload menu and the collision prompt (#807). Without this, Escape in either closed the
-      // whole PANEL: both handlers are capture-phase on `document`, so registration order wins
-      // and this one is registered first. Caught by the mobile e2e, invisible to jsdom.
+      // upload menu and collision prompt (#807) and the GIT tab's branch menu and discard
+      // confirmation (#806). Without this, Escape in any of them closed the whole PANEL: both
+      // handlers are capture-phase on `document`, so registration order wins and this one is
+      // registered first. Caught by the mobile e2e, invisible to jsdom. The list is a UNION —
+      // the two features landed on separate branches and each added its own overlays.
       if (
         document.querySelector(
-          "[data-file-viewer], [data-upload-menu], [data-collision-prompt]",
+          "[data-file-viewer], [data-upload-menu], [data-collision-prompt], " +
+            "[data-branch-menu], [data-discard-confirm]",
         )
       )
         return;
@@ -251,11 +264,14 @@ export function FilePanel({
     const ctl = new AbortController();
     api
       .gitStatus(root, { signal: ctl.signal })
-      .then((s) => live && setGitRes({ tick, status: s, error: null }))
+      // `root` here is the one this request was ISSUED for, captured by the closure — not
+      // whatever the panel is showing by the time it answers.
+      .then((s) => live && setGitRes({ root, tick, status: s, error: null }))
       .catch((e: unknown) => {
         if (!live || (e instanceof DOMException && e.name === "AbortError"))
           return;
         setGitRes({
+          root,
           tick,
           status: null,
           error:
@@ -270,9 +286,12 @@ export function FilePanel({
     };
   }, [root, tick]);
 
-  const git = gitRes.status;
-  const gitError = gitRes.error;
-  const gitLoading = gitRes.tick !== tick;
+  // A status that answers for a different root is not "slightly stale", it is about a different
+  // repository — so it is withheld entirely rather than rendered until it is replaced.
+  const gitFresh = gitRes.root === root;
+  const git = gitFresh ? gitRes.status : null;
+  const gitError = gitFresh ? gitRes.error : null;
+  const gitLoading = !gitFresh || gitRes.tick !== tick;
 
   const goUp = useCallback(() => {
     if (rootParent) {
@@ -455,11 +474,23 @@ export function FilePanel({
         </div>
       ) : tab === "git" ? (
         <GitTab
+          root={root}
+          sessionKey={sessionKey}
           status={git}
           loading={gitLoading}
           error={gitError}
           onRetry={() => setTick((n) => n + 1)}
           onSendPath={sendPath}
+          // A write answers with the post-write status, so the panel settles from the SERVER
+          // rather than waiting up to a poll interval to notice its own change (#806). The root
+          // the write STARTED against is carried through and re-checked here: a slow write in
+          // repo A must not overwrite repo B's status after the operator moved the panel.
+          onStatus={(s, forRoot) => {
+            if (forRoot !== root) return;
+            // Tagged with the root it belongs to, same as the poll: the guard above is what
+            // rejects a stale write, and this is what keeps the state readable as "whose".
+            setGitRes({ root, tick, status: s, error: null });
+          }}
           onOpen={(e: GitEntry, trigger) =>
             setViewer({
               path: `${git?.repo ?? root}/${e.path}`,
@@ -493,8 +524,9 @@ export function FilePanel({
         <span className="hud-tag">
           {root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}
         </span>
-        {/* `READ ONLY` became a lie the moment upload shipped (#807). It is REPLACED rather than
-            deleted, because the remaining boundary is still worth saying out loud. */}
+        {/* `READ ONLY` became a lie the moment upload (#807) and the git writes (#806) shipped.
+            It is REPLACED rather than deleted, because the remaining boundary is still worth
+            saying out loud — and it stays accurate for both features. */}
         <span className="hud-tag">NO MOVE / RENAME / DELETE / EDIT</span>
       </div>
     </>

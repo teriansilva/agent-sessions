@@ -521,8 +521,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # before the SPA catch-all.
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
-    # File panel (#783): bounded read-only directory listing + file read under $HOME. GET-only
-    # (no CSRF surface); containment lives in files.py, which is a security boundary.
+    # File panel (#783/#784): bounded directory listing, file read, git status/diff/branches — and
+    # since #807 the upload routes and since #806 the git WRITE routes, all POST and therefore
+    # CSRF-guarded. Containment lives in files.py, filewrite.py and gitpanel.discover_repo; all
+    # three are security boundaries.
     files_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Per-agent usage + budgets (#839): the read is cheap and always available; probing the

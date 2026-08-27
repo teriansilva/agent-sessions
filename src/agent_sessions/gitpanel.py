@@ -60,6 +60,7 @@ No shell, ever. No writes to the repository, ever.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import select
@@ -734,7 +735,7 @@ def _verify_with_git(repo: Repo, gitdir: str) -> None:
 # --------------------------------------------------------------------------- status
 
 
-def _parse_porcelain_v2(blob: bytes) -> dict:
+def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
     """NUL-delimited porcelain v2.
 
     ``-z`` matters: v1 and non-``-z`` output *quote-escape* paths containing spaces, quotes,
@@ -820,6 +821,12 @@ def _parse_porcelain_v2(blob: bytes) -> dict:
                     "oid_theirs": parts[9],
                 }
             )
+    for e in entries:
+        # The root travels with the entry only long enough to fingerprint it; it is not part of
+        # the payload the client sees.
+        e["_root"] = root
+        e["fp"] = entry_fingerprint(e)
+        e.pop("_root", None)
     return {
         "branch": branch,
         "upstream": upstream,
@@ -827,7 +834,65 @@ def _parse_porcelain_v2(blob: bytes) -> dict:
         "behind": behind,
         "entries": entries,
         "truncated": truncated,
+        # What the STAGED set looked like when this was read. A commit records the whole index,
+        # not the rows the operator ticked, so binding a commit to individual paths would still
+        # let a file staged in the meantime ride along unseen.
+        "staged_fp": staged_fingerprint(entries),
+        # And whether the tree was clean, for the operations whose precondition is exactly that.
+        "dirty_fp": dirty_fingerprint(entries),
     }
+
+
+def entry_fingerprint(e: dict) -> str:
+    """What this row IS, not what it is called.
+
+    Every write in the panel was bound to a pathname, so "discard a.txt" meant "discard whatever
+    a.txt contains when the command runs" — not the bytes the operator looked at and confirmed.
+    The session agent shares the worktree and does not take the panel's lock, so the gap is
+    reachable without any concurrent panel use at all.
+
+    The fingerprint covers the identity of the content on both sides of the index, so a row that
+    changed in any way the panel would have re-rendered no longer matches the one confirmed.
+    """
+    material = "\x00".join(
+        str(e.get(k) or "")
+        for k in ("path", "kind", "index", "worktree", "oid", "oid_ours", "oid_theirs")
+    )
+    # …plus the WORKTREE side, which none of the above carries. `oid` is the INDEX blob, and it
+    # does not move when the agent edits the working file — so a fingerprint built from porcelain
+    # alone matched happily across exactly the edit this exists to catch (measured: the discard
+    # regression did not raise). git never hashes worktree files during `status`, so identity here
+    # is `(size, mtime_ns)` rather than content.
+    #
+    # Residual, stated: a rewrite that keeps both the size AND the mtime is not distinguished.
+    # That takes deliberately restoring the timestamp; an agent editing a file does neither.
+    material += "\x00" + _worktree_stat(e.get("_root") or "", e.get("path") or "")
+    return hashlib.sha256(material.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def _worktree_stat(root: str, path: str) -> str:
+    """`size:mtime_ns` for a tracked path, or `-` when it is absent (a deletion is a state too)."""
+    if not root or not path:
+        return "-"
+    try:
+        st = os.stat(os.path.join(root, path))
+    except OSError:
+        return "-"
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def staged_fingerprint(entries: list[dict]) -> str:
+    """The whole staged set, because that is what a commit actually records."""
+    staged = sorted(
+        entry_fingerprint(e) for e in entries if e.get("index") not in (".", "?", None, "")
+    )
+    return hashlib.sha256("\x00".join(staged).encode()).hexdigest()[:16]
+
+
+def dirty_fingerprint(entries: list[dict]) -> str:
+    """The set of paths making the tree dirty — what `switch` and `pull` refuse on."""
+    dirty = sorted(e.get("path", "") for e in entries if e.get("kind") != "untracked")
+    return hashlib.sha256("\x00".join(dirty).encode()).hexdigest()[:16]
 
 
 def _split_xy(path: str, xy: str, oid_head: str, oid_index: str) -> list[dict]:
@@ -862,30 +927,57 @@ class _Flight:
     value: dict | None = None
     error: BaseException | None = None
     at: float = 0.0
+    #: The epoch this flight STARTED in. A caller that has just mutated the repository asks for a
+    #: value produced at or after its own epoch, so an in-flight read that began before the write
+    #: can never be handed back as the post-write answer (#806, found in review).
+    epoch: int = 0
 
 
 _flights_lock = threading.Lock()
 _flights: dict[str, _Flight] = {}
+_epochs: dict[str, int] = {}
 
 
-def _single_flight(key: str, produce):
+def bump_epoch(key: str) -> int:
+    """Mark everything known about ``key`` as belonging to the past. Returns the new epoch."""
+    with _flights_lock:
+        nxt = _epochs.get(key, 0) + 1
+        _epochs[key] = nxt
+        fl = _flights.get(key)
+        # A SETTLED entry is dropped outright; an unsettled one is left for the followers already
+        # waiting on it (orphaning them is the bug this cache exists to prevent) — it simply
+        # cannot satisfy anyone asking for the new epoch.
+        if fl is not None and fl.event.is_set():
+            _flights.pop(key, None)
+        return nxt
+
+
+def _single_flight(key: str, produce, min_epoch: int | None = None):
     """One run per repo at a time, with a 1s reuse window.
 
     A TTL cache alone does not coalesce simultaneous *cold* misses: N pollers arriving together
     each miss, each spawn git, and each then populate the cache. The leader/follower split is what
     actually makes "N pollers, one subprocess" true.
+
+    ``min_epoch`` is the write path's guard. Dropping a settled entry is not enough on its own:
+    a read already IN FLIGHT when the write landed would be rejoined and its pre-write value
+    returned as the result of the write (measured — a fetch reported ``behind: 0`` while a fresh
+    read straight after reported ``behind: 1``). A flight older than ``min_epoch`` is therefore
+    neither reused nor joined; a new one starts.
     """
     now = time.monotonic()
     with _flights_lock:
+        cur = _epochs.get(key, 0)
         fl = _flights.get(key)
-        if fl is not None and fl.event.is_set() and now - fl.at < _STATUS_TTL_S:
+        current_enough = fl is not None and (min_epoch is None or fl.epoch >= min_epoch)
+        if fl is not None and current_enough and fl.event.is_set() and now - fl.at < _STATUS_TTL_S:
             if fl.error:
                 raise fl.error
             return fl.value
-        if fl is not None and not fl.event.is_set():
+        if fl is not None and current_enough and not fl.event.is_set():
             leader = False
         else:
-            fl = _Flight()
+            fl = _Flight(epoch=cur)
             _flights[key] = fl
             leader = True
     if not leader:
@@ -908,10 +1000,28 @@ def _single_flight(key: str, produce):
 def reset_flights_for_test() -> None:
     with _flights_lock:
         _flights.clear()
+        _epochs.clear()
 
 
-def git_status(path: str | None) -> dict:
-    """Repository state for ``path``. ``repo: None`` is a normal 200 — "not a repo" is a state."""
+def invalidate_status(key: str) -> None:
+    """Mark the cached status for one repo stale — called after a WRITE (#806).
+
+    Without this, a completed fetch/switch/commit could be followed by up to a second of the
+    pre-write status, so the panel would show the operator a state their own action had already
+    replaced. A finished write is exactly the moment the cached answer is known to be wrong.
+
+    Implemented as an epoch bump rather than only a cache drop, because a drop alone leaves the
+    *in-flight* case open — see :func:`_single_flight`.
+    """
+    bump_epoch(key)
+
+
+def git_status(path: str | None, min_epoch: int | None = None) -> dict:
+    """Repository state for ``path``. ``repo: None`` is a normal 200 — "not a repo" is a state.
+
+    ``min_epoch`` is for the write path: it demands a value produced at or after that epoch, so
+    a read that began before the mutation cannot be handed back as its result.
+    """
     base = contained_path(path or "")
     repo = discover_repo(base)
     if repo is None:
@@ -934,14 +1044,61 @@ def git_status(path: str | None) -> dict:
                 cwd=repo.toplevel,
                 gitdir=gitdir,
             )
-            parsed = _parse_porcelain_v2(blob)
+            parsed = _parse_porcelain_v2(blob, repo.toplevel)
             # git reports `(detached)` when the ref snapshot was too large to copy, but the branch
             # name was read straight from HEAD and is still known.
             parsed["branch"] = parsed["branch"] or branch
             parsed["repo"] = repo.toplevel
             return parsed
 
-    return _single_flight(repo.toplevel, produce)
+    return _single_flight(repo.toplevel, produce, min_epoch=min_epoch)
+
+
+def git_branches(path: str | None) -> dict:
+    """Local + remote-tracking branches for the panel's branch menu (#806).
+
+    A **read**, so it stays on the read path and runs against the sanitized gitdir like every other
+    read — the write side never grows its own listing. `for-each-ref` rather than `branch`: it is
+    plumbing with a stable, parseable format and no colour/pager/column behaviour to suppress.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return {"repo": None, "current": None, "local": [], "remote": []}
+
+    def produce() -> dict:
+        with sanitized_gitdir(repo) as (gitdir, branch):
+            blob = _run_git(
+                home_root(),
+                [
+                    "for-each-ref",
+                    "--format=%(refname:short)%00%(refname)",
+                    "--count",
+                    str(GIT_MAX_REFS),
+                    "refs/heads",
+                    "refs/remotes",
+                ],
+                cwd=repo.toplevel,
+                gitdir=gitdir,
+            )
+            local: list[str] = []
+            remote: list[str] = []
+            for line in blob.decode("utf-8", "replace").splitlines():
+                short, _, full = line.partition("\x00")
+                if not short:
+                    continue
+                if full.startswith("refs/heads/"):
+                    local.append(short)
+                elif full.startswith("refs/remotes/") and not short.endswith("/HEAD"):
+                    remote.append(short)
+            return {
+                "repo": repo.toplevel,
+                "current": branch,
+                "local": sorted(local),
+                "remote": sorted(remote),
+            }
+
+    return _single_flight(f"branches:{repo.toplevel}", produce)
 
 
 def git_diff_kw(path: str, staged: bool) -> dict:
@@ -962,7 +1119,9 @@ __all__ = [
     "git_bin",
     "git_diff",
     "git_diff_kw",
+    "git_branches",
     "git_status",
+    "invalidate_status",
     "reset_flights_for_test",
     "reset_git_bin_for_test",
 ]
