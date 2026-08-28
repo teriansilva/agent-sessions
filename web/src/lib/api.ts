@@ -363,6 +363,13 @@ export const api = {
     postJson<{ term_font_size: number }>("/api/prefs", {
       term_font_size: size,
     }),
+  /** Persist the terminal font stack (#866). CSRF-guarded. Strict on the server — a stack with
+   *  a forbidden character or an empty comma segment is a 422, not a silent fallback — so
+   *  callers send an already-coerced value from `coerceTermFontFamily`. */
+  setTermFontFamily: (family: string) =>
+    postJson<{ term_font_family: string }>("/api/prefs", {
+      term_font_family: family,
+    }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
    *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url

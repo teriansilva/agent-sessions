@@ -28,7 +28,11 @@ test("each theme is self-consistent with a usable terminal palette", () => {
     ]) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i);
     }
-    expect(t.terminal.fontFamily).toMatch(/monospace/);
+    // #866: the FACE is not a theme field any more — it is its own axis (theme/termFont.ts),
+    // exactly like the size (#859). Asserted as an ABSENCE so re-adding it fails here rather
+    // than silently giving the value a second owner that a theme flip could reset.
+    expect(t.terminal).not.toHaveProperty("fontFamily");
+    expect(t.terminal).not.toHaveProperty("fontSize");
   }
 });
 

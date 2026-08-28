@@ -60,8 +60,9 @@ import {
   TERM_FONT_SIZE_MAX,
   TERM_FONT_SIZE_MIN,
 } from "../../theme/termSize";
+import { useTermFont } from "../../theme/termFontStore";
 import { useTermSize } from "../../theme/termSizeStore";
-import { THEMES, xtermTheme } from "../../theme/themes";
+import { xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle } from "./Compose";
 import { HandoffModal } from "./HandoffModal";
@@ -188,6 +189,14 @@ export function Terminal({
   const termFontSizeRef = useRef(termFontSize);
   useEffect(() => {
     termFontSizeRef.current = termFontSize;
+  });
+  const { family: termFontFamily } = useTermFont();
+  // Same ref treatment as the size above, and for the same reason (#866): a fresh terminal
+  // must open in the current face, but changing the face must never re-key the socket —
+  // that would tear down xterm and the WebSocket on every card tap.
+  const termFontFamilyRef = useRef(termFontFamily);
+  useEffect(() => {
+    termFontFamilyRef.current = termFontFamily;
   });
   // Live column count for the quick-zoom readout (#859). Fed by xterm's own resize event, so
   // it tracks a rotation or a sidebar toggle, not just a stepper tap.
@@ -338,7 +347,6 @@ export function Terminal({
 
     // Initial look from the active theme; a separate effect re-applies on theme/accent change.
     // The cursor follows the brand accent (#211 Phase 2), overriding the theme's default.
-    const t0 = THEMES[theme].terminal;
     const term = new Xterm({
       cursorBlink: true,
       // #859: the size is its own axis now (theme/termSize.ts), not a theme field.
@@ -348,7 +356,8 @@ export function Terminal({
       // compactly so the memory cost is modest. Pairs with the server ring (_MAX_BUF) that backs
       // reconnect replay.
       scrollback: 50000,
-      fontFamily: t0.fontFamily,
+      // #866: the FACE is its own axis too (theme/termFont.ts), no longer a theme field.
+      fontFamily: termFontFamilyRef.current,
       theme: { ...xtermTheme(theme), cursor: accent },
       // #617: on macOS xterm's `shouldForceSelection` is `altKey && macOptionClickForcesSelection`
       // (Shift is inert there), so without this NO modifier — synthetic or real — can select while
@@ -1502,10 +1511,14 @@ export function Terminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, id, takeoverEpoch]);
 
-  // Re-theme AND re-size the live terminal WITHOUT tearing it down. Colours apply immediately;
-  // a font change recomputes the grid, and xterm's onResize handler (wired above) pushes the
-  // new dimensions to the pty — SIGWINCH, so the agent re-lays-out at the new width. The cursor
-  // tracks the brand accent (#211 Phase 2).
+  // Re-theme, re-size AND re-FACE the live terminal WITHOUT tearing it down. Colours apply
+  // immediately; a size or family change recomputes the grid, and xterm's onResize handler
+  // (wired above) pushes the new dimensions to the pty — SIGWINCH, so the agent re-lays-out at
+  // the new width. The cursor tracks the brand accent (#211 Phase 2).
+  //
+  // Size (#859) and family (#866) are two axes on one effect deliberately: they are the two
+  // inputs to the same cell measurement, so coalescing them here means changing both in one
+  // commit costs ONE refit rather than two. Neither may join the socket effect's deps.
   //
   // The refit goes through `refitSoonRef` — the DEBOUNCED path the socket effect owns — never a
   // raw fit(). A theme flip is rare, but the #859 stepper is tapped repeatedly, and one SIGWINCH
@@ -1515,12 +1528,11 @@ export function Terminal({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    const t = THEMES[theme].terminal;
     term.options.theme = { ...xtermTheme(theme), cursor: accent };
-    term.options.fontFamily = t.fontFamily;
+    term.options.fontFamily = termFontFamily;
     term.options.fontSize = termFontSize;
     refitSoonRef.current();
-  }, [theme, accent, termFontSize]);
+  }, [theme, accent, termFontSize, termFontFamily]);
 
   const text = statusText(status);
   const head = headStatus(status);

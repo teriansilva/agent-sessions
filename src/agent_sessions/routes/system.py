@@ -81,6 +81,10 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("invalid accent")
     if "term_font_size" in payload and not prefs.is_valid_term_font_size(payload["term_font_size"]):
         raise bad("invalid term_font_size")
+    if "term_font_family" in payload and not prefs.is_valid_term_font_family(
+        payload["term_font_family"]
+    ):
+        raise bad("invalid term_font_family")
     if "compose_default" in payload and payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
         raise bad("unknown compose_default")
     if (
@@ -350,6 +354,9 @@ def register(
                 # yet; localStorage is the device cache and WINS over this, which is what
                 # keeps a phone at 10 px while the desktop stays at 13 px.
                 "term_font_size": prefs.get_term_font_size(),
+                # Terminal font FAMILY (#866). Same seeding contract as the size above: the
+                # device cache wins, this only seeds a device that has never chosen.
+                "term_font_family": prefs.get_term_font_family(),
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
@@ -446,6 +453,14 @@ def register(
             if not prefs.is_valid_term_font_size(payload["term_font_size"]):
                 raise HTTPException(status_code=422, detail="invalid term_font_size")
             out["term_font_size"] = prefs.set_term_font_size(payload["term_font_size"])
+        if "term_font_family" in payload:
+            # Strict on write, lenient on read (#866), exactly as for the size above. The
+            # write gate also carries the security boundary: the value lands in a CSS
+            # declaration and in xterm's font strings, so a forbidden character is a 422
+            # rather than something the read path quietly drops.
+            if not prefs.is_valid_term_font_family(payload["term_font_family"]):
+                raise HTTPException(status_code=422, detail="invalid term_font_family")
+            out["term_font_family"] = prefs.set_term_font_family(payload["term_font_family"])
         if "compose_default" in payload:
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")

@@ -898,6 +898,141 @@ def test_set_term_font_size_without_clobbering_theme_or_accent(auth_cfg, tmp_hom
     assert cfg["term_font_size"] == 16 and cfg["theme"] == "light" and cfg["accent"] == "#00aaff"
 
 
+# ---- terminal font FAMILY (#866) -----------------------------------------------------
+#
+# Same shared-fixture device as the size above (tests/fixtures/term_font_family_cases.json,
+# read by web/src/theme/termFont.test.ts too). The rows that earn the fixture are NOT the
+# obviously-forbidden characters — those are easy and both languages get them right. They are
+# the stacks built entirely from ALLOWED characters that are nevertheless dead: an unbalanced
+# quote, an empty comma segment, whitespace only. A charset check passes every one of those,
+# and the terminal then renders in nothing.
+
+_FAM = json.loads((Path(__file__).parent / "fixtures" / "term_font_family_cases.json").read_text())
+
+
+def test_term_font_family_fixture_matches_the_constants():
+    assert _FAM["default"] == prefs.DEFAULT_TERM_FONT_FAMILY
+    assert _FAM["max_len"] == prefs.TERM_FONT_FAMILY_MAX_LEN
+
+
+def test_coerce_term_font_family_shared_read_table():
+    for case in _FAM["read"]:
+        got = prefs.coerce_term_font_family(case["in"])
+        why = case["why"]
+        assert got == case["out"], f"{case['in']!r} → {got!r}, expected {case['out']!r}: {why}"
+
+
+def test_is_valid_term_font_family_shared_write_table():
+    for v in _FAM["write_accepted"]:
+        assert prefs.is_valid_term_font_family(v) is True, v
+    for v in _FAM["write_rejected"]:
+        assert prefs.is_valid_term_font_family(v) is False, v
+
+
+def test_term_font_family_length_cap_is_enforced_at_the_boundary():
+    # Exactly at the cap is fine; one character over is not — asserted on the boundary itself
+    # rather than on a comfortably-long string, which would pass against an off-by-one.
+    at_cap = "Menlo, " + "a" * (prefs.TERM_FONT_FAMILY_MAX_LEN - len("Menlo, "))
+    assert len(at_cap) == prefs.TERM_FONT_FAMILY_MAX_LEN
+    assert prefs.is_valid_term_font_family(at_cap) is True
+    assert prefs.is_valid_term_font_family(at_cap + "a") is False
+    assert prefs.coerce_term_font_family(at_cap + "a") == prefs.DEFAULT_TERM_FONT_FAMILY
+
+
+def test_term_font_family_read_never_preserves_an_unusable_stack(tmp_path):
+    # The failure this guards: a hand-edited prefs.json must not be able to leave the terminal
+    # rendering in nothing. Every one of these is legal-charset and structurally dead.
+    p = tmp_path / "p.json"
+    for dead in ('"Fira Code', "Menlo,,monospace", "   ", ",monospace"):
+        p.write_text(json.dumps({"term_font_family": dead}))
+        assert prefs.get_term_font_family(p) == prefs.DEFAULT_TERM_FONT_FAMILY, dead
+
+
+def test_term_font_family_round_trip_and_default(tmp_path):
+    p = tmp_path / "p.json"
+    assert prefs.get_term_font_family(p) == prefs.DEFAULT_TERM_FONT_FAMILY
+    assert prefs.set_term_font_family('"Fira Code", monospace', p) == '"Fira Code", monospace'
+    assert prefs.get_term_font_family(p) == '"Fira Code", monospace'
+
+
+def test_term_font_family_interior_spacing_is_preserved_verbatim(tmp_path):
+    # Not cosmetic: the client decides which preset card reads as ACTIVE by comparing the
+    # stored string to its preset stacks. Any rewriting here would show a preset as "Custom"
+    # on the next device that seeds from the server.
+    p = tmp_path / "p.json"
+    odd = "Menlo ,  monospace"
+    assert prefs.set_term_font_family(f"  {odd}  ", p) == odd
+    assert prefs.get_term_font_family(p) == odd
+
+
+def test_config_exposes_term_font_family(auth_cfg, tmp_home):
+    prefs.set_term_font_family('"Fira Code", monospace')
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["term_font_family"] == '"Fira Code", monospace'
+
+
+def test_config_default_term_font_family(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get("/api/config").json()["term_font_family"] == prefs.DEFAULT_TERM_FONT_FAMILY
+
+
+def test_set_term_font_family_endpoint_persists(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/prefs", json={"term_font_family": "Menlo, monospace"}, headers=hdrs)
+    assert r.status_code == 200 and r.json() == {"term_font_family": "Menlo, monospace"}
+    assert c.get("/api/config").json()["term_font_family"] == "Menlo, monospace"
+
+
+def test_set_term_font_family_rejected_shapes_are_422_and_persist_nothing(auth_cfg, tmp_home):
+    # Strict on write: every rejected row must 422 AND leave the stored value untouched — the
+    # security-relevant half of this axis, since the value lands in a CSS declaration.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    good = {"term_font_family": "Menlo, monospace"}
+    assert c.post("/api/prefs", json=good, headers=hdrs).status_code == 200
+    for bad in _FAM["write_rejected"]:
+        r = c.post("/api/prefs", json={"term_font_family": bad}, headers=hdrs)
+        assert r.status_code == 422, f"{bad!r} should be rejected, got {r.status_code}"
+        assert c.get("/api/config").json()["term_font_family"] == "Menlo, monospace", bad
+
+
+def test_term_font_family_rejection_is_atomic_with_the_rest_of_the_payload(auth_cfg, tmp_home):
+    # The preflight contract (#859): a 422 means NOTHING was persisted, not that the keys
+    # before the bad one already landed.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post(
+        "/api/prefs",
+        json={"theme": "light", "term_font_family": "url(evil.woff2)"},
+        headers=hdrs,
+    )
+    assert r.status_code == 422
+    cfg = c.get("/api/config").json()
+    assert cfg["theme"] == "dark", "the good key must not have landed"
+    assert cfg["term_font_family"] == prefs.DEFAULT_TERM_FONT_FAMILY
+
+
+def test_font_family_and_size_are_independent_axes(auth_cfg, tmp_home):
+    # The whole point of #866: the face and the size are two axes, and neither a theme flip
+    # nor a size change may disturb the other.
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdrs = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/prefs", json={"term_font_family": "Menlo, monospace"}, headers=hdrs)
+    c.post("/api/prefs", json={"term_font_size": 9}, headers=hdrs)
+    c.post("/api/prefs", json={"theme": "light"}, headers=hdrs)
+    cfg = c.get("/api/config").json()
+    assert cfg["term_font_family"] == "Menlo, monospace"
+    assert cfg["term_font_size"] == 9
+    assert cfg["theme"] == "light"
+
+
 # ---- #859 review findings: hostile ints, atomic rejection ----------------------------
 
 

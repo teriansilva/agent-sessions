@@ -56,6 +56,142 @@ TERM_FONT_SIZE_MIN = 8
 TERM_FONT_SIZE_MAX = 20
 DEFAULT_TERM_FONT_SIZE = 13
 
+# Terminal font FAMILY (#866) — the second axis beside the size, and for the same reason: the
+# face used to be a field on TerminalTheme, which gave one value two owners (a dark->light flip
+# could reset it). It lives on its own here and in web/src/theme/termFont.ts; the shared
+# normalization fixture that pins the two implementations against each other is
+# tests/fixtures/term_font_family_cases.json.
+#
+# Keep DEFAULT_TERM_FONT_FAMILY byte-identical to termFont.ts's DEFAULT_TERM_FONT_FAMILY: it is
+# what a device with no choice gets seeded with, and a drift would show up as "my preset says
+# System but the card isn't selected".
+DEFAULT_TERM_FONT_FAMILY = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+TERM_FONT_FAMILY_MAX_LEN = 120
+
+# The value is interpolated into a CSS declaration and into xterm's own font strings, so the
+# charset is an allowlist rather than a denylist: letters, digits, space, comma, hyphen,
+# underscore, period and the two quote marks. No ';' '{' '}' '(' ')' '<' '>' '\\' and no
+# newlines — which is what makes `url(...)`, a second declaration and a tag escape unreachable
+# rather than merely unlikely.
+_FONT_STACK_CHARS_RE = re.compile(r"^[A-Za-z0-9 ,._'\"-]+$")
+
+
+# CSS-wide keywords, plus ``default``. Chromium rejects every one of these as an item in a
+# font-family LIST (measured), and ``font-family: inherit`` alone would make the terminal inherit
+# the app chrome's face — not a font choice at all. Rejected everywhere.
+_CSS_WIDE = frozenset({"inherit", "initial", "unset", "revert", "revert-layer", "default"})
+
+# One CSS identifier: a letter or underscore (optionally after a single hyphen, which is what
+# makes ``-apple-system`` legal), then letters, digits, hyphens, underscores. A leading DIGIT is
+# the case that matters — ``123`` and ``1Password`` are not identifiers, and the browser throws
+# away the whole declaration rather than the one family. A period is absent on purpose:
+# ``Font.Name`` is invalid unquoted and must be quoted.
+_IDENT_RE = re.compile(r"^-?[A-Za-z_][A-Za-z0-9_-]*$")
+
+# CSS generic families. A generic is a legal family on its own (``monospace``), but it may not
+# START a multi-token family name: Chromium consumes it as a generic and then rejects the whole
+# declaration on the trailing tokens, so ``serif foo, monospace`` is thrown away entirely while
+# our validator called it fine. Measured, case-insensitively, over a 1712-case fuzz corpus —
+# ``Serif A1`` is refused for the same reason ``serif foo`` is.
+#
+# A generic in any LATER position is legal and stays legal: ``PT Serif`` and ``Noto Sans Mono``
+# are real font names, and rejecting them would be a false refusal with a real cost.
+#
+# The set is the full CSS Fonts 4 list, which is deliberately WIDER than what this Chromium
+# rejects today: it accepts ``ui-monospace foo`` because it has not shipped that generic yet. A
+# browser that ships it would start rejecting — so covering the whole set keeps "everything we
+# accept, the browser accepts" true tomorrow as well as today, and costs nothing real (no font
+# is named "ui-rounded Something").
+_CSS_GENERIC = frozenset(
+    {
+        "serif",
+        "sans-serif",
+        "cursive",
+        "fantasy",
+        "monospace",
+        "system-ui",
+        "math",
+        "emoji",
+        "fangsong",
+        "ui-serif",
+        "ui-sans-serif",
+        "ui-monospace",
+        "ui-rounded",
+    }
+)
+
+
+def _font_stack_is_sane(stack: str) -> bool:
+    """True for a stack that is permitted, usable, AND actually parses as CSS.
+
+    Mirrors ``stackIsSane`` in web/src/theme/termFont.ts exactly; the shared fixture
+    tests/fixtures/term_font_family_cases.json pins the two against each other.
+
+    The relationship to a browser's parser is ONE-directional by design: everything accepted here
+    is accepted by Chromium (pinned by a real-browser test), but not the converse — Chromium
+    accepts ``"Fira Code`` by auto-closing the string, and accepts ``--weird``. Both are typos in
+    this context, and storing a face the operator did not mean is worse than refusing it.
+
+    Three classes are rejected, and each was a real defect before it was:
+
+    * **charset** (``;`` ``{}`` ``()`` ``<>`` ``\\``, newlines) — the injection boundary;
+    * **structure** (``Menlo,,monospace``, ``,monospace``, ``"Fira Code``, whitespace only) — all
+      legal characters, still renders as nothing;
+    * **grammar** (``123, monospace``, ``Font.Name``, ``inherit``) — all legal characters, valid
+      structure, and the browser discards the whole declaration, leaving the stored value and the
+      live terminal disagreeing about which face is active.
+    """
+    if not stack or len(stack) > TERM_FONT_FAMILY_MAX_LEN:
+        return False
+    if not _FONT_STACK_CHARS_RE.match(stack):
+        return False
+    for raw in stack.split(","):
+        seg = raw.strip()
+        if not seg:
+            return False  # empty segment: "a,,b", ",b", "b,"
+        if seg[0] in "\"'":
+            # A quoted family may hold anything the charset allows — digits, periods, spaces —
+            # but must be closed by the same mark and contain something.
+            if seg[-1] != seg[0] or len(seg) < 3 or seg[0] in seg[1:-1]:
+                return False
+            continue
+        if '"' in seg or "'" in seg:
+            return False  # unbalanced quote
+        # Unquoted: a sequence of CSS identifiers separated by whitespace ("Segoe UI Mono").
+        words = seg.split()
+        for word in words:
+            if not _IDENT_RE.match(word) or word.lower() in _CSS_WIDE:
+                return False
+        if len(words) > 1 and words[0].lower() in _CSS_GENERIC:
+            return False
+    return True
+
+
+def coerce_term_font_family(value: object) -> str:
+    """Narrow any input to a usable terminal font stack — the READ boundary, lenient by design.
+
+    Anything that is not a sane stack falls back to the default, so neither an edited
+    localStorage-shaped payload nor a hand-edited prefs.json can strand the terminal in a face
+    the browser cannot resolve. Never raises. Whitespace is trimmed and nothing else is
+    normalized: the client compares the stored string against its preset stacks to decide which
+    card reads as active, so any *rewriting* here would show a preset as "Custom" on the next
+    device that seeds from the server.
+    """
+    if not isinstance(value, str):
+        return DEFAULT_TERM_FONT_FAMILY
+    s = value.strip()
+    return s if _font_stack_is_sane(s) else DEFAULT_TERM_FONT_FAMILY
+
+
+def is_valid_term_font_family(value: object) -> bool:
+    """True iff ``value`` is a stack we accept — the strict WRITE gate for POST /api/prefs.
+
+    Surrounding whitespace is tolerated and stripped on write (the accent gate does the same
+    with a missing '#'), because trimming is normalization, not coercion to a different value.
+    A non-string, an over-long stack, a forbidden character or a structurally dead stack is a
+    422 rather than a silent fallback."""
+    return isinstance(value, str) and _font_stack_is_sane(value.strip())
+
 
 def _default_path() -> Path:
     return Path(
@@ -322,6 +458,20 @@ def set_term_font_size(size: object, path: Path | None = None) -> int:
     document; the route validates with `is_valid_term_font_size` first and 422s, so a bad
     value never reaches here over HTTP."""
     return _set("term_font_size", coerce_term_font_size(size), path)
+
+
+def get_term_font_family(path: Path | None = None) -> str:
+    """The persisted terminal font stack, or the default when unset/unreadable/invalid."""
+    return coerce_term_font_family(_load(path or _default_path()).get("term_font_family"))
+
+
+def set_term_font_family(family: object, path: Path | None = None) -> str:
+    """Persist the terminal font stack. Preserves other keys (e.g. theme/accent/size).
+
+    Coerces rather than raising so a direct caller can't write an unusable stack into the
+    document; the route validates with `is_valid_term_font_family` first and 422s, so a bad
+    value never reaches here over HTTP."""
+    return _set("term_font_family", coerce_term_font_family(family), path)
 
 
 def get_overview_expanded(path: Path | None = None) -> list[str]:

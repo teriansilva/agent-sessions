@@ -511,6 +511,10 @@ export interface AppConfig {
    *  Seeds a device with no local choice; the localStorage cache wins over it. Absent on
    *  older servers (→ client default 13). */
   term_font_size?: number;
+  /** Terminal font stack (#866) — the FACE, the second axis beside the size. Seeds a device
+   *  with no local choice; the localStorage cache wins over it. Absent on older servers
+   *  (→ client default: the system monospace stack). */
+  term_font_family?: string;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
   /** Session-list sort order (#506): "recent_activity" (newest update first, default) or

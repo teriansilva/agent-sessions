@@ -26,6 +26,7 @@ import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
 import { MissionTimer } from "../components/hud/MissionTimer";
 import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
+import { TermFontProvider } from "../theme/TermFontProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { useIsMobile } from "../lib/useIsMobile";
@@ -487,13 +488,15 @@ export default function App() {
       <ThemeProvider>
         <AccentProvider>
           <TermSizeProvider>
-            <OverviewPrefsProvider>
-              <SessionsProvider>
-                <BrowserRouter>
-                  <Layout />
-                </BrowserRouter>
-              </SessionsProvider>
-            </OverviewPrefsProvider>
+            <TermFontProvider>
+              <OverviewPrefsProvider>
+                <SessionsProvider>
+                  <BrowserRouter>
+                    <Layout />
+                  </BrowserRouter>
+                </SessionsProvider>
+              </OverviewPrefsProvider>
+            </TermFontProvider>
           </TermSizeProvider>
         </AccentProvider>
       </ThemeProvider>

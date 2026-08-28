@@ -35,12 +35,13 @@ export interface TerminalAnsiPalette {
 
 /** xterm.js theme subset we set (background/foreground/cursor + selection + ANSI 16).
  *
- *  Deliberately WITHOUT a font size (#859): the size is an independent axis owned by
- *  theme/termSize.ts, because a theme is about colour and a size is about how many columns
- *  the agent gets. Owning it here as well would give the value two owners and make flipping
- *  dark->light silently reset the operator's zoom. */
+ *  Deliberately WITHOUT a font size (#859) and WITHOUT a font family (#866): both are
+ *  independent axes, owned by theme/termSize.ts and theme/termFont.ts. A theme is about
+ *  colour; a size is how many columns the agent gets and a face is what those columns are
+ *  drawn in. Owning either here as well would give one value two owners and make flipping
+ *  dark->light silently reset the operator's choice — which is why the fields are absent
+ *  rather than merely unused. */
 export interface TerminalTheme {
-  fontFamily: string;
   background: string;
   foreground: string;
   cursor: string;
@@ -56,9 +57,6 @@ export interface ThemeMeta {
   terminal: TerminalTheme;
 }
 
-// Same monospace stack the terminal has always used; kept per-theme so a future theme
-// could ship a different face without touching Terminal.tsx.
-const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 // Dark ANSI = xterm.js's built-in default (the Tango palette), spelled out verbatim so the
 // dark terminal renders pixel-identical to before the palette became theme-driven (#473).
@@ -111,7 +109,6 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
     description:
       "BattleLab tactical-HUD — near-black ground, phosphor-amber accent.",
     terminal: {
-      fontFamily: MONO,
       background: "#0d0e10",
       foreground: "#e8e9ec",
       cursor: "#ffb000",
@@ -124,7 +121,6 @@ export const THEMES: Record<ThemeId, ThemeMeta> = {
     label: "Light",
     description: "BattleLab daylight — paper-grey ground, same amber accent.",
     terminal: {
-      fontFamily: MONO,
       background: "#f2f3f5",
       foreground: "#14161a",
       cursor: "#ffb000",

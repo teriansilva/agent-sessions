@@ -158,6 +158,31 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_orchestrator_ledger(tmp_path, monkeypatch) -> None:
+    """Point the orchestrator ledger at a per-test tmp file — the same gap as
+    ``_isolate_notifications`` above, one store over, and equally measured rather than
+    hypothetical.
+
+    The operator's real ledger on this host carries **three records with the id ``act-A``** —
+    a fixture id, written there by an unisolated test run. It reads back the other way, and that
+    is how it surfaced: ``notifications.listing()`` reconciles rows against the ledger and
+    retires any whose action has reached a terminal state, so a test that adds a row for
+    ``act-A`` had it retired on read by the operator's live data. The result was
+    ``test_re_linking_does_not_make_a_read_row_look_new`` failing with ``IndexError`` on a clean
+    checkout of ``main`` — i.e. reddening every PR in the repo, for a reason no diff caused and
+    no reviewer could see in one.
+
+    ``_path`` reads the env per call, so the override is enough and no file is created until
+    something writes. Both directions close together: a test can no longer read the operator's
+    orchestrator state, and — the more serious half — can no longer append fixture records into
+    the store the live orchestrator makes decisions from."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
+        str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_missions_db(tmp_path, monkeypatch) -> None:
     """Point the missions store (#846) at a per-test tmp file, never the operator's real one.
 

@@ -1453,6 +1453,103 @@
   opacity: 0.4;
   cursor: default;
 }
+/* Terminal FONT picker (#866). A card radiogroup like the theme picker above, because the
+ * choice is made by LOOKING: every card renders its own name and specimen in its own face.
+ * Same grid geometry as .themes, so the two controls read as one family of choices. */
+.fonts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.fontCard {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  /* 44px coarse-pointer floor is met by the content (three stacked lines) plus this padding;
+     min-height keeps it true if a note ever wraps to nothing. */
+  min-height: 44px;
+  padding: 10px 11px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.fontCard:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.fontCard.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.fontCard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Unavailable = the primary face is not installed on THIS device. Disabled rather than hidden:
+   an operator moving between a phone and a desktop should see that the card exists and simply
+   isn't offered here, instead of the list silently changing length. */
+.fontCard:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.fontCard.custom {
+  border-style: dashed;
+}
+.fontName {
+  font-weight: 700;
+  font-size: 13px;
+}
+/* The specimen renders in the card's OWN face — that is the entire point of the control. */
+.fontSpecimen {
+  font-size: 13px;
+  color: var(--text-2, var(--text-muted));
+  white-space: pre;
+  overflow: hidden;
+}
+.fontNote {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.fontCustomRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  /* A long stack must scroll INSIDE the input, never widen the panel: min-width:0 is what
+     stops a flex item from refusing to shrink below its content on a 412px phone. */
+  min-width: 0;
+  max-width: 420px;
+}
+.fontCustomInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+.fontCustomInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.fontCustomInput.invalid {
+  border-color: var(--danger-text, var(--status-down));
+}
+.fontCustomError {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--danger-text, var(--status-down));
+}
+
 /* The sample line renders at the CHOSEN size, so it must not inherit .hint's size. Mono,
  * because what you are judging is agent output. */
 .termSizeSample {
@@ -1460,9 +1557,13 @@
   padding: 7px 9px;
   width: 100%;
   border: 1px solid var(--border);
-  background: var(--bg-1);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--term-bg, var(--bg-1));
   color: var(--text-muted);
   white-space: pre;
   overflow-x: auto;
+  /* #866: NO font-family here. The face is set inline from the operator's choice — a preview
+     that renders in the chrome's --font-mono stack (as it did) shows a face the terminal will
+     not use, which is worse than no preview. Line-height 1.15 so the box rules join, the way
+     they do in xterm. */
+  line-height: 1.15;
 }
