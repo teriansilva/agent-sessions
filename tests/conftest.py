@@ -6,6 +6,7 @@ every fixture sets up isolated paths.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -315,3 +316,35 @@ def opencode_db(tmp_home, monkeypatch) -> Path:
     con.close()
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_DB", str(db))
     return db
+
+
+def pytest_collection_modifyitems(config, items):
+    """Second, independent arm on the real-agent gate (#801) — a marker is not a gate.
+
+    `tests/test_nudge_submit_real.py` launches real agent CLIs and spends real tokens. It was
+    described as "opt-in twice over", but registering a `real_agent` marker in `pyproject.toml`
+    only *names* it — pytest still collects and runs it. Review demonstrated the gap: a plain
+    `pytest tests/test_nudge_submit_real.py` selected all 24 cases, and they skipped only
+    because `AGENT_SESSIONS_REAL_AGENT` happened to be unset. Inherit that variable — from a
+    shell that ran the matrix earlier, or a CI environment — and an ordinary run starts
+    launching agents.
+
+    So the second arm is enforced here: a `real_agent` test runs only when the `-m` expression
+    *explicitly names it*. That composes with the environment gate in `nudge_harness` (both
+    must hold) and, deliberately, does not fight the `-m "not e2e_install"` selections CI
+    already uses — those do not mention `real_agent`, so they correctly deselect it.
+    """
+    # Match the IDENTIFIER, not a substring: `-m "not real_agent_extra"` contains the text
+    # "real_agent" while selecting the real-agent cells, so a substring check let a routine run
+    # launch the token-spending matrix whenever the env var happened to be inherited (review on
+    # #858). Word boundaries around `_` do not work either — `\b` sees `_` as a word character —
+    # so the lookaround is explicit.
+    if re.search(r"(?<![0-9A-Za-z_])real_agent(?![0-9A-Za-z_])", config.option.markexpr or ""):
+        return
+    skip = pytest.mark.skip(
+        reason="real-agent tests need an explicit `-m real_agent` (they launch agents and spend "
+        "tokens); AGENT_SESSIONS_REAL_AGENT=1 is required in addition"
+    )
+    for item in items:
+        if "real_agent" in item.keywords:
+            item.add_marker(skip)

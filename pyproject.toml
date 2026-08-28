@@ -68,6 +68,10 @@ markers = [
     # _TEMPLATES/_STATIC off __file__), so it can only fail in a non-editable install.
     # pr-validate's wheel pass re-runs exactly these against site-packages (#704).
     "deploy_shape: exercises a packaged resource through the installed package (wheel pass)",
+    # #801's real-agent matrix: launches actual engines and spends actual tokens, so it is
+    # opt-in TWICE — the marker plus AGENT_SESSIONS_REAL_AGENT=1 — and CI never runs it.
+    # Deselected by default via addopts below, so a plain `pytest` stays hermetic.
+    "real_agent: launches a real agent CLI and spends tokens (opt-in; never run in CI)",
 ]
 
 [tool.ruff]
