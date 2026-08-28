@@ -13,7 +13,7 @@ half-apply a transition.
 
 **The state machine** (Phase 2 drives the delivery half)::
 
-    proposed ─┬─► claimed ─┬─► delivered        bytes reached the PTY
+    proposed ─┬─► claimed ─┬─► delivered        the PTY writes succeeded (see below)
               │            ├─► failed           write refused / aborted mid-write
               │            └─► indeterminate    crashed after the write, before the record
               ├─► approved ─► claimed …         operator tapped approve
@@ -21,6 +21,24 @@ half-apply a transition.
               ├─► escalated                     needs the operator (see `escalation_reason`)
               ├─► stale                         precondition moved before delivery
               └─► expired                       TTL elapsed untouched
+
+**``delivered`` is a statement about the WRITE, not about the agent** (#801 Phase 5). It means
+every byte of the payload was accepted by the PTY and nothing refused, aborted or raced the
+write. It does **not** mean the agent read those bytes, submitted a turn, or did anything at
+all — the ledger has no way to observe that, and must not be read as claiming it.
+
+That gap is measured, not theoretical. The #801 harness drives a real engine through this exact
+path and then counts committed user turns in the engine's own transcript store: **gemini 0.57.0
+reports ``delivered``, puts the nudge text on screen, and never commits a turn** — reproduced
+across trusted and untrusted folders, with ``bypass=True``, and with both the bundled and split
+carriage-return forms. The same run shows claude 2.1.247 submitting normally, so this is a
+per-engine property that a delivery outcome cannot express. Two engines, same ``delivered``,
+opposite results.
+
+The practical consequence: **an autonomous nudge that reports ``delivered`` may have done
+nothing**, and a caller that treats the state as proof of a turn will report success for a
+no-op. Whether the agent acted has to be established from the engine's own store — never from
+here. `Outcome.ok` in :mod:`session_input` carries the same warning at the other end.
 
 ``indeterminate`` is the load-bearing one. Terminal I/O cannot be exactly-once: if the process
 dies after bytes reach the PTY but before the ``delivered`` event is durable, nothing on disk

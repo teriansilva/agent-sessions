@@ -57,13 +57,21 @@ QUIET_WAIT_MAX_S = 3.0
 
 @dataclass(frozen=True)
 class Outcome:
-    """What happened. ``state`` maps onto the ledger's terminal states."""
+    """What happened. ``state`` maps onto the ledger's terminal states.
+
+    ``delivered`` means **the writes succeeded**, and nothing more (#801 Phase 5). The payload
+    was accepted by the PTY in full; whether the agent read it, submitted a turn, or acted at
+    all is unobservable from here. Measured: gemini 0.57.0 yields ``delivered`` for a nudge it
+    never commits, while claude 2.1.247 submits the identical payload — same outcome, opposite
+    result. Confirm a turn against the engine's own transcript store, never against this.
+    """
 
     state: str  # delivered | not_live | refused | stale | aborted | failed | timeout
     detail: str = ""
 
     @property
     def ok(self) -> bool:
+        """The write completed. **Not** "the agent acted" — see the class docstring."""
         return self.state == "delivered"
 
 
