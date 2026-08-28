@@ -975,9 +975,11 @@ def test_a_failed_heartbeat_retries_soon_not_a_full_interval_later(tmp_path, mon
 
     real = missions.renew_session
     calls = {"n": 0}
+    at: list[float] = []  # when each beat FIRED — the gaps between these are the policy
 
     def flaky(*a, **kw):
         calls["n"] += 1
+        at.append(time.time())
         if calls["n"] <= 2:  # the first two beats fail, as a contended store would
             raise sqlite3.OperationalError("database is locked")
         return real(*a, **kw)
@@ -989,21 +991,49 @@ def test_a_failed_heartbeat_retries_soon_not_a_full_interval_later(tmp_path, mon
 
     async def _run():
         # `time.sleep`, not `await` — the production shape, and it also proves the beat is not on
-        # this thread. The first beat is always a full interval away whatever the policy; what is
-        # being measured is what the two failures AFTER it cost.
+        # this thread.
+        #
+        # Runs until FOUR attempts have been observed, not until the claim is first renewed. The
+        # fourth is what makes this test mean anything: attempts 1-2 fail, 3 succeeds, and 4 is
+        # the next beat AFTER a success — the only gap in the sequence that is an ordinary
+        # cadence produced by this same run under this same load.
         async with missions.holding(key, token, interval=interval, path=db):
             t0 = time.time()
-            while time.time() - t0 < interval * 6:
-                if missions.reservation_of(key, path=db)["at"] > started:
-                    return time.time() - t0
+            while time.time() - t0 < interval * 12:
+                if len(at) >= 4:
+                    return True
                 time.sleep(0.01)
-            return None
+            return False
 
-    took = asyncio.run(_run())
-    assert took is not None, "the claim was never renewed at all"
-    assert calls["n"] >= 3, "the beat did not retry after failing"
-    # Slow policy needs 3 intervals (1.5s); fast needs ~1 (0.5s) plus two 20ms retries.
-    assert took < interval * 2, (
-        f"a failed beat cost a full interval: renewed after {took:.2f}s, "
-        f"which only the retry-on-the-ordinary-cadence policy is slow enough to produce"
+    got_four = asyncio.run(_run())
+    assert got_four, f"the beat did not produce four attempts (saw {len(at)})"
+    assert missions.reservation_of(key, path=db)["at"] > started, "the claim was never renewed"
+
+    # Compared as a RATIO between two gaps THE BEAT ITSELF produced, never against a wall-clock
+    # budget and never against startup.
+    #
+    # The absolute version (`took < interval * 2`) failed in CI at 1.14s against a 1.0s bound:
+    # the fast policy needs ~0.54s and the slow one ~1.5s, so the bound sat only 0.46s above the
+    # expected value — inside the scheduling jitter a loaded 40-minute suite produces.
+    #
+    # The first ratio attempt was worse, and wrong in a way that mattered: it used
+    # `at[0] - t_start` as the reference cadence. That is startup → the FIRST attempt, and the
+    # first attempt FAILS — so it was never a successful-beat cadence at all, only thread-start
+    # latency. Inflating it (a slow first attempt) inflates only the denominator, and the buggy
+    # `wait = interval` policy passes. Caught in review, reproduced as a false green.
+    #
+    # Both gaps below are waits INSIDE the beat loop, taken moments apart under identical load:
+    #
+    #   at[1] - at[0]  gap after a FAILED beat     -> the retry cadence, the behaviour under test
+    #   at[3] - at[2]  gap after a SUCCESSFUL beat -> the ordinary cadence, measured not assumed
+    #
+    # A policy that retried on the ordinary cadence makes these EQUAL; the fix makes the first
+    # ~25x smaller. Half is a wide margin between those, and no amount of load can close it,
+    # because load stretches both.
+    retry_gap = at[1] - at[0]
+    cadence_gap = at[3] - at[2]
+    assert retry_gap < cadence_gap / 2, (
+        f"a failed beat cost a full interval: retried after {retry_gap:.3f}s against this run's "
+        f"own successful-beat cadence of {cadence_gap:.3f}s — only the "
+        f"retry-on-the-ordinary-cadence policy is slow enough to produce that"
     )

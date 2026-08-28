@@ -131,7 +131,18 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
 
     ``AGENT_SESSIONS_PUSH_SUBS`` is the load-bearing half. ``add`` fans out to every stored
     subscription when push is configured, so an unisolated run does not merely write a file —
-    it can send a real Web Push to the operator's actual devices from a test fixture."""
+    it can send a real Web Push to the operator's actual devices from a test fixture.
+
+    ``AGENT_SESSIONS_ORCHESTRATOR_LEDGER`` was missed for the same reason and bites in the
+    opposite direction: :func:`notifications.listing` reconciles against the ledger and retires
+    any row whose action has already settled, so an unisolated test *reads* operator state and
+    lets it decide the test's outcome. Measured on this host: the real ledger held three
+    ``action_id: "act-A"`` records in the terminal ``delivered`` state — a synthetic id that
+    only a test could have written — which silently retired the row
+    ``test_re_linking_does_not_make_a_read_row_look_new`` had just created, leaving ``listing``
+    empty and the test failing with ``IndexError`` on every run, locally and in CI alike. Two
+    sibling files already pinned this env var per-file; putting it here makes the guarantee
+    structural instead of something each new test file has to remember."""
     monkeypatch.setenv(
         "AGENT_SESSIONS_NOTIFICATIONS",
         str(tmp_path / ".config" / "agent-sessions" / "notifications.json"),
@@ -139,6 +150,10 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_PUSH_SUBS",
         str(tmp_path / ".config" / "agent-sessions" / "push-subscriptions.json"),
+    )
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
+        str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
     )
 
 
