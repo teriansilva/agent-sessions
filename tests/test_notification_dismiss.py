@@ -17,6 +17,14 @@ from agent_sessions import notifications, orchestrator, prefs
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
     monkeypatch.setenv("AGENT_SESSIONS_PUSH_SUBS", str(tmp_path / "s.json"))
+    # The LEDGER too, and this is not belt-and-braces: `listing()` reconciles against it, so a
+    # test that leaves it pointing at the real store retires its own rows the moment a *live*
+    # record happens to share one of these synthetic action ids ("act-A", "a1"). That is not
+    # hypothetical — it took the whole repo's `python` job red on 2026-08-28 when three
+    # `id: "act-A"` records in state `delivered` reached the operator's own ledger, and every
+    # PR failed here on code none of them had touched. The sibling files
+    # (test_notification_retire.py, test_orchestrator.py, test_webpush.py) already isolate it.
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
 
 
 IDLE = 1_700_000_000.0  # a session waiting on the operator emits nothing; its clock stands still

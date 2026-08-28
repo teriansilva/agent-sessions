@@ -95,6 +95,21 @@ function agentChannel(ws: Sock) {
   };
 }
 
+/** Start the box side as a background fixture whose LATE failure cannot fail the run.
+ *
+ *  `fakeAppAgent` is fire-and-forget and outlives its test: when the test finishes and teardown
+ *  restores the `WebSocket` global, a `recv()` still in flight resolves with a frame that is not
+ *  what it was waiting for and throws — as an UNHANDLED rejection, which vitest reports against
+ *  the whole run rather than against a test. Observed reddening `web-ci` on an unrelated PR while
+ *  this file's own five tests passed; the timing needs a starved host, so it does not reproduce
+ *  on an idle one.
+ *
+ *  Swallowing is right HERE and only here: the agent is a fixture, and every assertion that
+ *  proves the path works is on the client side — an agent that fails EARLY still fails those. */
+function startAgent(...args: Parameters<typeof fakeAppAgent>): void {
+  void fakeAppAgent(...args).catch(() => {});
+}
+
 // The box side: pair + handshake, read the advert, run a responder Mux, and answer every HTTP
 // stream with a canned `u32 meta_len | meta_json | body` (mirrors AppProxyTarget's HTTP framing).
 async function fakeAppAgent(
@@ -194,7 +209,7 @@ describe("wireAppTunnel", () => {
     const orig = globalThis.WebSocket;
     const [clientWs, serverWs] = pair();
     const key = "app-mode-key";
-    void fakeAppAgent(serverWs, key, te.encode('{"csrf":"tok"}'));
+    startAgent(serverWs, key, te.encode('{"csrf":"tok"}'));
 
     const wired = await wireAppTunnel(clientWs, key, "captcha");
     expect(globalThis.WebSocket).not.toBe(orig); // scoped backstop installed
@@ -212,7 +227,7 @@ describe("mountApp", () => {
   it("tears down the tunnel/seams when the mount step fails (no leaked shim/session)", async () => {
     const orig = globalThis.WebSocket;
     const [clientWs, serverWs] = pair();
-    void fakeAppAgent(serverWs, "k", te.encode("{}"));
+    startAgent(serverWs, "k", te.encode("{}"));
     await expect(
       mountApp(clientWs, "k", "x", {
         render: async () => {
@@ -226,7 +241,7 @@ describe("mountApp", () => {
   it("mounts on success and teardown unmounts + restores the WebSocket global", async () => {
     const orig = globalThis.WebSocket;
     const [clientWs, serverWs] = pair();
-    void fakeAppAgent(serverWs, "k", te.encode("{}"));
+    startAgent(serverWs, "k", te.encode("{}"));
     let unmounted = false;
     const mounted = await mountApp(clientWs, "k", "x", {
       render: async () => () => {

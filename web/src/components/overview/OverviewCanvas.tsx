@@ -17,13 +17,16 @@ import {
   ChevronsUpDown,
   FolderTree,
   Plus,
+  SquareDashedBottom,
 } from "lucide-react";
 import {
   type FormEvent,
   type MouseEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -32,16 +35,22 @@ import { api, ApiError } from "../../lib/api";
 import { engineColor } from "../../lib/format";
 import {
   buildOverview,
+  clusterKeyFor,
   DEFAULT_PROJECT_ID,
   expandableKeys,
   type GroupBy,
   type ProjectGroupData,
   type SessionNodeData,
 } from "../../lib/overviewGraph";
+import { useIsMobile } from "../../lib/useIsMobile";
 import type { ProjectRef, Session } from "../../types/api";
+import { anchorPointOf } from "./nodeAnchor";
 import { OverviewActionsCtx } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
+import { useWorkspace } from "./useWorkspace";
+import { WindowLayer } from "./WindowLayer";
+import { canHostWindow, WINDOW_CAP } from "./workspace";
 import "./overview.css";
 
 // Stable identity (module scope) so React Flow doesn't re-register node types each render.
@@ -105,6 +114,61 @@ function OverviewCanvasInner({
   const rf = useReactFlow();
   // Drag-to-reassign is live in Projects layout only — folder/agent clusters aren't user-assignable.
   const draggable = groupBy === "project";
+
+  // ---- Window workspace (#208) -------------------------------------------------------------
+  // Desktop, fullscreen map only: `compact` is the squeezed embed, and the ≤800px breakpoint is
+  // the shell's own (useIsMobile) rather than a second predicate that could drift from it.
+  // Where the workspace is off, a chip click navigates exactly as it always has.
+  const isMobile = useIsMobile();
+  const windowsOn = !compact && !isMobile;
+  const ws = useWorkspace();
+  // The actions are stable `useCallback`s; naming them here keeps them out of the dependency
+  // arrays as `ws.*` (which changes identity whenever a window moves).
+  const { open: openWindow, close: closeWindow, syncTitles } = ws;
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
+  // The overlay box: screen origin (the shell offset every projection subtracts) + size, with
+  // the top inset below the floating toolbar so a window's chrome can never hide under it.
+  const [box, setBox] = useState({ x: 0, y: 0, w: 0, h: 0, top: 0 });
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const bar = barRef.current?.getBoundingClientRect();
+      const top = bar ? Math.max(0, bar.bottom - r.top + 8) : 0;
+      const next = {
+        x: r.left,
+        y: r.top + top,
+        w: Math.round(r.width),
+        h: Math.max(0, Math.round(r.height - top)),
+        top: Math.round(top),
+      };
+      // Same-value guard: a ResizeObserver fires on layout, and re-setting an identical box
+      // would re-render (and re-project) on every one of them.
+      setBox((cur) =>
+        cur.x === next.x &&
+        cur.y === next.y &&
+        cur.w === next.w &&
+        cur.h === next.h &&
+        cur.top === next.top
+          ? cur
+          : next,
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (barRef.current) ro.observe(barRef.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
 
   // Non-archived project entities (#447) → empty ones still render as drag-target clusters in
   // Projects mode. Fetched here (sessions alone can't surface a 0-session project) and refreshed
@@ -174,6 +238,45 @@ function OverviewCanvasInner({
       : undefined;
   }, [pathname]);
 
+  const bounds = useMemo(() => ({ w: box.w, h: box.h }), [box.w, box.h]);
+  // OPENING needs a map area that can hold a window at its floor: ≤800px is mobile, but 801px
+  // with the sidebar expanded leaves ~460px of map, which is below MIN_SIZE and would hand the
+  // agent a column count the floor exists to prevent. There the chip navigates, as it always did.
+  const canOpenWindow = windowsOn && canHostWindow(bounds);
+  // MOUNTING is a different question, deliberately: an open window must survive the map getting
+  // small (or emptying out entirely) — unmounting the layer would close its socket and kill the
+  // session's live view over a layout change.
+  //
+  // Note what this does NOT depend on: `windowsOn`, and therefore not on the mobile breakpoint.
+  // Gating the mount on it meant dragging a desktop window from 801px to 800px closed every
+  // open socket — the same defect as the empty map, at a different boundary, and contradicting
+  // the sentence above. The breakpoint decides whether a window can be OPENED; on a real phone
+  // `windows` is therefore always empty and this layer never mounts, which is the mobile
+  // contract. The only way to be under it with windows open is to have crossed it in a
+  // resizable browser, and a resize is not a reason to kill a live session.
+  const layerOn = !compact && (canOpenWindow || ws.windows.length > 0);
+
+  // Renames (the sidebar's, or an AI title landing) reach an OPEN window's chrome: the live
+  // index goes to the workspace, which keeps each window's own title current. Resolving
+  // live-or-captured at render time instead would make a window REVERT to its old name the
+  // moment its session left the map.
+  const titles = useMemo(
+    () =>
+      new Map(
+        effectiveSessions.map((s) => [s.id, s.title || s.short_uuid] as const),
+      ),
+    [effectiveSessions],
+  );
+  useEffect(() => {
+    syncTitles(titles);
+  }, [titles, syncTitles]);
+
+  // Chips whose session is open as a window (#208) — the map marks them.
+  const openIds = useMemo(
+    () => new Set(ws.windows.map((w) => w.key)),
+    [ws.windows],
+  );
+
   const { nodes, edges } = useMemo(
     () =>
       buildOverview(effectiveSessions, {
@@ -185,6 +288,7 @@ function OverviewCanvasInner({
         names: projectNames,
         draggableSessions: draggable,
         projects,
+        openIds,
       }),
     [
       effectiveSessions,
@@ -196,6 +300,7 @@ function OverviewCanvasInner({
       projectNames,
       draggable,
       projects,
+      openIds,
     ],
   );
 
@@ -295,6 +400,22 @@ function OverviewCanvasInner({
     (_e: MouseEvent, node: Node) => {
       if (node.type === "session") {
         const s = (node.data as SessionNodeData).session;
+        // #208 decision 1: on the fullscreen desktop map a chip OPENS A WINDOW; the window's
+        // ⤢ is the way to the full-screen route. The chip only has one press gesture left
+        // (press+move is already drag-to-reassign), so the workspace takes it rather than
+        // crowding a 240px chip with a second target. Everywhere else — the squeezed embed,
+        // mobile — the click navigates exactly as it always did.
+        if (canOpenWindow) {
+          openWindow(
+            s,
+            anchorPointOf(node, rf.getNode, rf.flowToScreenPosition, {
+              x: box.x,
+              y: box.y,
+            }),
+            bounds,
+          );
+          return;
+        }
         navigate(
           `/s/${encodeURIComponent(s.engine)}/${encodeURIComponent(s.uuid)}`,
         );
@@ -302,7 +423,37 @@ function OverviewCanvasInner({
         toggle((node.data as ProjectGroupData).groupKey);
       }
     },
-    [navigate, toggle],
+    [navigate, toggle, canOpenWindow, openWindow, rf, box.x, box.y, bounds],
+  );
+
+  // Which map node a window's tether may attach to, best first: its own chip, else the cluster
+  // that chip collapses into. Neither on the map (filtered, archived, another layout) → the
+  // tether simply isn't drawn, and the window stays open and usable.
+  const anchorCandidates = useCallback(
+    (key: string) => {
+      const s = effectiveSessions.find((x) => x.id === key);
+      return s ? [key, `group:${clusterKeyFor(s, groupBy)}`] : [key];
+    },
+    [effectiveSessions, groupBy],
+  );
+
+  // ⤢ — hand this session to the full-screen route. The window closes with it; leaving
+  // /overview unmounts the whole workspace, so the route's socket is the only one left.
+  // Synced in an effect, never during render (the repo's `jiggleRef` idiom) — see Terminal.tsx.
+  const windowsRef = useRef(ws.windows);
+  useEffect(() => {
+    windowsRef.current = ws.windows;
+  });
+  const onFullScreen = useCallback(
+    (key: string) => {
+      // Resolved through a ref so this handler stays stable across window state changes — an
+      // unstable one would re-render every mounted pane on every drag frame.
+      const w = windowsRef.current.find((x) => x.key === key);
+      if (!w) return;
+      closeWindow(key);
+      navigate(`/s/${encodeURIComponent(w.engine)}/${encodeURIComponent(w.id)}`);
+    },
+    [navigate, closeWindow],
   );
 
   // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions.
@@ -340,7 +491,13 @@ function OverviewCanvasInner({
     }
   };
 
-  if (!nodes.length) {
+  // An empty map is a STATE, not a different component — while windows are open. Returning a
+  // bare message here (as this did) unmounted the window layer with it, which closed every
+  // window's socket and killed the live view because the last chip got filtered off the map.
+  // #208's contract is the opposite: a map filter never closes a window. With no windows open,
+  // the bare message is exactly what it always was.
+  const emptyMap = !nodes.length;
+  if (emptyMap && !layerOn) {
     return (
       <div className="tr-overview tr-ov-state">No sessions to map yet.</div>
     );
@@ -349,13 +506,14 @@ function OverviewCanvasInner({
   return (
     <OverviewActionsCtx.Provider value={actions}>
       <div
+        ref={wrapRef}
         className={`tr-overview${dragging ? " tr-overview--dragging" : ""}`}
         style={{ position: "relative" }}
       >
         {partial && (
           <div className="tr-ov-partial">Showing the most recent sessions</div>
         )}
-        <div className="tr-ov-toolbar">
+        <div className="tr-ov-toolbar" ref={barRef}>
           <div
             className="tr-ov-groupby"
             role="radiogroup"
@@ -424,6 +582,28 @@ function OverviewCanvasInner({
           >
             <ChevronsDownUp size={14} /> Collapse all
           </button>
+          {layerOn && (
+            <>
+              <span
+                className="tr-ov-wins"
+                data-window-readout
+                title={`${ws.windows.length} of ${WINDOW_CAP} session windows open`}
+              >
+                <SquareDashedBottom size={14} aria-hidden="true" /> Windows{" "}
+                <b>{ws.windows.length}</b>/{WINDOW_CAP}
+              </span>
+              {ws.windows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={ws.closeAll}
+                  title="Close every open session window"
+                  data-window-close-all
+                >
+                  Close all
+                </button>
+              )}
+            </>
+          )}
         </div>
         {(createErr || dragErr) && (
           <div className="tr-ov-toolbar-err">{createErr || dragErr}</div>
@@ -433,6 +613,12 @@ function OverviewCanvasInner({
             Drag a session onto a project to move it
           </div>
         )}
+        {emptyMap && (
+          <div className="tr-ov-state tr-ov-state--overlay">
+            No sessions to map yet — the open windows below stay live.
+          </div>
+        )}
+        {!emptyMap && (
         <ReactFlow
           nodes={rfNodes}
           edges={edges}
@@ -469,6 +655,29 @@ function OverviewCanvasInner({
             />
           )}
         </ReactFlow>
+        )}
+        {/* Outside <ReactFlow>, deliberately: inside it the terminal would inherit the zoom
+            transform, which is what makes xterm blurry and breaks its fit/selection/input
+            maths. Only the tether is re-projected as the map moves (#208). */}
+        {layerOn && (
+          <WindowLayer
+            layerRef={layerRef}
+            windows={ws.windows}
+            focusedKey={ws.focusedKey}
+            flashKey={ws.flashKey}
+            notice={ws.notice}
+            bounds={bounds}
+            originX={box.x}
+            originY={box.y}
+            topInset={box.top}
+            anchorCandidates={anchorCandidates}
+            onFocus={ws.focus}
+            onClose={ws.close}
+            onFullScreen={onFullScreen}
+            onRect={ws.setRect}
+            onRole={ws.setRole}
+          />
+        )}
       </div>
     </OverviewActionsCtx.Provider>
   );

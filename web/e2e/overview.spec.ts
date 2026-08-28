@@ -73,7 +73,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("desktop: a cluster expands on click, then a chip opens the session (#149)", async ({
+test("desktop: a cluster expands on click, then a chip opens the session as a window (#149/#208)", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "covered on desktop");
@@ -91,9 +91,17 @@ test("desktop: a cluster expands on click, then a chip opens the session (#149)"
   await header.click();
   await expect(ov.getByText("First session")).toBeVisible();
 
-  // Click a chip → it opens that session (URL = identity).
+  // Click a chip → on the fullscreen desktop map that now opens the session as a WINDOW
+  // (#208 decision 1), and the window's ⤢ hands it to the full-screen route. The session the
+  // chip opens is unchanged; the surface it opens into is what moved.
   await ov.getByText("First session").click();
+  const win = page.locator('[data-session-window="claude:aaa"]');
+  await expect(win).toBeVisible();
+  await expect(win.getByText("First session")).toBeVisible();
+
+  await win.locator("[data-window-fullscreen]").click();
   await expect(page).toHaveURL(/\/s\/claude\/aaa$/);
+  await expect(page.locator("[data-session-window]")).toHaveCount(0);
 });
 
 test("desktop: the layout selector regroups the map and persists device-locally (#424)", async ({

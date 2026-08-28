@@ -129,6 +129,7 @@ export function Terminal({
   filesOpen,
   onToggleFiles,
   filesDisabledReason,
+  onRole,
   ref,
 }: {
   engine: string;
@@ -144,6 +145,10 @@ export function Terminal({
   /** Server reconciled to the real engine-qualified id (#127, opencode new-session).
    *  The owner converges the URL/sidebar without tearing down the socket. */
   onReconcileId?: (sid: string) => void;
+  /** The #184/#293 role verdict, published for a host that frames this pane (#208: the map's
+   *  window chrome shows READ-ONLY). Read-only signal — the pane keeps rendering its own
+   *  banner and Take over button; nothing about ownership moves out here. */
+  onRole?: (role: TermRole) => void;
   /** React 19 passes `ref` as an ordinary prop; the handle is `TerminalHandle`. */
   ref?: Ref<TerminalHandle>;
 }) {
@@ -243,6 +248,13 @@ export function Terminal({
   // until the server says otherwise — backward-compatible with the pre-slice-3
   // server which never sends a role frame at all.
   const [role, setRole] = useState<TermRole>("owner");
+  // #208: the host's role callback, held in a ref for the same reason `jiggleRef` exists — the
+  // live socket effect reads it without joining its identity-only dep array, so a parent that
+  // re-renders with a fresh closure never re-keys the socket.
+  const onRoleRef = useRef(onRole);
+  useEffect(() => {
+    onRoleRef.current = onRole;
+  });
   // Read-only take-over banner (#293/#434, flag on): the active viewer's identity when this
   // tab is a read-only secondary — it opened a session already active elsewhere, or it was
   // taken over mid-session. null = we're the owner / not gated. The PTY stream keeps flowing
@@ -1114,6 +1126,7 @@ export function Terminal({
         },
         onRole: (r, h) => {
           setRole(r);
+          onRoleRef.current?.(r);
           // Owner → clear the banner. Secondary → show who's active (#434): we keep streaming
           // read-only behind the take-over banner instead of going blank. `h` names the active
           // viewer on the flag-on take-over path; the in-memory #184 path sends no holder, so

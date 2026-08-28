@@ -1,0 +1,149 @@
+/* Floating session window on the Overview map (#208).
+ *
+ * The whole point of the overlay architecture is that NOTHING here scales the terminal: this is
+ * chrome around the unmodified session pane, positioned in overlay-local pixels, outside React
+ * Flow's zoom transform. Square corners + hairline rules per the HUD language. */
+
+.win {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 50%);
+  /* The layer is pointer-events:none so the canvas pans between windows; each window takes
+     its own events back. */
+  pointer-events: auto;
+}
+
+.focused {
+  border-color: var(--accent-soft);
+  box-shadow:
+    0 26px 70px rgb(0 0 0 / 60%),
+    0 0 0 1px var(--accent-glow);
+}
+
+.head {
+  display: flex;
+  flex: 0 0 30px; /* CHROME_H in workspace.ts */
+  gap: 8px;
+  align-items: center;
+  height: 30px;
+  padding: 0 6px 0 8px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-2);
+  background: var(--glass-strong);
+  border-bottom: 1px solid var(--line);
+  /* The header is the ONLY drag initiator; the buttons inside it opt back out below. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.dragging .head {
+  cursor: grabbing;
+}
+
+.focused .head {
+  color: var(--text-1);
+}
+
+.grip {
+  font-size: 13px;
+  letter-spacing: -1px;
+  color: var(--text-3);
+}
+
+.eng {
+  padding: 2px 5px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  border: 1px solid var(--line-strong);
+}
+
+.title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inherited from the pane's own #184/#293 role frame — the window only mirrors it. */
+.lock {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--status-degraded);
+}
+
+.btns {
+  display: flex;
+  gap: 0;
+}
+
+.btns button {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-3);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.focused .btns button {
+  color: var(--text-2);
+}
+
+.btns button:hover {
+  color: var(--accent);
+}
+
+.btns button:focus-visible,
+.resize:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+
+/* The pane fills the window; its own ResizeObserver + debounced refit (#859) does the rest —
+   this component never calls fit() itself, which is what keeps a drag from marching the agent
+   through every intermediate width (#227/#349). */
+.body > :global(*) {
+  height: 100%;
+}
+
+.resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 46%,
+    var(--line-strong) 46%,
+    var(--line-strong) 58%,
+    transparent 58%,
+    transparent 72%,
+    var(--line-strong) 72%,
+    var(--line-strong) 84%,
+    transparent 84%
+  );
+  border: 0;
+  touch-action: none;
+}

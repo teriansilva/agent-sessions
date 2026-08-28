@@ -74,6 +74,9 @@ export interface SessionNodeData extends Record<string, unknown> {
   /** Launch-folder display label (#424 Phase 4): the per-cwd custom name (#148) or shortened
    *  path — precomputed here so the chip stays presentational, matching the list row. */
   folderLabel: string;
+  /** This session is open as a window on the map's workspace (#208) — the chip carries a small
+   *  marker so a panel stays legible as "this node, opened". */
+  opened: boolean;
 }
 
 export interface OverviewGraph {
@@ -115,6 +118,8 @@ export interface BuildOptions {
   excluded?: Set<string>;
   /** Engine-qualified id ("engine:uuid") of the open session → its chip is marked selected. */
   activeId?: string;
+  /** Engine-qualified ids currently open as workspace windows (#208). */
+  openIds?: Set<string>;
   /** Per-cwd custom display names (#148). */
   names?: Record<string, string>;
   /** Make session chips draggable and drop their parent-clamp so one can be dragged onto
@@ -244,6 +249,13 @@ export function expandableKeys(
  *  layered tidy tree: depth = nesting level → row; siblings spread left→right with parents
  *  centered over their children. Group nodes precede their session-chip children (React
  *  Flow requirement). */
+/** The cluster key a session falls under in a given layout — the group node's id is
+ *  `group:<key>`. Exported for the window workspace (#208): when a chip is collapsed into its
+ *  cluster the tether re-anchors to that cluster rather than vanishing. */
+export function clusterKeyFor(s: Session, groupBy: GroupBy): string {
+  return clusterOf(s, groupBy).key;
+}
+
 export function buildOverview(
   sessions: Session[],
   opts: BuildOptions = {},
@@ -254,6 +266,7 @@ export function buildOverview(
   const excluded = opts.excluded ?? new Set<string>();
   const names = opts.names ?? {};
   const draggableSessions = opts.draggableSessions ?? false;
+  const openIds = opts.openIds ?? new Set<string>();
   // cwd visibility prefs apply per `keepsHiddenCwd`: an entity-resolved session in `project`
   // mode survives a hidden cwd (server sidebar/facet parity, #361); in `folder`/`agent` mode
   // a hidden cwd hides its sessions outright (#424 Phase 2).
@@ -435,6 +448,7 @@ export function buildOverview(
             working: !!s.working,
             selected: s.id === opts.activeId,
             folderLabel: displayProjectName(s.cwd, names),
+            opened: openIds.has(s.id),
           } satisfies SessionNodeData,
           draggable: draggableSessions,
         });

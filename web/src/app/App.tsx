@@ -28,6 +28,7 @@ import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
+import { useIsMobile } from "../lib/useIsMobile";
 import { api } from "../lib/api";
 import "./App.css";
 import { useConfig, useConfigRefresh } from "./config";
@@ -81,17 +82,9 @@ function Layout() {
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
   // Which surface the header toggle drives — so the mobile hamburger never mutates the
-  // persisted desktop-collapse flag (and vice versa). Tracks the ≤800px breakpoint.
-  const [isMobile, setIsMobile] = useState(
-    () => window.matchMedia?.("(max-width: 800px)").matches ?? false,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia?.("(max-width: 800px)");
-    if (!mq) return;
-    const on = () => setIsMobile(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
+  // persisted desktop-collapse flag (and vice versa). Tracks the ≤800px breakpoint, which
+  // now has exactly one owner (`useIsMobile`) shared with the map's window workspace (#208).
+  const isMobile = useIsMobile();
   const location = useLocation();
   const config = useConfig();
   // First-run onboarding (#463): show the setup wizard once the password gate has cleared and

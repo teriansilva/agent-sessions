@@ -19,7 +19,7 @@ import { HudFrame } from "../hud/HudFrame";
  *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
  *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold. */
 export function SessionNode({ data }: NodeProps) {
-  const { session, active, working, selected, folderLabel } =
+  const { session, active, working, selected, folderLabel, opened } =
     data as SessionNodeData;
   const color = engineColor(session.engine);
   // #284: the server already resolves the meaningful display title (manual rename → AI
@@ -35,7 +35,7 @@ export function SessionNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`tr-ov-chip nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}`}
+      className={`tr-ov-chip nopan${session.archived ? " archived" : ""}${selected ? " selected" : ""}${opened ? " opened" : ""}`}
       style={
         {
           "--eng": color,
@@ -48,6 +48,13 @@ export function SessionNode({ data }: NodeProps) {
       aria-current={selected ? "true" : undefined}
     >
       <HudFrame />
+      {/* #208: this session is open as a workspace window — the marker plus the tether are what
+          keep a floating panel legible as "this node, opened". */}
+      {opened && (
+        <span className="tr-ov-opened" aria-label="open as a window" role="img">
+          ▣
+        </span>
+      )}
       <span className="tr-ov-chip-head">
         <span
           className={`tr-ov-dot ${working ? "working" : active ? "active" : "idle"}`}
