@@ -158,50 +158,6 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_orchestrator_ledger(tmp_path, monkeypatch) -> None:
-    """Point the orchestrator ledger at a per-test tmp file — the same gap as
-    ``_isolate_notifications`` above, one store over, and equally measured rather than
-    hypothetical.
-
-    The operator's real ledger on this host carries **three records with the id ``act-A``** —
-    a fixture id, written there by an unisolated test run. It reads back the other way, and that
-    is how it surfaced: ``notifications.listing()`` reconciles rows against the ledger and
-    retires any whose action has reached a terminal state, so a test that adds a row for
-    ``act-A`` had it retired on read by the operator's live data. The result was
-    ``test_re_linking_does_not_make_a_read_row_look_new`` failing with ``IndexError`` on a clean
-    checkout of ``main`` — i.e. reddening every PR in the repo, for a reason no diff caused and
-    no reviewer could see in one.
-
-    ``_path`` reads the env per call, so the override is enough and no file is created until
-    something writes. Both directions close together: a test can no longer read the operator's
-    orchestrator state, and — the more serious half — can no longer append fixture records into
-    the store the live orchestrator makes decisions from."""
-    monkeypatch.setenv(
-        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
-        str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_orchestrator_ledger(tmp_path, monkeypatch) -> None:
-    """Point the orchestrator ledger at a per-test tmp file, never the operator's real one.
-
-    Same class of leak as prefs / notifications / missions — and this one was already biting.
-    ``notifications.listing()`` reconciles against the ledger on every read and retires any row
-    whose action has settled, so an unisolated ledger silently empties the bell mid-test:
-    ``test_re_linking_does_not_make_a_read_row_look_new`` failed with ``IndexError`` on the live
-    install (992 ledger entries, one of them a terminal ``act-A`` written there by an earlier
-    test run) and inside CI once a sibling test in the same run had written that id.
-
-    It also stops the suite writing test records INTO the operator's production ledger, which is
-    how ``act-A`` got there in the first place."""
-    monkeypatch.setenv(
-        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
-        str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
-    )
-
-
-@pytest.fixture(autouse=True)
 def _isolate_missions_db(tmp_path, monkeypatch) -> None:
     """Point the missions store (#846) at a per-test tmp file, never the operator's real one.
 
