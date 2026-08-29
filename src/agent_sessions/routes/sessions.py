@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -88,6 +89,78 @@ def _clean_draft_payload(payload: object) -> dict | None:
     return {"text": text, "attachments": attachments, "updated_at": time.time()}
 
 
+# Sentinel for the single-row lookup: "the scan does not know this id" as distinct from "found
+# it, and the hard scope refuses it" (#867 review round 4). Only the first is worth re-walking
+# for — a fresh scan cannot change a scope refusal, and both still answer 404 to the caller.
+_NOT_FOUND = object()
+
+# The miss re-walk is throttled (#867 review round 5). Without this, every well-formed unknown id
+# forces a full provider scan, so a handful of random authenticated misses defeat the shared
+# 10 s cache for everyone — availability amplification, even behind auth. One forced re-walk per
+# window is enough for the case it exists for: a session created moments ago, absent from a warm
+# snapshot. A second miss inside the window is answered from the snapshot that re-walk produced,
+# which is already fresh.
+_MISS_REWALK_MIN_INTERVAL_S = 10.0
+_last_miss_rewalk = 0.0
+_miss_rewalk_lock = threading.Lock()
+
+
+def _note_miss_rewalk() -> None:
+    """Stamp the permit AFTER the re-walk, so the window starts from fresh data.
+
+    Called with ``_miss_rewalk_lock`` held: the lock spans the whole re-walk, which is what makes
+    a follower wait for the fresh snapshot rather than answer 404 from the stale one being
+    replaced. Serializing misses is the point — the work is a single shared scan.
+    """
+    global _last_miss_rewalk
+    _last_miss_rewalk = time.monotonic()
+
+
+def _hard_scope_filter(*, honour_curation: bool):
+    """The HARD half of the membership scope: configured roots (#465) + ``folder_exclusions``.
+
+    Split out from :func:`_scope_filter` because the two halves answer different questions and
+    only one of them is a security boundary (#867). Archived state and folder *visibility* are
+    presentation — they decide which of two lists a row belongs in, and hiding a folder from the
+    picker was never meant to make its sessions unnameable. Roots/exclusions are a boundary: the
+    ws resume path enforces them and calls bypassing them "a back door" (``terminal.py``).
+
+    ``honour_curation`` is the ONE difference between the two callers, and it is deliberate:
+
+    * ``True`` — the LIST's rule (#520). An adopted project, or an ``included``-mode allowlisted
+      cwd, stays in scope even outside every root. Long-standing behaviour; unchanged here.
+    * ``False`` — the TERMINAL's rule. ``routes/terminal.py`` calls ``in_scope`` with its default
+      ``curated=False``, so a curated-but-outside-root session is **not resumable**. The
+      single-row lookup uses this stricter form because its entire justification is "you are
+      already able to open this session": where resume refuses, naming it — cwd, title, first
+      message, review/recap — is not ours to do either. Matching the list here instead would let
+      an authenticated caller holding a guessed or stale id read metadata for a session the
+      terminal rejects, which is exactly the hole this parameter closes (#867 review round 2).
+
+    Empty roots ⇒ the root half is off, but an excluded prefix ALWAYS drops the row — curated or
+    not, roots or not. That ordering lives in ``project_dirs.in_scope``, which is why this calls
+    it unconditionally rather than short-circuiting on empty roots.
+    """
+    mode = prefs.get_projects_mode()
+    included = set(prefs.get_projects_included())
+    roots = project_dirs.effective_roots()
+    exclusions = prefs.get_folder_exclusions()
+
+    def in_scope(cwd: str, project_ref: dict) -> bool:
+        curated = honour_curation and (
+            project_ref["kind"] == "project" or (mode == "included" and cwd in included)
+        )
+        # ALWAYS through the canonical predicate — no `if not roots: return True` short-circuit
+        # (#867 review round 3). That shortcut looks equivalent because empty roots mean "the
+        # #465 feature is off", but `project_dirs.in_scope` checks EXCLUSIONS FIRST and only then
+        # falls through on empty roots. Skipping it therefore served a row under an explicitly
+        # excluded prefix whenever no roots were configured — which is the common case, and an
+        # exclusion is the most explicit opt-out the operator has (#520).
+        return project_dirs.in_scope(cwd, roots=roots, exclusions=exclusions, curated=curated)
+
+    return in_scope
+
+
 def _scope_filter():
     """The session-list membership scope (#567) — active + #465 root-scope + visibility —
     as ONE predicate shared by ``GET /api/sessions`` (the list) and ``GET /api/projects``
@@ -110,15 +183,9 @@ def _scope_filter():
     # Root scope (#465) + explicit-curation precedence (#520): a HARD scope. Empty roots ⇒
     # no filtering. Precedence exclusion > curation > roots: an excluded prefix always drops
     # the row; otherwise an adopted project (or, in `included` mode, an allowlisted cwd) stays
-    # even outside a root.
-    roots = project_dirs.effective_roots()
-    exclusions = prefs.get_folder_exclusions()
-
-    def _in_scope(cwd: str, project_ref: dict) -> bool:
-        if not roots:
-            return True
-        curated = project_ref["kind"] == "project" or (mode == "included" and cwd in included)
-        return project_dirs.in_scope(cwd, roots=roots, exclusions=exclusions, curated=curated)
+    # even outside a root. Shared with the single-row lookup, which passes
+    # `honour_curation=False` to match the terminal's stricter resume boundary (#867).
+    _in_scope = _hard_scope_filter(honour_curation=True)
 
     def _visible(cwd: str, project_ref: dict) -> bool:
         # Project-resolved rows are always visible: hiding members happens through the
@@ -417,6 +484,103 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "total": len(rows),
             "facets": facets,
         }
+
+    def _session_row_sync(key: str) -> dict | None:
+        """Build the ONE row for ``key`` (canonical ``engine:native_id``), or None if the
+        scanner doesn't know it.
+
+        Blocking disk/CPU work — cached scan walk, sidecar load, project resolve — so it is a
+        plain sync function the route awaits through ``asyncio.to_thread``, exactly as
+        ``/api/sessions`` does with ``_list_sessions_sync`` (#561 Phase 2). Running it on the
+        event loop would stall every terminal WebSocket sharing that loop (the #678 shape).
+
+        ``_scope_filter()`` is applied in HALVES, and which half goes where is the whole contract:
+
+        * **Soft — skipped.** Archived state and folder *visibility* decide which of two lists a
+          row belongs in. Hiding a folder from the picker was never meant to make its sessions
+          unnameable, and skipping this half is what fixes the nameless header. Archived rides on
+          the row as a field; it never hides one.
+        * **Hard — enforced**, in the terminal's stricter form
+          (``_hard_scope_filter(honour_curation=False)``). Configured roots and
+          ``folder_exclusions`` are a boundary, not a preference: the ws resume path refuses those
+          sessions as a back door, so this route — which checks only ``logged_in`` and cannot
+          prove the caller is attached to anything — refuses to name them either.
+
+        Reuses ``_row`` rather than assembling a second payload, so the pane and the sidebar can
+        never disagree about a session.
+        """
+        # A miss may be a STALE SNAPSHOT, not an absent session (#867 review round 4).
+        # `scan_all_cached` serves a short-TTL walk, and a session created outside the app is
+        # legitimately absent from a warm one — so answering 404 from that snapshot would teach
+        # the client "this id does not exist" about a session that does. Re-walk ONCE on a miss
+        # and answer from fresh data, which makes the 404 authoritative and lets the client
+        # settle it. Only a genuine not-found pays for the re-walk; a scope refusal (below) does
+        # not, since a fresh scan cannot change the answer.
+        row = _lookup_row(key)
+        if row is _NOT_FOUND:
+            # Hold the permit ACROSS the re-walk, not just while claiming it (#867 review r6
+            # note). Publishing the timestamp first let a concurrent follower see "someone is
+            # re-walking" and answer 404 from the very snapshot the winner was replacing. Holding
+            # it means a follower waits for the fresh walk and answers from that instead.
+            with _miss_rewalk_lock:
+                if time.monotonic() - _last_miss_rewalk >= _MISS_REWALK_MIN_INTERVAL_S:
+                    engines.invalidate_scan_cache()
+                    row = _lookup_row(key)
+                    _note_miss_rewalk()
+                else:
+                    row = _lookup_row(key)
+        return None if row is _NOT_FOUND else row
+
+    def _lookup_row(key: str):
+        aliases = metadata.load_aliases()
+        meta_index = metadata.load()
+        project_index = projects.load()
+        # The TERMINAL's boundary, not the list's (#867 review round 2): no curation override, so
+        # an adopted project outside every root is refused here exactly as resume refuses it.
+        in_scope = _hard_scope_filter(honour_curation=False)
+        phys = engines.physical_key(key, aliases)
+        for s in engines.scan_all_cached():
+            if engines.session_key(s) != key:
+                continue
+            m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+            row = _row(s, m, project_index)
+            # The HARD boundary still applies (#867 review). Roots/exclusions are not a listing
+            # preference: the ws resume path enforces the same predicate and calls bypassing it
+            # a back door, so a session outside it cannot be opened at all — and a caller holding
+            # a guessed or stale id must not be able to read its cwd and metadata through a route
+            # that only checks `logged_in`. Out of scope reads as "unknown session", exactly as
+            # the resume path answers. Curation does NOT exempt a row here: the list lets an
+            # adopted project outside a root through, the terminal does not, and this endpoint
+            # follows the terminal.
+            if not in_scope(row["cwd"], row["project"]):
+                return None  # refused, not missing — a re-walk cannot change this
+            return row
+        return _NOT_FOUND
+
+    @app.get("/api/sessions/{sid}")
+    async def get_session(sid: str, _: str = Depends(logged_in)) -> JSONResponse:
+        """One session row by id — what the session PANE reads (#867).
+
+        The pane used to resolve its project / cwd / title out of the sidebar's store, which holds
+        a single filtered, scope-stripped 20-row page. Anything opened by deep link (the form every
+        Forgejo claim record posts), reloaded after dropping off page 0, archived, or hidden from
+        the list by ``projects_mode`` / ``projects_hidden`` therefore had no row anywhere in the
+        client: no project, no update time, and a Files trigger disabled behind "this session has
+        not reported a folder yet" — while the terminal for it was on screen.
+
+        ``canonical_key`` is the validation gate (the same one the metadata PATCH uses), so an
+        unknown engine, a malformed native id, and an unreconciled ``new-<uuid>`` placeholder all
+        land as 404 rather than reaching the scan.
+        """
+        try:
+            key = engines.canonical_key(sid)
+        except engines.EngineError:
+            raise HTTPException(status_code=404, detail="unknown session") from None
+        with perfstats.timed("api_session_ms"):
+            row = await asyncio.to_thread(_session_row_sync, key)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        return JSONResponse(row)
 
     @app.get("/api/projects")
     async def list_projects(request: Request, _: str = Depends(logged_in)) -> JSONResponse:

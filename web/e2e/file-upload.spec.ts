@@ -23,7 +23,7 @@ const SESSION = {
   engine: "claude",
   title: "upload session",
   cwd: CWD,
-  project: { kind: "folder", id: CWD, label: "proj" },
+  project: { kind: "folder", id: CWD, name: "proj" },
   last_mtime: NOW - 120,
   archived: false,
   favorite: false,

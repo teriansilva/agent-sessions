@@ -24,6 +24,17 @@ vi.mock("../../lib/api", () => ({
         updated_at: null,
       }),
     saveDraft: vi.fn().mockResolvedValue({ id: "", has_draft: false }),
+    // "Review now" in the session brief. Asserted by the #867 action-identity test below: it is
+    // the cheapest place to observe WHICH session id an action actually targets.
+    reviewNow: vi.fn().mockResolvedValue({
+      ai_summary: "ok",
+      // The FULL row shape: the modal splits `ai_recap` on newlines, so a partial mock throws
+      // where the product would not.
+      ai_recap: "",
+      intervention_required: false,
+      intervention_reason: "",
+      reviewed_at: 0,
+    }),
   },
 }));
 
@@ -493,12 +504,26 @@ function headerRow(over: Record<string, unknown> = {}): Session[] {
   ] as unknown as Session[];
 }
 
-function renderTerminal(sessions: Session[]) {
+function renderTerminal(
+  sessions: Session[],
+  props: { engine?: string; id?: string; rowKey?: string } = {},
+) {
   return render(
     <MemoryRouter>
       <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
-        <SessionsCtx.Provider value={{ sessions, setSessions: () => {} }}>
-          <Terminal engine="claude" id="abc" />
+        <SessionsCtx.Provider
+          value={{
+            sessions,
+            setSessions: () => {},
+            // The list already holds this row, so the pane never asks for it (#867).
+            looked: {},
+            lookup: () => {},
+            retryGen: 0,
+            remember: () => {},
+            forget: () => {},
+          }}
+        >
+          <Terminal engine="claude" id="abc" {...props} />
         </SessionsCtx.Provider>
       </ThemeCtx.Provider>
     </MemoryRouter>,
@@ -542,4 +567,48 @@ test("an adopted project shows its entity name in the header (#744)", () => {
     headerRow({ project: { kind: "project", id: "p-1", name: "BattleLab" } }),
   );
   expect(screen.getByText("BattleLab")).toBeInTheDocument();
+});
+
+// #867: the header is now fed by a lookup as well as the sidebar's list, so a row can arrive
+// from a source this component does not control. A header that cannot name its project must
+// degrade to a blank chip — a throw here is caught by the route's error boundary and takes the
+// LIVE TERMINAL down with it ("we couldn't load this part of the app").
+test("a project ref with no name renders a blank chip, it does not kill the session (#867)", () => {
+  renderTerminal(
+    headerRow({ project: { kind: "folder", id: "/home/u/x" } }),
+  );
+  // The pane is still there — engine box, LED, actions — rather than an error boundary.
+  expect(screen.getByTitle("claude")).toHaveTextContent("cc");
+  expect(screen.getByRole("img", { name: /^status: /i })).toBeInTheDocument();
+});
+
+// #867 review round 3: the frozen placeholder is the TRANSPORT identity (socket/lock/ring) and
+// must never move. But it is not what the SERVER should act on — `canonical_key` rejects a
+// `new-<uuid>`, so a "Review now" or a handoff prepare aimed at it targets a session that does
+// not exist, and gating Hand off on it hides the control for the whole life of a converged
+// session. Actions follow the reconciled id; transport stays frozen.
+test("after the converge, actions target the REAL id — not the frozen placeholder (#867)", async () => {
+  const real = "opencode:ses_realreal0000";
+  renderTerminal(
+    headerRow({ id: real, engine: "opencode", uuid: "ses_realreal0000" }),
+    {
+      engine: "opencode",
+      id: "new-11111111-1111-1111-1111-111111111111",
+      rowKey: real,
+    },
+  );
+
+  // Hand off is OFFERED: gating on the frozen `new-…` id kept it hidden forever.
+  const handoff = screen.getByRole("button", {
+    name: /hand off session/i,
+  });
+  expect(handoff).toBeInTheDocument();
+
+  // And the brief ACTS on the real id — `canonical_key` rejects the placeholder, so a review
+  // aimed at it would silently target a session that does not exist.
+  await userEvent.click(
+    screen.getByRole("button", { name: /open session brief/i }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /review now/i }));
+  expect(api.reviewNow).toHaveBeenCalledWith(real);
 });

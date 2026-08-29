@@ -2290,3 +2290,386 @@ def test_api_config_advertises_shell_new_session(auth_cfg, fake_jsonl, tmp_home,
     _login(c, auth_cfg)
     d = c.get("/api/config").json()
     assert "shell" in d["new_session_engines"]
+
+
+# ---- single-session lookup (#867) ---------------------------------------------
+#
+# The session PANE reads this route, not the list. Everything below exists because the pane used
+# to resolve its project / cwd / title out of the sidebar's store — one filtered, scope-stripped
+# 20-row page — so anything deep-linked, reloaded off page 0, archived, or hidden by
+# `projects_mode` / `projects_hidden` had no row anywhere in the client.
+
+
+def test_session_lookup_returns_the_same_row_shape_as_the_list(auth_cfg, fake_jsonl):
+    """One row, byte-identical to the list's — both go through `_row`, so the pane and the
+    sidebar can never disagree about a session."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    listed = next(
+        s for s in c.get("/api/sessions?limit=100").json()["sessions"] if s["uuid"] == uuid
+    )
+    r = c.get(f"/api/sessions/claude:{uuid}")
+    assert r.status_code == 200
+    assert r.json() == listed
+
+
+def test_session_lookup_accepts_a_bare_uuid(auth_cfg, fake_jsonl):
+    """`canonical_key` back-compat: a bare Claude UUID resolves to `claude:<uuid>`, so an old
+    bookmark keeps working here exactly as it does on every other /api/sessions/{sid} route."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    r = c.get(f"/api/sessions/{uuid}")
+    assert r.status_code == 200
+    assert r.json()["id"] == f"claude:{uuid}"
+
+
+def test_session_lookup_finds_an_archived_session(auth_cfg, fake_jsonl):
+    """The list's default filter is `archived=false`, so an archived session opened by link had
+    no row at any page. The lookup returns it with `archived: true` — a field, never a filter."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "44444444-4444-4444-4444-444444444444"
+    assert uuid not in {s["uuid"] for s in c.get("/api/sessions?limit=100").json()["sessions"]}
+    r = c.get(f"/api/sessions/claude:{uuid}")
+    assert r.status_code == 200
+    assert r.json()["archived"] is True
+
+
+def test_session_lookup_ignores_the_list_visibility_scope(auth_cfg, fake_jsonl, tmp_home):
+    """The deliberate difference from the list (#867).
+
+    `_scope_filter()` answers "should this row appear in a LISTING". This is a lookup of one id
+    whose live terminal the operator is already attached to, so hiding its folder name buys
+    nothing — and applying the filter would leave exactly the sessions this route exists for
+    (measured: 588 of 1390 on the author's install) still nameless.
+    """
+    from agent_sessions import prefs
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "33333333-3333-3333-3333-333333333333"
+    prefs.set_projects_hidden(["/tmp/other"])
+    listed = c.get("/api/sessions?limit=100").json()["sessions"]
+    assert uuid not in {s["uuid"] for s in listed}  # gone from the list…
+    r = c.get(f"/api/sessions/claude:{uuid}")  # …still nameable in the pane
+    assert r.status_code == 200
+    assert r.json()["cwd"] == "/tmp/other"
+
+
+def test_session_lookup_404s_on_unknown_and_malformed_ids(auth_cfg, fake_jsonl):
+    """`canonical_key` is the gate: an unknown engine and a malformed native id are rejected
+    before the scan, and a well-formed id nobody has is a plain 404. Never a 500."""
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    for sid in (
+        "claude:99999999-9999-4999-8999-999999999999",  # well-formed, unknown
+        "claude:not-a-uuid",  # fails the provider's id pattern
+        "nosuchengine:11111111-1111-1111-1111-111111111111",  # unknown engine
+        "..",  # not an id at all
+    ):
+        assert c.get(f"/api/sessions/{sid}").status_code == 404, sid
+
+
+def test_session_lookup_404s_on_an_unreconciled_new_placeholder(auth_cfg, fake_jsonl):
+    """`<engine>:new-<uuid>` (#127/#315) is accepted only on the ws launch path, so it 404s here.
+
+    The CLIENT never asks for one (that would pin an error on a key about to be replaced) — this
+    pins the server half: a placeholder that does arrive is a clean 404, never a 500.
+    """
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    r = c.get("/api/sessions/opencode:new-11111111-1111-1111-1111-111111111111")
+    assert r.status_code == 404
+
+
+def test_session_lookup_requires_login(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    r = c.get("/api/sessions/claude:11111111-1111-1111-1111-111111111111")
+    assert r.status_code == 401
+
+
+def test_session_lookup_does_not_block_the_event_loop(auth_cfg, fake_jsonl):
+    """The row build runs in a worker thread, so a cache miss cannot stall the terminal
+    WebSockets that share the event loop (#678's shape, arriving through a new door).
+
+    Driven over ASGI on ONE loop, deliberately: `TestClient` gives each request its own portal
+    and loop, so two of its calls can never contend — a version of this test written on it
+    passed against a handler that called the blocking builder directly, which is worse than no
+    test at all.
+
+    The discriminator is WHEN the sibling request lands, not how long it takes. Both requests
+    start together; the health one yields briefly so the lookup reaches the blocking scan first.
+    On the event loop the lookup pins it for `BLOCK_S`, so the health coroutine cannot even
+    resume from that yield until the block is over and it lands at >= BLOCK_S. In a worker
+    thread the loop stays free and it lands immediately.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    import httpx
+
+    from agent_sessions import engines
+
+    BLOCK_S = 1.5
+    real = engines.scan_all_cached
+
+    def slow():
+        _time.sleep(BLOCK_S)
+        return real()
+
+    async def drive():
+        transport = httpx.ASGITransport(app=create_app(auth_cfg))
+        async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as ac:
+            r = await ac.post(
+                "/login",
+                data={"username": "marcus", "password": "hunter2"},
+                headers={"Origin": auth_cfg.origin},
+            )
+            assert r.status_code == 303
+
+            t0 = _time.monotonic()
+
+            async def health_when():
+                await _asyncio.sleep(0.05)  # let the lookup reach the scan first
+                resp = await ac.get("/healthz")
+                return _time.monotonic() - t0, resp
+
+            with mock.patch.object(engines, "scan_all_cached", slow):
+                lookup, (landed_at, health) = await _asyncio.gather(
+                    ac.get("/api/sessions/claude:11111111-1111-1111-1111-111111111111"),
+                    health_when(),
+                )
+            return lookup, landed_at, health
+
+    lookup, landed_at, health = _asyncio.run(drive())
+    assert lookup.status_code == 200
+    assert health.status_code == 200
+    assert (
+        landed_at < BLOCK_S / 2
+    ), f"/healthz landed {landed_at:.2f}s in — the lookup held the event loop"
+
+
+def _seed_session_at(tmp_home, uuid: str, cwd: Path) -> None:
+    """A claude session whose cwd is a REAL directory — roots are normalized against the
+    filesystem (`_normalize_roots` keeps only existing dirs), so a scope test written against
+    the shared fixture's decoded-but-nonexistent paths silently tests nothing."""
+    cwd.mkdir(parents=True, exist_ok=True)
+    d = tmp_home / ".claude" / "projects" / str(cwd).replace("/", "-")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{uuid}.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(cwd), "message": {"content": "hi"}}) + "\n"
+    )
+
+
+def test_session_lookup_enforces_the_hard_root_scope(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    """Roots + `folder_exclusions` are a BOUNDARY, not a listing preference (#867 review).
+
+    The ws resume path enforces exactly this predicate and calls bypassing it a back door, so a
+    session outside the configured roots cannot be opened at all — and a caller holding a guessed
+    or stale id must not be able to read its cwd and metadata through a route that checks only
+    `logged_in`. Out of scope answers 404, the same way resume does.
+
+    The soft half is unaffected: the archived and `projects_hidden` cases above still resolve.
+    """
+    inside_uuid = "aaaa1111-1111-4111-8111-111111111111"
+    outside_uuid = "bbbb2222-2222-4222-8222-222222222222"
+    root = tmp_home / "roots" / "work"
+    _seed_session_at(tmp_home, inside_uuid, root / "repo")
+    _seed_session_at(tmp_home, outside_uuid, tmp_home / "elsewhere" / "repo")
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # No roots ⇒ the feature is off and both resolve.
+    assert c.get(f"/api/sessions/claude:{outside_uuid}").status_code == 200
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+    assert c.get(f"/api/sessions/claude:{inside_uuid}").status_code == 200
+    assert c.get(f"/api/sessions/claude:{outside_uuid}").status_code == 404
+
+
+def test_session_lookup_honours_folder_exclusions(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    """An excluded prefix drops the row even inside a root — exclusion beats curation (#520)."""
+    from agent_sessions import prefs
+
+    uuid = "cccc3333-3333-4333-8333-333333333333"
+    root = tmp_home / "roots2"
+    _seed_session_at(tmp_home, uuid, root / "repo")
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 200
+    prefs.set_folder_exclusions([str(root / "repo")])
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 404
+
+
+def test_session_lookup_refuses_a_curated_project_outside_every_root(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    """Curation does NOT exempt a row from the lookup's boundary (#867 review round 2).
+
+    The LIST lets an adopted project through outside a root (#520, `curated=True`), but
+    `routes/terminal.py` calls the same helper with its default `curated=False` and refuses to
+    resume it. The lookup follows the TERMINAL: its whole justification is "you can already open
+    this session", so where resume refuses, naming it — cwd, title, first message, recap — is not
+    ours either. Otherwise a caller holding a guessed id reads metadata for a session the
+    terminal rejects as a back door.
+    """
+    from agent_sessions import projects
+
+    uuid = "dddd4444-4444-4444-8444-444444444444"
+    outside = tmp_home / "adopted" / "repo"
+    _seed_session_at(tmp_home, uuid, outside)
+    root = tmp_home / "roots3"
+    root.mkdir(parents=True, exist_ok=True)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    # Adopt the folder into a project, then scope to an unrelated root.
+    projects.create("Adopted", folders=[str(outside)])
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+
+    # The LIST still shows it — curation beats roots there, and that behaviour is untouched.
+    listed = c.get("/api/sessions?limit=100").json()["sessions"]
+    assert uuid in {s["uuid"] for s in listed}
+    # The LOOKUP refuses it, matching what resume would do.
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 404
+
+
+def test_session_lookup_refuses_an_included_cwd_outside_every_root(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    """The other curation route: `included` mode's allowlist. Same rule, same reason."""
+    from agent_sessions import prefs
+
+    uuid = "eeee5555-5555-4555-8555-555555555555"
+    outside = tmp_home / "allowlisted" / "repo"
+    _seed_session_at(tmp_home, uuid, outside)
+    root = tmp_home / "roots4"
+    root.mkdir(parents=True, exist_ok=True)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    prefs.set_projects_mode("included")
+    prefs.set_projects_included([str(outside)])
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+
+    listed = c.get("/api/sessions?limit=100").json()["sessions"]
+    assert uuid in {s["uuid"] for s in listed}
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 404
+
+
+def test_session_lookup_honours_exclusions_with_no_roots_configured(auth_cfg, fake_jsonl, tmp_home):
+    """An exclusion drops the row even when NO roots are configured (#867 review round 3).
+
+    The tempting shortcut — "empty roots ⇒ the #465 feature is off ⇒ everything is in scope" —
+    skips `project_dirs.in_scope`, which checks exclusions FIRST and only then falls through on
+    empty roots. With no roots set (the common case) that served rows under an explicitly
+    excluded prefix, which is the most explicit opt-out the operator has (#520).
+    """
+    from agent_sessions import prefs
+
+    uuid = "ffff6666-6666-4666-8666-666666666666"
+    cwd = tmp_home / "excluded" / "repo"
+    _seed_session_at(tmp_home, uuid, cwd)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    assert not prefs.get_project_roots()  # no roots — the shortcut's precondition
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 200
+    prefs.set_folder_exclusions([str(cwd)])
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 404
+
+
+def test_session_lookup_rewalks_before_answering_404(auth_cfg, fake_jsonl, tmp_home, monkeypatch):
+    """A miss re-walks once, so the 404 is authoritative rather than an artifact of the TTL.
+
+    `scan_all_cached` serves a short-TTL snapshot, and a session created outside the app is
+    legitimately absent from a warm one. Answering 404 from that snapshot teaches the client
+    "this id does not exist" about a session that does — and the client settles negatives.
+
+    The TTL is enabled explicitly: conftest pins it to 0 for the suite, which makes the cache a
+    pass-through and would leave this test asserting nothing (it passed against the unfixed
+    endpoint until that was noticed).
+    """
+    from agent_sessions import engines
+    from agent_sessions.routes import sessions as sessions_routes
+
+    monkeypatch.setattr(sessions_routes, "_last_miss_rewalk", 0.0, raising=False)
+    engines.set_scan_cache_ttl(30.0)
+    monkeypatch.setattr(
+        engines, "_SCAN_CACHE_TTL_S", 30.0, raising=False
+    )  # belt and braces for the module-global read
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    uuid = "abcd7777-7777-4777-8777-777777777777"
+    try:
+        c.get("/api/sessions?limit=1")  # warm a snapshot WITHOUT the session
+        _seed_session_at(tmp_home, uuid, tmp_home / "late" / "repo")
+        # Sanity: the warm snapshot really does not know it — otherwise the assert below is free.
+        assert all(s.uuid != uuid for s in engines.scan_all_cached())
+        assert c.get(f"/api/sessions/claude:{uuid}").status_code == 200
+    finally:
+        engines.set_scan_cache_ttl(0.0)
+        engines.invalidate_scan_cache()
+
+
+def test_session_lookup_does_not_rewalk_for_a_scope_refusal(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    """A scope refusal is not a miss — re-walking cannot change it, so it must not pay for one.
+
+    Pinned because the re-walk is the expensive branch: making every out-of-scope lookup force a
+    full disk scan would hand any authenticated caller a cheap way to thrash the scanner.
+    """
+    from agent_sessions import engines
+
+    uuid = "bcde8888-8888-4888-8888-888888888888"
+    outside = tmp_home / "outside" / "repo"
+    _seed_session_at(tmp_home, uuid, outside)
+    root = tmp_home / "roots5"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGENT_SESSIONS_PROJECT_ROOTS", str(root))
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    c.get("/api/sessions?limit=1")  # warm the snapshot WITH the session in it
+
+    calls = {"n": 0}
+    real = engines.invalidate_scan_cache
+    monkeypatch.setattr(
+        engines,
+        "invalidate_scan_cache",
+        lambda: (calls.__setitem__("n", calls["n"] + 1), real())[1],
+    )
+    assert c.get(f"/api/sessions/claude:{uuid}").status_code == 404
+    assert calls["n"] == 0, "a scope refusal must not force a re-walk"
+
+
+def test_session_lookup_throttles_the_miss_rewalk(auth_cfg, fake_jsonl, monkeypatch):
+    """Repeated unknown ids must not each force a full provider scan (#867 review round 5).
+
+    The re-walk exists for one narrow case — a session created moments ago and absent from a warm
+    snapshot. Doing it per miss lets a handful of random authenticated 404s defeat the shared
+    10 s cache for every other caller.
+    """
+    from agent_sessions import engines
+    from agent_sessions.routes import sessions as sessions_routes
+
+    monkeypatch.setattr(sessions_routes, "_last_miss_rewalk", 0.0, raising=False)
+    calls = {"n": 0}
+    real = engines.invalidate_scan_cache
+    monkeypatch.setattr(
+        engines,
+        "invalidate_scan_cache",
+        lambda: (calls.__setitem__("n", calls["n"] + 1), real())[1],
+    )
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    for n in range(4):
+        sid = f"claude:9999999{n}-9999-4999-8999-999999999999"
+        assert c.get(f"/api/sessions/{sid}").status_code == 404
+    assert calls["n"] == 1, f"{calls['n']} forced scans for 4 misses — the throttle is not holding"

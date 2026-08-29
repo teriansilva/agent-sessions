@@ -36,6 +36,7 @@ import type {
   PulseAskResult,
   PulseDepth,
   PulseOverview,
+  Session,
   SessionDraft,
   SessionsPage,
   SessionsQuery,
@@ -630,6 +631,11 @@ export const api = {
       },
     ),
   sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
+  /** ONE session row by id (#867) — what the session pane reads when the sidebar's page
+   *  doesn't hold it. Unlike `sessions()` this is a lookup, not a listing: it ignores the
+   *  list's pagination, filters, archived tab and visibility scope, so a deep-linked or
+   *  hidden session can still name its project and folder. 404 when nothing has that id. */
+  session: (id: string) => getJson<Session>(`/api/sessions/${enc(id)}`),
   rename: (id: string, title: string) =>
     postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, {
       title,

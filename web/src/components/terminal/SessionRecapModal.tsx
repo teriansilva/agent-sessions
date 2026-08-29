@@ -94,6 +94,31 @@ export function SessionRecapModal({
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  // Has a local "Review now" produced a result? Once it has, THIS modal owns the state and
+  // incoming props must not overwrite it — the review is newer than the row the header holds.
+  // State, not a ref: it is read during render to decide whether to reconcile, and refs are not
+  // readable there.
+  const [owned, setOwned] = useState(false);
+
+  // Until then, keep reconciling from the props (#867 review round 4). Seeding at mount alone
+  // was fine when the row could only come from the sidebar's already-loaded page; now the pane
+  // may still be FETCHING it when the brief is opened, and the row arrives moments later. The
+  // header updated, this modal did not — it sat on "No summary yet" / "not reviewed yet" until
+  // closed and reopened. Derived-state reconciliation during render, the same pattern
+  // SessionView uses, so there is no extra commit.
+  const incoming = {
+    summary: summary ?? "",
+    recap: recap ?? "",
+    interventionRequired: !!interventionRequired,
+    interventionReason: interventionReason ?? "",
+    reviewedAt: reviewedAt ?? null,
+  };
+  const [seen, setSeen] = useState(() => JSON.stringify(incoming));
+  const incomingKey = JSON.stringify(incoming);
+  if (!owned && incomingKey !== seen) {
+    setSeen(incomingKey);
+    setState(incoming);
+  }
 
   // Move focus to the close button on open + restore it to the trigger on close.
   useEffect(() => {
@@ -119,6 +144,7 @@ export function SessionRecapModal({
     setError(null);
     try {
       const r = await api.reviewNow(sessionId);
+      setOwned(true); // this result is newer than any row the header can hand us
       setState({
         summary: r.ai_summary,
         recap: r.ai_recap,

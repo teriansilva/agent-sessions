@@ -1799,3 +1799,163 @@ def test_attach_holds_owner_input_until_the_pty_repair_finishes(tmp_path):
     assert (
         echoes[0] > probe["end"]
     ), "owner input reached the PTY before the repair finished — TCSAFLUSH would eat it"
+
+
+def test_ws_resume_rejected_by_exclusion_with_no_roots(fake_jsonl, auth_cfg, monkeypatch):
+    """An exclusion closes the resume back door even with NO roots configured (#867 review r4).
+
+    The gate used to read `roots and not in_scope(...)`, on the reading that empty roots mean the
+    #465 feature is off. But `in_scope` checks EXCLUSIONS FIRST and only then falls through on
+    empty roots — so with no roots (the common case) an explicitly excluded session stayed
+    resumable, which is exactly the back door this gate exists to close. The sibling test above
+    pins that empty roots still leave the ROOT half off.
+    """
+    from agent_sessions import prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        # NB the scanned cwd decodes dashes to slashes: the fixture dir
+        # `-home-user-claude-repo-a` is /home/user/claude/repo/a, not …/repo-a.
+        prefs,
+        "get_folder_exclusions",
+        lambda path=None: ["/home/user/claude/repo/a"],
+    )
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_attach_rejected_by_exclusion_with_a_live_master(fake_jsonl, auth_cfg, monkeypatch):
+    """A LIVE master does not exempt a session from the hard boundary (#867 review round 6).
+
+    The gate used to live only in the resume branch, so `open_action() == ATTACH` went straight to
+    `webterm.run()`. An excluded session with a warm dtach master was therefore attachable while
+    the same session 404s on lookup and is refused on a cold resume — whether a master happens to
+    be running is not an authorization fact. The sibling LAUNCH test cannot catch this: with no
+    live master it never reaches this branch.
+    """
+    from agent_sessions import prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        prefs, "get_folder_exclusions", lambda path=None: ["/home/user/claude/repo/a"]
+    )
+
+    # Force the ATTACH dispatch — a real live master needs a real dtach.
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_attach_allowed_for_a_fresh_session_when_no_boundary_is_configured(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """An ATTACH with nothing scanned is usually a FRESH session mid-launch — a reload in the
+    first seconds, before its transcript lands. With NO roots and NO exclusions configured there
+    is nothing to enforce, so it is not refused and the reload case keeps working.
+
+    The sibling below is the other half: once the operator HAS configured a boundary, the same
+    unidentifiable attach fails closed.
+    """
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    unknown = "claude:77777777-7777-4777-8777-777777777777"  # nothing scanned under this id
+    # `not 4404` rather than a specific downstream code: what this pins is that the SCOPE GATE
+    # did not refuse it. Whatever the bridge does next is a different contract.
+    assert _close_code(c, f"/ws/term/{unknown}", headers) != 4404
+
+
+def test_ws_attach_refuses_an_unknown_row_once_a_boundary_is_configured(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """A live master is not proof that the CURRENT config still authorizes its cwd (#867 r7).
+
+    With nothing scanned there is no cwd to check — so where the operator has asked for a
+    boundary (any root or any exclusion), an unidentifiable attach is refused rather than handed
+    the terminal. Fails closed where it matters, open where nothing was configured.
+
+    The gap this closes: launch a session, change roots or exclude its cwd before its transcript
+    is scannable, then reconnect while the master is still live.
+    """
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        prefs, "get_folder_exclusions", lambda path=None: ["/home/user/claude/repo/a"]
+    )
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    unknown = "claude:77777777-7777-4777-8777-777777777777"
+    assert _close_code(c, f"/ws/term/{unknown}", headers) == 4404
+
+
+def test_ws_attach_scan_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatch):
+    """The warm-reconnect scan must not run on the event loop (#867 review round 8).
+
+    `scan_all()` walks every present provider's store — ~1400 sessions on the author's install —
+    and this path runs on EVERY warm reconnect, between the async dispatch and `webterm.run()`.
+    On the loop it stalls every other terminal stream and the health/API coroutines: the same
+    #678 shape the single-row lookup route already avoids.
+
+    The comparison is against the thread the COROUTINE runs on, captured from inside the
+    handler's own async dispatch — not against the main thread. `TestClient` runs its loop in a
+    worker thread, so a `current_thread() is main_thread()` assertion is vacuous here and passed
+    against the blocking version.
+    """
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+
+    loop_thread: list[threading.Thread] = []
+    scan_thread: list[threading.Thread] = []
+    real = engines.scan_all
+
+    def watched():
+        scan_thread.append(threading.current_thread())
+        return real()
+
+    monkeypatch.setattr(engines, "scan_all", watched)
+
+    async def _attach(_engine, _native):
+        # Runs ON the event loop, inside the same handler — this is the thread to beat.
+        loop_thread.append(threading.current_thread())
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    _close_code(c, f"/ws/term/{_GOOD}", headers)
+
+    assert loop_thread, "the attach dispatch never ran"
+    assert scan_thread, "the attach path never reached the scan"
+    assert (
+        scan_thread[0] is not loop_thread[0]
+    ), "scan_all ran on the event loop's own thread during ATTACH"

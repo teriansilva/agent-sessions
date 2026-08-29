@@ -388,15 +388,50 @@ def register(
                 # dtach -A attaches (ignoring the cmd), so a fresh session survives a
                 # browser reload before it has written its on-disk history. cwd is only
                 # for the (unused-on-attach) spawn; a scanned cwd if known, else home.
+                # OFF the event loop (#867 review round 8). `scan_all()` walks every present
+                # provider's store — ~1400 sessions on the author's install — and this runs on
+                # EVERY warm reconnect, between the async dispatch and `webterm.run()`. On the
+                # loop it stalls every other terminal stream and the health/API coroutines: the
+                # same #678 shape the single-row lookup route already avoids. The scan is also
+                # now load-bearing for authorization below, so it cannot simply be dropped.
+                _all = await asyncio.to_thread(engines.scan_all)
                 scanned = next(
-                    (
-                        s
-                        for s in engines.scan_all()
-                        if s.engine == prov.engine_id and s.uuid == native
-                    ),
+                    (s for s in _all if s.engine == prov.engine_id and s.uuid == native),
                     None,
                 )
                 cwd = scanned.cwd if scanned else str(Path.home())
+                # The hard boundary applies to ATTACH too (#867 review round 6). It used to live
+                # only in the resume branch below, so a session with a LIVE dtach master was
+                # attachable even when its cwd is excluded or outside every root — the lookup
+                # 404s it and a cold resume refuses it, but a warm one handed over the terminal.
+                # Whether a master happens to be running is not an authorization fact.
+                #
+                # An ATTACH with NOTHING scanned cannot be authorized on its cwd: `scanned` is
+                # where the cwd comes from. It is usually a fresh session whose transcript has not
+                # landed yet (a browser reload in the first seconds), whose cwd was scope-checked
+                # on the launch that created it — but "usually" is not an authorization argument,
+                # and a live master is not proof that the CURRENT config still allows that cwd
+                # (roots or exclusions can change in between).
+                #
+                # So it fails CLOSED exactly where the operator has asked for a boundary, and open
+                # where they have not (#867 review round 7): with no roots and no exclusions
+                # configured there is nothing to enforce and the reload case is preserved for the
+                # default install; with either configured, an unidentifiable session is refused.
+                # A stricter fix — persisting the launch cwd at the master boundary so unknown
+                # rows can be authorized properly — is a change to the session-lock layer and
+                # belongs in its own issue, not here.
+                _roots = project_dirs.effective_roots()
+                _exclusions = prefs.get_folder_exclusions()
+                _boundary_configured = bool(_roots) or bool(_exclusions)
+                if (
+                    scanned is None
+                    and _boundary_configured
+                    or scanned is not None
+                    and not project_dirs.in_scope(scanned.cwd, roots=_roots, exclusions=_exclusions)
+                ):
+                    if lock is not None:
+                        lock.release()
+                    return await reject(4404)
                 launch = prov.launch_argv(native, cwd=cwd, bypass=True)
             elif is_new:
                 # Start a FRESH session with this client-generated id, in a picker cwd.
@@ -485,24 +520,30 @@ def register(
                     engines.invalidate_scan_cache()
             else:
                 # Resume an EXISTING scanned session.
-                sessions_all = engines.scan_all()
+                # Same boundary, same reason (#867 review round 8): the resume path's scan is
+                # the identical full walk and was equally on the loop.
+                sessions_all = await asyncio.to_thread(engines.scan_all)
                 match = next(
                     (s for s in sessions_all if s.engine == prov.engine_id and s.uuid == native),
                     None,
                 )
                 # Hard root scope (#465/#467): a session whose cwd is outside the configured roots
                 # (or under an exclusion) is hidden from the list/picker AND not resumable here —
-                # otherwise the ws would be a back door to the scoped-out sessions. Empty roots ⇒
-                # unscoped (every scanned session resumable, today's behaviour).
+                # otherwise the ws would be a back door to the scoped-out sessions.
+                #
+                # The predicate is called UNCONDITIONALLY (#867 review round 4). It used to be
+                # guarded by `roots and …`, on the reading that empty roots mean "the #465 feature
+                # is off". But `in_scope` checks EXCLUSIONS FIRST and only then falls through on
+                # empty roots — so with no roots configured (the common case) an explicitly
+                # excluded session stayed resumable, which is precisely the back door this block
+                # exists to close. Empty roots still leave the ROOT half off; an exclusion binds
+                # either way.
                 roots = project_dirs.effective_roots()
                 exclusions = prefs.get_folder_exclusions()
                 if (
                     match is None
                     or match.cwd not in scanner.scanned_cwds(sessions_all)
-                    or (
-                        roots
-                        and not project_dirs.in_scope(match.cwd, roots=roots, exclusions=exclusions)
-                    )
+                    or not project_dirs.in_scope(match.cwd, roots=roots, exclusions=exclusions)
                 ):
                     return await reject(4404)
                 # Background-agent guard (#631): this id is resumable on disk, but action is

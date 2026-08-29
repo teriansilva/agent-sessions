@@ -4,7 +4,7 @@ import { Terminal, type TerminalHandle } from "../components/terminal/Terminal";
 import { FilePanel } from "../components/files/FilePanel";
 import { pathToken } from "../lib/pathToken";
 import panel from "../components/files/filePanel.module.css";
-import { useSessionsStore } from "../app/sessionsStore";
+import { useSessionRow } from "../app/useSessionRow";
 import {
   loadPanelState,
   migratePanelState,
@@ -82,15 +82,17 @@ export function SessionView() {
   );
 
   const sessionKey = `${shown.engine}:${shown.id}`;
-  const { sessions } = useSessionsStore();
   // Look the row up under BOTH identities. The terminal identity stays frozen on the placeholder
   // so the live socket survives the opencode converge (#127) — but after `onReconcileId` the
   // session row exists only under the REAL id, and `fresh` has been dropped. Resolving panel
   // metadata from the frozen key alone therefore lost the cwd the moment the URL converged: the
   // Files action vanished and an open panel closed itself.
-  const row =
-    sessions.find((s) => s.id === sessionKey) ??
-    sessions.find((s) => s.id === liveKey);
+  //
+  // #867: the sidebar's page is no longer the only source. When it doesn't hold this session —
+  // a deep link, a reload after it fell off page 0, an archived one, one the list's visibility
+  // scope hides — the accessor fetches the single row, so the Files trigger opens on the real
+  // cwd instead of sitting disabled behind "this session has not reported a folder yet".
+  const row = useSessionRow(sessionKey, liveKey);
   // The panel needs a real starting directory. A fresh launch carries one in router state before
   // the session row exists; otherwise it comes from the row. Until one of those is true the
   // trigger stays DISABLED rather than opening an empty tree — a session mid-reconcile has no
@@ -183,6 +185,10 @@ export function SessionView() {
           key={sessionKey}
           engine={shown.engine}
           id={shown.id}
+          // The identity stays FROZEN (`key`/`engine`/`id`) so the live socket survives the
+          // converge; `rowKey` carries the id the URL has settled on, purely so the header can
+          // find the row — which only ever exists under the real id (#867).
+          rowKey={liveKey}
           fresh={fresh}
           onReconcileId={onReconcileId}
           filesOpen={filesOpen}

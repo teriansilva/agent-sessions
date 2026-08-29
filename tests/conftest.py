@@ -183,6 +183,25 @@ def _isolate_orchestrator_ledger(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_orchestrator_ledger(tmp_path, monkeypatch) -> None:
+    """Point the orchestrator ledger at a per-test tmp file, never the operator's real one.
+
+    Same class of leak as prefs / notifications / missions — and this one was already biting.
+    ``notifications.listing()`` reconciles against the ledger on every read and retires any row
+    whose action has settled, so an unisolated ledger silently empties the bell mid-test:
+    ``test_re_linking_does_not_make_a_read_row_look_new`` failed with ``IndexError`` on the live
+    install (992 ledger entries, one of them a terminal ``act-A`` written there by an earlier
+    test run) and inside CI once a sibling test in the same run had written that id.
+
+    It also stops the suite writing test records INTO the operator's production ledger, which is
+    how ``act-A`` got there in the first place."""
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
+        str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_missions_db(tmp_path, monkeypatch) -> None:
     """Point the missions store (#846) at a per-test tmp file, never the operator's real one.
 

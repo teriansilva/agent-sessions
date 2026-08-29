@@ -12,23 +12,23 @@ function renderModal(
   trigger.textContent = "Open";
   document.body.appendChild(trigger);
   trigger.focus();
-  const result = render(
-    <SessionRecapModal
-      sessionId="claude:abc"
-      engine="claude"
-      title="Fix the auth token refresh race"
-      project={{ kind: "project", id: "p-1", name: "agent-sessions" }}
-      lastMtime={Math.floor(Date.now() / 1000) - 7200}
-      statusRow={{ review_excluded: false, working: true, has_draft: false }}
-      summary="Refactoring the token-refresh path."
-      recap={"Cloned repo.\nFixed bug."}
-      reviewedAt={1_700_000_000}
-      onClose={onClose}
-      returnFocusTo={trigger}
-      {...overrides}
-    />,
-  );
-  return { ...result, onClose, trigger };
+  const props = {
+    sessionId: "claude:abc",
+    engine: "claude",
+    title: "Fix the auth token refresh race",
+    project: { kind: "project" as const, id: "p-1", name: "agent-sessions" },
+    lastMtime: Math.floor(Date.now() / 1000) - 7200,
+    statusRow: { review_excluded: false, working: true, has_draft: false },
+    summary: "Refactoring the token-refresh path.",
+    recap: "Cloned repo.\nFixed bug.",
+    reviewedAt: 1_700_000_000,
+    onClose,
+    returnFocusTo: trigger,
+    ...overrides,
+  };
+  const result = render(<SessionRecapModal {...props} />);
+  // `props` is returned so a test can RERENDER with only the fields a late lookup would change.
+  return { ...result, onClose, trigger, props };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -291,4 +291,27 @@ test("a review-excluded session shows the excluded state and disables Review now
     screen.getByText("This session is excluded from AI review."),
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /review now/i })).toBeDisabled();
+});
+
+// #867 review round 4: the brief can now be opened while the pane is still FETCHING its row.
+// Seeding local state only at mount left it frozen on the empty state — the header filled in
+// moments later, the modal kept saying "No summary yet" until closed and reopened.
+test("a row that arrives while the brief is open fills it in (#867)", async () => {
+  const { rerender, props } = renderModal({ summary: "", recap: "" });
+  expect(screen.getByText("No summary yet.")).toBeInTheDocument();
+
+  // The deep-link lookup resolves: the same props the header just received.
+  rerender(
+    <SessionRecapModal
+      {...props}
+      summary="Refactoring the token-refresh path."
+      recap={"Cloned repo.\nFixed bug."}
+    />,
+  );
+
+  expect(
+    await screen.findByText("Refactoring the token-refresh path."),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Fixed bug.")).toBeInTheDocument();
+  expect(screen.queryByText("No summary yet.")).not.toBeInTheDocument();
 });

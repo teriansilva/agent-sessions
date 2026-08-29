@@ -45,7 +45,7 @@ import {
   forceSelectModifier,
 } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
-import { useSessionsStore } from "../../app/sessionsStore";
+import { useSessionRow } from "../../app/useSessionRow";
 import {
   TermSocket,
   type TermGateHolder,
@@ -125,6 +125,7 @@ export interface TerminalHandle {
 export function Terminal({
   engine,
   id,
+  rowKey,
   fresh,
   onReconcileId,
   filesOpen,
@@ -135,6 +136,16 @@ export function Terminal({
 }: {
   engine: string;
   id: string;
+  /** The id the URL has settled on, when it differs from this terminal's frozen identity —
+   *  i.e. after the opencode/codex placeholder→real converge (#127/#315).
+   *
+   *  `engine`/`id` stay frozen on the placeholder ON PURPOSE: re-keying them would tear down the
+   *  live socket. But the session ROW only ever exists under the real id, so resolving header
+   *  metadata from the frozen key alone left the header, Recap and Hand off nameless for the rest
+   *  of a converged session's life — the file panel recovered because `SessionView` already
+   *  looked under both. This carries the real key for the row lookup ONLY; nothing here feeds the
+   *  terminal's identity, so the frozen socket is untouched (#867). */
+  rowKey?: string;
   fresh?: FreshSession;
   /** File panel (#783). The panel itself is owned by SessionView (it lays out beside this pane);
    *  the terminal only carries its trigger, because the pane head is where the trigger belongs. */
@@ -201,10 +212,24 @@ export function Terminal({
   // Live column count for the quick-zoom readout (#859). Fed by xterm's own resize event, so
   // it tracks a rotation or a sidebar toggle, not just a stepper tap.
   const [cols, setCols] = useState(0);
-  // Resolve the human session title for the panel header (#232) from the shared store the
-  // sidebar fills (matched by engine+uuid). Falls back to a short id before the
-  // list has loaded / for a fresh placeholder session. Read-only: it never re-keys the socket.
-  const { sessions } = useSessionsStore();
+  // The row for THIS session (#232, re-sourced in #867) — project, title, update time, review
+  // fields. It comes from the sidebar's loaded page when that has it and from a per-session
+  // lookup when it doesn't, so a deep-linked / archived / list-hidden session names itself
+  // instead of showing a bare LED. Falls back to a short id while nothing has resolved yet.
+  // Read-only: it never re-keys the socket.
+  const row = useSessionRow(`${engine}:${id}`, rowKey);
+  // TWO identities, and conflating them is the #127 converge bug in its second form (#867
+  // review round 3). `${engine}:${id}` is the TRANSPORT identity — frozen on the placeholder for
+  // life so the socket, lock and ring keep pointing at the master we launched. `actionKey` is
+  // what the SERVER should act on, which after `onReconcileId` is the real id the engine minted:
+  // the placeholder is rejected by `canonical_key`, so a "Review now" or a handoff prepare aimed
+  // at it silently targets a session that does not exist. Transport stays frozen; actions follow
+  // the URL.
+  const actionKey = rowKey || `${engine}:${id}`;
+  // …and the same distinction decides whether Hand off is even offered. Gating on the frozen
+  // `id` left it hidden for the entire life of a converged opencode/codex session, because that
+  // id keeps its `new-` prefix forever.
+  const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
   const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(
     () => window.matchMedia?.("(pointer: coarse)")?.matches ?? false,
@@ -1536,7 +1561,6 @@ export function Terminal({
 
   const text = statusText(status);
   const head = headStatus(status);
-  const row = sessions.find((s) => s.engine === engine && s.uuid === id);
   // #284: use the server-resolved display title only (manual rename → AI title → meaningful
   // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
   // leaks into the panel header — drop straight to the short id.
@@ -1544,10 +1568,25 @@ export function Terminal({
   // Header meta run (#744): the same facts the sidebar row carries — project and how stale the
   // session is. A folder ref's `name` is the FULL cwd by server contract (projects.resolve), so
   // clients shorten it themselves; an adopted project keeps its entity name + colour dot.
+  // `?? ""` is not defensive clutter: the pane header is now fed by a LOOKUP as well as the
+  // sidebar's list (#867), so a row can arrive from a source this component does not control.
+  // `shortCwd(undefined)` throws, and a throw here is caught by the route's error boundary and
+  // replaces the WHOLE session — live terminal included — with "we couldn't load this part of
+  // the app". A header that cannot name its project must degrade to a blank chip, never take
+  // the session down with it.
   const projectLabel = row
     ? row.project.kind === "project"
-      ? row.project.name
-      : shortCwd(row.project.name)
+      ? (row.project.name ?? "")
+      : shortCwd(row.project.name ?? row.cwd ?? "")
+    : "";
+  // The chip's tooltip is the FULL launch folder, not a repeat of the label it sits on (#867).
+  // The visible text is either an entity name or a shortened cwd, so "which folder is this
+  // actually in" had no answer anywhere in the pane — you had to open the file panel to find
+  // out. An adopted project keeps its name on the first line and gains the folder under it.
+  const projectTitle = row
+    ? row.project.kind === "project"
+      ? `${row.project.name ?? ""}\n${row.cwd ?? ""}`
+      : (row.cwd ?? "")
     : "";
   const projectStyle =
     row?.project.kind === "project"
@@ -1566,7 +1605,7 @@ export function Terminal({
   const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(
     null,
   );
-  const canHandoff = engine !== "shell" && !id.startsWith("new-");
+  const canHandoff = engine !== "shell" && !actionNative.startsWith("new-");
   const scrollToTail = useCallback(() => {
     // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
     // scroll-up fling is still decaying scrolls to the tail for one frame and is then dragged
@@ -1764,7 +1803,7 @@ export function Terminal({
                 <span
                   className={styles.headProject}
                   style={projectStyle}
-                  title={projectLabel}
+                  title={projectTitle}
                 >
                   {row.project.kind === "project" && (
                     <span
@@ -1796,7 +1835,7 @@ export function Terminal({
       </div>
       {recapOpen && (
         <SessionRecapModal
-          sessionId={`${engine}:${id}`}
+          sessionId={actionKey}
           engine={engine}
           title={title}
           project={row?.project}
@@ -1818,7 +1857,7 @@ export function Terminal({
       )}
       {handoffOpen && (
         <HandoffModal
-          sessionId={`${engine}:${id}`}
+          sessionId={actionKey}
           engine={engine}
           title={title}
           onClose={() => setHandoffOpen(false)}
