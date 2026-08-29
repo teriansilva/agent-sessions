@@ -137,6 +137,34 @@ def test_the_docs_do_not_claim_a_control_that_is_not_wired_up_yet():
         ), "install.sh now verifies signatures — drop the not-enforced marker and its banner"
 
 
+def test_the_custody_record_does_not_claim_the_installer_protects_anyone_yet():
+    """The over-claim direction, on the file an incident responder reads first.
+
+    A sibling test pins INSTALL.md against `install.sh`. This pins the custody record, which makes
+    the same class of claim to a different audience: INSTALL.md is read by someone installing,
+    this file by someone deciding whether a release can be trusted. Phase 1 gave CI a real
+    `verify-tag` gate, and the tempting next edit is to summarise that as "releases are verified"
+    — which an installing user would read as protection they do not have.
+
+    So while `install.sh` carries no gate, this file must say so in as many words. When Phase 2
+    lands the gate, this test fails until the sentence is removed — the same bidirectional
+    coupling as the INSTALL.md marker, and for the same reason: a claim nothing can falsify is
+    not a claim.
+    """
+    body = (REPO / "docs/release-signing.md").read_text()
+    disclaimer = "**`install.sh` does not verify anything.**"
+    if "verify-tag" in INSTALL_SH.read_text():
+        assert disclaimer not in body, (
+            "install.sh now verifies; the custody record still says it does not — "
+            "drop the disclaimer and move Phase 2 to landed"
+        )
+    else:
+        assert disclaimer in body, (
+            "install.sh has no verify-tag gate, so the custody record must say plainly that an "
+            "installing user is not protected yet"
+        )
+
+
 def test_the_custody_record_names_durable_identities():
     """The record exists so nobody has to remember where the secret is.
 
