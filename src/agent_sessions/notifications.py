@@ -226,6 +226,15 @@ def add(
                     # the equivalence check above keeps suppressing new ones — the situation
                     # would be unresolved, re-proposed every TTL, and announced nowhere.
                     r["retired"] = False
+                    # Cleared in the SAME write that revives the row. A stale `settled_at` on a
+                    # live alert would file an unresolved situation in the operator's decision
+                    # history and start a retention clock on something nobody has settled.
+                    r.pop("settled_at", None)
+                    # …and the HIDE, or a cleared incident that comes back stays invisible for
+                    # ever: the flag outlived the settlement it was clearing, so the row's next
+                    # settlement was filtered out by a decision the operator made about the
+                    # previous one.
+                    r.pop("settled_hidden", None)
                     _write(p, rows)
                 return None
         rec = {
@@ -268,15 +277,114 @@ def _evict(rows: list[dict]) -> list[dict]:
     return kept[-NOTIFY_MAX:]
 
 
-def _terminal_action_ids(rows: list[dict]) -> set[str]:
-    """Of the actionable rows in ``rows``, which point at an action that has already settled?
+#: How much settled history the bell projects back. Bounds the PROJECTION, not the store —
+#: `_evict` still trims only on `NOTIFY_MAX` overflow, so a row that ages out of this window
+#: survives as the #760 dedupe memo and simply stops being drawn (#852).
+SETTLED_MAX = 10
+SETTLED_WINDOW_S = 24 * 3600
+
+
+def _action_states(rows: list[dict]) -> dict[str, str] | None:
+    """``action_id -> ledger state`` for the rows that carry one. ``None`` if the ledger could
+    not be read AT ALL — which is not the same as "no rows matched", and callers must not
+    collapse the two: an unreadable ledger has to fail toward showing, an empty one does not.
+
+    Read WITHOUT the notifications lock held — see :func:`listing`.
+    """
+    wanted = {str(r.get("action_id")) for r in rows if r.get("action_id")}
+    if not wanted:
+        return {}
+    try:
+        from . import orchestrator_ledger as ledger
+
+        status, latest = ledger.latest_by_id_checked()
+    except Exception:  # noqa: BLE001 — an unreadable ledger must not retire or hide anything
+        log.debug("notifications: could not reconcile against the ledger", exc_info=True)
+        return None
+    if status != "ok":
+        # A read that FAILED is not a ledger that is EMPTY. `latest_by_id` cannot tell them
+        # apart — it turns an OSError into `{}` — and `{}` here means "every action absent",
+        # which projects each live escalation as `historical`: no controls, no badge, no outcome
+        # asserted. A transient permission or I/O error would silently disarm the bell.
+        log.debug("notifications: ledger unreadable; leaving rows unreconciled")
+        return None
+    out: dict[str, str] = {}
+    for aid in wanted:
+        rec = latest.get(aid)
+        if rec is not None and rec.get("state"):
+            out[aid] = str(rec["state"])
+    return out
+
+
+def _row_projection(row: dict, states: dict[str, str] | None) -> dict:
+    """The projection for one notification row — the ONE place a row's state is resolved.
+
+    Two things make a row's state unestablishable, and they are the same answer: the ledger could
+    not be read at all, or the row carries no ``action_id`` to look up. Neither is "absent" (which
+    asserts the action is genuinely gone), so both resolve through ``known=False`` to ``unknown``.
+    """
+    from . import orchestrator_ledger as ledger
+
+    aid = str(row.get("action_id") or "")
+    known = states is not None and bool(aid)
+    return ledger.project_for_operator(states.get(aid) if known else None, known=known)
+
+
+def _counts_toward_badge(row: dict, states: dict[str, str] | None) -> bool:
+    """Does this unread row still want the operator, **and can the operator do anything?**
+    (#852 rule 5.)
+
+    The badge counts what can still be **acted on**. A decision already delivered, claimed or
+    settled is history, and leaving it in the count trains the operator to ignore the number.
+
+    **No exceptions, and the exceptions were the bug.** This used to fail toward counting whenever
+    the answer was genuinely unknown — an unreadable ledger, or an escalation with no action id —
+    on the reasoning that hiding a decision the operator never saw is worse. That reasoning is
+    right about *visibility* and wrong about *the count*: those rows render `unknown`, which offers
+    no control, so counting them produced a number the operator could not clear by acting. That is
+    precisely the property rule 5 exists to remove, and it contradicted this module's own claim
+    that ONE projection decides both "does this badge" and "does this render controls".
+
+    So the projection decides, for every row. Rows whose state cannot be established are not lost:
+    they stay fully visible in the listing and are counted separately as `uncertain`, which says
+    what is true — *something is outstanding and we cannot currently tell you whether you can act
+    on it* — instead of overstating it as actionable.
+
+    Informational rows are excluded for a different reason: they are not uncertain, they are
+    **known not to be decisions**. Nothing about them can be approved or rejected, so no operator
+    action could ever clear them.
+    """
+    if row.get("escalation") is not True:
+        return False  # a log entry, never a decision
+    from . import orchestrator_ledger as ledger
+
+    return _row_projection(row, states)["projection"] == ledger.ACTIONABLE
+
+
+def _is_uncertain(row: dict, states: dict[str, str] | None) -> bool:
+    """An escalation whose state could not be established — counted, but never as actionable."""
+    if row.get("escalation") is not True:
+        return False
+    from . import orchestrator_ledger as ledger
+
+    return _row_projection(row, states)["projection"] == ledger.UNKNOWN
+
+
+def _terminal_settlements(rows: list[dict]) -> dict[str, float | None]:
+    """Which of these rows point at an action that has already settled, **and when**.
+
+    Returns the ids WITH their decision times, from the SAME read that detected them. Fetching the
+    timestamps in a second read is a race: compaction can remove the terminal record in between,
+    and the fallback is repair time — which reorders the operator's decision history and extends
+    the 24h window for a decision made long ago. The snapshot that proves the settlement is the
+    snapshot that carries its time.
 
     Read WITHOUT the notifications lock held — see :func:`listing`.
 
-    Fails toward SHOWING, in three separate ways, because hiding an escalation the operator
-    never saw is the one outcome this module exists to prevent: a row with no ``action_id``, an
-    id the ledger has never heard of, and a ledger that cannot be read at all are all treated as
-    "still live". A single corrupt ledger record must not empty the bell.
+    Fails toward SHOWING, in three separate ways, because hiding an escalation the operator never
+    saw is the one outcome this module exists to prevent: a row with no ``action_id``, an id the
+    ledger has never heard of, and a ledger that cannot be read at all are all treated as "still
+    live". A single corrupt ledger record must not empty the bell.
     """
     wanted = {
         str(r.get("action_id"))
@@ -284,19 +392,21 @@ def _terminal_action_ids(rows: list[dict]) -> set[str]:
         if r.get("escalation") is True and not r.get("retired") and r.get("action_id")
     }
     if not wanted:
-        return set()
+        return {}
     try:
         from . import orchestrator_ledger as ledger
 
         latest = ledger.latest_by_id()
-        return {
-            aid
-            for aid in wanted
-            if (rec := latest.get(aid)) is not None and rec.get("state") in ledger.TERMINAL_STATES
-        }
     except Exception:  # noqa: BLE001 — an unreadable ledger must not retire anything
         log.debug("notifications: could not reconcile against the ledger", exc_info=True)
-        return set()
+        return {}
+    out: dict[str, float | None] = {}
+    for aid in wanted:
+        rec = latest.get(aid)
+        if rec is not None and rec.get("state") in ledger.TERMINAL_STATES:
+            ts = rec.get("ts")
+            out[aid] = float(ts) if isinstance(ts, int | float) else None
+    return out
 
 
 def retire_for_actions(
@@ -304,6 +414,7 @@ def retire_for_actions(
     path: Path | None = None,
     *,
     escalations_only: bool = True,
+    decided_at: dict[str, float] | None = None,
 ) -> int:
     """Retire the bell rows raised for actions that have settled. Returns the count retired.
 
@@ -336,6 +447,15 @@ def retire_for_actions(
             if escalations_only and r.get("escalation") is not True:
                 continue
             r["retired"] = True
+            # `settled_at` is the row's OWN stamp — it must survive compaction, which can remove
+            # the ledger row carrying the decision time while this row is still inside the 24h
+            # window (#852 rule 2). But when the DECISION time is available it is the honest
+            # value: retirement can be a self-heal that runs long after the fact, and stamping
+            # the repair time reorders history by when we noticed rather than when it happened —
+            # an action decided first can then look newer than one decided after it.
+            aid = str(r.get("action_id") or "")
+            when = (decided_at or {}).get(aid)
+            r["settled_at"] = float(when) if isinstance(when, int | float) else time.time()
             n += 1
         if n:
             _write(p, rows)
@@ -361,14 +481,149 @@ def listing(path: Path | None = None) -> dict:
     """
     p = path or _notifications_path()
     rows = _read(p)
-    stale = _terminal_action_ids(rows)
-    if stale:
-        retire_for_actions(stale, p)
+    settled_now = _terminal_settlements(rows)
+    if settled_now:
+        # The decision times come from the SAME snapshot that detected the settlement. Fetching
+        # them in a second read races compaction, and losing that race silently substitutes
+        # repair time for decision time — the reordering these stamps exist to prevent.
+        retire_for_actions(
+            set(settled_now),
+            p,
+            decided_at={k: v for k, v in settled_now.items() if v is not None},
+        )
         rows = _read(p)
+    states = _action_states(rows)
     visible = sorted(
         (r for r in rows if not r.get("retired")), key=lambda r: -float(r.get("ts") or 0)
     )
-    return {"notifications": visible, "unread": sum(1 for r in visible if not r.get("read"))}
+    # The badge counts ACTIONABLE unread rows (#852 rule 5). Counting every unread row put
+    # decisions that were already delivered, claimed or settled into the number, so the number
+    # stopped meaning "things waiting on you" — and a badge the operator cannot clear by acting
+    # is a badge they learn to ignore.
+    unread = sum(1 for r in visible if not r.get("read") and _counts_toward_badge(r, states))
+    # Rows the badge cannot count because their state is unestablishable. Reported separately so
+    # the operator is told "something is outstanding and we cannot read it" rather than either
+    # silence (which loses the decision) or an actionable count they cannot clear (rule 5).
+    uncertain = sum(1 for r in visible if not r.get("read") and _is_uncertain(r, states))
+
+    # Every producer of a decision consumes the ONE projection (#852). A live bell row is a
+    # producer as much as a Pulse card is, and returning it raw left the bell deriving its own
+    # controls from a state field — the drift this contract exists to end, in the third place.
+    hydrated = [
+        {**r, **_row_projection(r, states)} if r.get("escalation") is True else r for r in visible
+    ]
+    return {
+        "notifications": hydrated,
+        "unread": unread,
+        "uncertain": uncertain,
+        "settled": settled(rows, states),
+    }
+
+
+def _settled_window(rows: list[dict], *, now: float | None = None) -> list[dict]:
+    """The rows currently INSIDE the settled projection — newest first, bounded 10 and 24h.
+
+    One definition, because "what is in the window" is asked by two callers who must agree.
+    :func:`clear_settled` used to re-state the predicate and omit the bounds, so with eleven
+    recent rows the operator saw ten and cleared eleven: the unseen row was hidden for ever,
+    though it would have become visible as newer entries aged out. Hiding what was never shown is
+    history loss, not a dismissal.
+    """
+    cutoff = (time.time() if now is None else now) - SETTLED_WINDOW_S
+    out = [
+        r
+        for r in rows
+        if r.get("retired")
+        and r.get("escalation") is True
+        and isinstance(r.get("settled_at"), int | float)
+        and float(r["settled_at"]) >= cutoff
+        and not r.get("settled_hidden")
+    ]
+    out.sort(key=lambda r: -float(r.get("settled_at") or 0))
+    return out[:SETTLED_MAX]
+
+
+def settled(rows: list[dict] | None = None, states: dict[str, str] | None = None) -> list[dict]:
+    """A bounded window of recently decided rows, projected back as history with NO controls.
+
+    Before this, a decided row simply disappeared from the bell, so the operator could not tell
+    "I dealt with that" from "that vanished" — and the row was still in the store the whole time,
+    doing its #760 dedupe job invisibly. This draws it.
+
+    **Bounds the projection, not the store.** `_evict` is untouched: a row that falls outside this
+    window is still present, still suppressing a re-announce, and merely stops being rendered.
+    Trimming the store instead would destroy the memo and restart the very re-announce loop #800
+    fixed — the same bug through the front door.
+
+    Ordered by the row's own `settled_at`, never by a ledger timestamp, because the ledger record
+    can be compacted away while the row is still inside the window.
+    """
+    if rows is None:
+        rows = _read(_notifications_path())
+    if states is None:
+        states = _action_states(rows)
+    out = _settled_window(rows)
+    projected = []
+    for r in out:
+        from . import orchestrator_ledger as ledger
+
+        aid = str(r.get("action_id") or "")
+        state = (states or {}).get(aid)
+        known = states is not None
+        # A compacted action degrades to `historical`: no controls, and NO outcome asserted.
+        # Claiming one would invent a fact the store cannot support (#852 rule 4).
+        #
+        # Then controls are forced OFF, unconditionally — this window is history and the
+        # docstring above promises exactly that. The ledger is consulted here only to LABEL the
+        # outcome; a row's *finality* is durable evidence on the row itself (`retired` plus a
+        # `settled_at` this window already filtered on), so it cannot depend on whether the
+        # ledger happens to read. Passing `known=` straight through let an outage project a
+        # decided row as `unknown` and hand it a Reject — a control on history, for an action the
+        # operator already settled, which the backend then answers 404.
+        proj = ledger.project_for_operator(state, known=known)
+        projected.append({**r, **proj, "can_approve": False, "can_reject": False})
+    return projected
+
+
+def clear_settled(seen_ids: list[str] | set[str], path: Path | None = None) -> int:
+    """Hide the settled rows the operator actually saw. Returns how many left the projection.
+
+    **A hide, not a delete, and only over rows already settled.** Physically removing them
+    destroys the #760 dedupe memo and restarts the re-announce loop for exactly the actions the
+    operator has already dealt with — #800's bug through the front door. And it may only touch
+    rows already in the settled projection: reaching a live row here would clear an alert nobody
+    decided.
+
+    **``seen_ids`` is required, and that is the fix for a race a lock cannot close.** Recomputing
+    the window when the POST arrives is correct only if nothing settled since the GET that drew
+    the button — and something can: the operator reads a window holding A, action B settles, the
+    operator clicks Clear, and B is hidden having never been rendered. It is then gone for good,
+    because "hidden" is exactly the state that keeps it out of every future projection. The two
+    moments are different moments, and no amount of locking inside the second one can recover
+    what the first one displayed. So the caller passes what it showed, and this hides the
+    intersection of that with the window as it stands now.
+
+    The intersection matters in both directions: an id the caller never saw is not hidden (the
+    race above), and an id that has since aged out of the window is not hidden either (it was
+    never the caller's to clear, and it is due to resurface as newer rows age out).
+    """
+    wanted = {str(i) for i in seen_ids}
+    if not wanted:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read(p)
+        # The SAME membership definition the operator is looking at, computed inside this lock so
+        # the two cannot drift. Identity, not equality — two rows can compare equal.
+        visible = {id(r) for r in _settled_window(rows)}
+        n = 0
+        for r in rows:
+            if id(r) in visible and str(r.get("id")) in wanted:
+                r["settled_hidden"] = True
+                n += 1
+        if n:
+            _write(p, rows)
+        return n
 
 
 def mark_read(ids: list[str] | None = None, path: Path | None = None) -> int:

@@ -17,20 +17,36 @@ Three contracts are worth naming here rather than leaving to be discovered:
   so a detail names the mission id and the failure kind and nothing else. The store raises
   :class:`missions.MissionError` already shaped that way; :func:`_fail` just maps the status.
 
-Notably absent, on purpose: ``/message``, ``/plan``, ``/dispatch``, ``/answer``, ``/context`` and
-the playbook routes are Phases 2–5. And there is **no new decision endpoint** — approve/reject
-stay ``/api/pulse/actions/{id}/approve|reject`` (#840 §14).
+``/context`` (#852) lives here too, and inherits **nothing** from the file panel by being
+adjacent: the no-store middleware is gated on the ``/api/files/`` and ``/api/git/`` prefixes, so
+this route had to be added to that boundary explicitly or it would have served a git status —
+which carries absolute paths — as a cacheable response, on the 401 as well as on success.
+
+Notably absent, on purpose: ``/message`` is **#871** (split out of #852 after its lifecycle proved
+to need its own design pass); ``/plan``, ``/dispatch``, ``/answer`` and the playbook routes are
+Phases 3–5. And there is **no new decision endpoint** — approve/reject stay
+``/api/pulse/actions/{id}/approve|reject`` (#840 §14).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .. import engines, mission_archive, missions, projects
+from .. import (
+    engines,
+    gitpanel,
+    mission_archive,
+    missions,
+    projects,
+)
+from . import files as files_routes
+
+log = logging.getLogger(__name__)
 
 
 def _fail(e: missions.MissionError) -> JSONResponse:
@@ -106,7 +122,7 @@ def _session_key(raw: object) -> str:
         raise missions.MissionError("unknown session id", status=404) from None
 
 
-def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     @app.get("/api/missions")
     async def list_missions_route(
         request: Request, _user: str = Depends(logged_in)
@@ -315,6 +331,44 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
+
+    @app.get("/api/missions/{mission_id}/context")
+    async def context_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """Project, cwd, branch, git summary and session roster for one mission.
+
+        **Takes no path.** The cwd is read from the mission row and nowhere else, so there is no
+        client-supplied path to traverse with. The file/git work is composed from the existing
+        helpers rather than by calling the route handlers, and it runs through the same bounded
+        executor those routes use — that bound is part of the safety contract, not a speed knob.
+
+        The no-store envelope is applied by the middleware in `routes/files.py`, whose prefix test
+        was widened to cover this path: git status carries absolute paths, and it must not be
+        cacheable on success, on 401, or on 500.
+        """
+        try:
+            missions.validate_id(mission_id)
+            m = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        if m is None:
+            # A fabricated 200 for a mission that does not exist is worse than an error: the
+            # caller renders an empty console for a thing that was never there.
+            return _fail(missions.MissionError("unknown mission", status=404))
+        cwd = m.get("cwd") or ""
+        out: dict = {
+            "id": mission_id,
+            "project_id": m.get("project_id") or "",
+            "cwd": cwd,
+            "sessions": m.get("sessions") or [],
+            "git": None,
+            "git_error": None,
+        }
+        if cwd:
+            try:
+                out["git"] = await files_routes.run_bounded(cwd, gitpanel.git_status, cwd)
+            except Exception as e:  # noqa: BLE001 — fail CLOSED and name the kind, never the path
+                out["git_error"] = type(e).__name__
+        return JSONResponse(out)
 
     @app.get("/api/missions/{mission_id}/objectives")
     async def objectives_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:

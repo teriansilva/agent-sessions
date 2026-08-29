@@ -505,7 +505,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     pulse_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
     # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
-    missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).

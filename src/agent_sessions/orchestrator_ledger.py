@@ -89,6 +89,129 @@ OPERATOR_PENDING_STATES: frozenset[str] = frozenset({"proposed", "approved", "es
 # history into something that never happened.
 REJECTABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
 
+# --- the operator-facing projection -----------------------------------------------------------
+#
+# One action state, ONE projection of it, computed HERE and consumed everywhere (#852/#840 §16).
+#
+# The three sets above overlap by accident rather than by design: `OPERATOR_PENDING_STATES` and
+# `REJECTABLE_STATES` are literally identical today, and `actuator.CLAIMABLE_STATES` is a third,
+# different set. Gating controls on any one of them alone gets `approved` wrong (it is reject-only
+# yet still deliverable) and `claimed` wrong (it is live, not terminal). Three surfaces re-deriving
+# the answer from three sets that already disagree is how they drift, and the drift is invisible
+# until a control appears that cannot be honoured.
+#
+# "Compute it server-side" is not sufficient, because it still lets three *server* handlers derive
+# it separately. So it is one function, and every producer calls it.
+
+#: The five projections. `historical` is deliberately distinct from `settled`: an action the ledger
+#: no longer holds has no outcome to assert, and claiming one would invent a fact.
+ACTIONABLE = "actionable"
+IN_FLIGHT_REVOCABLE = "in_flight_revocable"
+IN_FLIGHT_LOCKED = "in_flight_locked"
+SETTLED = "settled"
+HISTORICAL = "historical"
+#: The ledger could not be READ. Distinct from `historical` (read fine, action not there) —
+#: see :func:`project_for_operator`. #840 §16 has no row for this because it assumes the store
+#: always answers.
+UNKNOWN = "unknown"
+
+
+#: The only states an action may be CLAIMED (delivered) from. Lives here, not in
+#: :mod:`actuator`, because :func:`project_for_operator` must gate ``can_approve`` on the very
+#: set the delivery path enforces — and ``actuator`` already imports this module, so the reverse
+#: import is impossible. Two copies of this set is precisely the drift that shipped an Approve
+#: button the backend answers with ``409 NotDeliverable``.
+CLAIMABLE_STATES: frozenset[str] = frozenset({"proposed", "approved"})
+
+
+def project_for_operator(state: str | None, *, known: bool = True) -> dict:
+    """How one action should be rendered wherever a decision is shown. The whole contract.
+
+    ``state`` is the ledger state, or ``None`` when the action is absent from the ledger — which
+    is a real answer, not a missing one: a compacted action is *historical*, and a surface that
+    renders it must offer no controls and assert no outcome.
+
+    Returns a fixed wire shape so the contract is checkable rather than inferred::
+
+        {"projection": ..., "can_approve": bool, "can_reject": bool, "state": str | None}
+
+    ``known=False`` is the *other* kind of missing: the ledger could not be read at all, so no
+    conclusion about this action is available. Pass it rather than ``state=None``, which asserts
+    the action is genuinely gone.
+
+    Callers **must not** re-derive any part of this — that is the entire point of it being here.
+    """
+    if not known:
+        # The store did not answer. That is NOT the same as answering "absent", and collapsing
+        # the two is how a transient permission error disarmed a live escalation: absent projects
+        # as `historical` — no controls, no badge — so an unreadable ledger silently retired
+        # every decision the operator had waiting.
+        #
+        # NO controls — not even Reject, which an earlier revision of this offered.
+        #
+        # The reasoning that offered it was: the row still wants the operator, so give them
+        # something to do. That is right about the row and wrong about the control, and the
+        # deciding fact is the rule this very module established one commit earlier — **the
+        # projection may not advertise a control the backend refuses.** Reject cannot be
+        # honoured during this outage either: `compare_and_set` and `get` read through the same
+        # `_read_all_at`, which turns the same `OSError` into an empty ledger, so the route finds
+        # no record and answers **404 "unknown action"**. Offering it produces a tap that reports
+        # the action never existed — strictly worse than offering nothing, because it invites the
+        # operator to conclude the decision is gone.
+        #
+        # What the operator gets instead is the truth: the row stays visible, it keeps counting
+        # toward the badge (`_counts_toward_badge` treats an outage as "show, do not guess"), and
+        # `unknown` tells the surface to say *why* it cannot be acted on. When the store reads
+        # again the controls come back on their own, with no operator action.
+        #
+        # This is NOT the un-clearable badge of #852 rule 5. That rule is about rows which are
+        # permanently finished — delivered, claimed, settled — inflating a count for ever. An
+        # outage is transient and the count is true while it lasts: something *is* outstanding.
+        return {"projection": UNKNOWN, "can_approve": False, "can_reject": False, "state": None}
+    if state is None:
+        return {"projection": HISTORICAL, "can_approve": False, "can_reject": False, "state": None}
+    if state in ("proposed", "escalated"):
+        # Both want the operator, so both are ACTIONABLE and both count toward the badge — but
+        # only `proposed` may be APPROVED. `escalated` is not in :data:`CLAIMABLE_STATES`, so
+        # `actuator.deliver` answers an approval with `409 action is escalated, not deliverable`.
+        #
+        # This is where #840 §16 is wrong, and it names the contradiction itself: the same
+        # paragraph states `actuator.CLAIMABLE_STATES` is `{proposed, approved}` and then tables
+        # `escalated` as "Approve + Reject". Advertising a control the backend refuses is worse
+        # than withholding one — the operator taps it, gets a 409, and learns the console lies.
+        #
+        # There are two ways into `escalated` and NEITHER is approvable today: the model asking a
+        # question (`verb == "escalate"`), and a yolo action below `confidence_min` keeping its
+        # delivering verb (`orchestrator._decide_state`). The second is a genuine capability gap
+        # — "approve this low-confidence `continue`" is a reasonable thing to want and there is
+        # no way to do it — but closing it means widening the delivery state machine, which is a
+        # safety property of #726. That is its own issue, not a side effect of this one.
+        return {
+            "projection": ACTIONABLE,
+            "can_approve": state in CLAIMABLE_STATES,
+            "can_reject": True,
+            "state": state,
+        }
+    if state == "approved":
+        # In flight and still revocable. Approving again is a no-op, so the control is withdrawn;
+        # rejecting is not, because delivery has not claimed it yet.
+        return {
+            "projection": IN_FLIGHT_REVOCABLE,
+            "can_approve": False,
+            "can_reject": True,
+            "state": state,
+        }
+    if state == "claimed":
+        # The bytes are going out. Neither control can be honoured, so neither is offered.
+        return {
+            "projection": IN_FLIGHT_LOCKED,
+            "can_approve": False,
+            "can_reject": False,
+            "state": state,
+        }
+    return {"projection": SETTLED, "can_approve": False, "can_reject": False, "state": state}
+
+
 # States expiry may act on. Excludes `claimed` for the same reason as reject: once a delivery
 # has claimed an action, the bytes are on their way and "expired" would be a lie.
 EXPIRABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
@@ -199,13 +322,11 @@ def read_all(path: Path | None = None) -> list[dict]:
     return _read_all_at(_path(path))
 
 
-def _read_all_at(p: Path) -> list[dict]:
-    if not p.exists():
-        return []
-    try:
-        raw = p.read_text(errors="replace")
-    except OSError:
-        return []
+def _parse_records(raw: str) -> list[dict]:
+    """Records out of already-read ledger text. Split from :func:`_read_all_at` so a caller that
+    must distinguish "unreadable" from "empty" can check the read itself and still share this
+    parse — rather than reading the file a second time and giving it a second chance to change
+    underneath the answer."""
     out: list[dict] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -218,6 +339,16 @@ def _read_all_at(p: Path) -> list[dict]:
         if isinstance(rec, dict) and isinstance(rec.get("id"), str):
             out.append(rec)
     return out
+
+
+def _read_all_at(p: Path) -> list[dict]:
+    if not p.exists():
+        return []
+    try:
+        raw = p.read_text(errors="replace")
+    except OSError:
+        return []
+    return _parse_records(raw)
 
 
 def lookup(action_id: str, path: Path | None = None) -> tuple[str, dict | None]:
@@ -259,6 +390,30 @@ def lookup(action_id: str, path: Path | None = None) -> tuple[str, dict | None]:
     return ("found", merged) if merged is not None else ("absent", None)
 
 
+def latest_by_id_checked(path: Path | None = None) -> tuple[str, dict[str, dict]]:
+    """Tri-state bulk read: ``("ok", mapping)`` / ``("unreadable", {})``.
+
+    :func:`latest_by_id` cannot express "I could not read it": ``_read_all_at`` turns an
+    ``OSError`` into ``[]``, which is indistinguishable from a ledger that genuinely holds
+    nothing. A caller that reconciles rows against the ledger then reads a transient permission
+    or I/O error as *every action is absent* — and "absent" is a real answer here, meaning
+    ``historical``: no controls, no outcome asserted, out of the badge. A live escalation
+    silently loses its buttons because a file briefly would not open.
+
+    Same distinction :func:`lookup` already draws for one action, at the shape its bulk caller
+    needs. A file that does not exist is a genuine absence (nothing has written a ledger yet);
+    a file that exists and will not read is unreadable, and the caller must draw no conclusion.
+    """
+    p = _path(path)
+    if not p.exists():
+        return "ok", {}
+    try:
+        raw = p.read_text(errors="replace")
+    except OSError:
+        return "unreadable", {}
+    return "ok", _latest_of(_parse_records(raw))
+
+
 def latest_by_id(path: Path | None = None) -> dict[str, dict]:
     """Current state per action id — the newest event wins. Insertion order follows first
     appearance, so a caller iterating gets stable, roughly chronological output."""
@@ -266,8 +421,12 @@ def latest_by_id(path: Path | None = None) -> dict[str, dict]:
 
 
 def _latest_by_id_locked(p: Path) -> dict[str, dict]:
+    return _latest_of(_read_all_at(p))
+
+
+def _latest_of(records: list[dict]) -> dict[str, dict]:
     out: dict[str, dict] = {}
-    for rec in _read_all_at(p):
+    for rec in records:
         prev = out.get(rec["id"])
         if prev is None:
             out[rec["id"]] = rec
@@ -293,6 +452,7 @@ def append_batch_for_free_sessions(
 
     Combining the check and the append under ONE exclusive hold is the only thing that closes
     it, because the losing writer must see the winner's record before deciding.
+
     """
     p = _path(path)
     kept: list[dict] = []
@@ -402,7 +562,15 @@ def _settled(action_id: str, state: str, record: dict | None = None) -> None:
     with contextlib.suppress(Exception):
         from . import notifications
 
-        notifications.retire_for_actions([action_id])
+        # Hand the DECISION time over while it is still in hand. Retirement can also happen as
+        # a self-heal on a later read, and stamping the repair time there orders the operator's
+        # decision history by when we noticed rather than when they decided — so an action
+        # decided first can be projected newer than one decided after it.
+        when = record.get("ts") if isinstance(record, dict) else None
+        notifications.retire_for_actions(
+            [action_id],
+            decided_at={action_id: float(when)} if isinstance(when, int | float) else None,
+        )
     # Freeze the mission timeline's settlement projection (#846, #840 §2). Compaction bounds
     # this ledger to a GLOBAL tail (`HISTORY_MAX`), which is right for a feed and wrong for a
     # mission that outlives it: without a projection, a six-week-old mission would keep its
@@ -566,12 +734,13 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
                 len(doomed),
             )
             return 0
-        return _compact_locked(p, history_max, rows=rows)
+        return _compact_locked(p, history_max, rows=rows, doomed=doomed)
 
 
 def _doomed(rows: list[dict], history_max: int) -> list[dict]:
     """The terminal rows this compaction will drop. The SAME partition ``_compact_locked`` uses —
-    computed once, from one snapshot, and handed to both, so the two cannot disagree."""
+    computed once, from one snapshot, and handed to both, so the two cannot disagree.
+    """
     done = [r for r in rows if r.get("state") not in LIVE_STATES]
     done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
     return done[max(0, history_max) :]
@@ -605,14 +774,21 @@ def _project(doomed: list[dict]) -> bool:
         return False
 
 
-def _compact_locked(p: Path, history_max: int, *, rows: list[dict] | None = None) -> int:
+def _compact_locked(
+    p: Path, history_max: int, *, rows: list[dict] | None = None, doomed: list[dict] | None = None
+) -> int:
     # `rows` is passed in by `compact` so the partition that was PROJECTED is byte-identical to
     # the one that is rewritten. Re-reading here would reopen the window the projection closed.
     rows = list(_latest_by_id_locked(p).values()) if rows is None else rows
-    live = [r for r in rows if r.get("state") in LIVE_STATES]
-    done = [r for r in rows if r.get("state") not in LIVE_STATES]
-    done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
-    keep = live + done[: max(0, history_max)]
+    # …and `doomed` is passed in for the same reason, one level up. This used to RE-DERIVE the
+    # partition, which was fine only while both derivations happened to agree: the moment
+    # `_doomed` learned to exclude rows pinned by an unresolved turn, a recomputation here would
+    # have projected one set and deleted a different, larger one. One computation, handed to
+    # both, is what the `_doomed` docstring always claimed.
+    if doomed is None:
+        doomed = _doomed(rows, history_max)
+    drop = {id(r) for r in doomed}
+    keep = [r for r in rows if id(r) not in drop]
     keep.sort(key=lambda r: float(r.get("ts") or 0))
     tmp = p.with_name(p.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

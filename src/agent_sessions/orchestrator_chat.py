@@ -80,9 +80,16 @@ def _history_answer(limit: int = HISTORY_ROWS) -> dict:
     }
 
 
-async def ask(query: str, history: object = None, *, working_keys: set[str] | None = None) -> dict:
+async def ask(
+    query: str,
+    history: object = None,
+    *,
+    working_keys: set[str] | None = None,
+) -> dict:
     """One chat turn. Raises :class:`review.NotConfiguredError` (→409) /
-    :class:`review.ReviewError` (→502), matching ``/api/pulse/ask``."""
+    :class:`review.ReviewError` (→502), matching ``/api/pulse/ask``.
+
+    """
     review._require_config()
     turns = pulse_chat.bound_history(history)
     intent = await _classify(query, turns)

@@ -152,15 +152,33 @@ export function ActionRow({
   const delivering = (deliveringVerbs ?? DELIVERING_FALLBACK).has(action.verb);
   const [busy, setBusy] = useState<"" | "approve" | "reject">("");
   const [note, setNote] = useState<string | null>(null);
-  // Approvable only while it is still awaiting a decision AND the verb actually delivers.
-  const waiting = action.state === "proposed" || action.state === "approved";
-  // Approve requires something to DELIVER; dismissing does not. An `escalated` row has no
-  // delivering verb by definition — it is the orchestrator saying "you look at this" — so
-  // gating Reject on deliverability left it stuck under "Needs a decision", blocking another
-  // proposal for that session until it expired. The backend has always allowed it:
-  // REJECTABLE_STATES includes `escalated`.
-  const approvable = delivering && waiting;
-  const rejectable = waiting || action.state === "escalated";
+  // WHICH CONTROLS ARE OFFERED IS THE SERVER'S ANSWER, not ours (#852/#840 §16).
+  //
+  // This used to derive it from `state`, treating `proposed` and `approved` alike — so an
+  // `approved` action rendered **Approve**, a tap the backend refuses because approving again is
+  // a no-op. `claimed` is live rather than terminal and must offer nothing at all. The server
+  // computes all of that once in `project_for_operator`; re-deriving it here is exactly the
+  // drift that contract exists to end.
+  //
+  // The fallback reproduces the OLD behaviour verbatim for a response written before the fields
+  // existed. It is deliberately not a guess at the new one: a surface that invents a projection
+  // is the thing being removed.
+  const legacyWaiting = action.state === "proposed" || action.state === "approved";
+  const serverProjected = action.can_approve !== undefined || action.can_reject !== undefined;
+  // Approve still requires something to DELIVER — that is a property of the verb, not of the
+  // action's state, so it stays here.
+  //
+  // It is NOT, however, what keeps Approve off an `escalated` row, and believing that it was is
+  // how an invalid control shipped. "An escalated row has no delivering verb" is false: the
+  // orchestrator also escalates a yolo action that fell below `confidence_min`, and that one
+  // keeps its real verb (`continue`), so `delivering` is true and the button rendered — for an
+  // action `actuator.deliver` refuses with 409. The server's `can_approve` is what gates it, and
+  // it is gated on `CLAIMABLE_STATES`, which excludes `escalated`. Reject is unaffected:
+  // REJECTABLE_STATES does include `escalated`.
+  const approvable = delivering && (serverProjected ? !!action.can_approve : legacyWaiting);
+  const rejectable = serverProjected
+    ? !!action.can_reject
+    : legacyWaiting || action.state === "escalated";
   const escSuffix = escalationSuffix(action);
 
   const act = useCallback(
@@ -252,10 +270,12 @@ export function ActionRow({
           onClick={() => void act("reject")}
         >
           <X size={13} aria-hidden="true" />
-          {/* An escalation offers NO Approve — there is nothing to deliver — so this is the
-              row's only control, and beside the evidence disclosure a bare ✕ reads as "close
-              that panel" rather than "settle this". Everywhere else Approve stands next to it
-              and the pairing already says what it does, so the glyph stays on its own. */}
+          {/* An escalation offers no Approve — not because it has nothing to deliver (a
+              confidence-escalated action keeps its verb), but because `escalated` is outside
+              CLAIMABLE_STATES, so the server's `can_approve` is false — which makes this the
+              row's only control. Beside the evidence disclosure a bare ✕ reads as "close that
+              panel" rather than "settle this". Everywhere else Approve stands next to it and
+              the pairing already says what it does, so the glyph stays on its own. */}
           {action.state === "escalated" && "Dismiss"}
         </button>
       )}

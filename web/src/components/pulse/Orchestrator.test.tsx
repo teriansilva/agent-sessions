@@ -676,3 +676,96 @@ test("a 409 carrying only a detail is not a resolution and must not invalidate",
   expect(seen).not.toHaveBeenCalled();
   window.removeEventListener(ACTION_RESOLVED_EVENT, seen);
 });
+
+// --- the server's projection is the authority on controls (#852 / #840 §16) -------------------
+
+test("an approved action is reject-only, because approving again is a no-op", async () => {
+  // The row used to derive controls from `state`, treating `proposed` and `approved` alike — so
+  // an `approved` action rendered Approve, a tap the backend refuses. The server decides this
+  // once in `project_for_operator`; the row consumes it.
+  renderRow({
+    state: "approved",
+    verb: "continue",
+    projection: "in_flight_revocable",
+    can_approve: false,
+    can_reject: true,
+  });
+  expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+  expect(
+    await screen.findByRole("button", { name: /reject|dismiss/i }),
+  ).toBeInTheDocument();
+});
+
+test("a claimed action offers no controls at all", async () => {
+  // `claimed` is live rather than terminal: the bytes are already going out, so neither control
+  // can be honoured and neither is offered.
+  renderRow({
+    state: "claimed",
+    verb: "continue",
+    projection: "in_flight_locked",
+    can_approve: false,
+    can_reject: false,
+  });
+  await screen.findByText(/continue/i);
+  expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /reject|dismiss/i })).toBeNull();
+});
+
+test("a proposed action still offers both", async () => {
+  renderRow({
+    state: "proposed",
+    verb: "continue",
+    projection: "actionable",
+    can_approve: true,
+    can_reject: true,
+  });
+  expect(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /reject|dismiss/i }),
+  ).toBeInTheDocument();
+});
+
+test("a response without the projection falls back to the old behaviour, not to a guess", async () => {
+  // A payload written before these fields existed must still render. The fallback reproduces the
+  // PREVIOUS rule verbatim rather than inventing the new one — a surface that invents a
+  // projection is the thing this contract removes.
+  renderRow({ state: "proposed", verb: "continue" });
+  expect(
+    await screen.findByRole("button", { name: /^approve$/i }),
+  ).toBeInTheDocument();
+});
+
+// -----------------------------------------------------------------------------------------
+// #852 / #840 §16 — the row renders the SERVER's projection, and never re-derives it.
+//
+// The defect this pins: an `escalated` action that kept a delivering verb. Two roads reach
+// `escalated`, and the orchestrator's confidence path (`confidence < confidence_min` under
+// yolo) leaves the verb alone — so `continue` survives, `delivering` is true, and the row
+// offered Approve for an action `actuator.deliver` answers with 409. The comment in this file's
+// subject said an escalated row "has no delivering verb by definition"; it does.
+// -----------------------------------------------------------------------------------------
+
+test("an escalated action with a delivering verb offers Reject, never Approve", () => {
+  renderRow({ state: "escalated", verb: "continue", can_approve: false, can_reject: true });
+  expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+  // The reject control is named by its aria-label, which says "dismiss" for an escalation.
+  expect(
+    screen.getByRole("button", { name: /dismiss this escalation/i }),
+  ).toBeInTheDocument();
+});
+
+test("the row obeys can_approve even when the state would suggest otherwise", () => {
+  // `proposed` is the one approvable state, so this is the strongest form of the assertion:
+  // if the row were still deriving from `state`, it would render Approve here.
+  renderRow({ state: "proposed", verb: "continue", can_approve: false, can_reject: true });
+  expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+});
+
+test("an unknown projection still lets the operator reject", () => {
+  // The ledger could not be read. The row must not go silent — see `project_for_operator`.
+  renderRow({ state: undefined, verb: "continue", can_approve: false, can_reject: true });
+  expect(screen.getByRole("button", { name: /reject this action/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+});

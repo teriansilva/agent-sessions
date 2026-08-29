@@ -297,6 +297,30 @@ export interface OrchestratorAction {
    *  yolo threshold. Absent on every non-escalated action, and on records written before the
    *  field existed — which render NO reason rather than a guessed one. */
   escalation_reason?: "model" | "degraded" | "confidence";
+  /** How this action should be RENDERED — decided once on the server by
+   *  `orchestrator_ledger.project_for_operator` and consumed verbatim (#852/#840 §16).
+   *
+   *  Three sets on the server already disagreed about what "pending" means, so every surface
+   *  that re-derived controls from `state` got `approved` wrong: it is in flight and reject-only,
+   *  because approving again is a no-op the backend refuses. `claimed` is live rather than
+   *  terminal and offers nothing at all. Optional so a response written before the field existed
+   *  still renders — the fallback below reproduces the old behaviour rather than guessing. */
+  projection?:
+    | "actionable"
+    | "in_flight_revocable"
+    | "in_flight_locked"
+    | "settled"
+    | "historical"
+    /** The ledger could not be READ — distinct from `historical`, which means it read fine and
+     *  the action is not in it. No controls: the mutation routes read through the same reader,
+     *  so a Reject offered here comes back 404 "unknown action". The row stays visible and keeps
+     *  counting, and regains its controls by itself when the store reads again. */
+    | "unknown";
+  can_approve?: boolean;
+  can_reject?: boolean;
+  /** True once this action has been raised in the bell. The rail needs it to tell a decision the
+   *  operator has already seen from one that has never surfaced anywhere. */
+  announced?: boolean;
 }
 
 export interface OrchestratorConfig {
@@ -338,6 +362,13 @@ export interface PulseNotification {
 export interface NotificationList {
   notifications: PulseNotification[];
   unread: number;
+  /** Unread escalations whose ledger state could NOT be established — the store would not read,
+   *  or the row carries no `action_id`. Deliberately not folded into `unread`: those rows project
+   *  as `unknown` and offer no control, so counting them as actionable gives a number the
+   *  operator cannot clear by acting (#852 rule 5). Reported separately so the console can say
+   *  "something is outstanding and its state is unreadable" instead of overstating or hiding it.
+   *  Optional so a response predating the field still parses. */
+  uncertain?: number;
 }
 
 /** A registered browser. `origin` only — the endpoint is a per-device capability URL and

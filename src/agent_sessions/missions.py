@@ -1936,6 +1936,17 @@ RESERVATION_RENEW_S = 60.0
 RESERVATION_RETRY_S = 5.0
 
 
+def beat_wait(renewed: bool, interval: float) -> float:
+    """How long a heartbeat waits before its next attempt. The retry policy, as a pure function.
+
+    Extracted so it can be asserted **directly** rather than inferred from elapsed wall-clock. A
+    timing-based test of this is only as reliable as the machine running it: the policies differ by
+    a fraction of a second, and a loaded CI runner erases that difference — which is precisely the
+    "passes on a quiet machine" failure this module's tests warn against elsewhere.
+    """
+    return interval if renewed else min(interval, RESERVATION_RETRY_S)
+
+
 #: What a heartbeat learned. ``released`` and ``superseded`` both stop the beat, and collapsing
 #: them into one boolean is what made a successful teardown log as a hostile takeover: settlement
 #: happens INSIDE the claim, so the very next beat finds its own reservation gone.
@@ -2040,9 +2051,9 @@ async def holding(
                 verdict = renew_session(session_key, token, path=path)
             except Exception as exc:  # transient — retry SOON, not on the ordinary cadence
                 log.debug("mission: heartbeat on %s deferred (%s)", session_key, type(exc).__name__)
-                wait = min(interval, RESERVATION_RETRY_S)
+                wait = beat_wait(False, interval)
                 continue
-            wait = interval
+            wait = beat_wait(True, interval)
             if verdict == SUPERSEDED:
                 log.warning("mission: claim on %s was reclaimed while still working", session_key)
                 return

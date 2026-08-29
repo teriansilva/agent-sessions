@@ -33,6 +33,7 @@ retrying (double-delivery) or assuming success (silent drop).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 from . import (
@@ -50,8 +51,30 @@ from . import (
 
 # A viewer who typed or looked recently owns the keyboard; we stay off it.
 VIEWER_RECENT_S = 60.0
-# The only states an action may be claimed from.
-CLAIMABLE_STATES: frozenset[str] = frozenset({"proposed", "approved"})
+# The only states an action may be claimed from. Re-exported, NOT re-declared: the authority is
+# `orchestrator_ledger`, because `project_for_operator` gates the operator's Approve control on
+# this very set and must not be able to disagree with the path that enforces it. Two copies is
+# how an Approve button shipped for `escalated`, which `deliver` answers with a 409.
+CLAIMABLE_STATES: frozenset[str] = ledger.CLAIMABLE_STATES
+
+
+def working_keys(registry) -> set[str]:
+    """Sessions that are live right now — recent server-owned output, or a viewer attached.
+
+    Shared rather than duplicated: `orchestrator_chat.ask` uses this overlay for eligibility, so
+    two callers computing it differently would propose against different views of what is busy.
+    Matches either the logical or physical key (a reconciled opencode session registers under its
+    placeholder). Best-effort — a registry hiccup yields no overlay rather than failing the turn.
+    """
+    if registry is None:
+        return set()
+    keys: set[str] = set()
+    with contextlib.suppress(Exception):
+        for r in registry.snapshot():
+            if r.get("working") or r.get("attached"):
+                keys.add(r["id"])
+    return keys
+
 
 # What `render()` can actually turn into bytes. Declared HERE, beside the renderer, and shipped
 # to the client by the state route — the UI previously kept its own copy that included

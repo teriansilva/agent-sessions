@@ -70,6 +70,16 @@ async def _run(key: str, fn, *args):
         raise
 
 
+async def run_bounded(key: str, fn, *args):
+    """Public alias for :func:`_run`, for surfaces outside this module that must share its bound.
+
+    The mission console's `/context` composes the same `files` / `gitpanel` helpers, and running
+    them anywhere else would give the panel's admission budget a second, uncounted pool to
+    contend with — the exact failure `_run` documents. One bound, or it is not a bound.
+    """
+    return await _run(key, fn, *args)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _file_routes_are_never_cached(request: Request, call_next):
@@ -86,8 +96,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
           outer error middleware, which knows nothing about this policy. So exceptions are
           caught and rendered HERE, where the headers can still be attached.
         """
+        # `/api/missions/{id}/context` is here because it serves the SAME payloads under a
+        # different prefix — a git status carrying absolute paths — and inherits none of this by
+        # being adjacent. Both escapes the docstring lists reopen for it otherwise: its 401 is
+        # raised by `Depends(logged_in)` before any handler runs, and an exception inside it
+        # unwinds past this middleware to Starlette's renderer.
+        path = request.url.path
         if not (
-            request.url.path.startswith("/api/files/") or request.url.path.startswith("/api/git/")
+            path.startswith("/api/files/")
+            or path.startswith("/api/git/")
+            or (path.startswith("/api/missions/") and path.endswith("/context"))
         ):
             return await call_next(request)
         try:

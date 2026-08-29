@@ -190,7 +190,13 @@ def test_a_failing_push_service_never_loses_the_bell_entry():
     finally:
         webpush._TRANSPORT = None
     assert report["failed"] == 1 and report["sent"] == 0
-    assert notifications.listing()["unread"] == 1  # the bell still has it
+    # The subject here is that the ENTRY survives a failed push, so assert on the entry. `unread`
+    # was a convenient proxy for that and stopped being one when the badge became actionable-only
+    # (#852 §16 rule 5): this row is informational, so it stays fully listed and simply is not a
+    # decision anyone could clear by deciding it.
+    listing = notifications.listing()
+    assert [n["title"] for n in listing["notifications"]] == ["T"]  # the bell still has it
+    assert listing["unread"] == 0  # …and it is not a decision, so it does not badge
 
 
 def test_push_errors_never_embed_the_endpoint():

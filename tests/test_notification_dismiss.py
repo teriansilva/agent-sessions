@@ -30,6 +30,21 @@ def _isolate(tmp_path, monkeypatch):
 IDLE = 1_700_000_000.0  # a session waiting on the operator emits nothing; its clock stands still
 
 
+def _live(action_id: str, session: str = "claude:aaa") -> None:
+    """Put an `escalated` action in the ledger, the way production always has by this point.
+
+    `notifications.add` is called from `orchestrator._persist` **after** the ledger append, so a
+    freshly raised bell row always has its action. Rows created without one project as
+    `historical` — no controls, and correctly outside the actionable badge — which is right for a
+    compacted action and wrong as a stand-in for a live escalation.
+    """
+    from agent_sessions import orchestrator_ledger as ledger
+
+    ledger.append(
+        {"id": action_id, "state": "escalated", "verb": "continue", "session_id": session}
+    )
+
+
 def _add(
     title="needs you",
     session="claude:aaa",
@@ -119,7 +134,12 @@ def test_dismiss_all_empties_the_ring_and_reports_the_count():
     for i in range(4):
         _add(title=f"t{i}", session=f"claude:s{i}")
     assert notifications.dismiss() == 4
-    assert notifications.listing() == {"notifications": [], "unread": 0}
+    assert notifications.listing() == {
+        "notifications": [],
+        "unread": 0,
+        "uncertain": 0,
+        "settled": [],
+    }
 
 
 def test_dismiss_for_action_retires_that_alert_and_leaves_the_others():
@@ -247,6 +267,7 @@ def test_an_autonomous_notice_never_suppresses_a_later_escalation():
     the bell exists to prevent."""
     auto = _add(action_id="auto-1", escalation=False)
     notifications.mark_read()
+    _live("esc-1")
     esc = _add(action_id="esc-1", escalation=True)
 
     assert esc is not None, "an escalation was suppressed by an autonomous notice"
@@ -302,6 +323,8 @@ def test_a_different_escalation_in_the_same_session_is_announced():
     session had to produce output, which moves its clock — so the two are distinguishable
     without any model text.
     """
+    _live("a1")
+    _live("a2")
     first = _add(action_id="a1", reason="Choose an auth method", activity_at=IDLE)
     second = _add(action_id="a2", reason="Production deploy failed", activity_at=IDLE + 900)
 

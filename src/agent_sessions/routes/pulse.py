@@ -86,6 +86,18 @@ def _attach_pending(overview: dict) -> dict:
         # the "no Pulse cache yet" case where they would otherwise be unreachable.
         cards = []
         overview["cards"] = cards
+    # Which action ids the bell has ALREADY raised (#852/#840 §16). This cannot be computed from
+    # ledger state: with `notify: "none"` nothing ever reaches the bell, so an escalated action's
+    # only surface is the card, and demoting it unconditionally would bury the one decision with
+    # nowhere else to appear. Read ONCE here rather than per card. The join is self-healing —
+    # clear a bell row without deciding it and the card goes back to needing you.
+    announced: set[str] = set()
+    with contextlib.suppress(Exception):
+        for row in notifications.listing().get("notifications") or []:
+            aid = str(row.get("action_id") or "")
+            if aid:
+                announced.add(aid)
+
     live: dict[str, dict] = {}
     with contextlib.suppress(Exception):
         # Retire overdue proposals FIRST. `live_actions` filters on persisted state and never
@@ -99,12 +111,25 @@ def _attach_pending(overview: dict) -> dict:
             # on a card for bytes that are already going out, and a non-polling page keeps them
             # there. The sibling `_pending_and_feed` already drew this line; both now read the
             # same set so they cannot drift apart again.
+            # WHICH actions overlay a card is unchanged (`OPERATOR_PENDING_STATES`) — `claimed`
+            # stays off this surface, as #777 decided, and the sibling decision list reads the
+            # same set so the two cannot drift. What changes is WHAT MAY BE TAPPED once one is
+            # here: that is the shared projection below, never this filter. The two questions
+            # were conflated before, which is how `approved` ended up offering Approve.
             if a.get("state") not in orchestrator_ledger.OPERATOR_PENDING_STATES:
                 continue
             sid = str(a.get("session_id") or "")
-            # newest-first, so the first row seen per session is the current one
+            # newest-first, so the first row seen per session is the current one.
+            # PROJECTED HERE, once, so both producers below consume the same object. Doing it in
+            # the card branch alone left the synthesized branch storing the raw ledger row — the
+            # same "one contract, two derivations" drift the projection exists to end, reproduced
+            # inside the very function that introduced it.
             if sid and sid not in live:
-                live[sid] = a
+                live[sid] = {
+                    **a,
+                    **orchestrator_ledger.project_for_operator(a.get("state")),
+                    "announced": str(a.get("id") or "") in announced,
+                }
     # Settled history, one row per session (`feed_by_session`, #775). The Activity block used to
     # render this as a SECOND list of near-identical boxes directly above the cards — different
     # things (what the orchestrator did vs what your sessions are) that looked the same and sat
@@ -138,7 +163,11 @@ def _attach_pending(overview: dict) -> dict:
             # this the session stays under "Needs you" until some later fetch succeeds — the
             # band outliving the reason for it.
             c["state_without_action"] = c.get("state")
-            c["state"] = "needs_you"
+            # Only an ACTIONABLE decision means the operator is needed. An `approved` action is
+            # in flight (reject-only) and a `claimed` one cannot be touched at all, so banding
+            # either as "needs you" asks for a decision that has already been made.
+            if a["projection"] == orchestrator_ledger.ACTIONABLE:
+                c["state"] = "needs_you"
         else:
             # No live action — show what the orchestrator last DID here instead. Never both:
             # a card with decision controls is about a choice you still have, and a settled
@@ -241,18 +270,10 @@ def _with_pending(result: dict) -> dict:
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _working_keys() -> set[str]:
-        # Live "in flight" overlay: a session is live if its server-owned stream has recent
-        # output (working) or a viewer is attached. Match either the logical or physical key
-        # (a reconciled opencode session registers under its placeholder). Best-effort — a
-        # registry hiccup must never fail the scan, it just yields no live overlay.
-        if registry is None:
-            return set()
-        keys: set[str] = set()
-        with contextlib.suppress(Exception):
-            for r in registry.snapshot():
-                if r.get("working") or r.get("attached"):
-                    keys.add(r["id"])
-        return keys
+        # One implementation, in `actuator`, because `/api/missions/{id}/message` needs the same
+        # overlay and two callers computing "what is busy" differently would propose against
+        # different views of the world.
+        return actuator.working_keys(registry)
 
     @app.get("/api/pulse")
     async def get_pulse(_: str = Depends(logged_in)) -> JSONResponse:
@@ -611,6 +632,43 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 ids = [i for i in body["ids"] if isinstance(i, str)]
         n = await asyncio.to_thread(notifications.mark_read, ids)
         return JSONResponse({"marked": n, **await asyncio.to_thread(notifications.listing)})
+
+    @app.post("/api/pulse/notifications/clear-settled")
+    async def clear_settled_notifications(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Hide the settled rows the client displayed. Returns how many left the projection.
+
+        A **hide**, never a delete, and it may only touch rows already settled. Removing them
+        would destroy the #760 "already told you" memo and restart the re-announce loop for
+        exactly the actions the operator has just dealt with — #800's bug through the front door.
+
+        **`ids` is required: it is the snapshot the operator was looking at.** Clearing "the
+        settled window" as recomputed at POST time silently swallows anything that settled
+        between the GET that drew the list and the click — hiding a decision the operator never
+        saw, permanently, since hidden is what keeps a row out of every later projection. The
+        window is bounded (newest 10 / 24h), so it turns over on its own; this is not a rare
+        interleaving.
+
+        Required rather than optional-with-a-fallback because nothing calls this yet — the bell's
+        client lands with the console (#840 Phase 2). An unsnapshotted branch kept "for
+        compatibility" would be a live footgun with no user to justify it; better it never
+        exists.
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — a malformed body is a 400, not a 500
+            body = None
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return JSONResponse(
+                {"detail": "ids must be the list of settled notification ids you displayed"},
+                status_code=400,
+            )
+        n = await asyncio.to_thread(notifications.clear_settled, ids)
+        return JSONResponse({"cleared": n})
 
     @app.post("/api/pulse/notifications/dismiss")
     async def dismiss_notifications(
