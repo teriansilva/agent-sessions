@@ -16,10 +16,13 @@ and every one of them looks exactly like the bug under test.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 import nudge_harness as H
 from agent_sessions import actuator, prefs
+from agent_sessions.engines import registry
 
 pytestmark = pytest.mark.real_agent
 
@@ -53,6 +56,11 @@ pytestmark = pytest.mark.real_agent
 #: into a login shell is a *command*, which is the whole reason that gate is default-deny.
 ACTUABLE = ("claude", "opencode", "codex", "gemini", "antigravity", "kimi")
 
+#: Engines whose first-run flow cannot be ANSWERED under a pinned session id, so the prompt has
+#: to be avoided at launch. Maps to the single flag that suppresses that prompt — never to the
+#: provider's `bypass`, which is a wider thing. See `_session`.
+_SUPPRESS_TRUST_FLAG = {"gemini": "--skip-trust"}
+
 
 def _nudge_payload() -> bytes:
     """The bytes a real `continue` sends — rendered by the server, never authored here.
@@ -75,38 +83,81 @@ def _session(engine: str, tmp_path) -> H.RealSession:
     ok, reason = H.engine_available(engine)
     if not ok:
         pytest.skip(reason)
-    return H.RealSession(engine=engine, cwd=str(tmp_path))
+    # `bypass` stays FALSE for every engine, and the gemini case is why that matters.
+    #
+    # Gemini needs its workspace-trust dialog suppressed: ACCEPTING it makes gemini re-exec, and
+    # the re-exec collides with the pinned `--session-id` ("Session ID … already exists") and
+    # kills the session — so the prompt has to be avoided rather than answered.
+    #
+    # But the provider's `bypass` does not mean "suppress that prompt". It expands to
+    # `--yolo --skip-trust`, and `--yolo` AUTO-APPROVES TOOL CALLS — a broad permission grant on
+    # an authenticated agent. A throwaway cwd is not a sandbox; it confines nothing about
+    # filesystem, process or network access. That grant would need explicit human approval and
+    # has none, so it is not taken (review on #880).
+    #
+    # So: the production argv with `bypass=False`, plus the ONE flag that suppresses the prompt.
+    # `--skip-trust` skips a question; `--yolo` skips a safety boundary. This harness needs only
+    # the first, and the two must not be reached for together just because a provider bundles
+    # them behind one parameter.
+    prov = next(p for p in registry.present_providers() if p.engine_id == engine)
+    native = str(uuid.uuid4())
+    argv = prov.new_launch_argv(native, cwd=str(tmp_path), bypass=False)
+    flag = _SUPPRESS_TRUST_FLAG.get(engine)
+    if flag:
+        argv = [*argv, flag]
+    return H.RealSession(engine=engine, cwd=str(tmp_path), native_id=native, argv_override=argv)
+
+
+def _classify(s: H.RealSession, submitted: bool, detail: str) -> None:
+    """Decide what a cell MEANS. The whole contested question of this PR lives here.
+
+    **A PASS needs no prerequisite, and that is what makes the rest tractable.** A session parked
+    on a trust dialog or a Terms notice cannot commit a turn, so a committed turn is
+    self-certifying: the engine was at a prompt and it submitted. Nothing has to be established
+    beforehand.
+
+    The ambiguity exists only on a FAILURE, where "the engine dropped it" and "the engine was
+    never at a prompt" are indistinguishable from the turn count. #801's contract is that the
+    second must not be published as the first. So a failure is a RED cell only when the engine
+    has a DEMONSTRATED prompt-ready signal that said it was ready — and today none does
+    (`H.PROMPT_READY` is empty, with the measurements that emptied it recorded there).
+
+    That is deliberately conservative: it means no engine can produce a red until someone
+    contributes a readiness signal for it. Which is the honest reading of "we observed no
+    submission and cannot establish the engine was ever at a prompt", and it names the missing
+    prerequisite instead of guessing past it.
+    """
+    if submitted:
+        return
+    if detail.startswith("not delivered:"):
+        # The WRITE did not land. Still a failure, but a claim about the delivery path — not
+        # about how the engine handles a payload that DID arrive.
+        pytest.fail(
+            f"{s.engine}: the write itself did not land, so this says nothing about whether the "
+            f"engine submits a delivered payload. {detail}"
+        )
+    ready, why = H.prompt_ready(s)
+    if ready is True:
+        pytest.fail(
+            f"{s.engine}: bytes were DELIVERED to a session demonstrated to be at a prompt "
+            f"({why}), and no user turn committed. This is the defect #801 exists to measure. "
+            f"{detail}"
+        )
+    pytest.skip(
+        f"{s.engine}: delivered, and no turn committed — but {why}, so this cannot be published "
+        f"as an engine defect. UNTESTED, not failing (#801). {detail}"
+    )
 
 
 def _ready(s: H.RealSession) -> None:
-    """Wait for readiness, and classify a missing LOGIN as a prerequisite rather than a red cell.
+    """Wait for the session to paint and go quiet. **No longer a gate.**
 
-    **The auth check runs whether or not readiness succeeded, and the ordering is the whole
-    point.** `wait_ready()` accepts any first paint followed by a quiet window — and a login
-    prompt paints once and then waits, so a logged-out engine looks *ready*. Checking auth only
-    on the failure path therefore never fires for the most common logged-out shape, and the
-    nudge goes on to fail as a red matrix result: a confident false negative about submission,
-    caused by a missing login (review on #858; the earlier version had exactly this bug).
-
-    `present_providers()` answers "is the binary installed", never "is it logged in", and
-    `service_env()` strips provider credential families on purpose — so this cannot be inferred
-    from availability either. #801 asks for a skip when the binary **or its auth** is absent.
-
-    Anything else stays a failure: an engine that is installed, authenticated and still will not
-    start is a real result, not something to skip past.
+    Every version of a gate here was wrong, in four different ways, and the last two were refuted
+    by the installed stores rather than by argument — see `H.PROMPT_READY` for the measurements.
+    The gate moved to `_classify`, where the question actually arises: only a FAILING cell is
+    ambiguous, because a PASS certifies its own prerequisite.
     """
-    ready = s.wait_ready()
-    if s.looks_unauthenticated():
-        pytest.skip(
-            f"{s.engine} is installed but not authenticated in a service-like environment, so "
-            "it cannot be measured here — recorded as UNTESTED, not as failing"
-        )
-    if ready:
-        return
-    raise AssertionError(
-        f"{s.engine} passed availability and appears authenticated but never became ready — "
-        "a launch/readiness failure, which is a real result and not something to skip past"
-    )
+    s.wait_ready()
 
 
 @pytest.mark.parametrize("engine", ACTUABLE)
@@ -122,6 +173,7 @@ def test_nudge_submits_when_quiescent(engine, tmp_path):
         print(
             f"\n[matrix] {engine:12s} quiescent      : {'PASS' if submitted else 'FAIL'} — {detail}"
         )
+        _classify(s, submitted, detail)
         assert submitted, f"{engine} did not submit a quiescent nudge: {detail}"
 
 
@@ -138,4 +190,5 @@ def test_nudge_submits_without_the_quiet_gate(engine, tmp_path):
         print(
             f"\n[matrix] {engine:12s} no-quiet-gate  : {'PASS' if submitted else 'FAIL'} — {detail}"
         )
+        _classify(s, submitted, detail)
         assert submitted, f"{engine} did not submit with the quiet gate off: {detail}"

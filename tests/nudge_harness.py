@@ -92,6 +92,7 @@ import termios
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -125,10 +126,27 @@ _PTY_ROWS, _PTY_COLS = 32, 120
 #: cursor rather than emitting spaces, so "trust this folder" never appears contiguously in
 #: the raw stream and a naive substring match silently never fires. Measured, after a first
 #: attempt matched nothing and looked exactly like "the engine simply never started".
-_TRUST_MARKERS = ("trustthisfolder", "doyoutrustthefiles", "quicksafetycheck")
+_TRUST_MARKERS = (
+    "trustthisfolder",
+    "doyoutrustthefiles",
+    "quicksafetycheck",
+    # gemini's wording, MEASURED from a real dialog rather than guessed. Its absence produced a
+    # textbook false negative: `wait_ready` returned True with the trust modal still up, every
+    # nudge went into a three-option dialog instead of a prompt, and the matrix reported gemini
+    # as "delivered, no turn committed" — indistinguishable from the defect under test, and
+    # published as one before the screen was looked at.
+    "trustingafolderallows",
+    "trustparentfolder",
+    "trustfolder",
+)
 
 #: Glyphs a TUI uses to mark the currently selected option.
 _CURSOR_MARKS = ("\u276f", "\u25b8", "\u203a", ">")
+
+#: Frame and bullet characters a dialog draws around its options. Stripped before parsing so a
+#: boxed menu (`│●1.Trustfolder(…)│`) is read as the option it is.
+_BOX = "\u25cf\u2502\u2503|*-\u2022\u00b7"
+_DECOR = "".join(_CURSOR_MARKS) + _BOX
 
 #: Markers of an engine that launched but is NOT authenticated. Matched on the same
 #: whitespace-stripped screen as the trust markers.
@@ -139,21 +157,6 @@ _CURSOR_MARKS = ("\u276f", "\u25b8", "\u203a", ">")
 #: matrix cell: a confident false negative about submission caused by a missing login
 #: (review on #858). #801 asks for a skip when the binary or its auth is absent; this is
 #: the auth half.
-_AUTH_MARKERS = (
-    "pleaselogin",
-    "loginrequired",
-    "notloggedin",
-    "signintocontinue",
-    "authenticationrequired",
-    "invalidapikey",
-    "missingapikey",
-    "setyourapikey",
-    "unauthorized",
-    "authenticationfailed",
-    "runlogin",
-    "youmustbeloggedin",
-)
-
 #: Terminal capability queries some TUIs send at startup and then WAIT for. A browser's
 #: xterm.js answers these in production; a bare pty does not, so an unanswered engine sits
 #: alive and silent forever — which `wait_ready`'s first-paint+quiet reads as ready, and the
@@ -821,6 +824,55 @@ class RealSession:
                 return True
         return False
 
+    def _numbered_trust_key(self) -> bytes | None:
+        """A NUMBERED trust dialog answered by its digit, or None if this is not one.
+
+        Gemini draws (whitespace collapsed):
+
+            ●1.Trustfolder(<dir>)
+             2.Trustparentfolder(<parent>)
+             3.Don'ttrust
+
+        The cursor-arithmetic path below cannot read this, and correctly refused to guess — so
+        every gemini session sat on the modal and every nudge went into it, which the matrix
+        published as an engine defect. Two reasons this needs its own branch rather than an
+        extension of that one:
+
+        * its selected-option glyph is `●`, not one of `_CURSOR_MARKS`;
+        * it has THREE options, two of which begin "trust", so the frame-splitting rule there
+          ("a repeated kind means a new frame") would cut the dialog apart.
+
+        A numbered menu does not need any of that. It wants its digit — the same reasoning
+        `actuator.render` uses for `choose`: "a numbered prompt wants a keypress, and the
+        narrower the payload the smaller the blast radius."
+
+        **Narrowest affirmative only.** `Trust parent folder` is also a "trust" option and is
+        strictly broader — it would trust `/tmp` for every future run. If the exact-folder
+        option is not found, this returns None rather than reaching for the parent.
+        """
+        numbered: list[tuple[int, str]] = []
+        for raw in _ESC_RE.sub("", self.screen_text()).splitlines():
+            # Strip the frame as well as the cursor: gemini draws its dialog inside a box, so a
+            # collapsed line reads `│●1.Trustfolder(…)│` and the digit is not at the start.
+            # Anchoring after the decoration keeps this a MATCH rather than a search — a search
+            # would happily find a numbered-looking run inside prose.
+            line = "".join(raw.split()).lower().lstrip(_DECOR)
+            m = re.match(r"^(\d+)[.)](.+)$", line)
+            if m:
+                numbered.append((int(m.group(1)), m.group(2).rstrip(_DECOR)))
+        if not numbered:
+            return None
+        # Last frame only: the dialog repaints, and the buffer holds every earlier frame.
+        last: dict[int, str] = {}
+        for n, body in numbered:
+            if n == 1 and last:
+                last = {}
+            last[n] = body
+        yes = [n for n, body in last.items() if body.startswith("trustfolder")]
+        if len(yes) != 1:
+            return None  # ambiguous or absent — refuse rather than guess
+        return f"{yes[0]}\r".encode()
+
     def _trust_selection_keys(self) -> bytes | None:
         """Keystrokes that move the cursor onto the affirmative option, or None if unreadable.
 
@@ -835,6 +887,10 @@ class RealSession:
         that is a fact to be read off the screen each time, not a constant to hard-code, since
         the inverse ordering makes the same keystroke destructive.
         """
+        # A numbered menu is answered by its digit — no cursor reading, no frame splitting.
+        numbered = self._numbered_trust_key()
+        if numbered is not None:
+            return numbered
         opts = self._trust_options()
         if not opts:
             return None
@@ -933,18 +989,15 @@ class RealSession:
             ):
                 # A modal that paints and then waits is quiet too — the same shape as the
                 # logged-out prompt. "Quiet" alone is not readiness.
+                #
+                # The onboarding/auth check is here for the same reason the trust one is, and it
+                # was missing: gemini's Terms-of-Service notice is neither a trust dialog nor an
+                # exit, so readiness returned True with it on screen and the matrix published a
+                # red cell for an engine that never reached a prompt. Readiness is "at a prompt",
+                # and a modal is not a prompt whichever modal it is.
                 return True
             time.sleep(0.25)
         return False
-
-    def looks_unauthenticated(self) -> bool:
-        """Does the screen say the engine launched but is not logged in?
-
-        Distinguishes "this engine cannot be measured here" from "this engine dropped the
-        nudge" — the difference between an UNTESTED row and a false red.
-        """
-        text = self._normalised_screen()
-        return any(m in text for m in _AUTH_MARKERS)
 
     def _store_exists(self) -> bool:
         loc = transcript.locator_for(self.engine)
@@ -1022,6 +1075,46 @@ class RealSession:
         return session_input.send_input(self.key, payload, require_quiet=require_quiet)
 
 
+#: **Per-engine, independently demonstrated prompt-ready signals — and it is EMPTY.**
+#:
+#: An entry maps an engine id to `(session) -> (ready, detail)`, proving the session is sitting at
+#: an input prompt by some means other than submitting to it. Adding one requires DEMONSTRATING
+#: the engine's real store/state boundary, not reasoning about it — five attempts at a general
+#: rule were each refuted, four of them by evidence rather than by argument:
+#:
+#: 1. pattern-match the screen — six rounds of narrowing, each defeated by ordinary agent output;
+#: 2. …and it cannot work in principle: `screen_text()` is a rolling BYTE buffer and a TUI
+#:    repaints by overwriting, so tail-slicing cannot establish what is DISPLAYED;
+#: 3. delete the classifier — every blocked engine became a red cell, which is a false negative
+#:    about the ENGINE and exactly what #801 forbids;
+#: 4. a warm-up turn — CIRCULAR: it made a committed turn the prerequisite for measuring turn
+#:    commitment, so the defect under test classified itself as UNTESTED;
+#: 5. transcript-record existence — refuted by the installed stores, in BOTH directions. Measured
+#:    on this host: gemini has 323 session files and **zero** with a user record (317 under 4 KB),
+#:    so its header exists before the prompt and a session parked on the Terms notice would pass
+#:    the check and publish a false red. claude has 170 files and **all 170** carry a user record,
+#:    so nothing exists until a turn commits — the same check would skip claude, the one engine
+#:    that passes. A signal that is early for one engine and late for another is not a signal.
+#:
+#: So the registry starts empty and is the honest extension point: to turn an engine's failing
+#: cell from UNTESTED into RED, contribute a demonstrated signal for it here.
+PROMPT_READY: dict[str, Callable[[RealSession], tuple[bool, str]]] = {}
+
+
+def prompt_ready(session: RealSession) -> tuple[bool | None, str]:
+    """`(ready, detail)` — `None` means NO SIGNAL EXISTS for this engine, which is not `False`.
+
+    The three answers are genuinely different and the caller acts differently on each: `True` is
+    "it was at a prompt, so a dropped payload is a defect", `False` is "it was demonstrably not",
+    and `None` is "nobody has established how to tell for this engine" — the state every engine
+    is in today.
+    """
+    signal = PROMPT_READY.get(session.engine)
+    if signal is None:
+        return None, f"no demonstrated prompt-ready signal for {session.engine}"
+    return signal(session)
+
+
 def submits(
     session: RealSession, payload: bytes, *, require_quiet: bool = True, settle: float = 120.0
 ) -> tuple[bool, str]:
@@ -1048,4 +1141,15 @@ def submits(
         if after > before:
             return True, f"user turns {before} → {after}"
         time.sleep(0.5)
-    return False, f"delivered, but user turns stayed at {before} after {settle:.0f}s"
+    # The SCREEN rides on every failure, because a red cell here has two very different causes
+    # and they are indistinguishable from the turn count alone: the engine dropped the nudge, or
+    # the engine was never at a prompt. An unrecognised modal reads exactly like the defect under
+    # test — that is not hypothetical, it is what an unmatched gemini trust dialog did to this
+    # matrix. Naming the screen in the failure makes the second cause announce itself instead of
+    # being published as the first.
+    tail = "".join(_ESC_RE.sub("", session.screen_text()).split())[-220:]
+    return (
+        False,
+        f"delivered, but user turns stayed at {before} after {settle:.0f}s "
+        f"| screen tail: {tail!r}",
+    )

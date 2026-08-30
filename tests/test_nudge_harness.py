@@ -18,6 +18,7 @@ import struct
 import termios
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -335,55 +336,190 @@ def test_teardown_reaps_an_escaped_child_with_no_grace_period(tmp_path):
     assert not _pids_running(sleep, "291"), "the escaped child survived an immediate teardown"
 
 
-def test_unauthenticated_screen_is_recognised():
-    """A logged-out engine must be classifiable as a prerequisite, not a submission failure."""
+def test_a_dropped_nudge_is_ALWAYS_a_red_cell_now(monkeypatch):
+    """The suppression is gone, and this is the test that says so.
+
+    Five rounds of review could not make "the engine was blocked, not broken" derivable from
+    what this harness sees, and the two errors are not symmetric: a false red costs an
+    investigation that starts with the screen tail printed beside it, while a false `UNTESTED`
+    deletes the finding. So a non-submitting engine is reported, with its evidence, every time —
+    even when the screen is showing a modal we would previously have skipped on.
+    """
+    s = _real(_GEMINI_MODAL, engine="gemini")
+    # Nothing about this SCREEN changes the answer. What decides is the session record.
+    assert H.prompt_ready(s)[0] is None
+
+
+#: The REAL gemini modal, from a screen tail this harness captured on a live run. Kept as a
+#: FIXTURE — nothing classifies on it any more; it is the realistic thing to put on a screen when
+#: a test needs one.
+_GEMINI_MODAL = (
+    "│ Terms of Services and Privacy Notice for Gemini CLI │\n"
+    "│ https://geminicli.com/docs/resources/tos-privacy/    │\n"
+    "╰──────────────────────────────────────────────────────╯"
+)
+
+
+def test_no_result_is_derived_from_the_RAW_SCREEN_BUFFER_anywhere():
+    """The classifier is gone, and this is what stands where its tests did.
+
+    Six review rounds each defeated a narrower version of it — free-form substrings, then
+    strong-vs-weak, then line anchoring, then a length bound, then an engine-bound two-marker
+    signature — and the sixth showed why: `screen_text()` is a rolling BYTE buffer, and a TUI
+    repaints with cursor-home plus erase-line, so a modal overwritten on screen still has every
+    byte in it. Tail-slicing cannot establish what is displayed, and no rule built on it can.
+
+    So no engine state is inferred from that buffer any more. The buffer is diagnostics: it
+    rides on a failure so a person can read it. This asserts the absence, because "we removed
+    it" is a claim about today and this is a claim about tomorrow.
+    """
+    src = (Path(H.__file__)).read_text()
+    for gone in ("_MODAL_SIGNATURES", "modal_may_be_showing", "looks_unauthenticated"):
+        assert gone not in src, f"{gone} came back — see `PROMPT_READY` before re-adding"
+    # …and the one remaining reader of the buffer is the TRUST handler, where over-matching
+    # costs a keystroke and under-matching costs a dialog left up — both ending in a red cell
+    # that carries this same screen.
+    assert "_TRUST_MARKERS" in src
+
+
+def _real(text: str = "", engine: str = "claude", ready: bool = True) -> H.RealSession:
+    """A REAL `RealSession`, not a duck-typed stand-in.
+
+    The stand-ins are what let a rename ship broken: they implemented the OLD method name, so
+    `_ready`'s call to a method that no longer existed passed every caller test and would have
+    crashed every real-agent cell with `AttributeError` (review on #880). A fake that implements
+    the API the caller *used to* use tests nothing about the API it uses now.
+    """
     s = H.RealSession.__new__(H.RealSession)
-    s._seen = bytearray(b"\x1b[1mPlease login\x1b[0m to continue")
-    assert s.looks_unauthenticated()
-    s._seen = bytearray(b"ready > try 'refactor foo.py'")
-    assert not s.looks_unauthenticated()
+    s.engine = engine
+    # A real id, because a readiness signal may resolve one against the engine store — and a
+    # bypassed `__init__` is exactly how a field the code depends on goes missing.
+    s.native_id = str(uuid.uuid4())
+    s._seen = bytearray(text.encode())
+    s.wait_ready = lambda *a, **k: ready  # type: ignore[method-assign]
+    return s
 
 
-def test_a_logged_out_engine_that_looks_ready_is_still_skipped():
-    """The caller-level ordering, which a helper-only test cannot catch.
+def test_a_PASS_needs_no_prerequisite_at_all(monkeypatch):
+    """A committed turn is self-certifying, and that is what makes the rest tractable.
 
-    `wait_ready()` accepts any first paint followed by a quiet window, and a login prompt paints
-    once and then waits — so a logged-out engine looks *ready*. An earlier version checked
-    `looks_unauthenticated()` only on the failure path, so it never fired for the most common
-    logged-out shape and the nudge went on to fail as a red matrix cell (review on #858).
+    A session parked on a trust dialog or a Terms notice cannot commit a turn — so if one
+    committed, the engine was at a prompt and it submitted. No readiness signal is required, and
+    demanding one is what would have skipped claude, the only engine that passes.
     """
     import test_nudge_submit_real as suite
 
-    class _LoggedOut:
-        engine = "claude"
-
-        def wait_ready(self, *a, **k):
-            return True  # a login prompt paints, then goes quiet
-
-        def looks_unauthenticated(self):
-            return True
-
-    with pytest.raises(BaseException) as excinfo:
-        suite._ready(_LoggedOut())
-    assert (
-        "Skipped" in type(excinfo.value).__name__
-    ), f"a logged-out engine that looks ready must SKIP, got {type(excinfo.value).__name__}"
-    assert "not authenticated" in str(excinfo.value)
+    monkeypatch.setattr(H, "PROMPT_READY", {})
+    # Asserted as "raises NOTHING", not by simply calling it: a `_classify` that SKIPPED on a pass
+    # would make this test skip rather than fail, and a skipped test is not a red — it would sail
+    # through a mutation that costs the matrix its only passing engine.
+    try:
+        suite._classify(_real("anything at all"), submitted=True, detail="user turns 0 -> 1")
+    except BaseException as e:  # noqa: BLE001 — including pytest's Skipped
+        raise AssertionError(
+            f"a PASS was not accepted on its own: {type(e).__name__}: {e}"
+        ) from None
 
 
-def test_an_authenticated_engine_that_is_ready_proceeds():
+def test_a_FAILURE_with_NO_demonstrated_signal_is_UNTESTED_not_red(monkeypatch):
+    """#801's contract, and the state every engine is in today."""
     import test_nudge_submit_real as suite
 
-    class _Fine:
-        engine = "claude"
+    monkeypatch.setattr(H, "PROMPT_READY", {})
+    with pytest.raises(BaseException) as e:
+        suite._classify(
+            _real(_GEMINI_MODAL, engine="gemini"),
+            submitted=False,
+            detail="delivered, but user turns stayed at 0 after 120s",
+        )
+    assert "Skipped" in type(e.value).__name__
+    assert "UNTESTED, not failing" in str(e.value)
+    assert "no demonstrated prompt-ready signal" in str(e.value)
 
-        def wait_ready(self, *a, **k):
-            return True
 
-        def looks_unauthenticated(self):
-            return False
+def test_a_FAILURE_with_a_signal_that_says_READY_is_a_RED_CELL(monkeypatch):
+    """The contract is not vacuous: contribute a signal and the defect becomes reportable.
 
-    suite._ready(_Fine())  # must not raise
+    The caller-level "ready" regression — demonstrated at a prompt, write landed, no turn.
+    """
+    import test_nudge_submit_real as suite
+
+    monkeypatch.setattr(
+        H, "PROMPT_READY", {"claude": lambda s: (True, "the prompt marker was observed")}
+    )
+    with pytest.raises(BaseException) as e:
+        suite._classify(
+            _real("ready > "),
+            submitted=False,
+            detail="delivered, but user turns stayed at 0 after 120s",
+        )
+    assert "Skipped" not in type(e.value).__name__, "the defect under test was skipped"
+    assert "Failed" in type(e.value).__name__
+    assert "defect #801 exists to measure" in str(e.value)
+
+
+def test_a_signal_that_says_NOT_READY_is_UNTESTED(monkeypatch):
+    """The caller-level "blocked" regression. `False` and `None` reach the same cell by different
+    routes, and both are honest; only `True` licenses a red."""
+    import test_nudge_submit_real as suite
+
+    monkeypatch.setattr(
+        H, "PROMPT_READY", {"claude": lambda s: (False, "the onboarding gate was observed")}
+    )
+    with pytest.raises(BaseException) as e:
+        suite._classify(
+            _real("ready > "), submitted=False, detail="delivered, but user turns stayed at 0"
+        )
+    assert "Skipped" in type(e.value).__name__
+    assert "onboarding gate was observed" in str(e.value)
+
+
+def test_a_DELIVERY_failure_is_red_but_says_something_DIFFERENT(monkeypatch):
+    """A write that never landed says nothing about how the engine handles one that did."""
+    import test_nudge_submit_real as suite
+
+    monkeypatch.setattr(H, "PROMPT_READY", {})
+    with pytest.raises(BaseException) as e:
+        suite._classify(_real(), submitted=False, detail="not delivered: refused (viewer busy)")
+    assert "Failed" in type(e.value).__name__
+    assert "the write itself did not land" in str(e.value)
+
+
+def test_the_registry_is_EMPTY_and_that_is_the_finding():
+    """Five general rules were tried and refuted; the registry records that rather than hiding it.
+
+    If an entry appears here, its author owes the demonstration — which is the contract this test
+    exists to make visible.
+    """
+    assert H.PROMPT_READY == {}, (
+        "a prompt-ready signal was added: demonstrate the engine's real store/state boundary in "
+        "the PR, the way the gemini/claude measurements in `PROMPT_READY` are demonstrated"
+    )
+
+
+def test_prompt_ready_distinguishes_NO_SIGNAL_from_NOT_READY(monkeypatch):
+    """`None` is not `False`. "Nobody has established how to tell" and "it is demonstrably not at
+    a prompt" are different facts; collapsing them makes a missing prerequisite read as an
+    observation."""
+    monkeypatch.setattr(H, "PROMPT_READY", {})
+    ready, why = H.prompt_ready(_real(engine="gemini"))
+    assert ready is None and "no demonstrated prompt-ready signal" in why
+
+    monkeypatch.setattr(H, "PROMPT_READY", {"gemini": lambda s: (False, "modal observed")})
+    ready, why = H.prompt_ready(_real(engine="gemini"))
+    assert ready is False and why == "modal observed"
+
+
+def test_ready_calls_only_methods_a_REAL_session_has():
+    """The stale-rename guard, stated as a property rather than trusted to a fake.
+
+    `_ready` is driven against an actual `RealSession`, so a method it calls that no longer
+    exists is an `AttributeError` here instead of in the opt-in matrix nobody runs in CI — which
+    is how a rename shipped broken once already (review on #880).
+    """
+    import test_nudge_submit_real as suite
+
+    suite._ready(_real("ready > "))
 
 
 @pytest.mark.skipif(
@@ -863,3 +999,138 @@ def _skips_added(markexpr: str) -> int:
     item = _Item()
     conftest.pytest_collection_modifyitems(cfg, [item])
     return len(item.marks)
+
+
+# ==================================================================================================
+# The numbered trust parser, and the post-write classifier (#801, review on #880).
+#
+# Both are hermetic: a stub screen, no engine, no tokens. They exist because the previous version
+# of this file did not exercise either — so a parser regression could have selected the BROADER
+# `Trust parent folder`, or a classifier regression could have manufactured a green, while the
+# suite this PR cites stayed entirely passing. That is the exact defect class #801 is about.
+# ==================================================================================================
+
+
+class _Screen(H.RealSession):
+    """A session whose screen is whatever the test says it is."""
+
+    def __init__(self, text: str, engine: str = "gemini"):
+        super().__init__(engine=engine, cwd="/tmp")
+        self._text = text
+
+    def screen_text(self) -> str:  # type: ignore[override]
+        return self._text
+
+
+#: Gemini's dialog as it is actually drawn — box-framed, `●` on the selected option, numbered.
+#: Captured from a live session; the parser is written against this rather than against a guess.
+GEMINI_TRUST = """
+ │ Trusting a folder allows Gemini CLI to load its local configurations, including custom       │
+ │                                                                                              │
+ │ ● 1. Trust folder (work-dir)                                                                 │
+ │   2. Trust parent folder (tmp)                                                               │
+ │   3. Don't trust                                                                             │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+"""
+
+
+def test_numbered_trust_dialog_selects_the_exact_folder():
+    assert _Screen(GEMINI_TRUST)._numbered_trust_key() == b"1\r"
+
+
+def test_the_dialog_is_recognised_as_a_trust_prompt_at_all():
+    # Readiness depends on this too: `wait_ready` must not call a session ready while it is up.
+    assert _Screen(GEMINI_TRUST).trust_prompt_showing() is True
+
+
+def test_parent_only_fails_closed_rather_than_widening_the_grant():
+    """`Trust parent folder` is strictly broader — it would trust the parent for every future
+    run. With no exact-folder option the parser refuses instead of reaching for it."""
+    screen = GEMINI_TRUST.replace("● 1. Trust folder (work-dir)", "● 1. Trust parent folder (tmp)")
+    screen = screen.replace("  2. Trust parent folder (tmp)", "  2. Don't trust")
+    assert _Screen(screen)._numbered_trust_key() is None
+
+
+def test_two_exact_folder_options_are_ambiguous_and_refused():
+    screen = GEMINI_TRUST.replace("  2. Trust parent folder (tmp)", "  2. Trust folder (other)")
+    assert _Screen(screen)._numbered_trust_key() is None
+
+
+#: The dialog REPAINTED with its options renumbered — the exact-folder choice is now `2`.
+#:
+#: The frames must MATERIALLY DISAGREE or the test is vacuous. An earlier version only moved the
+#: selection glyph, leaving `1. Trust folder` in both frames: a parser that always read the first
+#: frame returned `b"1\r"` and passed, which is precisely the bug the test claims to exclude
+#: (review on #880). Answering `1` here would now choose "Don't trust" — a wrong answer that
+#: exits the engine and publishes the exit as a dropped nudge.
+GEMINI_TRUST_RENUMBERED = """
+ │ Trusting a folder allows Gemini CLI to load its local configurations, including custom       │
+ │                                                                                              │
+ │ ● 1. Don't trust                                                                             │
+ │   2. Trust folder (work-dir)                                                                 │
+ │   3. Trust parent folder (tmp)                                                               │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+"""
+
+
+def test_a_repaint_is_read_from_the_CURRENT_frame_not_a_stale_one():
+    """The dialog repaints and the buffer keeps every earlier frame. Reading a stale frame would
+    answer a menu that is no longer on screen — the same hazard `_trust_options` guards for the
+    cursor path, and it applies to the numbered one too."""
+    # Old frame first, current frame second. The stale answer is `1`; the current one is `2`.
+    assert _Screen(GEMINI_TRUST + GEMINI_TRUST_RENUMBERED)._numbered_trust_key() == b"2\r"
+
+
+def test_a_repaint_that_removes_the_exact_folder_option_fails_closed():
+    """The other direction, and the one a stale read is most dangerous in: the current frame no
+    longer offers the exact folder at all, so the answer is to refuse — never the digit that
+    happened to be right one frame ago."""
+    narrowed = GEMINI_TRUST.replace(
+        "● 1. Trust folder (work-dir)", "● 1. Trust parent folder (tmp)"
+    ).replace("  2. Trust parent folder (tmp)", "  2. Don't trust")
+    assert _Screen(GEMINI_TRUST + narrowed)._numbered_trust_key() is None
+
+
+def test_a_screen_with_no_numbered_menu_is_not_a_numbered_dialog():
+    assert _Screen("❯ No, exit\n  Yes, I trust this folder")._numbered_trust_key() is None
+
+
+# --------------------------------------------------------------------------------------------
+# `PROMPT_READY` — the difference between "this engine drops nudges" and "this engine was never
+# at a prompt". This issue has already published the first when the second was true, on a live
+# run, so it is tested here rather than in the real-agent module where the opt-in gate would skip
+# every case (review on #880).
+# --------------------------------------------------------------------------------------------
+
+#: The REAL modal, copied from a screen tail this harness captured on a live gemini run — not a
+#: paraphrase. The heading alone is deliberately NOT enough to classify (see the negative
+#: controls above); what makes this frame a modal is the notice's own link beside it.
+_TOS = (
+    "│ Terms of Services and Privacy Notice for Gemini CLI │\n"
+    "│ https://geminicli.com/docs/resources/tos-privacy/    │\n"
+    "╰──────────────────────────────────────────────────────╯"
+)
+
+
+def test_TRANSCRIPT_EXISTENCE_is_not_a_readiness_signal(tmp_path, monkeypatch):
+    """The measurement that refuted attempt 5, pinned so it cannot be quietly re-adopted.
+
+    The installed stores disagree about WHEN a session file appears, in opposite directions:
+    gemini writes a header before the prompt (so a blocked session would pass such a check and
+    publish a false red), and claude writes nothing until a turn commits (so the same check would
+    skip the one engine that passes). This reproduces the shape locally — a resolvable session
+    record whose session has committed nothing.
+    """
+    from agent_sessions import transcript
+
+    home = tmp_path / "home"
+    proj = home / ".claude" / "projects" / "-tmp-x"
+    proj.mkdir(parents=True)
+    native = "11111111-2222-3333-4444-555555555555"
+    # No user turn — exactly the shape gemini's 317 header-only files have.
+    (proj / f"{native}.jsonl").write_text('{"type":"session_meta","cwd":"/tmp/x"}\n')
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    assert transcript.locator_for("claude")(native, home), "the locator resolves it"
+    assert H.user_turns("claude", native, home) == 0, "...and it has committed nothing"
+    # So "the locator resolves it" cannot mean "the engine was at a prompt".
