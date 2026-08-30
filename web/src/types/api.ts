@@ -255,6 +255,11 @@ export type OrchestratorState =
   | "claimed"
   | "delivered"
   | "escalated"
+  /** A yolo action below `confidence_min` that kept a real DELIVERING verb (#877). Distinct
+   *  from `escalated` — which is the model asking a QUESTION, with nothing to run — because
+   *  only this one can be answered "yes". It is in the server's `CLAIMABLE_STATES`; plain
+   *  `escalated` is not. */
+  | "escalated_low_confidence"
   | "observed"
   | "rejected"
   | "stale"
@@ -272,7 +277,7 @@ export type OrchestratorState =
  *  wording is then a **compile error**, not a blank cell nobody notices. */
 export type TerminalActionState = Exclude<
   OrchestratorState,
-  "proposed" | "approved" | "claimed" | "escalated"
+  "proposed" | "approved" | "claimed" | "escalated" | "escalated_low_confidence"
 >;
 
 export type EvidenceKind = "screen" | "transcript_tail" | "recap" | "none";

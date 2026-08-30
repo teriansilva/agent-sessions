@@ -273,7 +273,12 @@ def test_tier_and_threshold_decide_state():
     cfg["autonomy"] = "suggest"
     assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg)[0] == "proposed"
     cfg["autonomy"] = "yolo"
-    assert orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg)[0] == "escalated"
+    # A DELIVERING verb below the threshold escalates to the approvable kind — the model wanted
+    # to act and was not sure, so the operator can still say yes (#877).
+    assert (
+        orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg)[0]
+        == "escalated_low_confidence"
+    )
     assert orchestrator._decide({"verb": "continue", "confidence": 0.75}, cfg)[0] == "approved"
     cfg["autonomy"] = "off"
     assert orchestrator._decide({"verb": "continue", "confidence": 0.99}, cfg)[0] == "proposed"
@@ -283,9 +288,11 @@ def test_tier_and_threshold_decide_state():
 
 
 def test_decide_reports_why_it_escalated():
-    """Three paths reach `escalated` and the row has to say which one — the UI appended
-    "below threshold" to all of them, which is false on two and unreachable on the third at
-    any tier but yolo."""
+    """Three paths escalate and the row has to say which one — the UI appended "below threshold"
+    to all of them, which is false on two and unreachable on the third at any tier but yolo.
+
+    Since #877 those three paths write two different STATES, and the reason is deliberately
+    unchanged by that: the roads are distinguished by state, never by re-reading this string."""
     cfg = dict(prefs.get_orchestrator())
     cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.75)
 
@@ -298,9 +305,11 @@ def test_decide_reports_why_it_escalated():
     assert orchestrator._decide(
         {"verb": "escalate", "confidence": 0.9, "escalation_reason": "degraded"}, cfg
     ) == ("escalated", "degraded")
-    # the yolo threshold gate — the ONLY path "below threshold" ever described
+    # the yolo threshold gate — the ONLY path "below threshold" ever described. Its state is the
+    # approvable kind, and the REASON is unchanged: the two roads are distinguished by state,
+    # never by re-reading the reason string (#877).
     assert orchestrator._decide({"verb": "continue", "confidence": 0.74}, cfg) == (
-        "escalated",
+        "escalated_low_confidence",
         "confidence",
     )
     # anything not escalated carries no reason at all
@@ -309,7 +318,7 @@ def test_decide_reports_why_it_escalated():
         {"verb": "observe", "confidence": 0.1},
     ):
         state, reason = orchestrator._decide(action, cfg)
-        assert state != "escalated"
+        assert state not in ledger.ESCALATION_STATES
         assert reason is None
 
 
@@ -686,7 +695,10 @@ def test_non_finite_confidence_is_zero_not_maximum():
         assert action["confidence"] == 0.0, f"{raw} must not become usable confidence"
         cfg = dict(prefs.get_orchestrator())
         cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.5)
-        assert orchestrator._decide(action, cfg)[0] == "escalated"
+        # Escalated, not approved — which is the whole point. The KIND is the approvable one
+        # because `continue` is deliverable, and that is exactly right: a NaN confidence is a
+        # thing to ask the operator about, not a thing to auto-run.
+        assert orchestrator._decide(action, cfg)[0] == "escalated_low_confidence"
 
 
 def test_concurrent_append_during_compaction_is_not_lost(tmp_path):
@@ -2757,3 +2769,101 @@ def test_a_manual_decision_hides_the_row_but_keeps_the_dedupe_memo(
         activity_at=idle,
     )
     assert again is None, "a decided situation was announced all over again"
+
+
+# --- the two roads into an escalation, across the PRODUCER boundary (#877) ---------------------
+#
+# The projection helper being right is necessary and not sufficient. `escalated` was decided from
+# by seven exact string comparisons, none of them a set, and a new state that misses one fails
+# SILENTLY and differently each time: never announced, or announced and never counted, or shown
+# with the wrong tone, or labelled "dismiss" when it has an Approve beside it. These drive the
+# real producers rather than the helper.
+
+from agent_sessions import notifications  # noqa: E402
+
+LOW_CONF = "escalated_low_confidence"
+
+
+def _rec(state, aid="a1", sid="claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"):
+    return {
+        "id": aid,
+        "session_id": sid,
+        "verb": "continue",
+        "state": state,
+        "confidence": 0.4,
+        "escalation_reason": "confidence",
+        "title": "t",
+        "rationale": "r",
+    }
+
+
+@pytest.mark.parametrize("state", ["escalated", LOW_CONF])
+def test_notify_escalations_announces_both_kinds_exactly_once(state):
+    """`orchestrator.py:692` decides whether the row is announced AT ALL. A low-confidence row
+    that missed it would be silent — the one failure this feature exists to remove."""
+    prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
+    orchestrator._persist([_rec(state)])
+    rows = notifications.listing()["notifications"]
+    assert len(rows) == 1, state
+
+
+@pytest.mark.parametrize("state", ["escalated", LOW_CONF])
+def test_both_kinds_are_flagged_as_escalations_for_the_badge(state):
+    """`orchestrator.py:704` decides `escalation=True`, which drives the badge and the settled
+    window. Missing it announces the row and then never counts it — a different silence in the
+    same feature."""
+    prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
+    orchestrator._persist([_rec(state)])
+    assert notifications.listing()["notifications"][0]["escalation"] is True, state
+
+
+@pytest.mark.parametrize("state", ["escalated", LOW_CONF])
+def test_both_kinds_suppress_a_second_proposal_for_the_same_session(state):
+    """A session with a decision already waiting is not eligible for another. Keyed on
+    `OPERATOR_PENDING_STATES`, so the new state inherits it rather than needing to be remembered
+    — otherwise a low-confidence row would let the next pass stack a second action on the same
+    session, which is the duplicate-proposal loop the pending set exists to break."""
+    sid = "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    ledger.append(_rec(state, sid=sid))
+    pending = {
+        r.get("session_id")
+        for r in ledger.live_actions()
+        if r.get("state") in ledger.OPERATOR_PENDING_STATES
+    }
+    assert sid in pending, state
+
+
+@pytest.mark.parametrize("state", ["escalated", LOW_CONF])
+def test_both_kinds_expire_on_the_ttl_sweep(state):
+    """`EXPIRABLE_STATES`. Missing this one is the worst of the set failures: the row never
+    expires and stays live INDEFINITELY, which is worse than the gap being fixed."""
+    rec = _rec(state)
+    rec["expires_at"] = time.time() - 1
+    ledger.append(rec)
+    ledger.expire_due()
+    assert ledger.latest_by_id()["a1"]["state"] == "expired", state
+
+
+def test_only_the_low_confidence_kind_reaches_the_card_with_an_approve(
+    auth_cfg, fake_jsonl, monkeypatch
+):  # noqa: ARG001
+    """The end the operator actually sees, through the REAL pulse producer rather than the
+    projection helper: a low-confidence row arrives with Approve + Reject, the model's question
+    with Reject only."""
+    sids = {
+        "escalated": "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        LOW_CONF: "claude:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }
+    for state, sid in sids.items():
+        ledger.append(_rec(state, aid=f"act-{state}", sid=sid))
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cards = {x["id"]: x for x in c.get("/api/pulse").json()["cards"]}
+
+    q = cards[sids["escalated"]]["pending_action"]
+    low = cards[sids[LOW_CONF]]["pending_action"]
+    assert (q["can_approve"], q["can_reject"]) == (False, True)
+    assert (low["can_approve"], low["can_reject"]) == (True, True)
+    assert q["projection"] == low["projection"] == "actionable"

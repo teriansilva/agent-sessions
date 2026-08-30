@@ -4,15 +4,22 @@ import { mockMissions } from "./mission-console";
 
 // #795 — an escalation says why it escalated, and what you can do about it.
 //
-// The row appended "· below threshold" to EVERY escalated action. Three paths reach
-// `escalated` and only one is the confidence gate — and that one is unreachable at any tier
-// but `yolo`, where nothing reads `confidence_min`. So the fixture below is the exact live
-// shape that made the claim absurd: `suggest`, a threshold of 0.70, and an escalation at
-// conf 0.90 that the model raised itself.
+// The row appended "· below threshold" to EVERY escalated action. Three paths escalate and only
+// one is the confidence gate — and that one is unreachable at any tier but `yolo`, where nothing
+// reads `confidence_min`. So the fixture below is the exact live shape that made the claim
+// absurd: `suggest`, a threshold of 0.70, and an escalation at conf 0.90 that the model raised
+// itself.
 //
-// Real-browser rather than jsdom for the second half: an escalation's only control is the ✕
-// (there is nothing to Approve), and whether that control is legible and keeps its per-project
-// touch geometry with a label added are computed-layout facts. An emulator reports neither.
+// SCOPED TO THE MODEL-QUESTION CASE, deliberately. Since #877 those three paths write two
+// states: `escalated` (the model asking — nothing to run, so the ✕ is its only control) and
+// `escalated_low_confidence` (a real delivering verb, so Approve + Reject). This fixture is the
+// FIRST, and its "only control is the ✕" assertion is true of that state and not of the other.
+// The low-confidence row's controls are covered in `Orchestrator.test.tsx`; adding it here would
+// need its own fixture rather than a reinterpretation of this one.
+//
+// Real-browser rather than jsdom for the second half: whether that single control is legible and
+// keeps its per-project touch geometry with a label added are computed-layout facts. An emulator
+// reports neither.
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -209,7 +216,9 @@ test("the one control an escalation offers says what it does", async ({
 
   // ...which makes the ✕ the row's ONLY control, sitting beside the RECAP disclosure where a
   // bare glyph reads as "close that panel". It carries a visible label now.
-  const dismiss = page.getByRole("button", { name: /dismiss this escalation/i });
+  const dismiss = page.getByRole("button", {
+    name: /dismiss this escalation/i,
+  });
   await expect(dismiss).toBeVisible();
   await expect(dismiss).toHaveText(/dismiss/i);
 });
@@ -221,7 +230,9 @@ test("the dismiss control keeps its geometry with the label added", async ({
     await page.goto("/pulse");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
-  const dismiss = page.getByRole("button", { name: /dismiss this escalation/i });
+  const dismiss = page.getByRole("button", {
+    name: /dismiss this escalation/i,
+  });
   const box = await dismiss.boundingBox();
   expect(box).not.toBeNull();
 

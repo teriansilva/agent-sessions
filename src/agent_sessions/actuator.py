@@ -24,10 +24,11 @@ caller. Four things are checked, and all of them can change between proposal and
 4. no viewer is attached or recently active — the operator and the orchestrator must never
    type at the same time.
 
-**At-most-once, stated honestly.** The ledger moves ``proposed|approved → claimed`` *before*
-the write and to a terminal state after. If the process dies in between, nothing on disk can
-prove whether the bytes landed, so startup recovery parks it as ``indeterminate`` rather than
-retrying (double-delivery) or assuming success (silent drop).
+**At-most-once, stated honestly.** The ledger moves any :data:`CLAIMABLE_STATES` member —
+``proposed``, ``approved`` and, since #877, ``escalated_low_confidence`` — to ``claimed``
+*before* the write, and to a terminal state after. If the process dies in between, nothing on
+disk can prove whether the bytes landed, so startup recovery parks it as ``indeterminate``
+rather than retrying (double-delivery) or assuming success (silent drop).
 """
 
 from __future__ import annotations

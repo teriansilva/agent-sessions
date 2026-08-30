@@ -9,6 +9,7 @@ import styles from "./Orchestrator.module.css";
 import {
   DELIVERING_FALLBACK,
   escalationSuffix,
+  isEscalation,
   sessionPath,
 } from "../../lib/orchestratorAction";
 
@@ -17,7 +18,7 @@ import {
 function toneOf(a: OrchestratorAction): string {
   if (a.state === "failed" || a.state === "indeterminate")
     return styles.toneDown;
-  if (a.state === "escalated" || a.state === "proposed")
+  if (isEscalation(a.state) || a.state === "proposed")
     return styles.toneDegraded;
   if (a.state === "delivered" || a.state === "approved") return styles.toneUp;
   return styles.toneIdle;
@@ -163,23 +164,32 @@ export function ActionRow({
   // The fallback reproduces the OLD behaviour verbatim for a response written before the fields
   // existed. It is deliberately not a guess at the new one: a surface that invents a projection
   // is the thing being removed.
-  const legacyWaiting = action.state === "proposed" || action.state === "approved";
-  const serverProjected = action.can_approve !== undefined || action.can_reject !== undefined;
+  const legacyWaiting =
+    action.state === "proposed" || action.state === "approved";
+  const serverProjected =
+    action.can_approve !== undefined || action.can_reject !== undefined;
   // Approve still requires something to DELIVER — that is a property of the verb, not of the
   // action's state, so it stays here.
   //
-  // It is NOT, however, what keeps Approve off an `escalated` row, and believing that it was is
+  // It is NOT, however, what decides Approve on an escalated row, and believing that it was is
   // how an invalid control shipped. "An escalated row has no delivering verb" is false: the
   // orchestrator also escalates a yolo action that fell below `confidence_min`, and that one
   // keeps its real verb (`continue`), so `delivering` is true and the button rendered — for an
-  // action `actuator.deliver` refuses with 409. The server's `can_approve` is what gates it, and
-  // it is gated on `CLAIMABLE_STATES`, which excludes `escalated`. Reject is unaffected:
-  // REJECTABLE_STATES does include `escalated`.
-  const approvable = delivering && (serverProjected ? !!action.can_approve : legacyWaiting);
+  // action `actuator.deliver` then refused with 409.
+  //
+  // The server's `can_approve` is the gate, and it is gated on `CLAIMABLE_STATES`. Since #877
+  // that set contains `escalated_low_confidence` and still excludes plain `escalated`, so the
+  // low-confidence row now legitimately offers Approve and the model's question still does not
+  // — decided once on the server, never re-derived from a state name here.
+  const approvable =
+    delivering && (serverProjected ? !!action.can_approve : legacyWaiting);
   const rejectable = serverProjected
     ? !!action.can_reject
-    : legacyWaiting || action.state === "escalated";
+    : legacyWaiting || isEscalation(action.state);
   const escSuffix = escalationSuffix(action);
+  /** An escalation with nothing to approve — the model's question. The one place the two roads
+   *  into an escalation are meant to look different to the operator (#877). */
+  const dismissOnly = isEscalation(action.state) && !approvable;
 
   const act = useCallback(
     async (which: "approve" | "reject") => {
@@ -259,24 +269,24 @@ export function ActionRow({
           type="button"
           className={styles.reject}
           disabled={!!busy}
-          // Keyed off STATE, not off whether Approve happens to be offered: a proposed
-          // action with a non-deliverable verb is not an escalation, and calling it one
-          // mislabels the control for a screen reader.
+          // "Dismiss" is for an escalation with NOTHING TO APPROVE — the model's own question,
+          // where declining is the only move. Both halves are needed: a proposed action with a
+          // non-deliverable verb is not an escalation and calling it one mislabels the control,
+          // while a low-confidence escalation stands beside a real Approve and "dismiss" would
+          // understate what rejecting it does. Derived from the projection rather than from a
+          // state name, so a third kind of escalation is labelled correctly without a change
+          // here (#877).
           aria-label={
-            action.state === "escalated"
-              ? "Dismiss this escalation"
-              : "Reject this action"
+            dismissOnly ? "Dismiss this escalation" : "Reject this action"
           }
           onClick={() => void act("reject")}
         >
           <X size={13} aria-hidden="true" />
-          {/* An escalation offers no Approve — not because it has nothing to deliver (a
-              confidence-escalated action keeps its verb), but because `escalated` is outside
-              CLAIMABLE_STATES, so the server's `can_approve` is false — which makes this the
-              row's only control. Beside the evidence disclosure a bare ✕ reads as "close that
-              panel" rather than "settle this". Everywhere else Approve stands next to it and
-              the pairing already says what it does, so the glyph stays on its own. */}
-          {action.state === "escalated" && "Dismiss"}
+          {/* The word appears only when this is the row's ONLY control: beside the evidence
+              disclosure a bare ✕ reads as "close that panel" rather than "settle this".
+              Wherever Approve stands next to it the pairing already says what it does, so the
+              glyph stays on its own — which is now also true of a low-confidence escalation. */}
+          {dismissOnly && "Dismiss"}
         </button>
       )}
     </div>

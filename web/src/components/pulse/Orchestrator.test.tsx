@@ -672,7 +672,9 @@ test("a 409 carrying only a detail is not a resolution and must not invalidate",
     await screen.findByRole("button", { name: /^approve$/i }),
   );
 
-  await waitFor(() => expect(screen.getByText(/not sent/i)).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByText(/not sent/i)).toBeInTheDocument(),
+  );
   expect(seen).not.toHaveBeenCalled();
   window.removeEventListener(ACTION_RESOLVED_EVENT, seen);
 });
@@ -748,7 +750,12 @@ test("a response without the projection falls back to the old behaviour, not to 
 // -----------------------------------------------------------------------------------------
 
 test("an escalated action with a delivering verb offers Reject, never Approve", () => {
-  renderRow({ state: "escalated", verb: "continue", can_approve: false, can_reject: true });
+  renderRow({
+    state: "escalated",
+    verb: "continue",
+    can_approve: false,
+    can_reject: true,
+  });
   expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
   // The reject control is named by its aria-label, which says "dismiss" for an escalation.
   expect(
@@ -759,13 +766,119 @@ test("an escalated action with a delivering verb offers Reject, never Approve", 
 test("the row obeys can_approve even when the state would suggest otherwise", () => {
   // `proposed` is the one approvable state, so this is the strongest form of the assertion:
   // if the row were still deriving from `state`, it would render Approve here.
-  renderRow({ state: "proposed", verb: "continue", can_approve: false, can_reject: true });
+  renderRow({
+    state: "proposed",
+    verb: "continue",
+    can_approve: false,
+    can_reject: true,
+  });
   expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 });
 
 test("an unknown projection still lets the operator reject", () => {
   // The ledger could not be read. The row must not go silent — see `project_for_operator`.
-  renderRow({ state: undefined, verb: "continue", can_approve: false, can_reject: true });
-  expect(screen.getByRole("button", { name: /reject this action/i })).toBeInTheDocument();
+  renderRow({
+    state: undefined,
+    verb: "continue",
+    can_approve: false,
+    can_reject: true,
+  });
+  expect(
+    screen.getByRole("button", { name: /reject this action/i }),
+  ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+});
+
+// -----------------------------------------------------------------------------------------
+// #877 — the two roads into an escalation, in the row the operator actually sees.
+//
+// Before this, `escalated` meant both "the model asked you a question" and "the model wanted to
+// act and was not sure". The second kept a real delivering verb, so the operator was shown a
+// runnable `continue`, asked to look at it, and had no way to say yes. The row is where that
+// asymmetry has to become visible.
+// -----------------------------------------------------------------------------------------
+
+test("a low-confidence escalation offers Approve AND Reject", () => {
+  renderRow({
+    state: "escalated_low_confidence",
+    verb: "continue",
+    can_approve: true,
+    can_reject: true,
+  });
+  expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
+  // …and the reject control is a REJECT, not a dismiss: it stands beside a real Approve, so
+  // "dismiss" would understate what declining it does.
+  expect(
+    screen.getByRole("button", { name: /reject this action/i }),
+  ).toBeInTheDocument();
+});
+
+test("the visible DISMISS word appears only when there is nothing to approve", () => {
+  // The word exists because beside the evidence disclosure a bare ✕ reads as "close that panel"
+  // rather than "settle this". Wherever Approve stands next to it, the pairing already says what
+  // the ✕ does — which is now true of a low-confidence escalation too.
+  const { unmount } = renderRow({
+    state: "escalated",
+    verb: "escalate",
+    can_approve: false,
+    can_reject: true,
+  });
+  expect(screen.getByText("Dismiss")).toBeInTheDocument();
+  unmount();
+
+  renderRow({
+    state: "escalated_low_confidence",
+    verb: "continue",
+    can_approve: true,
+    can_reject: true,
+  });
+  expect(screen.queryByText("Dismiss")).toBeNull();
+});
+
+test("the row still obeys can_approve for the new state, never the state name", () => {
+  // The strongest form: the state that CAN be approved, with the server saying no. If the row
+  // were deriving controls from the state name — the failure this whole contract exists to
+  // prevent — it would render Approve here and the tap would 409.
+  renderRow({
+    state: "escalated_low_confidence",
+    verb: "continue",
+    can_approve: false,
+    can_reject: true,
+  });
+  expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+  expect(screen.getByText("Dismiss")).toBeInTheDocument();
+});
+
+test("both kinds of escalation still explain themselves", () => {
+  renderRow({
+    state: "escalated_low_confidence",
+    verb: "continue",
+    escalation_reason: "confidence",
+    can_approve: true,
+    can_reject: true,
+  });
+  expect(screen.getByText(/below threshold/i)).toBeInTheDocument();
+});
+
+test("a low-confidence escalation carries the same NEEDS-A-DECISION tone as any other", () => {
+  // Status colour is load-bearing here (docs/design.md): amber `degraded` means "needs a
+  // decision". A new escalation state that fell through `toneOf` would render as idle grey —
+  // the row would still work, and would stop *looking* like something waiting on the operator,
+  // which is the quietest of the seven ways a missed comparison could fail.
+  const tone = (state: string) => {
+    const { container, unmount } = renderRow({
+      state: state as OrchestratorAction["state"],
+      verb: "continue",
+      can_approve: true,
+      can_reject: true,
+    });
+    const cls = container.firstElementChild?.className ?? "";
+    unmount();
+    return cls;
+  };
+  const degraded = tone("proposed");
+  expect(tone("escalated")).toBe(degraded);
+  expect(tone("escalated_low_confidence")).toBe(degraded);
+  // …and it is a real distinction, not every state returning the same string.
+  expect(tone("delivered")).not.toBe(degraded);
 });

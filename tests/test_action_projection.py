@@ -22,7 +22,11 @@ from agent_sessions import orchestrator_ledger as ledger
 # state -> (projection, can_approve, can_reject)
 TABLE = {
     "proposed": ("actionable", True, True),
+    # The two roads into an escalation, and the ONE thing that differs between them (#877):
+    # a model QUESTION has nothing to run, so it is reject-only; a low-confidence action kept a
+    # real delivering verb, so "yes" is a meaningful answer and Approve is offered.
     "escalated": ("actionable", False, True),
+    "escalated_low_confidence": ("actionable", True, True),
     "approved": ("in_flight_revocable", False, True),
     "claimed": ("in_flight_locked", False, False),
     "delivered": ("settled", False, False),
@@ -256,23 +260,40 @@ def test_the_two_sets_are_one_object_not_two_equal_ones():
 
 
 @pytest.mark.parametrize(
-    ("verb", "why"),
+    ("verb", "want_state", "want_approve", "why"),
     [
-        ("escalate", "the model asking a question — there is no verb to deliver"),
-        ("continue", "a yolo action below confidence_min, keeping its delivering verb"),
+        ("escalate", "escalated", False, "the model asking a question — no verb to deliver"),
+        (
+            "continue",
+            "escalated_low_confidence",
+            True,
+            "the model wanting to ACT and not being sure — a real verb, so yes is an answer",
+        ),
     ],
 )
-def test_escalated_is_reject_only_whatever_put_it_there(verb, why):
-    """Both roads into `escalated` land on the same controls.
+def test_the_two_roads_into_an_escalation_DIVERGE(verb, want_state, want_approve, why):
+    """The contract #877 changed, driven through the PRODUCER rather than asserted about a
+    constant.
 
-    They are genuinely different situations — `orchestrator._decide_state` reaches `escalated`
-    from `verb == "escalate"` and, separately, from `confidence < confidence_min` in yolo — and
-    the second keeps a real delivering verb, which is why the client rendered Approve for it.
-    Neither is claimable, so neither may offer Approve.
+    The version of this test that stood here was parametrized on `verb` and then never used it:
+    it called `project_for_operator("escalated")` twice and asserted both roads converge on
+    reject-only. That was the pre-#877 contract, and because the test never called `_decide` it
+    stayed GREEN while documenting the opposite of what the code now does — a test that passes
+    against code it contradicts, which is worse than no test because it reads as coverage.
+
+    So the verb is now actually used: `_decide` maps it to a state, and the projection of THAT
+    state is what is asserted.
     """
-    out = ledger.project_for_operator("escalated")
+    from agent_sessions import orchestrator, prefs
+
+    cfg = dict(prefs.get_orchestrator())
+    cfg.update(enabled=True, autonomy="yolo", allowed_verbs=["continue"], confidence_min=0.75)
+    state, _reason = orchestrator._decide({"verb": verb, "confidence": 0.1}, cfg)
+    assert state == want_state, f"{verb}: {why}"
+
+    out = ledger.project_for_operator(state)
     assert out["projection"] == "actionable", f"{verb}: still wants the operator ({why})"
-    assert out["can_approve"] is False, f"{verb}: Approve is a 409 ({why})"
+    assert out["can_approve"] is want_approve, f"{verb}: {why}"
     assert out["can_reject"] is True
 
 
@@ -344,6 +365,135 @@ def test_unknown_wins_over_any_stale_state_handed_alongside_it(state):
     """`known=False` is not advisory: whatever state a caller happens to pass, an unreadable
     store cannot have produced it, so the projection must not be computed from it."""
     assert ledger.project_for_operator(state, known=False)["projection"] == "unknown"
+
+
+# ==============================================================================================
+# THE TWO ROADS INTO AN ESCALATION (#877)
+#
+# `escalated` used to be one state carrying two meanings, and that conflation WAS the bug: the
+# operator was shown a real, runnable `continue`, asked to look at it, and given no way to say
+# yes — the console's Approve button 409'd because `escalated` is not claimable.
+#
+# The fix is one state per meaning, so the projection stays a pure state → controls table. The
+# risk it introduces is different and is what these tests are for: a new state has to be in
+# EVERY set that decides something, and each one it misses fails silently, in a different
+# surface, in a different way.
+# ==============================================================================================
+
+LOW_CONF = "escalated_low_confidence"
+
+
+@pytest.mark.parametrize(
+    "set_name",
+    [
+        # Miss this and the row is not live — compaction may drop it while it waits.
+        "LIVE_STATES",
+        # Miss this and it never carries decision controls on a card at all.
+        "OPERATOR_PENDING_STATES",
+        # Miss this and the operator can see it but cannot decline it.
+        "REJECTABLE_STATES",
+        # Miss this and it NEVER EXPIRES — it stays live indefinitely, which is worse than the
+        # gap being fixed. This was the set missing from the first draft of the issue.
+        "EXPIRABLE_STATES",
+        # …and this is the one the whole issue is about.
+        "CLAIMABLE_STATES",
+    ],
+)
+def test_the_new_state_is_in_every_set_that_decides_something(set_name):
+    assert LOW_CONF in getattr(ledger, set_name), set_name
+
+
+def test_the_model_question_stays_out_of_claimable():
+    """The other direction, and the safety half. A `verb == "escalate"` action has nothing to
+    run, so widening delivery must not admit it."""
+    assert "escalated" not in ledger.CLAIMABLE_STATES
+    assert "escalated" in ledger.REJECTABLE_STATES
+
+
+def test_escalation_states_is_the_named_meaning_rather_than_a_seventh_comparison():
+    """Seven exact `== "escalated"` comparisons decided things before this — announcement,
+    counting, tone, ARIA, whether the reason shows. The set exists so the eighth reader asks a
+    name instead of repeating a string."""
+    assert ledger.ESCALATION_STATES == {"escalated", LOW_CONF}
+    assert ledger.ESCALATION_STATES <= ledger.LIVE_STATES
+    assert ledger.ESCALATION_STATES <= ledger.OPERATOR_PENDING_STATES
+    assert ledger.ESCALATION_STATES <= ledger.REJECTABLE_STATES
+    assert ledger.ESCALATION_STATES <= ledger.EXPIRABLE_STATES
+
+
+def test_the_low_confidence_row_is_approvable_and_the_question_is_not():
+    """The projection, which is the single authority every surface reads."""
+    low = ledger.project_for_operator(LOW_CONF)
+    q = ledger.project_for_operator("escalated")
+    assert low["projection"] == q["projection"] == ledger.ACTIONABLE
+    assert (low["can_approve"], low["can_reject"]) == (True, True)
+    assert (q["can_approve"], q["can_reject"]) == (False, True)
+
+
+def test_can_approve_still_equals_membership_of_the_delivery_set():
+    """The identity that makes "the console never advertises a control the backend refuses" a
+    structural property rather than a convention. If this ever drifts, an Approve button appears
+    for something `actuator.deliver` answers with a 409 — the exact defect #862 removed."""
+    from agent_sessions import actuator
+
+    assert actuator.CLAIMABLE_STATES is ledger.CLAIMABLE_STATES
+    for state in ledger.ALL_STATES:
+        p = ledger.project_for_operator(state)
+        if p["projection"] == ledger.ACTIONABLE:
+            assert p["can_approve"] == (state in ledger.CLAIMABLE_STATES), state
+        else:
+            assert p["can_approve"] is False, state
+
+
+def test_no_source_file_decides_anything_from_a_BARE_escalated_comparison():
+    """The recurrence guard, and it exists because the count kept being wrong.
+
+    `escalated` was compared by hand in eight places across the server and the client — the
+    issue's inventory found seven, and the eighth shipped a low-confidence action labelled as
+    already "in flight". Each miss fails SILENTLY and differently: never announced, announced
+    but never counted, the wrong tone, the wrong ARIA label, the wrong sentence.
+
+    So the literal is banned outside the places that legitimately own it: the set that defines
+    the vocabulary, the projection that reads it, and tests. Anything else asking "is this an
+    escalation?" asks `ESCALATION_STATES` (or the client's `isEscalation`), which cannot fall
+    behind a new member.
+
+    A source scan is an early warning, not a boundary — the same standing as the AST checker in
+    `test_prompts_registry.py`, and for the same reason: a static check of string literals can
+    always be spelled around. What it CAN do is catch the accident, which is what every one of
+    the eight was.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    # Where the literal is the DEFINITION rather than a decision derived from it.
+    allowed = {
+        root / "src" / "agent_sessions" / "orchestrator_ledger.py",  # the sets themselves
+        root / "web" / "src" / "lib" / "orchestratorAction.ts",  # the client mirror
+        root / "web" / "src" / "types" / "api.ts",  # the state union
+    }
+    pattern = re.compile(r'[=!]==?\s*"escalated"|case\s+"escalated"|"escalated"\s*[=!]=')
+
+    offenders = []
+    for sub, globs in (
+        (root / "src", ("**/*.py",)),
+        (root / "web" / "src", ("**/*.ts", "**/*.tsx")),
+    ):
+        for g in globs:
+            for f in sub.glob(g):
+                if f in allowed or ".test." in f.name:
+                    continue
+                for i, line in enumerate(f.read_text().splitlines(), 1):
+                    stripped = line.lstrip()
+                    if stripped.startswith(("#", "*", "//", '"""', "/**")):
+                        continue  # prose about the rule is not the rule
+                    if pattern.search(line):
+                        offenders.append(f"{f.relative_to(root)}:{i}: {stripped[:90]}")
+    assert not offenders, (
+        "these decide something from a bare `escalated` comparison; use ESCALATION_STATES / "
+        "isEscalation / the projection instead:\n  " + "\n  ".join(offenders)
+    )
 
 
 # --- the ownership stamp (#878) ---------------------------------------------------------------

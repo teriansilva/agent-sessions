@@ -18,7 +18,9 @@ half-apply a transition.
               │            └─► indeterminate    crashed after the write, before the record
               ├─► approved ─► claimed …         operator tapped approve
               ├─► rejected                      operator declined
-              ├─► escalated                     needs the operator (see `escalation_reason`)
+              ├─► escalated                     the model asked a QUESTION — reject-only
+              ├─► escalated_low_confidence ─► claimed …
+              │                                 it wanted to ACT and was unsure — approvable
               ├─► stale                         precondition moved before delivery
               └─► expired                       TTL elapsed untouched
 
@@ -73,21 +75,42 @@ TERMINAL_STATES: frozenset[str] = frozenset(
     {"delivered", "failed", "indeterminate", "rejected", "stale", "expired", "observed"}
 )
 # States an action can sit in while still awaiting something (an operator tap, a delivery).
-LIVE_STATES: frozenset[str] = frozenset({"proposed", "approved", "claimed", "escalated"})
+LIVE_STATES: frozenset[str] = frozenset(
+    {"proposed", "approved", "claimed", "escalated", "escalated_low_confidence"}
+)
 ALL_STATES: frozenset[str] = TERMINAL_STATES | LIVE_STATES
+
+#: The TWO ROADS INTO AN ESCALATION, which used to be one state carrying two meanings (#877).
+#:
+#: * ``escalated`` — the MODEL asked a question. Its verb is ``escalate``; there is nothing to
+#:   run, so the only answers are dismiss or ignore.
+#: * ``escalated_low_confidence`` — the model wanted to ACT and was not sure. Its verb is a real
+#:   delivering one, so "yes" is a meaningful answer and the operator may give it.
+#:
+#: Conflating them was the bug: the operator was shown a runnable action, asked to look at it,
+#: and given no way to say yes — the delivery path refused `escalated` and the button 409'd.
+#:
+#: **This set exists so the meaning is named once rather than string-matched an eighth time.**
+#: Seven exact `== "escalated"` comparisons already decided things across the server and the
+#: client — whether a row is announced, whether it is counted, its tone, its ARIA label, whether
+#: its reason is shown. Each one that missed a new state would fail SILENTLY and differently.
+#: Anything asking "is this row an escalation, whichever kind?" asks this; the two-kind
+#: distinction is made only where it genuinely differs — the controls (from the projection) and
+#: the operator-facing wording.
+ESCALATION_STATES: frozenset[str] = frozenset({"escalated", "escalated_low_confidence"})
 
 # States in which an action is waiting on the OPERATOR — the only ones that should ever put
 # decision controls on a Pulse card or a row under "Needs a decision". Deliberately excludes
 # `claimed`: a claimed action is already being delivered, so offering Approve/Reject for it
 # invites a tap that cannot be honoured. It coincides with `REJECTABLE_STATES` below, and for
 # the same reason, but they answer different questions — keep both named.
-OPERATOR_PENDING_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+OPERATOR_PENDING_STATES: frozenset[str] = frozenset({"proposed", "approved"} | ESCALATION_STATES)
 
 # The only states a reject may move FROM. Deliberately excludes `claimed`: once a delivery has
 # claimed an action the bytes are already going out, so "rejected" would be a lie the operator
 # acts on. It also excludes every terminal state — rejecting a `delivered` action would rewrite
 # history into something that never happened.
-REJECTABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+REJECTABLE_STATES: frozenset[str] = frozenset({"proposed", "approved"} | ESCALATION_STATES)
 
 # --- the operator-facing projection -----------------------------------------------------------
 #
@@ -121,7 +144,14 @@ UNKNOWN = "unknown"
 #: set the delivery path enforces — and ``actuator`` already imports this module, so the reverse
 #: import is impossible. Two copies of this set is precisely the drift that shipped an Approve
 #: button the backend answers with ``409 NotDeliverable``.
-CLAIMABLE_STATES: frozenset[str] = frozenset({"proposed", "approved"})
+#:
+#: ``escalated_low_confidence`` is a member and plain ``escalated`` is NOT, which is the whole
+#: of #877: a low-confidence action is a real runnable one the operator was asked about, so
+#: their yes must be honourable; a model-escalated question has no verb to run. This widens what
+#: may be CLAIMED and deliberately does not widen what may be claimed **without a decision** —
+#: `orchestrator._decide` reaches the new state only on a path that by construction did not return
+#: `approved`, so nothing auto-approves into it.
+CLAIMABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated_low_confidence"})
 
 
 def project_for_operator(state: str | None, *, known: bool = True) -> dict:
@@ -170,22 +200,25 @@ def project_for_operator(state: str | None, *, known: bool = True) -> dict:
         return {"projection": UNKNOWN, "can_approve": False, "can_reject": False, "state": None}
     if state is None:
         return {"projection": HISTORICAL, "can_approve": False, "can_reject": False, "state": None}
-    if state in ("proposed", "escalated"):
-        # Both want the operator, so both are ACTIONABLE and both count toward the badge — but
-        # only `proposed` may be APPROVED. `escalated` is not in :data:`CLAIMABLE_STATES`, so
-        # `actuator.deliver` answers an approval with `409 action is escalated, not deliverable`.
+    if state == "proposed" or state in ESCALATION_STATES:
+        # All three want the operator, so all three are ACTIONABLE and count toward the badge.
+        # Whether APPROVE is offered is decided by one thing and one thing only: membership of
+        # :data:`CLAIMABLE_STATES`, the very set `actuator.deliver` enforces. That identity is
+        # what makes "the console never advertises a control the backend refuses" a structural
+        # property rather than a convention two files have to keep agreeing on.
         #
-        # This is where #840 §16 is wrong, and it names the contradiction itself: the same
-        # paragraph states `actuator.CLAIMABLE_STATES` is `{proposed, approved}` and then tables
-        # `escalated` as "Approve + Reject". Advertising a control the backend refuses is worse
-        # than withholding one — the operator taps it, gets a 409, and learns the console lies.
+        # #840 §16 tabled `escalated` as "Approve + Reject" while the same paragraph stated
+        # `CLAIMABLE_STATES` was `{proposed, approved}` — a contradiction four lines apart. The
+        # console shipped the button, the tap 409'd, and the operator learned the console lies.
         #
-        # There are two ways into `escalated` and NEITHER is approvable today: the model asking a
-        # question (`verb == "escalate"`), and a yolo action below `confidence_min` keeping its
-        # delivering verb (`orchestrator._decide_state`). The second is a genuine capability gap
-        # — "approve this low-confidence `continue`" is a reasonable thing to want and there is
-        # no way to do it — but closing it means widening the delivery state machine, which is a
-        # safety property of #726. That is its own issue, not a side effect of this one.
+        # #877 fixed the underlying conflation rather than the button. There were two roads into
+        # `escalated` and they wanted different answers: a model QUESTION (`verb == "escalate"`)
+        # has nothing to run, while a low-confidence action kept a real delivering verb — so
+        # "yes" was always a meaningful answer to the second and there was no way to give it.
+        # They are now two states, and this stays a pure state → controls table: the verb was
+        # consulted once, where the state was decided, rather than at every surface that reads
+        # it. A projection that took the verb too would be checkable only by enumerating a
+        # product, which is exactly the property #840 §16 exists to have.
         return {
             "projection": ACTIONABLE,
             "can_approve": state in CLAIMABLE_STATES,
@@ -214,7 +247,7 @@ def project_for_operator(state: str | None, *, known: bool = True) -> dict:
 
 # States expiry may act on. Excludes `claimed` for the same reason as reject: once a delivery
 # has claimed an action, the bytes are on their way and "expired" would be a lie.
-EXPIRABLE_STATES: frozenset[str] = frozenset({"proposed", "approved", "escalated"})
+EXPIRABLE_STATES: frozenset[str] = frozenset({"proposed", "approved"} | ESCALATION_STATES)
 
 # Compaction bounds. The live set is kept in full (it is small by construction — bounded by
 # `max_actions_per_pass` per pass), plus a bounded tail of terminal actions for the feed.

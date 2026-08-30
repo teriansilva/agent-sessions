@@ -184,7 +184,7 @@ def eligible_cards(
     pending_sessions = {
         r.get("session_id")
         for r in ledger.live_actions()
-        if r.get("state") in ("proposed", "approved", "escalated")
+        if r.get("state") in ledger.OPERATOR_PENDING_STATES
     }
     skipped = {"engine": 0, "excluded": 0, "pending": 0, "stale": 0}
     out: list[dict] = []
@@ -488,20 +488,26 @@ def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
     * ``suggest`` — deliverable verbs queue for a tap (``proposed``).
     * ``yolo`` — a deliverable verb **inside the enforced ceiling** and at or above the
       confidence threshold is ``approved`` (Phase 2 delivers it); anything else falls back to
-      the supervised path. Below threshold it is ``escalated``, which is the whole point of the
-      threshold: unsure means ask, never guess.
+      the supervised path. Below threshold it is an ESCALATION, which is the whole point of the
+      threshold: unsure means ask, never guess — and since #877 the kind of escalation depends on
+      the verb, so that "ask" can be answered YES where there is something to run
+      (``escalated_low_confidence``) rather than only dismissed (``escalated``).
 
     ``observe`` and ``escalate`` are decisions rather than deliveries, so they land terminal-ish
     immediately and never consult the ceiling.
 
-    The second element is the ``escalation_reason`` — ``None`` unless the state is ``escalated``:
+    The second element is the ``escalation_reason`` — ``None`` unless the state is one of
+    :data:`orchestrator_ledger.ESCALATION_STATES`:
 
     * ``model`` — the model read the session and chose ``escalate`` itself.
     * ``degraded`` — ``_validate_actions`` rewrote a `choose` with no usable option, or an
       `answer` with no text, into an escalation. It marks the action where it does the rewrite,
       because only that code knows what the model originally asked for; by the time the verb is
       `escalate` the intent is gone.
-    * ``confidence`` — the yolo threshold gate below.
+    * ``confidence`` — the yolo threshold gate below. Since #877 that gate writes ONE OF TWO
+      states: ``escalated_low_confidence`` when the verb is deliverable (so the operator can
+      approve it), plain ``escalated`` otherwise. The reason string is the same for both —
+      the two roads are told apart by STATE, never by re-reading this field.
 
     **Three paths in, one reporter.** The UI used to append "below threshold" to every escalated
     row (`ActionRow.tsx`), which is false on two of the three paths — and unreachable on the
@@ -527,6 +533,25 @@ def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
     if verb not in set(cfg["allowed_verbs"]):
         return "proposed", None  # outside the v1 ceiling → always a tap
     if action["confidence"] < float(cfg["confidence_min"]):
+        # THE ONE PLACE THE VERB IS CONSULTED (#877). A low-confidence action kept its real
+        # delivering verb, so "yes" is a meaningful answer to it — unlike the `verb == "escalate"`
+        # case above, which has nothing to run. They were the same state, so the operator was
+        # shown a runnable `continue`, asked to look at it, and given no way to approve it: the
+        # console's button 409'd because `escalated` is not claimable.
+        #
+        # Deciding it HERE, once, is what keeps `project_for_operator` a pure state → controls
+        # table. A projection that took the verb as well would be checkable only by enumerating a
+        # product of two variables, at three surfaces, each needing the verb in scope.
+        #
+        # This does NOT widen what may be delivered without a decision: this branch is reached
+        # only where `approved` was not returned, so nothing auto-approves into the new state.
+        # The guard is structural — the `return "approved"` below is the sole auto-approval, and
+        # it is unreachable from here.
+        if verb in DELIVERING_VERBS:
+            return "escalated_low_confidence", "confidence"
+        # Below the threshold with a verb that cannot be delivered anyway. There is nothing to
+        # approve, so it stays the reject-only kind rather than advertising a control that would
+        # have nothing to run.
         return "escalated", "confidence"
     return "approved", None
 
@@ -689,7 +714,13 @@ def _persist(records: list[dict]) -> list[dict]:
     for rec in kept:
         # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
         # actions taken autonomously, so a yolo operator still gets a record of what was done.
-        if not (notify == "all" or (notify == "escalations" and rec.get("state") == "escalated")):
+        # `ESCALATION_STATES`, never `== "escalated"` (#877). A low-confidence row that missed
+        # this comparison would never be announced at all — silently, and differently from the
+        # six other exact comparisons that used to decide things about this state.
+        if not (
+            notify == "all"
+            or (notify == "escalations" and rec.get("state") in ledger.ESCALATION_STATES)
+        ):
             continue
         with contextlib.suppress(Exception):
             # Best-effort by design: a notification store or push failure must never lose the
@@ -701,7 +732,9 @@ def _persist(records: list[dict]) -> list[dict]:
                 session_id=str(rec.get("session_id") or ""),
                 engine=str(rec.get("engine") or ""),
                 action_id=str(rec.get("id") or ""),
-                escalation=rec.get("state") == "escalated",
+                # …and the same set here. Missing THIS one announces the row and then never
+                # counts it, which is a different silence in the same feature.
+                escalation=rec.get("state") in ledger.ESCALATION_STATES,
                 activity_at=rec.get("last_activity"),
             )
             # `None` means an equivalent alert is already sitting in the bell — the operator has

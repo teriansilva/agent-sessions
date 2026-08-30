@@ -888,7 +888,7 @@ def test_pending_and_feed_are_disjoint(tmp_path, monkeypatch):
     ledger.append({"id": "a2", "state": "delivered", "verb": "continue", "session_id": KEY})
 
     live = ledger.live_actions()
-    pending = [r for r in live if r.get("state") in ("proposed", "approved", "escalated")]
+    pending = [r for r in live if r.get("state") in ledger.OPERATOR_PENDING_STATES]
     pending_ids = {r["id"] for r in pending}
     feed = [r for r in ledger.feed(100) if r["id"] not in pending_ids]
 
@@ -1448,3 +1448,88 @@ def test_a_never_resolvable_pty_still_delivers_after_the_fence_move(pty_pair):
 
     assert res.ok
     assert b"continue" in os.read(slave, 1024)
+
+
+# --- #877: the operator can now answer YES to a low-confidence action -------------------------
+#
+# The gap this closes: the orchestrator escalated a yolo action below `confidence_min` while
+# KEEPING its delivering verb, so the operator was shown a real, runnable `continue`, asked to
+# look at it — and had no way to approve it. The only route to the model's suggestion was to open
+# the session and type it by hand.
+#
+# What must NOT change is the safety half. Widening what may be CLAIMED must not widen what may
+# be claimed without a decision, and the model's own question — which has nothing to run — must
+# stay undeliverable.
+
+LOW_CONF = "escalated_low_confidence"
+
+
+def test_a_low_confidence_escalation_can_be_approved_and_delivered(pty_pair, monkeypatch):
+    """The capability, end to end through the real delivery path."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    _propose(state=LOW_CONF, confidence=0.4, escalation_reason="confidence")
+    monkeypatch.setattr(
+        session_input, "send_input", lambda *a, **k: session_input.Outcome("delivered")
+    )
+    assert asyncio.run(actuator.deliver("act1"))["state"] == "delivered"
+
+
+def test_the_models_own_question_is_still_not_deliverable(pty_pair):
+    """The safety half, and the reason this needed two states rather than one loosened set. A
+    `verb == "escalate"` action has nothing to run; admitting it would deliver the *question* to
+    the agent as if it were an instruction."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    _propose(state="escalated", verb="escalate", escalation_reason="model")
+    with pytest.raises(actuator.NotDeliverable):
+        asyncio.run(actuator.deliver("act1"))
+
+
+def test_a_low_confidence_action_still_delivers_at_most_once(pty_pair, monkeypatch):
+    """The claim is still a compare-and-set, so the new state inherits at-most-once rather than
+    getting a second, looser path to the PTY."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    _propose(state=LOW_CONF)
+    monkeypatch.setattr(
+        session_input, "send_input", lambda *a, **k: session_input.Outcome("delivered")
+    )
+    asyncio.run(actuator.deliver("act1"))
+    with pytest.raises(actuator.NotDeliverable):
+        asyncio.run(actuator.deliver("act1"))
+
+
+def test_a_settled_action_cannot_be_resurrected_through_the_new_state(pty_pair):
+    """There is no new TRANSITION here — delivery claims the new state directly, arbitrated by
+    the same compare-and-set as `proposed`. So a terminal action stays terminal; the widened set
+    gives no path back into flight."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    _propose(state=LOW_CONF)
+    ledger.compare_and_set("act1", ledger.CLAIMABLE_STATES, "rejected")
+    with pytest.raises(actuator.NotDeliverable):
+        asyncio.run(actuator.deliver("act1"))
+    assert ledger.get("act1")["state"] == "rejected"
+
+
+def test_the_screen_moved_check_still_fires_for_a_low_confidence_action(pty_pair, monkeypatch):
+    """The precondition runs immediately before the write and is unchanged by the widening — a
+    low-confidence action gets exactly the same last-moment guard as a proposed one."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    monkeypatch.setattr(metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(metadata, "get", lambda *a, **k: metadata.SessionMeta())
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "prompt A")
+    _propose(state=LOW_CONF, precondition=orchestrator.precondition_for(KEY))
+    # …the agent moved on between the proposal and the tap.
+    monkeypatch.setattr(actuator.scrollback, "live_tail_text", lambda *a, **k: "moved on")
+    assert asyncio.run(actuator.deliver("act1"))["state"] == "stale"
+
+
+def test_an_expired_low_confidence_action_is_never_delivered(pty_pair):
+    """`EXPIRABLE_STATES` again, from the delivery side: the TTL still bounds it."""
+    master, _slave = pty_pair
+    session_input.register_writer(engines.physical_key(KEY), master, threading.Lock(), "headless")
+    _propose(state=LOW_CONF, expires_at=time.time() - 1)
+    assert asyncio.run(actuator.deliver("act1"))["state"] == "expired"
