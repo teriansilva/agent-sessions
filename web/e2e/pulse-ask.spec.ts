@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // Pulse "Ask" (#522): the natural-language session finder embedded at the top of /pulse.
 // Real-browser proof (mobile + desktop, per agent-workflow §5), red on pre-#522 builds:
 // type a question → the answer line + the matched session card render → "Jump in" routes
@@ -99,14 +101,18 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
     });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });
   await input.fill(
     "I worked on the websocket reconnect bug — which session was that?",
   );
-  await page.getByRole("button", { name: /^ask$/i }).click();
+  // The control is "SEND" since #878: the Ask BOX became the mission thread's composer, and a
+  // composer sends. Only the label moved — the accessible name of the field, the request shape
+  // and every assertion below are unchanged.
+  await page.getByRole("button", { name: /^send$/i }).click();
 
   // Answer line + the matched session card (the reused Pulse card) render in the thread.
   await expect(
@@ -151,12 +157,16 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
     }),
   );
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });
   await input.fill(LONG_Q);
-  await page.getByRole("button", { name: /^ask$/i }).click();
+  // The control is "SEND" since #878: the Ask BOX became the mission thread's composer, and a
+  // composer sends. Only the label moved — the accessible name of the field, the request shape
+  // and every assertion below are unchanged.
+  await page.getByRole("button", { name: /^send$/i }).click();
   await expect(
     page.getByText(/that long-token session is this one/i),
   ).toBeVisible();

@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #781 — one card, one box, one statement.
 //
 // A card carrying an escalation used to render the same fact four times (title, review summary,
@@ -145,7 +147,8 @@ test.beforeEach(async ({ page }) => {
 test("the action is not a second box inside the card, and the card speaks once", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   // --- one statement -------------------------------------------------------------------
@@ -246,7 +249,8 @@ test("a blank rationale keeps the review's reason — the card never says nothin
       },
     }),
   );
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(REASON)).toBeVisible();
   await expect(
     page.getByRole("img", { name: /intervention required/i }),

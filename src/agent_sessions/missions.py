@@ -1445,9 +1445,25 @@ def list_missions(
     con = _ready(path)
     try:
         scoped = con.execute(_LIST_ARCHIVED_SQL if archived else _LIST_LIVE_SQL).fetchall()
+        # `session_keys`, NOT the `sessions` roster. A list row is not a detail row, and the
+        # console proved why: it iterated `m.sessions` on a list row, which has never had one,
+        # so any non-empty production list threw instead of rendering the rail.
+        #
+        # Keys rather than a bare count because the console needs BOTH questions answered and
+        # they are the same fact: how many sessions a mission holds (the rail's line), and which
+        # sessions are held at all (so a session tracked by ANOTHER mission is not offered as
+        # untracked). A count alone would answer the first and silently get the second wrong.
+        # One query over an indexed partial set, never an N+1.
+        keys: dict[str, list[str]] = {}
+        for r in con.execute(
+            "SELECT mission_id, session_key FROM mission_sessions WHERE removed_at IS NULL"
+        ).fetchall():
+            keys.setdefault(r["mission_id"], []).append(r["session_key"])
     finally:
         con.close()
     rows = [_row_to_mission(r) for r in scoped]
+    for r in rows:
+        r["session_keys"] = keys.get(r["id"], [])
     facets = {
         "projects": sorted({r["project_id"] for r in rows if r.get("project_id")}),
         "states": sorted({r["state"] for r in rows if r.get("state")}),

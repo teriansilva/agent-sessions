@@ -1,0 +1,621 @@
+/* MISSION CONTROL — the console shell (#878, Phase 2b of #840).
+ *
+ * Tactical-HUD vocabulary (#211): 1px borders, NO radii, no gradients, mono tags.
+ *
+ * Colour discipline, which is load-bearing rather than stylistic (docs/design.md):
+ *   - SEMANTIC tokens carry state. `--status-up` running, `--status-degraded` needs-you,
+ *     a hollow ring for done, `--status-unknown` for a state we could not establish.
+ *   - The BRAND `--accent` marks affordances only — ADOPT, JUMP IN, SEND, selection. It never
+ *     means a state. A green LED as a bullet is exactly the confusion this separation removes.
+ *
+ * Two breakpoints, three modes. The middle one (1100–1399: rail is a column, detail is a tab
+ * strip) is the mode neither Playwright project lands on, so it is the one that ships broken —
+ * `web/e2e/mission-console-breakpoints.spec.ts` tests both edges of both boundaries.
+ */
+
+.console {
+  display: grid;
+  /* < 1100: one column; the rail is a drawer and the detail is a tab strip. */
+  grid-template-columns: 1fr;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Rail becomes a persistent column. */
+@media (min-width: 1100px) {
+  .console {
+    grid-template-columns: 300px 1fr;
+  }
+}
+
+/* …and the detail column joins it. */
+@media (min-width: 1400px) {
+  .console {
+    grid-template-columns: 300px 1fr 340px;
+  }
+}
+
+/* --- rail ---------------------------------------------------------------------- */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--glass);
+  padding: 10px 0;
+}
+
+/* Below 1100 the rail is not laid out at all — it is portalled into a drawer. */
+.railInline {
+  display: none;
+}
+@media (min-width: 1100px) {
+  .railInline {
+    display: flex;
+  }
+}
+
+.railGroup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 12px 14px 6px;
+}
+
+/* The archived-scope switch. It sits in the group header rather than in the list because it
+   changes WHICH list is shown, not which rows within one. 44px is the touch floor the geometry
+   inventory measures against; the negative margin keeps the header's own optical height while
+   the hit area stays full-size. */
+.scope {
+  flex: none;
+  min-height: 44px;
+  margin: -12px 0;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.scope:hover,
+.scope:focus-visible {
+  color: var(--text-1);
+}
+
+.railRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  /* 44px floor — the geometry inventory measures EVERY interactive control, not a sample. */
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.railRow:hover {
+  background: var(--row-hover);
+}
+.railRow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.railRowOn {
+  background: var(--row-hover);
+  /* Selection is an AFFORDANCE, so it may use the brand accent. */
+  border-left-color: var(--accent);
+}
+
+.railTitle {
+  display: block;
+  font-size: 0.86rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.railMeta {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-3);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* The state dot. Semantic tokens only. */
+.dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  background: var(--status-unknown);
+}
+.dotRunning {
+  background: var(--status-up);
+}
+.dotNeedsYou {
+  background: var(--status-degraded);
+}
+.dotDone {
+  /* A hollow ring, not a filled dot — done is not a status light. */
+  background: transparent;
+  border: 1.5px solid var(--text-3);
+}
+.dotFailed {
+  background: var(--status-down);
+}
+
+.adopt {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.adopt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.adopt[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- centre column ------------------------------------------------------------- */
+
+.centre {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+}
+
+.drawerBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.drawerBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (min-width: 1100px) {
+  .drawerBtn {
+    display: none;
+  }
+}
+
+.missionTitle {
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* --- mobile stops: THREAD · OBJECTIVES · TIMELINE ------------------------------- */
+
+.stops {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+}
+@media (min-width: 1400px) {
+  /* The detail column is persistent, so there is nothing to switch between. */
+  .stops {
+    display: none;
+  }
+}
+
+.stop {
+  flex: 1 1 0;
+  min-height: 44px;
+  padding: 10px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+.stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.stopOn {
+  color: var(--text-1);
+  background: var(--row-hover);
+  border-bottom-color: var(--accent);
+}
+
+.pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* `overflow-y: auto` PROMOTES overflow-x to auto — that is #494's root cause, and it is why
+   * every text class below sets `overflow-wrap: anywhere`. A single unbroken token (an AI
+   * summary, an intervention reason, a path) is otherwise wider than the box and the operator
+   * gets a sideways scroll on a phone. Wrapping is the fix; hiding the overflow would only make
+   * the text unreachable instead of unreadable. */
+  overflow-y: auto;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+/* --- detail column ------------------------------------------------------------- */
+
+.detail {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+  padding: 12px 14px;
+}
+@media (min-width: 1400px) {
+  .detail {
+    display: flex;
+  }
+}
+
+.section {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 14px 0 8px;
+}
+.section:first-child {
+  margin-top: 0;
+}
+
+/* --- objectives ---------------------------------------------------------------- */
+
+.objRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+.objTitle {
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+.objWhen {
+  overflow-wrap: anywhere;
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+/* A probe that could not run reports its LAST OBSERVED state, visibly stale, naming the reason.
+ * Nothing is ever marked met or failed on data the server could not fetch. */
+.objStale {
+  overflow-wrap: anywhere;
+  display: block;
+  font-size: 0.68rem;
+  color: var(--status-degraded);
+}
+.objReason {
+  overflow-wrap: anywhere;
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+
+/* --- context ------------------------------------------------------------------- */
+
+.cwd {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.gitLine {
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+.roster {
+  font-size: 0.72rem;
+  color: var(--text-3);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.jumpIn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  cursor: pointer;
+}
+.jumpIn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- timeline ------------------------------------------------------------------ */
+
+.tlRow {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tlAt {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+.tlKind {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.tlText {
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.more {
+  min-height: 44px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+}
+.more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.more[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- thread -------------------------------------------------------------------- */
+
+.event {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.eventHead {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.eventText {
+  font-size: 0.82rem;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- composer ------------------------------------------------------------------ */
+
+.composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.composerInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+.composerInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.send {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.send:focus-visible {
+  outline: 2px solid var(--text-1);
+  outline-offset: 2px;
+}
+.send[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- honest empty / degraded states -------------------------------------------- */
+
+.empty {
+  overflow-wrap: anywhere;
+  padding: 18px 4px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.emptyLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+
+/* A degraded surface names its cause. `--status-degraded` (amber) means "needs a human /
+ * not current"; `--status-down` (red) stays reserved for errors and failure. */
+.notice {
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--glass);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.noticeLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  margin-bottom: 3px;
+}
+
+/* The verb tag on an untracked row's last-action line. Mono, so it reads as a token rather than
+ * as prose — the same treatment the card gave it. */
+.verb {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+/* Untracked rows are a real list — `<ul>`/`<li>` rather than a pile of divs, so the count and the
+ * position are available to a screen reader as they were on the grid. */
+.railList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The session block in the UNTRACKED view. `position: relative` hosts the HUD corner brackets,
+ * which are the repo's card treatment (docs/design.md) — the grid's cards carried them and this
+ * is what replaced those cards. */
+.sessionBlock {
+  position: relative;
+  min-width: 0;
+}
+.openSession {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.74rem;
+  text-decoration: none;
+}
+.openSession:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sessionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* ADOPT, on the session block in the UNTRACKED view. */
+.adoptInline {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 76px;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.adoptInline:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.adoptInline[disabled] {
+  opacity: 0.55;
+  cursor: default;
+  border-color: var(--line-strong);
+  color: var(--text-3);
+}
+
+/* A matched session inside an Ask answer. Indented so it reads as evidence for the answer rather
+ * than as a peer of it. */
+.matchRow {
+  min-width: 0;
+  margin: 8px 0 0 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-strong);
+}

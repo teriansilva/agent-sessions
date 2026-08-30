@@ -193,6 +193,15 @@ export interface PulseCard {
   /** Per-session "state + next step" line from a `slow` scan (#441 Phase 4); null otherwise.
    *  When set the card shows it instead of `ai_summary`. */
   synthesis: string | null;
+  /** Which mission holds this session, stamped server-side by `routes/pulse._attach_pending`
+   *  over EVERY mission — loaded or not (#878).
+   *
+   *  TRI-STATE, and the three answers are not interchangeable: a mission id means that mission
+   *  holds it; `null` means no mission does (adoptable); and the field being ABSENT means the
+   *  membership store could not be read, which is neither. The console must not derive this by
+   *  scanning the mission rows it has in memory — that list is paged, so a session held by an
+   *  unloaded mission read as unheld and was offered an adoption the server refused. */
+  mission_id?: string | null;
   /** The live orchestrator action on this session, attached server-side by
    *  `routes/pulse._attach_pending` (#754). Present means the card carries the decision
    *  controls inline; the queue is no longer a separate list. */
@@ -369,6 +378,11 @@ export interface NotificationList {
    *  "something is outstanding and its state is unreadable" instead of overstating or hiding it.
    *  Optional so a response predating the field still parses. */
   uncertain?: number;
+  /** A bounded window of recently DECIDED rows, projected back as history with NO controls
+   *  (#852). Bounded by the SERVER — newest 10 / 24h — and the bound is on the PROJECTION, not
+   *  the store: a row that ages out of this list is still present, still suppressing a
+   *  re-announce (#760), and merely stops being drawn. Optional for the same reason as above. */
+  settled?: PulseNotification[];
 }
 
 /** A registered browser. `origin` only — the endpoint is a per-device capability URL and
@@ -975,4 +989,135 @@ export interface GitWriteResult {
   created?: boolean;
   staged?: boolean;
   upstream?: string;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Missions (#846 Phase 1, #852/#862 Phase 2a). Shapes derived from the running store, not from
+// the SQL — `missions.create_mission` / `get_mission` / `objectives` / `list_missions` were
+// called directly and their output transcribed, so a field that does not exist cannot be typed
+// here by wishful thinking.
+// ---------------------------------------------------------------------------------------------
+
+/** One entry in a mission's timeline. `kind` is `missions.EVENT_KINDS`. */
+export interface MissionEvent {
+  seq: number;
+  mission_id: string;
+  at: number;
+  kind: string;
+  session_key: string | null;
+  action_id: string | null;
+  text: string | null;
+  meta: Record<string, unknown> | null;
+  /** The IMMUTABLE settlement projection frozen onto a decision event (#840). Present only on
+   *  decision events; a stored answer that changes is not a stored answer. */
+  settlement: Record<string, unknown> | null;
+}
+
+/** An objective. `state` is never written by the client — an operator edit may add, drop,
+ *  retitle, waive or reorder, and can never mark something met (#840). */
+export interface MissionObjective {
+  mission_id: string;
+  key: string;
+  ord: number;
+  title: string;
+  probe: string;
+  probe_args: Record<string, unknown> | null;
+  gate: boolean;
+  state: string;
+  met_at: number | null;
+  /** The last thing a probe actually saw, with when it saw it. Rendered as STALE rather than
+   *  as current when the probe could not run — nothing is marked met or failed on data the
+   *  server could not fetch. */
+  observed: Record<string, unknown> | null;
+  source: string;
+}
+
+/** A row from `GET /api/missions` — the LIST shape.
+ *
+ *  It carries `session_count`, **not** `sessions`. That is not an omission: a list row has never
+ *  had a roster, and the console originally iterated `m.sessions` on one, which threw on any
+ *  non-empty production list while every unit mock hid it by supplying the array. The two shapes
+ *  are separate types so consuming a detail-only field from a list row does not compile. */
+export interface MissionListRow {
+  id: string;
+  title: string;
+  project_id: string | null;
+  cwd: string | null;
+  state: string;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  archived_at: number | null;
+  outcome: string | null;
+  /** Active memberships (`removed_at IS NULL`) — the KEYS, not the roster rows.
+   *
+   *  Both of the console's questions are this one fact: how many sessions the mission holds (the
+   *  rail's line) and which sessions are held at all, so a session another mission owns is not
+   *  offered as untracked. A bare count answers the first and gets the second silently wrong. */
+  session_keys: string[];
+  /** DERIVED at read time from the ledger, never stored (#840). */
+  needs_you?: boolean;
+  needs_you_why?: string[];
+}
+
+/** A row from `GET /api/missions/{id}` — the DETAIL shape, which does carry the roster. */
+export interface Mission {
+  id: string;
+  title: string;
+  instruction: string | null;
+  brief: string | null;
+  project_id: string | null;
+  cwd: string | null;
+  engine: string | null;
+  engine_source: string | null;
+  state: string;
+  playbook_id: string | null;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  archived_at: number | null;
+  archiving_at: number | null;
+  unarchiving_at: number | null;
+  outcome: string | null;
+  sessions: MissionSession[];
+  objectives?: MissionObjective[];
+  events?: MissionEvent[];
+  /** Cursor for the NEXT page of older events, or null when the first page is all of them. */
+  events_next_seq?: number | null;
+  /** DERIVED at read time from the ledger, never stored (#840). */
+  needs_you?: boolean;
+  needs_you_why?: string[];
+}
+
+export interface MissionSession {
+  mission_id?: string;
+  session_key: string;
+  role?: string | null;
+  added_at?: number;
+  removed_at?: number | null;
+}
+
+export interface MissionList {
+  missions: MissionListRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  facets: { projects: string[]; states: string[] };
+  /** A locked or corrupt store empties the rail and SAYS WHY rather than taking the console
+   *  down — the same fail-soft the opencode reader gives the sidebar. Never conflate this with
+   *  "you have no missions": one is a store that would not answer, the other is an answer. */
+  store_error?: string | null;
+}
+
+/** Project, cwd, branch, git summary and session roster for one mission. Takes NO client path —
+ *  the cwd is read from the mission row, which is what makes it traversal-proof (#862). */
+export interface MissionContext {
+  id: string;
+  project_id: string;
+  cwd: string;
+  sessions: MissionSession[];
+  git: GitStatus | null;
+  /** The exception KIND only, never the path or message — the panel says "git could not be
+   *  read" without leaking where. Fails closed: `git` stays null. */
+  git_error: string | null;
 }

@@ -1,6 +1,8 @@
 import { Bell, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+
+import { useModalDrawer } from "./useModalDrawer";
 import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
@@ -30,6 +32,14 @@ function targetPath(n: PulseNotification): string {
 export function NotificationBell() {
   const [items, setItems] = useState<PulseNotification[]>([]);
   const [unread, setUnread] = useState(0);
+  /** Recently decided rows, projected back as history with NO controls (#852). Bounded by the
+   *  SERVER (newest 10 / 24h) — this renders the window it is given and never re-derives it. */
+  const [settled, setSettled] = useState<PulseNotification[]>([]);
+  /** Unread escalations whose ledger state could not be established. Deliberately NOT folded
+   *  into `unread`: they project `unknown` and offer no control, so counting them as actionable
+   *  hands the operator a number they cannot clear by acting (#852 rule 5). Shown as its own,
+   *  non-decision signal — the console is degraded, and saying so beats a silent wrong count. */
+  const [uncertain, setUncertain] = useState(0);
   const [open, setOpen] = useState(false);
   // Inline confirm for `Clear all` (#752) — NOT an undo, and not a modal.
   //
@@ -69,6 +79,8 @@ export function NotificationBell() {
       const r = await api.notifications();
       setItems(r.notifications);
       setUnread(r.unread);
+      setSettled(r.settled ?? []);
+      setUncertain(r.uncertain ?? 0);
     } catch {
       // A failing notifications endpoint must never break the top bar — the bell simply shows
       // nothing rather than taking the app's chrome down with it.
@@ -87,6 +99,8 @@ export function NotificationBell() {
           if (!live) return;
           setItems(r.notifications);
           setUnread(r.unread);
+          setSettled(r.settled ?? []);
+          setUncertain(r.uncertain ?? 0);
         })
         .catch(() => undefined);
     };
@@ -103,14 +117,27 @@ export function NotificationBell() {
     };
   }, []);
 
-  // Close on outside click / Escape — a panel that traps the operator is worse than no panel.
+  const closeDrawer = useCallback(() => setOpen(false), []);
+
+  // The modal contract — focus in, `#root` inert, Tab contained, focus back to the bell on
+  // every close path — now lives in one shared hook (#878), because the console's rail drawer
+  // owes exactly the same promise and a second copy of a focus trap is how the two drift.
+  // `mobile-pulse-layout.spec.ts` is what proves the extraction kept every part of it.
+  useModalDrawer({
+    active: open && drawer,
+    panelRef,
+    initialFocusRef: closeRef,
+    triggerRef: btnRef,
+    onClose: closeDrawer,
+    insideRefs: [wrapRef],
+  });
+
+  // The ANCHORED dropdown is not a modal and owes none of the above — but it still closes on an
+  // outside click or Escape, which the hook only wires while `active`.
   useEffect(() => {
-    if (!open) return;
+    if (!open || drawer) return;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
-      // The drawer is portalled to <body>, so it is NOT inside `wrapRef` — testing the wrap
-      // alone would close the panel on every tap of its own rows. Both hosts count as inside;
-      // the scrim is what closes on tap.
       if (wrapRef.current?.contains(t) || panelRef.current?.contains(t)) return;
       setOpen(false);
     };
@@ -123,64 +150,6 @@ export function NotificationBell() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
-
-  // The drawer declares `aria-modal`, so it owes the full modal contract — declaring it and
-  // not honouring it is worse than not declaring it, because it tells assistive tech the
-  // background is inert when it is still reachable. Focus moves in on open, the app root is
-  // made genuinely `inert` (the drawer + scrim are portalled OUTSIDE #root, so this isolates
-  // the background without touching either), and focus returns to the bell on every close
-  // path — Escape, scrim, a row's Open link, or a resize that drops drawer mode.
-  //
-  // Because #root goes inert the bell itself stops being clickable while the drawer is open,
-  // which is why the drawer carries its own Close button; that button is also where focus
-  // lands, mirroring `SessionRecapModal`.
-  useEffect(() => {
-    if (!open || !drawer) return;
-    const trigger = btnRef.current;
-    const root = document.getElementById("root");
-    closeRef.current?.focus();
-    root?.setAttribute("inert", "");
-    return () => {
-      // Order matters: the bell lives inside #root and cannot take focus while it is inert.
-      root?.removeAttribute("inert");
-      // …and the restore waits a frame. On the Escape path a synchronous `focus()` sticks, but
-      // when the drawer is dismissed by a TAP the browser is still settling focus from that
-      // pointer sequence and finishes after this passive cleanup — landing on <body> and
-      // silently undoing the restore. A frame later the event is done and the bell keeps it.
-      requestAnimationFrame(() => trigger?.focus());
-    };
-  }, [open, drawer]);
-
-  // Tab containment. `inert` already stops the background taking focus in browsers that
-  // support it; this keeps the cycle correct inside the drawer either way, and is what makes
-  // the trap observable in a test rather than inferred from an attribute.
-  useEffect(() => {
-    if (!open || !drawer) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Tab") return;
-      const host = panelRef.current;
-      if (!host) return;
-      const focusable = Array.from(
-        host.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const inside = active instanceof Node && host.contains(active);
-      if (e.shiftKey && (!inside || active === first)) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && (!inside || active === last)) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
   }, [open, drawer]);
 
   const measure = useCallback(() => {
@@ -209,12 +178,33 @@ export function NotificationBell() {
       const r = await api.dismissNotifications({ all: true });
       setItems(r.notifications);
       setUnread(r.unread);
+      setSettled(r.settled ?? []);
+      setUncertain(r.uncertain ?? 0);
     } catch {
       /* leave the list alone rather than pretending it cleared */
     } finally {
       setArming(false);
     }
   }, []);
+
+  /** Clear the settled window — sending exactly the ids that are ON SCREEN.
+   *
+   *  Not "clear the settled window", which is what the server used to be asked. Recomputing it
+   *  at POST time silently hides anything that settled between the render and the click, and
+   *  hidden is permanent: it is the flag that keeps a row out of every later projection. The
+   *  window is bounded and turns over on its own, so that interleaving is ordinary, not rare.
+   *  The server intersects what we send with the window as it stands, so a row that has since
+   *  aged out is not touched either. */
+  const clearSettled = useCallback(async () => {
+    const shown = settled.map((n) => n.id);
+    if (!shown.length) return;
+    try {
+      await api.clearSettledNotifications(shown);
+      await load();
+    } catch {
+      /* leave the history visible rather than pretending it cleared */
+    }
+  }, [settled, load]);
 
   const dismissOne = useCallback(async (id: string) => {
     try {
@@ -327,6 +317,47 @@ export function NotificationBell() {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* The console could not establish these rows' state. NOT added to the badge: they offer
+          no control, so counting them as actionable is a number the operator cannot clear by
+          acting. Said plainly instead, which is the true thing. */}
+      {uncertain > 0 && (
+        <p className={styles.uncertain} data-testid="bell-uncertain">
+          {uncertain} {uncertain === 1 ? "decision" : "decisions"} could not be read
+          — the store is unavailable, so they cannot be acted on yet.
+        </p>
+      )}
+
+      {/* Recent decisions: history, no controls. A decided row is RETIRED rather than deleted
+          (#800) because it is also the "already told you" memo that stops one situation being
+          announced every TTL (#760) — so this window DRAWS what the store already holds, and
+          clearing it hides rather than deletes. */}
+      {settled.length > 0 && (
+        <div className={styles.settled} data-testid="bell-settled">
+          <div className={styles.settledHead}>
+            <span>Recent decisions</span>
+            <button
+              type="button"
+              className={styles.settledClear}
+              onClick={() => void clearSettled()}
+              data-testid="bell-clear-settled"
+            >
+              Clear
+            </button>
+          </div>
+          <ul className={styles.list}>
+            {settled.map((n) => (
+              <li key={n.id} className={styles.row} data-testid="bell-settled-row">
+                <div className={styles.title}>{n.title}</div>
+                <div className={styles.foot}>
+                  {n.project && <span className={styles.proj}>{n.project}</span>}
+                  <span className={styles.age}>{relTime(n.ts)}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </>
   );

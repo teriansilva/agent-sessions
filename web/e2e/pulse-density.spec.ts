@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #754 — Pulse must use the width it has.
 //
 // Measured on the shipped v0.17.2 build at 1900px, with the numbers this spec now pins:
@@ -202,7 +204,8 @@ test("the session cards are ONE list, ordered needs-you first", async ({
 }) => {
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
 
   // No per-band sections: the four headings used to break the grid and leave a partial row.
@@ -211,10 +214,23 @@ test("the session cards are ONE list, ordered needs-you first", async ({
       page.getByRole("heading", { name: band, exact: true }),
     ).toHaveCount(0);
   }
-  const cards = await layout(page, "_card_");
-  expect(cards.perRow).toBeGreaterThan(1);
 
-  // …and the order the headings conveyed survives as sort order.
+  // DROPPED by #878, and this is the only assertion in this file that is gone rather than moved:
+  // `cards.perRow > 1`. The multi-column grid it measured does not exist — the console's pane is
+  // a single column by design, and the width a 1900px viewport used to spend on extra card
+  // columns now goes to the rail. So the property is asserted in its new form: the rail is a
+  // real column BESIDE the pane at this width, not stacked above it.
+  const railBox = await page
+    .getByRole("navigation", { name: /missions/i })
+    .boundingBox();
+  const paneBox = await page.getByTestId("pane").boundingBox();
+  expect(railBox).not.toBeNull();
+  expect(paneBox).not.toBeNull();
+  expect(railBox!.x + railBox!.width).toBeLessThanOrEqual(paneBox!.x + 1);
+
+  // …and the order the headings conveyed survives as sort order — unchanged, and the reason
+  // that `perRow` assertion could go: what mattered was never the columns, it was that one
+  // ordered list replaced four sections.
   const titles = await page.locator("li").allInnerTexts();
   const idx = (t: string) => titles.findIndex((x) => x.includes(t));
   expect(idx(TITLES[0])).toBeLessThan(idx(TITLES[6])); // needs_you before in_flight
@@ -226,7 +242,8 @@ test("the LED carries the band for a screen reader, since the heading no longer 
 }) => {
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
   // Colour alone was acceptable under a "Needs you" heading. It is not, on its own.
   await expect(
@@ -241,10 +258,18 @@ test("on a phone everything stays exactly one column", async ({ page }) => {
   // CSS at phone width, and it has to hold in the desktop project too or it proves nothing
   // about a desktop browser narrowed to a phone-sized window.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
-  const cards = await layout(page, "_card_");
+  // One column, and the console is now one column at EVERY width — so the assertion that used
+  // to distinguish phone from desktop is instead the stronger one it always stood for: nothing
+  // is laid out side by side at phone width, and the page does not scroll sideways.
+  const sessions = await layout(page, "_sessionBlock_");
+  expect(sessions.perRow).toBe(1);
   const feed = await layout(page, "_act_");
-  expect(cards.perRow).toBe(1);
   expect(feed.perRow).toBe(1);
+  const wide = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  );
+  expect(wide).toBe(false);
 });

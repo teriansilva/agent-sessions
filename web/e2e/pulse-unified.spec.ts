@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #754 — the orchestrator queue merged into the session cards, plus project/agent filters.
 //
 // Measured against the live stores before this change: 16 sessions had a live action and all 16
@@ -152,7 +154,8 @@ test.beforeEach(async ({ page }) => {
 test("a session appears ONCE, with its decision controls on the card", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByRole("heading", { name: /pulse/i })).toBeVisible();
 
   // The action's own title appears exactly once on the page — the queue used to render it a
@@ -172,7 +175,8 @@ test("a session appears ONCE, with its decision controls on the card", async ({
 });
 
 test("a card with a live action sorts above one without", async ({ page }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
   const titles = await page.locator("li").allInnerTexts();
   const withAction = titles.findIndex((t) =>
@@ -186,7 +190,8 @@ test("a card with a live action sorts above one without", async ({ page }) => {
 test("project and agent filters narrow the whole list and compose", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // Counts come from the unfiltered set, so a chip states what selecting it would yield.
@@ -240,7 +245,8 @@ test("a manual pass puts its new actions onto the cards, not just in the panel",
     });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
 
   await page.getByRole("button", { name: /run now/i }).click();
@@ -297,7 +303,8 @@ test("resolving from a card also updates the panel's count and feed", async ({
       orchFetches += 1;
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(/1 action needs you/i)).toBeVisible();
   const before = orchFetches;
 
@@ -347,7 +354,8 @@ test("a settled action loses its controls even when the background refresh fails
     await r.fulfill({ json: { ...ACTION, state: "delivered" } });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
   await approve.click();
@@ -421,7 +429,8 @@ test("a card that existed only for its action goes away with it", async ({
     await r.fulfill({ json: { ...ACTION, id: "act-2", state: "delivered" } });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Phantom candidate")).toBeVisible();
 
   await page.getByRole("button", { name: /^approve$/i }).click();

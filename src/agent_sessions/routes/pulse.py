@@ -35,6 +35,7 @@ from .. import (
     aitasks,
     engines,
     metadata,
+    missions,
     notifications,
     orchestrator,
     orchestrator_chat,
@@ -141,11 +142,38 @@ def _attach_pending(overview: dict) -> dict:
             if sid and sid not in live:
                 history[sid] = a
 
+    # WHICH MISSION HOLDS EACH SESSION — stamped here, on the card, because ownership is a
+    # server fact and the client cannot derive it.
+    #
+    # The console's first version computed it by scanning the mission rows it happened to have
+    # in memory. That list is PAGED (100 a page, server cap 200), so a session held by mission
+    # 101 read as "held by nobody" and was offered ADOPT — a mutation the server then correctly
+    # refused with 409. Ownership that depends on how far the operator has scrolled is not
+    # ownership; one query answers it for every mission at once, loaded or not.
+    #
+    # Tri-state, not two: `None` means NO mission holds this session, and a card with no
+    # `mission_id` key at all means the membership store could not be read. Those are different
+    # answers and the client acts on them differently — the first offers ADOPT, the second
+    # offers nothing, because advertising a control the backend will refuse is the defect this
+    # whole stamp exists to remove. Absence is the honest encoding of "unreadable": there is no
+    # sentinel string that cannot also be a real mission id.
+    owner: dict[str, str] = {}
+    memberships_known = True
+    try:
+        owner = missions.all_active_memberships()
+    except Exception:
+        memberships_known = False
+
     seen: set[str] = set()
     for c in cards:
         if not isinstance(c, dict):
             continue
-        seen.add(str(c.get("id") or ""))
+        cid = str(c.get("id") or "")
+        seen.add(cid)
+        # `mission_id` is set (id or None) only when the membership store answered; see above.
+        c.pop("mission_id", None)
+        if memberships_known:
+            c["mission_id"] = owner.get(cid)
         # Strip BEFORE consulting the ledger, and unconditionally. The cache is written by a
         # scan and outlives the actions it saw, so a stale `pending_action` would otherwise
         # survive precisely when the ledger holds nothing live — the case where a card would
@@ -226,6 +254,7 @@ def _attach_pending(overview: dict) -> dict:
                 "ai_summary": "",
                 "synthesis": "",
                 "pending_action": a,
+                **({"mission_id": owner.get(sid)} if memberships_known else {}),
             }
         )
     return overview

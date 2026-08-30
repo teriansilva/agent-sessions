@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #795 — an escalation says why it escalated, and what you can do about it.
 //
 // The row appended "· below threshold" to EVERY escalated action. Three paths reach
@@ -180,7 +182,8 @@ test.beforeEach(async ({ page }) => {
 test("an escalation names its real cause, never the threshold it never consulted", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   const conf = page.getByText(/^conf 0\.90/);
@@ -197,7 +200,8 @@ test("an escalation names its real cause, never the threshold it never consulted
 test("the one control an escalation offers says what it does", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   // There is nothing to deliver, so there is no Approve — that part was already right.
@@ -213,7 +217,8 @@ test("the one control an escalation offers says what it does", async ({
 test("the dismiss control keeps its geometry with the label added", async ({
   page,
 }, testInfo) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   const dismiss = page.getByRole("button", { name: /dismiss this escalation/i });
@@ -232,7 +237,10 @@ test("the dismiss control keeps its geometry with the label added", async ({
   const recap = page.getByRole("button", { name: /show recap/i });
   const recapBox = await recap.boundingBox();
   expect(recapBox).not.toBeNull();
-  // Same row: their vertical centres agree within a few pixels.
+
+  // Same row: their vertical centres agree within a few pixels. Unchanged by #878 — the
+  // untracked session block IS a card (it names and links its session), so `ActionRow` renders
+  // there `embedded`, exactly as it did inside the grid's card.
   const centre = (b: { y: number; height: number }) => b.y + b.height / 2;
   expect(Math.abs(centre(box!) - centre(recapBox!))).toBeLessThan(6);
 });
@@ -240,11 +248,16 @@ test("the dismiss control keeps its geometry with the label added", async ({
 test("a settled action says what became of it, not which state it reached", async ({
   page,
 }) => {
+  await mockMissions(page);
   await page.goto("/pulse");
-  await expect(page.getByText("Awaiting Hermes re-review")).toBeVisible();
+  // Scoped to the pane: since #878 a session appears in BOTH the rail row and the view, which is
+  // correct and makes an unscoped `getByText` ambiguous under strict mode. The assertion is
+  // unchanged — only the region it is read from is now named.
+  const pane = page.getByTestId("pane");
+  await expect(pane.getByText("Awaiting Hermes re-review")).toBeVisible();
 
   // The other "no options" case: history, no controls. `EXPIRED` names a transition in a state
   // machine the operator never sees.
-  await expect(page.getByText(/no decision in time/i)).toBeVisible();
+  await expect(pane.getByText(/no decision in time/i)).toBeVisible();
   await expect(page.getByText(/^expired$/i)).toHaveCount(0);
 });

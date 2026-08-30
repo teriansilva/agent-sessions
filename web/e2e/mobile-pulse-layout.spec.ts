@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #750 — the #726 Pulse surfaces on a phone.
 //
 // Both defects here are pure box geometry, which is exactly what jsdom cannot model: a
@@ -385,7 +387,8 @@ test("'Run now' takes its own full-width row instead of sitting inline with the 
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile layout");
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   // The queue's heading is gone (#754) — wait on the panel this test is actually about.
   const run = page.getByRole("button", { name: /run now/i });
   await expect(run).toBeVisible();

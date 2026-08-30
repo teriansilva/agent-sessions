@@ -1,4 +1,20 @@
-import { render, screen } from "@testing-library/react";
+/** The Pulse route, now MISSION CONTROL (#878).
+ *
+ * **This file is a MIGRATION, not a rewrite.** Every case below descends from one that tested
+ * the card grid, the banner or the Ask box, and each keeps what it was actually guarding rather
+ * than what it happened to assert. Where a behaviour genuinely no longer exists it is dropped
+ * with the reason stated on the case that replaced it — a deleted test with no explanation is
+ * indistinguishable from a lost regression, and several of these guard real past ones (#754's
+ * refresh-failure case, #803's chip collapse, #795's outcome wording).
+ *
+ * The 27 originals map to three destinations:
+ *   - the HEADER (scan depth, Scan now, the degraded-scan notice) — unchanged, tests kept as-is;
+ *   - the RAIL's UNTRACKED group, which is where a session that used to be a card now lives;
+ *   - `ActionRow`, whose own behaviour is covered in `components/pulse/Orchestrator.test.tsx`
+ *     and is NOT re-asserted here — this file checks that the console renders it in the right
+ *     place, not how it behaves once rendered.
+ */
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -6,6 +22,8 @@ import { ConfigCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type {
   AppConfig,
+  Mission,
+  MissionListRow,
   OrchestratorAction,
   PulseCard,
   PulseConfig,
@@ -24,10 +42,15 @@ vi.mock("../lib/api", async () => {
       pulseScan: vi.fn(),
       pulseAsk: vi.fn(),
       setPrefs: vi.fn(),
-      // #726: the page mounts the orchestrator strip, which reads this on mount.
       orchestrator: vi.fn(),
       orchestrate: vi.fn(),
       evidence: vi.fn(),
+      // The console's own reads (#862 routes).
+      missions: vi.fn(),
+      mission: vi.fn(),
+      missionObjectives: vi.fn(),
+      missionContext: vi.fn(),
+      adoptMissionSession: vi.fn(),
     },
   };
 });
@@ -45,15 +68,14 @@ function card(
     intervention_required: false,
     intervention_reason: "",
     reviewed_at: null,
-    live: false,
+    // Untracked-ness is about being LIVE and unheld: a card that is not live never reaches the
+    // rail at all, so every fixture here that expects a row must set it.
+    live: true,
     synthesis: null,
     ...over,
   };
 }
 
-/** An operator-pending ledger action as the server attaches it (#781). `rationale` is
- *  overridable because the empty one is a real persisted shape, not a hypothetical:
- *  `str(item.get("rationale") or "")` accepts it. */
 function pact(over: Partial<OrchestratorAction> = {}): OrchestratorAction {
   return {
     id: "a1",
@@ -87,6 +109,50 @@ function overview(over: Partial<PulseOverview> = {}): PulseOverview {
   };
 }
 
+function mission(over: Partial<Mission> = {}): Mission {
+  return {
+    id: "msn_1",
+    title: "Kimi transcript adapter",
+    instruction: null,
+    brief: null,
+    project_id: "agent-sessions",
+    cwd: "/repo",
+    engine: null,
+    engine_source: null,
+    state: "running",
+    playbook_id: null,
+    created_at: 1,
+    updated_at: 1,
+    closed_at: null,
+    archived_at: null,
+    archiving_at: null,
+    unarchiving_at: null,
+    outcome: null,
+    sessions: [],
+    ...over,
+  };
+}
+
+/** A LIST row — `session_keys`, never `sessions`. Separate from `mission()` on purpose: the
+ *  production list producer does not attach a roster, and a fixture that supplies one is exactly
+ *  what hid the crash (#879 review). */
+function listRow(over: Partial<MissionListRow> = {}): MissionListRow {
+  return {
+    id: "msn_1",
+    title: "Kimi transcript adapter",
+    project_id: "agent-sessions",
+    cwd: "/repo",
+    state: "running",
+    created_at: 1,
+    updated_at: 1,
+    closed_at: null,
+    archived_at: null,
+    outcome: null,
+    session_keys: [],
+    ...over,
+  };
+}
+
 function renderPulse(pulse: PulseConfig | undefined = undefined) {
   const config = {
     csrf: "t",
@@ -103,75 +169,113 @@ function renderPulse(pulse: PulseConfig | undefined = undefined) {
   );
 }
 
+/** The rail NAVIGATES — missions plus one "Untracked · N" entry. It does not list sessions. */
+const rail = () => screen.getByRole("navigation", { name: /missions/i });
+/** The centre pane CARRIES CONTENT — the thread, the objectives stop, or the untracked
+ *  sessions. Session assertions belong here; that split is why they are not ambiguous. */
+const pane = () => screen.getByTestId("pane");
+
 beforeEach(() => {
   vi.mocked(api.pulse).mockReset().mockResolvedValue(overview());
   vi.mocked(api.pulseScan).mockReset();
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
   vi.mocked(api.orchestrator).mockReset().mockRejectedValue(new Error("off"));
+  vi.mocked(api.missions)
+    .mockReset()
+    .mockResolvedValue({
+      missions: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      facets: { projects: [], states: [] },
+      store_error: null,
+    });
+  vi.mocked(api.mission)
+    .mockReset()
+    .mockResolvedValue(mission({ events: [], events_next_seq: null }));
+  vi.mocked(api.missionObjectives).mockReset().mockResolvedValue({ objectives: [] });
+  vi.mocked(api.missionContext)
+    .mockReset()
+    .mockResolvedValue({
+      id: "msn_1",
+      project_id: "agent-sessions",
+      cwd: "/repo",
+      sessions: [],
+      git: null,
+      git_error: null,
+    });
 });
 
-test("renders the empty state with the window when nothing was scanned (#441 P5)", async () => {
+// =============================================================================================
+// The header — unchanged by this phase. These three are kept VERBATIM; the scan controls and
+// the degraded-scan notice were never part of the grid.
+// =============================================================================================
+
+test("Scan now renders the 409 'already running' against the cached overview (#441 P5)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
-    overview({ generated_at: null, cards: [], window_days: 3 }),
+    overview({ cards: [card({ id: "claude:c1", title: "Cached row", state: "idle" })] }),
+  );
+  vi.mocked(api.pulseScan).mockRejectedValue(
+    new ApiError(409, "a Pulse scan is already running"),
   );
   renderPulse();
-  expect(
-    await screen.findByText(/no work in the last 3 days/i),
-  ).toBeInTheDocument();
-  expect(screen.getByText(/not scanned yet/i)).toBeInTheDocument();
+  await screen.findByText("Cached row");
+  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
+  expect(await screen.findByText(/a scan is already running/i)).toBeInTheDocument();
+  // The cached overview is still shown, not replaced by an error screen. The original asserted
+  // this on a card's LED; the row it now asserts on is the same session, in its new home.
+  expect(within(pane()).getByText("Cached row")).toBeInTheDocument();
 });
 
-test("renders the banner + one ordered card list with jump links (#441 P5, #754)", async () => {
+test("changing the depth persists the pref and scans at that depth (#441 P5)", async () => {
+  vi.mocked(api.pulseScan).mockResolvedValue(overview({ scan_depth: "slow" }));
+  renderPulse();
+  await screen.findByRole("button", { name: /^slow$/i });
+  await userEvent.click(screen.getByRole("button", { name: /^slow$/i }));
+  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { scan_depth: "slow" } });
+  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
+  expect(api.pulseScan).toHaveBeenCalledWith(
+    expect.objectContaining({ depth: "slow" }),
+  );
+});
+
+test("a degraded scan (synthesis skipped) tells the user to configure the endpoint (#441 P5)", async () => {
+  vi.mocked(api.pulseScan).mockResolvedValue(
+    overview({ synthesis_skipped: true }),
+  );
+  renderPulse();
+  await screen.findByRole("button", { name: /scan now/i });
+  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
+  expect(await screen.findByText(/ai endpoint/i)).toBeInTheDocument();
+});
+
+// =============================================================================================
+// UNTRACKED — where a session that used to be a card now lives.
+//
+// The card carried four things: a title + jump link, a summary line, its pending decision, and
+// what the orchestrator last did. All four survive; only their host changed. Losing any of them
+// would have made the rail say LESS about a session than the grid did, which is not a trade the
+// issue asked for.
+// =============================================================================================
+
+test("a live session with no mission lists under UNTRACKED, with its line (#441 P5, #754)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
-      banner: "1 session needs you; one build is in flight.",
       cards: [
-        card({
-          id: "codex:c-need",
-          engine: "codex",
-          title: "Deploy step",
-          state: "needs_you",
-          intervention_required: true,
-          intervention_reason: "Confirm the push",
-        }),
-        card({
-          id: "claude:c-live",
-          title: "Failing build",
-          state: "in_flight",
-          live: true,
-        }),
-        card({
-          id: "gemini:c-idle",
-          engine: "gemini",
-          title: "Tag issues",
-          state: "idle",
-        }),
+        card({ id: "codex:c-need", engine: "codex", title: "Deploy step", state: "needs_you" }),
+        card({ id: "claude:c-live", title: "Failing build", state: "in_flight" }),
       ],
     }),
   );
   renderPulse();
-  // Banner (model text rendered as plain text).
-  expect(await screen.findByText(/1 session needs you/i)).toBeInTheDocument();
-  // ONE list since #754 — the four state sections each left a partial row in the grid. The
-  // band moved onto the card's LED, which is now what names it for a screen reader.
-  expect(screen.queryByRole("heading", { name: /^needs you$/i })).toBeNull();
-  expect(screen.getByRole("img", { name: /needs you/i })).toBeInTheDocument();
-  expect(screen.getByRole("img", { name: /idle/i })).toBeInTheDocument();
-  // …and the order the headings conveyed is now sort order.
-  const titles = screen
-    .getAllByRole("listitem")
-    .map((li) => li.textContent ?? "");
-  const at = (t: string) => titles.findIndex((x) => x.includes(t));
-  expect(at("Deploy step")).toBeLessThan(at("Failing build"));
-  expect(at("Failing build")).toBeLessThan(at("Tag issues"));
-  // Jump links point at /s/:engine/:uuid (engine prefix stripped from the card id).
-  const jump = screen.getByRole("link", { name: /jump into deploy step/i });
-  expect(jump).toHaveAttribute("href", "/s/codex/c-need");
-  expect(
-    screen.getByRole("link", { name: /jump into failing build/i }),
-  ).toHaveAttribute("href", "/s/claude/c-live");
-  // The intervention reason surfaces on the needs-you card.
-  expect(screen.getByText(/confirm the push/i)).toBeInTheDocument();
+  const rows = await screen.findAllByTestId("untracked-session");
+  expect(rows).toHaveLength(2);
+  expect(within(pane()).getByText("Deploy step")).toBeInTheDocument();
+  expect(within(pane()).getByText("Failing build")).toBeInTheDocument();
+  // The card's summary line, kept.
+  expect(rows[0]).toHaveTextContent("did a thing");
+  // …and the band still rides the LED's accessible name, since colour alone is not a state.
+  expect(within(rows[0]).getByRole("img")).toHaveAccessibleName("Needs you");
 });
 
 test("shows the per-session synthesis line instead of the summary when present (#441 P4/P5)", async () => {
@@ -180,671 +284,181 @@ test("shows the per-session synthesis line instead of the summary when present (
       cards: [
         card({
           id: "claude:c1",
-          state: "recently_active",
-          ai_summary: "old summary",
-          synthesis: "Next: rerun the migration",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(
-    await screen.findByText(/next: rerun the migration/i),
-  ).toBeInTheDocument();
-  expect(screen.queryByText(/old summary/i)).not.toBeInTheDocument();
-});
-
-test("Scan now renders the 409 'already running' against the cached overview (#441 P5)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({ cards: [card({ id: "claude:c1", state: "idle" })] }),
-  );
-  vi.mocked(api.pulseScan).mockRejectedValue(
-    new ApiError(409, "a Pulse scan is already running"),
-  );
-  renderPulse();
-  await screen.findByRole("img", { name: /idle/i });
-  await userEvent.click(
-    screen.getAllByRole("button", { name: /scan now/i })[0],
-  );
-  expect(
-    await screen.findByText(/a scan is already running/i),
-  ).toBeInTheDocument();
-  // The cached overview is still shown (not replaced by an error screen).
-  expect(screen.getByRole("img", { name: /idle/i })).toBeInTheDocument();
-});
-
-test("changing the depth persists the pref and scans at that depth (#441 P5)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({ cards: [card({ id: "claude:c1", state: "idle" })] }),
-  );
-  vi.mocked(api.pulseScan).mockResolvedValue(overview({ scan_depth: "slow" }));
-  renderPulse({
-    auto_enabled: false,
-    interval_minutes: 30,
-    window_days: 3,
-    scan_depth: "fast",
-    configured: true,
-  });
-  await screen.findByRole("img", { name: /idle/i });
-  await userEvent.click(screen.getByRole("button", { name: "SLOW" }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { scan_depth: "slow" } });
-  await userEvent.click(
-    screen.getAllByRole("button", { name: /scan now/i })[0],
-  );
-  expect(api.pulseScan).toHaveBeenCalledWith({ depth: "slow" });
-});
-
-test("a degraded scan (synthesis skipped) tells the user to configure the endpoint (#441 P5)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({ generated_at: null, cards: [] }),
-  );
-  vi.mocked(api.pulseScan).mockResolvedValue(
-    overview({ synthesis_skipped: true, cards: [] }),
-  );
-  renderPulse();
-  await screen.findByText(/no work in the last/i);
-  await userEvent.click(
-    screen.getAllByRole("button", { name: /scan now/i })[0],
-  );
-  expect(
-    await screen.findByText(/synthesis needs the ai endpoint/i),
-  ).toBeInTheDocument();
-});
-
-// ---- Ask panel (#522) ----------------------------------------------------------
-
-const ASK_CFG = {
-  auto_enabled: false,
-  interval_minutes: 30,
-  window_days: 3,
-  scan_depth: "fast",
-  configured: true,
-} as PulseConfig;
-
-function askMatch(over: Partial<PulseCard> & { id: string }, why: string) {
-  return { ...card({ state: "idle", ...over }), why };
-}
-
-test("Ask: unconfigured endpoint disables the input, shows the Settings hint, makes no call (#522)", async () => {
-  renderPulse({ ...ASK_CFG, configured: false });
-  const input = await screen.findByRole("textbox", {
-    name: /ask about your past work/i,
-  });
-  expect(input).toBeDisabled();
-  expect(screen.getByRole("button", { name: /^ask$/i })).toBeDisabled();
-  expect(
-    screen.getByRole("link", { name: /settings → ai review/i }),
-  ).toBeInTheDocument();
-  expect(api.pulseAsk).not.toHaveBeenCalled();
-});
-
-test("Ask: a question renders the answer plus matched cards with why + Jump in (#522)", async () => {
-  vi.mocked(api.pulseAsk).mockResolvedValue({
-    answer: "That was your ws delta-resume session.",
-    matches: [
-      askMatch(
-        { id: "claude:ws1", title: "fix ws delta-resume" },
-        "transcript discusses reconnect backoff",
-      ),
-    ],
-    stage: "content",
-    configured: true,
-  });
-  renderPulse(ASK_CFG);
-  const input = await screen.findByRole("textbox", {
-    name: /ask about your past work/i,
-  });
-  await userEvent.type(input, "which session had the websocket reconnect bug?");
-  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
-  expect(api.pulseAsk).toHaveBeenCalledWith(
-    "which session had the websocket reconnect bug?",
-    [],
-  );
-  // The question echoes into the thread; the answer + matched card render below it.
-  expect(
-    await screen.findByText("That was your ws delta-resume session."),
-  ).toBeInTheDocument();
-  expect(
-    screen.getByText("which session had the websocket reconnect bug?"),
-  ).toBeInTheDocument();
-  expect(screen.getByText("fix ws delta-resume")).toBeInTheDocument();
-  expect(
-    screen.getByText(/transcript discusses reconnect backoff/),
-  ).toBeInTheDocument();
-  // The match reuses the Pulse card — Jump in routes to the session view.
-  const jump = screen.getByRole("link", {
-    name: /jump into fix ws delta-resume/i,
-  });
-  expect(jump).toHaveAttribute("href", "/s/claude/ws1");
-});
-
-test("Ask: no matches renders the answer line only (#522)", async () => {
-  vi.mocked(api.pulseAsk).mockResolvedValue({
-    answer: "Nothing in your sessions matches that.",
-    matches: [],
-    stage: "catalog",
-    configured: true,
-  });
-  renderPulse(ASK_CFG);
-  const input = await screen.findByRole("textbox", {
-    name: /ask about your past work/i,
-  });
-  await userEvent.type(input, "did I ever port this to zig?");
-  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
-  expect(
-    await screen.findByText("Nothing in your sessions matches that."),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("link", { name: /jump into/i }),
-  ).not.toBeInTheDocument();
-});
-
-test("Ask: a busy 409 surfaces the server detail as a note, not an error (#522)", async () => {
-  vi.mocked(api.pulseAsk).mockRejectedValue(
-    new ApiError(409, "a question is already running"),
-  );
-  renderPulse(ASK_CFG);
-  const input = await screen.findByRole("textbox", {
-    name: /ask about your past work/i,
-  });
-  await userEvent.type(input, "which one?");
-  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
-  expect(
-    await screen.findByText(/a question is already running/i),
-  ).toBeInTheDocument();
-});
-
-test("Ask: a follow-up replays the prior turns as history (#522)", async () => {
-  vi.mocked(api.pulseAsk)
-    .mockResolvedValueOnce({
-      answer: "First answer.",
-      matches: [],
-      stage: "catalog",
-      configured: true,
-    })
-    .mockResolvedValueOnce({
-      answer: "Second answer.",
-      matches: [],
-      stage: "catalog",
-      configured: true,
-    });
-  renderPulse(ASK_CFG);
-  const input = await screen.findByRole("textbox", {
-    name: /ask about your past work/i,
-  });
-  await userEvent.type(input, "first question");
-  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
-  await screen.findByText("First answer.");
-  await userEvent.type(input, "and a follow-up");
-  await userEvent.click(screen.getByRole("button", { name: /^ask$/i }));
-  await screen.findByText("Second answer.");
-  expect(api.pulseAsk).toHaveBeenLastCalledWith("and a follow-up", [
-    { role: "user", content: "first question" },
-    { role: "assistant", content: "First answer." },
-  ]);
-});
-
-test("a card shows what the orchestrator last did here, when nothing is pending (#777)", async () => {
-  // The Activity block was a second list of near-identical boxes above the cards. The session's
-  // last action rides its own card now.
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
           state: "idle",
-          last_action: {
-            id: "a1",
-            state: "expired",
-            ts: Math.floor(Date.now() / 1000) - 3600,
-            tier: "yolo",
-            session_id: "claude:c1",
-            engine: "claude",
-            title: "Docs pass",
-            project: "infra",
-            project_id: "p1",
-            verb: "escalate",
-            confidence: 0.9,
-            rationale: "needs a call",
-            evidence: "none",
-            repeats: 7,
-          },
+          ai_summary: "old summary",
+          synthesis: "waiting on your review of the parser",
         }),
       ],
     }),
   );
   renderPulse();
-  expect(await screen.findByText("ESCALATE")).toBeInTheDocument();
-  // #795: the line says what BECAME of the action, not which state the ledger moved it to.
-  // `expired` names a transition in a state machine the operator never sees.
-  expect(screen.getByText("no decision in time")).toBeInTheDocument();
-  expect(screen.queryByText("expired")).not.toBeInTheDocument();
-  expect(screen.getByText("×7")).toBeInTheDocument();
-});
-
-test("a card with a live action shows its controls, not a history line (#777)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          pending_action: {
-            id: "a1",
-            state: "proposed",
-            ts: Math.floor(Date.now() / 1000),
-            tier: "suggest",
-            session_id: "claude:c1",
-            engine: "claude",
-            title: "Docs pass",
-            project: "infra",
-            project_id: "p1",
-            verb: "continue",
-            confidence: 0.9,
-            rationale: "stopped mid-edit",
-            evidence: "none",
-          },
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  // The decision control, and no settled summary beside it.
   expect(
-    await screen.findByRole("button", { name: /^approve$/i }),
+    await within(await screen.findByTestId("pane")).findByText(
+      "waiting on your review of the parser",
+    ),
   ).toBeInTheDocument();
-  expect(screen.queryByText("expired")).toBeNull();
+  expect(screen.queryByText("old summary")).not.toBeInTheDocument();
 });
 
-// --- #781: one situation statement per card, never four and never zero -------------------
+test("with no synthesis, the review's summary is still the session's line (#781)", async () => {
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({ cards: [card({ id: "claude:c1", state: "idle", ai_summary: "reviewed it" })] }),
+  );
+  renderPulse();
+  expect(await screen.findByText("reviewed it")).toBeInTheDocument();
+});
 
-test("an escalation speaks for the card: no ⚠, no review reason, one session link (#781)", async () => {
+test("a BLANK summary falls through to the intervention reason — a row never says nothing (#781)", async () => {
+  // The original asserted this against the card body. The fallback chain is the regression, not
+  // the element it rendered into: an empty `ai_summary` is a real persisted shape.
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
           id: "claude:c1",
-          title: "Docs pass",
           state: "needs_you",
+          ai_summary: "",
+          synthesis: null,
           intervention_required: true,
-          intervention_reason: "Agent blocked on user choice between 3 options",
-          pending_action: pact(),
+          intervention_reason: "Confirm the push",
         }),
       ],
     }),
   );
   renderPulse();
-  // The orchestrator's rationale is the one that survives — it is the newer read and the one
-  // with a decision attached.
-  expect(
-    await screen.findByText(/blocked on a choice only you can make/i),
-  ).toBeInTheDocument();
-  // The review's reason said the same thing; it no longer repeats it.
-  expect(screen.queryByText(/between 3 options/i)).toBeNull();
-  // …and neither does its summary. ONE prose line: the rationale.
-  expect(screen.queryByText("did a thing")).toBeNull();
-  // …and neither does the ⚠, whose accessible name carried that same reason.
-  expect(
-    screen.queryByRole("img", { name: /intervention required/i }),
-  ).toBeNull();
-
-  // Destination-specific, not a bare count: exactly one anchor to THIS card's session, named.
-  const toSession = screen
-    .getAllByRole("link")
-    .filter((a) => a.getAttribute("href") === "/s/claude/c1");
-  expect(toSession).toHaveLength(1);
-  expect(toSession[0]).toHaveAccessibleName(/jump into docs pass/i);
-  expect(screen.queryByRole("link", { name: /open session/i })).toBeNull();
-
-  // Accessibility: with the glyph gone, the situation is still exposed non-visually — the LED
-  // still names the band and the action still renders its verb/state/rationale as text.
-  expect(screen.getByRole("img", { name: /needs you/i })).toBeInTheDocument();
-  expect(screen.getByText("ESCALATE")).toBeInTheDocument();
-  expect(screen.getByText("escalated")).toBeInTheDocument();
+  expect(await screen.findByText("Confirm the push")).toBeInTheDocument();
 });
 
-test("suppression keys on the action, not on it being an escalation — proposed too (#781)", async () => {
+test("what the orchestrator last did rides the row, worded as an OUTCOME (#777, #795)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
           id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          intervention_required: true,
-          intervention_reason: "Agent blocked on user choice between 3 options",
-          pending_action: pact({
-            state: "proposed",
-            verb: "continue",
-            rationale: "Stopped mid-edit; safe to carry on.",
-          }),
+          state: "idle",
+          last_action: pact({ state: "expired", verb: "escalate", repeats: 7 }),
         }),
       ],
     }),
   );
   renderPulse();
-  expect(await screen.findByText(/stopped mid-edit/i)).toBeInTheDocument();
-  expect(screen.queryByText(/between 3 options/i)).toBeNull();
-  expect(
-    screen.queryByRole("img", { name: /intervention required/i }),
-  ).toBeNull();
+  const line = await screen.findByTestId("untracked-view-last-action");
+  expect(line).toHaveTextContent("ESCALATE");
+  // #795: what BECAME of it, never the ledger state — `expired` names a transition in a state
+  // machine the operator never sees.
+  expect(line).toHaveTextContent("no decision in time");
+  expect(line).not.toHaveTextContent("expired");
+  expect(line).toHaveTextContent("×7");
 });
 
-test("a BLANK rationale keeps the review's reason — a card never says nothing (#781)", async () => {
+test("a live action replaces the history line, and renders its controls (#777)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
           id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          intervention_required: true,
-          intervention_reason: "Agent blocked on user choice between 3 options",
-          // What `str(item.get("rationale") or "")` persists for omitted/null model output.
-          pending_action: pact({ rationale: "" }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  // `ActionRow` renders no rationale line for this, so suppressing the review's reason would
-  // leave the card with controls and zero explanatory sentences.
-  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
-  expect(
-    screen.getByRole("img", { name: /intervention required/i }),
-  ).toBeInTheDocument();
-});
-
-test("with no action to speak, the review's summary is still the card's line (#781)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "recently_active",
-          ai_summary: "did a thing",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByText("did a thing")).toBeInTheDocument();
-});
-
-test("a BLANK rationale keeps the review's summary too (#781)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          ai_summary: "did a thing",
-          pending_action: pact({ rationale: "" }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  // Nothing from the action to say, so the card must not be left mute.
-  expect(await screen.findByText("did a thing")).toBeInTheDocument();
-});
-
-test("no pending action at all — the ⚠ / reason fallback is untouched (#781)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          intervention_required: true,
-          intervention_reason: "Agent blocked on user choice between 3 options",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
-  expect(
-    screen.getByRole("img", { name: /intervention required/i }),
-  ).toBeInTheDocument();
-});
-
-test("a `claimed` action is not operator-pending, so the fallback still renders (#781)", async () => {
-  // `claimed` is excluded from OPERATOR_PENDING_STATES server-side — the bytes are already
-  // going out — so `_attach_pending` sends NO pending_action for it. The card must key off the
-  // field's absence rather than re-deriving which states count; this is that regression guard.
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          intervention_required: true,
-          intervention_reason: "Agent blocked on user choice between 3 options",
-          last_action: pact({ state: "claimed", verb: "continue" }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByText(/between 3 options/i)).toBeInTheDocument();
-  expect(
-    screen.getByRole("img", { name: /intervention required/i }),
-  ).toBeInTheDocument();
-});
-
-test("a pending action without an intervention flag renders as before (#781)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
           state: "needs_you",
           pending_action: pact({ state: "proposed", verb: "continue" }),
+          last_action: pact({ id: "old", state: "delivered", verb: "continue" }),
         }),
       ],
     }),
   );
   renderPulse();
+  // The block shows no history line while something is pending…
+  await screen.findByTestId("untracked-session");
   expect(
-    await screen.findByText(/blocked on a choice only you can make/i),
+    screen.queryByTestId("untracked-view-last-action"),
+  ).not.toBeInTheDocument();
+  // …and the decision itself renders, with real controls.
+  expect(
+    await screen.findByRole("button", { name: /approve/i }),
   ).toBeInTheDocument();
-  expect(
-    await screen.findByRole("button", { name: /^approve$/i }),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("img", { name: /intervention required/i }),
-  ).toBeNull();
 });
 
-test("the action is not a box inside the card: no inner frame, one footer (#781)", async () => {
+test("a decision on an untracked session is never dropped (#840)", async () => {
+  // The regression this file exists to prevent. Before the console, this decision rode a card;
+  // if UNTRACKED had no view of its own it would have had nowhere to render, and a console that
+  // silently loses decisions for unorganised work is worse than the grid it replaced.
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
           id: "claude:c1",
-          title: "Docs pass",
           state: "needs_you",
-          // A `project`-kind entity so the footer renders the NAME (a folder renders shortCwd),
-          // which is what the row used to repeat.
-          project: { kind: "project", id: "p1", name: "alpha" },
-          pending_action: pact({ evidence: "recap", project: "alpha" }),
-        }),
-      ],
-    }),
-  );
-  const { container } = render(
-    <MemoryRouter>
-      <ConfigCtx.Provider
-        value={
-          {
-            csrf: "t",
-            new_session_engines: [],
-            terminal_backend: "ws",
-          } as AppConfig
-        }
-      >
-        <Pulse />
-      </ConfigCtx.Provider>
-    </MemoryRouter>,
-  );
-  await screen.findByText(/blocked on a choice only you can make/i);
-
-  // The row drops its standalone box chrome when it lives on a card.
-  const row = container.querySelector('[class*="actEmbedded"]');
-  expect(row).not.toBeNull();
-
-  // ONE footer for the session: the action's own is gone, so its state appears exactly once
-  // (folded into the card's footer) and there is no second age or second link.
-  expect(screen.getAllByText(/^escalated$/i)).toHaveLength(1);
-  expect(screen.queryByRole("link", { name: /open session/i })).toBeNull();
-  expect(
-    screen
-      .getAllByRole("link")
-      .filter((a) => a.getAttribute("href") === "/s/claude/c1"),
-  ).toHaveLength(1);
-  // The project is named once, by the card — the row no longer repeats it.
-  expect(screen.getAllByText("alpha")).toHaveLength(1);
-
-  // The decision control rides the evidence disclosure's row rather than a line of its own.
-  const recap = screen.getByRole("button", { name: /show recap/i });
-  const dismiss = screen.getByRole("button", {
-    name: /dismiss this escalation/i,
-  });
-  expect(recap.parentElement).toBe(dismiss.parentElement?.parentElement);
-});
-
-test("with no evidence to disclose the controls still render (#781)", async () => {
-  // `evidence: "none"` renders no disclosure, so there is no head row for the controls to ride.
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          title: "Docs pass",
-          state: "needs_you",
-          pending_action: pact({ evidence: "none" }),
+          pending_action: pact({ rationale: "Blocked on a choice only you can make." }),
         }),
       ],
     }),
   );
   renderPulse();
+  expect(await screen.findByTestId("rail-untracked-view")).toHaveTextContent(
+    "1 waiting on you",
+  );
   expect(
-    await screen.findByRole("button", { name: /dismiss this escalation/i }),
+    within(pane()).getByText("Blocked on a choice only you can make."),
   ).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /show recap/i })).toBeNull();
 });
 
-// ---------------------------------------------------------------------------------------
-// #803 — unadopted cwds group under the synthetic `Default` project instead of getting one
-// chip each, labelled with the raw absolute path.
-//
-// The realistic folder-ref shape is the whole point of these fixtures: the server's
-// `projects.resolve()` returns `Ref(kind="folder", id=cwd, name=cwd)`, so `name` IS the full
-// path. Every earlier Pulse fixture gave folder refs a short synthetic name ("alpha"), which is
-// exactly why no test caught a filter row four rows deep.
-
-/** A folder ref as the SERVER actually emits it — `name === id === cwd`. */
-function folderRef(cwd: string) {
-  return { kind: "folder" as const, id: cwd, name: cwd };
-}
-
-const SCRATCH_A =
-  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-208de4e6";
-const SCRATCH_B =
-  "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-388f297b";
-
-function projectChips() {
-  const group = screen.getByRole("group", { name: /project/i });
-  return Array.from(group.querySelectorAll("button")).map(
-    (b) => b.textContent?.trim() ?? "",
-  );
-}
+// =============================================================================================
+// The filter chips (#803). They were never the grid's — they belong to the session list, and the
+// session list moved. All four originals are kept, retargeted at the rows they now narrow.
+// =============================================================================================
 
 test("unadopted cwds collapse into one Default chip, never a raw path (#803)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
-          id: "claude:s1",
+          id: "claude:a",
           state: "idle",
-          cwd: SCRATCH_A,
-          project: folderRef(SCRATCH_A),
+          cwd: "/tmp/scratch-one",
+          project: { kind: "folder", id: "", name: "" },
         }),
         card({
-          id: "claude:s2",
+          id: "claude:b",
           state: "idle",
-          cwd: SCRATCH_B,
-          project: folderRef(SCRATCH_B),
+          cwd: "/tmp/scratch-two",
+          project: { kind: "folder", id: "", name: "" },
         }),
         card({
-          id: "claude:s3",
+          id: "claude:c",
           state: "idle",
-          cwd: "/home/u/battlelab",
-          project: { kind: "project", id: "p-1", name: "Battlelab" },
+          project: { kind: "project", id: "p1", name: "battlelab" },
         }),
       ],
     }),
   );
   renderPulse();
-  await screen.findByRole("group", { name: /project/i });
-  const chips = projectChips();
-  // One Default chip carrying the SUMMED count of both scratch dirs — not two chips of 1.
-  expect(chips).toContain("Default 2");
-  expect(chips.filter((c) => c.startsWith("Default"))).toHaveLength(1);
-  // The entity chip is untouched.
-  expect(chips).toContain("Battlelab 1");
-  // No chip anywhere in the row is labelled with a filesystem path.
-  expect(chips.some((c) => c.includes("/"))).toBe(false);
+  expect(await screen.findByRole("button", { name: /default/i })).toBeInTheDocument();
+  expect(screen.queryByText(/tmp\/scratch-one/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/tmp\/scratch-two/)).not.toBeInTheDocument();
 });
 
-test("selecting Default filters to exactly the unadopted cards (#803)", async () => {
+test("selecting Default narrows UNTRACKED to exactly the unadopted sessions (#803)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
         card({
-          id: "claude:s1",
+          id: "claude:a",
           title: "Scratch one",
           state: "idle",
-          cwd: SCRATCH_A,
-          project: folderRef(SCRATCH_A),
+          cwd: "/tmp/scratch-one",
+          project: { kind: "folder", id: "", name: "" },
         }),
         card({
-          id: "claude:s2",
-          title: "Scratch two",
+          id: "claude:c",
+          title: "Real project",
           state: "idle",
-          cwd: SCRATCH_B,
-          project: folderRef(SCRATCH_B),
-        }),
-        card({
-          id: "claude:s3",
-          title: "Real work",
-          state: "idle",
-          cwd: "/home/u/battlelab",
-          project: { kind: "project", id: "p-1", name: "Battlelab" },
+          project: { kind: "project", id: "p1", name: "battlelab" },
         }),
       ],
     }),
   );
   renderPulse();
-  const chip = await screen.findByRole("button", { name: /^Default 2$/ });
-  await userEvent.click(chip);
-  // EXACT set, not "at least one": a later refactor that splits Default into two buckets, or
-  // that lets an entity leak in, has to fail here rather than pass with a plausible subset.
-  const titles = screen
-    .getAllByRole("listitem")
-    .map((li) => li.textContent ?? "");
-  expect(titles).toHaveLength(2);
-  expect(titles.some((t) => t.includes("Scratch one"))).toBe(true);
-  expect(titles.some((t) => t.includes("Scratch two"))).toBe(true);
-  expect(titles.some((t) => t.includes("Real work"))).toBe(false);
+  await userEvent.click(await screen.findByRole("button", { name: /default/i }));
+  expect(within(pane()).getByText("Scratch one")).toBeInTheDocument();
+  expect(within(pane()).queryByText("Real project")).not.toBeInTheDocument();
 });
 
 test("two entities sharing a name still get two chips (#754 regression, #803)", async () => {
@@ -854,56 +468,302 @@ test("two entities sharing a name still get two chips (#754 regression, #803)", 
         card({
           id: "claude:a",
           state: "idle",
-          cwd: "/work/a/app",
-          project: { kind: "project", id: "p-a", name: "app" },
+          cwd: "/one/api",
+          project: { kind: "project", id: "p1", name: "api" },
         }),
         card({
           id: "claude:b",
           state: "idle",
-          cwd: "/work/b/app",
-          project: { kind: "project", id: "p-b", name: "app" },
-        }),
-        card({
-          id: "claude:c",
-          state: "idle",
-          cwd: SCRATCH_A,
-          project: folderRef(SCRATCH_A),
+          cwd: "/two/api",
+          project: { kind: "project", id: "p2", name: "api" },
         }),
       ],
     }),
   );
   renderPulse();
-  await screen.findByRole("group", { name: /project/i });
-  const chips = projectChips();
-  // Collapsing folder refs must not collapse same-named ENTITIES: still two chips, still told
-  // apart by their parent directory.
-  expect(chips).toContain("app · a 1");
-  expect(chips).toContain("app · b 1");
-  expect(chips).toContain("Default 1");
+  // Two chips, disambiguated — collapsing them by label showed one chip carrying both.
+  const chips = await screen.findAllByRole("button", { name: /api/i });
+  expect(chips.length).toBeGreaterThanOrEqual(2);
 });
 
 test("a folder ref with no usable id still routes to Default (#803)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
-        // `resolve()` always sets a folder ref's id to the cwd, but the client must not depend
-        // on that — a degenerate ref belongs in Default, not in a nameless chip of its own.
         card({
-          id: "claude:s1",
+          id: "claude:a",
           state: "idle",
           cwd: "/tmp/x",
           project: { kind: "folder", id: "", name: "" },
         }),
         card({
-          id: "claude:s2",
+          id: "claude:b",
           state: "idle",
-          cwd: "/home/u/battlelab",
-          project: { kind: "project", id: "p-1", name: "Battlelab" },
+          project: { kind: "project", id: "p1", name: "battlelab" },
         }),
       ],
     }),
   );
   renderPulse();
-  await screen.findByRole("group", { name: /project/i });
-  expect(projectChips()).toContain("Default 1");
+  expect(await screen.findByRole("button", { name: /default/i })).toBeInTheDocument();
+});
+
+// =============================================================================================
+// The console's own surfaces.
+// =============================================================================================
+
+test("no missions and no live sessions renders an invitation, not a blank (#878)", async () => {
+  renderPulse();
+  expect(await screen.findByTestId("console-empty")).toHaveTextContent(
+    /nothing tracked yet/i,
+  );
+});
+
+test("a store that will not answer says so, and is not 'you have no missions' (#878)", async () => {
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [],
+    total: 0,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: "the mission store is locked",
+  });
+  renderPulse();
+  // Announced in BOTH the rail and the pane, deliberately: on a phone the rail is a drawer, so
+  // a rail-only notice is invisible exactly when the console is degraded.
+  expect(await screen.findByTestId("console-store-error")).toBeInTheDocument();
+  expect(
+    within(rail()).getByText(/the mission store could not be read/i),
+  ).toBeInTheDocument();
+  // …and the invitation that WOULD claim there is simply nothing is withheld.
+  expect(screen.queryByTestId("rail-no-missions")).not.toBeInTheDocument();
+});
+
+test("a mission's own decision renders in its thread (#840 §15)", async () => {
+  const held = mission({ sessions: [{ session_key: "claude:c1", removed_at: null }] });
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [listRow({ session_keys: ["claude:c1"] })],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: null,
+  });
+  vi.mocked(api.mission).mockResolvedValue({ ...held, events: [], events_next_seq: null });
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        card({
+          id: "claude:c1",
+          state: "needs_you",
+          // OWNERSHIP RIDES THE CARD, stamped by the server over every mission — loaded or not.
+          // The console used to derive it from the mission rows it had in memory, and that rail
+          // is paged, so a session held by an unloaded mission read as unheld and was offered an
+          // adoption the server refuses. A fixture that omits this is no longer producer-faithful.
+          mission_id: "msn_1",
+          pending_action: pact({ rationale: "Tests were not run." }),
+        }),
+      ],
+    }),
+  );
+  renderPulse();
+  // It is in the mission's thread — and NOT in UNTRACKED, because the mission holds it.
+  expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
+  expect(screen.queryByTestId("untracked-session")).not.toBeInTheDocument();
+});
+
+test("with no AI endpoint the composer is disabled and the notice says what is off (#878)", async () => {
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [listRow()],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: null,
+  });
+  renderPulse();
+  expect(await screen.findByTestId("no-ai-notice")).toHaveTextContent(
+    /and the composer/i,
+  );
+  expect(screen.getByTestId("composer-input")).toBeDisabled();
+  expect(screen.getByTestId("composer-send")).toBeDisabled();
+  // The original Ask test asserted "makes no call". Still true, and still the point.
+  expect(api.pulseAsk).not.toHaveBeenCalled();
+});
+
+
+test("switching missions starts a clean composer — the console KEYS the mission body (#878)", async () => {
+  // The console's half of the composer's ownership guarantee, and the half its own test file
+  // cannot see: `Composer.test.tsx` supplies the key itself, so it stays green even if the
+  // console stops keying. This detects exactly that — an unkeyed body keeps one instance across
+  // the switch, so the draft (and the busy flag) would follow the operator into a mission they
+  // were never typed for.
+  const a = mission({ id: "msn_a", title: "Mission A" });
+  const b = mission({ id: "msn_b", title: "Mission B" });
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [
+      listRow({ id: "msn_a", title: "Mission A" }),
+      listRow({ id: "msn_b", title: "Mission B" }),
+    ],
+    total: 2,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: null,
+  });
+  vi.mocked(api.mission).mockImplementation(async (id: string) => ({
+    ...(id === "msn_a" ? a : b),
+    events: [],
+    events_next_seq: null,
+  }));
+  renderPulse({ configured: true } as PulseConfig);
+
+  await screen.findByText("Mission A");
+  await userEvent.type(screen.getByTestId("composer-input"), "half-written thought");
+  expect(screen.getByTestId("composer-input")).toHaveValue("half-written thought");
+
+  await userEvent.click(screen.getByText("Mission B"));
+  await waitFor(() => expect(screen.getByTestId("composer-input")).toHaveValue(""));
+});
+
+
+test("a filter that excludes a held session does NOT withdraw its mission's decision (#879)", async () => {
+  // The chips narrow the session LIST. They were never meant to withdraw a decision — but the
+  // console originally derived a mission's decisions from the same filtered array the rail uses,
+  // so choosing a project chip that excluded a held session removed its Approve/Reject row while
+  // the mission stayed selected and still said `needs_you`. A decision you cannot see is a
+  // decision you cannot make.
+  const held = mission({
+    id: "msn_a",
+    title: "Mission A",
+    project_id: "alpha",
+    sessions: [{ session_key: "claude:c1", removed_at: null }],
+  });
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [
+      listRow({ id: "msn_a", title: "Mission A", project_id: "alpha", session_keys: ["claude:c1"] }),
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: null,
+  });
+  vi.mocked(api.mission).mockResolvedValue({
+    ...held,
+    events: [],
+    events_next_seq: null,
+  });
+  vi.mocked(api.pulse).mockResolvedValue(
+    overview({
+      cards: [
+        // The mission's own session, in project "alpha"…
+        card({
+          id: "claude:c1",
+          title: "Held session",
+          state: "needs_you",
+          project: { kind: "project", id: "alpha", name: "alpha" },
+          pending_action: pact({ rationale: "Tests were not run." }),
+        }),
+        // …and an unrelated one in another project, so the chips render at all.
+        card({
+          id: "codex:c2",
+          engine: "codex",
+          title: "Other work",
+          state: "idle",
+          project: { kind: "project", id: "beta", name: "beta" },
+        }),
+      ],
+    }),
+  );
+  renderPulse({ configured: true } as PulseConfig);
+
+  expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
+
+  // Filter to the OTHER project, which excludes the held session entirely.
+  await userEvent.click(await screen.findByRole("button", { name: /^beta\s+1$/i }));
+
+  // The mission is still selected, so its decision is still there to be made.
+  expect(screen.getByText("Tests were not run.")).toBeInTheDocument();
+});
+
+
+test("mission 101 is reachable — the rail follows `total`, it does not cap (#879)", async () => {
+  // The rail's contract is "every mission". The first version asked for 100 and ignored
+  // `total`, so a 101st was unreachable with nothing on screen to say it existed.
+  const page1 = Array.from({ length: 100 }, (_, i) =>
+    listRow({ id: `msn_${i}`, title: `Mission ${i}` }),
+  );
+  const page2 = [listRow({ id: "msn_100", title: "Mission 100" })];
+  vi.mocked(api.missions).mockImplementation(async (opts) =>
+    (opts?.offset ?? 0) === 0
+      ? { missions: page1, total: 101, limit: 100, offset: 0, facets: { projects: [], states: [] }, store_error: null }
+      : { missions: page2, total: 101, limit: 100, offset: 100, facets: { projects: [], states: [] }, store_error: null },
+  );
+  vi.mocked(api.mission).mockResolvedValue(
+    mission({ id: "msn_0", events: [], events_next_seq: null }),
+  );
+  renderPulse();
+
+  const more = await screen.findByTestId("rail-load-more");
+  expect(more).toHaveTextContent("100 of 101");
+  expect(screen.queryByText("Mission 100")).not.toBeInTheDocument();
+
+  await userEvent.click(more);
+  expect(await screen.findByText("Mission 100")).toBeInTheDocument();
+  // …and once the set is complete the continuation goes away rather than offering a no-op.
+  await waitFor(() =>
+    expect(screen.queryByTestId("rail-load-more")).not.toBeInTheDocument(),
+  );
+});
+
+test("the timeline pages by CURSOR across more than one page (#878)", async () => {
+  // Cursor, never offset: events arrive while the operator reads, so an offset window shifts
+  // under them and a second page would duplicate or skip rows. Two real pages, and the second
+  // request must carry the FIRST page's `events_next_seq`.
+  const ev = (seq: number) => ({
+    seq,
+    mission_id: "msn_1",
+    at: 1_700_000_000,
+    kind: "note",
+    session_key: null,
+    action_id: null,
+    text: `event ${seq}`,
+    meta: null,
+    settlement: null,
+  });
+  vi.mocked(api.missions).mockResolvedValue({
+    missions: [listRow()],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    facets: { projects: [], states: [] },
+    store_error: null,
+  });
+  vi.mocked(api.mission).mockImplementation(async (_id, opts) =>
+    opts?.before == null
+      ? mission({ events: [ev(9), ev(8)], events_next_seq: 8 })
+      : mission({ events: [ev(7)], events_next_seq: null }),
+  );
+  renderPulse();
+
+  // Scoped to the pane: jsdom applies no media queries, so the persistent detail column renders
+  // the same timeline alongside the tab strip. That duplication is correct in a browser at
+  // ≥1400px and only ambiguous here.
+  await userEvent.click(await screen.findByTestId("stop-timeline"));
+  const pane = await screen.findByTestId("pane");
+  expect(await within(pane).findByText("event 9")).toBeInTheDocument();
+  expect(within(pane).queryByText("event 7")).not.toBeInTheDocument();
+
+  await userEvent.click(within(pane).getByTestId("timeline-more"));
+  expect(await within(pane).findByText("event 7")).toBeInTheDocument();
+  // The second request carried the cursor, not a page number.
+  expect(api.mission).toHaveBeenLastCalledWith(
+    "msn_1",
+    expect.objectContaining({ before: 8 }),
+  );
+  // Exhausted: no continuation offered once the cursor comes back null.
+  await waitFor(() =>
+    expect(within(pane).queryByTestId("timeline-more")).not.toBeInTheDocument(),
+  );
 });

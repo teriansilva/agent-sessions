@@ -302,3 +302,45 @@
     animation: none;
   }
 }
+
+/* Rows whose state could not be established (#852). Amber — "not current", never red, which is
+ * reserved for errors and failure (docs/design.md). */
+.uncertain {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--status-degraded);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+/* The bounded settled window — history, so it is visually quieter than the live rows above. */
+.settled {
+  border-top: 1px solid var(--line);
+}
+.settledHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 4px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.settledClear {
+  min-height: 44px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+.settledClear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

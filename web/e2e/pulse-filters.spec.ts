@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // #754 (filters half) — narrow the Pulse card list by project and agent.
 //
 // The fixture deliberately carries TWO distinct projects both named `app`, under different
@@ -157,7 +159,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("project and agent filters narrow the whole list", async ({ page }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // The orchestrator queue is deliberately empty here: it is a separate list on this branch and
@@ -182,7 +185,8 @@ test("two projects with the same name are two chips, not one", async ({
 }) => {
   // Keyed by display name, `/work/a/app` and `/work/b/app` collapsed into one `app 2` chip and
   // selecting it showed both. Keyed by id they are separate, and the parent disambiguates them.
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(
     page.getByRole("button", { name: /^app · a\s+1$/i }),
   ).toBeVisible();
@@ -197,7 +201,8 @@ test("two projects with the same name are two chips, not one", async ({
 });
 
 test("project and agent compose to their intersection", async ({ page }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
 
   // infra holds two sessions, one per engine.
   await page.getByRole("button", { name: /^infra\s+2$/i }).click();
@@ -222,7 +227,8 @@ test("project and agent compose to their intersection", async ({ page }) => {
 test("a combination that matches nothing says so and offers one-action recovery", async ({
   page,
 }) => {
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   // battlelab is codex-only, so this intersection is empty — the list area used to just go blank.
   await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
   await page.getByRole("button", { name: /^claude\s+2$/i }).click();
@@ -270,7 +276,8 @@ test("a scan that invalidates the selection does not leave a blank page", async 
     });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
   await expect(page.getByText("Relay cap")).toBeVisible();
 
@@ -325,7 +332,8 @@ test("unadopted scratch dirs collapse into one Default chip, and nothing scrolls
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({ json: overview(UNADOPTED) }),
   );
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByText("Real work")).toBeVisible();
 
   // 1. One Default chip carrying the SUMMED count — not one chip per scratch directory.

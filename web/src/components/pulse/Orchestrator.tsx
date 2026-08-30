@@ -117,10 +117,10 @@ export function Orchestrator({
       // right (#772 review).
       setHealth(s.last?.orchestrator);
       if (s.assessment) setNote(s.assessment);
-      // A pass can propose NEW actions, and those live on the session cards now — this panel
-      // says so directly above. Without telling the page, the claim is false until a reload:
-      // the panel would show "N actions need you — shown on the session cards below" while no
-      // card had one (#754).
+      // A pass can propose NEW actions, and those render inside the mission that raised them
+      // (#878; they were on the session cards before that). This panel says so directly above,
+      // so without telling the page the claim is false until a reload — the panel would show
+      // "N actions need you" while nothing downstream had one (#754).
       onActionsChanged?.();
     } catch (e) {
       setNote(
@@ -238,7 +238,7 @@ export function Orchestrator({
         <p className={styles.hint}>
           {pending.length}{" "}
           {pending.length === 1 ? "action needs" : "actions need"} you — shown
-          on the session cards below.
+          in the mission it belongs to, below.
         </p>
       )}
 

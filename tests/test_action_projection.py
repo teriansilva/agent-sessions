@@ -344,3 +344,128 @@ def test_unknown_wins_over_any_stale_state_handed_alongside_it(state):
     """`known=False` is not advisory: whatever state a caller happens to pass, an unreadable
     store cannot have produced it, so the projection must not be computed from it."""
     assert ledger.project_for_operator(state, known=False)["projection"] == "unknown"
+
+
+# --- the ownership stamp (#878) ---------------------------------------------------------------
+#
+# Which mission holds a session is a SERVER fact. The console's first version derived it by
+# scanning the mission rows it happened to have in memory — and that rail is paged, so a session
+# held by mission 101 read as held by nobody and was offered an ADOPT the server then refused
+# with 409. Ownership that depends on how far the operator has scrolled is not ownership.
+
+
+def _cards_with_missions(auth_cfg, *, cached_ids, membership):
+    from fastapi.testclient import TestClient
+
+    from agent_sessions import pulse
+    from agent_sessions.main import create_app
+    from agent_sessions.routes import pulse as pulse_routes
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            pulse,
+            "load_cache",
+            lambda *a, **k: {"cards": [{"id": i, "state": "idle"} for i in cached_ids]},
+        )
+        if isinstance(membership, Exception):
+
+            def boom(*a, **k):
+                raise membership
+
+            mp.setattr(pulse_routes.missions, "all_active_memberships", boom)
+        else:
+            mp.setattr(
+                pulse_routes.missions, "all_active_memberships", lambda *a, **k: dict(membership)
+            )
+        c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+        c.post(
+            "/login",
+            data={"username": "marcus", "password": "hunter2"},
+            follow_redirects=False,
+            headers={"Origin": auth_cfg.origin},
+        )
+        return {x["id"]: x for x in c.get("/api/pulse").json()["cards"]}
+
+
+def test_a_card_carries_the_mission_that_holds_it(auth_cfg, fake_jsonl):  # noqa: ARG001
+    """The stamp covers EVERY mission, not the page the rail happens to show.
+
+    `msn_page3` stands in for a mission far past the first page: the server has never been told
+    what the client has loaded, so it cannot answer differently for one — which is exactly the
+    property that makes the client's paged derivation unnecessary.
+    """
+    cards = _cards_with_missions(
+        auth_cfg,
+        cached_ids=["claude:held", "claude:free"],
+        membership={"claude:held": "msn_page3"},
+    )
+    assert cards["claude:held"]["mission_id"] == "msn_page3"
+    # `None`, not absent: "no mission holds this" is a real answer and the client adopts on it.
+    assert cards["claude:free"]["mission_id"] is None
+
+
+def test_a_synthesized_card_is_stamped_too(auth_cfg, fake_jsonl):  # noqa: ARG001
+    """The second producer. A card conjured for an action the pulse cache never saw is still a
+    session some mission may hold — and it is the one most likely to be, since it is carrying a
+    live decision."""
+    ledger.append(
+        {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:ghost"}
+    )
+    cards = _cards_with_missions(auth_cfg, cached_ids=[], membership={"claude:ghost": "msn_x"})
+    assert cards["claude:ghost"]["mission_id"] == "msn_x"
+
+
+def test_an_unreadable_membership_store_omits_the_field_rather_than_lying(auth_cfg, fake_jsonl):  # noqa: ARG001
+    """ABSENT, never `None`.
+
+    `None` means "no mission holds this", which the client acts on by offering ADOPT. If an
+    unreadable store answered `None` the console would offer that adoption for every session on
+    the page — mutations the server refuses — which is the precise defect the stamp removes.
+    There is no sentinel string available either: any value could be a real mission id.
+    """
+    cards = _cards_with_missions(
+        auth_cfg, cached_ids=["claude:s1"], membership=RuntimeError("db is gone")
+    )
+    # The card still SHOWS — hiding the operator's work is the worse failure — it just makes no
+    # ownership claim.
+    assert "claude:s1" in cards
+    assert "mission_id" not in cards["claude:s1"]
+
+
+def test_a_stale_cached_stamp_never_survives_a_store_that_will_not_answer(auth_cfg, fake_jsonl):  # noqa: ARG001
+    """The unconditional strip, tested where it is load-bearing.
+
+    When the store answers, the assignment overwrites whatever the cache held, so a test with a
+    readable store proves nothing about the strip — it would pass with the strip deleted. The
+    case that needs it is the one where nothing overwrites: the pulse cache outlives the
+    memberships it saw, so a `mission_id` an earlier scan wrote into it would be served as
+    current ownership precisely when the server cannot establish ownership at all. Absent, not
+    stale.
+    """
+    from fastapi.testclient import TestClient
+
+    from agent_sessions import pulse
+    from agent_sessions.main import create_app
+    from agent_sessions.routes import pulse as pulse_routes
+
+    def boom(*a, **k):
+        raise RuntimeError("db is gone")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            pulse,
+            "load_cache",
+            lambda *a, **k: {
+                "cards": [{"id": "claude:s1", "state": "idle", "mission_id": "msn_stale"}]
+            },
+        )
+        mp.setattr(pulse_routes.missions, "all_active_memberships", boom)
+        c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+        c.post(
+            "/login",
+            data={"username": "marcus", "password": "hunter2"},
+            follow_redirects=False,
+            headers={"Origin": auth_cfg.origin},
+        )
+        card = {x["id"]: x for x in c.get("/api/pulse").json()["cards"]}["claude:s1"]
+    assert "mission_id" not in card

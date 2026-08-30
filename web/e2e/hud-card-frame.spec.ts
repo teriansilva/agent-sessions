@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // Real-browser guard for #476: Pulse cards and Overview session chips are framed by the
 // HudFrame corner brackets ONLY — no engine/urgency `border-left` rail, so the bracketed left
 // edge never doubles up into a "double line". A jsdom test can't prove this (no real layout /
@@ -82,6 +84,7 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
       }),
     );
 
+    await mockMissions(page);
     await page.goto("/pulse");
 
     const li = page.locator("li", { hasText: "Pulse needs-you card" });

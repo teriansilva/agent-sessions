@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 /** The bell converges when an action is resolved (#800).
  *
  *  jsdom can dispatch the event and read a badge, but it cannot prove the two things that
@@ -157,7 +159,8 @@ test("resolving the last action empties the bell — badge and panel — in the 
 }) => {
   const state = { open: true };
   await mockApp(page, state);
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
 
   const bell = page.getByRole("button", { name: /^Notifications/ });
   await expect(bell).toHaveAttribute("aria-label", "Notifications, 1 unread");
@@ -185,7 +188,8 @@ test("another tab does not jump; it converges on its next fetch", async ({
   // only prove startup fetching, and would stay green with the interval deleted.
   await other.clock.install();
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await other.goto("/pulse");
 
   const otherBell = other.getByRole("button", { name: /^Notifications/ });

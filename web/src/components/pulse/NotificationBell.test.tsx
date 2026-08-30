@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, test, vi } from "vitest";
@@ -138,4 +138,94 @@ test("resolving an action refreshes the bell in the same tab (#800)", async () =
   window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
 
   await waitFor(() => expect(screen.queryByText("1")).toBeNull());
+});
+
+// =============================================================================================
+// The settled window and the `uncertain` count (#852, wired by #879).
+// =============================================================================================
+
+const SETTLED = {
+  ...NOTIFICATION,
+  id: "s1",
+  title: "delivered: continue",
+  read: true,
+};
+
+test("the settled window renders as history, with no controls", async () => {
+  mockWidth(false);
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [NOTIFICATION],
+    unread: 1,
+    uncertain: 0,
+    settled: [SETTLED],
+  });
+  render(
+    <MemoryRouter>
+      <NotificationBell />
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+  const row = await screen.findByTestId("bell-settled-row");
+  expect(row).toHaveTextContent("delivered: continue");
+  // History offers nothing to decide — that is the whole contract of the window.
+  expect(within(row).queryByRole("button")).toBeNull();
+});
+
+test("`uncertain` is shown as its own signal and NEVER added to the badge", async () => {
+  mockWidth(false);
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [NOTIFICATION],
+    unread: 1,
+    uncertain: 3,
+    settled: [],
+  });
+  render(
+    <MemoryRouter>
+      <NotificationBell />
+    </MemoryRouter>,
+  );
+  const bell = await screen.findByRole("button", { name: /notifications/i });
+  // 1, not 4. A row whose state could not be read offers no control, so counting it as
+  // actionable hands the operator a number they cannot clear by acting (#852 rule 5).
+  expect(bell).toHaveAccessibleName(/1 unread/i);
+  await userEvent.click(bell);
+  expect(await screen.findByTestId("bell-uncertain")).toHaveTextContent(
+    /3 decisions could not be read/i,
+  );
+});
+
+test("Clear sends exactly the settled ids that were DISPLAYED (#862)", async () => {
+  // The race this exists for: the operator sees one settled row, another decision settles
+  // before the click, and a server-side "clear the current window" would hide the second one
+  // without it ever being seen — permanently, since hidden is what keeps a row out of every
+  // later projection.
+  mockWidth(false);
+  const clear = vi
+    .spyOn(api, "clearSettledNotifications")
+    .mockResolvedValue({ cleared: 1 });
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [],
+    unread: 0,
+    uncertain: 0,
+    settled: [SETTLED],
+  });
+  render(
+    <MemoryRouter>
+      <NotificationBell />
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+  await screen.findByTestId("bell-settled-row");
+
+  // …a second decision settles between the render and the click. The client must not send it.
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [],
+    unread: 0,
+    uncertain: 0,
+    settled: [SETTLED, { ...SETTLED, id: "s2", title: "rejected: continue" }],
+  });
+
+  await userEvent.click(screen.getByTestId("bell-clear-settled"));
+  await waitFor(() => expect(clear).toHaveBeenCalled());
+  expect(clear).toHaveBeenCalledWith(["s1"]);
 });

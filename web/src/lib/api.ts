@@ -44,6 +44,10 @@ import type {
   TwoFactorEnrollment,
   UpdateInfo,
   UpdateSettings,
+  Mission,
+  MissionContext,
+  MissionList,
+  MissionObjective,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
 import { announceActionResolved } from "./actionEvents";
@@ -853,6 +857,76 @@ export const api = {
         scope,
       },
     ),
+  // -------------------------------------------------------------------------------------------
+  // Missions (#846 / #862). Every route is `logged_in`; the mutating ones are CSRF-guarded.
+  // -------------------------------------------------------------------------------------------
+
+  /** The rail's list. `archived` scopes it; `q` / `project` / `state` filter the FULL set before
+   *  the page window, so `total` and the facets describe the filtered result (#840). */
+  missions: (opts?: {
+    q?: string;
+    project?: string;
+    state?: string;
+    archived?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (opts?.q) p.set("q", opts.q);
+    if (opts?.project) p.set("project", opts.project);
+    if (opts?.state) p.set("state", opts.state);
+    if (opts?.archived) p.set("archived", "1");
+    if (opts?.limit != null) p.set("limit", String(opts.limit));
+    if (opts?.offset != null) p.set("offset", String(opts.offset));
+    const q = p.toString();
+    return getJson<MissionList>(`/api/missions${q ? `?${q}` : ""}`);
+  },
+
+  /** One mission with a page of its timeline. `before` is the cursor from a previous page's
+   *  `events_next_seq` — older events, never a page offset, so a new event arriving between
+   *  pages cannot shift the window and duplicate or skip a row. */
+  mission: (id: string, opts?: { eventsLimit?: number; before?: number | null }) => {
+    const p = new URLSearchParams();
+    if (opts?.eventsLimit != null) p.set("events_limit", String(opts.eventsLimit));
+    if (opts?.before != null) p.set("events_before_seq", String(opts.before));
+    const q = p.toString();
+    return getJson<Mission>(`/api/missions/${encodeURIComponent(id)}${q ? `?${q}` : ""}`);
+  },
+
+  /** Folder, git summary and session roster. Sends NO path — the server resolves the mission's
+   *  own cwd, which is the property that makes it traversal-proof. */
+  missionContext: (id: string) =>
+    getJson<MissionContext>(`/api/missions/${encodeURIComponent(id)}/context`),
+
+  missionObjectives: (id: string) =>
+    getJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+    ),
+
+  /** Operator edits only — add / drop / retitle / waive / reorder. `state` and `met_at` are not
+   *  writable on this route at all, so an edit can never retroactively mark an objective met. */
+  patchMissionObjectives: (id: string, ops: Record<string, unknown>[]) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops },
+    ),
+
+  /** Take a live session into a mission. Membership is exclusive: a session already held by
+   *  another mission comes back 409 NAMING the holder, so the operator is told where it went
+   *  rather than being told "no". `mutateJson` so that detail survives (#834). */
+  adoptMissionSession: (id: string, sessionKey: string) =>
+    mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/adopt`, {
+      session_key: sessionKey,
+    }),
+
+  /** Hide the settled rows the client DISPLAYED — never "the current window" (#862). Passing
+   *  what was on screen is what stops a decision that settled between the render and the click
+   *  from being hidden without ever being seen. */
+  clearSettledNotifications: (ids: string[]) =>
+    postJson<{ cleared: number }>("/api/pulse/notifications/clear-settled", {
+      ids,
+    }),
+
   /** Sign out: clear the session server-side, then hard-navigate to the login page (#141). */
   logout,
 };

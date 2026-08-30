@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { mockMissions } from "./mission-console";
+
 // Real-browser checks for Pulse orchestration (#726 Phases 1–2). Network is fully mocked —
 // the suite never talks to a backend or an AI endpoint.
 //
@@ -193,7 +195,8 @@ test("approve delivers, and only a delivering verb offers the button", async ({
     await r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   // The queue's own heading is gone (#754) — the controls ride on the session cards, and the
   // panel just points at them.
   await expect(page.getByText(/actions? needs? you/i)).toBeVisible();
@@ -218,7 +221,8 @@ test("a stale 409 says nothing was sent, distinguishably from an error", async (
     }),
   );
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await page.getByRole("button", { name: /^approve$/i }).click();
   // Compare-and-execute refused: the operator must be able to tell "nothing happened" from
   // "something broke", because the two call for completely different responses.
@@ -243,7 +247,8 @@ test("evidence is pulled from the server on expand, not shipped with the proposa
     });
   });
 
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
   // Nothing is fetched until the operator asks — the proposal carries a KIND, never content.
   expect(evidenceCalls).toBe(0);
@@ -257,7 +262,8 @@ test("the autonomy strip shows the ceiling, not just the tier", async ({
   page,
 }) => {
   await mockOrchestrator(page, []);
-  await page.goto("/pulse");
+  await mockMissions(page);
+    await page.goto("/pulse");
   // "YOLO" alone reads as "does everything"; the copy has to say what it can actually send.
   await expect(page.getByText(/acts on its own:/i)).toContainText("continue");
   await expect(
@@ -275,6 +281,7 @@ test.describe("mobile", () => {
       r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } }),
     );
 
+    await mockMissions(page);
     await page.goto("/pulse");
     const approve = page.getByRole("button", { name: /^approve$/i });
     await expect(approve).toBeVisible();
