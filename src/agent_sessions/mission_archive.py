@@ -40,7 +40,15 @@ import logging
 import time
 
 from . import archive as archive_mod
-from . import engines, metadata, missions, runtime_cleanup, transcript_owner
+from . import (
+    engines,
+    metadata,
+    mission_turn_reconcile,
+    missions,
+    runtime_cleanup,
+    session_input,
+    transcript_owner,
+)
 
 log = logging.getLogger("agent_sessions.mission_archive")
 
@@ -263,13 +271,134 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
     return outcome
 
 
+def _settle_live_actions(session_keys: list[str]) -> int:
+    """Terminalize every still-live ledger action on these sessions. Returns how many settled.
+
+    DECISION 5 (#871). `{"abandon": true}` is the one path that archives PAST a live mission, so
+    it is the only place "archived mission, still-deliverable approval" is reachable — the
+    security case #871's Risks table names. Terminating the agents is not the guard on its own: a
+    delivery can race the teardown, and a session relaunched afterwards is a live PTY again.
+
+    **The outcome depends on the state, and conflating the two would be a lie.**
+
+    * `proposed` / `approved` / `escalated` — nothing was ever written to a PTY, so `expired` is
+      exactly right: the operator abandoned the mission, no decision is coming, which is what the
+      TTL sweep would have concluded anyway, reached sooner. Not `rejected` (nobody declined it)
+      and not `failed` (nothing was attempted).
+    * `claimed` — bytes may ALREADY be on their way to the terminal. Recording that as `expired`
+      would assert a delivery did not happen when nobody knows, which is the one thing the
+      ledger's design refuses to do: `recover_claimed` maps this state to `indeterminate` for
+      exactly this reason, and abandoning a mission is not more informative about a write in
+      flight than a crash is.
+
+    So the two are settled separately, to the outcome each actually earned.
+
+    **Why this is not inside the archive transaction**, which is where it belongs on paper: the
+    ledger and the missions store are different stores, and #862 fixed the lock order as
+    LEDGER → MISSIONS. Holding a missions transaction across a ledger append inverts that and
+    deadlocks. So it runs immediately after `begin_archive` has stamped `archiving_at` and moved
+    the mission to `abandoned` — the narrowest window the lock order permits, and before any
+    teardown begins.
+
+    **That window is now closed rather than deferred.** An earlier revision said the orchestrator
+    could still propose against these sessions afterwards because it reasons about SESSIONS and
+    not about missions, and filed the fix under Phase 5. It is an authorization hole, not a
+    feature: `missions.sessions_barred_from_automation` is consulted inside the ledger append
+    lock and again in the actuator's final guard, so neither a fresh proposal nor an operator's
+    approval can reach a session this archive governs.
+
+    This sweep still matters — it settles the actions that ALREADY exist, which no fence can
+    retract — but it is no longer the only thing standing between an abandon and a PTY write.
+    """
+    from . import orchestrator_ledger as ledger
+
+    if not session_keys:
+        return 0
+    # SERIALIZED AND CHECKED. This used the fail-soft `latest_by_id()`, so an unreadable ledger
+    # read as "no live actions" and abandon reported success having settled nothing — while a
+    # pre-existing approved action stayed deliverable into the mission it had just archived.
+    # Third site of the same fail-open, and the one where it matters most (review on #881).
+    status, latest = ledger.latest_by_id_serialized_checked()
+    if status != "ok":
+        # The missions store has ALREADY committed the abandon, so this cannot be undone here.
+        # Raising is what stops the caller reporting a completed archive whose action fence was
+        # never installed; the mission is left mid-operation and the retry re-runs the sweep.
+        raise missions.MissionError(
+            "the orchestrator ledger could not be read, so the mission's live actions were not "
+            "settled — the archive is incomplete and must be retried",
+            status=503,
+        )
+    wanted = set(session_keys)
+    # Everything live EXCEPT `claimed`, which earns a different outcome (see above).
+    undelivered = ledger.LIVE_STATES - {"claimed"}
+    settled = 0
+    for action_id, rec in latest.items():
+        state = rec.get("state")
+        if state not in ledger.LIVE_STATES:
+            continue
+        if str(rec.get("session_id") or "") not in wanted:
+            continue
+        # CAS on the state actually read, so an action that changed underneath us — an approve
+        # that won the race — is left alone rather than overwritten with a stale conclusion.
+        if state == "claimed":
+            done = ledger.compare_and_set(action_id, {"claimed"}, "indeterminate")
+        else:
+            done = ledger.compare_and_set(action_id, undelivered, "expired")
+        if done is not None:
+            settled += 1
+    return settled
+
+
+def _begin_archive_fenced(mission_id: str, *, abandon: bool = False, resume: bool = False) -> dict:
+    """`begin_archive`, announced through the PTY WRITE FENCE (#871).
+
+    **The gap this closes.** `deliver()` evaluates the mission fence in `final_guard`, which runs
+    BEFORE `_write_all` takes the registry lock — deliberately, because the guard does I/O. So a
+    verdict of "not barred" was already true-and-stale by the time byte one happened, and an
+    archive committing in that window reached a real PTY. Reproduced on the previous head:
+    guard says not barred, `begin_archive(abandon=True)` commits, bytes land anyway.
+
+    `policy_transaction()` is the mechanism the input layer already provides for exactly this —
+    it holds the write fence across the change and bumps the epoch on the way out, so an
+    in-flight send either finishes before the archive starts, or waits and then fails the
+    integer epoch compare that happens INSIDE the fence, immediately before byte one.
+
+    **The global epoch rather than the per-session one**, deliberately: which sessions this
+    archive governs is not known until the transaction has read the roster, so there is no key
+    to scope a `session_transaction` to at the moment the fence must be taken. Over-invalidation
+    costs an unrelated in-flight delivery one refusal, which the caller settles and the
+    orchestrator re-proposes; under-invalidation costs bytes typed into a torn-down mission.
+
+    Lock order stays one-way: this takes the registry lock and then does missions work; the
+    fence takes the registry lock and compares an integer, never wanting the missions store.
+    """
+    with session_input.policy_transaction():
+        return missions.begin_archive(mission_id, abandon=abandon, resume=resume)
+
+
 async def archive_mission(mission_id: str, *, abandon: bool = False) -> dict:
     """Archive a mission and every session in its roster. The full three-step operation.
 
     Raises :class:`missions.MissionError` from step 1 — a live mission without ``abandon`` is a
-    409 there, before anything is torn down.
+    409 there, before anything is torn down, and an unresolved turn is a 409 there too (#871
+    decision 1).
     """
-    begun = await missions.run_admitted(lambda: missions.begin_archive(mission_id, abandon=abandon))
+    # RECONCILE BEFORE FENCING. Decision 1 refuses to archive while a turn is unresolved, and
+    # decision 2 keeps a turn unresolved until its action settles — so a turn whose action the
+    # TTL already expired would 409 this archive for ever if nobody wrote that conclusion onto
+    # the turn. This is that writer, and here is one of its two call sites: the archive heals
+    # itself rather than refusing indefinitely. It runs OUTSIDE `begin_archive` because it reads
+    # the ledger, and a missions transaction may not span a ledger read (#862 lock order).
+    await asyncio.to_thread(lambda: mission_turn_reconcile.reconcile(mission_id=mission_id))
+    begun = await missions.run_admitted(lambda: _begin_archive_fenced(mission_id, abandon=abandon))
+    if abandon:
+        # Before any teardown: an approval that outlives the abandon can still reach a PTY.
+        # Scoped the same way the recovery path is, so the two cannot disagree about which
+        # sessions this archive is responsible for.
+        keys = await missions.run_admitted(
+            lambda: missions.sessions_governed_by_archive(mission_id)
+        )
+        await asyncio.to_thread(_settle_live_actions, keys)
     for row in begun["sessions"]:
         await _teardown_session(mission_id, row["session_key"])
     return await missions.run_admitted(lambda: missions.finish_archive(mission_id))
@@ -378,9 +507,33 @@ async def resume_pending_operations() -> dict:
             # is refused instead, because handing it the worklist is how a second caller came to
             # finalise an archive while the first worker was still inside `cleanup_runtime`.
             begun = await missions.run_admitted(
-                lambda mid=mission_id: missions.begin_archive(mid, resume=True)
+                lambda mid=mission_id: _begin_archive_fenced(mid, resume=True)
             )
             token = begun["op_token"]
+            # RE-RUN THE ABANDON SWEEP ON EVERY ATTEMPT, not just the first.
+            #
+            # The sweep can fail AFTER `begin_archive` has committed — that is precisely the 503
+            # path that leaves the mission on this worklist — and resuming used to go straight to
+            # teardown and `finish_archive`. The approved action that caused the failure stayed
+            # claimable while recovery reported the archive complete, which is the same
+            # authorization hole the sweep exists to close, reached by the retry instead of the
+            # first try (review on #881).
+            #
+            # Unconditional for an abandoned mission rather than conditional on a persisted "the
+            # sweep still owes work" flag: the sweep is idempotent (it CASes only actions that are
+            # still live, so a second run settles nothing extra), and an extra ledger read is a far
+            # cheaper thing to be wrong about than a missed fence. If it raises again the mission
+            # stays on the worklist, exactly as on the first attempt.
+            if str(begun.get("state") or "") == "abandoned":
+                # The sessions THIS archive governs — not `begun["sessions"]` (the still-PENDING
+                # subset, which misses one already torn down) and not the raw historical roster
+                # (which would reach into a session another live mission now holds and expire ITS
+                # action). `sessions_governed_by_archive` is the scope that is exactly right on
+                # both sides (review on #881).
+                keys = await missions.run_admitted(
+                    lambda mid=mission_id: missions.sessions_governed_by_archive(mid)
+                )
+                await asyncio.to_thread(_settle_live_actions, keys)
             for row in begun["sessions"]:
                 await _teardown_session(mission_id, row["session_key"])
             await missions.run_admitted(

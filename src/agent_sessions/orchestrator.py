@@ -678,7 +678,32 @@ async def run_pass(
     }
 
 
-def _persist(records: list[dict]) -> list[dict]:
+def _barred_sessions() -> set[str]:
+    """Sessions no action may be written for, read at the moment of writing.
+
+    An unreadable missions store RAISES, which aborts the append rather than writing actions
+    whose authorization could not be checked. Verified rather than assumed: the scheduled loop
+    catches `Exception`, logs, and continues without advancing `_last_fingerprint`, so the next
+    sweep re-runs the same work — and a store that stays broken backs the loop off exponentially
+    (`2**consecutive_failures`, capped) rather than spinning. The manual `Run now` path maps it
+    to a 503 naming the store. Guessing instead would mean an action delivered into a mission
+    that was being torn down.
+    """
+    from . import missions
+
+    try:
+        return missions.sessions_barred_from_automation()
+    except missions.MissionError:
+        raise
+    except Exception as e:  # noqa: BLE001 — one shape for every store failure
+        raise missions.MissionError(
+            "the mission store could not be read, so no action's authorization could be "
+            "checked; nothing was proposed",
+            status=503,
+        ) from e
+
+
+def _persist(records: list[dict], *, gate=None) -> list[dict]:
     """Write a pass's records, raise notifications, and compact if needed. Returns what was
     actually written.
 
@@ -703,7 +728,13 @@ def _persist(records: list[dict]) -> list[dict]:
     notifying about it would announce exactly the thing that does not exist — the same rule,
     applied to the case where the ledger refuses the slot.
     """
-    kept, dropped = ledger.append_batch_for_free_sessions(records)
+    # The MISSION fence, evaluated inside the ledger lock (#871). A mission that has been
+    # abandoned or is being archived has withdrawn its sessions from automation, and the pass
+    # reasons about sessions rather than missions — so without this it can mint an action for a
+    # session whose mission was torn down moments ago, and under `yolo` deliver it.
+    kept, dropped = ledger.append_batch_for_free_sessions(
+        records, gate=gate, barred=_barred_sessions
+    )
     if dropped:
         log.info(
             "orchestrator: dropped %d action(s) whose session already had a live one", len(dropped)

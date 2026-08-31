@@ -1633,7 +1633,7 @@ def test_a_hand_edited_non_boolean_gate_DEGRADES_on_read(tmp_path):
     assert obj["title"] == "T", "the operator's intent stayed visible"
 
 
-def test_the_v8_to_v9_UPGRADE_does_not_backfill_history(tmp_path, monkeypatch):
+def test_the_objectives_intent_UPGRADE_does_not_backfill_history(tmp_path, monkeypatch):
     """The migration path, driven from a real v8 database rather than only a fresh one.
 
     Only the fresh-install path was exercised, and the risk lives in the upgrade: a mission that
@@ -1660,7 +1660,11 @@ def test_the_v8_to_v9_UPGRADE_does_not_backfill_history(tmp_path, monkeypatch):
     assert missions.get_mission(old_id) is not None, "the upgrade lost a mission"
     cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(missions)")}
     assert {"objectives_state", "objectives_at"} <= cols
-    assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == 9
+    # Against the CONSTANT, not a literal: this test is about BACKFILL, and every later
+    # migration would otherwise break it. #881's two migrations did exactly that.
+    assert (
+        sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
+    )
 
     assert (
         _pending_ids() == []

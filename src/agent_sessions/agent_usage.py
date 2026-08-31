@@ -445,7 +445,7 @@ def _first_line(text: str) -> str:
 # --- file-backed reporters (no subprocess) ------------------------------------------------------
 
 
-def read_codex_rate_limits(home: Path | None = None) -> Report:
+def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None) -> Report:
     """codex writes its own quota into every rollout; the newest one wins.
 
     A tail read of one file — codex states `used_percent`, the window length, when it resets and
@@ -453,7 +453,10 @@ def read_codex_rate_limits(home: Path | None = None) -> Report:
     """
     from .engines import base
 
-    now = time.time()
+    # Injectable, like the other two readers in this file. Without it a fixture that states a
+    # real `resets_at` is a TIME BOMB: it passes until that moment arrives, then fails for
+    # everyone, on a test that is about parsing rather than about the clock.
+    now = time.time() if now is None else now
     try:
         # `rglob`, not a `*/*/*/` glob: the date nesting is codex's business, not ours, and a
         # hardcoded depth would fail SILENTLY if it ever changed — every codex row would just

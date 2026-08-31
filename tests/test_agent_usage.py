@@ -148,7 +148,10 @@ def _rollout(tmp_path: Path, *lines: dict, name: str = "rollout-a.jsonl") -> Pat
 def test_codex_reads_rate_limits_from_its_own_rollout(tmp_path, monkeypatch):
     payload = json.loads("{" + _fixture("codex-ratelimits.json").strip() + "}")
     _rollout(tmp_path, {"type": "event_msg", "payload": {"type": "token_count", **payload}})
-    rep = au.read_codex_rate_limits(home=tmp_path)
+    # A moment BEFORE the fixture's stated reset. Unpinned, this test was a time bomb:
+    # `resets_at` is a real epoch, the reader drops windows that have already reset, and it duly
+    # started failing for everyone once that moment passed. The assertion is about PARSING.
+    rep = au.read_codex_rate_limits(home=tmp_path, now=1788137880 - 60)
     assert rep.source == au.SOURCE_PLAN
     assert [(w.label, w.used_pct) for w in rep.windows] == [("week", 21.0)]
     assert rep.plan == "pro"

@@ -61,6 +61,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .atomicjson import fsync_dir
@@ -453,6 +454,48 @@ def latest_by_id(path: Path | None = None) -> dict[str, dict]:
     return _latest_by_id_locked(_path(path))
 
 
+def latest_by_id_serialized(path: Path | None = None) -> dict[str, dict]:
+    """:func:`latest_by_id`, but **taking the writer lock**.
+
+    `latest_by_id` reads without it, which is right for a feed — a reader must not queue behind a
+    write. It is wrong for anyone deciding *whether a write happened*: `append_batch_for_free_
+    sessions` holds this lock across gate-then-append, so an unlocked reader can observe the
+    ledger in the middle of that hold, see nothing, and conclude nothing was written while the
+    append is moments away. `/message` recovery did exactly that and settled a turn terminal just
+    before its own action landed.
+
+    Serializing against the writer is what makes "readable and absent" mean "not written **yet**"
+    is impossible rather than merely unlikely.
+    """
+    p = _path(path)
+    with _locked(p):
+        return _latest_by_id_locked(p)
+
+
+def latest_by_id_serialized_checked(path: Path | None = None) -> tuple[str, dict[str, dict]]:
+    """Both guarantees at once: **serialized** against the writer AND **tri-state**.
+
+    The two existing helpers each give one half, and recovery needs both. Reading with
+    `latest_by_id_serialized` cannot say "unreadable" — `_read_all_at` maps an `OSError` to `[]`
+    — and a caller deciding *whether a write happened* then reads a transient I/O error as
+    "nothing was written" and settles a turn terminal on no evidence. Reading with
+    `latest_by_id_checked` says it, but without the writer lock, so it can observe the ledger
+    mid-append and reach the same wrong conclusion for the other reason.
+
+    Absence here is only meaningful because BOTH hold: the file read cleanly, and no write was in
+    flight while it did.
+    """
+    p = _path(path)
+    with _locked(p):
+        if not p.exists():
+            return "ok", {}
+        try:
+            raw = p.read_text(errors="replace")
+        except OSError:
+            return "unreadable", {}
+        return "ok", _latest_of(_parse_records(raw))
+
+
 def _latest_by_id_locked(p: Path) -> dict[str, dict]:
     return _latest_of(_read_all_at(p))
 
@@ -471,7 +514,11 @@ def _latest_of(records: list[dict]) -> dict[str, dict]:
 
 
 def append_batch_for_free_sessions(
-    records: list[dict], path: Path | None = None
+    records: list[dict],
+    path: Path | None = None,
+    *,
+    gate: Callable[[], bool] | None = None,
+    barred: Callable[[], set[str]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Append only those ``records`` whose session has no live action. Returns ``(kept, dropped)``.
 
@@ -486,11 +533,36 @@ def append_batch_for_free_sessions(
     Combining the check and the append under ONE exclusive hold is the only thing that closes
     it, because the losing writer must see the winner's record before deciding.
 
+    ``gate`` extends that hold to a caller-supplied precondition, evaluated **inside** the lock
+    and immediately before the write. `/message` uses it to make its turn reservation part of the
+    same critical section as the append (#852): a fence checked before the lock is taken is
+    check-then-write, and the writer can be reclaimed in between and append anyway — landing a
+    second instruction no later fence can withdraw. A False gate drops the whole batch.
+
+    ``barred`` is the same idea PER RECORD rather than per batch: a callable returning the set of
+    session keys that may not be written at all, evaluated **inside** the lock and dropping only
+    the records it names. `gate` cannot express this — it is all-or-nothing — and a caller
+    filtering its own records before the call would be doing the check-then-write this function
+    exists to prevent: the mission could be abandoned in the window between the filter and the
+    lock, and the append would land anyway.
+
+    **Lock order is ledger → missions, deliberately.** That is the order :func:`compact` already
+    establishes (it holds this lock while projecting into the missions store), so a gate that
+    touches missions here is consistent with it rather than the inversion that would deadlock.
+    The same applies to ``barred``, which is a missions query.
     """
     p = _path(path)
     kept: list[dict] = []
     dropped: list[dict] = []
     with _locked(p):
+        if gate is not None and not gate():
+            # Refused before anything is written. Every record is reported as dropped, so the
+            # caller cannot claim to have queued what the ledger declined — the same rule the
+            # per-session check below follows.
+            return [], list(records)
+        # Inside the lock, exactly like `gate` — and once, not per record, so the whole batch is
+        # judged against one consistent snapshot of mission state.
+        off_limits = barred() if barred is not None else set()
         latest = _latest_by_id_locked(p)
         busy = {
             r.get("session_id")
@@ -500,6 +572,12 @@ def append_batch_for_free_sessions(
         for rec in records:
             sid = rec.get("session_id")
             if sid and sid in busy:
+                dropped.append(rec)
+                continue
+            if sid and sid in off_limits:
+                # The session belongs to a mission that has been abandoned or is being archived.
+                # Dropped rather than written-and-swept: an action that never exists cannot be
+                # delivered by a pass that runs before the sweep reaches it.
                 dropped.append(rec)
                 continue
             _append_locked(p, rec, json.dumps(rec, sort_keys=True) + "\n")
@@ -770,11 +848,52 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
         return _compact_locked(p, history_max, rows=rows, doomed=doomed)
 
 
+def _pinned_turn_keys() -> set[tuple[str, str]] | None:
+    """Turn ids with an unresolved `/message` claim. ``None`` if the missions store is unreadable.
+
+    A turn recovering from a crash asks the ledger "is there already an action for me?", and
+    reads a readable absence as "nothing was ever appended" — the only state from which it may
+    call the model a second time. That reading is only sound if compaction cannot have removed
+    the action underneath it, because *compacted away* and *never written* are otherwise the same
+    observation with opposite safe responses.
+
+    So an action belonging to an unresolved turn is not compactable. ``None`` (unreadable) is
+    propagated rather than treated as "nothing pinned": guessing empty here would let compaction
+    delete the very evidence the guess depends on.
+
+    Keyed on ``(mission_id, turn_id)``, both halves. `turn_id` is client-generated and may
+    legitimately repeat across missions, so pinning on it alone let one long-running turn retain
+    another mission's unrelated terminal history — defeating this ledger's global bound.
+    """
+    try:
+        from . import missions
+
+        return missions.unresolved_turn_keys()
+    except Exception:  # noqa: BLE001 — unreadable is not "nothing pinned"
+        log.debug("ledger: could not read unresolved turns", exc_info=True)
+        return None
+
+
 def _doomed(rows: list[dict], history_max: int) -> list[dict]:
     """The terminal rows this compaction will drop. The SAME partition ``_compact_locked`` uses —
     computed once, from one snapshot, and handed to both, so the two cannot disagree.
+
+    Rows pinned by an unresolved turn are excluded, so they are neither dropped nor counted
+    against the tail — see :func:`_pinned_turn_ids`.
     """
+    pinned = _pinned_turn_keys()
     done = [r for r in rows if r.get("state") not in LIVE_STATES]
+    if pinned is None:
+        # The pin set is unknown, so nothing may be dropped: this pass cannot prove any given
+        # row is safe to remove. Compaction is a housekeeping optimisation and skipping one is
+        # free; deleting an action a recovering turn was about to find is not.
+        return []
+    if pinned:
+        done = [
+            r
+            for r in done
+            if (str(r.get("mission_id") or ""), str(r.get("turn_id") or "")) not in pinned
+        ]
     done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
     return done[max(0, history_max) :]
 

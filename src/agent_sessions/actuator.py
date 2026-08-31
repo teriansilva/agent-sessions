@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Callable
 
 from . import (
     engines,
@@ -194,6 +195,30 @@ def _policy_fingerprint() -> tuple:
     )
 
 
+def _authority_fingerprint(session_id: str) -> Callable[[], object]:
+    """The policy snapshot PLUS the shared mission state for this session (#871).
+
+    The in-memory policy epoch is process-local, and this app supports several instances over one
+    store — so an archive committed by a sibling instance never touches this interpreter's
+    counter, and its own epoch reads unchanged right up to byte one. The missions store is the
+    only thing both instances agree on, so the fingerprint reads it.
+
+    Kept cheap and, critically, taking NO lock the write fence already holds: it is called from
+    inside the registry lock, so everything it touches must be ordered after it — which is the
+    order both `policy_transaction` and the archive fence take.
+    """
+
+    def _fp() -> object:
+        # Imported HERE, not at module scope: `missions` opens sqlite, and this module is on the
+        # import path of the input layer it must stay below.
+        from . import missions
+
+        barred = bool(session_id) and session_id in missions.sessions_barred_from_automation()
+        return (*_policy_fingerprint(), barred)
+
+    return _fp
+
+
 def _settle_waiting(action_id: str, state: str, **fields) -> dict | None:
     """Settle an action that has NOT been claimed yet, atomically.
 
@@ -270,6 +295,29 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
             ok, why = authority(live)
             if not ok:
                 return False, why
+        # THE MISSION FENCE, and it belongs HERE — in the guard every delivery passes through —
+        # rather than in `authority`, which only the automatic path supplies. Placing it there
+        # left the ordinary approval route (`POST /api/pulse/actions/{id}/approve` → `deliver()`)
+        # with no mission check at all, so an operator tap could still type into a session whose
+        # mission was being torn down. Reproduced on the previous head (review on #881).
+        #
+        # It is not "an extra permission this delivery rests on", which is what `authority` is
+        # for. It is a property of the SESSION: an archiving mission has withdrawn it, and no
+        # caller — automatic or human — may write to it. A tap is authority to send what the
+        # operator approved; it is not authority to send it somewhere that no longer accepts it.
+        #
+        # Fails CLOSED, unlike the append-time fence: this is the last check before bytes reach a
+        # real pty, and "I could not verify this is still authorized" must not deliver.
+        sid = str(rec.get("session_id") or "")
+        if sid:
+            from . import missions
+
+            try:
+                barred = missions.sessions_barred_from_automation()
+            except Exception:
+                return False, "the mission store could not be read, so authority is unverifiable"
+            if sid in barred:
+                return False, "the session's mission is being archived; it accepts no writes"
         # The screen/viewer contract is "no viewer at the keyboard, and the screen still looks
         # like the one that was proposed against" — as of NOW, not as of setup.
         return check_precondition(rec, registry=registry)
@@ -284,7 +332,7 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
         # flip between those two still slipped through — the guard's verdict is only as fresh
         # as the moment it ran. This is re-read INSIDE the fence, immediately before byte one,
         # so a withdrawal at any point up to the write refuses.
-        policy_fingerprint=_policy_fingerprint,
+        policy_fingerprint=_authority_fingerprint(str(rec.get("session_id") or "")),
     )
     state = {
         "delivered": "delivered",

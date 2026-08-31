@@ -577,6 +577,33 @@ def _write_all(
                         # order against `set_orchestrator` and deadlock both.
                         if _policy_epoch != policy_epoch:
                             return Outcome("stale", "policy changed before the write")
+                        # …and the caller's own authority, RE-EVALUATED here rather than trusted
+                        # from before the waits. This is what the `policy_fingerprint` parameter
+                        # was always documented to do ("the fence re-reads it before byte one and
+                        # refuses on any change"); it was accepted, passed down, and never
+                        # compared, so the guarantee existed only in the docstring.
+                        #
+                        # It matters because the epoch above is PROCESS-LOCAL. This app supports
+                        # several instances over one store, so an authorization change committed
+                        # by a sibling instance never touches this interpreter's counter — its
+                        # own epoch reads unchanged and the write proceeds. A fingerprint that
+                        # reads the SHARED store closes that, because the store is the only thing
+                        # both instances agree on (review on #881).
+                        #
+                        # CONTRACT for the callable: cheap, and it must not take `_lock` — it is
+                        # invoked while this frame holds it. Everything it touches must therefore
+                        # be ordered AFTER the registry lock, which is the order
+                        # `policy_transaction` and the archive fence already take.
+                        if policy_fingerprint is not None:
+                            try:
+                                if policy_fingerprint() != policy_fp:
+                                    return Outcome("stale", "authority changed before the write")
+                            except Exception:  # noqa: BLE001
+                                # Unverifiable authority is not authority. This is the last check
+                                # before bytes reach a real terminal, so it fails CLOSED.
+                                return Outcome(
+                                    "stale", "authority could not be re-verified before the write"
+                                )
                         # The seqlock's second half — and it must RESERVE the screen, not
                         # merely observe it. Comparing and then writing leaves ingestion free
                         # to enter and complete an interval in between: the compare sees the

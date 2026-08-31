@@ -470,6 +470,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except review.ReviewError as e:
             return JSONResponse({"detail": str(e)}, status_code=502)
+        except missions.MissionError as e:
+            # The mission fence could not be evaluated (#871). A pass that cannot check whether a
+            # session's mission was torn down proposes nothing, and says which store failed —
+            # `Run now` returning a 500 would read as a bug in the pass rather than as a store
+            # that is unavailable.
+            return JSONResponse({"detail": str(e)}, status_code=getattr(e, "status", 503))
         pending, feed = await asyncio.to_thread(_pending_and_feed)
         # Carry the health record on the manual path too. `Run now` is what the operator is
         # told to click to force recovery, so it is exactly the request that clears a degraded

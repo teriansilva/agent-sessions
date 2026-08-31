@@ -28,6 +28,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections.abc import Callable
 
 from . import orchestrator, prefs, prompts, pulse_chat, review
 from . import orchestrator_ledger as ledger
@@ -85,10 +86,25 @@ async def ask(
     history: object = None,
     *,
     working_keys: set[str] | None = None,
+    turn_id: str | None = None,
+    mission_id: str | None = None,
+    reserve_write: Callable[[list[str]], bool] | None = None,
 ) -> dict:
     """One chat turn. Raises :class:`review.NotConfiguredError` (→409) /
     :class:`review.ReviewError` (→502), matching ``/api/pulse/ask``.
 
+    ``turn_id`` and ``reserve_write`` exist for the mission console's `/message` route (#852) and
+    are both optional, so every existing caller is unchanged.
+
+    * ``turn_id`` **and ``mission_id``** are both stamped onto each recorded action as
+      provenance. Qualifying by mission is not decoration: the turn key is
+      ``(mission_id, turn_id)``, so two missions may legitimately use the same turn id, and
+      matching on the id alone lets one mission's recovery adopt another mission's actions.
+    * ``reserve_write`` is called **immediately before** the ledger append, receives the action
+      ids about to be written, and returns False if this caller has been fenced out. It is a
+      *reservation*, not a check: it commits a durable receipt — including that intended
+      identity — so recovery can look for exactly those actions rather than infer from timing.
+      A False answer aborts the append entirely: no action is written and none is claimed.
     """
     review._require_config()
     turns = pulse_chat.bound_history(history)
@@ -197,13 +213,49 @@ async def ask(
                 orchestrator.precondition_for,
                 orchestrator.engines.physical_key(action["session_id"]),
             )
+        if turn_id:
+            # Durable provenance, MISSION-QUALIFIED. Without the mission half, a recovering turn
+            # in mission B can adopt an identically-named turn's actions from mission A — the
+            # turn key is (mission_id, turn_id), and half a key is not a key.
+            rec["turn_id"] = turn_id
+            if mission_id:
+                rec["mission_id"] = mission_id
         recorded.append(rec)
 
     if recorded:
+        # THE LINEARIZATION POINT. The receipt commits before the append, so being fenced out is
+        # discovered here rather than after the irreversible half has happened. Check-then-append
+        # would let a reclaimed caller pass and then write, landing a second instruction that no
+        # later fence could withdraw.
+        # THE LINEARIZATION POINT, and it is inside the ledger's own lock rather than before it.
+        # Reserving first and appending afterwards is still check-then-write: this caller can be
+        # reclaimed in the gap and append anyway, landing a second instruction that no later fence
+        # can withdraw. Passed as a GATE, it is evaluated in the same hold as the write, so being
+        # fenced out means the append never happens at all.
+        intended = [str(r.get("id")) for r in recorded if r.get("id")]
+        # Whether the GATE refused, recorded by the gate itself. Inferring it from "the batch came
+        # back empty" conflates being fenced out with the ordinary case where the ledger drops an
+        # action because that session picked up a live one — two different situations, and only
+        # one of them means nothing was sent on this turn's behalf.
+        refused = {"v": False}
+
+        def _gate() -> bool:
+            ok = bool(reserve_write(intended))
+            refused["v"] = not ok
+            return ok
+
+        gate = _gate if reserve_write is not None else None
         # Use what was actually WRITTEN: the ledger drops any action whose session
         # picked up a live one from a concurrent pass, and the reply must not claim
         # to have queued something that was refused.
-        recorded = await asyncio.to_thread(orchestrator._persist, recorded)
+        recorded = await asyncio.to_thread(lambda: orchestrator._persist(recorded, gate=gate))
+        if refused["v"]:
+            return {
+                "intent": "instruct",
+                "answer": "That turn was taken over by another request; nothing was sent.",
+                "actions": [],
+                "fenced": True,
+            }
     # The model's own phrasing ("On it.", "Nudged both sessions.") describes what it INTENDED,
     # and by here that intention may have been overruled three ways: validation dropped the
     # action (a dead session), the post-call eligibility recheck revoked it, or the ledger

@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 TITLE_MAX = 200
 INSTRUCTION_MAX = 8000
@@ -607,6 +607,41 @@ CREATE TABLE IF NOT EXISTS session_reservations (
   at          REAL NOT NULL
 );
 
+-- One operator chat turn, as a DURABLE CLAIM rather than a pair of ordinary timeline events
+-- (#852). `/message` spans two stores — this one and the orchestrator ledger — so ordering alone
+-- cannot make it idempotent: two concurrent requests with the same new `turn_id` would both pass
+-- a "no prior turn" check and both call the model, and a crash after the ledger append but before
+-- the result event would leave a replay with nothing to return, so it would ask again.
+--
+-- The INSERT is the claim, so a duplicate loses at the database. `msg_sha` binds the key to the
+-- content, so the same id with different text is a different turn rather than a replay. `owner`
+-- is renewed while the request runs, so its expiry means the owner STOPPED rather than that it is
+-- slow; `fence` is minted on every ownership change, so a holder that turns out not to be dead
+-- cannot land its result over the recovery that replaced it.
+--
+-- `write_reserved_at` is the receipt: stamped under the fence in a COMMITTED transaction BEFORE
+-- the ledger append, so recovery reads evidence instead of inferring from timing. Set means a
+-- write may have landed (reconcile by provenance, never re-ask); null positively means nothing
+-- was ever appended, which is the only state permitting the single fenced re-entry.
+CREATE TABLE IF NOT EXISTS mission_turns (
+  mission_id        TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  turn_id           TEXT NOT NULL,
+  msg_sha           TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK (state IN ('in_progress','done','indeterminate')),
+  owner             TEXT,
+  owner_at          REAL,
+  fence             TEXT NOT NULL,
+  write_reserved_at REAL,
+  result            TEXT,
+  result_meta       TEXT,
+  operator_seq      INTEGER,
+  assistant_seq     INTEGER,
+  action_ids        TEXT,
+  created_at        REAL NOT NULL,
+  settled_at        REAL,
+  PRIMARY KEY (mission_id, turn_id)
+);
+
 -- Durable obligations that outlive one call. Today: `scrub_pending`, set when a WAL truncate
 -- came back busy so the plaintext of a deleted mission is still on disk. Without it the advertised
 -- "retry" was a no-op — the rows are already gone, so the next delete returns early and never
@@ -681,8 +716,55 @@ def _migrate(con) -> int:
             _migrate_7_to_8(con)
         if version < 9:
             _migrate_8_to_9(con)
+        if version < 10:
+            _migrate_9_to_10(con)
+        if version < 11:
+            _migrate_10_to_11(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
+
+
+def _migrate_9_to_10(con) -> None:
+    """v10 adds `mission_turns` — the durable claim behind `/message` (#852).
+
+    A new table only, so an in-place upgrade is the same statement a fresh install runs. Nothing
+    backfills: a turn is claimed at request time, and there is no history to reconstruct.
+    """
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS mission_turns ("
+        "  mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,"
+        "  turn_id TEXT NOT NULL,"
+        "  msg_sha TEXT NOT NULL,"
+        "  state TEXT NOT NULL CHECK (state IN ('in_progress','done','indeterminate')),"
+        "  owner TEXT, owner_at REAL, fence TEXT NOT NULL, write_reserved_at REAL,"
+        "  result TEXT, result_meta TEXT, action_ids TEXT, created_at REAL NOT NULL,"
+        "  settled_at REAL,"
+        "  PRIMARY KEY (mission_id, turn_id))"
+    )
+
+
+def _migrate_10_to_11(con) -> None:
+    """v11 adds `mission_turns.result_meta`.
+
+    It exists as its own version because it was very nearly added WITHOUT one: the column went
+    into the v9 `CREATE TABLE` while `SCHEMA_VERSION` stayed at 9, so a database created by the
+    previous build was accepted as current, never migrated, and then failed **every** turn
+    settlement with `no such column: result_meta`. A fresh install would have looked perfect and
+    every existing one would have broken.
+
+    That is the whole reason this machinery is explicit rather than implicit: editing a `CREATE
+    TABLE` only ever describes a *new* file.
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(mission_turns)")}
+    if "result_meta" not in cols:
+        con.execute("ALTER TABLE mission_turns ADD COLUMN result_meta TEXT")
+    # …and the two columns that make a turn's timeline events exactly-once. They live on the turn
+    # rather than beside the events because the turn is the thing with an identity: "has this
+    # turn already written its operator message" is a question only the claim can answer.
+    if "operator_seq" not in cols:
+        con.execute("ALTER TABLE mission_turns ADD COLUMN operator_seq INTEGER")
+    if "assistant_seq" not in cols:
+        con.execute("ALTER TABLE mission_turns ADD COLUMN assistant_seq INTEGER")
 
 
 def _migrate_1_to_2(con) -> None:
@@ -2449,6 +2531,96 @@ def all_active_memberships(*, path: Path | None = None) -> dict[str, str]:
         con.close()
 
 
+def sessions_barred_from_automation(*, path: Path | None = None) -> set[str]:
+    """Session keys no action may be written for or delivered into, right now (#871).
+
+    **The window this closes is an archive IN FLIGHT.** `_settle_live_actions` settles what exists
+    at one instant and then releases the ledger lock; the orchestrator reasons about SESSIONS and
+    not about missions, so without a fence it could append a fresh action for the same still-live
+    session immediately afterwards — or an operator could approve an existing one — and write into
+    a mission being torn down.
+
+    Three scoping rules, and the first two were each wrong in an earlier revision:
+
+    * **Membership is read regardless of `removed_at`.** Abandoning RELEASES a mission's sessions,
+      so a fence that looked only at open memberships excluded precisely what it protects.
+    * **…but a session another mission legitimately owns is NOT barred.** This repo explicitly
+      supports "A finishes and releases a session, B adopts it, A is archived" — A marks its own
+      historical row `skipped` so B's session is not torn down. Barring on A's history alone
+      stopped B being proposed for and refused B's existing actions, purely because A stayed
+      archived. That is a cross-mission availability failure, and the row that says so is already
+      there: `archive_state='skipped'` means "this archive does not govern this session".
+    * **The state is `archiving`, not `abandoned`.** A bare abandon releases its sessions and they
+      are then free; barring on "ever belonged to an abandoned mission" would permanently disable
+      automation for every such session. `archiving_at` set with `archived_at` null is exactly the
+      teardown-in-flight window, including the indefinite stretch after a failed sweep leaves the
+      mission on the recovery worklist — which is when the fence matters most.
+
+    Returns a SET rather than a predicate so a caller takes one snapshot per critical section
+    instead of one query per record.
+    """
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT ms.session_key AS session_key FROM mission_sessions ms "
+            "JOIN missions m ON m.id = ms.mission_id "
+            "WHERE ((m.archiving_at IS NOT NULL AND m.archived_at IS NULL) "
+            "       OR m.archived_at IS NOT NULL) "
+            # This archive does not govern a session it deliberately skipped…
+            "  AND COALESCE(ms.archive_state, '') != 'skipped' "
+            # …nor one the operator explicitly DETACHED. `begin_archive` already excludes those
+            # from teardown for exactly this reason: reaching a terminal state releases ownership
+            # and those sessions are still the mission's to reap, but a detach is the operator
+            # taking the session OUT of the mission. Both stamp `removed_at`, so only the reason
+            # tells them apart — and without it, archiving A disabled automation on a session A
+            # no longer had (review on #881).
+            "  AND COALESCE(ms.release_reason, 'closed') != 'detached' "
+            # …nor one that some OTHER mission currently holds. That mission is live and its
+            # session is legitimately workable; the archiving mission's history does not reach it.
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM mission_sessions o JOIN missions om ON om.id = o.mission_id "
+            "    WHERE o.session_key = ms.session_key AND o.mission_id != ms.mission_id "
+            "      AND o.removed_at IS NULL "
+            "      AND om.archiving_at IS NULL AND om.archived_at IS NULL"
+            "  )"
+        ).fetchall()
+        return {r["session_key"] for r in rows}
+    finally:
+        con.close()
+
+
+def sessions_governed_by_archive(mission_id: str, *, path: Path | None = None) -> list[str]:
+    """The session keys THIS archive is responsible for — the abandon sweep's correct scope.
+
+    Not the full historical roster: a row this archive marked `skipped`, or a session another
+    live mission now holds, belongs to that other mission. Expiring its action during recovery
+    would mutate a mission nobody archived (review on #881).
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT ms.session_key AS session_key FROM mission_sessions ms "
+            "WHERE ms.mission_id = ? "
+            "  AND COALESCE(ms.archive_state, '') != 'skipped' "
+            # The same detach exclusion `begin_archive` applies to teardown. Without it the sweep
+            # expired an approved action belonging to a session the operator had removed from
+            # this mission — archiving A mutating work that was deliberately taken out of A.
+            "  AND COALESCE(ms.release_reason, 'closed') != 'detached' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM mission_sessions o JOIN missions om ON om.id = o.mission_id "
+            "    WHERE o.session_key = ms.session_key AND o.mission_id != ms.mission_id "
+            "      AND o.removed_at IS NULL "
+            "      AND om.archiving_at IS NULL AND om.archived_at IS NULL"
+            "  ) "
+            "ORDER BY ms.added_at ASC",
+            (mission_id,),
+        ).fetchall()
+        return [r["session_key"] for r in rows]
+    finally:
+        con.close()
+
+
 def settle_objectives_state(
     mission_id: str, state: str, *, now: float | None = None, path: Path | None = None
 ) -> bool:
@@ -3411,13 +3583,56 @@ def begin_archive(
                     (mission_id,),
                 )
                 pending = _pending_sessions(con, mission_id)
+                # EVERY session the mission ever held, not just the ones still awaiting teardown.
+                # The abandon sweep settles live ACTIONS, and an action can name a session that
+                # this archive has already torn down — sweeping only `pending` would leave that
+                # one claimable, which is the same hole one session narrower.
+                roster = [
+                    r["session_key"]
+                    for r in con.execute(
+                        "SELECT session_key FROM mission_sessions WHERE mission_id=? "
+                        "ORDER BY added_at ASC",
+                        (mission_id,),
+                    ).fetchall()
+                ]
                 con.execute("COMMIT")
                 return {
                     "mission_id": mission_id,
                     "sessions": pending,
                     "resumed": True,
                     "op_token": token,
+                    # RECOVERY HAS TO KNOW WHICH KIND OF ARCHIVE IT IS FINISHING (#871). An
+                    # abandon owes its sessions a live-action sweep before teardown; a plain
+                    # archive of an already-terminal mission does not. Without this the resume
+                    # path could not tell them apart and finished every pending archive as
+                    # though it were the second kind — completing an abandon while an approved
+                    # action stayed claimable (review on #881).
+                    "state": row["state"],
+                    "roster": roster,
                 }
+            # DECISION 1 (#871): a turn still in flight fences the archive.
+            #
+            # A turn past its ledger append may already have put bytes on a live PTY, and there
+            # is no un-sending them — so a "cancelled" turn that actually delivered would be a
+            # lie in the timeline. Refusing costs the operator a retry five seconds later;
+            # cancelling costs an archived mission whose agent just received an instruction.
+            #
+            # Checked INSIDE the transaction, like `_fence_busy`, so it cannot be raced by a
+            # claim landing between the read and the write. Bounded, not indefinite: `approved`
+            # is in `EXPIRABLE_STATES`, so the TTL sweep settles an approved-but-undelivered
+            # action within `proposal_ttl_minutes` and the turn resolves with it.
+            unresolved = con.execute(
+                "SELECT turn_id FROM mission_turns WHERE mission_id=? AND state='in_progress' "
+                "LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+            if unresolved is not None and not abandon:
+                con.execute("ROLLBACK")
+                raise MissionError(
+                    f"mission {mission_id} has an unresolved turn ({unresolved['turn_id']}); "
+                    "archive waits for it to settle, or use an explicit abandon",
+                    status=409,
+                )
             if row["state"] not in TERMINAL_STATES:
                 if not abandon:
                     con.execute("ROLLBACK")
@@ -3705,6 +3920,653 @@ def reopen_stale_leases(
             raise
         finally:
             con.close()
+
+
+#: How long a turn claim may go without a heartbeat before it is treated as orphaned. Same
+#: reasoning as the session lease: a live holder renews, so reaching this means the owner stopped.
+TURN_OWNER_MAX_AGE_S = 300
+
+#: What a claim attempt learned. Four answers, because collapsing any two of them is how a
+#: duplicated instruction gets issued (#852).
+TURN_CLAIMED = "claimed"  # this caller owns it; proceed to the model
+TURN_LIVE = "live"  # someone else is running it right now; answer in-progress, call nothing
+TURN_DONE = "done"  # already completed; replay the stored result identically
+TURN_CONFLICT = "conflict"  # same id, different message — a different turn wearing a used key
+TURN_RECOVER = "recover"  # orphaned and nothing was ever appended; the ONE re-entry path
+TURN_RECONCILE = "reconcile"  # orphaned but a write may have landed; settle from provenance
+
+
+# NOTE ON THE OPERATOR EVENT, which used to be written here.
+#
+# Committing it with the claim was right about ordering (the question must be durable before the
+# model call) and wrong about lifetime: a claim can be RELEASED — a busy flight, an unconfigured
+# endpoint — and releasing then had to delete the event again. Append-then-delete cannot be undone,
+# because `_append_event` trims the mission to its soft cap on the way in, and the delete cannot
+# restore whichever older recap that eviction dropped. Repeated transient 409s drained history for
+# turns that never ran.
+#
+# So the event is written by the caller AFTER the transient window closes and before `ask` — same
+# ordering guarantee, no deletion, nothing to undo. `append_turn_event` keeps it exactly-once
+# across a recovery that re-enters the turn.
+def claim_turn(
+    mission_id: str,
+    turn_id: str,
+    msg_sha: str,
+    *,
+    text: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> tuple[str, dict | None]:
+    """Take, replay or recover one operator turn. Returns ``(verdict, row)``.
+
+    **The INSERT is the claim.** A concurrent duplicate loses at the database rather than at a
+    check, which is what makes this idempotent rather than merely ordered — two requests carrying
+    the same new ``turn_id`` cannot both reach the model.
+
+    The verdicts are deliberately six, not two. ``in_progress`` alone cannot distinguish a request
+    that is still running from a claim whose process died, and answering both the same way either
+    strands the turn forever or duplicates a live instruction. Ownership separates them; the
+    write receipt then separates *recoverable* from *already-acted*:
+
+    * :data:`TURN_LIVE` — the owner is beating. Call nothing.
+    * :data:`TURN_RECONCILE` — orphaned, but ``write_reserved_at`` is set, so an append may have
+      landed. Settle from provenance; **never** re-enter the model.
+    * :data:`TURN_RECOVER` — orphaned with **no** receipt, which positively means nothing was ever
+      appended. The only path on which the model is called a second time.
+
+    **`text` writes the operator's message IN THIS TRANSACTION** (#871 decision 3). It used to be
+    appended by the caller after a configuration preflight, and that ordering is the source of
+    #852's five consecutive fix-caused-the-next-defect rounds: a check before the call and a check
+    inside it are two moments, so configuration could vanish between them, and the handler then
+    released the claim but not the event. Every attempt to repair that from one side created the
+    next defect on the other — release-leaves-the-event, delete-loses-trimmed-history.
+
+    One transaction removes the state instead of making it rarer: either the claim and the
+    operator event both exist, or neither does. There is nothing left to release and nothing left
+    to delete, which is what makes the forward-only rule ("a turn never deletes anything, and
+    never re-sends anything") actually hold rather than nearly hold.
+
+    Only on :data:`TURN_CLAIMED`, deliberately — a replay must not append a second copy of a
+    message the timeline already carries.
+    """
+    ts = time.time() if now is None else now
+    fence = uuid.uuid4().hex
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # The SAME fence every other mutation takes, in the same place: inside the
+            # transaction, so it cannot be raced. A turn is an ordinary mutation of a mission —
+            # it writes the timeline and can issue a live instruction — and skipping it let an
+            # ARCHIVED mission mutate its sensitive timeline and reach the actuator with no
+            # unarchive predecessor, while racing retention's deletion of that same record.
+            _fence_busy(con, mission_id)
+            try:
+                n = con.execute(
+                    "INSERT INTO mission_turns "
+                    "(mission_id, turn_id, msg_sha, state, owner, owner_at, fence, created_at) "
+                    "VALUES (?,?,?,'in_progress',?,?,?,?) ON CONFLICT DO NOTHING",
+                    (mission_id, turn_id, msg_sha, PROCESS_EPOCH, ts, fence, ts),
+                ).rowcount
+            except sqlite3.IntegrityError:
+                # The mission went away between the caller's existence check and this insert —
+                # check-then-act, one layer down. The foreign key is the AUTHORITATIVE answer, so
+                # it becomes the caller's 404 rather than escaping as a 500 that says "we broke"
+                # about a request that was merely aimed at something gone.
+                con.execute("ROLLBACK")
+                raise MissionError("unknown mission", status=404) from None
+            if n:
+                if text is not None:
+                    seq = _append_event(
+                        con,
+                        mission_id,
+                        "operator_msg",
+                        at=ts,
+                        text=text,
+                        meta={"turn_id": turn_id},
+                    )
+                    con.execute(
+                        "UPDATE mission_turns SET operator_seq=? "
+                        "WHERE mission_id=? AND turn_id=?",
+                        (seq, mission_id, turn_id),
+                    )
+                con.execute("COMMIT")
+                return TURN_CLAIMED, {"fence": fence, "mission_id": mission_id, "turn_id": turn_id}
+            row = con.execute(
+                "SELECT * FROM mission_turns WHERE mission_id=? AND turn_id=?",
+                (mission_id, turn_id),
+            ).fetchone()
+            if row is None:  # deleted between the insert and the read; treat as a lost race
+                con.execute("COMMIT")
+                return TURN_LIVE, None
+            rec = dict(row)
+            if rec["msg_sha"] != msg_sha:
+                con.execute("COMMIT")
+                return TURN_CONFLICT, rec
+            if rec["state"] != "in_progress":
+                con.execute("COMMIT")
+                return TURN_DONE, rec
+            if float(rec["owner_at"] or 0) >= ts - TURN_OWNER_MAX_AGE_S:
+                con.execute("COMMIT")
+                return TURN_LIVE, rec
+            # Orphaned. Take ownership under a NEW fence, so the previous owner can neither
+            # settle this turn nor reserve a write against it.
+            con.execute(
+                "UPDATE mission_turns SET owner=?, owner_at=?, fence=? "
+                "WHERE mission_id=? AND turn_id=?",
+                (PROCESS_EPOCH, ts, fence, mission_id, turn_id),
+            )
+            con.execute("COMMIT")
+            rec["fence"] = fence
+            # The receipt decides, not the clock: a write may already have happened.
+            return (TURN_RECONCILE if rec["write_reserved_at"] else TURN_RECOVER), rec
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def reserve_turn_write(
+    mission_id: str,
+    turn_id: str,
+    fence: str,
+    intended_action_ids: list[str] | None = None,
+    *,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Record that this turn is **about to** append to the ledger. False if the fence is stale.
+
+    **This is the linearization point, and it is a reservation rather than a check.** Validating
+    the fence and then appending is check-then-write: the owner can pass validation, be reclaimed,
+    and append afterwards — landing a second instruction that the fence never sees, because by
+    then the irreversible half has happened.
+
+    So the receipt is written **first**, in its own committed transaction, and a stale fence fails
+    here so the append never happens at all.
+
+    It commits before the ledger lock is ever taken, deliberately. Holding a missions transaction
+    across the append would close the same race while nesting missions → ledger, inverting the
+    order `orchestrator_ledger.compact()` already establishes (it holds the ledger lock and then
+    writes this store) — a deadlock between an ordinary chat turn and a routine compaction pass.
+    """
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # THE MISSION FENCE, HERE — not only at the claim (#871, review on #881).
+            #
+            # `{"abandon": true}` commits the archive and THEN scans the ledger once. A model
+            # call already in flight reaches this reservation after that scan, and the turn fence
+            # alone says nothing about the mission — so the append landed a fresh `approved`
+            # action on a mission that had just been abandoned, after the sweep that was supposed
+            # to have settled everything.
+            #
+            # This is the linearization point for the append, so it is the right place to ask:
+            # an archived or mid-operation mission refuses the reservation, and the append never
+            # happens at all.
+            _fence_busy(con, mission_id)
+            # The receipt records WHAT is about to be written, not merely that something is.
+            # Recovery can then look for exactly those actions instead of scanning for anything
+            # that looks related — deterministic identity rather than an inference.
+            n = con.execute(
+                "UPDATE mission_turns SET write_reserved_at=COALESCE(write_reserved_at, ?), "
+                "action_ids=COALESCE(action_ids, ?) "
+                "WHERE mission_id=? AND turn_id=? AND fence=? AND state='in_progress'",
+                (ts, json.dumps(intended_action_ids or []), mission_id, turn_id, fence),
+            ).rowcount
+            con.execute("COMMIT")
+            return bool(n)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def park_turn(mission_id: str, turn_id: str, fence: str, *, path: Path | None = None) -> bool:
+    """Release a turn's OWNER while leaving it `in_progress`. False on a stale fence.
+
+    Decision 2 keeps a turn open until its action is terminal, so a frame can finish its work and
+    still not settle. Leaving its owner lease held would make the turn read TURN_LIVE — "someone
+    is running this right now" — for the full `TURN_OWNER_MAX_AGE_S` while nobody is, so the next
+    request could neither reconcile it nor report anything but "still running".
+
+    Parking states what is actually true: the turn is unfinished and unowned, waiting on its
+    action rather than on a worker. The next request reconciles it immediately instead of waiting
+    out a lease nobody holds.
+
+    NOT `release_turn`, which DELETES the claim: the operator's message is in that claim's
+    transaction, and the receipt is what recovery reads. Parking keeps both.
+    """
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            n = con.execute(
+                "UPDATE mission_turns SET owner=NULL, owner_at=NULL "
+                "WHERE mission_id=? AND turn_id=? AND fence=? AND state='in_progress'",
+                (mission_id, turn_id, fence),
+            ).rowcount
+            con.execute("COMMIT")
+            return bool(n)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def note_turn_delivery_error(
+    mission_id: str, turn_id: str, fence: str, error: str, *, path: Path | None = None
+) -> bool:
+    """Record a delivery failure on a turn that is NOT settling. False on a stale fence.
+
+    Since decision 2 is enforced on every path, a turn whose delivery failed keeps its action
+    `approved` and therefore stays `in_progress` — it does not reach `settle_turn`, which is the
+    only thing that used to persist `delivery_error`. So the failure was reported on the first
+    response and lost on every one after it.
+
+    "A failure that is recorded and never shown is not a failure that was reported" is the
+    contract that made `delivery_error` a top-level field in the first place; this is what keeps
+    it true now that the turn stays open.
+    """
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT result_meta FROM mission_turns "
+                "WHERE mission_id=? AND turn_id=? AND fence=? AND state='in_progress'",
+                (mission_id, turn_id, fence),
+            ).fetchone()
+            if row is None:
+                con.execute("ROLLBACK")
+                return False
+            try:
+                meta = json.loads(row["result_meta"] or "{}") or {}
+            except (TypeError, ValueError):
+                meta = {}
+            meta["delivery_error"] = error
+            con.execute(
+                "UPDATE mission_turns SET result_meta=? "
+                "WHERE mission_id=? AND turn_id=? AND fence=?",
+                (json.dumps(meta), mission_id, turn_id, fence),
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def settle_turn(
+    mission_id: str,
+    turn_id: str,
+    fence: str,
+    *,
+    state: str = "done",
+    result: str | None = None,
+    result_meta: dict | None = None,
+    action_ids: list[str] | None = None,
+    action_snapshot: list[dict] | None = None,
+    assistant_text: str | None = None,
+    assistant_meta: object = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Complete a turn under its fence. False when the fence is stale — a reclaimed owner may not
+    land its result over the recovery that replaced it.
+
+    The assistant event is written **in this transaction**, for the reason `append_event`
+    documents: an event that is part of an operator-visible change belongs inside that change, or
+    the timeline can disagree with the state it describes. Appending it afterwards and suppressing
+    the failure left a *terminal* turn with no answer in its timeline and no path that ever
+    repaired it — the replay returns the stored response and looks perfectly healthy.
+    """
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            n = con.execute(
+                "UPDATE mission_turns SET state=?, result=?, result_meta=?, action_ids=?, "
+                "settled_at=?, owner=NULL, owner_at=NULL "
+                "WHERE mission_id=? AND turn_id=? AND fence=? AND state='in_progress'",
+                (
+                    state,
+                    result,
+                    # `action_snapshot or []` conflated the two answers decision 4 exists to
+                    # keep apart: `None` means NO SNAPSHOT WAS TAKEN (a recovery settled this
+                    # turn from provenance), and `[]` means one was taken and there were no
+                    # actions. `or` maps both to `[]`, so a reader could not tell "we never
+                    # looked" from "we looked and found nothing" — the same lesson #862 landed
+                    # twice (`unknown` is not `historical`; `states is None` is not `{}`). Three
+                    # instances make it the codebase's rule, not a special case.
+                    json.dumps({**(result_meta or {}), "actions": action_snapshot}),
+                    json.dumps(action_ids or []),
+                    ts,
+                    mission_id,
+                    turn_id,
+                    fence,
+                ),
+            ).rowcount
+            if n and assistant_text is not None:
+                row = con.execute(
+                    "SELECT assistant_seq FROM mission_turns WHERE mission_id=? AND turn_id=?",
+                    (mission_id, turn_id),
+                ).fetchone()
+                if row is not None and row["assistant_seq"] is None:
+                    seq = _append_event(
+                        con,
+                        mission_id,
+                        "assistant_msg",
+                        at=ts,
+                        text=assistant_text,
+                        meta=assistant_meta,
+                    )
+                    con.execute(
+                        "UPDATE mission_turns SET assistant_seq=? WHERE mission_id=? AND turn_id=?",
+                        (seq, mission_id, turn_id),
+                    )
+            con.execute("COMMIT")
+            return bool(n)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def renew_turn(
+    mission_id: str, turn_id: str, fence: str, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Prove the owner of ``fence`` is still running this turn."""
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            n = con.execute(
+                "UPDATE mission_turns SET owner_at=? WHERE mission_id=? AND turn_id=? AND fence=?",
+                (ts, mission_id, turn_id, fence),
+            ).rowcount
+            con.execute("COMMIT")
+            return bool(n)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+@contextlib.asynccontextmanager
+async def holding_turn(
+    mission_id: str,
+    turn_id: str,
+    fence: str,
+    *,
+    interval: float = RESERVATION_RENEW_S,
+    path: Path | None = None,
+) -> AsyncIterator[None]:
+    """Keep a turn claim alive for as long as the model call actually runs.
+
+    Same mechanism and same reason as :func:`holding`: the beat runs on its own thread, so it is
+    not starved by whatever the request is doing, and a renewal makes the claim's expiry mean
+    *the owner stopped* rather than *the owner is slow*. A model call is exactly the kind of long,
+    externally-paced wait that would otherwise look like death.
+    """
+    if not fence:
+        yield
+        return
+    stop = threading.Event()
+
+    def _beat() -> None:
+        wait = interval
+        while not stop.wait(wait):
+            try:
+                alive = renew_turn(mission_id, turn_id, fence, path=path)
+            except Exception:  # transient — retry soon, not on the ordinary cadence
+                wait = beat_wait(False, interval)
+                continue
+            wait = beat_wait(True, interval)
+            if not alive:
+                # Fenced out or already settled. Either way this beat has nothing left to hold.
+                return
+
+    beat = threading.Thread(target=_beat, name="mission-turn-heartbeat", daemon=True)
+    beat.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        beat.join(timeout=5.0)
+
+
+def release_turn(mission_id: str, turn_id: str, fence: str, *, path: Path | None = None) -> bool:
+    """Give a claim back **without settling it**, so the same `turn_id` can be retried.
+
+    `abandon_turn` is for a turn that reached an honest dead end; this is for one that never
+    started — a busy single-flight, an unconfigured endpoint. Those are transient conditions of
+    the *system*, not outcomes of the *turn*, and settling them `indeterminate` permanently
+    consumes the id: the operator's retry replays a terminal record and never calls the model.
+
+    **Refuses once a write was reserved.** A reservation means an append may already have
+    happened, and deleting the claim would erase the only evidence recovery has — so a turn past
+    that point can only ever be settled, never released.
+    """
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # Nothing to undo: the operator event is no longer written at claim time, so a
+            # released claim leaves no event behind and no trimmed history to restore.
+            n = con.execute(
+                "DELETE FROM mission_turns WHERE mission_id=? AND turn_id=? AND fence=? "
+                "AND state='in_progress' AND write_reserved_at IS NULL",
+                (mission_id, turn_id, fence),
+            ).rowcount
+            con.execute("COMMIT")
+            return bool(n)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def abandon_turn(
+    mission_id: str,
+    turn_id: str,
+    fence: str,
+    *,
+    turn_id_meta: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Settle a turn `indeterminate` — reached, and never re-asked.
+
+    The receipt is a **one-way no-reask barrier**, and that leaves exactly one window it cannot
+    resolve: the process commits `write_reserved_at` and dies before the ledger append. On restart
+    there is no provenance to replay, and the receipt correctly forbids calling the model again —
+    so without this the turn sits `in_progress` for ever, holding a compaction pin and answering
+    every replay with "still running" about a request that no longer exists.
+
+    `indeterminate` is the honest terminal state: we cannot say whether the instruction went out,
+    we will not send a second one to find out, and the operator sees an unanswered turn rather
+    than a silent hang. Deterministic, so a replay after it is a plain `done`-style read.
+    """
+    return settle_turn(
+        mission_id,
+        turn_id,
+        fence,
+        state="indeterminate",
+        result=None,
+        action_ids=[],
+        # Terminal is terminal: an abandoned turn carries its event like any other, so the
+        # timeline never has a settled turn it cannot account for.
+        assistant_text="",
+        assistant_meta={"turn_id": turn_id_meta or turn_id, "indeterminate": True},
+        now=now,
+        path=path,
+    )
+
+
+def append_turn_event(
+    mission_id: str,
+    turn_id: str,
+    slot: str,
+    kind: str,
+    *,
+    text: str | None = None,
+    meta: object = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> int | None:
+    """Append one of a turn's two timeline events **exactly once**. Returns its ``seq``.
+
+    ``slot`` is ``"operator"`` or ``"assistant"``.
+
+    Exactly-once is achievable here and it would not be anywhere else, because `mission_events`
+    and `mission_turns` are **the same database**: the "have I already written this" check and the
+    append commit in ONE transaction, so a crash cannot land between them. Appending and then
+    recording the fact separately is the two-store problem this whole feature is about, in
+    miniature — and the crash window it opens is real: recovery re-enters the turn and writes a
+    second `operator_msg` for a message the operator sent once.
+
+    Returns the existing ``seq`` when the slot is already filled, so a replay is a no-op rather
+    than a duplicate.
+    """
+    # Two literal statements per slot rather than one with the column name interpolated. `slot`
+    # is validated and could be spelled into SQL safely, but "safe dynamic SQL" is a claim a
+    # reviewer has to re-derive every time, and there are exactly two cases.
+    if slot == "operator":
+        read_sql = "SELECT operator_seq AS seq FROM mission_turns WHERE mission_id=? AND turn_id=?"
+        write_sql = "UPDATE mission_turns SET operator_seq=? WHERE mission_id=? AND turn_id=?"
+    elif slot == "assistant":
+        read_sql = "SELECT assistant_seq AS seq FROM mission_turns WHERE mission_id=? AND turn_id=?"
+        write_sql = "UPDATE mission_turns SET assistant_seq=? WHERE mission_id=? AND turn_id=?"
+    else:
+        raise MissionError(f"unknown turn event slot {slot!r}", status=500)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(read_sql, (mission_id, turn_id)).fetchone()
+            if row is None:
+                con.execute("COMMIT")
+                return None
+            if row["seq"] is not None:
+                con.execute("COMMIT")
+                return int(row["seq"])
+            seq = _append_event(con, mission_id, kind, at=ts, text=text, meta=meta)
+            con.execute(write_sql, (seq, mission_id, turn_id))
+            con.execute("COMMIT")
+            return seq
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def get_turn(mission_id: str, turn_id: str, *, path: Path | None = None) -> dict | None:
+    """One turn record, or None. The store's own answer, for when a frame must not speak for it."""
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT * FROM mission_turns WHERE mission_id=? AND turn_id=?", (mission_id, turn_id)
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        con.close()
+
+
+def unresolved_turn_keys(*, path: Path | None = None) -> set[tuple[str, str]]:
+    """`(mission_id, turn_id)` for every claim still `in_progress`, for compaction to pin against.
+
+    Without this, "the ledger is readable and holds no action for my turn" cannot be told apart
+    from "it held one and compaction removed it" — and the safe reading of that ambiguity is to
+    never re-ask, which strands every recoverable turn. Pinning makes the absence positive.
+
+    **Both halves of the key.** `turn_id` is client-generated and may legitimately repeat across
+    missions, so pinning on it alone let one long-running turn in mission A retain unrelated
+    terminal history from mission B — defeating the ledger's global bound and holding on to
+    sensitive action records nothing was waiting for.
+    """
+    con = _ready(path)
+    try:
+        return {
+            (str(r["mission_id"]), str(r["turn_id"]))
+            for r in con.execute(
+                "SELECT mission_id, turn_id FROM mission_turns WHERE state='in_progress'"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+
+
+def orphaned_turns(
+    *, mission_id: str | None = None, now: float | None = None, path: Path | None = None
+) -> list[dict]:
+    """`in_progress` turns whose owner has stopped heartbeating, with their reserved action ids.
+
+    The worklist for :func:`mission_turn_reconcile.reconcile`. An owner that is still renewing its
+    lease is genuinely mid-flight and must never be reconciled — that would settle a turn whose
+    model call is about to return its own answer. So the cutoff is the same
+    :data:`TURN_OWNER_MAX_AGE_S` that `claim_turn` reclaims on: past it, the owner has stopped,
+    whatever the reason.
+
+    `action_ids` is the reservation `reserve_turn_write` wrote BEFORE appending, so it names what
+    the turn was about to put in the ledger even when the process died mid-append. That is what
+    makes reconciliation deterministic — looking for exactly those ids — rather than a search for
+    anything that looks related.
+    """
+    ts = time.time() if now is None else now
+    cutoff = ts - TURN_OWNER_MAX_AGE_S
+    con = _ready(path)
+    try:
+        sql = (
+            "SELECT mission_id, turn_id, fence, action_ids, write_reserved_at, owner_at "
+            "FROM mission_turns WHERE state='in_progress' "
+            "AND (owner_at IS NULL OR owner_at < ?)"
+        )
+        args: list[object] = [cutoff]
+        if mission_id is not None:
+            sql += " AND mission_id=?"
+            args.append(mission_id)
+        rows = con.execute(sql, args).fetchall()
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        try:
+            ids = json.loads(r["action_ids"] or "[]")
+        except (TypeError, ValueError):
+            ids = []
+        out.append(
+            {
+                "mission_id": str(r["mission_id"]),
+                "turn_id": str(r["turn_id"]),
+                "fence": str(r["fence"]),
+                "action_ids": [str(a) for a in ids if a],
+                "reserved": r["write_reserved_at"] is not None,
+            }
+        )
+    return out
 
 
 def next_lease_expiry(*, path: Path | None = None) -> float | None:

@@ -114,3 +114,36 @@ def test_cleanup_and_failed_last_run_on_exception():
         assert last["detail"] == "boom"
 
     asyncio.run(scenario())
+
+
+@pytest.mark.anyio
+async def test_a_NON_EXCLUSIVE_track_never_consults_single_flight_state(monkeypatch):
+    """Ordinary tracking short-circuits, and it always did.
+
+    Hoisting the `is_running` call out of the `exclusive` branch — while fixing an unrelated
+    arity problem — changed the contract for every non-exclusive task at once (review on #881).
+    """
+    called = []
+    monkeypatch.setattr(aitasks, "is_running", lambda *a, **k: called.append(a) or False)
+    async with aitasks.track("ordinary", "detail"):
+        pass
+    assert called == [], "a non-exclusive track consulted single-flight state"
+
+
+@pytest.mark.anyio
+async def test_a_LEGACY_one_argument_stub_still_works(monkeypatch):
+    """The arity fix, asserted from the caller's side.
+
+    A stub written against `is_running(kind)` — the shape this had for its whole life — must keep
+    working for an unscoped exclusive task, or the break resurfaces somewhere unrelated.
+    """
+    seen = []
+
+    def one_arg_stub(kind):  # deliberately NOT accepting a scope
+        seen.append(kind)
+        return False
+
+    monkeypatch.setattr(aitasks, "is_running", one_arg_stub)
+    async with aitasks.single_flight("legacy"):
+        pass
+    assert seen == ["legacy"]

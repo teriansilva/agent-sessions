@@ -94,8 +94,19 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False, scope: 
     (``ok`` / ``finished_at`` / ``duration_s``) is recorded on exit whether the block
     returned or raised.
     """
-    if exclusive and is_running(kind, scope):
-        raise AlreadyRunning(f"{kind}:{scope}" if scope else kind)
+    if exclusive:
+        # Called with ONE argument when there is no scope, which is every pre-existing caller.
+        # `scope` is additive in the SIGNATURE, but passing it unconditionally made it a breaking
+        # change in PRACTICE: a test that stubs `is_running(kind)` — a reasonable stub for the
+        # shape this had for its whole life — raises `TypeError` from inside `track`, and it
+        # surfaces as an unrelated 502 several layers up.
+        #
+        # And it stays INSIDE this branch: a non-exclusive `track` never consulted single-flight
+        # state, and hoisting the call out changed that contract for every ordinary tracked task
+        # (review on #881).
+        busy = is_running(kind, scope) if scope else is_running(kind)
+        if busy:
+            raise AlreadyRunning(f"{kind}:{scope}" if scope else kind)
     token = next(_ids)
     started = time.time()
     _running[token] = _Running(token, kind, detail, started, scope)

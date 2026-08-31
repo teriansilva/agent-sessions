@@ -1151,3 +1151,492 @@ def test_a_reservation_expires_so_a_crashed_holder_cannot_block_forever(env):
     assert missions.reserve_session(CLAUDE_A, "someone-else", now=later)
     # …and the original holder's token is now dead, so it cannot free the new holder's claim.
     assert missions.release_session(CLAUDE_A, hold) is False
+
+
+# ---- the two authorization holes the second review found (review on #881) -------------------
+
+
+def test_a_mission_ARCHIVING_bars_its_sessions_from_automation(env):
+    """The fence the orchestrator consults, at the source, over the window that matters.
+
+    Abandon settles the actions that exist at one instant and then releases the ledger lock. The
+    background pass reasons about SESSIONS and not about missions, so without a fence it can mint
+    a fresh action for the same still-live session immediately afterwards — and under `yolo`
+    deliver it into a mission being torn down.
+    """
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    assert missions.sessions_barred_from_automation() == set(), "a live mission barred its session"
+
+    # `begin_archive` is what stamps `archiving_at` — the teardown-in-flight window.
+    missions.begin_archive(mid, abandon=True)
+    assert (
+        CLAUDE_A in missions.sessions_barred_from_automation()
+    ), "an archive in flight left its sessions open to automation"
+
+
+def test_a_session_RELEASED_by_a_bare_abandon_is_not_barred_for_ever(env):
+    """Scope discipline: the hole is the archive window, not "ever belonged to an abandoned
+    mission".
+
+    A bare abandon releases its sessions and they are then free. Barring on history would
+    permanently disable automation for every session that had ever been in one — a far larger
+    behaviour change than the hole being closed, and one nobody asked for.
+    """
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    missions.set_state(mid, "running", "abandoned", outcome="abandoned")
+    assert missions.sessions_barred_from_automation() == set()
+
+
+def test_a_DONE_mission_does_not_bar_its_sessions(env):
+    """`done` and `failed` are outcomes, not withdrawals."""
+    mid = _mission("done")
+    missions.adopt(mid, CLAUDE_A)
+    assert missions.sessions_barred_from_automation() == set()
+
+
+def test_the_LEDGER_refuses_to_append_for_a_barred_session(env, tmp_path, monkeypatch):
+    """Dropped rather than written-and-swept.
+
+    An action that never exists cannot be delivered by a pass that runs before the sweep reaches
+    it, and the check is inside the ledger lock — filtering before the call would be the
+    check-then-write this function exists to prevent.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import orchestrator_ledger as ledger
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    missions.begin_archive(mid, abandon=True)
+
+    recs = [{"id": "x1", "state": "approved", "verb": "continue", "session_id": CLAUDE_A}]
+    kept, dropped = ledger.append_batch_for_free_sessions(
+        recs, barred=missions.sessions_barred_from_automation
+    )
+    assert kept == [] and len(dropped) == 1, "an action was minted for a mission being archived"
+    assert ledger.latest_by_id() == {}, "the refused action was written anyway"
+
+
+@pytest.mark.anyio
+async def test_DELIVERY_refuses_a_session_whose_mission_was_archived_mid_batch(
+    env, tmp_path, monkeypatch
+):
+    """The second half, and the one that actually stops bytes.
+
+    A pass persists and then delivers over many seconds, so the archive can begin inside that
+    window. The append-time fence ran before it and cannot see it.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import actuator, prefs
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    monkeypatch.setattr(
+        prefs,
+        "get_orchestrator",
+        lambda: {
+            "enabled": True,
+            "autonomy": "yolo",
+            "allowed_verbs": ["continue"],
+            "confidence_min": 0.0,
+        },
+    )
+    action = {
+        "id": "x1",
+        "state": "approved",
+        "verb": "continue",
+        "session_id": CLAUDE_A,
+        "confidence": 1.0,
+    }
+    reached: list[str] = []
+
+    async def _spy(action_id, *, registry=None, authority=None):
+        ok, why = authority(prefs.get_orchestrator()) if authority else (True, "")
+        reached.append("DELIVERED" if ok else why)
+        return None
+
+    monkeypatch.setattr(actuator, "deliver", _spy)
+
+    missions.begin_archive(mid, abandon=True)
+    await actuator.deliver_auto(action)
+    # The tier checks still pass — the mission fence now lives in `deliver`'s own final guard,
+    # which this spy replaces, so what this asserts is that `deliver_auto` REACHES it rather
+    # than short-circuiting first. The fence itself is asserted directly below.
+    assert reached == ["DELIVERED"], reached
+
+
+@pytest.mark.anyio
+async def test_RECOVERY_re_runs_the_abandon_sweep_before_finishing(env, tmp_path, monkeypatch):
+    """The retry path owes the same fence the first attempt does.
+
+    The sweep can fail AFTER `begin_archive` commits — that is the 503 that leaves the mission on
+    the worklist — and recovery went straight to teardown and `finish_archive`. The approved
+    action that caused the failure stayed claimable while recovery reported the archive complete.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import orchestrator_ledger as ledger
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    ledger.append({"id": "a1", "state": "approved", "verb": "continue", "session_id": CLAUDE_A})
+
+    # The durable intermediate state: abandon committed, the sweep then failed.
+    boom = RuntimeError("ledger unreadable")
+
+    def _fail(_keys):
+        raise boom
+
+    monkeypatch.setattr(mission_archive, "_settle_live_actions", _fail)
+    with pytest.raises(RuntimeError):
+        await mission_archive.archive_mission(mid, abandon=True)
+    assert ledger.latest_by_id()["a1"]["state"] == "approved"
+
+    # Recovery takes over. It MUST re-run the sweep before finishing.
+    swept: list[list[str]] = []
+
+    def _record(keys):
+        swept.append(list(keys))
+        return 0
+
+    monkeypatch.setattr(mission_archive, "_settle_live_actions", _record)
+    await mission_archive.resume_pending_operations()
+    assert (
+        swept and CLAUDE_A in swept[0]
+    ), "recovery finished an abandoned archive without settling its live actions"
+
+
+def test_a_pass_whose_MISSION_FENCE_cannot_be_read_proposes_NOTHING(env, tmp_path, monkeypatch):
+    """The fence's failure mode, checked rather than asserted in a comment.
+
+    `_barred_sessions` raises when the missions store will not read, and the whole point is that
+    the append is aborted rather than completed without an authorization check. Guessing "nothing
+    is barred" would write actions for sessions whose mission may have been torn down.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import orchestrator
+    from agent_sessions import orchestrator_ledger as ledger
+
+    def boom(*a, **k):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(missions, "sessions_barred_from_automation", boom)
+    with pytest.raises(missions.MissionError) as e:
+        orchestrator._barred_sessions()
+    assert e.value.status == 503
+    assert "authorization" in str(e.value)
+
+    # …and the append writes nothing when the gate raises, rather than falling open.
+    recs = [{"id": "x1", "state": "approved", "verb": "continue", "session_id": CLAUDE_A}]
+    with pytest.raises(missions.MissionError):
+        ledger.append_batch_for_free_sessions(recs, barred=orchestrator._barred_sessions)
+    assert ledger.latest_by_id() == {}, "an action was written without an authorization check"
+
+
+@pytest.mark.anyio
+async def test_the_MANUAL_approval_path_is_fenced_too(env, tmp_path, monkeypatch):
+    """The operator's own tap goes through `deliver()` with NO authority callback.
+
+    Putting the mission check in `authority` fenced only the automatic path, so
+    `POST /api/pulse/actions/{id}/approve` could still type into a session whose mission was
+    being torn down. A tap is authority to send what the operator approved; it is not authority
+    to send it somewhere that no longer accepts it (review on #881).
+
+    **Asserted on the BYTES, not on the guard's source.** A first version of this test checked
+    that the symbol appeared in `_final_guard`, and a mutation that neutered the check while
+    leaving the name in place sailed straight through it — the "assert the cause, not a symptom"
+    trap, in a test written to catch exactly this class of bug.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import actuator, prefs, session_input
+    from agent_sessions import orchestrator_ledger as ledger
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    monkeypatch.setattr(
+        prefs,
+        "get_orchestrator",
+        lambda: {
+            "enabled": True,
+            "autonomy": "yolo",
+            "allowed_verbs": ["continue"],
+            "confidence_min": 0.0,
+        },
+    )
+    ledger.append(
+        {
+            "id": "m1",
+            "state": "approved",
+            "verb": "continue",
+            "session_id": CLAUDE_A,
+            "confidence": 1.0,
+        }
+    )
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+
+    sent: list[object] = []
+    refusals: list[str] = []
+
+    def _spy_send(key, payload, **kw):
+        """Stand in for `send_input`, honouring `final_guard` the way it does.
+
+        `deliver` passes the mission fence as `final_guard`; a spy that ignored it would write
+        bytes production never writes and the test would assert nothing.
+        """
+        guard = kw.get("final_guard")
+        if guard is not None:
+            ok, why = guard()
+            if not ok:
+                refusals.append(why)
+                return session_input.Outcome(state="refused", detail=why)
+        sent.append(payload)
+        return session_input.Outcome(state="delivered")
+
+    monkeypatch.setattr(session_input, "send_input", _spy_send)
+
+    missions.begin_archive(mid, abandon=True)
+    # NO `authority` — this is the manual approval path.
+    await actuator.deliver("m1")
+    assert sent == [], "bytes were written into a session whose mission is being archived"
+    assert refusals and "archiv" in refusals[0], refusals
+
+
+def test_a_session_RE_ADOPTED_by_another_mission_is_not_barred(env):
+    """Mission A finishes and releases a session; B adopts it; A is archived.
+
+    The repo explicitly supports this — A marks its own row `skipped` so B's session is not torn
+    down. Barring on A's history alone stopped B being proposed for and refused B's existing
+    actions, purely because A stayed archived: a cross-mission availability failure (review
+    on #881).
+    """
+    a = _mission("done")
+    missions.adopt(a, CLAUDE_A)
+    # A releases it explicitly — the operator saying it is no longer part of A.
+    missions.detach(a, CLAUDE_A)
+
+    b = _mission("running")
+    missions.adopt(b, CLAUDE_A)  # B legitimately owns it now
+    missions.begin_archive(a, abandon=True)
+
+    assert (
+        CLAUDE_A not in missions.sessions_barred_from_automation()
+    ), "archiving A barred a session that mission B currently owns"
+    assert CLAUDE_A not in missions.sessions_governed_by_archive(
+        a
+    ), "A's abandon sweep would have expired B's action"
+
+
+@pytest.mark.anyio
+async def test_an_explicitly_DETACHED_session_is_outside_the_archive_entirely(
+    env, tmp_path, monkeypatch
+):
+    """A detach takes the session OUT of the mission, and archiving must not reach back in.
+
+    `begin_archive` has excluded detached rows from teardown from the start, for a reason it
+    states: a terminal state releases ownership and those sessions are still the mission's to
+    reap, but a detach is the operator removing it. Both stamp `removed_at`, so only
+    `release_reason` tells them apart — and my scope queries checked `skipped` and re-adoption
+    but not the reason, so archiving A expired an approved action on a session A no longer had
+    (review on #881).
+
+    Asserted on BOTH boundaries the fence has: the action is untouched, and the session is not
+    barred from automation.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import orchestrator_ledger as ledger
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    missions.detach(mid, CLAUDE_A)  # the operator takes it out of the mission
+    ledger.append({"id": "d1", "state": "approved", "verb": "continue", "session_id": CLAUDE_A})
+
+    assert CLAUDE_A not in missions.sessions_governed_by_archive(
+        mid
+    ), "a detached session is still in the archive's scope"
+
+    await mission_archive.archive_mission(mid, abandon=True)
+
+    assert (
+        ledger.latest_by_id()["d1"]["state"] == "approved"
+    ), "archiving the mission expired an action on a session the operator had detached"
+    assert (
+        CLAUDE_A not in missions.sessions_barred_from_automation()
+    ), "a detached session stayed barred from automation after its old mission archived"
+
+
+@pytest.mark.anyio
+async def test_a_CLOSED_release_is_still_the_missions_to_reap(env, tmp_path, monkeypatch):
+    """The control, and the reason the exclusion is on the REASON rather than on `removed_at`.
+
+    Reaching a terminal state also stamps `removed_at` — with `release_reason='closed'` — and
+    those sessions ARE still the mission's to reap. Excluding every released row would have
+    emptied the abandon sweep entirely.
+    """
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
+    from agent_sessions import orchestrator_ledger as ledger
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    ledger.append({"id": "c1", "state": "approved", "verb": "continue", "session_id": CLAUDE_A})
+
+    # Reaching a terminal state RELEASES the session — `removed_at` stamped, reason `closed` —
+    # and it is still the mission's to reap. This is the case that separates the correct
+    # exclusion from the over-correction: filtering on `removed_at IS NULL` rather than on the
+    # REASON would drop this session and empty the sweep. An end-to-end abandon alone cannot
+    # tell the two apart, because `begin_archive(abandon=True)` never stamps `removed_at` — which
+    # is exactly how the first version of this control passed against both implementations.
+    missions.set_state(mid, "running", "abandoned", outcome="abandoned")
+    con = missions._ready(None)
+    try:
+        row = con.execute(
+            "SELECT removed_at, release_reason FROM mission_sessions WHERE mission_id=?", (mid,)
+        ).fetchone()
+    finally:
+        con.close()
+    assert row["removed_at"] is not None and row["release_reason"] == "closed"
+    assert CLAUDE_A in missions.sessions_governed_by_archive(
+        mid
+    ), "a session released by reaching a terminal state fell out of the archive's scope"
+
+    await mission_archive.archive_mission(mid, abandon=True)
+    assert (
+        ledger.latest_by_id()["c1"]["state"] == "expired"
+    ), "the abandon sweep left a live action on a session it does govern"
+
+
+def test_an_archive_COMMITTING_after_the_guard_still_writes_ZERO_bytes(env, tmp_path, monkeypatch):
+    """The write-boundary race, driven through the REAL `send_input` (review on #881).
+
+    `deliver()` evaluates the mission fence in `final_guard`, which runs BEFORE `_write_all`
+    takes the registry lock — deliberately, because the guard does I/O. So the verdict was
+    already true-and-stale by the time byte one happened, and an archive committing in that
+    window reached a real PTY.
+
+    The previous manual-path test could not see this: its `send_input` stub called `final_guard`
+    and wrote immediately, so there WAS no window after the callback returned. This one uses the
+    real `send_input` against a real pipe and commits the abandon from inside the guard — i.e.
+    exactly in the gap — then asserts on the BYTES that reached the fd.
+    """
+    import contextlib
+    import os
+    import threading
+
+    from agent_sessions import session_input
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+
+    r_fd, w_fd = os.pipe()
+    lock = threading.Lock()
+    token = session_input.register_writer(CLAUDE_A, w_fd, lock, "test")
+    assert token
+
+    def guard_then_archive():
+        """Authorized at the instant it is asked — and then the archive commits."""
+        barred_before = CLAUDE_A in missions.sessions_barred_from_automation()
+        mission_archive._begin_archive_fenced(mid, abandon=True)
+        return (not barred_before), "authorized when asked"
+
+    try:
+        out = session_input.send_input(
+            CLAUDE_A,
+            b"UNAUTHORIZED_AFTER_ARCHIVE",
+            final_guard=guard_then_archive,
+            require_quiet=False,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            session_input.unregister_writer(CLAUDE_A, token)
+
+    assert CLAUDE_A in missions.sessions_barred_from_automation(), "the archive did not commit"
+    assert out.state != "delivered", f"bytes were authorized after the archive: {out}"
+
+    # The fd must be EMPTY. This is the assertion the stubbed test could not make.
+    os.set_blocking(r_fd, False)
+    try:
+        written = os.read(r_fd, 4096)
+    except BlockingIOError:
+        written = b""
+    finally:
+        os.close(r_fd)
+        with contextlib.suppress(OSError):
+            os.close(w_fd)
+    assert written == b"", f"bytes reached the pty after the mission was archived: {written!r}"
+
+
+def test_a_SIBLING_INSTANCE_archiving_still_writes_zero_bytes(env, tmp_path, monkeypatch):
+    """The cross-process boundary. The in-memory epoch cannot see a sibling app instance.
+
+    This app supports several instances over one store (`docs/session-handling.md`), so an
+    archive committed by process B never touches process A's `_policy_epoch` — A's own counter
+    reads unchanged right up to byte one and it writes. Reproduced by the review with two forked
+    processes; the same-process regression above cannot reach this boundary at all.
+
+    The fix is that A's authority fingerprint reads the SHARED store, which is the only thing the
+    two instances agree on. Here the "sibling" is a real forked child with its own interpreter
+    state, so the in-memory epoch genuinely cannot carry the signal.
+    """
+    import contextlib
+    import os
+    import threading
+
+    from agent_sessions import actuator, session_input
+
+    mid = _mission("running")
+    missions.adopt(mid, CLAUDE_A)
+    db = os.environ["AGENT_SESSIONS_MISSIONS_DB"]
+
+    r_fd, w_fd = os.pipe()
+    lock = threading.Lock()
+    token = session_input.register_writer(CLAUDE_A, w_fd, lock, "test")
+    assert token
+
+    def sibling_archives() -> None:
+        """A DIFFERENT process commits the abandon — fork, so no in-memory state is shared."""
+        pid = os.fork()
+        if pid == 0:  # child
+            code = 1
+            try:
+                os.environ["AGENT_SESSIONS_MISSIONS_DB"] = db
+                from agent_sessions import missions as m2
+
+                m2.reset_schema_cache_for_test()
+                m2.begin_archive(mid, abandon=True)
+                code = 0
+            finally:
+                os._exit(code)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0, "the sibling failed to archive"
+
+    def guard_then_sibling_archives():
+        """Authorized when asked; the SIBLING then commits, touching none of our memory."""
+        barred_before = CLAUDE_A in missions.sessions_barred_from_automation()
+        sibling_archives()
+        return (not barred_before), "authorized when asked"
+
+    fp = actuator._authority_fingerprint(CLAUDE_A)
+    try:
+        out = session_input.send_input(
+            CLAUDE_A,
+            b"UNAUTHORIZED_FROM_SIBLING",
+            final_guard=guard_then_sibling_archives,
+            policy_fingerprint=fp,
+            require_quiet=False,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            session_input.unregister_writer(CLAUDE_A, token)
+
+    assert CLAUDE_A in missions.sessions_barred_from_automation(), "the sibling did not archive"
+    assert out.state != "delivered", f"bytes authorized after a sibling archived: {out}"
+
+    os.set_blocking(r_fd, False)
+    try:
+        written = os.read(r_fd, 4096)
+    except BlockingIOError:
+        written = b""
+    finally:
+        os.close(r_fd)
+        with contextlib.suppress(OSError):
+            os.close(w_fd)
+    assert written == b"", f"bytes reached the pty after a sibling archived: {written!r}"
