@@ -33,6 +33,7 @@ from . import (
     engines,
     metadata,
     mission_archive,
+    mission_objectives,
     missions,
     orchestrator_loop,
     owner,
@@ -270,6 +271,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # A task, not an await, so a slow store never delays the app from serving.
         async def _mission_maintenance():
             await mission_archive.recover_with_retry()
+            # Objective production is a durable intent (#883): a crash between a mission's commit
+            # and its model call leaves a checklist nobody will ever fill. Boot is the caller
+            # that discharges it, exactly as it is for a half-finished archive above.
+            with contextlib.suppress(Exception):
+                await mission_objectives.recover_pending()
             # Discharge any scrub a busy reader left owed at the last shutdown. Sensitive text
             # sits on disk until this runs, so boot is the backstop for an obligation the
             # process that created it could not collect.

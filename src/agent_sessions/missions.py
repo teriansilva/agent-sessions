@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------- identity + bounds
 
@@ -63,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 TITLE_MAX = 200
 INSTRUCTION_MAX = 8000
@@ -204,6 +206,158 @@ PROBE_KINDS: frozenset[str] = frozenset(
 )
 #: "the agent believes it wrote tests" is not evidence that it did, so it may never gate alone.
 NON_GATING_PROBES: frozenset[str] = frozenset({"agent_judged"})
+
+#: WHAT A WELL-FORMED ARGUMENT SET LOOKS LIKE, per probe kind (#883).
+#:
+#: `PROBE_KINDS` says which probes exist; this says what each one needs. Without it a probe could
+#: be stored with a typo'd key, or with no target at all, and nothing would notice until the
+#: Phase 5 runner met it — at which point the runner would have to invent a policy for malformed
+#: data, which is how two components end up disagreeing about what "valid" means.
+#:
+#: `(required, optional)`. Anything outside their union is **rejected, not ignored**: an ignored
+#: key is how a typo becomes a probe that silently checks the wrong thing, and how a future field
+#: arrives having never been honoured with nobody noticing.
+#:
+#: Applied at EVERY boundary where a probe becomes durable — the operator's own
+#: `PATCH /objectives`, a playbook write, playbook read-time normalization, and instantiation.
+#: One schema rather than one per path, because two validity rules is how one of them ends up
+#: weaker than the other.
+#: The value contracts an argument may satisfy. A NAME-ONLY schema is not a schema: it accepted
+#: `http_status.probe_args.url` as a LIST and `expect_status` as an object, both of which persist
+#: fine and then hand the Phase 5 runner something it cannot probe (#883 review).
+#:
+#: `bool` is excluded from `status` deliberately — `isinstance(True, int)` is `True` in Python, so
+#: an unstated int check silently admits `True` as a status code. That trap already bit this repo
+#: once, in `termSize`'s prefs normalization.
+PROBE_ARG_TEXT_MAX = 200
+PROBE_ARG_URL_MAX = 512
+#: Hostname charset, conservative on purpose: letters/digits/`-`/`.` for DNS names, plus `:` and
+#: hex for an IPv6 literal (`urlsplit` strips the brackets) and `%` for a zone id. An
+#: internationalized domain reaches here as punycode.
+_ARG_HOST_RE = re.compile(r"^[a-z0-9._\-:%]+$", re.IGNORECASE)
+
+
+def _arg_text(kind: str, name: str, value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise MissionError(f"probe {kind}: {name} must be a non-empty string", status=422)
+    if len(value) > PROBE_ARG_TEXT_MAX:
+        raise MissionError(
+            f"probe {kind}: {name} is longer than {PROBE_ARG_TEXT_MAX} characters", status=422
+        )
+    if any(ch in value for ch in "\r\n\t\x00"):
+        raise MissionError(f"probe {kind}: {name} may not contain control characters", status=422)
+
+
+def _arg_url(kind: str, name: str, value: object) -> None:
+    """A probe target is an ADDRESS THE SERVER WILL FETCH, so its shape is checked where it is
+    written rather than where it is used.
+
+    The scheme requirement is not cosmetic: `http_status` and `http_revision` are the only two
+    kinds that make a request, and a stored `file:///etc/shadow` or `gopher://…` would be a
+    request of a kind the operator did not think they were configuring. This is NOT a defence
+    against a hostile author — the operator authoring a playbook already has the authority to
+    point a probe wherever they like, exactly as they do with `ai_review.base_url`. It is the
+    contract that keeps a typo from becoming a different protocol.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise MissionError(f"probe {kind}: {name} must be a non-empty string", status=422)
+    if len(value) > PROBE_ARG_URL_MAX:
+        raise MissionError(
+            f"probe {kind}: {name} is longer than {PROBE_ARG_URL_MAX} characters", status=422
+        )
+    # PARSED, not pattern-matched. The regex accepted `http://?x`, `https://#frag` and
+    # `http://:80` — all hostless, all storable, and all failing only when the Phase 5 runner
+    # tried to fetch them, which is exactly the "well-formed at the write boundary" contract this
+    # is supposed to be (review on #884).
+    try:
+        parts = urlsplit(value)
+    except ValueError as e:
+        raise MissionError(f"probe {kind}: {name} is not a URL ({e})", status=422) from None
+    if parts.scheme not in ("http", "https"):
+        raise MissionError(f"probe {kind}: {name} must be an http:// or https:// URL", status=422)
+    try:
+        host = parts.hostname
+    except ValueError as e:  # an authority the parser itself refuses
+        raise MissionError(f"probe {kind}: {name} has an invalid host ({e})", status=422) from None
+    if not host:
+        raise MissionError(f"probe {kind}: {name} has no host", status=422)
+    # A URL never legitimately carries raw whitespace or control characters, and `urlsplit` is
+    # happy to hand back `'  '` as a hostname — so `https://  ` and `http:// /x` both survived
+    # the scheme and non-empty checks above.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise MissionError(
+            f"probe {kind}: {name} may not contain whitespace or control characters", status=422
+        )
+    if not _ARG_HOST_RE.match(host):
+        raise MissionError(f"probe {kind}: {name} has an invalid host {host!r}", status=422)
+    # `urlsplit` parses the port LAZILY — `parts.port` is what raises, so a URL with `:abc` for a
+    # port sails through everything above and only fails when `httpx.Request` refuses to build it.
+    # Same write-time well-formedness contract as the hostless cases, not runner policy.
+    try:
+        port = parts.port
+    except ValueError as e:
+        raise MissionError(f"probe {kind}: {name} has an invalid port ({e})", status=422) from None
+    if port is not None and not (1 <= port <= 65535):
+        raise MissionError(f"probe {kind}: {name} has a port outside 1-65535", status=422)
+
+
+def _arg_status(kind: str, name: str, value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MissionError(f"probe {kind}: {name} must be an integer", status=422)
+    if not (100 <= value <= 599):
+        raise MissionError(f"probe {kind}: {name} must be an HTTP status 100-599", status=422)
+
+
+#: name -> (required?, value contract)
+_ArgSpec = dict[str, tuple[bool, object]]
+
+#: WHAT A WELL-FORMED ARGUMENT SET LOOKS LIKE, per probe kind (#883).
+#:
+#: `PROBE_KINDS` says which probes exist; this says what each one needs, AND what each thing it
+#: needs may be. One table, used at every boundary where a probe becomes durable — the public
+#: PATCH route, playbook writes, read-time normalization and instantiation — because two notions
+#: of validity is how one of them ends up weaker.
+PROBE_ARG_SCHEMA: dict[str, _ArgSpec] = {
+    # Nothing to configure: the operator settles these by hand, or the agent claims them.
+    "none": {},
+    "agent_judged": {},
+    # The mission's own checkout answers these; `branch` narrows it when the objective is about
+    # a specific one rather than whatever the mission is on.
+    "git_local": {"branch": (False, _arg_text)},
+    # Forge probes address a repository — but `repo` is OPTIONAL, because the mission's own
+    # checkout already names one. The server resolving it from the mission's remote is both the
+    # "server resolves the entity" rule and one fewer target an operator can typo; naming it
+    # explicitly is for the case where the objective is about a DIFFERENT repository than the one
+    # the work happens in.
+    "forge_pr": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
+    "forge_checks": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
+    "forge_review": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
+    "forge_merged": {"repo": (False, _arg_text), "branch": (False, _arg_text)},
+    "forge_run": {
+        "repo": (False, _arg_text),
+        "workflow": (False, _arg_text),
+        "branch": (False, _arg_text),
+    },
+    # The two that make a REQUEST, and the only two with a REQUIRED argument. There is no
+    # server-derivable default URL — that is the entire point: a probe target exists only because
+    # a human typed it. A URL-less `http_status` would be a live probe with nothing to check, so
+    # it cannot be stored at all.
+    "http_status": {"url": (True, _arg_url), "expect_status": (False, _arg_status)},
+    "http_revision": {"url": (True, _arg_url), "expect": (False, _arg_text)},
+}
+#: Every kind must say what it takes. A kind added to `PROBE_KINDS` without a schema entry would
+#: otherwise be validated by nothing at all — the silent-widening failure this table exists to
+#: prevent — so the two are asserted equal at import.
+assert set(PROBE_ARG_SCHEMA) == set(PROBE_KINDS), (
+    "PROBE_ARG_SCHEMA must cover exactly PROBE_KINDS; missing: "
+    f"{sorted(set(PROBE_KINDS) - set(PROBE_ARG_SCHEMA))}"
+)
+
+#: Keys the INSTANTIATOR mints for model-proposed notes (#883). A playbook objective key may not
+#: use this prefix — rejected at prefs-write time — which is what makes a note/template collision
+#: UNREACHABLE rather than merely detected. It lives here, with the other objective-key rules,
+#: because it is a fact about keys rather than about prefs storage.
+NOTE_KEY_PREFIX = "note_"
 
 OBJECTIVE_STATES: frozenset[str] = frozenset({"pending", "active", "met", "failed", "waived"})
 OBJECTIVE_SOURCES: frozenset[str] = frozenset({"playbook", "model", "operator"})
@@ -356,6 +510,12 @@ CREATE TABLE IF NOT EXISTS missions (
   -- list (because the first worker already leased every row) and finalising the operation while
   -- that worker is still inside `cleanup_runtime`. The operation needs an owner too.
   op_token      TEXT,
+  -- Objective production is a DURABLE intent (#883), stamped in the same transaction that
+  -- creates the mission. A background task lives only in this process; this is what lets
+  -- recovery find a checklist that was never filled. NULL = predates the producer, never
+  -- retried.
+  objectives_state TEXT,
+  objectives_at    REAL,
   outcome       TEXT,
   -- A draft may exist before its project is resolved (that is the whole point of asking), but
   -- nothing may LAUNCH without a server-resolved cwd. Enforced here, not in a comment.
@@ -519,6 +679,8 @@ def _migrate(con) -> int:
             _migrate_6_to_7(con)
         if version < 8:
             _migrate_7_to_8(con)
+        if version < 9:
+            _migrate_8_to_9(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -613,6 +775,26 @@ def _migrate_6_to_7(con) -> None:
     cols = {r[1] for r in con.execute("PRAGMA table_info(mission_sessions)")}
     if "lease_at" not in cols:
         con.execute("ALTER TABLE mission_sessions ADD COLUMN lease_at REAL")
+
+
+def _migrate_8_to_9(con) -> None:
+    """v9 makes objective production a DURABLE intent rather than an in-process hope (#883).
+
+    The producer ran as a `BackgroundTask` on the create response, which lives only in this
+    server process: a crash or restart between the mission's commit and the model call left a
+    permanent empty checklist, with no timeline event saying why and nobody to retry it. A
+    background task is not a promise.
+
+    `objectives_state` records the intent alongside the mission itself, in the same transaction,
+    so recovery can find the work the same way `resume_pending_operations` finds a half-finished
+    archive. NULL means "this mission predates the producer" and is never retried — a backfill
+    would propose objectives for every historical mission at once (review on #884).
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(missions)")}
+    if "objectives_state" not in cols:
+        con.execute("ALTER TABLE missions ADD COLUMN objectives_state TEXT")
+    if "objectives_at" not in cols:
+        con.execute("ALTER TABLE missions ADD COLUMN objectives_at REAL")
 
 
 def _migrate_7_to_8(con) -> None:
@@ -1260,8 +1442,9 @@ def create_mission(
             con.execute("BEGIN IMMEDIATE")
             con.execute(
                 "INSERT INTO missions (id, title, instruction, brief, project_id, cwd, engine,"
-                " engine_source, state, playbook_id, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?)",
+                " engine_source, state, playbook_id, created_at, updated_at,"
+                " objectives_state, objectives_at) "
+                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,'pending',?)",
                 (
                     mission_id,
                     _cap(title, TITLE_MAX) or text[:TITLE_MAX],
@@ -1272,6 +1455,7 @@ def create_mission(
                     _cap_or_none(engine, 40),
                     _cap_or_none(engine_source, 20),
                     _cap_or_none(playbook_id, 200),
+                    ts,
                     ts,
                     ts,
                 ),
@@ -2265,7 +2449,322 @@ def all_active_memberships(*, path: Path | None = None) -> dict[str, str]:
         con.close()
 
 
+def settle_objectives_state(
+    mission_id: str, state: str, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Record that objective production finished. `done` | `failed` | `skipped`.
+
+    Compare-and-set on `pending`, so two racing producers cannot both claim the outcome and a
+    recovery pass cannot overwrite a result that landed while it was deciding.
+    """
+    validate_id(mission_id)
+    if state not in ("done", "failed", "skipped"):
+        raise MissionError(f"unknown objectives_state {state!r}", status=422)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            cur = con.execute(
+                "UPDATE missions SET objectives_state=?, objectives_at=? "
+                "WHERE id=? AND objectives_state='pending'",
+                (state, ts, mission_id),
+            )
+            con.commit()
+            return bool(cur.rowcount)
+        finally:
+            con.close()
+
+
+def missions_awaiting_objectives(
+    *,
+    older_than: float = 0.0,
+    limit: int = 50,
+    after: tuple[float, str] | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> list[tuple[float, str]]:
+    """Missions whose objective production never finished — the recovery worklist (#883).
+
+    Returns `(objectives_at, id)` pairs so the caller can PAGE FORWARD. Returning bare ids and
+    always serving the oldest `limit` rows starved everything behind a stuck page: the caller
+    remembered what it had attempted, the query kept handing back the same rows, and it stopped
+    with unattempted work still pending (review on #884). A cursor fixes both halves at once —
+    each row is visited at most once per pass, so nothing spins AND nothing is skipped.
+
+    `older_than` skips intents still legitimately in flight in THIS process; boot passes 0
+    because a just-started process has no producers of its own. NULL `objectives_state` is
+    deliberately excluded: those missions predate the producer, and treating them as pending
+    would propose objectives for the entire history at once.
+    """
+    ts = time.time() if now is None else now
+    con = _ready(path)
+    try:
+        sql = (
+            "SELECT objectives_at, id FROM missions "
+            "WHERE objectives_state='pending' AND objectives_at <= ? "
+            "AND state NOT IN ('done','failed','abandoned') "
+        )
+        args: list[object] = [ts - max(0.0, older_than)]
+        if after is not None:
+            # Row-value comparison, so a shared timestamp cannot hide a row behind its neighbour.
+            sql += "AND (objectives_at, id) > (?, ?) "
+            args += [after[0], after[1]]
+        sql += "ORDER BY objectives_at ASC, id ASC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        rows = con.execute(sql, args).fetchall()
+        return [(float(r["objectives_at"]), r["id"]) for r in rows]
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------- objectives
+
+
+def _binding_digest(status: str, templates: list[dict]) -> str:
+    """The digest, as a PURE function of one resolution.
+
+    Separated from the read so a caller can digest exactly the templates it is going to use.
+    Computing the two with separate reads is a race of precisely the kind this fence exists to
+    close: prefs changing between them yields a digest of the NEW config beside the OLD
+    templates, the write-boundary check then compares new against new and passes, and the stale
+    templates are written anyway.
+    """
+    payload = json.dumps([status, templates], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+def templates_and_binding(
+    mission_id: str, *, path: Path | None = None
+) -> tuple[str, list[dict], str]:
+    """`(status, templates, binding)` from ONE resolution — what a producer should call."""
+    status, templates = templates_for_mission(mission_id, path=path)
+    return status, templates, _binding_digest(status, templates)
+
+
+def playbook_binding(mission_id: str, *, path: Path | None = None) -> str:
+    """A digest identifying WHICH templates a mission resolves to, right now.
+
+    **The revocation fence for a producer that spans a model call (#883 review).**
+    `propose()` resolves templates, awaits the model for many seconds, and then writes. If the
+    operator deletes or edits the bound playbook inside that window, instantiating from the
+    snapshot persists a probe target they have just revoked — and Phase 5 would then schedule
+    requests to it. "Re-read the policy at the WRITE boundary" is the same rule `deliver_auto`
+    follows for the orchestrator tier, applied to the thing that authorizes a probe.
+
+    It digests the resolved templates rather than a version counter, so ANY change that matters
+    — deleting the playbook, retargeting a URL, adding or reordering an objective — changes it,
+    with nothing to remember to bump. Indices are positional, so reordering MUST invalidate:
+    a selection of index 2 means a different objective afterwards.
+    """
+    return _binding_digest(*templates_for_mission(mission_id, path=path))
+
+
+def templates_for_mission(mission_id: str, *, path: Path | None = None) -> tuple[str, list[dict]]:
+    """`(status, templates)` — the objective templates in play for this mission (#883).
+
+    `status` is one of `"ok"` / `"no_default"` / `"unknown_playbook"`, and the caller records the
+    last one so the operator can see WHICH id went missing rather than wondering why a mission
+    got no objectives.
+
+    **The two failure modes are deliberately different**, and collapsing them is how probes get
+    armed for a mission nobody chose them for:
+
+    * ``playbook_id`` ABSENT ⇒ the operator's configured `default_id`. Still their decision, made
+      once in Settings rather than silently per mission.
+    * ``playbook_id`` SET but UNKNOWN ⇒ **nothing**. The config changed under the mission, and
+      substituting another playbook would instantiate gating objectives with operator-authored
+      probe targets that were never chosen here. "You did not choose" and "what you chose is
+      gone" are different facts.
+
+    Reads the prefs block through the normalizer, so a hand-edited or legacy entry is already
+    degraded (non-probing, non-gating) before it can be offered as a template.
+    """
+    from . import prefs
+
+    row = get_mission(mission_id, path=path)
+    if row is None:
+        raise MissionNotFound(mission_id)
+    block = prefs.get_mission_playbooks()
+    by_id = {p["id"]: p for p in block["playbooks"]}
+    wanted = str(row.get("playbook_id") or "")
+    if wanted:
+        pb = by_id.get(wanted)
+        return ("ok", list(pb["objectives"])) if pb else ("unknown_playbook", [])
+    pb = by_id.get(block["default_id"]) if block["default_id"] else None
+    return ("ok", list(pb["objectives"])) if pb else ("no_default", [])
+
+
+def _finish_objective_write(
+    con,
+    mission_id: str,
+    *,
+    by: str,
+    applied: list[dict],
+    added_unmet_gate: bool,
+    prior_state: str,
+    ts: float,
+) -> bool:
+    """The tail EVERY objective write shares: reopen, timeline, `updated_at`. Returns `reopened`.
+
+    Extracted because the two writers had drifted. `instantiate_objectives` committed rows and
+    stopped there, so a proposal against a mission already in `review` could add a pending gate
+    while the mission stayed review-ready — an objective list saying "not done" beside a mission
+    saying "ready to close" — and left `updated_at` and the timeline stale, so no consumer could
+    even see it had happened (#883 review).
+
+    Sharing the code is the fix rather than copying it: these three invariants belong to "an
+    objective was written", not to one caller's route.
+    """
+    reopened = False
+    if added_unmet_gate and prior_state == "review":
+        cur = con.execute(
+            "UPDATE missions SET state='running', updated_at=?, closed_at=NULL "
+            "WHERE id=? AND state='review'",
+            (ts, mission_id),
+        )
+        reopened = bool(cur.rowcount)
+        if reopened:
+            _append_event(
+                con,
+                mission_id,
+                "state",
+                at=ts,
+                meta={
+                    "from": "review",
+                    "to": "running",
+                    "why": "an unmet gating objective was added",
+                },
+            )
+    _append_event(
+        con,
+        mission_id,
+        "objective",
+        at=ts,
+        meta={"by": by, "ops": applied, "reopened": reopened},
+    )
+    con.execute("UPDATE missions SET updated_at=? WHERE id=?", (ts, mission_id))
+    return reopened
+
+
+@contextlib.contextmanager
+def _playbook_policy_held(mission_id: str, expect_binding: str | None, *, path: Path | None = None):
+    """Hold the PREFS write lock across a mission write, and verify the binding inside it.
+
+    **Lock order is MISSIONS -> PREFS, and prefs is a leaf.** Nothing under `json_write_lock`
+    opens the missions database — `prefs`' playbook validation calls only pure helpers from this
+    module (`NOTE_KEY_PREFIX`, `NON_GATING_PROBES`, `validate_probe_args`) — so this edge cannot
+    close a cycle with the LEDGER -> MISSIONS order #862 fixed.
+
+    A `None` expectation takes no prefs lock at all: a caller that is not instantiating from a
+    playbook snapshot has no policy to pin, and holding a global file lock for it would serialize
+    unrelated writes for nothing.
+    """
+    if expect_binding is None:
+        yield
+        return
+    from .atomicjson import json_write_lock
+    from .prefs import _default_path as _prefs_path
+
+    with json_write_lock(_prefs_path()):
+        if playbook_binding(mission_id, path=path) != expect_binding:
+            raise MissionError(
+                "the mission's playbook changed while its objectives were being proposed; "
+                "nothing was instantiated",
+                status=409,
+            )
+        yield
+
+
+def instantiate_objectives(
+    mission_id: str,
+    rows: list[dict],
+    *,
+    expect_binding: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> list[dict]:
+    """Write a mixed playbook/model objective batch in ONE transaction (#883).
+
+    **This is the trusted boundary, and it exists because authority is per ROW.**
+    `patch_objectives` takes one `source` for a whole batch, and the tempting fix — widening it
+    to accept a per-row source — would put authority in the caller's hands, which is the shape
+    of every privilege bug. So instantiation is its own path: each row's `source` is assigned
+    HERE, from where the row came from, and the public `PATCH /objectives` route keeps
+    `source="operator"` with no way to say otherwise.
+
+    Atomic on purpose. A rejected batch leaves the mission with the objective list it had, because
+    a half-instantiated plan the operator cannot tell is partial is worse than no plan at all.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock, _playbook_policy_held(mission_id, expect_binding, path=path):
+        # THE REVOCATION FENCE, and it is a real fence rather than a narrow window (#883 review).
+        #
+        # An earlier version checked the digest and THEN took the write lock, which is
+        # check-then-write across two stores: a revocation could commit under the prefs flock
+        # after the equality check and before the insert, and the revoked target was persisted
+        # anyway. Reproduced by forcing that ordering.
+        #
+        # `_playbook_policy_held` holds the PREFS write lock across the check AND this
+        # transaction, so a concurrent `set_mission_playbooks` blocks until the mission write
+        # finishes. The revocation therefore lands strictly before the check (and it fails) or
+        # strictly after the commit (and it is a revocation of something already written, which
+        # is what revocation means). There is no in-between left.
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            state_row = con.execute(
+                "SELECT state FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if state_row is None:
+                raise MissionNotFound(mission_id)
+            # THE LIFECYCLE FENCE (#883 review). A proposal spans a model call, and the mission
+            # can reach a terminal state inside that window. Inserting then leaves a `done`
+            # mission carrying a fresh PENDING gating objective — a checklist that contradicts
+            # the mission's own outcome, and one `_finish_objective_write` cannot repair, because
+            # it reopens `review` and nothing else.
+            #
+            # Refused rather than reopened: a mission the operator closed is not something a late
+            # background task gets to reopen on their behalf.
+            if state_row["state"] in TERMINAL_STATES:
+                raise MissionError(
+                    f"mission {mission_id} is {state_row['state']}; objectives are not "
+                    f"instantiated into a closed mission",
+                    status=409,
+                )
+            added_unmet_gate = False
+            applied: list[dict] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise MissionError("each objective must be an object", status=422)
+                src = row.get("source")
+                if src not in ("playbook", "model"):
+                    # Not a client-facing message: reaching it means a caller inside this module
+                    # tried to mint an authority it does not have.
+                    raise MissionError(f"instantiation cannot write source {src!r}", status=500)
+                added_unmet_gate |= _op_add(con, mission_id, row, src, ts)
+                applied.append({"op": "add", "key": row.get("key"), "source": src})
+            # `by` names the BOUNDARY, not a source, because this batch is deliberately mixed:
+            # per-row authority is the whole reason this path exists, so a single `by` naming one
+            # source would be a lie about half the rows. Each row carries its own in `applied`.
+            _finish_objective_write(
+                con,
+                mission_id,
+                by="instantiation",
+                applied=applied,
+                added_unmet_gate=added_unmet_gate,
+                prior_state=state_row["state"],
+                ts=ts,
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return objectives(mission_id, path=path)
 
 
 def objectives(mission_id: str, *, path: Path | None = None) -> list[dict]:
@@ -2295,7 +2794,56 @@ def _validate_probe(probe: object, probe_args: object, gate: bool) -> tuple[str,
         raise MissionError(f"probe {kind} may not be a gate", status=422)
     if probe_args is not None and not isinstance(probe_args, dict):
         raise MissionError("probe_args must be an object", status=422)
+    _validate_probe_args(kind, probe_args)
+    # A SERIALIZATION backstop, and — since the per-field value contracts landed — no longer
+    # reachable for any known kind: every field is length-capped, and the widest schema-valid set
+    # serializes to well under `PROBE_ARGS_MAX`. It stays because it guards the COLUMN rather than
+    # the fields: a kind added to `PROBE_ARG_SCHEMA` with generous caps of its own would otherwise
+    # discover this budget by writing invalid truncated JSON that reads back as None. Kept
+    # deliberately rather than left by accident, and pinned directly on `_json_or_none` — asserting
+    # it through `_validate_probe` is what a dead branch looks like when nobody says so.
     return kind, _json_or_none(probe_args, PROBE_ARGS_MAX)
+
+
+def validate_probe_args(kind: str, probe_args: object) -> None:
+    """Check one probe's arguments against :data:`PROBE_ARG_SCHEMA`. Raises, never repairs.
+
+    **The one shared validator**, called by every path that makes a probe durable: the public
+    `PATCH /objectives` route, `instantiate_objectives`, and — through `prefs` — playbook writes
+    and read-time normalization. `prefs` used to re-implement the name half of this inline, which
+    is how the two paths came to disagree about values while agreeing about names.
+
+    **Unknown keys are rejected rather than dropped.** Silently ignoring one turns a typo into a
+    probe that checks something other than what was written, and leaves a future field looking
+    accepted while it is discarded. Rejecting makes the operator's mistake visible at the moment
+    they make it, which is the only moment they can fix it cheaply.
+
+    **Values are checked, not just names.** A name-only schema accepted a `url` that was a list
+    and an `expect_status` that was an object; both persisted, and both would have reached the
+    Phase 5 runner as a target it cannot probe.
+    """
+    spec = PROBE_ARG_SCHEMA.get(kind)
+    if spec is None:
+        raise MissionError(f"unknown probe {kind!r}", status=422)
+    if probe_args is None:
+        got: dict = {}
+    elif isinstance(probe_args, dict):
+        got = probe_args
+    else:
+        raise MissionError("probe_args must be an object", status=422)
+    missing = {n for n, (req, _) in spec.items() if req} - set(got)
+    if missing:
+        raise MissionError(f"probe {kind} requires {', '.join(sorted(missing))}", status=422)
+    unknown = set(got) - set(spec)
+    if unknown:
+        raise MissionError(f"probe {kind} does not take {', '.join(sorted(unknown))}", status=422)
+    for name, value in got.items():
+        spec[name][1](kind, name, value)
+
+
+#: The private spelling stays as an alias so nothing internal has to change name to gain the
+#: value checks; the public one is what `prefs` imports.
+_validate_probe_args = validate_probe_args
 
 
 def patch_objectives(
@@ -2354,34 +2902,15 @@ def patch_objectives(
                 else:
                     raise MissionError(f"unknown objective op {kind!r}", status=422)
                 applied.append({"op": kind, "key": op.get("key")})
-            reopened = False
-            if added_unmet_gate and state_row["state"] == "review":
-                cur = con.execute(
-                    "UPDATE missions SET state='running', updated_at=?, closed_at=NULL "
-                    "WHERE id=? AND state='review'",
-                    (ts, mission_id),
-                )
-                reopened = bool(cur.rowcount)
-                if reopened:
-                    _append_event(
-                        con,
-                        mission_id,
-                        "state",
-                        at=ts,
-                        meta={
-                            "from": "review",
-                            "to": "running",
-                            "why": "an unmet gating objective was added",
-                        },
-                    )
-            _append_event(
+            _finish_objective_write(
                 con,
                 mission_id,
-                "objective",
-                at=ts,
-                meta={"by": source, "ops": applied, "reopened": reopened},
+                by=source,
+                applied=applied,
+                added_unmet_gate=added_unmet_gate,
+                prior_state=state_row["state"],
+                ts=ts,
             )
-            con.execute("UPDATE missions SET updated_at=? WHERE id=?", (ts, mission_id))
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -2434,6 +2963,17 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     if not title:
         raise MissionError("objective title is required", status=422)
     gate = strict_bool(op.get("gate"), "gate", default=False)
+    # AUTHORITY BY SOURCE (#883). A `model` row is a NOTE: it may name an objective and nothing
+    # else. `probe` and `probe_args` are operator-authored — from a playbook the operator wrote,
+    # or from their own edit — and a model row carrying either would launder model text into an
+    # operator-authored field, which is the SSRF surface this phase closes by construction.
+    #
+    # Checked here rather than at the caller, so a future caller fails loudly instead of quietly
+    # widening it. It is belt-and-braces: `instantiate_objectives` cannot produce such a row.
+    if source == "model" and (
+        op.get("probe", "none") not in (None, "none") or op.get("probe_args")
+    ):
+        raise MissionError("a model-proposed objective may not carry a probe", status=422)
     probe, args = _validate_probe(op.get("probe", "none"), op.get("probe_args"), gate)
     nxt = con.execute(
         "SELECT COALESCE(MAX(ord), -1) + 1 FROM mission_objectives WHERE mission_id=?",

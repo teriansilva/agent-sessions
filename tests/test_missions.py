@@ -22,6 +22,11 @@ CLAUDE_A = "claude:11111111-1111-1111-1111-111111111111"
 CLAUDE_B = "claude:22222222-2222-2222-2222-222222222222"
 
 
+def _pending_ids(**kw) -> list[str]:
+    """Just the ids from the recovery worklist, which pages on `(objectives_at, id)`."""
+    return [mid for _, mid in missions.missions_awaiting_objectives(**kw)]
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """A fresh store per test — NEVER the operator's real one."""
@@ -730,12 +735,30 @@ def test_the_event_cap_is_a_real_cap_even_for_preserved_kinds(store):
 
 def test_an_oversized_probe_args_is_refused_not_silently_corrupted(store):
     """Truncating serialized JSON at an arbitrary character stores invalid JSON that reads back as
-    None — the caller is told the write succeeded and the data is silently gone."""
+    None — the caller is told the write succeeded and the data is silently gone.
+
+    The refusal now comes from the FIELD's own length cap rather than the serialization budget,
+    which is a better error (it names the field), and the property the test exists for is
+    unchanged: refused, and nothing stored.
+    """
     mid = _running()
     with pytest.raises(missions.MissionError) as e:
         _add(mid, "big", probe="http_status", probe_args={"url": "https://x/" + "y" * 4000})
-    assert e.value.status == 422 and "too large" in str(e.value)
+    assert e.value.status == 422 and "url is longer than" in str(e.value)
     assert missions.objectives(mid) == []
+
+
+def test_the_serialization_budget_still_bites_where_it_is_reachable():
+    """The column backstop, asserted where it can actually fire.
+
+    Per-field caps have made it unreachable through `_validate_probe` for every current kind. That
+    is a reason to pin it directly, not a reason to delete it: it guards the COLUMN, so a future
+    kind with generous field caps of its own must meet a budget rather than discover it by writing
+    truncated JSON.
+    """
+    with pytest.raises(missions.MissionError) as e:
+        missions._json_or_none({"k": "v" * (missions.PROBE_ARGS_MAX + 1)}, missions.PROBE_ARGS_MAX)
+    assert e.value.status == 422 and "too large" in str(e.value)
 
 
 def test_reorder_rejects_a_duplicate_key(store):
@@ -1256,3 +1279,391 @@ def test_a_v7_store_migrates_forward_to_v8(store):
         assert "session_reservations" in names
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------- Phase 3a boundaries (#883)
+
+
+def _pb(**over):
+    """A playbook block with one template, valid unless a test breaks it deliberately."""
+    obj = {"key": "pr_open", "title": "A PR is open", "probe": "forge_pr", "gate": True}
+    obj.update(over.pop("objective", {}))
+    return {
+        "default_id": over.pop("default_id", "ship"),
+        "playbooks": [{"id": "ship", "label": "Ship", "objectives": [obj]}],
+    }
+
+
+def test_a_model_row_may_never_carry_a_probe(store, monkeypatch):
+    """AUTHORITY BY SOURCE. A model row is a NOTE: it may name an objective and nothing else.
+
+    Carrying a probe would launder model text into an operator-authored field, which is the SSRF
+    surface this phase closes. Checked at the WRITE boundary so a future caller fails loudly
+    rather than quietly widening it.
+    """
+    mid = missions.create_mission("do it", path=store)["id"]
+    with pytest.raises(missions.MissionError) as e:
+        missions.instantiate_objectives(
+            mid,
+            [
+                {
+                    "key": "k",
+                    "title": "T",
+                    "probe": "http_status",
+                    "probe_args": {"url": "http://169.254.169.254/"},
+                    "source": "model",
+                }
+            ],
+            path=store,
+        )
+    assert e.value.status == 422
+    assert missions.objectives(mid, path=store) == []
+
+
+def test_instantiation_is_atomic_across_a_MIXED_batch(store):
+    """No partial objective list survives a rejected batch — asserted for a mixed
+    playbook/model batch, because that is the one the instantiator actually writes.
+
+    A half-instantiated plan the operator cannot tell is partial is worse than no plan.
+    """
+    mid = missions.create_mission("do it", path=store)["id"]
+    with pytest.raises(missions.MissionError):
+        missions.instantiate_objectives(
+            mid,
+            [
+                {"key": "good", "title": "fine", "probe": "forge_pr", "source": "playbook"},
+                {"key": "note_1", "title": "a note", "source": "model"},
+                # …and one that must take the whole batch down with it.
+                {"key": "bad", "title": "T", "probe": "http_status", "source": "model"},
+            ],
+            path=store,
+        )
+    assert missions.objectives(mid, path=store) == [], "a partial list survived"
+
+
+def test_instantiation_cannot_mint_operator_authority(store):
+    """The boundary assigns `source` itself; a caller cannot ask for one it should not have."""
+    mid = missions.create_mission("do it", path=store)["id"]
+    with pytest.raises(missions.MissionError) as e:
+        missions.instantiate_objectives(
+            mid, [{"key": "k", "title": "T", "source": "operator"}], path=store
+        )
+    assert e.value.status == 500
+
+
+def test_an_ABSENT_playbook_id_uses_the_configured_default(store, monkeypatch, tmp_path):
+    from agent_sessions import prefs
+
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
+    prefs.set_mission_playbooks(_pb())
+    mid = missions.create_mission("do it", path=store)["id"]
+    status, tpl = missions.templates_for_mission(mid, path=store)
+    assert status == "ok"
+    assert [t["key"] for t in tpl] == ["pr_open"]
+
+
+def test_an_UNKNOWN_playbook_id_offers_NOTHING_rather_than_the_default(
+    store, monkeypatch, tmp_path
+):
+    """The asymmetry that matters. "You did not choose" and "what you chose is gone" are
+    different facts, and substituting the default on the second silently instantiates gating
+    objectives with operator-authored probe targets nobody picked for this mission."""
+    from agent_sessions import prefs
+
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
+    prefs.set_mission_playbooks(_pb())
+    mid = missions.create_mission("do it", playbook_id="deleted_one", path=store)["id"]
+    status, tpl = missions.templates_for_mission(mid, path=store)
+    assert status == "unknown_playbook"
+    assert tpl == [], "an unknown playbook fell back to the default"
+
+
+def test_a_STALE_default_id_offers_nothing_rather_than_the_first_playbook(
+    store, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "p.json"))
+    # Written through the raw store, because `set_mission_playbooks` is strict and would refuse
+    # this — which is exactly the hand-edited case the read path exists to survive.
+    from agent_sessions.atomicjson import atomic_write_json
+
+    atomic_write_json(tmp_path / "p.json", {"mission_playbooks": {**_pb(), "default_id": "gone"}})
+    mid = missions.create_mission("do it", path=store)["id"]
+    status, tpl = missions.templates_for_mission(mid, path=store)
+    assert status == "no_default"
+    assert tpl == []
+
+
+# ---- the shipped defaults, and the ONE shared value contract (#883 review) ------------
+#
+# Three findings met here. `DEFAULT_MISSION_PLAYBOOKS` was declared and never consumed, so a
+# fresh install read `{"default_id": "", "playbooks": []}` and every mission fell through to
+# notes-only. `mission_playbooks` had no `POST /api/prefs` branch, so the only way to configure
+# one in production was hand-editing `prefs.json`. And `PROBE_ARG_SCHEMA` checked field NAMES
+# without checking VALUES, so both durable paths accepted a `url` that was a list.
+
+
+def test_a_FRESH_INSTALL_gets_the_shipped_playbooks(tmp_path):
+    """Absent means "never configured", and the shipped defaults are what that should read as."""
+    from agent_sessions import prefs
+
+    got = prefs.get_mission_playbooks(tmp_path / "nothing-here.json")
+    assert got["default_id"] == "ship_a_change"
+    assert [p["id"] for p in got["playbooks"]] == ["ship_a_change", "investigate"]
+
+
+def test_the_shipped_defaults_SURVIVE_STRICT_VALIDATION_unchanged(tmp_path):
+    """The constant obeys the rules it is handed to operators as an example of.
+
+    Asserted here rather than at import: validating in `prefs` would import `missions` while
+    `prefs` is still being defined.
+    """
+    from agent_sessions import prefs
+
+    strict = prefs._coerce_mission_playbooks(prefs.DEFAULT_MISSION_PLAYBOOKS, strict=True)
+    assert strict == prefs.get_mission_playbooks(tmp_path / "nothing-here.json")
+
+
+def test_a_PRESENT_but_malformed_block_still_fails_closed(tmp_path):
+    """Absence and corruption are different facts. Only the first gets the defaults — handing
+    them to a corrupt block would silently replace an operator's config with ours."""
+    from agent_sessions import prefs
+    from agent_sessions.atomicjson import atomic_write_json
+
+    p = tmp_path / "p.json"
+    atomic_write_json(p, {"mission_playbooks": {"playbooks": "not a list"}})
+    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": []}
+
+
+def test_an_operator_who_CLEARS_their_playbooks_does_not_get_them_back(tmp_path):
+    """The empty object is a decision, and it is distinguishable from never having decided."""
+    from agent_sessions import prefs
+
+    p = tmp_path / "p.json"
+    prefs.set_mission_playbooks({"default_id": "", "playbooks": []}, p)
+    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": []}
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"url": ["https://example.com"]},  # a list, not a URL
+        {"url": {"href": "https://example.com"}},
+        {"url": ""},
+        {"url": "example.com/healthz"},  # no scheme: not the protocol they configured
+        {"url": "file:///etc/shadow"},
+        {"url": "https://example.com", "expect_status": {}},
+        {"url": "https://example.com", "expect_status": "200"},
+        {"url": "https://example.com", "expect_status": True},  # isinstance(True, int) is True
+        {"url": "https://example.com", "expect_status": 7},
+        # HOSTLESS targets. All three parsed, all three stored, and all three would have failed
+        # only when the Phase 5 runner tried to fetch them (review on #884).
+        {"url": "http://?x"},
+        {"url": "https://#frag"},
+        {"url": "http://:80"},
+        {"url": "http://"},
+        # …and an authority that is only whitespace, which `urlsplit` hands back as a hostname.
+        {"url": "https://  "},
+        {"url": "http:// /x"},
+        {"url": "http://a b/c"},
+        # PORTS. `urlsplit` parses these lazily, so `parts.port` is what raises — every one of
+        # these passed the scheme and host checks and only failed when `httpx.Request` refused
+        # to build it (review on #884).
+        {"url": "http://example.com:abc"},
+        {"url": "http://example.com:0"},
+        {"url": "http://example.com:99999"},
+        {"url": "http://example.com:-1"},
+        {"url": "http://example.com:8080x"},
+    ],
+)
+def test_MALFORMED_probe_args_are_refused_by_BOTH_durable_paths(store, tmp_path, args):
+    """Paired, because a rule enforced on one path and not the other is not a rule.
+
+    A playbook and an operator objective edit are two different doors to the same stored column,
+    and the Phase 5 runner reads the column — it cannot tell which door a target came through,
+    so both have to be shut.
+    """
+    from agent_sessions import prefs
+
+    # Door 1: the playbook prefs write.
+    with pytest.raises(prefs.PlaybookError):
+        prefs.set_mission_playbooks(
+            {
+                "default_id": "p",
+                "playbooks": [
+                    {
+                        "id": "p",
+                        "label": "P",
+                        "objectives": [
+                            {
+                                "key": "live",
+                                "title": "It is live",
+                                "probe": "http_status",
+                                "probe_args": args,
+                            }
+                        ],
+                    }
+                ],
+            },
+            tmp_path / "p.json",
+        )
+
+    # Door 2: the public objective route's write path.
+    mid = missions.create_mission("do it", path=store)["id"]
+    with pytest.raises(missions.MissionError) as e:
+        missions.patch_objectives(
+            mid,
+            [
+                {
+                    "op": "add",
+                    "key": "live",
+                    "title": "It is live",
+                    "probe": "http_status",
+                    "probe_args": args,
+                }
+            ],
+            path=store,
+        )
+    assert e.value.status == 422
+    assert missions.objectives(mid, path=store) == []
+
+
+def test_a_hand_edited_malformed_template_DEGRADES_on_read_and_cannot_gate(tmp_path):
+    """`prefs.json` is a file a person can edit, so the read path has to say what a bad template
+    BECOMES — and a gating objective with no probe can never be met, which would wedge the
+    mission rather than protect it."""
+    from agent_sessions import prefs
+    from agent_sessions.atomicjson import atomic_write_json
+
+    p = tmp_path / "p.json"
+    atomic_write_json(
+        p,
+        {
+            "mission_playbooks": {
+                "default_id": "p",
+                "playbooks": [
+                    {
+                        "id": "p",
+                        "label": "P",
+                        "objectives": [
+                            {
+                                "key": "live",
+                                "title": "It is live",
+                                "probe": "http_status",
+                                "probe_args": {"url": ["nope"]},
+                                "gate": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+    (obj,) = prefs.get_mission_playbooks(p)["playbooks"][0]["objectives"]
+    assert (obj["probe"], obj["probe_args"], obj["gate"]) == ("none", None, False)
+    assert obj["title"] == "It is live", "the operator's intent stayed visible"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://app.example.com/healthz",
+        "http://127.0.0.1:8080/x?a=1#f",
+        "https://[::1]:9000/health",
+        "https://xn--bcher-kva.example/x",
+    ],
+)
+def test_LEGITIMATE_urls_still_pass(url):
+    """The control. A host contract that also refuses IPv6 literals or punycode would be a
+    different bug wearing the fix's clothes."""
+    missions.validate_probe_args("http_status", {"url": url})
+
+
+@pytest.mark.parametrize("gate", ["false", "true", 1, 0, {}, [], None])
+def test_a_playbook_write_REFUSES_a_non_boolean_gate(tmp_path, gate):
+    """`bool("false")` is `True`, so a client that stringifies a false value would silently
+    create a MANDATORY gate — and a gate nobody intended can strand a mission short of
+    completion for ever (review on #884)."""
+    from agent_sessions import prefs
+
+    with pytest.raises(prefs.PlaybookError):
+        prefs.set_mission_playbooks(
+            {
+                "default_id": "p",
+                "playbooks": [
+                    {
+                        "id": "p",
+                        "label": "P",
+                        "objectives": [
+                            {"key": "k", "title": "T", "probe": "forge_pr", "gate": gate}
+                        ],
+                    }
+                ],
+            },
+            tmp_path / "p.json",
+        )
+
+
+def test_a_hand_edited_non_boolean_gate_DEGRADES_on_read(tmp_path):
+    """The forgiving half. `prefs.json` is a file a person can edit, and a whole install must not
+    lose its playbooks over one bad value — but the row degrades explicitly rather than being
+    coerced into whichever gate the truthiness happened to give."""
+    from agent_sessions import prefs
+    from agent_sessions.atomicjson import atomic_write_json
+
+    p = tmp_path / "p.json"
+    atomic_write_json(
+        p,
+        {
+            "mission_playbooks": {
+                "default_id": "p",
+                "playbooks": [
+                    {
+                        "id": "p",
+                        "label": "P",
+                        "objectives": [
+                            {"key": "k", "title": "T", "probe": "forge_pr", "gate": "false"}
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+    (obj,) = prefs.get_mission_playbooks(p)["playbooks"][0]["objectives"]
+    assert (obj["probe"], obj["gate"]) == ("none", False)
+    assert obj["title"] == "T", "the operator's intent stayed visible"
+
+
+def test_the_v8_to_v9_UPGRADE_does_not_backfill_history(tmp_path, monkeypatch):
+    """The migration path, driven from a real v8 database rather than only a fresh one.
+
+    Only the fresh-install path was exercised, and the risk lives in the upgrade: a mission that
+    predates the producer must come through with `objectives_state` NULL and never be retried,
+    while a mission created after the upgrade must be pending. Backfilling would propose
+    objectives for the entire history at once, on the first boot after an upgrade (#883 review).
+    """
+    import sqlite3
+
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(db))
+    missions.reset_schema_cache_for_test()
+    old_id = missions.create_mission("pre-existing", cwd="/tmp")["id"]
+
+    # Roll a real database back to v8 — drop the columns v9 adds and reset the version stamp.
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE missions DROP COLUMN objectives_state")
+    con.execute("ALTER TABLE missions DROP COLUMN objectives_at")
+    con.execute("PRAGMA user_version=8")
+    con.commit()
+    con.close()
+    missions.reset_schema_cache_for_test()
+
+    assert missions.get_mission(old_id) is not None, "the upgrade lost a mission"
+    cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(missions)")}
+    assert {"objectives_state", "objectives_at"} <= cols
+    assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == 9
+
+    assert (
+        _pending_ids() == []
+    ), "the upgrade queued every historical mission for objective production"
+    fresh = missions.create_mission("post-upgrade", cwd="/tmp")["id"]
+    assert _pending_ids() == [fresh]

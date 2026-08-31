@@ -44,6 +44,12 @@ class _Running:
     kind: str
     detail: str
     started_at: float
+    #: The exclusivity discriminator, SEPARATE from the observable `kind` (#883 review). A
+    #: per-entity single-flight used to be spelled by putting the entity in the kind
+    #: (`mission-objectives:<id>`), which made `_last` grow one permanent entry per entity and
+    #: `GET /api/ai/activity` serialize the entire history of them. The kind is the label a
+    #: person reads and comes from a fixed vocabulary; the scope is what must not run twice.
+    scope: str = ""
 
 
 # Process-global: the app is single-instance, so a module-level registry is the whole story.
@@ -52,9 +58,14 @@ _last: dict[str, dict] = {}
 _ids = count(1)
 
 
-def is_running(kind: str) -> bool:
-    """True iff a task of ``kind`` is currently tracked as running."""
-    return any(r.kind == kind for r in _running.values())
+def is_running(kind: str, scope: str = "") -> bool:
+    """True iff a task of ``kind`` (optionally narrowed to ``scope``) is tracked as running.
+
+    With no ``scope`` this asks about the kind as a whole, which is what the callers that gate on
+    "is a pulse chat happening" mean. With one it asks about a single entity, which is what a
+    per-mission single-flight means.
+    """
+    return any(r.kind == kind and (not scope or r.scope == scope) for r in _running.values())
 
 
 ERROR_MAX = 200
@@ -66,8 +77,14 @@ def _clamp_error(e: BaseException) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
+#: Public spelling of the same one-line bounded rendering. Anything that records WHY a tracked
+#: task failed wants exactly this, and reaching across modules for the underscore name is how a
+#: private helper quietly becomes an interface without anyone deciding it should be one.
+clamp_error = _clamp_error
+
+
 @asynccontextmanager
-async def track(kind: str, detail: str = "", *, exclusive: bool = False):
+async def track(kind: str, detail: str = "", *, exclusive: bool = False, scope: str = ""):
     """Run the wrapped block as a tracked AI task of ``kind``.
 
     With ``exclusive=True`` (see :func:`single_flight`) it raises :class:`AlreadyRunning`
@@ -77,11 +94,11 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False):
     (``ok`` / ``finished_at`` / ``duration_s``) is recorded on exit whether the block
     returned or raised.
     """
-    if exclusive and is_running(kind):
-        raise AlreadyRunning(kind)
+    if exclusive and is_running(kind, scope):
+        raise AlreadyRunning(f"{kind}:{scope}" if scope else kind)
     token = next(_ids)
     started = time.time()
-    _running[token] = _Running(token, kind, detail, started)
+    _running[token] = _Running(token, kind, detail, started, scope)
     ok = True
     err: str | None = None
     try:
@@ -116,9 +133,14 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False):
         }
 
 
-def single_flight(kind: str, detail: str = ""):
-    """``track(kind, exclusive=True)`` — at most one task of ``kind`` runs at a time."""
-    return track(kind, detail, exclusive=True)
+def single_flight(kind: str, detail: str = "", *, scope: str = ""):
+    """``track(kind, exclusive=True)`` — at most one task of ``kind`` runs at a time.
+
+    ``scope`` narrows that to one per ENTITY while leaving the reported kind stable, so a
+    per-mission or per-session single-flight does not turn `_last` into an unbounded map (#883
+    review).
+    """
+    return track(kind, detail, exclusive=True, scope=scope)
 
 
 def snapshot() -> dict:
@@ -126,7 +148,12 @@ def snapshot() -> dict:
     task (kind, detail, started_at) sorted oldest-first, plus the last-run summary per kind."""
     running = sorted(
         (
-            {"kind": r.kind, "detail": r.detail, "started_at": r.started_at}
+            {
+                "kind": r.kind,
+                "detail": r.detail,
+                "started_at": r.started_at,
+                **({"scope": r.scope} if r.scope else {}),
+            }
             for r in _running.values()
         ),
         key=lambda r: r["started_at"],

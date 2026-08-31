@@ -36,11 +36,13 @@ import logging
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 
 from .. import (
     engines,
     gitpanel,
     mission_archive,
+    mission_objectives,
     missions,
     projects,
 )
@@ -174,17 +176,30 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
             project_id, cwd = _resolve_cwd(body.get("project_id"))
+            row = await missions.run_admitted(
+                lambda: missions.create_mission(
+                    body.get("instruction") or "",
+                    title=body.get("title") or "",
+                    project_id=project_id,
+                    cwd=cwd,
+                    playbook_id=body.get("playbook_id"),
+                )
+            )
+            # THE OBJECTIVE PRODUCER'S CALL SITE (#883). A mission is created with an empty
+            # checklist and then filled, rather than created-and-filled in one step, and the
+            # ordering is the design:
+            #
+            # * the 201 does not wait on a model call, so a slow or dead endpoint delays nobody
+            #   and cannot fail the create;
+            # * it is a `BackgroundTask` on the response rather than a bare `create_task`, so the
+            #   app owns its lifetime — a detached task can be garbage-collected mid-flight, and
+            #   its failures surface as an "exception was never retrieved" warning nobody reads;
+            # * `propose_for_new_mission` never raises: every outcome it cannot deliver is a
+            #   timeline event on the mission instead.
             return JSONResponse(
-                await missions.run_admitted(
-                    lambda: missions.create_mission(
-                        body.get("instruction") or "",
-                        title=body.get("title") or "",
-                        project_id=project_id,
-                        cwd=cwd,
-                        playbook_id=body.get("playbook_id"),
-                    )
-                ),
+                row,
                 status_code=201,
+                background=BackgroundTask(mission_objectives.propose_for_new_mission, row["id"]),
             )
         except missions.MissionError as e:
             return _fail(e)

@@ -1,12 +1,12 @@
 """Prompt catalog routes (#824) — the ONE read/write surface for every AI system prompt.
 
-* ``GET   /api/prompts``      — the catalog: all eleven prompts with their text, default,
+* ``GET   /api/prompts``      — the catalog: every registered prompt with its text, default,
   contract, cap and (for guarded ones) the read-only clause the server appends.
 * ``PATCH /api/prompts/{id}`` — the single write route. ``{"value": "…"}`` or
   ``{"reset": true}``; the registry resolves the id to its storage binding server-side, so a
   client never sends or learns where a prompt lives and the panel needs no per-prompt shape.
 
-Deliberately NOT on ``/api/config``: eleven prompts × (value + default) is ~50-100 KB of text
+Deliberately NOT on ``/api/config``: a dozen prompts × (value + default) is ~50-100 KB of text
 that only the Settings screen ever reads, and ``/api/config`` is on the SPA's boot path.
 
 Auth matches every other settings surface (``routes/ai_review.py``): the read needs a session,

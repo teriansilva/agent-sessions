@@ -39,6 +39,7 @@ EXPECTED_SITES = {
     ("pulse_chat.py", "ask_verify"),
     ("review.py", "tail_review"),
     ("review.py", "session_recap"),
+    ("mission_objectives.py", "mission_objectives"),
 }
 
 

@@ -1,25 +1,30 @@
 """The AI prompt registry (#824) — every system prompt this app sends, declared in one place.
 
-Eleven system prompts go to the one configured AI endpoint (``review.complete_json``). Three
-were operator-editable through their feature's prefs block; the other eight were module
+Twelve system prompts go to the one configured AI endpoint (``review.complete_json``). Three
+were operator-editable through their feature's prefs block; the other nine were module
 constants, so changing how a recap reads meant editing Python and shipping a release. This
-module owns all eleven: their text, their bounds, and where each one is stored.
+module owns all twelve: their text, their bounds, and where each one is stored.
 
 Two accessors, and callers may never improvise a third:
 
 * ``editable(id)`` — exactly what the operator typed. What the catalog and the UI show.
   Empty/whitespace resolves to the shipped default, so a cleared field cannot strand a feature.
-* ``effective(id)`` — the string actually sent. For ``guarded`` prompts (the two that emit
-  autonomous verbs) the invariant is **canonical and last**: every exact copy of the guard
-  clause is stripped out of the operator's text first, then one canonical copy is appended at
-  the very end. A "leave it alone if the text already contains it" check would not be enough —
-  editable text could carry the clause and then contradict it in the prose that follows,
-  suppressing the trailing copy and leaving the operator's instruction as the model's last
-  word. Stripping first makes the guard final no matter what was pasted in.
+* ``effective(id)`` — the string actually sent. For ``guarded`` prompts the invariant is
+  **canonical and last**: every exact copy of the guard clause is stripped out of the operator's
+  text first, then one canonical copy is appended at the very end. A "leave it alone if the text
+  already contains it" check would not be enough — editable text could carry the clause and then
+  contradict it in the prose that follows, suppressing the trailing copy and leaving the
+  operator's instruction as the model's last word. Stripping first makes the guard final no matter
+  what was pasted in.
+
+``guarded`` is not "emits verbs" — `mission_objectives` emits none, and is guarded because the
+objective list it produces is what a later phase's follow-through loop acts against, so text that
+shapes it shapes autonomous action one phase downstream. The test is whether operator (or
+injected) text could steer an autonomous act, not whether this particular call site writes one.
 
 Storage is a per-prompt binding, not a second source of truth: the three prompts that already
 had a home keep it (``ai_review.prompt``, ``auto_sort.prompt``, ``orchestrator.prompt`` — no
-prefs.json migration, existing validators untouched), and the other eight live in one
+prefs.json migration, existing validators untouched), and the other nine live in one
 ``ai_prompts`` block keyed by prompt id. Callers name a prompt by id and never learn its
 binding; ``routes/prompts.py`` is the only write path and resolves the binding server-side.
 
@@ -165,6 +170,25 @@ def _strip_guard(text: str) -> str:
 # The guarded defaults are DERIVED from the shipped text, not retyped: the guard sentence is
 # lifted out (effective() re-appends the canonical one), everything else is byte-identical.
 _ORCH_PASS = _strip_guard(prefs.DEFAULT_ORCH_PROMPT)
+
+_MISSION_OBJECTIVES = """You turn a mission instruction into a checklist of objectives.
+
+You are given the instruction and a NUMBERED LIST of objective templates the operator
+has written. Choose which of them this mission needs, in the order they should be done.
+
+Reply with JSON only:
+{"objectives": [{"template_index": <int>, "gate": <bool>, "title": "<optional, adapted>"}],
+ "notes": [{"title": "<something worth tracking that no template covers>"}],
+ "drop": ["<key of an objective already on the mission that no longer applies>"]}
+
+Rules:
+- `template_index` is an index into the list you were given. Never invent one.
+- You may adapt a template's `title` to this instruction. You may NOT choose what it checks:
+  there is no field for that, and any you add is ignored and the row is refused.
+- Anything worth tracking that no template covers goes in `notes`. A note is a reminder only —
+  it checks nothing and gates nothing.
+- `gate` means the mission is not done until this holds. Use it for outcomes, not for steps.
+- Prefer few objectives. A checklist nobody reads is worse than three that matter."""
 _CHAT_INSTRUCT = _strip_guard(_CHAT_INSTRUCT_ORIGINAL)
 
 
@@ -173,7 +197,7 @@ class Prompt:
     """One declared system prompt.
 
     ``group`` is the feature the prompt belongs to — the catalog's only ordering/heading hint,
-    so the panel can group eleven rows without the client hardcoding a list of its own.
+    so the panel can group twelve rows without the client hardcoding a list of its own.
     ``block``/``field`` is the storage binding (server-side only — never sent to a client).
     ``contract`` is the JSON shape the caller parses, shown to the operator as help text: it is
     the one thing an edit can break, and every call site already degrades to its documented
@@ -317,6 +341,28 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=6000,
         block=BLOCK,
         field="chat_instruct",
+        guarded=True,
+    ),
+    Prompt(
+        id="mission_objectives",
+        group="Missions",
+        label="Mission objectives",
+        description=(
+            "Turns a mission instruction into a checklist, by SELECTING from the operator's "
+            "playbook templates. It never chooses what an objective checks."
+        ),
+        # Index-shaped on purpose: `probe` and `probe_args` are resolved server-side from the
+        # selected template and are refused as model input entirely, so there is no code path
+        # from model text to a probe target (#883, #840).
+        contract='{"objectives": [{"template_index": int, "gate": bool, "title": str}], '
+        '"notes": [{"title": str}], "drop": [str]}',
+        default=_MISSION_OBJECTIVES,
+        max_chars=6000,
+        block=BLOCK,
+        field="mission_objectives",
+        # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
+        # narrow a reading: an objective list is what the follow-through loop nudges against, so
+        # text that shapes it shapes autonomous action a phase later (#840 §13).
         guarded=True,
     ),
 )

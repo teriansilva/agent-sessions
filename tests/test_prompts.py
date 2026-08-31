@@ -54,9 +54,17 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 11
+    assert len(prompts.REGISTRY) == 12
     assert len(prompts.IDS) == len(set(prompts.IDS))
-    assert [p.id for p in prompts.REGISTRY if p.guarded] == ["orchestrator_pass", "chat_instruct"]
+    # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
+    # `mission_objectives` earns it without emitting a verb: an objective list is what the
+    # follow-through loop nudges against, so text that shapes it shapes autonomous action a
+    # phase later (#840 §13, #883).
+    assert [p.id for p in prompts.REGISTRY if p.guarded] == [
+        "orchestrator_pass",
+        "chat_instruct",
+        "mission_objectives",
+    ]
     for p in prompts.REGISTRY:
         assert p.default.strip(), p.id
         assert len(p.default) <= p.max_chars, p.id
@@ -67,6 +75,7 @@ def test_registry_covers_every_system_prompt():
 # the hash in the same commit; one that changes by accident (a reflow, a "small" reword while
 # moving code) fails here instead of silently altering what every session is asked for.
 EXPECTED_DEFAULT_SHA = {
+    "mission_objectives": "2a449277a3f428f4",
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",
     "handoff_brief": "6229dae66d00c62f",

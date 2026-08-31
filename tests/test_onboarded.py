@@ -115,3 +115,109 @@ def test_onboarded_must_be_boolean(tmp_home, auth_cfg, monkeypatch):
         headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
     )
     assert r.status_code == 422
+
+
+# ---- mission_playbooks through POST /api/prefs (#883 review) -----------------------------
+#
+# The block was writable only by hand-editing `prefs.json`: a payload containing just this key
+# fell past every branch to "no known preference key" and 422'd. Settings had no way to save.
+
+
+def _PB(**over):
+    pb = {
+        "default_id": "p",
+        "playbooks": [
+            {
+                "id": "p",
+                "label": "P",
+                "objectives": [
+                    {
+                        "key": "live",
+                        "title": "It is live",
+                        "probe": "http_status",
+                        "probe_args": {"url": "https://app.example.com/healthz"},
+                        "gate": True,
+                    }
+                ],
+            }
+        ],
+    }
+    pb.update(over)
+    return pb
+
+
+def test_mission_playbooks_round_trips_through_the_prefs_API(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"mission_playbooks": _PB()},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["mission_playbooks"]["default_id"] == "p"
+    assert prefs.get_mission_playbooks()["playbooks"][0]["objectives"][0]["probe"] == "http_status"
+
+
+def test_the_prefs_API_refuses_a_malformed_playbook_rather_than_degrading_it(auth_cfg, tmp_home):
+    """Strict on write, lenient on read — the same split as `accent` and `term_font_size`.
+
+    Degrading here would take an operator's typo'd probe target and silently store a template
+    that can never gate, with the Settings panel showing it as saved.
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    bad = _PB()
+    bad["playbooks"][0]["objectives"][0]["probe_args"] = {"url": ["not", "a", "url"]}
+    r = c.post(
+        "/api/prefs",
+        json={"mission_playbooks": bad},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+    assert "mission_playbooks" in r.json()["detail"]
+
+
+def test_a_MIXED_payload_with_a_bad_playbook_persists_NOTHING(auth_cfg, tmp_home):
+    """The preflight's whole reason to exist (#859): a 422 must mean nothing was written, not
+    that the keys before the bad one already landed."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/prefs", json={"theme": "dark"}, headers=hdr)
+    bad = _PB()
+    bad["playbooks"][0]["objectives"][0]["probe_args"] = {"url": "gopher://nope"}
+    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": bad}, headers=hdr)
+    assert r.status_code == 422
+    assert prefs.get_theme() == "dark", "the valid key landed despite the request being refused"
+    # Still the shipped defaults: the refused playbook did not land. (Not `== []` — an install
+    # that has never configured playbooks reads as the defaults, which is the other half of this
+    # round of review.)
+    assert [pb["id"] for pb in prefs.get_mission_playbooks()["playbooks"]] == [
+        "ship_a_change",
+        "investigate",
+    ]
+
+
+def test_the_prefs_API_refuses_an_explicit_null_playbook_block(auth_cfg, tmp_home):
+    """The write side of the absent-vs-null distinction.
+
+    A stored `null` fails CLOSED on read (it degrades to no playbooks), and the API refuses to
+    create one in the first place — the operator clears playbooks with an empty BLOCK, which is a
+    decision the store can represent, not with a null it cannot. Asserted because I reasoned this
+    from the strict path rather than observing it (review on #884).
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+
+    r = c.post("/api/prefs", json={"mission_playbooks": None}, headers=hdr)
+    assert r.status_code == 422, r.text
+    assert "mission_playbooks" in r.json()["detail"]
+
+    # …and the empty block IS accepted, so "clear my playbooks" remains expressible.
+    ok = c.post(
+        "/api/prefs", json={"mission_playbooks": {"default_id": "", "playbooks": []}}, headers=hdr
+    )
+    assert ok.status_code == 200, ok.text
+    assert prefs.get_mission_playbooks() == {"default_id": "", "playbooks": []}

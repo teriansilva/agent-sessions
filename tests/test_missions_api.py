@@ -109,7 +109,12 @@ def test_get_returns_the_roster_objectives_and_a_bounded_timeline(api):
     m = _create(c, hdr)
     row = c.get(f"/api/missions/{m['id']}").json()
     assert row["sessions"] == [] and row["objectives"] == []
-    assert [e["kind"] for e in row["events"]] == ["operator_msg"]
+    # Two events, not one: creating a mission now runs the objective producer (#883), and this
+    # test env has no AI endpoint, so it records WHY the checklist is empty rather than leaving
+    # an empty list indistinguishable from a broken feature. Once, at creation — a fixed fact
+    # about an install repeated on every poll would be noise rather than information.
+    assert [e["kind"] for e in row["events"]] == ["objective", "operator_msg"]
+    assert "no AI endpoint is configured" in (row["events"][0].get("text") or "")
     assert row["needs_you"] is False
 
 

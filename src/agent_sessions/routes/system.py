@@ -94,6 +94,16 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("unknown session_list_order")
     if "projects_mode" in payload and payload["projects_mode"] not in prefs.PROJECT_MODES:
         raise bad("unknown projects_mode")
+    if "mission_playbooks" in payload:
+        # STRICT here, and deliberately not the read path's forgiving normalization: an operator
+        # typing a probe target into Settings must be told their mistake at the moment they can
+        # still fix it, rather than have it silently degrade to a template that cannot gate. The
+        # read path stays lenient because `prefs.json` is a file a person can also hand-edit, and
+        # a whole install must not lose its playbooks over one bad row (#883).
+        try:
+            prefs._coerce_mission_playbooks(payload["mission_playbooks"], strict=True)
+        except prefs.PlaybookError as e:
+            raise bad(f"invalid mission_playbooks: {e}") from None
     for key in ("default_project", "default_project_id"):
         if key in payload and not isinstance(payload[key], str):
             raise bad(f"{key} must be a string")
@@ -564,6 +574,16 @@ def register(
             if not isinstance(v, bool):
                 raise HTTPException(status_code=422, detail="onboarded must be a boolean")
             out["onboarded"] = prefs.set_onboarded(v)
+        if "mission_playbooks" in payload:
+            # Re-validated by `set_mission_playbooks` itself, which is the point of the preflight
+            # comment above: this pass and the write are edited at different times, so the write
+            # fails closed on its own rather than trusting that a preflight ran.
+            try:
+                out["mission_playbooks"] = prefs.set_mission_playbooks(payload["mission_playbooks"])
+            except prefs.PlaybookError as e:
+                raise HTTPException(
+                    status_code=422, detail=f"invalid mission_playbooks: {e}"
+                ) from None
         if not out:
             raise HTTPException(status_code=422, detail="no known preference key")
         return JSONResponse(out)

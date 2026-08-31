@@ -19,6 +19,7 @@ whole old document or the whole new one, and never needs the lock to be correct.
 
 from __future__ import annotations
 
+import copy
 import math
 import os
 import re
@@ -1582,3 +1583,295 @@ def set_agent_budgets(patch: dict, path: Path | None = None) -> dict:
         return cur
 
     return _mutate("agent_budgets", merge, path)
+
+
+# ---------------------------------------------------------------- mission playbooks (#883)
+#
+# A playbook is an operator-authored list of objective TEMPLATES a mission can be instantiated
+# from. It is the ONLY place a new probe target can come into existence: the planner selects
+# templates by index and may never author a `probe` or `probe_args`, so the only way an
+# `http_status` objective can point somewhere is that a human typed the URL here.
+#
+# That makes this block operator-authority config in the same class as `ai_review.base_url`, and
+# it is why the validation below is strict on write and fail-closed on read.
+
+#: Bounds. Small on purpose — a playbook is an operator-sized list, not a data feed.
+PLAYBOOKS_MAX = 20
+PLAYBOOK_OBJECTIVES_MAX = 30
+PLAYBOOK_ID_MAX = 64
+PLAYBOOK_LABEL_MAX = 120
+PLAYBOOK_TITLE_MAX = 200
+
+_PLAYBOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+#: The two shipped defaults, named for what they actually gate.
+DEFAULT_MISSION_PLAYBOOKS: dict[str, object] = {
+    "default_id": "ship_a_change",
+    "playbooks": [
+        {
+            "id": "ship_a_change",
+            "label": "Ship a change",
+            "objectives": [
+                {"key": "branch", "title": "A branch exists", "probe": "git_local", "gate": True},
+                {"key": "pr_open", "title": "A PR is open", "probe": "forge_pr", "gate": True},
+                {
+                    "key": "checks_green",
+                    "title": "Checks are green",
+                    "probe": "forge_checks",
+                    "gate": True,
+                },
+                {
+                    "key": "reviewed",
+                    "title": "It has been reviewed",
+                    "probe": "forge_review",
+                    "gate": True,
+                },
+                {"key": "merged", "title": "It is merged", "probe": "forge_merged", "gate": True},
+            ],
+        },
+        {
+            "id": "investigate",
+            "label": "Investigate",
+            # Nothing gates: `agent_judged` may not (NON_GATING_PROBES), and the operator is the
+            # one who decides an investigation is finished.
+            "objectives": [
+                {
+                    "key": "finding",
+                    "title": "A finding is written down",
+                    "probe": "agent_judged",
+                    "gate": False,
+                },
+                {
+                    "key": "confirmed",
+                    "title": "You have confirmed it",
+                    "probe": "none",
+                    "gate": False,
+                },
+            ],
+        },
+    ],
+}
+
+
+class PlaybookError(ValueError):
+    """A playbook a WRITE must refuse. Read-time recovery degrades instead — see below."""
+
+
+def _validate_probe_args(kind: str, args: object) -> None:
+    """The one authoritative per-kind argument check, imported lazily. Raises on a bad set.
+
+    Lazy because it lives in :mod:`missions` — which owns `PROBE_KINDS` and the objective store —
+    and this module is the lower layer. A module-level import would invert that and pull sqlite
+    into every prefs read.
+
+    **Called, not re-implemented.** This used to fetch the raw table and redo the name checks
+    here, which is precisely how a playbook came to accept a `url` that the objective route would
+    have refused: two copies of a rule, only one of them updated.
+    """
+    from . import missions
+
+    missions.validate_probe_args(kind, args)
+
+
+def _check_objective(obj: object, *, strict: bool) -> dict | None:
+    """One template. Returns the normalized row, or None when it cannot be one.
+
+    **`strict` is the whole difference between the two callers**, and the asymmetry is
+    deliberate (#883):
+
+    * a WRITE is strict — a malformed template is the operator's typo, and the moment they make
+      it is the only cheap moment to tell them. Unknown keys are rejected rather than dropped,
+      because a dropped key is a probe that silently checks something other than what was
+      written.
+    * a READ is fail-closed — `prefs.json` is a file that can be hand-edited, and an install
+      predating this block has no playbooks at all. A template that no longer validates degrades
+      to `probe="none"`, `probe_args=None` and **`gate=False`**, staying visible and fixable
+      while being unable to probe or to gate.
+
+    Forcing `gate=False` on a degraded row is not tidiness. A degraded row keeps `probe="none"`,
+    and a gating objective with no probe can never be met — so honouring its `gate` would turn a
+    malformed target into a mission that can never complete. Degrading a security problem into a
+    liveness one is not a fix.
+    """
+    if not isinstance(obj, dict):
+        if strict:
+            raise PlaybookError("each objective must be an object")
+        return None
+    key = obj.get("key")
+    title = obj.get("title")
+    if not isinstance(key, str) or not _PLAYBOOK_ID_RE.match(key) or len(key) > PLAYBOOK_ID_MAX:
+        if strict:
+            raise PlaybookError(f"bad objective key {key!r}")
+        return None
+    from . import missions as _m
+
+    if key.startswith(_m.NOTE_KEY_PREFIX):
+        # Reserved for minted note keys, so a note can never collide with a template.
+        if strict:
+            raise PlaybookError(f"objective key may not start with {_m.NOTE_KEY_PREFIX!r}")
+        return None
+    if not isinstance(title, str) or not title.strip() or len(title) > PLAYBOOK_TITLE_MAX:
+        if strict:
+            raise PlaybookError(f"bad objective title for {key!r}")
+        return None
+
+    probe = obj.get("probe", "none")
+    args = obj.get("probe_args")
+    # AN ACTUAL BOOLEAN, never a coercion. `bool("false")` is `True`, so a client that
+    # stringifies a false value would silently create a MANDATORY gate — and a gate nobody
+    # intended can strand a mission short of completion for ever. Strict writes refuse it;
+    # forgiving reads degrade the row explicitly rather than guessing which way it meant
+    # (review on #884).
+    raw_gate = obj.get("gate", False)
+    if not isinstance(raw_gate, bool):
+        if strict:
+            raise PlaybookError(f"objective {key!r}: gate must be true or false")
+        return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
+    gate = raw_gate
+    unknown = set(obj) - {"key", "title", "probe", "probe_args", "gate"}
+    if unknown:
+        if strict:
+            raise PlaybookError(f"objective {key!r} does not take {', '.join(sorted(unknown))}")
+        return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
+
+    ok = True
+    try:
+        _validate_probe_args(probe if isinstance(probe, str) else "", args)
+    except Exception:
+        # Every rejection reason collapses to the same outcome here — a WRITE refuses and a READ
+        # degrades — so the specific message is not carried. It is the store's message, phrased
+        # for the objectives route, and a playbook write reports the objective KEY instead.
+        ok = False
+    if not ok:
+        if strict:
+            raise PlaybookError(f"objective {key!r} has invalid probe arguments")
+        # DEGRADED: visible, but unable to probe and unable to gate.
+        return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
+
+    from . import missions
+
+    if gate and probe in missions.NON_GATING_PROBES:
+        if strict:
+            raise PlaybookError(f"probe {probe} may not be a gate")
+        gate = False
+    return {"key": key, "title": title, "probe": probe, "probe_args": args or None, "gate": gate}
+
+
+#: "the key is not in the document at all", which is a DIFFERENT fact from a stored `null`.
+#: `dict.get()` collapses the two, and that collapse fails OPEN: a hand-edited
+#: `{"mission_playbooks": null}` read back as the shipped templates — server-authored probe
+#: targets armed by a malformed value — instead of degrading to none (review on #884).
+_ABSENT = object()
+
+
+def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
+    """Normalize the stored block. Shared by the read path and the locked write merge, so both
+    agree on what the file means — the pattern `_coerce_orchestrator` already establishes."""
+    if raw is _ABSENT and not strict:
+        # ABSENT — the key is not in the document — means "this install has never configured
+        # playbooks", and the shipped defaults are what it should get; otherwise a fresh install
+        # has an empty picker and every mission falls through to notes-only (#883 review).
+        #
+        # A stored `null` is NOT absence. It is a value the operator (or a bad write) put there,
+        # and it takes the present-but-malformed path below: degrade to none rather than arm the
+        # shipped templates. Deep-copied so a caller that mutates the result cannot edit the
+        # constant for the whole process.
+        # Normalized rather than returned raw, so the shipped object goes through exactly the
+        # rules a hand-written one does and cannot become a second, laxer shape. That it SURVIVES
+        # strict validation unchanged is asserted by a test rather than at import: validating here
+        # would import `missions` while `prefs` is still being defined.
+        return _coerce_mission_playbooks(copy.deepcopy(DEFAULT_MISSION_PLAYBOOKS))
+    if not isinstance(raw, dict):
+        if strict:
+            raise PlaybookError("mission_playbooks must be an object")
+        return {"default_id": "", "playbooks": []}
+    unknown = set(raw) - {"default_id", "playbooks"}
+    if unknown and strict:
+        raise PlaybookError(f"mission_playbooks does not take {', '.join(sorted(unknown))}")
+
+    raw_list = raw.get("playbooks")
+    if not isinstance(raw_list, list):
+        if strict:
+            raise PlaybookError("playbooks must be a list")
+        return {"default_id": "", "playbooks": []}
+    if strict and len(raw_list) > PLAYBOOKS_MAX:
+        raise PlaybookError(f"at most {PLAYBOOKS_MAX} playbooks")
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw_list[:PLAYBOOKS_MAX]:
+        if not isinstance(entry, dict):
+            if strict:
+                raise PlaybookError("each playbook must be an object")
+            continue
+        pid = entry.get("id")
+        label = entry.get("label")
+        if not isinstance(pid, str) or not _PLAYBOOK_ID_RE.match(pid) or len(pid) > PLAYBOOK_ID_MAX:
+            if strict:
+                raise PlaybookError(f"bad playbook id {pid!r}")
+            continue
+        if pid in seen:
+            # Duplicate ids make `default_id` and `playbook_id` ambiguous, which is exactly the
+            # kind of ambiguity that resolves differently in two places later.
+            if strict:
+                raise PlaybookError(f"duplicate playbook id {pid!r}")
+            continue
+        if not isinstance(label, str) or not label.strip() or len(label) > PLAYBOOK_LABEL_MAX:
+            if strict:
+                raise PlaybookError(f"bad playbook label for {pid!r}")
+            continue
+        extra = set(entry) - {"id", "label", "objectives"}
+        if extra and strict:
+            raise PlaybookError(f"playbook {pid!r} does not take {', '.join(sorted(extra))}")
+        objs_raw = entry.get("objectives")
+        if not isinstance(objs_raw, list):
+            if strict:
+                raise PlaybookError(f"playbook {pid!r} objectives must be a list")
+            continue
+        if strict and len(objs_raw) > PLAYBOOK_OBJECTIVES_MAX:
+            raise PlaybookError(f"at most {PLAYBOOK_OBJECTIVES_MAX} objectives per playbook")
+        objs = [
+            o
+            for o in (
+                _check_objective(x, strict=strict) for x in objs_raw[:PLAYBOOK_OBJECTIVES_MAX]
+            )
+            if o is not None
+        ]
+        keys = [o["key"] for o in objs]
+        if len(set(keys)) != len(keys):
+            if strict:
+                raise PlaybookError(f"playbook {pid!r} has duplicate objective keys")
+            continue
+        seen.add(pid)
+        out.append({"id": pid, "label": label, "objectives": objs})
+
+    did = raw.get("default_id")
+    if not isinstance(did, str):
+        did = ""
+    if strict and did and did not in {p["id"] for p in out}:
+        raise PlaybookError(f"default_id {did!r} names no playbook")
+    # On READ a stale default is NOT an error and is NOT silently replaced: it resolves to "no
+    # default", which the caller treats as notes-only. Substituting another playbook would arm
+    # gating objectives with probe targets nobody chose for that mission (#883).
+    if did not in {p["id"] for p in out}:
+        did = ""
+    return {"default_id": did, "playbooks": out}
+
+
+def get_mission_playbooks(path: Path | None = None) -> dict:
+    """The stored block, normalized and never raising. A value this cannot normalize degrades to
+    no playbooks rather than to a partially-understood one."""
+    doc = _load(path or _default_path())
+    # Membership, not `.get()` — see `_ABSENT`.
+    raw = doc["mission_playbooks"] if "mission_playbooks" in doc else _ABSENT
+    return _coerce_mission_playbooks(raw)
+
+
+def set_mission_playbooks(value: object, path: Path | None = None) -> dict:
+    """Replace the block. STRICT — raises :class:`PlaybookError` rather than repairing.
+
+    A whole-block replace rather than a merge: a playbook list is edited as a list, and a partial
+    merge of one would make "remove the third objective" impossible to express.
+    """
+    checked = _coerce_mission_playbooks(value, strict=True)
+    return _mutate("mission_playbooks", lambda _cur: checked, path)
