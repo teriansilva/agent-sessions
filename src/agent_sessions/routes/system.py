@@ -23,6 +23,7 @@ from .. import (
     project_dirs,
     ptybridge,
     scopedspawn,
+    session_input,
     sysinfo,
     twofactor,
     update,
@@ -556,7 +557,18 @@ def register(
             err = prefs.validate_orchestrator_patch(payload["orchestrator"])
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
-            prefs.set_orchestrator(payload["orchestrator"])
+            # OFF THE LOOP, like the mission routes and the per-session opt-out. An orchestrator
+            # patch withdraws authority (a tier drop, a narrowed verb set), so `set_orchestrator`
+            # commits inside the cross-process fence — and that fence is a synchronous `flock`
+            # poll with a budget measured in seconds. Entering it on the event loop stalls every
+            # other request while a sibling instance holds it (#888 review, finding 2).
+            try:
+                await asyncio.to_thread(prefs.set_orchestrator, payload["orchestrator"])
+            except session_input.AuthorityFenceBusy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="the authorization fence is busy; retry",
+                ) from None
             out["orchestrator"] = prefs.public_orchestrator()
         if "project_names" in payload:
             v = payload["project_names"]

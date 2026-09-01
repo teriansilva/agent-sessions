@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import logging
 import os
 import select
 import threading
@@ -40,7 +41,25 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 
-from . import tty_health
+from . import authfence, tty_health
+
+log = logging.getLogger(__name__)
+
+#: How long an authority-withdrawing MUTATION waits for the cross-process fence. Longer than the
+#: writer's budget on purpose: the writer holds the fence for a store read plus one non-blocking
+#: chunk, so a mutation that cannot get in within this has hit something genuinely stuck rather
+#: than ordinary contention — and unlike the writer, a mutation has no safe way to proceed without
+#: it.
+MUTATION_FENCE_BUDGET_S = 10.0
+
+
+class AuthorityFenceBusy(RuntimeError):
+    """An authority-withdrawing mutation could not take the cross-process fence.
+
+    Surfaced to the caller rather than swallowed: committing without the fence would silently
+    break the one guarantee the fence exists to make.
+    """
+
 
 # A pty write with confirmed room accepts at least this much without blocking; a blocking
 # write never returns short, so a larger chunk could still block past the deadline.
@@ -174,6 +193,33 @@ def current_screen_epoch(key: str) -> int:
 
 
 @contextlib.contextmanager
+def _authority_fence():
+    """Hold the CROSS-PROCESS authorization fence across an authority-withdrawing mutation.
+
+    `_lock` orders a mutation against writers in THIS interpreter. A sibling instance never takes
+    it, so without the file fence a withdrawal committed there lands between a writer's shared
+    re-read and its byte one, and the bytes go out under authority that is already gone (#887).
+
+    **It does not fail open.** An earlier version logged and proceeded on a busy fence, reasoning
+    that refusing an operator's detach because someone else's delivery was slow is the wrong
+    trade. That reasoning is wrong, and Hermes was right to reject it: the guarantee this whole
+    mechanism exists to make is "no byte reaches a pty under a withdrawn authorization", and a
+    mutation that commits outside the fence breaks exactly that guarantee — quietly, in the one
+    case where contention says something is already unusual. A withdrawal that cannot be ordered
+    must fail and be retried, not proceed unordered.
+
+    The budget is generous relative to what the writer holds the fence for (a store read plus one
+    non-blocking chunk), so expiry means something is genuinely stuck rather than merely busy.
+    """
+    try:
+        with authfence.hold(timeout=MUTATION_FENCE_BUDGET_S):
+            yield
+    except authfence.FenceBusy as e:
+        log.warning("authorization fence busy; refusing the mutation rather than un-ordering it")
+        raise AuthorityFenceBusy(str(e)) from e
+
+
+@contextlib.contextmanager
 def policy_transaction():
     """Hold the write fence across a policy change, bumping the epoch on the way out.
 
@@ -187,7 +233,10 @@ def policy_transaction():
     prefs lock, so the two cannot deadlock.
     """
     global _policy_epoch
-    with _lock:
+    # The cross-process half, for the same reason `sessions_transaction` takes it: a sibling
+    # instance flipping the orchestrator off must be ordered against a writer here, and the
+    # process-local epoch cannot see it.
+    with _lock, _authority_fence():
         try:
             yield
         finally:
@@ -218,11 +267,38 @@ def session_transaction(key: str):
     for the same reason it wasn't for policy: between the write and the bump, the stored state
     has already changed while the epoch still reads old.
     """
-    with _lock:
+    with _lock, _authority_fence():
         try:
             yield
         finally:
             _bump_epoch_locked(key)
+
+
+@contextlib.contextmanager
+def sessions_transaction(keys):
+    """Hold the write fence across a change affecting SEVERAL sessions, bumping each on exit.
+
+    `session_transaction` generalised, and the generalisation is load-bearing rather than tidy: a
+    mission-level withdrawal — detaching a session, dropping or waiving an objective, standing one
+    down — invalidates the authority of every session that mission holds, and doing that as N
+    separate `session_transaction` blocks would release the lock between them. A delivery to
+    session B could then start under authority the first bump had already withdrawn.
+
+    One acquisition, one commit window, then every epoch moves. The fence compares the per-session
+    epoch inside this same lock immediately before byte one, so a mutation wrapped in this cannot
+    interleave with a compare-and-write: the send either finishes first, or waits and then sees the
+    new epoch (#888 review, finding 1).
+
+    Ordering note: this takes ONLY the registry lock, and the caller's store write happens inside
+    it. That is the same direction `policy_transaction` takes, so the two cannot deadlock.
+    """
+    ks = [k for k in dict.fromkeys(keys) if k]
+    with _lock, _authority_fence():
+        try:
+            yield
+        finally:
+            for k in ks:
+                _bump_epoch_locked(k)
 
 
 def bump_epoch(key: str) -> None:
@@ -594,16 +670,11 @@ def _write_all(
                         # invoked while this frame holds it. Everything it touches must therefore
                         # be ordered AFTER the registry lock, which is the order
                         # `policy_transaction` and the archive fence already take.
-                        if policy_fingerprint is not None:
-                            try:
-                                if policy_fingerprint() != policy_fp:
-                                    return Outcome("stale", "authority changed before the write")
-                            except Exception:  # noqa: BLE001
-                                # Unverifiable authority is not authority. This is the last check
-                                # before bytes reach a real terminal, so it fails CLOSED.
-                                return Outcome(
-                                    "stale", "authority could not be re-verified before the write"
-                                )
+                        # NOTE: the SHARED-store comparison has moved down, into the fence that
+                        # guards byte one. Comparing here and writing later is a check with a
+                        # window after it, and the sibling-instance case is precisely a commit
+                        # inside that window (#887). What remains above this point is the
+                        # process-local epoch work, which `_lock` already orders.
                         # The seqlock's second half — and it must RESERVE the screen, not
                         # merely observe it. Comparing and then writing leaves ingestion free
                         # to enter and complete an interval in between: the compare sees the
@@ -628,16 +699,65 @@ def _write_all(
                                 failure = "timeout"
                                 break
                             if first:
-                                with _screen_lock:
-                                    if key and _screen_epochs.get(key, 0) != screen_epoch:
-                                        return Outcome(
-                                            "stale", "the screen changed before the write"
+                                # WRITABILITY FIRST, FENCE SECOND. Taking the cross-process fence
+                                # and then discovering the pty is full would hold it across a wait
+                                # — the latency risk #887 names. Checking first means the fence
+                                # only ever covers a re-read plus one non-blocking chunk.
+                                _, writable, _ = select.select([], [fd], [], 0)
+                                if not writable:
+                                    select.select([], [fd], [], min(0.5, remaining_now))
+                                    continue
+                                try:
+                                    fence = authfence.hold(
+                                        timeout=min(
+                                            authfence.CONTENTION_BUDGET_S, max(0.0, remaining_now)
                                         )
-                                    _, writable, _ = select.select([], [fd], [], 0)
-                                    if not writable:
-                                        select.select([], [fd], [], min(0.5, remaining_now))
-                                        continue
-                                    written += os.write(fd, view[:WRITE_CHUNK])
+                                    )
+                                    with fence:
+                                        # THE SHARED-STORE RE-READ, under a fence the mutation
+                                        # side also takes. This is the difference between a
+                                        # comparison and mutual exclusion: a sibling instance
+                                        # cannot commit between this and the byte below, because
+                                        # committing requires this same fence.
+                                        if policy_fingerprint is not None:
+                                            try:
+                                                if policy_fingerprint() != policy_fp:
+                                                    return Outcome(
+                                                        "stale",
+                                                        "authority changed before the write",
+                                                    )
+                                            except Exception:  # noqa: BLE001
+                                                # Unverifiable authority is not authority. This is
+                                                # the last check before bytes reach a real
+                                                # terminal, so it fails CLOSED.
+                                                return Outcome(
+                                                    "stale",
+                                                    "authority could not be re-verified before "
+                                                    "the write",
+                                                )
+                                        with _screen_lock:
+                                            if key and _screen_epochs.get(key, 0) != screen_epoch:
+                                                return Outcome(
+                                                    "stale", "the screen changed before the write"
+                                                )
+                                            _, writable, _ = select.select([], [fd], [], 0)
+                                            if not writable:
+                                                # It went unwritable between the check above and
+                                                # here. Drop the fence and retry rather than hold
+                                                # it while waiting.
+                                                continue
+                                            written += os.write(fd, view[:WRITE_CHUNK])
+                                except authfence.FenceBusy:
+                                    # Bounded, and it fails CLOSED: a refusal the caller settles
+                                    # and the orchestrator re-proposes, never an unbounded wait.
+                                    return Outcome(
+                                        "stale",
+                                        "the authorization fence was busy before the write",
+                                    )
+                                if written == 0:
+                                    continue
+                                # AUTHORIZATION COMMITS AT BYTE ONE — the fence is released here
+                                # and the remaining chunks complete an already-started delivery.
                                 first = False
                                 continue
                             _, writable, _ = select.select([], [fd], [], min(0.5, remaining_now))

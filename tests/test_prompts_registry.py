@@ -40,6 +40,7 @@ EXPECTED_SITES = {
     ("review.py", "tail_review"),
     ("review.py", "session_recap"),
     ("mission_objectives.py", "mission_objectives"),
+    ("mission_supervisor.py", "mission_supervisor"),
 }
 
 

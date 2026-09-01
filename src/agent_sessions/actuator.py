@@ -195,6 +195,95 @@ def _policy_fingerprint() -> tuple:
     )
 
 
+def _supervisor_authority(rec: dict):
+    """`(check, fingerprint)` for a supervisor-minted action, or `(None, None)`.
+
+    DERIVED FROM THE RECORD, not passed in by a caller, and that is the whole point. An action
+    minted by the supervisor carries `source`, `mission_id` and `objective_key`; whoever delivers
+    it — this module's auto path, an operator tapping approve on a proposal from ten minutes ago,
+    any future path — gets the same enforcement without knowing it exists.
+
+    Handing callbacks to one call site protected one call site. In suggest mode a supervisor
+    proposal stays `proposed`, and `POST /api/pulse/actions/{id}/approve` goes through the generic
+    `deliver()`, which had no idea the action had mission authority behind it: propose, detach the
+    session into another mission, approve, and `continue` landed in the new mission's session
+    (#888 review, finding 1).
+    """
+    if str(rec.get("source") or "") != "supervisor":
+        return None, None
+    mission_id = str(rec.get("mission_id") or "")
+    objective_key = str(rec.get("objective_key") or "")
+    session_key = str(rec.get("session_id") or "")
+    if not (mission_id and objective_key and session_key):
+        return None, None
+    # The incarnation the proposal was made against — and it is NOT optional.
+    #
+    # An earlier version skipped the episode check when the record lacked the field, so actions
+    # minted before it existed would not be stranded. That trade is unsafe: dropping an objective
+    # and re-adding the same key produces a fresh, unmet, not-stood-down objective, so every other
+    # check passes and a stale proposal becomes deliverable against an incarnation it was never
+    # minted for. Authority is not a thing to trade for compatibility.
+    #
+    # The incarnation identity is the supervisor BINDING, carried in the same atomic snapshot as
+    # the objective state and compared inside the write fence. An action without one is refused.
+    raw_ep = rec.get("objective_episode")
+    episode = int(raw_ep) if isinstance(raw_ep, int) and not isinstance(raw_ep, bool) else None
+    action_id = str(rec.get("id") or "")
+
+    def _state():
+        from . import missions
+
+        # ONE snapshot, and it carries the BINDING. Reading the binding separately is an ABA
+        # window — a drop-and-re-add between the two reads shows a live binding beside a
+        # recreated objective that never belonged together — and a fingerprint without it cannot
+        # see a re-add at all, because every other field comes back identical (#888 review).
+        return missions.supervisor_authority(
+            mission_id, objective_key, session_key=session_key, action_id=action_id
+        )
+
+    def _check() -> tuple[bool, str]:
+        from . import missions
+
+        try:
+            # ONE atomic read, then one verdict. `supervisor_action_verdict` requires the binding
+            # the snapshot carries: an episode NUMBER is not an identity, because a drop deletes
+            # the lifecycle rows and a re-added key starts at episode 1 again — so an action
+            # minted for the first incarnation compares equal to a different objective that
+            # merely reuses the key. The binding is what distinguishes them.
+            #
+            # The record's own `objective_episode` is checked against the binding rather than
+            # trusted: the record is authored by the party being gated.
+            state = _state()
+            if episode is not None:
+                bound = state[4] if len(state) > 4 else None
+                if bound is not None and int(episode) != int(bound):
+                    return False, (
+                        "this supervisor action's recorded episode does not match its binding"
+                    )
+            return missions.supervisor_action_verdict(mission_id, state)
+        except Exception:  # noqa: BLE001
+            # Unverifiable authority is not authority — same rule as the fence itself.
+            return False, "the mission authority for this action could not be re-read"
+
+    return _check, _state
+
+
+def _compose_fingerprint(base: Callable[[], object], extra) -> Callable[[], object]:
+    """`base` plus a caller's own state, as one value the write fence compares.
+
+    Two fingerprints would need two comparisons at the fence and a rule for disagreement; one
+    tuple needs neither. `extra` is read in the same call, under the same lock, so anything it
+    covers is as binding as the policy half.
+    """
+    if extra is None:
+        return base
+
+    def _fp() -> object:
+        return (base(), extra())
+
+    return _fp
+
+
 def _authority_fingerprint(session_id: str) -> Callable[[], object]:
     """The policy snapshot PLUS the shared mission state for this session (#871).
 
@@ -214,7 +303,18 @@ def _authority_fingerprint(session_id: str) -> Callable[[], object]:
         from . import missions
 
         barred = bool(session_id) and session_id in missions.sessions_barred_from_automation()
-        return (*_policy_fingerprint(), barred)
+        # THE PER-SESSION OPT-OUT belongs here too. It is checked in `check_precondition`, which
+        # runs before the fence — so a sibling instance flipping `orchestrator_excluded` after
+        # that check still had its withdrawal land before byte one with nothing to catch it. It is
+        # a sidecar read, shared by every instance, which is exactly what this fingerprint is for
+        # (#888 review, finding 1).
+        excluded = False
+        if session_id:
+            with contextlib.suppress(Exception):
+                excluded = bool(
+                    metadata.get(metadata.resolve_key(session_id)).orchestrator_excluded
+                )
+        return (*_policy_fingerprint(), barred, excluded)
 
     return _fp
 
@@ -230,7 +330,7 @@ def _settle_waiting(action_id: str, state: str, **fields) -> dict | None:
     return ledger.compare_and_set(action_id, ledger.REJECTABLE_STATES, state, **fields)
 
 
-async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
+async def deliver(action_id: str, *, registry=None, authority=None, extra_fingerprint=None) -> dict:
     """Deliver one ledger action. Returns the resulting ledger record.
 
     The state machine is the safety property, so the ordering matters: ``claimed`` is written
@@ -272,6 +372,8 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
     if ledger.claim(action_id, CLAIMABLE_STATES) is None:
         raise NotDeliverable("another caller claimed this action first")
 
+    sup_check, sup_state = _supervisor_authority(rec)
+
     def _final_guard() -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
 
@@ -293,6 +395,15 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
         # in suggest, which is why this is a parameter rather than a blanket yolo requirement.
         if authority is not None:
             ok, why = authority(live)
+            if not ok:
+                return False, why
+        # …and the action's OWN mission authority, whoever is delivering it. Unlike `authority`
+        # this is not a property of how the delivery was triggered — it is a property of the
+        # action, so it applies to an operator's approve exactly as it applies to an automatic
+        # send. The same state is folded into the in-fence fingerprint below, so a change after
+        # this guard is caught too.
+        if sup_check is not None:
+            ok, why = sup_check()
             if not ok:
                 return False, why
         # THE MISSION FENCE, and it belongs HERE — in the guard every delivery passes through —
@@ -332,7 +443,14 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
         # flip between those two still slipped through — the guard's verdict is only as fresh
         # as the moment it ran. This is re-read INSIDE the fence, immediately before byte one,
         # so a withdrawal at any point up to the write refuses.
-        policy_fingerprint=_authority_fingerprint(str(rec.get("session_id") or "")),
+        # A caller may add its OWN state to the thing that is re-read inside the fence. That is
+        # the only place an extra authority can be enforced rather than merely consulted: a
+        # callback invoked from `_final_guard` runs before the registry and screen work, so a
+        # change after it still reaches byte one (#888 review, finding 1).
+        policy_fingerprint=_compose_fingerprint(
+            _authority_fingerprint(str(rec.get("session_id") or "")),
+            extra_fingerprint if extra_fingerprint is not None else sup_state,
+        ),
     )
     state = {
         "delivered": "delivered",
@@ -356,12 +474,25 @@ async def deliver(action_id: str, *, registry=None, authority=None) -> dict:
     )
 
 
-async def deliver_auto(action: dict, *, registry=None) -> dict | None:
+async def deliver_auto(
+    action: dict, *, registry=None, extra_authority=None, extra_fingerprint=None
+) -> dict | None:
     """Deliver an action the pass already auto-approved (``yolo``). Returns the record, or
     ``None`` when the tier/ceiling says it must wait for a tap.
 
     The ceiling is re-read here rather than trusted from the pass: prefs can change between a
     proposal being minted and this running, and the safe direction is to re-ask.
+
+    ``extra_authority`` composes a caller's OWN final check into the same fence, and exists because
+    the prefs re-read is only half the question. A supervisor's action also rests on facts about
+    the mission — that it still holds this session, that the objective is still unmet — which can
+    change in exactly the same window and are invisible here. Giving the caller a seat at this
+    fence is the difference between re-authorizing before the claim (where it is a hint) and
+    re-authorizing at the write (where it is a guarantee): see `mission_supervisor._nudge_authority`
+    (#888 review, findings 1 and 2).
+
+    Composed AND, and the prefs checks run first, so a withdrawn tier short-circuits before any
+    extra work. A refusal from either half is a refusal.
     """
     cfg = prefs.get_orchestrator()
     # `enabled` is the master switch and belongs in this gate too. Checking only the tier
@@ -390,9 +521,16 @@ async def deliver_auto(action: dict, *, registry=None) -> dict | None:
             return False, "the verb left the allowed set before the write"
         if float(action.get("confidence") or 0) < float(live["confidence_min"]):
             return False, "the confidence threshold was raised above this action before the write"
+        if extra_authority is not None:
+            return extra_authority()
         return True, ""
 
-    return await deliver(action["id"], registry=registry, authority=_auto_authority)
+    return await deliver(
+        action["id"],
+        registry=registry,
+        authority=_auto_authority,
+        extra_fingerprint=extra_fingerprint,
+    )
 
 
 async def deliver_pass_actions(records: list[dict], *, registry=None) -> list[dict]:

@@ -823,10 +823,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # first or sees the bumped session epoch and refuses. Keyed on the PHYSICAL session
         # key, which is what the fence compares.
         phys = engines.physical_key(key)
-        with session_input.session_transaction(phys):
-            if desired is None:
-                desired = not metadata.get(mkey).orchestrator_excluded
-            m = metadata.patch(mkey, orchestrator_excluded=desired)
+
+        # OFF THE LOOP. The fence is a cross-process `flock` with a mutation budget measured in
+        # seconds, and `session_transaction` polls it synchronously — entering that on the event
+        # loop stalls every other request for the whole budget while a sibling holds it. The
+        # mission routes already moved this exact work to a worker; this path is the same class
+        # and had been missed (#888 review, finding 2).
+        def _apply() -> object:
+            with session_input.session_transaction(phys):
+                want = not metadata.get(mkey).orchestrator_excluded if desired is None else desired
+                return metadata.patch(mkey, orchestrator_excluded=want)
+
+        try:
+            m = await asyncio.to_thread(_apply)
+        except session_input.AuthorityFenceBusy:
+            # Deliberate and retryable: the withdrawal was NOT applied, and saying so is better
+            # than applying it without the ordering that makes it mean anything.
+            raise HTTPException(
+                status_code=503,
+                detail="the authorization fence is busy; retry",
+            ) from None
         return JSONResponse({"id": key, "orchestrator_excluded": m.orchestrator_excluded})
 
     @app.get("/api/pulse/evidence/{session_id:path}")

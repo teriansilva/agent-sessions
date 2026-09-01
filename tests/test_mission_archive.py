@@ -1251,7 +1251,7 @@ async def test_DELIVERY_refuses_a_session_whose_mission_was_archived_mid_batch(
     }
     reached: list[str] = []
 
-    async def _spy(action_id, *, registry=None, authority=None):
+    async def _spy(action_id, *, registry=None, authority=None, extra_fingerprint=None):
         ok, why = authority(prefs.get_orchestrator()) if authority else (True, "")
         reached.append("DELIVERED" if ok else why)
         return None

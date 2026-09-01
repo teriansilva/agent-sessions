@@ -34,6 +34,7 @@ from . import (
     metadata,
     mission_archive,
     mission_objectives,
+    mission_supervisor_loop,
     missions,
     orchestrator_loop,
     owner,
@@ -247,6 +248,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # sweep. Also performs one startup recovery of any action left mid-delivery by a
         # restart — moved to `indeterminate`, never auto-retried.
         orchestrator_task = asyncio.create_task(orchestrator_loop.run(registry))
+        # The follow-through sweep (#885). Registered beside the orchestrator because it acts
+        # THROUGH it — same master switch, same verb path — rather than as a second autonomy.
+        supervisor_task = asyncio.create_task(mission_supervisor_loop.run(registry))
         # Daily in-app auto-update (#538): replaces the installer's systemd timer. Gated
         # per pass on the env-file AGENT_SESSIONS_AUTOUPDATE key, so the Settings → System
         # toggle governs it live without a restart.
@@ -311,6 +315,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 autosort_task,
                 pulse_task,
                 orchestrator_task,
+                supervisor_task,
                 update_task,
                 cap_sweep_task,
                 mission_task,

@@ -607,3 +607,117 @@ def test_the_session_routes_refuse_to_archive_a_mission_owned_session(api):
     r = c.post(f"/api/sessions/{CLAUDE_A}/archive", headers=hdr)
     assert r.status_code != 409, f"still guarded after detach: {r.text}"
     assert uuid  # the id round-tripped through the route
+
+
+# ---- "Stop telling me" (#885) ---------------------------------------------------------------
+
+
+def _with_objective(c, hdr, proj, key="checks_green"):
+    m = _create(c, hdr, project_id=proj.id)
+    missions.instantiate_objectives(
+        m["id"],
+        [
+            {
+                "key": key,
+                "title": "Checks are green",
+                "probe": "forge_checks",
+                "gate": True,
+                "source": "playbook",
+            }
+        ],
+    )
+    return m["id"]
+
+
+def test_a_stand_down_silences_WITHOUT_settling(api):
+    """It silences; it does not settle.
+
+    An operator's annoyance is not evidence about the work — a stand-down that marked something
+    met would turn "leave me alone" into a false claim about the mission.
+    """
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    r = c.post(
+        f"/api/missions/{mid}/objectives/checks_green/stand-down", json={"episode": 1}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"episode": 1, "stood_down": True}
+
+    rows = c.get(f"/api/missions/{mid}/objectives", headers=hdr).json()["objectives"]
+    assert [o["state"] for o in rows] == ["pending"], "a stand-down settled the objective"
+
+
+def test_a_STALE_stand_down_is_a_409_not_a_silent_no_op(api):
+    """The board the operator tapped was rendered at a particular episode.
+
+    If the objective moved since, their tap is about a situation that no longer exists, and
+    silencing the NEW episode would suppress a report nobody has seen. A 409 lets the console
+    re-render instead of quietly doing nothing.
+    """
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    missions.bump_episode(mid, "checks_green")  # the objective moved
+
+    r = c.post(
+        f"/api/missions/{mid}/objectives/checks_green/stand-down", json={"episode": 1}, headers=hdr
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["episode"] == 2
+    _, stood_down = missions.objective_episode(mid, "checks_green")
+    assert stood_down is False, "a stale tap silenced the new episode"
+
+
+def test_the_episode_is_REQUIRED_and_must_be_an_integer(api):
+    """Not defaulted to "whatever is current" — defaulting is what makes a stale tap silent."""
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    for body in ({}, {"episode": "1"}, {"episode": True}, {"episode": 0}, {"episode": -1}):
+        r = c.post(
+            f"/api/missions/{mid}/objectives/checks_green/stand-down", json=body, headers=hdr
+        )
+        assert r.status_code == 422, f"{body} was accepted: {r.text}"
+
+
+def test_the_stand_down_route_requires_csrf(api, auth_cfg):
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    r = c.post(
+        f"/api/missions/{mid}/objectives/checks_green/stand-down",
+        json={"episode": 1},
+        headers={"Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 403
+
+
+def test_the_mission_detail_carries_the_SUPERVISOR_reading(api):
+    """Derived at read time like `needs_you`, for the same reason: it is a projection of the
+    ledger and the objective store, so a cached copy could disagree with both."""
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    row = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert "supervisor" in row, "the console has nothing to render the boards from"
+    sup = row["supervisor"]
+    assert [o["key"] for o in sup["objectives"]] == ["checks_green"]
+    o = sup["objectives"][0]
+    assert o["episode"] == 1 and o["remaining"] > 0 and o["may_nudge"] is True
+    assert sup["likely_done"] is False and sup["unmet_gates"] == 1
+
+
+def test_the_page_still_RENDERS_when_the_supervisor_reading_fails(api, monkeypatch):
+    """A mission's page must not 500 because the ledger would not open.
+
+    The console shows nothing rather than something wrong — the same posture
+    `MissionObjectives` already takes for a probe that could not run.
+    """
+    from agent_sessions import mission_supervisor
+
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+
+    def boom(*a, **k):
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(mission_supervisor, "assess", boom)
+    r = c.get(f"/api/missions/{mid}", headers=hdr)
+    assert r.status_code == 200, r.text
+    assert "supervisor" not in r.json(), "a failed reading was reported as an empty one"

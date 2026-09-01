@@ -619,3 +619,103 @@
   padding-left: 10px;
   border-left: 1px solid var(--line-strong);
 }
+
+/* ---- supervisor follow-through board (#885) -------------------------------
+ * Colour is load-bearing here, so it follows the semantics declared at the top of this file
+ * rather than inventing a palette: `--status-up` the supervisor may act, `--status-degraded`
+ * amber for "needs a human" (a spent budget IS that), `--status-unknown` for a state we chose
+ * not to act on or could not establish. A met objective is a hollow ring, never a green dot —
+ * done is an absence of work, not a running light. */
+.supList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.supRow {
+  display: grid;
+  grid-template-columns: 4.75rem 1fr auto;
+  align-items: baseline;
+  gap: 0 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  /* 44px coarse-pointer floor — this row is not a tap target itself, but it sets the rhythm the
+   * controls that land here in Phase 5b inherit. */
+  min-height: 44px;
+}
+
+.supBadge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid currentColor;
+  text-align: center;
+  align-self: center;
+}
+
+.supReady { color: var(--status-up); }
+.supSpent { color: var(--status-degraded); }
+.supWaiting { color: var(--status-unknown); }
+/* An unreadable ledger is a fact about the FILE, not about the objective — amber, because it
+ * needs a human, and never the same paint as a budget the supervisor genuinely spent. */
+.supUnknown { color: var(--status-degraded); }
+.supHeld { color: var(--status-unknown); }
+.supMet {
+  color: var(--text-3);
+  border-style: dashed;
+}
+
+.supTitle {
+  color: var(--text-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.supGate {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  color: var(--status-degraded);
+  margin-left: 0.5rem;
+}
+
+.supBudget {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.supEpisode { color: var(--text-3); }
+
+/* The refusal sentence spans the full row under the title — it is prose, and cramming it into the
+ * title column makes every row a different height. */
+.supWhy {
+  grid-column: 2 / -1;
+  font-size: 0.78rem;
+  color: var(--text-3);
+  margin-top: 0.2rem;
+}
+
+.supProposal,
+.supGates,
+.supEmpty {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-2);
+  border-left: 3px solid var(--status-unknown);
+  background: var(--glass);
+}
+
+.supProposal { border-left-color: var(--status-up); }
+.supGates {
+  border-left-color: var(--status-degraded);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}

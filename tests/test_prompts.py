@@ -54,16 +54,18 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 12
+    assert len(prompts.REGISTRY) == 13
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
     # follow-through loop nudges against, so text that shapes it shapes autonomous action a
-    # phase later (#840 §13, #883).
+    # phase later (#840 §13, #883). `mission_supervisor` earns it directly rather than one phase
+    # removed — its output decides whether an autonomous nudge is sent at all (#885).
     assert [p.id for p in prompts.REGISTRY if p.guarded] == [
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
+        "mission_supervisor",
     ]
     for p in prompts.REGISTRY:
         assert p.default.strip(), p.id
@@ -87,6 +89,7 @@ EXPECTED_DEFAULT_SHA = {
     "orchestrator_pass": "5f8a224cfa4fbb82",
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",
+    "mission_supervisor": "793ba359d06a97ae",
 }
 
 

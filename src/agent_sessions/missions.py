@@ -65,7 +65,14 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 14
+#: What an objective's state reads as once it no longer exists. A distinct value rather than
+#: `None`, so a dropped objective and an objective whose state is unset can never look alike.
+OBJECTIVE_GONE = "<dropped>"
+#: The session a pre-v13 mission-wide checkpoint is carried onto. It matches no real session key
+#: (engine ids never contain a space), so it is inert: it preserves the row for forensics without
+#: ever suppressing a real session's first recap.
+_PRE_V13_CHECKPOINT = "<pre-v13 mission-wide>"
 
 TITLE_MAX = 200
 INSTRUCTION_MAX = 8000
@@ -162,6 +169,10 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "question",
         "answer",
         "probe",
+        # The supervisor's terminal "this needs you" (#885). Its own kind rather than an `error`:
+        # an escalation is not a fault, it is the supervisor correctly deciding that a decision
+        # is the operator's — and a timeline that files it under errors trains them to ignore it.
+        "escalation",
         # Beyond #840's literal list: adopt/detach and archive are operator-visible changes that
         # are not actions, and the timeline has to be able to say them.
         "session",
@@ -568,6 +579,96 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   PRIMARY KEY (mission_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS supervisor_state (
+  -- Small durable key/value for the supervisor LOOP itself, as opposed to any one mission.
+  -- Today it holds one row: the sweep cursor. In process memory that cursor reset on every
+  -- restart, and a service that restarts before finishing a revolution re-selects the lowest ids
+  -- forever while the tail is never reached — fairness that a restart silently erases is not
+  -- fairness (#888 review, finding 6).
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mission_supervisor (
+  -- One checkpoint per (mission, SESSION). `input_fp` and `recap_seq` advance in ONE transaction:
+  -- a recap written without moving the fingerprint is re-written on the next pass, and a
+  -- fingerprint moved without the recap loses it.
+  --
+  -- Keyed by session, not by mission, and that is a correctness requirement rather than a
+  -- refinement. A mission can hold several sessions and each is read separately, so one row per
+  -- mission makes two sessions fight over it: A writes its fingerprint, B overwrites it, and A —
+  -- which has not changed — is charged another model call on the next sweep. Worse in the other
+  -- direction, two sessions that happen to produce the SAME fingerprint suppress the second one's
+  -- first recap entirely.
+  mission_id  TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  session_key TEXT NOT NULL,
+  input_fp    TEXT,
+  recap_seq   INTEGER,
+  -- The GROWTH baseline for stall detection: a monotonic mark for how much this session had
+  -- written, and when that was last true.
+  --
+  -- "Has written nothing at all" is the wrong test — a session that writes one startup turn and
+  -- then hangs on a trust dialog is exactly the case the detector exists for, so what matters is
+  -- whether the mark MOVES. And the mark is the transcript store's size where one can be located,
+  -- not a rendered turn count: the renderers cap at `DEFAULT_MAX_MESSAGES`, so a busy session
+  -- pinned at the cap has a count that stops moving while the session is perfectly healthy, and
+  -- would read as stalled forever (#888 review).
+  growth_mark INTEGER,
+  growth_at   REAL,
+  updated_at  REAL NOT NULL,
+  PRIMARY KEY (mission_id, session_key)
+);
+
+CREATE TABLE IF NOT EXISTS mission_objective_episode (
+  -- THE RESET BOUNDARY, and it is durable. The budget resets only when an objective's own state
+  -- changes — never on input churn — so "delivered, then progress, then a later stall" starts
+  -- counting at zero. A derived rule cannot express that: re-deriving after progress would still
+  -- see the earlier nudges.
+  mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  objective_key TEXT NOT NULL,
+  episode       INTEGER NOT NULL,
+  -- The per-episode "Stop telling me". It silences THIS episode; it does not mark the objective
+  -- met, and an objective transition starts a new episode, which ends the silence.
+  stood_down    INTEGER NOT NULL DEFAULT 0,
+  at            REAL NOT NULL,
+  PRIMARY KEY (mission_id, objective_key)
+);
+
+CREATE TABLE IF NOT EXISTS mission_supervisor_actions (
+  -- The durable binding the budget is DERIVED from. No counter anywhere: a count incremented at
+  -- send time is wrong on both sides of a crash — incremented before the append and the action
+  -- never lands, incremented after and the crash loses the charge. Recording WHICH action was
+  -- sent lets the charge be read back from the ledger's terminal state, so a restart after
+  -- either side of the write yields the same number.
+  mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  session_key   TEXT NOT NULL,
+  objective_key TEXT NOT NULL,
+  episode       INTEGER NOT NULL,
+  action_id     TEXT NOT NULL,
+  at            REAL NOT NULL,
+  PRIMARY KEY (mission_id, action_id)
+);
+
+CREATE TABLE IF NOT EXISTS mission_escalations (
+  -- EXACTLY ONE terminal escalation per objective episode, enforced by the database rather than
+  -- by a check. Two overlapping passes both reading "not escalated yet" and both writing is the
+  -- shape this uniqueness constraint exists to make unreachable.
+  mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  session_key   TEXT NOT NULL,
+  objective_key TEXT NOT NULL,
+  episode       INTEGER NOT NULL,
+  reason        TEXT NOT NULL,
+  at            REAL NOT NULL,
+  -- OBJECTIVE-level, deliberately: `session_key` is recorded but is NOT part of the key.
+  --
+  -- The budget this escalation reports on is objective-level — `budget_state(mission, objective)`
+  -- takes no session — so an escalation keyed per session contradicts the very number it quotes.
+  -- With the pass now visiting every held session, one exhausted objective on a two-session
+  -- mission produced two escalation rows and two bell notifications for one situation.
+  UNIQUE (mission_id, objective_key, episode)
+);
+
 CREATE TABLE IF NOT EXISTS mission_events (
   seq         INTEGER PRIMARY KEY AUTOINCREMENT,
   mission_id  TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
@@ -720,6 +821,12 @@ def _migrate(con) -> int:
             _migrate_9_to_10(con)
         if version < 11:
             _migrate_10_to_11(con)
+        if version < 12:
+            _migrate_11_to_12(con)
+        if version < 13:
+            _migrate_12_to_13(con)
+        if version < 14:
+            _migrate_13_to_14(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -857,6 +964,145 @@ def _migrate_6_to_7(con) -> None:
     cols = {r[1] for r in con.execute("PRAGMA table_info(mission_sessions)")}
     if "lease_at" not in cols:
         con.execute("ALTER TABLE mission_sessions ADD COLUMN lease_at REAL")
+
+
+def _ddl_from_schema(table: str) -> str:
+    """The base schema's OWN `CREATE TABLE` text for one table.
+
+    A migration that rebuilds a table has to produce the same shape a fresh install gets, and
+    re-typing the DDL is how the two drift — a constraint fixed in one copy and not the other is
+    then present for fresh operators and absent for upgraded ones, or the reverse, and only one
+    kind of install ever shows it. `test_a_FRESH_install_and_an_UPGRADED_one_get_the_SAME_
+    supervisor_schema` exists to catch that, and it caught it here on a stray space.
+
+    So the migration reads the declaration instead of restating it: there is one copy of the truth,
+    and agreement is structural rather than a thing to remember.
+    """
+    marker = f"CREATE TABLE IF NOT EXISTS {table} ("
+    start = _SCHEMA.index(marker)
+    end = _SCHEMA.index(");", start) + 2
+    return _SCHEMA[start:end]
+
+
+def _migrate_13_to_14(con) -> None:
+    """v14 adds the stall baseline to `mission_supervisor` (#888 review, finding 2).
+
+    The columns were added to the v13 *table definition* after the v13 migration had already been
+    written, which is a shape change without a version change: a database created by the earlier
+    v13 returns immediately from `_migrate` and never gets them, and the first stall check then
+    raises `no such column: growth_mark`. A fresh install was fine, which is exactly why it needed
+    a version of its own — that asymmetry is the whole failure mode of an unversioned edit.
+
+    Idempotent by inspection rather than by `IF NOT EXISTS`, which SQLite's `ADD COLUMN` does not
+    support: a v13 file that never had the columns gets them, and one that did (created after the
+    definition changed) is left alone.
+    """
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_supervisor)").fetchall()}
+    if "growth_mark" not in have:
+        con.execute("ALTER TABLE mission_supervisor ADD COLUMN growth_mark INTEGER")
+    if "growth_at" not in have:
+        con.execute("ALTER TABLE mission_supervisor ADD COLUMN growth_at REAL")
+
+
+def _migrate_12_to_13(con) -> None:
+    """v13 re-keys two supervisor tables (#888 review, findings 4 and 9).
+
+    Both are constraint changes, so both are table rebuilds — SQLite cannot alter a PRIMARY KEY or
+    a UNIQUE in place.
+
+    * `mission_supervisor` gains `session_key` in its key. Existing rows are mission-wide and there
+      is no way to know which session they described, so they are carried onto a sentinel key
+      rather than guessed at. A sentinel row matches no real session, so the first pass after the
+      upgrade simply takes a fresh checkpoint per session — one extra model call per session, once,
+      which is the honest price of not inventing an attribution.
+
+    It also adds `supervisor_state`, the sweep's durable cursor.
+
+    * `mission_escalations` drops `session_key` from its uniqueness key. Any duplicate rows that
+      the old per-session key allowed are collapsed to the earliest, because the earliest is the
+      one whose notification the operator actually saw.
+    """
+    con.execute(_ddl_from_schema("supervisor_state"))
+    con.execute("ALTER TABLE mission_supervisor RENAME TO mission_supervisor_old")
+    con.execute(_ddl_from_schema("mission_supervisor"))
+    con.execute(
+        "INSERT INTO mission_supervisor "
+        "(mission_id, session_key, input_fp, recap_seq, updated_at) "
+        "SELECT mission_id, ?, input_fp, recap_seq, updated_at FROM mission_supervisor_old",
+        (_PRE_V13_CHECKPOINT,),
+    )
+    con.execute("DROP TABLE mission_supervisor_old")
+
+    con.execute("ALTER TABLE mission_escalations RENAME TO mission_escalations_old")
+    con.execute(_ddl_from_schema("mission_escalations"))
+    con.execute(
+        "INSERT INTO mission_escalations "
+        "(mission_id, session_key, objective_key, episode, reason, at) "
+        "SELECT mission_id, session_key, objective_key, episode, reason, at "
+        # ONE row per group, chosen by `rowid`, not by `at`. Two legacy per-session rows for the
+        # same objective episode can legally share a timestamp — they were written by passes that
+        # raced — and `at = MIN(at)` then selects BOTH, which the new objective-level UNIQUE
+        # rejects, failing the whole upgrade. Ordering by `(at, rowid)` keeps "earliest wins" as
+        # the intent and makes the tie-break total.
+        "FROM mission_escalations_old o WHERE o.rowid = ("
+        "  SELECT i.rowid FROM mission_escalations_old i "
+        "  WHERE i.mission_id=o.mission_id AND i.objective_key=o.objective_key "
+        "    AND i.episode=o.episode ORDER BY i.at ASC, i.rowid ASC LIMIT 1)"
+    )
+    con.execute("DROP TABLE mission_escalations_old")
+
+
+def _migrate_11_to_12(con) -> None:
+    """v12 adds the supervisor's durable state (#885, Phase 5a of #840).
+
+    Four tables, and each one exists because the thing it records cannot be derived:
+
+    * `mission_supervisor` — the recap checkpoint. `input_fp` and `recap_seq` advance together.
+    * `mission_objective_episode` — the budget's reset boundary. "Resets when the objective moved"
+      is not expressible by derivation alone: re-deriving after progress still counts the earlier
+      nudges, so the boundary has to be written down.
+    * `mission_supervisor_actions` — WHICH action each nudge was, so the budget is read back from
+      the ledger's terminal states instead of incremented at send time. A counter is wrong on both
+      sides of a crash; a binding is wrong on neither.
+    * `mission_escalations` — one row per objective episode, `UNIQUE` so overlapping passes
+      collide at the database rather than at a check.
+    """
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS mission_supervisor (
+          mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+          input_fp   TEXT,
+          recap_seq  INTEGER,
+          updated_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mission_objective_episode (
+          mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+          objective_key TEXT NOT NULL,
+          episode       INTEGER NOT NULL,
+          stood_down    INTEGER NOT NULL DEFAULT 0,
+          at            REAL NOT NULL,
+          PRIMARY KEY (mission_id, objective_key)
+        );
+        CREATE TABLE IF NOT EXISTS mission_supervisor_actions (
+          mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+          session_key   TEXT NOT NULL,
+          objective_key TEXT NOT NULL,
+          episode       INTEGER NOT NULL,
+          action_id     TEXT NOT NULL,
+          at            REAL NOT NULL,
+          PRIMARY KEY (mission_id, action_id)
+        );
+        CREATE TABLE IF NOT EXISTS mission_escalations (
+          mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+          session_key   TEXT NOT NULL,
+          objective_key TEXT NOT NULL,
+          episode       INTEGER NOT NULL,
+          reason        TEXT NOT NULL,
+          at            REAL NOT NULL,
+          UNIQUE (mission_id, session_key, objective_key, episode)
+        );
+        """
+    )
 
 
 def _migrate_8_to_9(con) -> None:
@@ -2689,6 +2935,760 @@ def missions_awaiting_objectives(
         con.close()
 
 
+# ---------------------------------------------------------------- supervisor (#885)
+
+
+def objective_episode(
+    mission_id: str, objective_key: str, *, path: Path | None = None
+) -> tuple[int, bool]:
+    """`(episode, stood_down)` for one objective. Episode 1 until something moves it.
+
+    Absent means episode 1, not "no episode": an objective that has never stalled has still had
+    exactly one run at it, and numbering it 0 would make the first budget look like a reset.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT episode, stood_down FROM mission_objective_episode "
+            "WHERE mission_id=? AND objective_key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        return (int(row["episode"]), bool(row["stood_down"])) if row else (1, False)
+    finally:
+        con.close()
+
+
+def _bump_episode_con(con, mission_id: str, objective_key: str, ts: float) -> int:
+    """Advance one objective's episode ON AN OPEN TRANSACTION. Returns the new number.
+
+    Split out so an objective transition can advance the episode in the SAME transaction that
+    performs the transition. The standalone `bump_episode` opens its own connection under
+    `_write_lock`, so calling it from inside an op would deadlock — and, more importantly, would
+    make the advance a separate commit that a crash could lose while keeping the transition.
+    """
+    row = con.execute(
+        "SELECT episode FROM mission_objective_episode WHERE mission_id=? AND objective_key=?",
+        (mission_id, objective_key),
+    ).fetchone()
+    nxt = int(row["episode"]) + 1 if row else 2
+    con.execute(
+        "INSERT INTO mission_objective_episode "
+        "(mission_id, objective_key, episode, stood_down, at) VALUES (?,?,?,0,?) "
+        "ON CONFLICT(mission_id, objective_key) DO UPDATE SET "
+        "episode=excluded.episode, stood_down=0, at=excluded.at",
+        (mission_id, objective_key, nxt, ts),
+    )
+    return nxt
+
+
+def bump_episode(
+    mission_id: str, objective_key: str, *, now: float | None = None, path: Path | None = None
+) -> int:
+    """Start a NEW episode for this objective, clearing any stand-down. Returns the new number.
+
+    The only legitimate trigger is the objective's own state changing. Input churn must not reset
+    a budget — that is the difference between "the agent made progress" and "something unrelated
+    happened", and conflating them hands an unmoving objective an unlimited supply of nudges.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            cur = _bump_episode_con(con, mission_id, objective_key, ts)
+            con.execute("COMMIT")
+            return cur
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def stand_down(
+    mission_id: str,
+    objective_key: str,
+    *,
+    episode: int,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """ "Stop telling me", for THIS episode only. Returns False if the episode already moved on.
+
+    It silences; it does not settle. The objective stays unmet and visibly so — a stand-down that
+    marked something met would be the operator's annoyance quietly becoming a false claim about
+    the work. The silence ends when the objective transitions, because that starts a new episode.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # The objective must EXIST. Upserting on an unknown key would let an authenticated
+            # malformed request pre-silence a key before it is ever added, and the row would then
+            # be waiting for it — a stand-down nobody could see in the objective list.
+            known = con.execute(
+                "SELECT 1 FROM mission_objectives WHERE mission_id=? AND key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            if known is None:
+                con.execute("ROLLBACK")
+                return False
+            # …and the episode must be the CURRENT one. The previous spelling put the episode
+            # guard only on the DO UPDATE branch, so the INSERT branch — a fresh objective with no
+            # episode row — accepted ANY number: `episode=99` was written and became current,
+            # silencing every real episode up to it. An absent row means episode 1, and nothing
+            # else is acceptable.
+            row = con.execute(
+                "SELECT episode FROM mission_objective_episode "
+                "WHERE mission_id=? AND objective_key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            current = int(row["episode"]) if row else 1
+            if int(episode) != current:
+                con.execute("ROLLBACK")
+                return False
+            con.execute(
+                "INSERT INTO mission_objective_episode "
+                "(mission_id, objective_key, episode, stood_down, at) VALUES (?,?,?,1,?) "
+                "ON CONFLICT(mission_id, objective_key) DO UPDATE SET "
+                "stood_down=1, at=excluded.at",
+                (mission_id, objective_key, current, ts),
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def record_supervisor_action(
+    mission_id: str,
+    *,
+    session_key: str,
+    objective_key: str,
+    episode: int,
+    action_id: str,
+    max_per_episode: int | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Bind an action to the objective episode it was sent for. True if the binding was taken.
+
+    Written BEFORE the ledger append is delivered, so a crash leaves a binding whose action may or
+    may not have landed; the ledger's terminal state for that id then says which. That ordering is
+    the point: a counter incremented at send time is wrong on one side of the crash or the other,
+    and this is wrong on neither.
+
+    **With `max_per_episode`, this is also the RESERVATION**, and that is what closes the overspend
+    race (#888 review, finding 3). Reading the budget and then appending is a check-then-act: two
+    overlapping passes both read "one left" and both send, and a 3-nudge budget delivers four. The
+    count and the insert happen here inside one `BEGIN IMMEDIATE`, so the second caller loses and
+    is told, rather than discovering it from a ledger that has already been written.
+
+    Counting BINDINGS rather than re-deriving spend is deliberate: the derived figure needs the
+    ledger, which is a different store and cannot join this transaction. Bindings are the right
+    thing to cap anyway — they are exactly the actions this supervisor minted for the episode, and
+    a definite refusal is removed again by `forget_supervisor_action`, so the count self-heals.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if not _objective_is_current(con, mission_id, objective_key, episode):
+                con.execute("ROLLBACK")
+                return False
+            if max_per_episode is not None:
+                n = con.execute(
+                    "SELECT COUNT(*) AS n FROM mission_supervisor_actions "
+                    "WHERE mission_id=? AND objective_key=? AND episode=?",
+                    (mission_id, objective_key, episode),
+                ).fetchone()["n"]
+                if int(n) >= int(max_per_episode):
+                    con.execute("ROLLBACK")
+                    return False
+            con.execute(
+                "INSERT OR IGNORE INTO mission_supervisor_actions "
+                "(mission_id, session_key, objective_key, episode, action_id, at) "
+                "VALUES (?,?,?,?,?,?)",
+                (mission_id, session_key, objective_key, episode, action_id, ts),
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def forget_supervisor_action(mission_id: str, action_id: str, *, path: Path | None = None) -> bool:
+    """Drop one supervisor→action binding. True if a row went away.
+
+    For the KNOWN-drop case only: the ledger definitively refused the slot, so nothing was
+    appended and there is nothing to account for. Leaving the binding would make the next budget
+    read see an id with no ledger row — which is deliberately treated as `indeterminate`, i.e.
+    charged and terminal — and permanently stop automatic attempts over a write the code KNOWS
+    never happened.
+
+    This is not a weakening of the fail-closed rule, and the distinction is the whole point: a
+    crash or an exception leaves the binding exactly where it was, because then nobody can say
+    whether the append landed. Only a definite refusal is forgotten.
+    """
+    validate_id(mission_id)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            cur = con.execute(
+                "DELETE FROM mission_supervisor_actions WHERE mission_id=? AND action_id=?",
+                (mission_id, action_id),
+            )
+            con.commit()
+            return bool(cur.rowcount)
+        finally:
+            con.close()
+
+
+def supervisor_action_episode(
+    mission_id: str, action_id: str, *, path: Path | None = None
+) -> int | None:
+    """The episode an action was BOUND to when the supervisor minted it, or None.
+
+    The binding row has always recorded this. It is the fail-closed answer for a durable action
+    whose own record predates `objective_episode`: rather than skipping the episode check for
+    compatibility — which a drop-and-re-add of the same key turns into a way to deliver a proposal
+    against an incarnation it was never minted for — the episode is recovered from the binding, and
+    an action with neither is refused (#888 review).
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT episode FROM mission_supervisor_actions WHERE mission_id=? AND action_id=?",
+            (mission_id, action_id),
+        ).fetchone()
+        return None if row is None else int(row["episode"])
+    finally:
+        con.close()
+
+
+def supervisor_action_ids(
+    mission_id: str, objective_key: str, episode: int, *, path: Path | None = None
+) -> list[str]:
+    """The action ids charged to this objective EPISODE, oldest first."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT action_id FROM mission_supervisor_actions "
+            "WHERE mission_id=? AND objective_key=? AND episode=? ORDER BY at ASC",
+            (mission_id, objective_key, episode),
+        ).fetchall()
+        return [r["action_id"] for r in rows]
+    finally:
+        con.close()
+
+
+def escalate_once(
+    mission_id: str,
+    *,
+    session_key: str,
+    objective_key: str,
+    episode: int,
+    reason: str,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Record the terminal escalation for this episode. True iff THIS caller won.
+
+    The uniqueness constraint is the arbiter, not a preceding check: two overlapping passes both
+    reading "not escalated yet" and both writing is exactly what a check-then-insert allows.
+
+    Arbitration is per `(mission, objective, episode)` — `session_key` is recorded for provenance
+    but is deliberately NOT part of the key. The budget being reported on is objective-level, so a
+    per-session key would let one exhausted objective announce itself once per held session while
+    quoting a single shared number (#888 review, finding 9).
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if not _objective_is_current(con, mission_id, objective_key, episode):
+                con.execute("ROLLBACK")
+                return False
+            con.execute(
+                "INSERT INTO mission_escalations "
+                "(mission_id, session_key, objective_key, episode, reason, at) "
+                "VALUES (?,?,?,?,?,?)",
+                (mission_id, session_key, objective_key, episode, _cap(reason, 500), ts),
+            )
+            # THE ARBITRATION ROW AND THE OPERATOR-VISIBLE ARTIFACT, TOGETHER.
+            #
+            # Appending afterwards and suppressing the failure is a one-way trap: the unique row is
+            # already committed, so a later pass can never win the arbitration again, and the
+            # timeline is permanently missing the only record the operator would ever see. The
+            # uniqueness that makes "exactly once" safe is exactly what makes a partial write
+            # unrepairable, so the two cannot be separate statements.
+            _append_event(
+                con,
+                mission_id,
+                "escalation",
+                at=ts,
+                session_key=session_key,
+                text=_cap(reason, 500),
+                meta={"objective_key": objective_key, "episode": episode},
+            )
+            con.execute("COMMIT")
+            return True
+        except sqlite3.IntegrityError:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            return False
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def supervisor_authority_verdict(
+    mission_id: str, state: tuple, *, episode: int | None = None
+) -> tuple[bool, str]:
+    """Interpret a `supervisor_authority` tuple. `(ok, why_not)`.
+
+    Lives here, beside the read that produces it, because BOTH the supervisor and the actuator
+    need the same answer and neither may import the other. A second copy of this reasoning is a
+    second thing to keep in step with the tuple's shape.
+
+    Each refusal is its own sentence: the operator acts differently on "the session moved" than on
+    "you stood this down".
+    """
+    holder, obj_state, current, stood_down = state[:4]
+    if holder != mission_id:
+        return False, (
+            "the session left this mission while this was being prepared"
+            if holder is None
+            else f"the session was adopted by mission {holder} while this was being prepared"
+        )
+    if obj_state == OBJECTIVE_GONE:
+        return False, "the objective was dropped while this was being prepared"
+    if obj_state in ("met", "waived"):
+        return False, f"the objective was {obj_state} while this was being prepared"
+    if stood_down:
+        return False, "the operator stood this objective down while this was being prepared"
+    if episode is not None and int(current) != int(episode):
+        return False, "the objective started a new episode while this was being prepared"
+    return True, ""
+
+
+def supervisor_action_verdict(mission_id: str, state: tuple) -> tuple[bool, str]:
+    """The verdict for a supervisor ACTION, from one atomic `supervisor_authority` snapshot.
+
+    Requires a live binding. An episode number is not an identity — dropping an objective and
+    re-adding the same key starts at episode 1 again, so an action minted for the first
+    incarnation compares equal to the second. The binding is what distinguishes them, because the
+    drop deletes it and the re-add does not bring it back.
+    """
+    bound = state[4] if len(state) > 4 else None
+    if bound is None:
+        return False, (
+            "this supervisor action has no live objective binding, so the objective incarnation "
+            "it was minted for no longer exists"
+        )
+    return supervisor_authority_verdict(mission_id, state, episode=bound)
+
+
+def supervisor_authority(
+    mission_id: str,
+    objective_key: str,
+    *,
+    session_key: str,
+    action_id: str = "",
+    path: Path | None = None,
+) -> tuple:
+    """`(holder, objective_state, episode, stood_down, bound_episode)` read in ONE transaction.
+
+    `bound_episode` is the episode the supervisor BINDING records for `action_id`, or `None` when
+    no binding exists. It is part of this tuple — rather than a separate lookup the caller does
+    first — for two reasons, and both were defects:
+
+    * **Atomicity.** Reading the binding and then reading the objective is an ABA window: a
+      drop-and-re-add between the two deletes the binding and recreates an objective that looks
+      identical, and the caller sees a valid binding beside a valid objective that never belonged
+      together.
+    * **It has to be in the FINGERPRINT.** The write fence compares this tuple immediately before
+      byte one. A drop-and-re-add after the guard restores `(holder, pending, 1, False)` exactly,
+      so without the binding the comparison cannot see that the incarnation was withdrawn — and
+      the binding is the one part that does not come back, because the drop deletes it and the
+      re-add does not recreate it.
+
+    Three independent reads are not a fingerprint. Assembled separately, a detach landing between
+    the holder read and the objective read produced a tuple byte-for-byte equal to the pre-detach
+    one — so the write fence compared equal and proceeded to `os.write()` on authority that had
+    already been withdrawn (#888 review, finding 1). A torn read is worse than a stale one: stale
+    is detected by the comparison, torn is invisible to it.
+
+    `BEGIN` gives SQLite's snapshot for the whole tuple, so every field describes the same instant.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        con.execute("BEGIN")
+        holder = con.execute(
+            "SELECT mission_id FROM mission_sessions "
+            "WHERE session_key=? AND removed_at IS NULL LIMIT 1",
+            (session_key,),
+        ).fetchone()
+        obj = con.execute(
+            "SELECT state FROM mission_objectives WHERE mission_id=? AND key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        ep = con.execute(
+            "SELECT episode, stood_down FROM mission_objective_episode "
+            "WHERE mission_id=? AND objective_key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        bound = None
+        if action_id:
+            b = con.execute(
+                "SELECT episode FROM mission_supervisor_actions "
+                "WHERE mission_id=? AND action_id=?",
+                (mission_id, action_id),
+            ).fetchone()
+            bound = None if b is None else int(b["episode"])
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    return (
+        None if holder is None else str(holder["mission_id"]),
+        OBJECTIVE_GONE if obj is None else str(obj["state"] or ""),
+        1 if ep is None else int(ep["episode"]),
+        bool(ep["stood_down"]) if ep is not None else False,
+        bound,
+    )
+
+
+def note_growth(
+    mission_id: str,
+    *,
+    session_key: str,
+    mark: int,
+    now: float | None = None,
+    path: Path | None = None,
+) -> None:
+    """Record this session's growth mark and when it was observed.
+
+    Only called when the mark has actually MOVED, so `growth_at` is the last time this session was
+    seen to make progress — which is the clock a stall is measured against.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute(
+                "INSERT INTO mission_supervisor "
+                "(mission_id, session_key, growth_mark, growth_at, updated_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(mission_id, session_key) DO UPDATE SET "
+                "growth_mark=excluded.growth_mark, growth_at=excluded.growth_at, "
+                "updated_at=excluded.updated_at",
+                (mission_id, session_key, int(mark), ts, ts),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def ensure_held_event(
+    mission_id: str,
+    *,
+    action_id: str,
+    session_key: str,
+    text: str,
+    meta: dict,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Write the operator-visible "held" record for `action_id`, exactly once. True if it exists.
+
+    IDEMPOTENT BY `action_id`, which is what makes the retry safe: the supervisor's binding row is
+    the recoverable intent, and it is only released once this has succeeded. A transient store
+    failure therefore delays the record rather than losing it, and a retry cannot produce a second
+    one (#888 review, finding 5).
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            existing = con.execute(
+                "SELECT 1 FROM mission_events WHERE mission_id=? AND action_id=? AND kind='action'",
+                (mission_id, action_id),
+            ).fetchone()
+            if existing is None:
+                _append_event(
+                    con,
+                    mission_id,
+                    "action",
+                    at=ts,
+                    session_key=session_key,
+                    text=text,
+                    action_id=action_id,
+                    meta=meta,
+                )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def get_supervisor_state(key: str, *, path: Path | None = None) -> str | None:
+    """One durable supervisor-loop value, or None."""
+    con = _ready(path)
+    try:
+        row = con.execute("SELECT value FROM supervisor_state WHERE key=?", (key,)).fetchone()
+        return None if row is None else row["value"]
+    finally:
+        con.close()
+
+
+def set_supervisor_state(
+    key: str, value: str | None, *, now: float | None = None, path: Path | None = None
+) -> None:
+    """Write one durable supervisor-loop value. `None` clears it."""
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            if value is None:
+                con.execute("DELETE FROM supervisor_state WHERE key=?", (key,))
+            else:
+                con.execute(
+                    "INSERT INTO supervisor_state (key, value, updated_at) VALUES (?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                    "updated_at=excluded.updated_at",
+                    (key, value, ts),
+                )
+            con.commit()
+        finally:
+            con.close()
+
+
+def supervisor_worklist(
+    *,
+    states: tuple[str, ...],
+    after: str | None = None,
+    limit: int = 50,
+    path: Path | None = None,
+) -> list[str]:
+    """Eligible mission ids in id order, starting strictly after `after`. A KEYSET cursor.
+
+    The supervisor sweep needs to walk every eligible mission and cannot use the list route to do
+    it: that route pages by offset over a newest-updated-first ordering, which shifts under its own
+    writes, and it clamps `limit`. Rebuilding a capped prefix of it and rotating within that prefix
+    is fair only over the prefix — missions past the cap are never supervised at all, however the
+    rotation is arranged.
+
+    Keyset on `id` instead. `id` is immutable and unique, so the walk is stable under concurrent
+    updates, it resumes exactly where it stopped, and it has no ceiling: `after=None` starts the
+    ring, and the cursor wrapping back to `None` is one complete revolution.
+    """
+    if not states:
+        return []
+    lim = max(1, min(LIST_LIMIT_MAX, int(limit)))
+    marks = ",".join("?" for _ in states)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            f"SELECT id FROM missions WHERE state IN ({marks}) "  # noqa: S608 — placeholders only
+            "AND archived_at IS NULL AND id > ? ORDER BY id ASC LIMIT ?",
+            (*states, after or "", lim),
+        ).fetchall()
+        return [str(r["id"]) for r in rows]
+    finally:
+        con.close()
+
+
+def propose_completion(
+    mission_id: str,
+    *,
+    from_state: str,
+    render,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Move `from_state` -> `review` AND post the proposal, in ONE transaction. True iff it moved.
+
+    Three separate operations — assess the gates, flip the state, append the artifact — have two
+    failure modes between them, and a probe reproduced both (#888 review, finding 5):
+
+    * a gating objective added between the assessment and the flip still went to `review`, carrying
+      a proposal that listed the OLD checklist and never mentioned the gate that reopened it;
+    * an append that failed after the flip left a mission sitting in `review` with no proposal to
+      review, and no later pass could repair it, because the state compare-and-set had already won
+      and would never fire again.
+
+    So the gate check moves INSIDE the transaction and is re-evaluated against the objectives as
+    they are right now, and the event is appended in the same transaction as the flip. Either the
+    mission is in review with its proposal, or it is untouched.
+
+    `render(rows) -> (text, meta)` is called with the objective rows read INSIDE this transaction,
+    and that is the point of taking a callable rather than finished bytes. Re-reading the gates but
+    then appending the caller's pre-built snapshot re-opens the window on the artifact alone: a
+    non-gating objective added, or a title changed, after the caller assessed still produced a
+    proposal listing the old set — a document that claims to enumerate what the operator is being
+    asked to sign off, and does not. The caller owns the WORDING; the store owns the FACTS.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            # RE-READ the objectives here. The caller's assessment is a proposal to act on, never
+            # the authority to act — between it and this line an operator can add a gate.
+            rows = con.execute(
+                "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
+                (mission_id,),
+            ).fetchall()
+            if not rows:
+                con.execute("ROLLBACK")
+                return False
+            unmet = sum(
+                1 for r in rows if int(r["gate"] or 0) and str(r["state"]) not in ("met", "waived")
+            )
+            if unmet:
+                con.execute("ROLLBACK")
+                return False
+            cur = con.execute(
+                "UPDATE missions SET state='review', updated_at=? WHERE id=? AND state=?",
+                (ts, mission_id, from_state),
+            )
+            if not cur.rowcount:
+                con.execute("ROLLBACK")
+                return False
+            _append_event(
+                con,
+                mission_id,
+                "state",
+                at=ts,
+                meta={"from": from_state, "to": "review", "why": "every gate is met"},
+            )
+            text, meta = render([_objective_row(r) for r in rows])
+            _append_event(con, mission_id, "completion", at=ts, text=text, meta=meta)
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def supervisor_checkpoint(mission_id: str, *, session_key: str, path: Path | None = None) -> dict:
+    """`{input_fp, recap_seq}` — what the last pass saw for THIS session, and what it wrote.
+
+    Per session, because a mission's sessions are read separately and a shared row makes them
+    fight: one overwrites the other's fingerprint, and the loser is re-read on the next sweep at
+    the cost of a model call it did not need (#888 review, finding 4).
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT input_fp, recap_seq, growth_mark, growth_at FROM mission_supervisor "
+            "WHERE mission_id=? AND session_key=?",
+            (mission_id, session_key),
+        ).fetchone()
+        return (
+            {
+                "input_fp": row["input_fp"],
+                "recap_seq": row["recap_seq"],
+                "growth_mark": row["growth_mark"],
+                "growth_at": row["growth_at"],
+            }
+            if row
+            else {
+                "input_fp": None,
+                "recap_seq": None,
+                "growth_mark": None,
+                "growth_at": None,
+            }
+        )
+    finally:
+        con.close()
+
+
+def advance_checkpoint(
+    mission_id: str,
+    *,
+    session_key: str,
+    input_fp: str,
+    recap_text: str = "",
+    recap_meta: dict | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> int | None:
+    """Write the recap and move the fingerprint in ONE transaction. Returns the recap's seq.
+
+    Two writes, and both orders are broken on their own: fingerprint-then-recap loses the recap to
+    a crash and never writes it again (the input now looks unchanged); recap-then-fingerprint
+    writes it twice. One transaction is the only version with neither failure.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            seq = None
+            if recap_text:
+                seq = _append_event(
+                    con, mission_id, "recap", at=ts, text=recap_text, meta=recap_meta
+                )
+            con.execute(
+                "INSERT INTO mission_supervisor "
+                "(mission_id, session_key, input_fp, recap_seq, updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(mission_id, session_key) DO UPDATE SET "
+                "input_fp=excluded.input_fp, recap_seq=COALESCE(excluded.recap_seq, "
+                "mission_supervisor.recap_seq), updated_at=excluded.updated_at",
+                (mission_id, session_key, input_fp, seq, ts),
+            )
+            con.execute("COMMIT")
+            return seq
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
 # ---------------------------------------------------------------- objectives
 
 
@@ -3170,6 +4170,72 @@ def _op_drop(con, mission_id: str, op: dict) -> None:
     )
     if not cur.rowcount:
         raise MissionError(f"unknown objective {key}", status=404)
+    # The supervisor's lifecycle rows key on `(mission_id, objective_key)` and are NOT reachable by
+    # the FK cascade, which only follows `missions(id)`. Left behind, a re-added key inherits the
+    # dead objective's episode, its stand-down and its spend — so a fresh objective could arrive
+    # already silenced with no budget, for a reason no longer visible anywhere. Same transaction as
+    # the delete: a half-applied drop is what would make the two disagree.
+    _forget_objective(con, mission_id, key)
+
+
+def _objective_is_current(con, mission_id: str, objective_key: str, episode: int) -> bool:
+    """Does this objective exist, and is `episode` its current one? Call INSIDE a transaction.
+
+    Supervisor lifecycle rows key on `(mission_id, objective_key)` and are cleaned by
+    `_forget_objective` when the objective is dropped. Without this check an in-flight pass could
+    insert one back afterwards — resurrecting a binding or an escalation for an objective that no
+    longer exists, and handing a later re-add of the same key an inherited episode and an instant
+    `needs_you` (#888 review, finding 2). Validating in the same transaction as the insert is what
+    makes the drop's cleanup final.
+    """
+    obj = con.execute(
+        "SELECT state FROM mission_objectives WHERE mission_id=? AND key=?",
+        (mission_id, objective_key),
+    ).fetchone()
+    if obj is None:
+        return False
+    row = con.execute(
+        "SELECT episode, stood_down FROM mission_objective_episode "
+        "WHERE mission_id=? AND objective_key=?",
+        (mission_id, objective_key),
+    ).fetchone()
+    current = int(row["episode"]) if row else 1
+    if int(episode) != current:
+        return False
+    # STOOD DOWN is part of "current authority", not a separate question. `escalate()` reads the
+    # episode, the operator's stand-down commits, and the stale pass then announces after they
+    # explicitly asked for silence — the exact thing the feature exists to prevent. Checking it
+    # here puts it in the same transaction as the insert, where the race cannot get between them.
+    if row is not None and int(row["stood_down"] or 0):
+        return False
+    # …and an objective that has already settled is not a legitimate target for a new lifecycle
+    # row either: there is nothing left to nudge toward or escalate about.
+    return str(obj["state"] or "") not in ("met", "waived")
+
+
+def _forget_objective(con, mission_id: str, key: str) -> None:
+    """Erase every supervisor row bound to one objective identity.
+
+    Deliberately NOT a foreign key: `mission_objectives` is edited by ordinary operator ops, and a
+    cascade there would silently delete audit rows (the escalations) as a side effect of a retitle
+    refactor. Dropping the objective is the one transition where forgetting is correct, so it is
+    spelled once, here, and called from exactly that place.
+    """
+    # Spelled out rather than looped over an interpolated table name: the three statements are the
+    # complete, greppable inventory of what is bound to an objective identity, so a table added
+    # later shows up as a missing line here instead of hiding behind a loop variable.
+    con.execute(
+        "DELETE FROM mission_objective_episode WHERE mission_id=? AND objective_key=?",
+        (mission_id, key),
+    )
+    con.execute(
+        "DELETE FROM mission_supervisor_actions WHERE mission_id=? AND objective_key=?",
+        (mission_id, key),
+    )
+    con.execute(
+        "DELETE FROM mission_escalations WHERE mission_id=? AND objective_key=?",
+        (mission_id, key),
+    )
 
 
 def _op_retitle(con, mission_id: str, op: dict) -> None:
@@ -3205,6 +4271,13 @@ def _op_waive(con, mission_id: str, op: dict, ts: float) -> None:
         if row is None:
             raise MissionError(f"unknown objective {key}", status=404)
         raise MissionError(f"objective {key} is already met", status=409)
+    # THE OBJECTIVE'S OWN STATE CHANGED, so this is the reset boundary the episode table exists to
+    # mark. Without it `bump_episode` had no production caller at all: a waived objective kept the
+    # episode that its earlier nudges were charged to, so its spend and — worse — a stand-down from
+    # the previous episode survived a transition that was supposed to end them. Same transaction as
+    # the waive: an episode that advanced without the waive, or a waive without the advance, is the
+    # inconsistency this pairing rules out.
+    _bump_episode_con(con, mission_id, key, ts)
 
 
 def _op_reorder(con, mission_id: str, op: dict) -> None:
@@ -3478,6 +4551,31 @@ def derive_needs_you(mission_ids: list[str], *, path: Path | None = None) -> dic
             f"FROM mission_events WHERE mission_id IN ({placeholders}) GROUP BY mission_id",
             tuple(mission_ids),
         ).fetchall()
+        # ESCALATIONS ARE AN ATTENTION SOURCE. The supervisor's terminal "this needs you" is
+        # durable and arbitrated, and it was reaching the timeline and the bell while
+        # `needs_you` stayed false — so the console's own "waiting on you" filter, and the
+        # supervisor's own gate against nudging a mission that needs its operator, both looked
+        # straight past it. An escalation IS the mission needing the operator; that is what the
+        # word means (#888 review, finding 5).
+        # CURRENT, UNRESOLVED escalations only. Selecting any historical row meant a mission
+        # stayed "needs you" forever: waiving the objective advanced the episode and the old row
+        # kept the flag set, and "Stop telling me" — the whole point of a stand-down — did not
+        # quiet it either (#888 review, finding 3). The rows stay as history; attention is a claim
+        # about NOW, so it joins the objective's live state, its current episode and its
+        # stand-down. An escalation for an objective that has since been dropped resolves too,
+        # because the inner join finds nothing.
+        escalated = con.execute(
+            f"SELECT DISTINCT e.mission_id AS mission_id FROM mission_escalations e "  # noqa: S608
+            f"JOIN mission_objectives o "
+            f"  ON o.mission_id = e.mission_id AND o.key = e.objective_key "
+            f"LEFT JOIN mission_objective_episode ep "
+            f"  ON ep.mission_id = e.mission_id AND ep.objective_key = e.objective_key "
+            f"WHERE e.mission_id IN ({placeholders}) "
+            f"  AND o.state NOT IN ('met','waived') "
+            f"  AND e.episode = COALESCE(ep.episode, 1) "
+            f"  AND COALESCE(ep.stood_down, 0) = 0",
+            tuple(mission_ids),
+        ).fetchall()
     finally:
         con.close()
 
@@ -3518,6 +4616,9 @@ def derive_needs_you(mission_ids: list[str], *, path: Path | None = None) -> dic
         if q is not None and (a is None or a < q):
             out[r["mission_id"]]["why"].append("question")
             out[r["mission_id"]]["needs_you"] = True
+    for r in escalated:
+        out[r["mission_id"]]["why"].append("escalation")
+        out[r["mission_id"]]["needs_you"] = True
     return out
 
 

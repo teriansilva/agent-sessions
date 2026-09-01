@@ -369,6 +369,58 @@ def source_location(engine_id: str, native_id: str, home: Path) -> str | None:
         return None
 
 
+#: A monotonic, session-scoped measure of how much an engine has written. Used ONLY as a growth
+#: signal — its absolute value is meaningless and must never be compared across engines.
+GrowthMark = Callable[[str, Path], "int | None"]
+_GROWTH: dict[str, GrowthMark] = {}
+
+
+def register_growth(engine_id: str, fn: GrowthMark) -> None:
+    """Register an engine's growth signal (keyed by the engines.py engine id)."""
+    _GROWTH[engine_id] = fn
+
+
+def growth_mark(engine_id: str, native_id: str, home: Path) -> int | None:
+    """How much ``engine_id``'s session ``native_id`` has written, or ``None``.
+
+    **Why this exists rather than counting rendered turns.** The renderers cap at
+    :data:`DEFAULT_MAX_MESSAGES`, so a busy session pinned at the cap has a count that stops moving
+    while the session is perfectly healthy — a stall detector built on it reports the opposite of
+    the truth. A growth signal has to be monotonic and uncapped.
+
+    **And why not the locator.** `source_location` is prose for the operator: opencode's returns
+    the shared database plus the query to run, deliberately, because there is no per-session file.
+    Sizing `Path(that_string)` therefore always fails for opencode and silently falls back to the
+    capped count — which looked like it worked, because every file-backed engine took the other
+    branch. A per-engine signal makes each provider say what its own monotonic measure is.
+
+    Fail-soft by construction: any error yields ``None`` and the caller treats the session as
+    unmeasurable rather than stalled.
+    """
+    fn = _GROWTH.get(engine_id)
+    if fn is None:
+        return None
+    try:
+        return fn(native_id, home)
+    except Exception:
+        return None
+
+
+def _path_growth(resolve: Callable[[str, Path], Path | None]) -> GrowthMark:
+    """Size on disk, for the file-backed engines. A transcript file only ever grows."""
+
+    def mark(native_id: str, home: Path) -> int | None:
+        path = resolve(native_id, home)
+        if path is None:
+            return None
+        try:
+            return int(Path(path).stat().st_size)
+        except OSError:
+            return None
+
+    return mark
+
+
 def _path_locator(resolve: Callable[[str, Path], Path | None]) -> SourceLocator:
     """Adapt a ``(native_id, home) -> Path | None`` resolver into a locator. Used for the
     file-backed engines, whose resolvers already enforce exact-id matching."""
@@ -466,6 +518,7 @@ def _claude_adapter(native_id: str, home: Path) -> list[Turn]:
 
 register_adapter("claude", _claude_adapter)
 register_locator("claude", _path_locator(claude_jsonl_path))
+register_growth("claude", _path_growth(claude_jsonl_path))
 
 
 def _read_tail(path: Path) -> bytes:
@@ -561,6 +614,7 @@ def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
 
 register_adapter("codex", _codex_adapter)
 register_locator("codex", _path_locator(codex_rollout_path))
+register_growth("codex", _path_growth(codex_rollout_path))
 
 
 # --- kimi ---------------------------------------------------------------------------------
@@ -728,6 +782,7 @@ def _kimi_adapter(native_id: str, home: Path) -> list[Turn]:
 
 register_adapter("kimi", _kimi_adapter)
 register_locator("kimi", _path_locator(kimi_wire_path))
+register_growth("kimi", _path_growth(kimi_wire_path))
 
 
 # --- opencode -----------------------------------------------------------------------------
@@ -821,8 +876,81 @@ def _opencode_locator(native_id: str, home: Path) -> str | None:
     )
 
 
+def _opencode_growth(native_id: str, home: Path) -> int | None:
+    """A monotonic, session-scoped activity mark for opencode. Its conversation is rows, not a file.
+
+    **The mark is the newest update TIMESTAMP across this session's messages and their parts**, not
+    a size or a count.
+
+    Counting rows misses the common case: opencode streams into the message it is already working
+    on. Summing part sizes misses it too, and is not even monotonic — a replacement of equal length
+    leaves the sum identical, and a shorter payload moves it BACKWARD, so a busy session reads as
+    stalled and a shrinking one reads as going into reverse (#888 review). A timestamp has neither
+    problem: it advances on an insert (a new row is created "now") and on an in-place update, and
+    it never goes back.
+
+    Session-scoped on purpose: the shared database is written by every session, so a whole-database
+    measure would report all of them healthy forever.
+
+    The time columns are read defensively. `time_updated` is what opencode maintains, but this is
+    a store we do not own and must never assume the shape of — an older or drifted schema falls
+    back to row counts, which is worse but still moves on an insert.
+    """
+    from .engines import base
+
+    db = Path(base._opencode_db(home))
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+    try:
+
+        def _time_col(table: str) -> str | None:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}  # noqa: S608
+            for name in ("time_updated", "time_created"):
+                if name in cols:
+                    return name
+            return None
+
+        mcol, pcol = _time_col("message"), _time_col("part")
+        marks: list[int] = []
+        if mcol:
+            row = conn.execute(
+                f"SELECT MAX(COALESCE({mcol}, 0)) FROM message WHERE session_id=?",  # noqa: S608
+                (native_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                marks.append(int(row[0]))
+        if pcol:
+            row = conn.execute(
+                f"SELECT MAX(COALESCE(p.{pcol}, 0)) FROM part p "  # noqa: S608
+                "JOIN message m ON m.id = p.message_id WHERE m.session_id=?",
+                (native_id,),
+            ).fetchone()
+            if row and row[0] is not None:
+                marks.append(int(row[0]))
+        if marks:
+            return max(marks)
+
+        # No usable time column — fall back to row counts, which still move on an insert.
+        row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM message WHERE session_id=?) "
+            "     + (SELECT COUNT(*) FROM part p JOIN message m ON m.id = p.message_id "
+            "        WHERE m.session_id=?) AS n",
+            (native_id, native_id),
+        ).fetchone()
+        return None if row is None else int(row[0])
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 register_adapter("opencode", _opencode_adapter)
 register_locator("opencode", _opencode_locator)
+register_growth("opencode", _opencode_growth)
 
 
 # --- gemini -------------------------------------------------------------------------------
@@ -892,6 +1020,7 @@ def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
 
 register_adapter("gemini", _gemini_adapter)
 register_locator("gemini", _path_locator(gemini_chat_path))
+register_growth("gemini", _path_growth(gemini_chat_path))
 
 
 # --- antigravity (agy) --------------------------------------------------------------------
@@ -940,5 +1069,21 @@ def _antigravity_locator(native_id: str, home: Path) -> str | None:
     return str(path) if path is not None else None
 
 
+def _antigravity_growth(native_id: str, home: Path) -> int | None:
+    """Size of antigravity's own transcript file. It is file-backed like the others; it was simply
+    missed when the registry was introduced, and the fallback it landed on is the capped renderer
+    that this whole mechanism exists to avoid (#888 review, finding 3)."""
+    from .engines import antigravity, base
+
+    path = antigravity._transcript_path(base._antigravity_dir(home), native_id)
+    if path is None:
+        return None
+    try:
+        return int(Path(path).stat().st_size)
+    except OSError:
+        return None
+
+
 register_adapter("antigravity", _antigravity_adapter)
 register_locator("antigravity", _antigravity_locator)
+register_growth("antigravity", _antigravity_growth)

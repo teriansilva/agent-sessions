@@ -385,3 +385,55 @@ A session is never refused because isolation is unavailable:
 
 Existing masters keep running in whatever cgroup they were born in; the scope
 applies from each session's next launch. No migration is needed.
+
+## The cross-process authorization fence (#887)
+
+The single-writer lock above answers "who may write to this pty". A second question sits
+underneath it: **is the authorization behind this particular write still true at the moment the
+byte goes out?** Those are different, and the gap between them is small but real.
+
+`session_input`'s write fence closes it within one process. Every path that can withdraw an
+authorization — a viewer attaching, an orchestrator policy change, a mission detaching a session,
+an objective being dropped, waived or stood down — commits while holding the registry lock, and
+the writer holds that same lock across its verification and its first byte. So the two are ordered:
+a withdrawal either lands before the check, or waits and lands after the write.
+
+That is the whole of what a `threading.Lock` can do, and this app supports **several instances over
+one store**. A sibling instance never takes this interpreter's lock, so it could commit a
+withdrawal in exactly that window and the check — which happened microseconds earlier — still read
+equal. Making the check read the *shared* store does not fix it: reading and comparing is not
+mutual exclusion, so the sibling can always land between the read and the write, however late the
+read happens.
+
+So there is one more fence, in `authfence.py`: a single `flock` file in the shared session-lock
+directory, taken by both sides.
+
+- **The mutation side** takes it inside `session_input.sessions_transaction`, which the mission
+  routes commit within.
+- **The writer** takes it around the shared-store re-read and the first chunk only — and only once
+  the fd is already writable, so what it covers is a store read plus one non-blocking write rather
+  than a wait on a full terminal.
+
+**Authorization commits at byte one.** Once the first chunk is written the delivery is irrevocable;
+later chunks complete an already-started write and are not re-authorized. A half-delivered
+instruction is worse for the operator than a whole one, and a pty offers no way to un-write. The
+guarantee is "no byte reaches the pty under a withdrawn authorization", never "every `os.write`
+stays authorized".
+
+**Bounded and fail-closed.** Acquisition has a contention budget (`CONTENTION_BUDGET_S`); expiry is
+a refusal the caller settles and the orchestrator re-proposes, never an unbounded wait — a stuck
+sibling must not become a hung delivery here. On the mutation side the trade runs the other way:
+a busy fence logs and proceeds, because refusing an operator's detach because a delivery elsewhere
+is slow would be the wrong answer.
+
+**Crash release is the kernel's.** `flock` drops when the fd closes, including on death by signal,
+so a crash while holding the fence cannot wedge the fleet. Asserted by a test, not assumed.
+
+**Lock order**, one-way by construction:
+
+    session_input._lock  →  authfence  →  session_input._screen_lock
+
+Measured cost of the uncontended path — every delivery on a single-instance install — is **~0.08 ms
+per acquire/release**, asserted by `tests/test_authfence.py`. The ordering itself is proved with two
+real processes writing to a real pty, asserting that **zero bytes** reach the terminal when a
+sibling withdraws authority in the window.

@@ -1066,6 +1066,49 @@ export interface MissionListRow {
 }
 
 /** A row from `GET /api/missions/{id}` — the DETAIL shape, which does carry the roster. */
+/** One objective as the FOLLOW-THROUGH supervisor sees it (#885). Distinct from
+ *  `MissionObjective`, which is the objective itself: this is what the supervisor is allowed to
+ *  do about it next, and why. */
+export interface SupervisorObjective {
+  key: string;
+  title: string | null;
+  gate: boolean;
+  state: string;
+  met: boolean;
+  /** Bumped when the objective goes round again; the nudge budget is PER EPISODE, so a new
+   *  episode restores it. */
+  episode: number;
+  /** The operator asked not to be told about this objective again. */
+  stood_down: boolean;
+  spent: number;
+  remaining: number;
+  may_nudge: boolean;
+  /** The ledger could not be READ. Distinct from a spent budget: the server reports
+   *  `remaining: 0` in this case because none can be justified, so the number alone cannot tell
+   *  "unknown" from "exhausted" — read this, never infer it. */
+  unreadable: boolean;
+  /** A nudge may or may not have been delivered. Charged and terminal. */
+  indeterminate: boolean;
+  /** How many nudges for this episode are still in flight. */
+  live: number;
+  /** Whether the refusal ENDS the episode (exhausted or indeterminate) as opposed to merely
+   *  describing right now (live, or an unreadable ledger). Only a terminal refusal escalates. */
+  terminal: boolean;
+  /** The server's OWN sentence for the refusal, rendered verbatim. Never re-derived here: the
+   *  supervisor's rule is that every refusal names itself, and a second copy of that vocabulary
+   *  in the client is a second thing to keep in step. */
+  why_not: string;
+}
+
+export interface MissionSupervisor {
+  objectives: SupervisorObjective[];
+  /** A PROPOSAL that the mission looks finished — never a close, and false for a mission with no
+   *  objectives, which is unmeasured rather than done. */
+  likely_done: boolean;
+  unmet_gates: number;
+  checked_at: number;
+}
+
 export interface Mission {
   id: string;
   title: string;
@@ -1086,6 +1129,10 @@ export interface Mission {
   outcome: string | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
+  /** The supervisor's mechanical reading, attached at read time (#885). ABSENT when the
+   *  assessment could not be produced — never an empty reading, which would render as
+   *  "nothing to follow up" and is a different claim from "we could not look". */
+  supervisor?: MissionSupervisor;
   events?: MissionEvent[];
   /** Cursor for the NEXT page of older events, or null when the first page is all of them. */
   events_next_seq?: number | null;

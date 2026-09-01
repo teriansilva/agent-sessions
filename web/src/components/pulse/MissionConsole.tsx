@@ -129,6 +129,7 @@ function MissionBody({
       objectives={d.objectives}
       context={d.context}
       loading={!d.context}
+      supervisor={d.mission?.supervisor}
     />
   );
   const timeline = (

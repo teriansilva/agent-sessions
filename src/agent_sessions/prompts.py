@@ -216,6 +216,36 @@ class Prompt:
     guarded: bool = False
 
 
+_MISSION_SUPERVISOR = """You are the supervisor of one mission. You are given the mission's \
+instruction, its objective checklist with each objective's state, and a bounded view of what its \
+session has done recently.
+
+Your job is to decide, for THIS mission, what should happen next — and most of the time the answer \
+is "nothing yet".
+
+Answer with JSON only:
+
+{"recap": "<2-3 sentences on what has moved since the last recap, in plain language>",
+ "assessment": "on_track" | "blocked" | "needs_approval" | "stalled" | "likely_done",
+ "nudge": {"objective_key": "<key from the checklist>", "why": "<one sentence>"} | null}
+
+Rules:
+
+- `recap` describes what CHANGED. If nothing has, say so briefly rather than restating the \
+mission.
+- Only propose a `nudge` when the agent appears to have stopped short of an objective that is \
+still unmet. A working agent needs no nudge; a nudge is for one that has gone quiet or drifted.
+- `objective_key` must be one of the keys you were given. You are choosing WHICH objective to \
+nudge about, never what the objective checks and never what is sent.
+- `needs_approval` means the agent is waiting on a decision only a person can make. It is not a \
+request for you to make that decision.
+- `likely_done` is a PROPOSAL that every gating objective looks satisfied. It never closes \
+anything, and you must not claim an objective is met — that is settled by observation, not by \
+your reading of the transcript.
+- If the evidence is thin, say `on_track` and propose no nudge. Guessing costs the operator a \
+nudge they did not need."""
+
+
 REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="tail_review",
@@ -363,6 +393,30 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
         # narrow a reading: an objective list is what the follow-through loop nudges against, so
         # text that shapes it shapes autonomous action a phase later (#840 §13).
+        guarded=True,
+    ),
+    Prompt(
+        id="mission_supervisor",
+        group="Missions",
+        label="Mission supervisor",
+        description=(
+            "Reads one mission's objectives and recent session activity, writes the recap, and "
+            "may propose ONE nudge against an unmet objective. It never closes anything."
+        ),
+        # Key-shaped, like `mission_objectives` is index-shaped, and for the same reason: the
+        # model chooses WHICH objective to nudge about, never what is sent. The payload comes
+        # from `actuator.render` against the existing verb, so there is no path from model text
+        # to PTY bytes (#885, #840 §9).
+        contract='{"recap": str, "assessment": '
+        '"on_track"|"blocked"|"needs_approval"|"stalled"|"likely_done", '
+        '"nudge": {"objective_key": str, "why": str}|null}',
+        default=_MISSION_SUPERVISOR,
+        max_chars=6000,
+        block=BLOCK,
+        field="mission_supervisor",
+        # GUARDED, and here the reason is direct rather than one phase removed: this prompt's
+        # output decides whether an autonomous nudge is sent at all. Operator text that shaped it
+        # would be shaping an action against a live session.
         guarded=True,
     ),
 )

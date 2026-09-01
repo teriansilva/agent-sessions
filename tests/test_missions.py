@@ -1661,7 +1661,7 @@ def test_the_objectives_intent_UPGRADE_does_not_backfill_history(tmp_path, monke
     cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(missions)")}
     assert {"objectives_state", "objectives_at"} <= cols
     # Against the CONSTANT, not a literal: this test is about BACKFILL, and every later
-    # migration would otherwise break it. #881's two migrations did exactly that.
+    # migration would otherwise break it. #881's two and Phase 5a's one each did exactly that.
     assert (
         sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     )
@@ -1671,3 +1671,218 @@ def test_the_objectives_intent_UPGRADE_does_not_backfill_history(tmp_path, monke
     ), "the upgrade queued every historical mission for objective production"
     fresh = missions.create_mission("post-upgrade", cwd="/tmp")["id"]
     assert _pending_ids() == [fresh]
+
+
+# ---- the supervisor's durable core (#885, Phase 5a) -----------------------------------------
+
+
+def test_the_v9_to_v10_UPGRADE_adds_the_supervisor_tables(tmp_path, monkeypatch):
+    """Driven from a real v9 database, because the risk in a migration is the upgrade."""
+    import sqlite3
+
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(db))
+    missions.reset_schema_cache_for_test()
+    mid = missions.create_mission("pre-existing", cwd="/tmp")["id"]
+
+    con = sqlite3.connect(db)
+    for t in (
+        "mission_supervisor",
+        "mission_objective_episode",
+        "mission_supervisor_actions",
+        "mission_escalations",
+    ):
+        con.execute(f"DROP TABLE {t}")
+    con.execute("PRAGMA user_version=9")
+    con.commit()
+    con.close()
+    missions.reset_schema_cache_for_test()
+
+    assert missions.get_mission(mid) is not None, "the upgrade lost a mission"
+    names = {
+        r[0]
+        for r in sqlite3.connect(db).execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {
+        "mission_supervisor",
+        "mission_objective_episode",
+        "mission_supervisor_actions",
+        "mission_escalations",
+    } <= names
+    assert (
+        sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
+    )
+
+
+def _ensure_objective(mid, key="k", *, path=None):
+    """A lifecycle write needs a real objective (#888 review, finding 2) — create it once."""
+    if not any(o.get("key") == key for o in missions.objectives(mid, path=path)):
+        missions.instantiate_objectives(
+            mid,
+            [
+                {
+                    "key": key,
+                    "title": key,
+                    "probe": "forge_pr",
+                    "gate": True,
+                    "source": "playbook",
+                }
+            ],
+            path=path,
+        )
+
+
+def test_exactly_ONE_escalation_per_objective_episode(store):
+    """The uniqueness constraint is the arbiter, not a preceding check.
+
+    Two overlapping passes both reading "not escalated yet" and both writing is precisely what a
+    check-then-insert allows, so the database decides instead.
+    """
+    mid = missions.create_mission("do it", path=store)["id"]
+    _ensure_objective(mid, "checks_green", path=store)
+    kw = {"session_key": CLAUDE_A, "objective_key": "checks_green", "path": store}
+    assert missions.escalate_once(mid, episode=1, reason="stalled", **kw) is True
+    assert missions.escalate_once(mid, episode=1, reason="stalled again", **kw) is False
+    # …and a NEW episode may escalate again: easing then stalling later is a new episode, not a
+    # continuation of one the operator already saw. The episode has to ACTUALLY advance first —
+    # a lifecycle write naming an episode the objective is not on is refused (#888 review,
+    # finding 2), which is what stops an in-flight pass resurrecting rows after a drop.
+    missions.bump_episode(mid, "checks_green", path=store)
+    assert missions.escalate_once(mid, episode=2, reason="stalled later", **kw) is True
+
+
+def test_the_budget_is_scoped_to_the_EPISODE_and_reset_is_durable(store):
+    """ "Resets when the objective moved" is not expressible by derivation alone.
+
+    Re-deriving after progress would still count the earlier nudges, so the boundary is written
+    down — and a bump clears any stand-down with it, because a moved objective is a new episode
+    and the operator's silence was about the old one.
+    """
+    mid = missions.create_mission("do it", path=store)["id"]
+    _ensure_objective(mid, path=store)
+    assert missions.objective_episode(mid, "k", path=store) == (1, False)
+    for aid in ("a1", "a2"):
+        missions.record_supervisor_action(
+            mid,
+            session_key=CLAUDE_A,
+            objective_key="k",
+            episode=1,
+            action_id=aid,
+            path=store,
+        )
+    assert missions.supervisor_action_ids(mid, "k", 1, path=store) == ["a1", "a2"]
+    # The objective must EXIST for a stand-down to land on it (#888 review, finding 5); it is
+    # created by `_ensure_objective` at the top of this test.
+    assert missions.stand_down(mid, "k", episode=1, path=store) is True
+    assert missions.objective_episode(mid, "k", path=store) == (1, True)
+
+    assert missions.bump_episode(mid, "k", path=store) == 2
+    assert missions.objective_episode(mid, "k", path=store) == (
+        2,
+        False,
+    ), "a new episode did not clear the stand-down"
+    assert (
+        missions.supervisor_action_ids(mid, "k", 2, path=store) == []
+    ), "the new episode inherited the old episode's charges"
+    assert missions.supervisor_action_ids(mid, "k", 1, path=store) == [
+        "a1",
+        "a2",
+    ], "the old episode's history was destroyed rather than superseded"
+
+
+def test_a_stand_down_for_a_SUPERSEDED_episode_is_refused(store):
+    """The operator's "stop telling me" applies to what they were looking at.
+
+    If the objective moved between the render and the tap, the tap is about an episode that no
+    longer exists — silencing the new one would suppress a report nobody has seen.
+    """
+    mid = missions.create_mission("do it", path=store)["id"]
+    missions.bump_episode(mid, "k", path=store)  # now episode 2
+    assert missions.stand_down(mid, "k", episode=1, path=store) is False
+    assert missions.objective_episode(mid, "k", path=store) == (2, False)
+
+
+#: The checkpoint is per (mission, SESSION) since v13 — two sessions must not share a row.
+SK = "claude:11111111-1111-1111-1111-111111111111"
+
+
+def test_the_recap_and_the_checkpoint_advance_TOGETHER(store):
+    """Two writes, and both orders are broken alone: fingerprint-then-recap loses the recap to a
+    crash and never rewrites it (the input now looks unchanged); recap-then-fingerprint writes it
+    twice."""
+    mid = missions.create_mission("do it", path=store)["id"]
+    assert missions.supervisor_checkpoint(mid, session_key=SK, path=store) == {
+        "input_fp": None,
+        "recap_seq": None,
+        "growth_mark": None,
+        "growth_at": None,
+    }
+
+    seq = missions.advance_checkpoint(
+        mid, session_key=SK, input_fp="fp1", recap_text="first recap", path=store
+    )
+    assert seq is not None
+    assert missions.supervisor_checkpoint(mid, session_key=SK, path=store) == {
+        "input_fp": "fp1",
+        "recap_seq": seq,
+        "growth_mark": None,
+        "growth_at": None,
+    }
+
+    # A fingerprint-only advance keeps the recorded recap rather than blanking it.
+    assert missions.advance_checkpoint(mid, session_key=SK, input_fp="fp2", path=store) is None
+    assert missions.supervisor_checkpoint(mid, session_key=SK, path=store) == {
+        "input_fp": "fp2",
+        "recap_seq": seq,
+        "growth_mark": None,
+        "growth_at": None,
+    }
+    kinds = [e["kind"] for e in missions.get_mission(mid, path=store)["events"]]
+    assert kinds.count("recap") == 1, "a second recap was written for unchanged input"
+
+
+def test_a_FRESH_install_and_an_UPGRADED_one_get_the_SAME_supervisor_schema(tmp_path, monkeypatch):
+    """Each supervisor table is declared TWICE — in the base schema and in the migration.
+
+    Nothing forces the two to agree, and a divergence would appear on only one kind of install:
+    the constraint that arbitrates escalations could be present for a fresh operator and missing
+    for an upgraded one, or the reverse. Found while red-proofing — a mutation aimed at the
+    UNIQUE constraint hit only the migration copy and the test stayed green, because the fixture
+    builds from the base schema.
+    """
+    import re
+    import sqlite3
+
+    tables = (
+        "mission_supervisor",
+        "mission_objective_episode",
+        "mission_supervisor_actions",
+        "mission_escalations",
+    )
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(db))
+    missions.reset_schema_cache_for_test()
+    missions.create_mission("fresh", cwd="/tmp")
+
+    def ddl(name: str) -> str:
+        raw = (
+            sqlite3.connect(db)
+            .execute("SELECT sql FROM sqlite_master WHERE name=?", (name,))
+            .fetchone()[0]
+        )
+        # Comments and whitespace are prose; the CONSTRAINTS are the contract.
+        return re.sub(r"\s+", " ", re.sub(r"--[^\n]*", "", raw)).strip()
+
+    fresh = {t: ddl(t) for t in tables}
+
+    con = sqlite3.connect(db)
+    for t in tables:
+        con.execute(f"DROP TABLE {t}")
+    con.execute("PRAGMA user_version=9")
+    con.commit()
+    con.close()
+    missions.reset_schema_cache_for_test()
+    missions.create_mission("upgraded", cwd="/tmp")  # forces the migration
+
+    for t in tables:
+        assert ddl(t) == fresh[t], f"{t} differs between a fresh install and an upgraded one"

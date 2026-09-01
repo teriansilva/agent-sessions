@@ -23,6 +23,13 @@ import type {
 
 const EVENTS_PAGE = 40;
 
+/** How often the mission DETAIL is refetched while a console is open.
+ *
+ *  Half the supervisor's own `INTERVAL_S` (300s), so a board is at most one sweep behind rather
+ *  than aliasing against it — polling at exactly the sweep period can sit permanently just before
+ *  each sweep and show the previous one's state forever. */
+const SUPERVISOR_POLL_MS = 150_000;
+
 export interface MissionDetailState {
   mission: Mission | null;
   events: MissionEvent[];
@@ -46,25 +53,47 @@ export function useMissionDetail(missionId: string): MissionDetailState {
 
   useEffect(() => {
     let live = true;
-    api
-      .mission(missionId, { eventsLimit: EVENTS_PAGE })
-      .then((m) => {
-        if (!live) return;
-        setMission(m);
-        setEvents(m.events ?? []);
-        setCursor(m.events_next_seq ?? null);
-      })
-      .catch(() => undefined);
-    api
-      .missionObjectives(missionId)
-      .then((r) => live && setObjectives(r.objectives))
-      .catch(() => undefined);
-    api
-      .missionContext(missionId)
-      .then((c) => live && setContext(c))
-      .catch(() => undefined);
+
+    // The FULL load, including the two side panels. Runs once per mission.
+    const loadAll = () => {
+      api
+        .missionObjectives(missionId)
+        .then((r) => live && setObjectives(r.objectives))
+        .catch(() => undefined);
+      api
+        .missionContext(missionId)
+        .then((c) => live && setContext(c))
+        .catch(() => undefined);
+    };
+
+    // The mission row alone — which is what carries the supervisor reading, so this is the part
+    // that has to keep moving. The supervisor mutates its state on its own 5-minute cadence:
+    // a nudge is sent, a budget is spent, an objective is stood down, an episode escalates. With
+    // a fetch keyed only on `missionId`, an open console kept showing READY indefinitely after
+    // any of those — the board was accurate exactly once, at mount.
+    //
+    // Only the DETAIL is refetched, never the objectives or the context: those change when the
+    // operator changes them (and the console already reloads on that path), while the supervisor
+    // reading changes underneath a console nobody is touching. Refetching all three would triple
+    // the poll cost to keep one of them current.
+    const loadMission = () => {
+      api
+        .mission(missionId, { eventsLimit: EVENTS_PAGE })
+        .then((m) => {
+          if (!live) return;
+          setMission(m);
+          setEvents(m.events ?? []);
+          setCursor(m.events_next_seq ?? null);
+        })
+        .catch(() => undefined);
+    };
+
+    loadMission();
+    loadAll();
+    const t = setInterval(loadMission, SUPERVISOR_POLL_MS);
     return () => {
       live = false;
+      clearInterval(t);
     };
   }, [missionId]);
 

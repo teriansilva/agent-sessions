@@ -48,12 +48,14 @@ from .. import (
     gitpanel,
     mission_archive,
     mission_objectives,
+    mission_supervisor,
     mission_turn_reconcile,
     missions,
     orchestrator_chat,
     orchestrator_ledger,
     projects,
     review,
+    session_input,
 )
 from . import files as files_routes
 
@@ -236,6 +238,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             flags = await missions.run_admitted(lambda: missions.derive_needs_you([mission_id]))
             row["needs_you"] = bool(flags.get(mission_id, {}).get("needs_you"))
             row["needs_you_why"] = flags.get(mission_id, {}).get("why") or []
+        # THE SUPERVISOR'S READING (#885), derived at read time like `needs_you` above and for the
+        # same reason: it is a projection of the ledger and the objective store, so caching it
+        # would just be a second copy that can disagree with both.
+        #
+        # Suppressed rather than fatal: a mission's page must still render when the ledger is
+        # unreadable. The console shows nothing rather than something wrong, which is the same
+        # posture `MissionObjectives` already takes for a probe that could not run.
+        with contextlib.suppress(Exception):
+            row["supervisor"] = await missions.run_admitted(
+                lambda: mission_supervisor.assess(mission_id)
+            )
         return JSONResponse(row)
 
     @app.post("/api/missions/{mission_id}/adopt")
@@ -273,9 +286,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             body = await _body(request)
             key = _session_key(body.get("session_key"))
-            return JSONResponse(
-                await missions.run_admitted(lambda: missions.detach(mission_id, key))
-            )
+            phys = engines.physical_key(key)
+            # FENCED. Detaching withdraws this session's authority, and an automatic delivery may
+            # be mid-flight: the write fence compares the per-session epoch immediately before
+            # byte one, holding the registry lock. Committing the detach inside that same lock is
+            # what makes the two orderable — the send either completes first, or waits and then
+            # sees the new epoch. Unfenced, the withdrawal could land between the fence's
+            # comparison and `os.write()` and the old mission still typed into the session
+            # (#888 review, finding 1).
+            out = await _fenced_write([phys], lambda: missions.detach(mission_id, key))
+            return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
 
@@ -295,15 +315,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         try:
             body = await _body(request)
+            # FENCED like detach, and for the same reason: a transition to a TERMINAL state
+            # (`done` / `failed` / `abandoned`) releases every session the mission holds, so it
+            # withdraws the authority behind any in-flight nudge. Committing it outside the fence
+            # let a closed mission's nudge still land (#888 review, finding 3). Non-terminal
+            # transitions pay only an epoch bump, which costs a re-proposal at worst.
+            keys = await _held_physical_keys(mission_id)
             return JSONResponse(
-                await missions.run_admitted(
+                await _fenced_write(
+                    keys,
                     lambda: missions.set_state(
                         mission_id,
                         str(body.get("from") or ""),
                         str(body.get("to") or ""),
                         outcome=body.get("outcome"),
                         detail=str(body.get("detail") or ""),
-                    )
+                    ),
                 )
             )
         except missions.MissionError as e:
@@ -544,6 +571,58 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _fail(e)
         return JSONResponse({"objectives": rows})
 
+    @app.post("/api/missions/{mission_id}/objectives/{objective_key}/stand-down")
+    async def stand_down_route(
+        mission_id: str,
+        objective_key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """ "Stop telling me about this one" — for the EPISODE the operator was looking at (#885).
+
+        It silences; it does not settle. The objective stays `pending` and visibly unmet, because
+        an operator's annoyance is not evidence about the work — a stand-down that marked
+        something met would turn "leave me alone" into a false claim.
+
+        The episode is REQUIRED in the body and is not defaulted to "whatever is current". The
+        board the operator tapped was rendered against a particular episode, and if the objective
+        has moved since, their tap is about a situation that no longer exists — silencing the new
+        episode would suppress a report nobody has seen. A stale tap is a 409, not a no-op, so the
+        console can re-render rather than quietly doing nothing.
+        """
+        try:
+            body = await _body(request)
+            episode = body.get("episode")
+            if not isinstance(episode, int) or isinstance(episode, bool) or episode < 1:
+                raise missions.MissionError(
+                    "episode is required and must be the one the objective was rendered at",
+                    status=422,
+                )
+            # Fenced for the same reason as detach: a stand-down withdraws the authority behind
+            # any in-flight nudge for this objective, on every session the mission holds.
+            keys = await _held_physical_keys(mission_id)
+            ok = await _fenced_write(
+                keys, lambda: missions.stand_down(mission_id, objective_key, episode=episode)
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        if not ok:
+            current, _ = await missions.run_admitted(
+                lambda: missions.objective_episode(mission_id, objective_key)
+            )
+            return JSONResponse(
+                {
+                    "detail": "this objective has moved on since you saw it",
+                    "episode": current,
+                },
+                status_code=409,
+            )
+        episode_now, stood_down = await missions.run_admitted(
+            lambda: missions.objective_episode(mission_id, objective_key)
+        )
+        return JSONResponse({"episode": episode_now, "stood_down": stood_down})
+
     @app.patch("/api/missions/{mission_id}/objectives")
     async def patch_objectives_route(
         mission_id: str,
@@ -561,14 +640,62 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         try:
             body = await _body(request)
-            rows = await missions.run_admitted(
+            # Dropping or waiving an objective withdraws the authority behind any in-flight nudge
+            # aimed at it, so the edit commits inside the write fence — see `detach_route`.
+            keys = await _held_physical_keys(mission_id)
+            rows = await _fenced_write(
+                keys,
                 lambda: missions.patch_objectives(
                     mission_id, body.get("ops") or [], source="operator"
-                )
+                ),
             )
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse({"objectives": rows})
+
+
+async def _fenced_write(keys: list[str], fn):
+    """Run a store mutation INSIDE the write fence, entirely on a worker thread.
+
+    Both halves matter and they pull in opposite directions.
+
+    The fence must be held across the store write, or the mutation can land between the fence's
+    comparison and byte one. But `session_input._lock` is a plain `threading.Lock`, and holding it
+    around an `await` on the event loop is a deadlock: request A suspends inside the lock waiting
+    for its worker, request B enters the same block on the loop thread and blocks it, and A can
+    never resume to release. Hermes reproduced exactly that hang (#888 review, finding 4).
+
+    So the lock and the synchronous mutation go into the SAME callable and that callable runs off
+    the loop. The fence still encloses the write; the loop thread never touches the lock.
+    """
+
+    def _run():
+        with session_input.sessions_transaction(keys):
+            return fn()
+
+    return await missions.run_admitted(_run)
+
+
+async def _held_physical_keys(mission_id: str) -> list[str]:
+    """The physical keys of every session this mission currently holds.
+
+    Physical, not app-facing: the write fence is keyed on the pty, which is what `session_input`
+    bumps and compares.
+    """
+    try:
+        row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+    except Exception:  # noqa: BLE001 — a fence that cannot enumerate still must not block the edit
+        return []
+    out: list[str] = []
+    for srow in (row or {}).get("sessions") or []:
+        if srow.get("removed_at") is not None:
+            continue
+        key = str(srow.get("session_key") or "")
+        if not key:
+            continue
+        with contextlib.suppress(Exception):
+            out.append(engines.physical_key(key))
+    return out
 
 
 def _cursor(raw: object):
