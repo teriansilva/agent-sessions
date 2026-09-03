@@ -74,6 +74,7 @@ from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import spa as spa_routes
 from .routes import system as system_routes
+from .routes import templates as templates_routes
 from .routes import terminal as terminal_routes
 from .routes import upload as upload_routes
 from .routes import usage as usage_routes
@@ -542,6 +543,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Upload route (save a pasted/dropped file to the shared uploads dir). Registered
     # before the SPA catch-all.
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
+    templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # File panel (#783/#784): bounded directory listing, file read, git status/diff/branches — and
     # since #807 the upload routes and since #806 the git WRITE routes, all POST and therefore

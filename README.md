@@ -172,6 +172,7 @@ BattleLab is a **single-admin** tool. Understand this before exposing it:
 - It is **not multi-tenant**. There is one admin account; there is no per-user isolation. Do not share a login.
 - The app binds `127.0.0.1` and does **not** terminate TLS or do rate-limiting itself. **You must put it behind a reverse proxy that provides TLS + auth.** See [`deploy/nginx.example.conf`](deploy/nginx.example.conf).
 - Defence in depth: the app has its own cookie + CSRF + same-origin (`Origin`/`Referer` must equal `AGENT_SESSIONS_ORIGIN`) checks, and `/api/auth-check` (204/401) so the reverse proxy can additionally gate with `auth_request`. **Rate-limit `/login` at the proxy** to blunt credential stuffing.
+- **What sits on disk, owner-only.** `prefs.json`, the compose draft, the instruction-template library (`~/.config/agent-sessions/templates.json`) and the uploads folder (`~/.agent-sessions/uploads/`) are all mode `0600` / `0700` under the service user. Instruction text you save as a template is as sensitive as anything you type into a session — it is stored in the clear, like the draft.
 - **Optional TOTP 2FA** adds a second factor on top of the password (see Install & operate). A correct password issues only a short-lived *pre-auth* cookie; the full session is minted after a valid authenticator/recovery code. Recommended once the instance is reachable beyond localhost. `clear-2fa` (host-only) is the lockout escape hatch.
 
 ## Where things live
@@ -193,7 +194,8 @@ agent-sessions/
 │   │   ├── system.py      healthz, auth-check, version, engines, system, update, config, prefs
 │   │   ├── sessions.py    /api/sessions, /api/projects (entities, #361), /api/folders, rename, archive/unarchive
 │   │   ├── scrollback.py  /api/scrollback (+ clear)
-│   │   ├── upload.py      /api/upload
+│   │   ├── upload.py      /api/upload, GET /api/uploads/{stored} (image read-back)
+│   │   ├── templates.py   /api/templates — the instruction-template library (#905)
 │   │   ├── auth.py        login, /login/totp, logout, change-password, /api/password, 2FA
 │   │   ├── terminal.py    the /ws/term/{sid} websocket handler
 │   │   └── spa.py         GET / + the /{spa_path} SPA catch-all (registered last)

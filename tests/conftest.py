@@ -96,6 +96,12 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_PREFS", str(tmp_path / ".config" / "agent-sessions" / "prefs.json")
     )
+    # The instruction-template library (#905) sits beside prefs.json and reads its override per
+    # call the same way, so the same env pin keeps a live library out of the suite.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_TEMPLATES",
+        str(tmp_path / ".config" / "agent-sessions" / "templates.json"),
+    )
 
 
 @pytest.fixture(autouse=True)
