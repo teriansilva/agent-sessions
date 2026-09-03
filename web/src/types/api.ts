@@ -68,6 +68,66 @@ export interface DraftAttachment {
   path: string;
 }
 
+/** A `{{name}}` slot on an instruction template (#905), filled when the template is used.
+ *  `name` is the token (`[a-z][a-z0-9_]{0,31}`); `label` is what the fill step shows. */
+export interface TemplateField {
+  name: string;
+  label: string;
+  default: string;
+  required: boolean;
+}
+
+/** A reference image on a template — an upload path, never a blob. The thumbnail is read back
+ *  through `GET /api/uploads/{stored}` where `stored` is the path's basename. */
+export interface TemplateImage {
+  name: string;
+  path: string;
+}
+
+/** An instruction template (#905) — `GET /api/templates`. A *message*, not a prompt: the
+ *  body is user-turn text the composer pastes into a session, never a system prompt. The
+ *  server owns `id` and every timestamp/counter; `updated_at` is also the optimistic-
+ *  concurrency fence (`expected_updated_at` on PATCH/DELETE, 409 + `current` on a stale edit).
+ *  `last_used_at` / `used_count` move on a send and never touch `updated_at`. */
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  body: string;
+  fields: TemplateField[];
+  images: TemplateImage[];
+  created_at: number;
+  updated_at: number;
+  used_count: number;
+  last_used_at: number | null;
+}
+
+/** The editable half of a template — what POST/PATCH `/api/templates` accept. */
+export type TemplateInput = Pick<
+  Template,
+  "name" | "description" | "tags" | "body" | "fields" | "images"
+>;
+
+/** The server's bounds, served with the library so the editor never hardcodes a cap. */
+export interface TemplateLimits {
+  templates_max: number;
+  name_max: number;
+  description_max: number;
+  tags_max: number;
+  body_max: number;
+  fields_max: number;
+  label_max: number;
+  default_max: number;
+  images_max: number;
+  image_suffixes: string[];
+}
+
+export interface TemplatesResponse {
+  templates: Template[];
+  limits: TemplateLimits;
+}
+
 /** GET /api/sessions/{id}/draft (#477): the saved compose draft for a session, or an empty
  *  draft (`text: ""`, `attachments: []`, `updated_at: null`) when there is none. */
 export interface SessionDraft {

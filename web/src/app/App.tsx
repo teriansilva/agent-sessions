@@ -1,5 +1,6 @@
 import {
   Activity,
+  BookMarked,
   HelpCircle,
   Menu,
   Network,
@@ -8,10 +9,11 @@ import {
 } from "lucide-react";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
-  BrowserRouter,
+  createBrowserRouter,
   Link,
   Navigate,
   Route,
+  RouterProvider,
   Routes,
   useLocation,
 } from "react-router-dom";
@@ -56,6 +58,12 @@ const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
 // Pulse — the AI-curated recent-work overview (#441 Phase 5). Lazy like Overview so its
 // page code stays out of the main bundle until opened.
 const Pulse = lazyWithReload(() => import("../routes/Pulse"), "pulse");
+// TEMPLATES — the instruction-template gallery + editor (#905). Lazy like the others.
+const Templates = lazyWithReload(() => import("../routes/Templates"), "templates");
+const TemplateEditor = lazyWithReload(
+  () => import("../routes/TemplateEditor"),
+  "template-editor",
+);
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 // Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
@@ -278,6 +286,14 @@ function Layout() {
               <Network size={18} />
             </Link>
             <Link
+              to="/templates"
+              className="gear"
+              aria-label="Templates"
+              onClick={closeMobileDrawer}
+            >
+              <BookMarked size={18} />
+            </Link>
+            <Link
               to="/settings"
               state={{ returnTo: location.pathname }}
               className="gear"
@@ -356,6 +372,14 @@ function Layout() {
               <Network size={18} />
             </Link>
             <Link
+              to="/templates"
+              className="gear"
+              aria-label="Templates"
+              onClick={closeMobileDrawer}
+            >
+              <BookMarked size={18} />
+            </Link>
+            <Link
               to="/settings"
               state={{ returnTo: location.pathname }}
               className="gear"
@@ -421,6 +445,9 @@ function Layout() {
                 <Route path="/settings/:tab" element={<Settings />} />
                 <Route path="/overview" element={<Overview />} />
                 <Route path="/pulse" element={<Pulse />} />
+                <Route path="/templates" element={<Templates />} />
+                <Route path="/templates/new" element={<TemplateEditor />} />
+                <Route path="/templates/:id" element={<TemplateEditor />} />
                 <Route path="/s/:engine/:id" element={<SessionView />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
@@ -483,6 +510,12 @@ function Layout() {
 }
 
 export default function App() {
+  // A DATA router, not <BrowserRouter> (#905 P2 review): `useBlocker` — the only way to hold
+  // Back/Forward and every in-app link on a dirty editor — needs one. The whole shell hangs off
+  // a single catch-all route; the `<Routes>` inside `Layout` keep working as descendant routes.
+  const [router] = useState(() =>
+    createBrowserRouter([{ path: "*", element: <Layout /> }]),
+  );
   return (
     <ConfigProvider>
       <ThemeProvider>
@@ -491,9 +524,7 @@ export default function App() {
             <TermFontProvider>
               <OverviewPrefsProvider>
                 <SessionsProvider>
-                  <BrowserRouter>
-                    <Layout />
-                  </BrowserRouter>
+                  <RouterProvider router={router} />
                 </SessionsProvider>
               </OverviewPrefsProvider>
             </TermFontProvider>

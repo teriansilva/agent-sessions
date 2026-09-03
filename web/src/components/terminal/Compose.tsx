@@ -32,6 +32,7 @@ import {
   confirmSent,
   readSent,
 } from "../../lib/sentHistory";
+import { assembleMessage } from "../../lib/templateMessage";
 import { SentMessagesModal } from "./SentMessagesModal";
 import {
   assembleSpoken,
@@ -961,10 +962,12 @@ export const Compose = forwardRef<
   const send = () => {
     const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
     const savedAttachments = attachments;
-    const parts: string[] = [];
-    if (text.trim()) parts.push(text.trim());
-    for (const a of attachments) parts.push(a.path);
-    const msg = parts.join(" ");
+    // The same helper the template editor's preview uses (#905): what the preview shows is,
+    // by construction, what this paste carries.
+    const msg = assembleMessage(
+      text,
+      attachments.map((a) => a.path),
+    );
     if (!msg) {
       // Empty compose box (no trimmed text, no attachments): act as a bare Return so the Send
       // button — and Enter in the empty field — submit whatever the user typed DIRECTLY into the

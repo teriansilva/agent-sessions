@@ -1,12 +1,16 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
+import { uploadStoredName } from "./templateMessage";
 import type {
   AgentBudgets,
   AgentUsageResponse,
   AiActivity,
   AppConfig,
   AutoSortReport,
+  DraftAttachment,
   EnginesResponse,
+  Evidence,
+  EvidenceKind,
   FileCapabilities,
   FileContent,
   FileListing,
@@ -17,38 +21,38 @@ import type {
   GitPushTarget,
   GitStatus,
   GitWriteResult,
-  UploadBatch,
-  UploadResult,
   HandoffCommitted,
   HandoffMode,
   HandoffPrepared,
   HistoryPage,
-  DraftAttachment,
+  Mission,
+  MissionContext,
+  MissionList,
+  MissionObjective,
+  MissionTurn,
+  NotificationList,
+  OrchestratorAction,
+  OrchestratorState_,
   ProjectArchiveReport,
   ProjectEntity,
   PromptEntry,
-  Evidence,
-  EvidenceKind,
-  OrchestratorAction,
-  NotificationList,
-  OrchestratorState_,
-  PushSubscriptionInfo,
   PulseAskResult,
   PulseDepth,
   PulseOverview,
+  PushSubscriptionInfo,
   Session,
   SessionDraft,
   SessionsPage,
   SessionsQuery,
   SystemInfo,
+  Template,
+  TemplateInput,
+  TemplatesResponse,
   TwoFactorEnrollment,
   UpdateInfo,
   UpdateSettings,
-  Mission,
-  MissionContext,
-  MissionList,
-  MissionTurn,
-  MissionObjective,
+  UploadBatch,
+  UploadResult,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
 import { announceActionResolved } from "./actionEvents";
@@ -245,6 +249,29 @@ const putJson = <T>(path: string, body?: unknown): Promise<T> =>
 const deleteJson = <T>(path: string): Promise<T> =>
   mutateJson<T>("DELETE", path);
 
+/** DELETE a CSRF-guarded resource that answers 204 (no body). Like `mutateJson`, a failure
+ *  carries the server's `detail` and the whole parsed body as `record` — a template DELETE
+ *  409s with the `current` record, which the gallery folds back in (#905). */
+async function deleteVoid(path: string): Promise<void> {
+  const r = await apiFetch(path, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken },
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `DELETE ${path} → ${r.status}`, parsed);
+  }
+}
+
 /** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
 async function postVoid(path: string, body?: unknown): Promise<void> {
   const r = await apiFetch(path, {
@@ -270,9 +297,28 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
 
 const enc = encodeURIComponent;
 
+/** The read-back URL for an upload path's image (#905): `GET /api/uploads/{stored}`, keyed by
+ *  the STORED basename — `<stamp>-<safe>`, the last component of the path the server returned.
+ *  Never by the response's `name`, which is the sanitized original and names no file. */
+export function uploadUrl(path: string): string {
+  return `/api/uploads/${enc(uploadStoredName(path))}`;
+}
+
+/** The bytes of an upload's image, through the injectable fetch seam (#905). In Home Free app
+ *  mode private HTTP reaches the box only via the tunnel `setApiFetch` installs; a native-origin
+ *  `<img src>` would hit the relay instead (a 404, and the stored name in its logs). Callers turn
+ *  the blob into an object URL and revoke it (`components/templates/UploadImage.tsx`). */
+async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(uploadUrl(path), { credentials: "same-origin", signal });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `upload read-back → ${r.status}`);
+  return await r.blob();
+}
+
 /** Upload a file (image/context) → server saves it under ~/.agent-sessions/uploads/
- *  and returns a path the agent can read. Multipart, CSRF-guarded (not JSON). */
-async function upload(file: File): Promise<{ path: string; name: string }> {
+ *  and returns a path the agent can read. Multipart, CSRF-guarded (not JSON). `stored` is the
+ *  basename actually written (absent on servers before #905). */
+async function upload(file: File): Promise<{ path: string; name: string; stored?: string }> {
   const fd = new FormData();
   fd.append("file", file, file.name || "pasted");
   const r = await apiFetch("/api/upload", {
@@ -283,7 +329,7 @@ async function upload(file: File): Promise<{ path: string; name: string }> {
   });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `upload → ${r.status}`);
-  return (await r.json()) as { path: string; name: string };
+  return (await r.json()) as { path: string; name: string; stored?: string };
 }
 
 export const api = {
@@ -397,6 +443,26 @@ export const api = {
   regenerate2fa: (proof: { code?: string; password?: string }) =>
     postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
   upload,
+  uploadBlob,
+  /** Instruction templates (#905): the operator's library of reusable messages. Its own
+   *  route, off /api/config. Reads need a session; every mutation is CSRF-guarded. A stale
+   *  PATCH/DELETE (the record moved since `expectedUpdatedAt`) is a 409 whose `record.current`
+   *  is what is stored now. */
+  templates: () => getJsonWithDetail<TemplatesResponse>("/api/templates"),
+  createTemplate: (input: TemplateInput) =>
+    mutateJson<Template>("POST", "/api/templates", input),
+  updateTemplate: (id: string, input: TemplateInput, expectedUpdatedAt: number) =>
+    mutateJson<Template>("PATCH", `/api/templates/${enc(id)}`, {
+      ...input,
+      expected_updated_at: expectedUpdatedAt,
+    }),
+  deleteTemplate: (id: string, expectedUpdatedAt: number) =>
+    deleteVoid(
+      `/api/templates/${enc(id)}?expected_updated_at=${enc(String(expectedUpdatedAt))}`,
+    ),
+  /** A send happened — bumps the usage counters, never `updated_at`. */
+  markTemplateUsed: (id: string) =>
+    mutateJson<Template>("POST", `/api/templates/${enc(id)}/used`),
   /** Launch-folder list (#361: behaviour-preserving rename of the old /api/projects).
    *  `visible: true` applies the mode-aware visibility filter (#335) — the new-session
    *  picker uses it so the dropdown mirrors the curated sidebar; Settings omits it to

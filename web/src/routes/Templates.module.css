@@ -1,0 +1,823 @@
+/* TEMPLATES — the instruction-template gallery and editor (#905). Same HUD vocabulary as Pulse
+ * (near-black ground, phosphor-amber accent, mono callsigns, square chrome); the chip row and
+ * the card grid mirror Pulse.module.css so the two overviews read as one system. Mobile reflows
+ * to a single column with ≥44px actions. The terminal pane already owns the page's hero frame,
+ * so nothing here adds one (docs/design.md §7). */
+
+.page {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 18px 20px 32px;
+  color: var(--text-1);
+}
+
+/* --- header ------------------------------------------------------------------ */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.headLeft {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.sl,
+.meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.headRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Flat CTA + ghost — the Settings pair, restated in mono so they sit beside the chips. */
+.cta,
+.ghost,
+.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 0;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cta {
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: 1px solid transparent;
+}
+.ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+}
+.ghost:hover {
+  color: var(--text-1);
+  background: var(--glass-strong);
+}
+.danger {
+  background: transparent;
+  color: var(--status-down);
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
+}
+.danger:hover {
+  background: color-mix(in srgb, var(--status-down) 12%, transparent);
+}
+.cta:disabled,
+.ghost:disabled,
+.danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.note {
+  font-size: 0.78rem;
+  color: var(--status-degraded);
+  margin: 0 0 12px;
+}
+.err {
+  font-size: 0.78rem;
+  color: var(--status-down);
+  margin: 0 0 12px;
+}
+
+/* --- toolbar: search + tag chips --------------------------------------------- */
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.search {
+  flex: 1 1 220px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-3);
+  min-width: 0;
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+.search:focus-within {
+  border-color: var(--accent);
+}
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover {
+  color: var(--text-1);
+}
+.chipOn {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--glass-strong);
+}
+.chipN {
+  color: var(--text-3);
+  margin-left: 4px;
+}
+.chipOn .chipN {
+  color: var(--accent);
+}
+
+/* --- cards -------------------------------------------------------------------- */
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  min-width: 0;
+}
+.thumb {
+  position: relative;
+  height: 96px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* A placeholder glyph, not a status colour: a text-only template has nothing to show. */
+.glyph {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+.thumbN {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+}
+.cbody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  flex: 1;
+  min-width: 0;
+}
+.cname {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cname a {
+  color: var(--text-1);
+  text-decoration: none;
+}
+.cname a:hover {
+  color: var(--accent);
+}
+.cdesc {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.tags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+}
+.cmeta {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.acts {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  color: var(--text-2);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.act:hover,
+.act:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.actDanger:hover,
+.actDanger:focus-visible {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
+}
+
+/* --- empty state ---------------------------------------------------------------- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  padding: 48px 16px;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+}
+.emptyGlyph {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  color: var(--text-3);
+}
+.emptyTitle {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.emptyHint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  max-width: 52ch;
+}
+.emptyActs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* --- editor ---------------------------------------------------------------------- */
+.ed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+  gap: 20px;
+}
+.form {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.form:disabled {
+  opacity: 0.7;
+}
+.lbl {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 12px 0 5px;
+}
+.lbl:first-child {
+  margin-top: 0;
+}
+.lbl .tok {
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+.lbl .over {
+  color: var(--status-down);
+}
+.input,
+.area {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.85rem;
+  border-radius: 0;
+  padding: 0 10px;
+  min-height: 34px;
+}
+.input:focus,
+.area:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1.5px var(--accent);
+}
+.area {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  padding: 9px 10px;
+  min-height: 180px;
+  resize: vertical;
+}
+.tagRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 34px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.tagRow:focus-within {
+  border-color: var(--accent);
+}
+.tagRow input {
+  flex: 1;
+  min-width: 90px;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.85rem;
+  outline: none;
+  min-height: 26px;
+}
+.tagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px solid var(--line);
+  padding: 2px 4px 2px 6px;
+}
+.tagChip button {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 2px;
+  min-width: 18px;
+  min-height: 18px;
+}
+.tagChip button:hover {
+  color: var(--status-down);
+}
+
+.fields {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.fields th {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: left;
+  font-weight: 500;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.fields td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.fields td input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.8rem;
+  border-radius: 0;
+}
+.fields td input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.fields td.tokCell input {
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+.checkWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.fields td input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.rowErr {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--status-down);
+  display: block;
+  margin-top: 2px;
+}
+.addRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  min-height: 30px;
+  padding: 0 4px;
+}
+.addRow:hover {
+  color: var(--accent);
+}
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: 0;
+}
+.iconBtn:hover,
+.iconBtn:focus-visible {
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
+}
+
+.imgs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.im {
+  position: relative;
+  width: 96px;
+  height: 64px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.im img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.im .x {
+  position: absolute;
+  right: 0;
+  top: 0;
+  min-width: 26px;
+  min-height: 26px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 0;
+  color: var(--text-1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.im .x:hover {
+  color: var(--status-down);
+}
+.imAdd {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 96px;
+  height: 64px;
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 0;
+}
+.imAdd:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.imAdd:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preview {
+  border: 1px solid var(--line);
+  background: var(--term-bg);
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 120px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.preview .path {
+  color: var(--status-draft);
+}
+.previewNote {
+  margin: 8px 0 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+.previewWarn {
+  color: var(--status-degraded);
+}
+.previewToggle {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0;
+  min-height: 24px;
+}
+
+.foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.foot .sp {
+  flex: 1;
+}
+
+.state {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* --- mobile reflow ---------------------------------------------------------------- */
+@media (max-width: 800px) {
+  .page {
+    padding: 14px 12px 28px;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .chip,
+  .cta,
+  .ghost,
+  .danger,
+  .search,
+  .act,
+  .imAdd,
+  .addRow,
+  .iconBtn {
+    min-height: 44px;
+  }
+  .act {
+    flex: 1;
+  }
+  .ed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .foot .cta,
+  .foot .ghost {
+    flex: 1;
+  }
+  .foot .sp {
+    flex: 0 0 100%;
+  }
+  /* Every interactive control is a real touch target (docs/design.md §8), including the small
+   * ones the first cut left at 18-30px (Hermes on #907): tag remove, image remove, field remove,
+   * the preview toggle. */
+  .tagRow {
+    gap: 8px;
+  }
+  .tagChip {
+    min-height: 44px;
+    padding-right: 0;
+  }
+  .tagChip button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .im {
+    width: 132px;
+    height: 96px;
+  }
+  .im .x {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .imAdd {
+    width: 132px;
+    height: 96px;
+  }
+  .previewToggle {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 12px;
+  }
+  .checkWrap {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .fields td input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+  .iconBtn {
+    min-width: 44px;
+  }
+  /* Text inputs are touch targets too (docs/design.md §8): name, description, the tag input,
+   * the field cells. */
+  .input,
+  .tagRow input,
+  .fields td input[type="text"] {
+    min-height: 44px;
+  }
+  .tagRow {
+    min-height: 44px;
+  }
+}
+
+/* --- addendum on #907: first-load retry, and the card title as a touch target ------------- */
+/* The first-load failure's Retry sits inside the alert: there is no list to show, so the
+ * action lives where the reason is. */
+.retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 10px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.retry:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+@media (max-width: 800px) {
+  .retry {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* The card title is a second edit link — a touch target like the rest (docs/design.md §8). */
+  .cname a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
