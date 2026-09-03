@@ -9,6 +9,8 @@ import { Link } from "react-router-dom";
 
 import type { MissionContext as MissionContextData } from "../../types/api";
 
+import { MissionScreen } from "./MissionScreen";
+
 import styles from "./mission.module.css";
 
 /** `engine:uuid` → `/s/:engine/:uuid`, both halves encoded. A bare `replace(":", "/")` is wrong
@@ -29,17 +31,24 @@ function gitLine(g: MissionContextData["git"]): string {
   if (entries.length) parts.push(`${entries.length} changed`);
   const staged = entries.filter((e) => e.kind === "staged").length;
   if (staged) parts.push(`${staged} staged`);
-  if (typeof g.ahead === "number" && g.ahead > 0) parts.push(`ahead ${g.ahead}`);
-  if (typeof g.behind === "number" && g.behind > 0) parts.push(`behind ${g.behind}`);
+  if (typeof g.ahead === "number" && g.ahead > 0)
+    parts.push(`ahead ${g.ahead}`);
+  if (typeof g.behind === "number" && g.behind > 0)
+    parts.push(`behind ${g.behind}`);
   if (!parts.length) parts.push("clean");
   return parts.join(" · ");
 }
 
 export function MissionContextPanel({
   context,
+  onMembershipChanged,
   loading,
 }: {
   context: MissionContextData | null;
+  /** The server told a control that this mission no longer holds its session. The roster the
+   *  blocks are built from is stale, so it is re-read — that is what removes the block, and it
+   *  is the console's to do because the roster is the console's (#903 review 3, finding 1). */
+  onMembershipChanged?: () => void;
   loading?: boolean;
 }) {
   if (loading && !context) {
@@ -60,13 +69,19 @@ export function MissionContextPanel({
       {context.cwd ? (
         <div className={styles.cwd}>{context.cwd}</div>
       ) : (
-        <div className={styles.empty}>No folder yet — this mission is still a draft.</div>
+        <div className={styles.empty}>
+          No folder yet — this mission is still a draft.
+        </div>
       )}
 
       {context.git_error ? (
         // Fails CLOSED and says so. The server deliberately sends only the exception kind, so
         // this cannot leak a path even if the operator screenshots it.
-        <div className={styles.notice} role="status" data-testid="context-git-error">
+        <div
+          className={styles.notice}
+          role="status"
+          data-testid="context-git-error"
+        >
           <div className={styles.noticeLead}>Git could not be read.</div>
           <div>{context.git_error} — the working tree is not shown.</div>
         </div>
@@ -78,9 +93,28 @@ export function MissionContextPanel({
       ) : null}
 
       {sessions.length ? (
-        <div className={styles.roster}>
-          {sessions.map((s) => s.session_key).join("  ·  ")}
-        </div>
+        <>
+          {/* The roster is now a COUNT rather than a list of keys: every key is printed on its
+              own block below, beside the controls that act on it, and printing them twice made
+              the ones above look like the labels for the blocks below when they are not
+              necessarily in the same order (#903 review 2, finding 2). */}
+          <div className={styles.roster}>
+            {sessions.length} session{sessions.length === 1 ? "" : "s"}
+          </div>
+          {/* VIEW SCREEN per session (#894). Per session rather than one control for the
+              mission, because a mission can hold several and "the screen" is not a thing a
+              mission has — each session has one. Read-only: looking takes no lease and does not
+              mark the viewer busy, so it cannot silently pause the follow-through. */}
+          {sessions.map((s) => (
+            <MissionScreen
+              key={s.session_key}
+              missionId={context.id}
+              sessionKey={s.session_key}
+              role={s.role ?? null}
+              onGone={onMembershipChanged}
+            />
+          ))}
+        </>
       ) : (
         <div className={styles.roster}>No sessions adopted yet.</div>
       )}

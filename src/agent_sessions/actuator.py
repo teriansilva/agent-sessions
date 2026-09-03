@@ -81,7 +81,18 @@ def working_keys(registry) -> set[str]:
 # What `render()` can actually turn into bytes. Declared HERE, beside the renderer, and shipped
 # to the client by the state route — the UI previously kept its own copy that included
 # `dispatch`, so it offered Approve on an action every delivery attempt would 409.
-RENDERABLE_VERBS: frozenset[str] = frozenset({"continue", "choose", "answer"})
+RENDERABLE_VERBS: frozenset[str] = frozenset({"continue", "choose", "answer", "relay"})
+
+#: `relay` is OPERATOR-AUTHORED bytes, and #840 §9 is explicit that this makes it a **narrower**
+#: authority than the model-authored `answer`, not a wider one — the operator typing their own
+#: words is the thing every other verb is a proposal to do on their behalf.
+#:
+#: It is not a new fence and must not become one. It renders through `render` like everything
+#: else, is claimed before the write like everything else, and passes the same
+#: `handoff.sanitize_seed` a seed does — so it cannot terminate a bracketed paste early or
+#: smuggle raw key input. What distinguishes it is AUTHORSHIP, which the timeline records, so a
+#: reader can always tell the operator's words from the model's.
+OPERATOR_VERBS: frozenset[str] = frozenset({"relay"})
 NUDGE_MAX = 2000
 # Pause between consecutive autonomous deliveries in one pass.
 DELIVERY_SPACING_S = 1.0
@@ -114,6 +125,15 @@ def render(action: dict, cfg: dict) -> bytes:
         text = handoff.sanitize_seed(str(action.get("answer") or ""))
         if not text.strip():
             raise NotDeliverable("answer with no usable text")
+        return session_input.bracketed_paste(text)
+    if verb == "relay":
+        # THE OPERATOR'S OWN WORDS (#894). Same rendering and the same sanitiser as `answer` —
+        # deliberately, because the payload shape is not what differs between them. What differs
+        # is who wrote it, and that is recorded on the action and in the timeline rather than
+        # expressed as a looser payload rule.
+        text = handoff.sanitize_seed(str(action.get("answer") or ""))
+        if not text.strip():
+            raise NotDeliverable("relay with no usable text")
         return session_input.bracketed_paste(text)
     raise NotDeliverable(f"verb {verb!r} is not deliverable")
 
@@ -193,6 +213,53 @@ def _policy_fingerprint() -> tuple:
         tuple(sorted(cfg.get("allowed_verbs") or ())),
         float(cfg.get("confidence_min") or 0),
     )
+
+
+def _mission_membership_authority(rec: dict):
+    """`(check, fingerprint)` for any action that names a mission AND a session, or `(None, None)`.
+
+    **An action authorised under one mission must not land in another mission's session** (#903
+    review, finding 1). The route checks membership before it appends, but between that check and
+    byte one lie a ledger append, a quiet wait, an fd borrow and a lock queue — seconds in which
+    the operator can detach the session and a second mission can adopt it. The relay would then
+    deliver mission A's words into mission B's work.
+
+    DERIVED FROM THE RECORD, deliberately, exactly as `_supervisor_authority` is: whoever
+    delivers the action gets the enforcement without knowing it exists. That is what stopped the
+    equivalent supervisor bug being re-introduced through the ordinary approve route, and the
+    same reasoning applies to every operator-origin mission action added later.
+
+    The generic mission fence in `_final_guard` does NOT cover this. Its question is "is this
+    session's mission being torn down", and a session re-adopted by a healthy second mission is
+    barred by nothing — correctly, for that second mission's own writes.
+
+    Fails CLOSED: this is the last check before a real pty, and an unverifiable membership is not
+    a membership.
+    """
+    mission_id = str(rec.get("mission_id") or "")
+    session_key = str(rec.get("session_id") or "")
+    if not (mission_id and session_key):
+        return None, None
+
+    def _state():
+        from . import missions
+
+        return missions.session_mission(session_key)
+
+    def _check() -> tuple[bool, str]:
+        from . import missions
+
+        try:
+            holder = missions.session_mission(session_key)
+        except Exception:
+            return False, "the mission store could not be read, so authority is unverifiable"
+        if holder is None:
+            return False, "the session left this mission before the write"
+        if holder != mission_id:
+            return False, f"the session was adopted by mission {holder} before the write"
+        return True, ""
+
+    return _check, _state
 
 
 def _supervisor_authority(rec: dict):
@@ -373,6 +440,7 @@ async def deliver(action_id: str, *, registry=None, authority=None, extra_finger
         raise NotDeliverable("another caller claimed this action first")
 
     sup_check, sup_state = _supervisor_authority(rec)
+    mem_check, mem_state = _mission_membership_authority(rec)
 
     def _final_guard() -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
@@ -404,6 +472,14 @@ async def deliver(action_id: str, *, registry=None, authority=None, extra_finger
         # this guard is caught too.
         if sup_check is not None:
             ok, why = sup_check()
+            if not ok:
+                return False, why
+        # …and the action's OWN mission MEMBERSHIP, for every action that names both a mission and
+        # a session — the relay included (#903 review, finding 1). The route's pre-append check
+        # gives the operator an answer; this is the one that is correct, because the detach and
+        # the re-adopt can both land in the window it opens.
+        if mem_check is not None:
+            ok, why = mem_check()
             if not ok:
                 return False, why
         # THE MISSION FENCE, and it belongs HERE — in the guard every delivery passes through —
@@ -448,8 +524,14 @@ async def deliver(action_id: str, *, registry=None, authority=None, extra_finger
         # callback invoked from `_final_guard` runs before the registry and screen work, so a
         # change after it still reaches byte one (#888 review, finding 1).
         policy_fingerprint=_compose_fingerprint(
-            _authority_fingerprint(str(rec.get("session_id") or "")),
-            extra_fingerprint if extra_fingerprint is not None else sup_state,
+            _compose_fingerprint(
+                _authority_fingerprint(str(rec.get("session_id") or "")),
+                extra_fingerprint if extra_fingerprint is not None else sup_state,
+            ),
+            # Membership rides in the fingerprint as well as in the guard, for the reason every
+            # other term does: the guard's verdict is only as fresh as the moment it ran, and the
+            # re-adopt can land between it and byte one.
+            mem_state,
         ),
     )
     state = {

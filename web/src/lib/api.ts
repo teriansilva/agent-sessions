@@ -836,6 +836,19 @@ export const api = {
         cache: "no-store",
       },
     ),
+  /** The live screen of a session a MISSION holds (#903 review 3, finding 1).
+   *
+   *  Not `evidence(key, "screen")`, and the difference is the whole point: that route is
+   *  mission-agnostic, so an already-open block for mission A goes on rendering the same key
+   *  after the session has been detached and adopted into B — B's live output, under A's
+   *  heading. Membership is a row another tab can change, so it is checked SERVER-SIDE at
+   *  request time and a session the mission no longer holds is a 409. */
+  missionScreen: (missionId: string, sessionKey: string) =>
+    getJson<Evidence>(
+      `/api/missions/${enc(missionId)}/screen/${enc(sessionKey)}`,
+      { cache: "no-store" },
+    ),
+
   /** Per-session Pulse-orchestration opt-out (#726). Managed-by-default; this withdraws (or
    *  restores) agency for ONE session without touching its AI review. CSRF-guarded. */
   setOrchestratorExcluded: (id: string, excluded?: boolean) =>
@@ -918,6 +931,25 @@ export const api = {
       { ops },
     ),
 
+  /** Type the operator's OWN words into one of a mission's sessions (#894).
+   *
+   *  Not a second path to a PTY: the server builds a ledger action and hands it to the actuator,
+   *  so the write takes the single-writer lock, the liveness check at the write boundary, the
+   *  viewer-busy precondition and the mission fence — the same door every other write uses.
+   *
+   *  `mutateJson` because the refusals are the interesting part and each has a different fix:
+   *  "this mission does not hold that session", "session is not live", "a viewer is attached".
+   */
+  relayToSession: (id: string, sessionKey: string, text: string) =>
+    mutateJson<{
+      action_id: string;
+      state: string;
+      detail?: string;
+      session_key: string;
+    }>("POST", `/api/missions/${encodeURIComponent(id)}/relay`, {
+      session_key: sessionKey,
+      text,
+    }),
   /** One durable operator turn on a mission (#871, wired in #890).
    *
    *  **`turnId` is minted once per send and REUSED on every retry**, which is what makes the

@@ -2969,6 +2969,25 @@ def active_session_keys(mission_id: str, *, path: Path | None = None) -> list[st
         con.close()
 
 
+def session_mission(session_key: str, *, path: Path | None = None) -> str | None:
+    """The mission that currently holds this session, or None. ONE row, by session.
+
+    The narrow counterpart to :func:`all_active_memberships`, and it exists because the write
+    fence needs this answer immediately before byte one: a full-table read there would scale with
+    the fleet inside the lock the terminal also wants (#903 review, finding 1).
+    """
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT mission_id FROM mission_sessions "
+            "WHERE session_key=? AND removed_at IS NULL LIMIT 1",
+            (session_key,),
+        ).fetchone()
+        return None if row is None else str(row["mission_id"])
+    finally:
+        con.close()
+
+
 def all_active_memberships(*, path: Path | None = None) -> dict[str, str]:
     """``session_key -> mission_id`` for every open membership. One query for the rail."""
     con = _ready(path)
@@ -3985,6 +4004,73 @@ def note_growth(
                 (mission_id, session_key, int(mark), ts, ts),
             )
             con.commit()
+        finally:
+            con.close()
+
+
+#: The relay-record states a later writer may still change. See `settle_relay_event`.
+RELAY_OPEN_STATES: frozenset[str] = frozenset({"sending", "indeterminate"})
+
+
+def settle_relay_event(
+    mission_id: str,
+    *,
+    action_id: str,
+    state: str,
+    detail: str = "",
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Stamp the outcome onto the operator's own record for `action_id`. True if a row moved.
+
+    The record is written BEFORE the bytes and settled here afterwards, which is the only
+    ordering that cannot lose the operator's words (#903 review, finding 2). Written after, a
+    store failure means the relay was delivered and the transcript never says so; written first
+    and left unsettled, the worst case is a record that says `sending`, beside a ledger row under
+    the same `action_id` that says what happened. One is a silent loss, the other is a
+    reconcilable one.
+
+    **A DEFINITE OUTCOME IS NEVER OVERWRITTEN** (#903 review 3, finding 2). Only `sending` and
+    `indeterminate` may still move: the first is unfinished, the second is a statement that
+    nobody could tell yet, which a later terminal row is allowed to resolve. Everything else is
+    somebody's answer about what happened to the operator's words, and a second writer with a
+    different opinion — a read-time reconcile working from a compacted ledger, say — must not get
+    to replace it. The fence is HERE, at the write, rather than in each caller's head.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT seq, meta FROM mission_events "
+                "WHERE mission_id=? AND action_id=? AND kind='operator_msg' "
+                "ORDER BY seq DESC LIMIT 1",
+                (mission_id, action_id),
+            ).fetchone()
+            if row is None:
+                con.execute("ROLLBACK")
+                return False
+            meta = _loads(row["meta"]) or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            if str(meta.get("state") or "") not in RELAY_OPEN_STATES:
+                con.execute("ROLLBACK")
+                return False
+            meta["state"] = str(state)
+            if detail:
+                meta["detail"] = _cap(detail, 500)
+            con.execute(
+                "UPDATE mission_events SET meta=?, at=? WHERE seq=?",
+                (_json_or_none(meta, EVENT_META_MAX, field="event meta"), ts, int(row["seq"])),
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
         finally:
             con.close()
 

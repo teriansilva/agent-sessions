@@ -53,6 +53,11 @@ export interface MissionDetailState {
   cursor: number | null;
   loadingMore: boolean;
   loadOlder: () => void;
+  /** Re-read the ROSTER now. Membership is a row another tab can change, and a control the
+   *  server has just refused for that reason is the page finding out (#903 review 3, finding 1).
+   *  The context is otherwise loaded once, deliberately — this is the one thing that invalidates
+   *  it from underneath. */
+  reloadContext: () => void;
   /** Re-read everything from the server.
    *
    *  The composer calls it on every settlement, success or failure: the route writes the
@@ -74,6 +79,10 @@ export function useMissionDetail(missionId: string): MissionDetailState {
   const [events, setEvents] = useState<MissionEvent[]>([]);
   const [objectives, setObjectives] = useState<MissionObjective[]>([]);
   const [context, setContext] = useState<MissionContext | null>(null);
+  // A COUNTER, not a callback: the loader lives inside the effect (it closes over `live`, which
+  // is what makes a late response harmless), so the way to re-run it is to re-run the effect.
+  const [ctxNonce, setCtxNonce] = useState(0);
+  const reloadContext = useCallback(() => setCtxNonce((n) => n + 1), []);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   /** Bumped by `reload`. Part of the load effect's identity, which is what makes a manual re-read
@@ -125,7 +134,7 @@ export function useMissionDetail(missionId: string): MissionDetailState {
       live = false;
       clearInterval(t);
     };
-  }, [missionId, nonce]);
+  }, [missionId, nonce, ctxNonce]);
 
   // THE OPEN-TURN CADENCE. Runs only while one is open, and stops the moment it settles — so a
   // console with nothing in flight is exactly as quiet as it was before.
@@ -184,6 +193,7 @@ export function useMissionDetail(missionId: string): MissionDetailState {
     cursor,
     loadingMore,
     loadOlder,
+    reloadContext,
     reload,
   };
 }

@@ -18,10 +18,14 @@ export function ObjectivesPane({
   context,
   loading,
   supervisor,
+  onMembershipChanged,
 }: {
   objectives: MissionObjective[];
   context: MissionContext | null;
   loading: boolean;
+  /** Forwarded to the per-session controls: the server refused one because the mission no longer
+   *  holds its session, so the roster has to be re-read. */
+  onMembershipChanged?: () => void;
   /** Absent when `assess()` could not run — the board says so rather than rendering a clean
    *  slate, which would read as "nothing to follow up". */
   supervisor?: MissionSupervisor;
@@ -33,7 +37,11 @@ export function ObjectivesPane({
       <div className={styles.section}>Follow-through</div>
       <MissionSupervisorBoard supervisor={supervisor} />
       <div className={styles.section}>Context</div>
-      <MissionContextPanel context={context} loading={loading} />
+      <MissionContextPanel
+        context={context}
+        loading={loading}
+        onMembershipChanged={onMembershipChanged}
+      />
     </>
   );
 }

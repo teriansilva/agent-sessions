@@ -10,12 +10,13 @@ queue; without admission above it a flood is experienced as a hang, and with a f
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_sessions import missions, projects
+from agent_sessions import engines, missions, orchestrator_ledger, projects
 from agent_sessions.main import create_app
 
 CLAUDE_A = "claude:11111111-1111-1111-1111-111111111111"
@@ -723,6 +724,967 @@ def test_the_page_still_RENDERS_when_the_supervisor_reading_fails(api, monkeypat
     assert "supervisor" not in r.json(), "a failed reading was reported as an empty one"
 
 
+# ---- #894: relay — the operator's own words, through the actuator's fence -------------------
+
+
+def _adopted(c, hdr, proj):
+    """A running mission holding one session — what a relay needs to have a target at all.
+
+    Through the PROJECT entity, because `dispatching` refuses a mission with no resolved cwd —
+    the rule that keeps a client-supplied path out of the store, and the reason a relay test
+    cannot take the short way to a running mission.
+    """
+    m = _create(c, hdr, project_id=proj.id)
+    missions.set_state(m["id"], "draft", "planned")
+    missions.set_state(m["id"], "planned", "dispatching")
+    missions.set_state(m["id"], "dispatching", "running")
+    missions.adopt(m["id"], CLAUDE_A)
+    return m
+
+
+def test_a_relay_goes_through_the_ACTUATOR_and_nowhere_else(api, monkeypatch):
+    """#840 §9's relay contract, asserted on the door it uses rather than on the bytes.
+
+    "It still goes through the actuator: precondition check, viewer-busy check, single-writer
+    lock, ledger record." A second write path would satisfy every observable in this test except
+    this one — which is why the assertion is that `actuator.deliver` was called with the action
+    the route minted, not that something reached a pty.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    seen: list[str] = []
+
+    async def deliver(action_id, **kw):
+        seen.append(action_id)
+        rec = orchestrator_ledger.get(action_id) or {}
+        return {**rec, "state": "delivered"}
+
+    monkeypatch.setattr(actuator, "deliver", deliver)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "delivered"
+    assert len(seen) == 1
+    # The action it delivered is the one the route wrote, and it is OPERATOR-authored.
+    rec = orchestrator_ledger.get(seen[0]) or {}
+    assert rec.get("verb") == "relay"
+    assert rec.get("origin") == "operator"
+    assert rec.get("session_id") == CLAUDE_A
+
+
+def test_a_relay_verb_can_NEVER_be_delivered_automatically(api):
+    """ "Operator-authored … a NARROWER authority than the model-authored `answer`, not a wider
+    one." The autonomous ceiling is `AUTO_VERBS_V1`, and `relay` is not in it — so no tier, no
+    confidence and no configuration can cause one to be sent without an operator pressing send."""
+    from agent_sessions import prefs
+
+    assert "relay" not in prefs.AUTO_VERBS_V1
+    # …and the model cannot even propose one: `relay` is not a verb the orchestrator's own
+    # vocabulary contains, so there is no path from model output to this action.
+    assert "relay" not in prefs.ORCH_VERBS
+
+
+def test_a_relay_to_a_session_this_mission_does_NOT_hold_is_refused(api):
+    """A relay aimed at a session the mission released would type the operator's words into
+    somebody else's work. Refused with a reason — and refused again inside the fence by
+    `deliver`'s own mission guard, which is the one that counts."""
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_B, "text": "hello"},
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert "does not hold" in r.json()["detail"]
+
+
+def test_a_relay_REQUIRES_login_and_csrf(api, auth_cfg):
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    body = {"session_key": CLAUDE_A, "text": "hi"}
+    assert c.post(f"/api/missions/{m['id']}/relay", json=body).status_code == 403
+    fresh = _client(auth_cfg)
+    assert fresh.post(f"/api/missions/{m['id']}/relay", json=body).status_code in (401, 403)
+
+
+def test_an_EMPTY_or_OVERLONG_relay_is_refused_before_anything_is_written(api):
+    """Bounded before it becomes a ledger record, like every other operator text on this
+    surface — an unbounded relay is an unbounded durable row and an unbounded paste."""
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    before = len(orchestrator_ledger.live_actions())
+    for body in (
+        {"session_key": CLAUDE_A, "text": ""},
+        {"session_key": CLAUDE_A, "text": "   "},
+        {"session_key": CLAUDE_A, "text": 42},
+        {"session_key": CLAUDE_A, "text": "x" * (actuator.NUDGE_MAX + 1)},
+    ):
+        r = c.post(f"/api/missions/{m['id']}/relay", json=body, headers=hdr)
+        assert r.status_code == 422, (body, r.text)
+    assert len(orchestrator_ledger.live_actions()) == before
+
+
+def test_a_relay_is_RECORDED_on_the_timeline_even_when_it_is_refused(api, monkeypatch):
+    """A write that was attempted and refused is a thing that happened to this mission. A
+    transcript showing only the ones that worked is one the operator cannot reason about."""
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    async def refused(action_id, **kw):
+        rec = orchestrator_ledger.get(action_id) or {}
+        return {**rec, "state": "stale", "detail": "a viewer is attached"}
+
+    monkeypatch.setattr(actuator, "deliver", refused)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "are you there?"},
+        headers=hdr,
+    )
+    assert r.status_code == 200 and r.json()["state"] == "stale"
+    events = missions.get_mission(m["id"])["events"]
+    relayed = [e for e in events if (e.get("meta") or {}).get("relay")]
+    assert len(relayed) == 1
+    assert relayed[0]["kind"] == "operator_msg", "a relay must read as the OPERATOR's words"
+    assert relayed[0]["text"] == "are you there?"
+    assert relayed[0]["session_key"] == CLAUDE_A
+    assert (relayed[0]["meta"] or {}).get("state") == "stale"
+
+
+def test_a_relay_is_REFUSED_at_byte_one_if_the_session_changed_hands(api, monkeypatch):
+    """The route's membership check and the write are two moments (#903 review, finding 1).
+
+    Between them lie a ledger append, a quiet wait, an fd borrow and a lock queue — seconds, and
+    the operator can detach the session and a second mission can adopt it inside them. Mission
+    A's words would then land in mission B's work.
+
+    **This drives the REAL fence** (#903 review 2, finding 4). The first version of this test
+    replaced `actuator.deliver()` and called `_mission_membership_authority().check()` by hand,
+    which is a test of the helper and not of the wiring: it stayed green with the production
+    check deleted, so it protected nothing. Here the real `deliver()` runs the real
+    `session_input.send_input()` against a real PTY, the membership moves inside the window the
+    fence exists to cover, and the assertion is the one the operator cares about — **zero bytes
+    reached the terminal**.
+    """
+    import os
+    import pty
+    import threading
+
+    from agent_sessions import actuator, prefs, session_input
+
+    c, hdr, proj = api
+    a = _adopted(c, hdr, proj)
+    b = _create(c, hdr, project_id=proj.id)
+    missions.set_state(b["id"], "draft", "planned")
+    missions.set_state(b["id"], "planned", "dispatching")
+    missions.set_state(b["id"], "dispatching", "running")
+
+    # A REAL pty, registered as the session's writer, so the whole write path is the production
+    # one down to `os.write`.
+    master, slave = pty.openpty()
+    try:
+        session_input.reset()
+        session_input.register_writer(
+            engines.physical_key(CLAUDE_A), master, threading.Lock(), "headless"
+        )
+        prefs.set_orchestrator({"enabled": True, "autonomy": "suggest"})
+
+        # THE WINDOW. `_wait_quiet` runs after the ledger claim and before the final guard, which
+        # is exactly where a detach-and-re-adopt lands in production. Moving membership here is
+        # deterministic rather than raced — a test that merely races proves nothing when it
+        # passes.
+        real_quiet = session_input._wait_quiet
+
+        def _move(key, deadline):
+            missions.detach(a["id"], CLAUDE_A)
+            missions.adopt(b["id"], CLAUDE_A)
+            return real_quiet(key, deadline)
+
+        monkeypatch.setattr(session_input, "_wait_quiet", _move)
+        assert actuator.deliver is not None  # the REAL one; nothing is stubbed here
+
+        r = c.post(
+            f"/api/missions/{a['id']}/relay",
+            json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+            headers=hdr,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] != "delivered", "a relay crossed into another mission's session"
+
+        # ZERO BYTES. Read non-blocking from the other end of the pty: anything at all here is
+        # mission A's words in mission B's agent.
+        os.set_blocking(slave, False)
+        try:
+            got = os.read(slave, 4096)
+        except BlockingIOError:
+            got = b""
+        assert got == b"", f"{len(got)} bytes reached the terminal: {got!r}"
+    finally:
+        session_input.reset()
+        for fd in (master, slave):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def test_a_relay_is_REFUSED_when_the_move_LANDS_BEFORE_the_fingerprint_is_taken(api, monkeypatch):
+    """The other half of the same fence, and a genuinely different window.
+
+    `send_input` captures the caller's fingerprint on entry, so a membership change AFTER that is
+    caught by the comparison inside the write lock. A change that lands EARLIER — between the
+    route's own check and the actuator's authority read — is invisible to that comparison, because
+    the fingerprint is then taken with the NEW membership already in place and compares equal to
+    itself. Only the guard branch refuses it.
+
+    Both are real orderings, so both are pinned: without this, deleting the guard leaves a green
+    suite because the fingerprint happens to cover the other case.
+    """
+    import os
+    import pty
+    import threading
+
+    from agent_sessions import actuator, prefs, session_input
+
+    c, hdr, proj = api
+    a = _adopted(c, hdr, proj)
+    b = _create(c, hdr, project_id=proj.id)
+    missions.set_state(b["id"], "draft", "planned")
+    missions.set_state(b["id"], "planned", "dispatching")
+    missions.set_state(b["id"], "dispatching", "running")
+
+    master, slave = pty.openpty()
+    try:
+        session_input.reset()
+        session_input.register_writer(
+            engines.physical_key(CLAUDE_A), master, threading.Lock(), "headless"
+        )
+        prefs.set_orchestrator({"enabled": True, "autonomy": "suggest"})
+
+        # `is_live` is read early in `deliver`, before the authority tuple is derived — so the
+        # move here is already in place when the fingerprint is taken.
+        real_live = session_input.is_live
+        moved: list[int] = []
+
+        def _move(key):
+            if not moved:
+                moved.append(1)
+                missions.detach(a["id"], CLAUDE_A)
+                missions.adopt(b["id"], CLAUDE_A)
+            return real_live(key)
+
+        monkeypatch.setattr(session_input, "is_live", _move)
+        assert actuator.deliver is not None  # the REAL one
+
+        r = c.post(
+            f"/api/missions/{a['id']}/relay",
+            json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+            headers=hdr,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] != "delivered"
+
+        os.set_blocking(slave, False)
+        try:
+            got = os.read(slave, 4096)
+        except BlockingIOError:
+            got = b""
+        assert got == b"", f"{len(got)} bytes reached the terminal: {got!r}"
+    finally:
+        session_input.reset()
+        for fd in (master, slave):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def test_a_relay_whose_RECORD_cannot_be_written_sends_nothing(api, monkeypatch):
+    """An acknowledged delivery with no transcript entry is the authorship contract broken.
+
+    The record used to be written after the bytes with every failure suppressed, so a transient
+    store failure sent the operator's words and answered `delivered` with nothing on the
+    timeline saying who sent them. Writing it FIRST turns that into a refusal the operator can
+    simply retry, because nothing has reached the pty yet.
+
+    Red against the old order: 200 `delivered`, and no `operator_msg` event.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    delivered: list[str] = []
+
+    async def deliver(action_id, **kw):
+        delivered.append(action_id)
+        rec = orchestrator_ledger.get(action_id) or {}
+        return {**rec, "state": "delivered"}
+
+    monkeypatch.setattr(actuator, "deliver", deliver)
+
+    real_append = missions.append_event
+
+    def boom(mission_id, kind, **kw):
+        if kind == "operator_msg":
+            raise RuntimeError("the store is unavailable")
+        return real_append(mission_id, kind, **kw)
+
+    monkeypatch.setattr(missions, "append_event", boom)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 502, r.text
+    assert "could not be written" in r.json().get("detail", "")
+    assert delivered == [], "bytes were sent for a relay the mission could not record"
+
+
+def test_a_relay_RECORD_exists_before_the_bytes_and_is_settled_after(api, monkeypatch):
+    """The ordering, asserted directly: the event is on the timeline while the delivery runs."""
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    during: list[list] = []
+
+    async def deliver(action_id, **kw):
+        rows = missions.get_mission(m["id"])["events"]
+        during.append(
+            [e for e in rows if e["kind"] == "operator_msg" and e.get("action_id") == action_id]
+        )
+        rec = orchestrator_ledger.get(action_id) or {}
+        return {**rec, "state": "delivered", "detail": ""}
+
+    monkeypatch.setattr(actuator, "deliver", deliver)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+
+    # It was already durable when the bytes were being written...
+    assert len(during[0]) == 1, "the record was not written before the delivery"
+    assert during[0][0]["meta"]["state"] == "sending"
+    # ...and exactly ONE record exists afterwards, settled with the outcome.
+    rows = [
+        e
+        for e in missions.get_mission(m["id"])["events"]
+        if e["kind"] == "operator_msg" and (e.get("meta") or {}).get("relay")
+    ]
+    assert len(rows) == 1, f"the relay left {len(rows)} records; it must leave one"
+    assert rows[0]["meta"]["state"] == "delivered"
+    assert rows[0]["text"] == "yes, go ahead"
+
+
+def test_a_relay_record_that_OUTLIVED_ITS_REQUEST_is_reconciled_on_the_next_read(api, monkeypatch):
+    """`sending` is a claim about NOW, and a record that keeps making it lies by the next minute.
+
+    The record is written before the bytes, so a process that exits in that window leaves one
+    unsettled — and the ledger row under the same action id is the thing that knows how it ended
+    (#903 review 2, finding 3).
+
+    Red against a route with no read-time reconciliation: the record still says `sending`.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    async def deliver(action_id, **kw):
+        # SETTLES THE LEDGER, as the real one does. The reconciler's whole job is to read that
+        # row, so a stub that only returned a dict would leave the action `approved` — genuinely
+        # in flight — and the record would correctly be left saying `sending`.
+        return orchestrator_ledger.compare_and_set(
+            action_id, frozenset({"approved", "claimed"}), "delivered"
+        ) or {"state": "delivered"}
+
+    monkeypatch.setattr(actuator, "deliver", deliver)
+    # THE CRASH: the settlement never runs, exactly as it would not if the process exited here.
+    # Restored by hand rather than with `monkeypatch.undo()`, which would also revert the
+    # fixture's own environment and point the read at a different store.
+    real_settle = missions.settle_relay_event
+    monkeypatch.setattr(missions, "settle_relay_event", lambda *a, **k: False)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    action_id = r.json()["action_id"]
+    row = missions.get_mission(m["id"])
+    stuck = next(e for e in row["events"] if e.get("action_id") == action_id)
+    assert stuck["meta"]["state"] == "sending", "the fixture did not reproduce the stuck record"
+
+    # …and the next ordinary read settles it from the ledger.
+    monkeypatch.setattr(missions, "settle_relay_event", real_settle)
+    body = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    settled = next(e for e in body["events"] if e.get("action_id") == action_id)
+    assert settled["meta"]["state"] == "delivered"
+
+
+def test_a_relay_whose_ACTION_WAS_NEVER_RECORDED_settles_as_definitely_not_sent(api, monkeypatch):
+    """The one case that can be settled with certainty rather than inference.
+
+    If the ledger append itself failed there is no row at all, so the actuator was never reached
+    and no byte was written. Without this the record says `sending` for ever and a retry adds a
+    second one beside it.
+    """
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    def boom(*a, **k):
+        raise OSError("the ledger is unwritable")
+
+    monkeypatch.setattr(orchestrator_ledger, "append", boom)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 502, r.text
+    row = missions.get_mission(m["id"])
+    rec = next(e for e in row["events"] if (e.get("meta") or {}).get("relay"))
+    assert rec["meta"]["state"] == "failed", rec["meta"]
+    assert "OSError" in rec["meta"].get("detail", "")
+
+
+def test_a_DELIVERY_that_raised_after_the_claim_is_ambiguous_not_failed(api, monkeypatch):
+    """#903 review 3, finding 3. The two exceptions are not the same fact, and stamping both
+    `failed` asserts something nobody can know.
+
+    Once `actuator.deliver` has CLAIMED the action the bytes may already be on the pty — the
+    post-write ledger CAS lives inside that call and can raise after a successful write. So
+    "nothing was sent" is not available as an answer, and the app has a word for that: the same
+    `indeterminate` startup recovery uses for an orphaned claim.
+
+    Red against a route with one `except` for the append and the delivery.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    async def raise_after_claiming(action_id, **kw):
+        # WHAT DELIVERY LOOKS LIKE when the write landed and the settling CAS did not.
+        orchestrator_ledger.claim(action_id, frozenset({"approved"}))
+        raise OSError("the ledger could not be updated after the write")
+
+    monkeypatch.setattr(actuator, "deliver", raise_after_claiming)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 502, r.text
+    assert "may or may not" in r.json()["detail"]
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if (e.get("meta") or {}).get("relay")
+    )
+    assert rec["meta"]["state"] == "indeterminate", rec["meta"]
+    # …AND THE LEDGER IS TERMINAL TOO (#903 review 4, finding 2). Left `claimed`, the action is
+    # one startup recovery deliberately refuses to touch — its owner is still running — so the
+    # session reads busy and later actions are refused until a restart. The process that knows
+    # the delivery is over is this one.
+    assert orchestrator_ledger.get(rec["action_id"])["state"] == "indeterminate"
+
+    # BOTH DURABLE STORES AGREE, and a read does not talk either of them out of it: the ledger
+    # row is terminal, its settlement is frozen from that row, and the reconciler prefers the
+    # settlement. "Nobody could tell" is the recorded outcome, which is the point — the operator
+    # decides whether to send it again, and nothing pretends to know for them.
+    body = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    settled = next(e for e in body["events"] if e.get("action_id") == rec["action_id"])
+    assert settled["meta"]["state"] == "indeterminate"
+
+
+def test_a_relay_still_IN_FLIGHT_is_left_saying_sending(api):
+    """The reconciler resolves what the ledger can answer for and nothing else. A live row is a
+    delivery genuinely in progress, and `sending` is the true statement about it."""
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    orchestrator_ledger.append(
+        {
+            "id": "relay_live",
+            "verb": "relay",
+            "session_id": CLAUDE_A,
+            "answer": "x",
+            "state": "approved",
+            "confidence": 1.0,
+        }
+    )
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="x",
+        session_key=CLAUDE_A,
+        action_id="relay_live",
+        meta={"relay": True, "state": "sending"},
+    )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 0
+    again = missions.get_mission(m["id"])["events"]
+    rec = next(e for e in again if e.get("action_id") == "relay_live")
+    assert rec["meta"]["state"] == "sending"
+
+
+def test_a_relay_read_BETWEEN_the_record_and_the_append_is_not_a_failure(api):
+    """The record is committed BEFORE the ledger append, so "no row" is the NORMAL state for the
+    moment between them — the same observation a crash leaves (#903 review 3, finding 1).
+
+    Settling there stamped a perfectly live relay `failed` for ever, because only `sending` rows
+    are ever revisited: the delivery then landed and could never repair the record.
+
+    Red against treating absence as immediate proof.
+    """
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="go",
+        session_key=CLAUDE_A,
+        action_id="relay_racing",
+        meta={"relay": True, "state": "sending"},
+    )
+
+    # THE WINDOW: the record exists, the append has not run yet.
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 0
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if e.get("action_id") == "relay_racing"
+    )
+    assert rec["meta"]["state"] == "sending", "a live relay was stamped failed mid-flight"
+
+    # …the append and the delivery then land, and the next read settles it truthfully.
+    orchestrator_ledger.append(
+        {
+            "id": "relay_racing",
+            "verb": "relay",
+            "session_id": CLAUDE_A,
+            "answer": "go",
+            "state": "approved",
+            "confidence": 1.0,
+        }
+    )
+    orchestrator_ledger.compare_and_set(
+        "relay_racing", frozenset({"approved", "claimed"}), "delivered"
+    )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 1
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if e.get("action_id") == "relay_racing"
+    )
+    assert rec["meta"]["state"] == "delivered"
+
+
+def test_an_ABSENT_ledger_row_NEVER_settles_a_record_however_long_it_waits(api):
+    """#903 review 3, finding 2. Absence is not a verdict and does not become one by waiting.
+
+    Two measured failures killed the grace window rather than shrinking it: a ledger append waits
+    on an unbounded writer flock, so a late append landed after the record had already been
+    stamped `failed`; and compaction legitimately removes a terminal row once its settlement has
+    been frozen, so a DELIVERED relay was overwritten to `failed`.
+
+    Red against any version that concludes "nothing was sent" from a missing row.
+    """
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="go",
+        session_key=CLAUDE_A,
+        action_id="relay_stranded",
+        meta={"relay": True, "state": "sending"},
+    )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 0
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if e.get("action_id") == "relay_stranded"
+    )
+    assert rec["meta"]["state"] == "sending"
+
+    # …AND THE BLOCKED APPEND THEN LANDS. This is the delivery the old shape had already called a
+    # failure, and only `sending` rows were revisited — so the record could never be repaired.
+    orchestrator_ledger.append(
+        {
+            "id": "relay_stranded",
+            "verb": "relay",
+            "session_id": CLAUDE_A,
+            "answer": "go",
+            "state": "delivered",
+            "confidence": 1.0,
+        }
+    )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 1
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if e.get("action_id") == "relay_stranded"
+    )
+    assert rec["meta"]["state"] == "delivered"
+
+
+def test_a_COMPACTED_delivery_is_read_from_its_frozen_settlement(api):
+    """#903 review 3, finding 2, the other half. Compaction removes a terminal row only AFTER
+    freezing its settlement — the projection is written precisely so it outlives the row. A
+    reconcile that consults only the ledger sees a delivered relay as absent and overwrites the
+    app's own record of a success.
+
+    Red against a reconciler that reads the ledger and not the settlement.
+    """
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="go",
+        session_key=CLAUDE_A,
+        action_id="relay_compacted",
+        meta={"relay": True, "state": "sending"},
+    )
+    # THE ROW IS GONE and the settlement remains — exactly what compaction leaves behind.
+    missions.record_settlement(
+        "relay_compacted",
+        {
+            "id": "relay_compacted",
+            "verb": "relay",
+            "state": "delivered",
+            "detail": "the words landed",
+        },
+    )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 1
+    rec = next(
+        e
+        for e in missions.get_mission(m["id"])["events"]
+        if e.get("action_id") == "relay_compacted"
+    )
+    assert rec["meta"]["state"] == "delivered"
+
+
+def test_the_STORE_refuses_to_overwrite_a_definite_relay_outcome(api):
+    """The fence is on the WRITE, not in each caller's head. The reconciler filters open records
+    before it asks, which is the right thing for it to do and the wrong thing to rely on: a second
+    writer with a different opinion — a future pass, a repair script — must not be able to replace
+    somebody's answer about what happened to the operator's words."""
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    for aid, state in (("r_open", "sending"), ("r_done", "delivered")):
+        missions.append_event(
+            m["id"],
+            "operator_msg",
+            text="go",
+            session_key=CLAUDE_A,
+            action_id=aid,
+            meta={"relay": True, "state": state},
+        )
+    assert missions.settle_relay_event(m["id"], action_id="r_open", state="failed") is True
+    assert missions.settle_relay_event(m["id"], action_id="r_done", state="failed") is False
+    after = {
+        e["action_id"]: e["meta"]["state"]
+        for e in missions.get_mission(m["id"])["events"]
+        if e.get("action_id") in {"r_open", "r_done"}
+    }
+    assert after == {"r_open": "failed", "r_done": "delivered"}
+
+
+def test_an_INDETERMINATE_record_is_revisited_and_a_DEFINITE_one_is_not(api):
+    """`indeterminate` says nobody could tell YET, so a later terminal row may resolve it. A
+    definite outcome is somebody's answer about the operator's own words and is never replaced —
+    the fence is on the write, so no caller can talk its way past it."""
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    for aid, state in (("relay_amb", "indeterminate"), ("relay_done", "delivered")):
+        missions.append_event(
+            m["id"],
+            "operator_msg",
+            text="go",
+            session_key=CLAUDE_A,
+            action_id=aid,
+            meta={"relay": True, "state": state},
+        )
+        orchestrator_ledger.append(
+            {
+                "id": aid,
+                "verb": "relay",
+                "session_id": CLAUDE_A,
+                "answer": "go",
+                "state": "failed",
+                "detail": "the ledger's later word",
+                "confidence": 1.0,
+            }
+        )
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 1
+    after = {
+        e["action_id"]: e["meta"]["state"]
+        for e in missions.get_mission(m["id"])["events"]
+        if e.get("action_id") in {"relay_amb", "relay_done"}
+    }
+    assert after == {"relay_amb": "failed", "relay_done": "delivered"}
+
+
+def test_an_UNREADABLE_ledger_settles_nothing(api, monkeypatch):
+    """`get()` maps every I/O error to "no such action", which turns a transient fault into the
+    permanent claim that nothing was ever sent. The tri-state read is what keeps "we could not
+    look" out of the record."""
+    from agent_sessions import mission_relay_reconcile
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="go",
+        session_key=CLAUDE_A,
+        action_id="relay_unreadable",
+        meta={"relay": True, "state": "sending"},
+    )
+    monkeypatch.setattr(orchestrator_ledger, "lookup", lambda *a, **k: ("unreadable", None))
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 0
+    rec = next(
+        e
+        for e in missions.get_mission(m["id"])["events"]
+        if e.get("action_id") == "relay_unreadable"
+    )
+    assert rec["meta"]["state"] == "sending"
+
+
+def test_the_CONTEXT_offers_only_ACTIVE_sessions_as_controls(api):
+    """The roster HISTORY is right for a record and wrong for a control surface (#903 review 3,
+    finding 2).
+
+    The console renders one live screen-and-relay block per session the context returns. With
+    detached rows included, a mission that had released a session went on offering it — and VIEW
+    SCREEN reads by session key, so it showed the CURRENT output of a session another mission had
+    since adopted, in the old mission's context. SEND only failed later, at the write fence.
+
+    Red against returning `m["sessions"]` verbatim.
+    """
+    c, hdr, proj = api
+    a = _adopted(c, hdr, proj)
+    b = _create(c, hdr, project_id=proj.id)
+    missions.set_state(b["id"], "draft", "planned")
+    missions.set_state(b["id"], "planned", "dispatching")
+    missions.set_state(b["id"], "dispatching", "running")
+
+    ctx = c.get(f"/api/missions/{a['id']}/context", headers=hdr).json()
+    assert [s["session_key"] for s in ctx["sessions"]] == [CLAUDE_A]
+
+    # A detaches it and B adopts it.
+    missions.detach(a["id"], CLAUDE_A)
+    missions.adopt(b["id"], CLAUDE_A)
+
+    ctx = c.get(f"/api/missions/{a['id']}/context", headers=hdr).json()
+    assert ctx["sessions"] == [], "a released session was still offered as a live control"
+    # …and the mission that holds it now does offer it.
+    ctx_b = c.get(f"/api/missions/{b['id']}/context", headers=hdr).json()
+    assert [s["session_key"] for s in ctx_b["sessions"]] == [CLAUDE_A]
+
+    # The RECORD is untouched — the timeline still says the session was there and left.
+    kinds = [e["kind"] for e in missions.get_mission(a["id"])["events"]]
+    assert kinds.count("session") >= 2
+
+
+@pytest.mark.anyio
+async def test_a_TRANSIENT_recovery_failure_is_retried_rather_than_ending_recovery(
+    api, monkeypatch
+):
+    """#903 review 3, finding 4. Recovery reads a file that can be transiently unreadable, and one
+    suppressed attempt turned that into "never": with the sweep switched off, `run()` returned and
+    nothing would ever look again, leaving the ledger `claimed` and the record `sending` for ever.
+
+    Red against a `recover_once` whose failure and success are the same answer.
+    """
+    from agent_sessions import orchestrator_loop
+
+    c, hdr, proj = api
+    orchestrator_ledger.append(
+        {"id": "relay_orphan", "state": "claimed", "claim_owner": "4194305:1"}
+    )
+
+    calls: list[int] = []
+    real = orchestrator_ledger.recover_claimed
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("the ledger could not be read")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(orchestrator_ledger, "recover_claimed", flaky)
+    # No sleeping in a test: the retry cadence is not what is under test, the RETRY is.
+    monkeypatch.setattr(orchestrator_loop, "RECOVERY_RETRY_S", 0)
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LOOP", "0")
+
+    await orchestrator_loop.run()
+
+    assert len(calls) == 2, "a failed first attempt ended recovery"
+    assert orchestrator_ledger.get("relay_orphan")["state"] == "indeterminate"
+
+
+@pytest.mark.anyio
+async def test_CRASH_RECOVERY_runs_even_with_the_orchestrator_loop_switched_off(api, monkeypatch):
+    """A kill-switch for the autonomous sweep is not a kill-switch for crash recovery.
+
+    The relay is a MANUAL route — an operator presses send, the action is claimed, the process
+    dies. With `recover_claimed()` behind `AGENT_SESSIONS_ORCHESTRATOR_LOOP=0`, a supported
+    configuration, that left the ledger row `claimed` and the mission's own record `sending` for
+    ever, with nothing that would ever revisit either (#903 review 3, finding 3).
+
+    Red against a `run()` that returns on the kill-switch before recovering.
+    """
+    from agent_sessions import orchestrator_loop
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+    orchestrator_ledger.append(
+        {
+            "id": "relay_claimed",
+            "verb": "relay",
+            "session_id": CLAUDE_A,
+            "answer": "go",
+            "state": "approved",
+            "confidence": 1.0,
+        }
+    )
+    orchestrator_ledger.claim("relay_claimed", frozenset({"approved"}))
+    missions.append_event(
+        m["id"],
+        "operator_msg",
+        text="go",
+        session_key=CLAUDE_A,
+        action_id="relay_claimed",
+        meta={"relay": True, "state": "sending"},
+    )
+    assert orchestrator_ledger.get("relay_claimed")["state"] == "claimed"
+    # THE PROCESS THAT CLAIMED IT IS GONE. Re-stamped with a pid that cannot exist, because
+    # recovery now refuses to steal a claim whose owner is still running — and the owner of the
+    # claim above is this very test process (#903 review 3, finding 4). Without this the test
+    # would assert the crash path while exercising the live-sibling one.
+    orchestrator_ledger.append(
+        {"id": "relay_claimed", "state": "claimed", "claim_owner": "4194305:1"}
+    )
+
+    monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LOOP", "0")
+    await orchestrator_loop.run()
+
+    # The ledger row is terminal…
+    assert orchestrator_ledger.get("relay_claimed")["state"] == "indeterminate"
+    # …and the mission's own record can therefore be settled by the next read.
+    from agent_sessions import mission_relay_reconcile
+
+    events = missions.get_mission(m["id"])["events"]
+    assert mission_relay_reconcile.reconcile(m["id"], events) == 1
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if e.get("action_id") == "relay_claimed"
+    )
+    assert rec["meta"]["state"] == "indeterminate"
+
+
+def test_a_screen_read_that_finishes_AFTER_a_re_adoption_returns_nothing(api, monkeypatch):
+    """#903 review 4, finding 1, and a cross-mission data-exposure race rather than a tidiness
+    point.
+
+    The membership check was about the REQUEST; the bytes are a different moment. Reading a live
+    screen takes a ring replay and filesystem work, and a detach-and-re-adopt inside that window
+    means what is in hand belongs to whoever owns the session now — mission A returned mission
+    B's current terminal output, under A's own heading.
+
+    Red against a route that checks once and returns whatever it read.
+    """
+    from agent_sessions import orchestrator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    def slow_read(session_id, kind):
+        # THE OWNERSHIP MOVES WHILE THE READ IS IN FLIGHT — which is exactly what a detach and a
+        # re-adopt by another mission does, and the only window this finding is about.
+        missions.detach(m["id"], CLAUDE_A)
+        return {"kind": "screen", "text": "the NEW owner's output", "available": True}
+
+    monkeypatch.setattr(orchestrator, "evidence_for", slow_read)
+    r = c.get(f"/api/missions/{m['id']}/screen/{CLAUDE_A}", headers=hdr)
+    assert r.status_code == 409, r.text
+    assert "no longer holds" in r.json()["detail"]
+    assert "NEW owner" not in r.text
+
+
+def test_a_COMPENSATING_WRITE_that_also_FAILS_is_retried_rather_than_dropped(api, monkeypatch):
+    """#903 review 5, finding 1. The compensating `claimed -> indeterminate` CAS is written by the
+    one process that knows the delivery is over — and it can fail for the same reason the delivery
+    did, because it is the same store.
+
+    Suppressed, that left the ledger `claimed` under an owner that is still running, which
+    `recover_claimed` correctly refuses to touch: the session reads busy and later actions are
+    refused until this process restarts, while the timeline says the delivery is terminal.
+
+    Red against a `contextlib.suppress` around the compensating write.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    async def raise_after_claiming(action_id, **kw):
+        orchestrator_ledger.claim(action_id, frozenset({"approved"}))
+        raise OSError("the ledger could not be updated after the write")
+
+    real_cas = orchestrator_ledger.compare_and_set
+    broken = {"on": True}
+
+    def flaky_cas(action_id, from_states, to_state, *a, **kw):
+        # ONLY THE COMPENSATING WRITE. `claim()` goes through this same function, so a blanket
+        # failure would stop the delivery ever claiming — and the split state this test is about
+        # needs the claim to have SUCCEEDED.
+        if broken["on"] and to_state == "indeterminate":
+            raise OSError("the store is still down")
+        return real_cas(action_id, from_states, to_state, *a, **kw)
+
+    monkeypatch.setattr(actuator, "deliver", raise_after_claiming)
+    monkeypatch.setattr(orchestrator_ledger, "compare_and_set", flaky_cas)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 502, r.text
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if (e.get("meta") or {}).get("relay")
+    )
+    # THE SPLIT STATE the finding is about: the event says terminal, the ledger says claimed.
+    assert rec["meta"]["state"] == "indeterminate"
+    assert orchestrator_ledger.get(rec["action_id"])["state"] == "claimed"
+    # …and recovery will NOT touch it, because this process is still alive — which is right, and
+    # is exactly why the obligation has to be remembered here.
+    assert orchestrator_ledger.recover_claimed() == []
+
+    # THE OBLIGATION SURVIVED, and the ordinary read-time reconcile discharges it once the store
+    # comes back. No new loop: this is the cadence that already exists for unfinished relays.
+    broken["on"] = False
+    body = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    assert orchestrator_ledger.get(rec["action_id"])["state"] == "indeterminate"
+    assert body["events"], "the read still worked"
+
+
 # ---- The open turn rides on the mission detail (#902 review, finding 1) -----------------------
 
 
@@ -772,3 +1734,72 @@ def test_dismissing_a_turn_REQUIRES_login_and_csrf(api, auth_cfg):
     assert c.post(f"/api/missions/{m['id']}/turns/t1/ack").status_code == 403
     fresh = TestClient(create_app(auth_cfg), base_url="https://testserver")
     assert fresh.post(f"/api/missions/{m['id']}/turns/t1/ack").status_code in (401, 403)
+
+
+def test_an_OWED_terminalization_is_discharged_WITHOUT_anybody_opening_the_page(api, monkeypatch):
+    """#903 review 6, finding 1. The read-time reconcile only runs when somebody looks at a
+    mission, and an operator who closes the page after the ambiguous 502 had nothing left that
+    would ever retry it.
+
+    The consequence is not cosmetic: a claim this process abandoned but could not release reads
+    as LIVE, so `append_batch_for_free_sessions` treats the session as busy and drops every later
+    autonomous action for it — indefinitely, because the owner is still running and startup
+    recovery is right to refuse the row.
+
+    Red against a discharge that only the mission read triggers.
+    """
+    from agent_sessions import actuator
+
+    c, hdr, proj = api
+    m = _adopted(c, hdr, proj)
+
+    async def raise_after_claiming(action_id, **kw):
+        orchestrator_ledger.claim(action_id, frozenset({"approved"}))
+        raise OSError("the ledger could not be updated after the write")
+
+    real_cas = orchestrator_ledger.compare_and_set
+    broken = {"on": True}
+
+    def flaky_cas(action_id, from_states, to_state, *a, **kw):
+        if broken["on"] and to_state == "indeterminate":
+            raise OSError("the store is still down")
+        return real_cas(action_id, from_states, to_state, *a, **kw)
+
+    monkeypatch.setattr(actuator, "deliver", raise_after_claiming)
+    monkeypatch.setattr(orchestrator_ledger, "compare_and_set", flaky_cas)
+    r = c.post(
+        f"/api/missions/{m['id']}/relay",
+        json={"session_key": CLAUDE_A, "text": "yes, go ahead"},
+        headers=hdr,
+    )
+    assert r.status_code == 502, r.text
+    rec = next(
+        e for e in missions.get_mission(m["id"])["events"] if (e.get("meta") or {}).get("relay")
+    )
+    assert orchestrator_ledger.get(rec["action_id"])["state"] == "claimed"
+
+    # THE SESSION READS BUSY, which is the actual harm — a later autonomous action is dropped.
+    broken["on"] = False
+    later = {"id": "act_later", "session_id": CLAUDE_A, "state": "approved", "verb": "continue"}
+    kept, dropped = orchestrator_ledger.append_batch_for_free_sessions([dict(later)])
+    # …and the admission check itself discharges the obligation first, so the action IS admitted.
+    assert [k["id"] for k in kept] == ["act_later"], (kept, dropped)
+    assert orchestrator_ledger.get(rec["action_id"])["state"] == "indeterminate"
+
+
+@pytest.mark.anyio
+async def test_the_ORCHESTRATOR_PASS_discharges_an_owed_terminalization(api, monkeypatch):
+    """The recurring execution path, with no page read and no admission check in between."""
+    from agent_sessions import orchestrator_loop
+
+    c, hdr, proj = api
+    orchestrator_ledger.append(
+        {"id": "act_owed", "state": "claimed", "session_id": CLAUDE_A, "verb": "continue"}
+    )
+    orchestrator_ledger.owe_terminalize("act_owed", "the delivering process could not settle it")
+
+    # `sweep` returns early for an unconfigured endpoint — which is the point: the discharge is
+    # ABOVE that gate, because a kill-switch for the autonomous pass is not a kill-switch for
+    # finishing what a delivery started.
+    await orchestrator_loop.sweep()
+    assert orchestrator_ledger.get("act_owed")["state"] == "indeterminate"

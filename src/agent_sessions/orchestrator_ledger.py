@@ -60,6 +60,7 @@ import fcntl
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -551,6 +552,18 @@ def append_batch_for_free_sessions(
     touches missions here is consistent with it rather than the inversion that would deadlock.
     The same applies to ``barred``, which is a missions query.
     """
+    # OWED TERMINALIZATIONS FIRST (#903 review 6, finding 1). A claim this process abandoned but
+    # could not release reads as LIVE below, so the session looks busy and every later autonomous
+    # action for it is dropped — indefinitely, because the owner is still running and startup
+    # recovery is right to refuse the row.
+    #
+    # Here rather than inside the lock, because `discharge_owed` takes it. That makes this
+    # check-then-act, and harmlessly so in the only direction that matters: discharging can only
+    # REMOVE a live claim, never add one, so a discharge landing after the snapshot below means
+    # the next pass admits the session rather than this one wrongly admitting it now.
+    if _owed_terminal:
+        discharge_owed(path)
+
     p = _path(path)
     kept: list[dict] = []
     dropped: list[dict] = []
@@ -750,6 +763,64 @@ def compare_and_set(
     return merged
 
 
+#: Who this process is, for the purposes of "may I recover that claim?" (#903 review 3,
+#: finding 4).
+#:
+#: The pid is what makes the question answerable — a claim whose owner is not running cannot be
+#: in flight — and the start time is what makes the pid trustworthy, because pids are reused. Both
+#: are read from ``/proc`` here and from ``/proc`` again at recovery time, so the comparison is
+#: between two readings of the same fact rather than between a fact and a memory of one.
+_OWNER_PID = os.getpid()
+
+
+def _proc_started(pid: int) -> str | None:
+    """The kernel's own start-time stamp for ``pid``, or None if it cannot be read.
+
+    Field 22 of ``/proc/<pid>/stat``, in clock ticks since boot. Parsed from the LAST ``)`` rather
+    than by splitting, because field 2 is the executable name and may itself contain spaces and
+    parentheses — a split-on-space parser reads the wrong column for anything launched from a path
+    with a bracket in it.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    cut = raw.rfind(")")
+    if cut < 0:
+        return None
+    fields = raw[cut + 2 :].split()
+    # `state` is field 3, so field 22 is index 19 of what follows the name.
+    return fields[19] if len(fields) > 19 else None
+
+
+def owner_token() -> str:
+    """This process's claim owner. Stable for the life of the process."""
+    return f"{_OWNER_PID}:{_proc_started(_OWNER_PID) or 'unknown'}"
+
+
+def owner_is_live(token: object) -> bool | None:
+    """Is the process that wrote this claim still running? ``None`` means we cannot tell.
+
+    Three answers, and the third is the point (`unknown` is not `absent`): a token we cannot parse,
+    or a pid whose ``/proc`` entry will not read, is not evidence that the owner is gone — and
+    recovering a LIVE claim is the harmful direction, because it steals the claim from a delivery
+    that is mid-write and makes its own settling CAS fail after the bytes have landed.
+    """
+    if not isinstance(token, str) or ":" not in token:
+        return None
+    pid_s, _, started = token.partition(":")
+    try:
+        pid = int(pid_s)
+    except ValueError:
+        return None
+    now = _proc_started(pid)
+    if now is None:
+        return False  # no such process: provably gone
+    if started == "unknown":
+        return None  # we never knew which incarnation; we cannot tell now either
+    return now == started
+
+
 def claim(action_id: str, from_states: frozenset[str], path: Path | None = None) -> dict | None:
     """Atomically move an action to ``claimed`` iff it is currently in ``from_states``.
 
@@ -760,8 +831,14 @@ def claim(action_id: str, from_states: frozenset[str], path: Path | None = None)
 
     Compare-and-swap under a single exclusive hold. Returns the claimed record, or ``None``
     when another caller got there first (or the action is not claimable).
+
+    **The claim records WHO holds it** (#903 review 3, finding 4). This store is shared between
+    sibling instances by design, so "every claimed action is orphaned" is false the moment two of
+    them are running: instance B starting while A is mid-delivery would recover A's claim, and A's
+    own ``claimed -> delivered`` CAS then fails after the bytes have already landed. Recovery can
+    only act on a claim it can PROVE is orphaned, and this is what makes that provable.
     """
-    return compare_and_set(action_id, from_states, "claimed", path)
+    return compare_and_set(action_id, from_states, "claimed", path, claim_owner=owner_token())
 
 
 def expire_due(now: float | None = None, path: Path | None = None) -> list[str]:
@@ -792,24 +869,110 @@ def expire_due(now: float | None = None, path: Path | None = None) -> list[str]:
     return moved
 
 
-def recover_claimed(path: Path | None = None) -> list[str]:
-    """Startup recovery: every action left ``claimed`` becomes ``indeterminate``.
+#: How long a claim whose owner cannot be identified may sit before it counts as orphaned.
+#:
+#: Only ever applied to rows written by a build that did not record an owner — every claim this
+#: build writes is decided by :func:`owner_is_live` instead, with no clock involved. The bound is
+#: derived rather than picked: a delivery holds the write fence for at most
+#: ``MUTATION_FENCE_BUDGET_S`` and writes with a ``WRITE_TIMEOUT_S`` deadline, so a claim still
+#: open two orders of magnitude past their sum is not a delivery in progress under any path that
+#: exists. Legacy rows only; delete this when no store can still contain one.
+LEGACY_CLAIM_STALE_S = 900.0
 
-    Called once at boot. A ``claimed`` record means "we were about to write, or had just
-    written" — and no on-disk state can distinguish those two, because the process died in
-    exactly the gap between them. Retrying could double-deliver a ``choose``; assuming success
-    could silently drop one. So neither is assumed: the action is parked for the operator and
-    the next pass re-reads the live screen. Returns the ids moved.
+
+#: Claims THIS process abandoned but could not terminalize (#903 review 5, finding 1).
+#:
+#: The compensating `claimed -> indeterminate` CAS is written by the one process that knows the
+#: delivery is over — and it can fail for the same reason the delivery did, because it is the same
+#: store. Suppressed, that left the ledger `claimed` under a live owner, which `recover_claimed`
+#: correctly refuses to touch: the session reads busy and later actions are refused until the
+#: process restarts, while the timeline says the delivery is already terminal.
+#:
+#: So the obligation outlives the attempt. In memory rather than on disk deliberately: the store
+#: is the thing that just failed, and a durable record of "the store would not take a write" has
+#: nowhere to live. If the process dies with entries here, its owner token dies with it and
+#: startup recovery takes them — the two paths cover each other exactly.
+_owed_terminal: dict[str, str] = {}
+_owed_lock = threading.Lock()
+
+
+def owe_terminalize(action_id: str, note: str) -> None:
+    """Remember that this process still has to release a claim it abandoned."""
+    with _owed_lock:
+        _owed_terminal[action_id] = note
+
+
+def discharge_owed(path: Path | None = None) -> list[str]:
+    """Retry every owed terminalization. Returns the ids that moved (or were already settled).
+
+    Called from the read-time relay reconcile, which is the cadence that already exists for
+    exactly this class of unfinished business — no new loop, and it runs whenever anybody looks
+    at a mission. Never raises: a store that is still down simply keeps the obligation.
     """
+    with _owed_lock:
+        owed = dict(_owed_terminal)
+    done: list[str] = []
+    for action_id, note in owed.items():
+        try:
+            moved = compare_and_set(
+                action_id, frozenset({"claimed"}), "indeterminate", path, note=note
+            )
+            if moved is None:
+                # Not `claimed` any more — somebody settled it, so the obligation is discharged
+                # by the outcome rather than by us. An unreadable ledger raises instead.
+                status, _rec = lookup(action_id, path)
+                if status == "unreadable":
+                    continue
+            done.append(action_id)
+        except Exception:  # noqa: BLE001
+            log.debug("could not discharge the owed terminalization of %s", action_id)
+    if done:
+        with _owed_lock:
+            for action_id in done:
+                _owed_terminal.pop(action_id, None)
+    return done
+
+
+def recover_claimed(path: Path | None = None, now: float | None = None) -> list[str]:
+    """Startup recovery: every action left ``claimed`` **by a process that is provably gone**
+    becomes ``indeterminate``.
+
+    A ``claimed`` record means "we were about to write, or had just written" — and no on-disk
+    state can distinguish those two, because the process died in exactly the gap between them.
+    Retrying could double-deliver a ``choose``; assuming success could silently drop one. So
+    neither is assumed: the action is parked for the operator and the next pass re-reads the live
+    screen.
+
+    **"Left by a process that is provably gone" is the whole of the change** (#903 review 3,
+    finding 4). Recovering every global ``claimed`` row was correct for a single instance and
+    actively harmful for the siblings this store supports: instance B starting while A is
+    mid-delivery moved A's action to ``indeterminate``, A's own settling CAS then failed, and the
+    ledger recorded an ambiguous outcome for a delivery whose bytes had landed. So a claim is
+    recovered only when its owner's pid is gone, and the move is a CAS from ``claimed`` — if the
+    owner settles it between the reading and the write, the owner wins and this does nothing.
+
+    Returns the ids moved.
+    """
+    ts = time.time() if now is None else now
     moved: list[str] = []
     for rec in latest_by_id(path).values():
-        if rec.get("state") == "claimed":
-            transition(
-                rec["id"],
-                "indeterminate",
-                path,
-                note="process restarted mid-delivery; cannot prove whether input landed",
-            )
+        if rec.get("state") != "claimed":
+            continue
+        token = rec.get("claim_owner")
+        if token is None:
+            # LEGACY ROW, from a build that recorded no owner. Nothing can prove it orphaned, so
+            # the only honest handle is its age against a bound the delivery path cannot exceed.
+            if ts - float(rec.get("ts") or 0) < LEGACY_CLAIM_STALE_S:
+                continue
+            note = "claimed with no recorded owner and long past any write deadline"
+        else:
+            live = owner_is_live(token)
+            if live is not False:
+                # ALIVE, or we could not tell. Both mean "leave it": stealing a live claim breaks
+                # the delivery that holds it, and an unreadable `/proc` is not evidence of death.
+                continue
+            note = "the process that claimed it is gone; cannot prove whether input landed"
+        if compare_and_set(rec["id"], frozenset({"claimed"}), "indeterminate", path, note=note):
             moved.append(rec["id"])
     return moved
 

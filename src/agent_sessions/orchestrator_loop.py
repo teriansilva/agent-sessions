@@ -151,6 +151,17 @@ async def sweep(registry=None) -> dict:
     Safe to call directly from tests.
     """
     global _last_fingerprint, _next_offset
+    # THE OWED TERMINALIZATIONS, on an EXECUTION cadence (#903 review 6, finding 1).
+    #
+    # A claim this process abandoned but could not release reads as live, so the session looks
+    # busy and later autonomous actions for it are dropped — and the read-time reconcile only
+    # runs when somebody opens the mission. An operator who closes the page after an ambiguous
+    # 502 had nothing left that would ever retry it.
+    #
+    # BEFORE the `enabled` gate, for the same reason `recover_once` is: a kill-switch for the
+    # autonomous sweep is not a kill-switch for finishing what a delivery started.
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(ledger.discharge_owed)
     cfg = prefs.get_orchestrator()
     if not cfg["enabled"]:
         # Reset change-detection on disable. Otherwise disable → re-enable inherits the cached
@@ -230,22 +241,77 @@ async def sweep(registry=None) -> dict:
     }
 
 
+#: How long the recovery retry waits between attempts, and how many it makes.
+#:
+#: Recovery reads a file that can be transiently unreadable — a full disk, a stale NFS handle, a
+#: sibling holding the writer lock past the read's patience. One attempt turned that into "never",
+#: which is the shape of the bug this whole retry exists to close: the ledger row stays `claimed`
+#: and the mission's own record stays `sending`, with nothing that would ever look again.
+RECOVERY_RETRY_S = 30.0
+RECOVERY_ATTEMPTS = 10
+
+
+async def recover_once() -> bool:
+    """One startup-recovery attempt. True when it ran to completion.
+
+    The boolean is the point: a suppressed failure and a successful pass used to be the same
+    answer, so a transient error at boot ended recovery for the life of the process (#903 review
+    3, finding 4). `recover_until_settled` is what turns "it failed" into "try again".
+    """
+    try:
+        recovered = await asyncio.to_thread(ledger.recover_claimed)
+    except Exception:  # noqa: BLE001
+        log.warning("orchestrator: startup recovery could not read the ledger", exc_info=True)
+        return False
+    if recovered:
+        log.warning(
+            "orchestrator: %d action(s) left mid-delivery by a restart moved to "
+            "indeterminate (never auto-retried): %s",
+            len(recovered),
+            ", ".join(recovered[:5]),
+        )
+    return True
+
+
+async def recover_until_settled() -> None:
+    """Retry startup recovery until it runs, INDEPENDENTLY of the sweep kill-switch.
+
+    A `claimed` action means the process died between "about to write" and "wrote" —
+    indistinguishable on disk, so it is parked as `indeterminate` rather than retried.
+
+    It runs unconditionally because the actions needing it are no longer only the loop's own.
+    The relay is a MANUAL route: an operator presses send, the action is claimed, the process
+    dies. With recovery behind `AGENT_SESSIONS_ORCHESTRATOR_LOOP=0` — a supported configuration —
+    that left the ledger row `claimed` and the mission's own record `sending` for ever, with
+    nothing that would ever revisit either. A kill-switch for the autonomous sweep is not a
+    kill-switch for crash recovery — and neither is one transient read error, which is why this
+    keeps trying rather than returning after the first attempt (#903 review 3, finding 4).
+    """
+    for attempt in range(RECOVERY_ATTEMPTS):
+        if await recover_once():
+            return
+        if attempt + 1 < RECOVERY_ATTEMPTS:
+            await asyncio.sleep(RECOVERY_RETRY_S)
+    log.error(
+        "orchestrator: startup recovery never completed after %d attempts; actions left "
+        "mid-delivery by a restart remain claimed",
+        RECOVERY_ATTEMPTS,
+    )
+
+
 async def run(registry=None) -> None:
     """Background orchestrator loop (started from the app lifespan, reaper pattern)."""
+    # BEFORE the kill-switch, and as its own TASK: see `recover_until_settled`. A task rather
+    # than an await, because the retry can span minutes and the sweep must not wait on it — and
+    # because with the loop disabled this function returns immediately, taking any inline retry
+    # with it.
+    recovery = asyncio.create_task(recover_until_settled())
     if not loop_enabled():
         log.info("orchestrator loop disabled (AGENT_SESSIONS_ORCHESTRATOR_LOOP=0)")
+        # The recovery still has to finish. With the sweep off this is the only thing keeping it
+        # alive, so it is awaited here rather than dropped on the floor.
+        await recovery
         return
-    # Startup recovery, once: a `claimed` action means the process died between "about to
-    # write" and "wrote" — indistinguishable on disk, so it is parked rather than retried.
-    with contextlib.suppress(Exception):
-        recovered = await asyncio.to_thread(ledger.recover_claimed)
-        if recovered:
-            log.warning(
-                "orchestrator: %d action(s) left mid-delivery by a restart moved to "
-                "indeterminate (never auto-retried): %s",
-                len(recovered),
-                ", ".join(recovered[:5]),
-            )
     log.info("orchestrator loop armed (gated on the orchestrator prefs per sweep)")
     consecutive_failures = 0
     while True:

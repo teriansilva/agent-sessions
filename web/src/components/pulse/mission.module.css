@@ -734,9 +734,61 @@
   color: var(--text-3);
 }
 
-/* A control inside a turn's own block — retry, dismiss, check again (#890). Sized to the 44px
-   touch floor the rest of the console holds to, and inline rather than a bar, because it belongs
-   to the one turn it is about rather than to the thread. */
+/* VIEW SCREEN (#894). A `pre` because it is terminal output: proportional text turns a TUI's
+   box drawing and column alignment into noise, which is most of what the operator is looking at.
+   Scrolls in BOTH axes rather than wrapping — a wrapped 120-column screen is unreadable in a way
+   a scrolled one is not. */
+.screenBlock {
+  margin: 10px 0;
+  /* A visible seam between blocks, because on a mission holding two sessions the boundary is
+     what tells the operator that the SEND box below belongs to the heading above it and not to
+     the one before (#903 review 2, finding 2). */
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* WHICH SESSION. Not decoration: these blocks are otherwise identical, and typing into the wrong
+   one types into the wrong live agent. */
+.screenTarget {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.screenBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.screenNote {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.screen {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--term-bg);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 11.5px/1.35 var(--font-mono);
+  white-space: pre;
+  tab-size: 8;
+}
+
+/* A control inside a mission block — view, hide, retry (#894) — and inside a TURN's own block —
+   retry, dismiss, check again (#890). One rule for both: they are the same control in the same
+   place, sized to the 44px touch floor the rest of the console holds to, and inline rather than a
+   bar because each belongs to the one thing it is about rather than to the thread. */
 .missionQBtn {
   min-height: 44px;
   margin: 8px 8px 0 0;
@@ -749,11 +801,56 @@
   cursor: pointer;
 }
 
-.missionQBtn:hover {
+.missionQBtn:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
 .missionQBtn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.missionQBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* The relay line, beside the screen it answers (#894). */
+.relayRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.relayInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 11px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 12px var(--font-sans, inherit);
+}
+
+.relayInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* What happened to a relayed message, beside the message (#894). Status colour is load-bearing
+ * here rather than decorative: `--status-degraded` (amber) is "needs a human / not current" and
+ * `--status-down` (red) is failure, which is exactly the distinction between "we cannot tell
+ * whether this arrived" and "it did not". */
+.tlRelay {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-2);
+}
+.tlRelay[data-relay-kind="warn"] {
+  color: var(--status-degraded);
+}
+.tlRelay[data-relay-kind="bad"] {
+  color: var(--status-down);
 }

@@ -167,6 +167,7 @@ function MissionBody({
       context={d.context}
       loading={!d.context}
       supervisor={d.mission?.supervisor}
+      onMembershipChanged={d.reloadContext}
     />
   );
   const timeline = (

@@ -292,7 +292,13 @@ def test_a_crash_between_write_and_record_parks_as_indeterminate(pty_pair, monke
     with pytest.raises(KeyboardInterrupt):
         asyncio.run(actuator.deliver("act1"))
     assert ledger.get("act1")["state"] == "claimed"  # in-flight, outcome unknowable
-    # Startup recovery refuses to guess in either direction.
+    # …AND THE CLAIM NAMES ITS OWNER, which is what makes the next line answerable rather than a
+    # guess about every claimed row in a store siblings share (#903 review 3, finding 4).
+    assert ledger.get("act1")["claim_owner"] == ledger.owner_token()
+    # Startup recovery refuses to guess in either direction — once the owner is provably gone.
+    # Simulated by re-stamping the claim with a pid that cannot exist, because THIS process is
+    # very much alive and recovery correctly leaves a live owner's claim alone.
+    ledger.append({"id": "act1", "state": "claimed", "claim_owner": "4194305:1"})
     assert ledger.recover_claimed() == ["act1"]
     assert ledger.get("act1")["state"] == "indeterminate"
     # And it is not deliverable any more, so no retry can double-deliver it.

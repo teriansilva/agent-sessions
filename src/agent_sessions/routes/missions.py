@@ -36,6 +36,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -48,9 +49,11 @@ from .. import (
     gitpanel,
     mission_archive,
     mission_objectives,
+    mission_relay_reconcile,
     mission_supervisor,
     mission_turn_reconcile,
     missions,
+    orchestrator,
     orchestrator_chat,
     orchestrator_ledger,
     projects,
@@ -133,6 +136,21 @@ def _session_key(raw: object) -> str:
         return engines.canonical_key(raw.strip())
     except engines.EngineError:
         raise missions.MissionError("unknown session id", status=404) from None
+
+
+async def _settle_relay(mission_id: str, action_id: str, state: str, detail: str) -> None:
+    """Stamp a relay record's outcome. Best-effort, and never raises into a response path.
+
+    The record is durable before the bytes, so a failure here leaves a row saying `sending` —
+    which `mission_relay_reconcile` resolves on the next read from the ledger. Raising would
+    replace a recoverable record with a 500 over a delivery that already happened.
+    """
+    with contextlib.suppress(Exception):
+        await missions.run_admitted(
+            lambda: missions.settle_relay_event(
+                mission_id, action_id=action_id, state=state, detail=detail
+            )
+        )
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -245,6 +263,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Suppressed rather than fatal: a mission's page must still render when the ledger is
         # unreadable. The console shows nothing rather than something wrong, which is the same
         # posture `MissionObjectives` already takes for a probe that could not run.
+        # A RELAY RECORD THAT OUTLIVED ITS REQUEST is resolved here, from the ledger row under the
+        # same action id (#903 review 2, finding 3). The record is written before the bytes, so a
+        # process that exits in that window leaves one saying `sending` — a claim about NOW that
+        # is wrong by the next minute. Read-time, like `needs_you` and the supervisor reading: a
+        # projection refreshed only at boot is wrong for as long as the process has been up.
+        with contextlib.suppress(Exception):
+            if await asyncio.to_thread(
+                mission_relay_reconcile.reconcile, mission_id, row.get("events") or []
+            ):
+                fresh = await missions.run_admitted(
+                    lambda: missions.safe_get_mission(
+                        mission_id,
+                        events_limit=_int(qp.get("events_limit"), missions.EVENTS_PAGE_DEFAULT),
+                        events_before_seq=_cursor(before),
+                    )
+                )
+                if fresh is not None:
+                    row = fresh
         with contextlib.suppress(Exception):
             row["supervisor"] = await missions.run_admitted(
                 lambda: mission_supervisor.assess(mission_id)
@@ -589,7 +625,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "id": mission_id,
             "project_id": m.get("project_id") or "",
             "cwd": cwd,
-            "sessions": m.get("sessions") or [],
+            # ACTIVE MEMBERSHIP ONLY (#903 review 3, finding 2).
+            #
+            # `get_mission` returns the whole roster HISTORY, `removed_at` rows included — which
+            # is right for a record and wrong for a control surface. The console renders one live
+            # screen-and-relay block per row, so a mission that had detached a session went on
+            # offering it: VIEW SCREEN showed the CURRENT output of a session another mission had
+            # since adopted, in the old mission's context, and SEND only failed later at the write
+            # fence. Filtered at the API boundary rather than in the component, because every
+            # consumer of this field wants the same thing and a second one would have to remember.
+            "sessions": [s for s in (m.get("sessions") or []) if s.get("removed_at") is None],
             "git": None,
             "git_error": None,
         }
@@ -599,6 +644,269 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             except Exception as e:  # noqa: BLE001 — fail CLOSED and name the kind, never the path
                 out["git_error"] = type(e).__name__
         return JSONResponse(out)
+
+    @app.post("/api/missions/{mission_id}/relay")
+    async def relay_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Type the operator's own words into one of this mission's sessions (#894, #840 §9).
+
+        **This is not a second path to a PTY, and everything about its shape is that sentence.**
+        It builds a ledger action and hands it to `actuator.deliver`, which is the one door:
+        `is_live` at the write boundary, an atomic claim before any byte, the final guard under
+        the write lock, the mission fence, the viewer-busy precondition, and
+        `handoff.sanitize_seed` on the payload. Nothing here re-implements any of that, and a
+        future change to the fence reaches this automatically because there is no copy of it.
+
+        **The bytes are OPERATOR-AUTHORED, which is a NARROWER authority than the model's
+        `answer`, not a wider one.** `relay` is not in `AUTO_VERBS_V1`, so nothing can ever
+        deliver one automatically; it exists only because an operator pressed send.
+
+        **It respects the orchestrator master switch and the OFF tier.** That is a deliberate
+        choice and worth stating, because the opposite is arguable: an operator typing their own
+        words is not the orchestrator acting, and one could reason that the switch should not
+        reach it. It does anyway, because the OFF tier's own copy promises the operator that
+        *nothing is ever sent* — and a promise with an exception the operator has to know about
+        is not the promise they read. Opening the terminal remains available, which is what #840
+        keeps deliberately.
+        """
+        try:
+            body = await _body(request)
+            missions.validate_id(mission_id)
+            key = _session_key(body.get("session_key"))
+            raw = body.get("text")
+            if not isinstance(raw, str):
+                return _fail(missions.MissionError("text must be a string", status=422))
+            text = raw.strip()
+            if not text:
+                return _fail(missions.MissionError("text is required", status=422))
+            if len(text) > actuator.NUDGE_MAX:
+                return _fail(
+                    missions.MissionError(
+                        f"text is longer than {actuator.NUDGE_MAX} characters", status=422
+                    )
+                )
+            # THE MISSION MUST STILL HOLD THIS SESSION. Checked here so a relay aimed at a
+            # session the mission released is refused with a reason rather than being delivered
+            # to somebody else's work — and checked AGAIN inside the fence by `deliver`'s own
+            # mission guard, which is the one that counts. This one exists to give the operator
+            # an answer; that one exists to be correct.
+            held = await missions.run_admitted(lambda: missions.active_session_keys(mission_id))
+            if key not in held:
+                return _fail(
+                    missions.MissionError("this mission does not hold that session", status=409)
+                )
+        except missions.MissionError as e:
+            return _fail(e)
+
+        action_id = f"relay_{uuid.uuid4().hex}"
+
+        # THE OPERATOR'S RECORD IS WRITTEN BEFORE THE BYTES, and a failure to write it refuses
+        # the relay (#903 review, finding 2).
+        #
+        # The other order suppressed the store failure and still answered `delivered`: the words
+        # reached the agent and the transcript never said who sent them, which is precisely the
+        # authorship contract this feature exists to keep. Refusing here is safe *because* it is
+        # first — nothing has been written to the pty, so the operator can simply send again.
+        try:
+            await missions.run_admitted(
+                lambda: missions.append_event(
+                    mission_id,
+                    "operator_msg",
+                    text=text,
+                    session_key=key,
+                    action_id=action_id,
+                    meta={"relay": True, "state": "sending"},
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return _fail(
+                missions.MissionError(
+                    "nothing was sent: the mission's own record of it could not be written",
+                    status=502,
+                )
+            )
+
+        # THE APPEND IS ITS OWN STEP, and its failure is a DIFFERENT fact from a delivery
+        # failure (#903 review 3, finding 3). Nothing has been claimed and no byte can have been
+        # written, because the thing that writes bytes reads this row to find out what to write.
+        # So this failure is definite, and saying so is the whole point of splitting it out.
+        try:
+            await asyncio.to_thread(
+                orchestrator_ledger.append,
+                {
+                    "id": action_id,
+                    "verb": "relay",
+                    "session_id": key,
+                    # Rendered by `actuator.render`, which sanitises it. Stored under `answer`
+                    # because that is the field `render` reads for a paste payload — one field,
+                    # one sanitiser, rather than a second spelling to keep in step.
+                    "answer": text,
+                    # APPROVED on arrival: the operator pressing send IS the approval, exactly as
+                    # their tap is for a proposal. There is no model opinion here to weigh.
+                    "state": "approved",
+                    "confidence": 1.0,
+                    "origin": "operator",
+                    "mission_id": mission_id,
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            await _settle_relay(
+                mission_id,
+                action_id,
+                "failed",
+                f"nothing was sent: the action could not be recorded ({type(e).__name__})",
+            )
+            return _fail(
+                missions.MissionError(f"the relay failed ({type(e).__name__})", status=502)
+            )
+
+        try:
+            rec = await actuator.deliver(action_id, registry=registry)
+        except actuator.NotDeliverable as e:
+            # A DEFINITE ZERO-BYTE REFUSAL, so the record is settled here rather than left for
+            # the reconciler (#903 review 2, finding 3). `NotDeliverable` is raised before the
+            # claim or on a lost claim race; either way nothing of ours reached the pty, and a
+            # record still reading `sending` would be a claim about a delivery that is over.
+            await _settle_relay(mission_id, action_id, "failed", str(e))
+            return _fail(missions.MissionError(str(e), status=409))
+        except Exception as e:  # noqa: BLE001
+            # AMBIGUOUS, AND SAID SO (#903 review 3, finding 3). Once `deliver` has claimed the
+            # action the bytes may already be on the pty — the post-write ledger CAS is inside
+            # this call, and it can raise after a successful write. "Zero bytes reached the
+            # terminal" is simply not knowable from here, and `failed` asserts it.
+            #
+            # `indeterminate` is the app's existing word for exactly this, and it is the state
+            # startup recovery moves an orphaned claim to. It is also REVISITABLE: if the ledger
+            # later carries a terminal row for this action, the read-time reconcile upgrades the
+            # record to whatever actually happened. A `failed` would have been final and wrong.
+            # THE LEDGER TOO, not just the mission's own record (#903 review 4, finding 2).
+            #
+            # The action stays `claimed`, and startup recovery deliberately refuses to touch a
+            # claim whose owner is still running — which is right, and here it means this process
+            # has left a live claim nothing will ever settle: the session reads busy and later
+            # actions are refused until a restart. The one process that knows the delivery is
+            # over is this one, so it says so.
+            #
+            # A CAS from `claimed`, never a write: `deliver` may have settled it in the window
+            # between the exception and here, and overwriting a real outcome with "we cannot
+            # tell" would replace a fact with a shrug.
+            note = f"the delivering process could not settle it ({type(e).__name__})"
+            try:
+                await asyncio.to_thread(
+                    orchestrator_ledger.compare_and_set,
+                    action_id,
+                    frozenset({"claimed"}),
+                    "indeterminate",
+                    None,
+                    detail=note,
+                )
+            except Exception:  # noqa: BLE001
+                # THE COMPENSATING WRITE CAN FAIL FOR THE SAME REASON THE DELIVERY DID (#903
+                # review 5, finding 1) — it is the same store. Suppressed, that left the ledger
+                # `claimed` under an owner that is still running, which recovery correctly
+                # refuses to touch: the session reads busy and later actions are refused until
+                # this process restarts, while the timeline says the delivery is terminal.
+                #
+                # So the obligation is remembered and retried on the read-time reconcile. If the
+                # process dies with it outstanding, its owner token dies too and startup recovery
+                # takes the row — the two paths cover each other exactly.
+                orchestrator_ledger.owe_terminalize(action_id, note)
+            await _settle_relay(
+                mission_id,
+                action_id,
+                "indeterminate",
+                f"the relay may or may not have landed ({type(e).__name__})",
+            )
+            # A MACHINE-READABLE OUTCOME, not only a sentence (#903 review 4, finding 3). The
+            # client prefixes every rejected mutation with "Not sent —", which is exactly the
+            # wrong thing to say about a delivery that may already be in the pty: it invites a
+            # retry of bytes the agent might have. `state` is how it tells this apart from the
+            # definite zero-byte refusal beside it.
+            return JSONResponse(
+                {
+                    "detail": (
+                        f"the relay may or may not have landed ({type(e).__name__}); "
+                        "check the session before sending it again"
+                    ),
+                    "state": "indeterminate",
+                    "action_id": action_id,
+                },
+                status_code=502,
+            )
+
+        # …and SETTLED with what actually happened. Best-effort on purpose: the record already
+        # exists, so the worst case here is one that still reads `sending` beside a ledger row
+        # under the same `action_id` that says how it ended — and `mission_relay_reconcile`
+        # resolves exactly that on the next read, which is what makes this recoverable rather
+        # than merely reconcilable in principle.
+        await _settle_relay(
+            mission_id, action_id, str(rec.get("state") or ""), str(rec.get("detail") or "")
+        )
+        return JSONResponse(
+            {
+                "action_id": action_id,
+                "state": rec.get("state"),
+                "detail": rec.get("detail"),
+                "session_key": key,
+            }
+        )
+
+    @app.get("/api/missions/{mission_id}/screen/{session_key:path}")
+    async def mission_screen_route(
+        mission_id: str, session_key: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """The live screen of a session THIS MISSION HOLDS, checked at request time (#903 review
+        3, finding 1).
+
+        `/api/pulse/evidence/{id}` is mission-agnostic and correct for what it is — the console
+        asks about a session it named. What it cannot answer is the question a mission's screen
+        block is actually asking: *show me what MY agent is doing.* Membership is not a property
+        of the page, it is a row that another tab can change: detach the session from mission A,
+        adopt it into B, and A's already-open block goes on polling the same key and rendering
+        B's live output under A's heading. Nothing on that page is wrong except the thing that
+        matters — whose work the operator is reading.
+
+        So the mission is part of the request, the roster is read NOW, and a session the mission
+        no longer holds is a 409 rather than a screenful of somebody else's terminal. The client
+        removes the block on that answer; the answer is what makes it able to.
+        """
+        try:
+            missions.validate_id(mission_id)
+            key = _session_key(session_key)
+            held = await missions.run_admitted(lambda: missions.active_session_keys(mission_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        if key not in held:
+            return _fail(
+                missions.MissionError("this mission no longer holds that session", status=409)
+            )
+        # Blocking: the ring replay + FS reads must never run on the event loop (#678).
+        result = await asyncio.to_thread(orchestrator.evidence_for, key, "screen")
+        # …AND CHECKED AGAIN AFTER IT (#903 review 4, finding 1). The first check is about the
+        # REQUEST; this one is about the BYTES, and they are not the same moment: reading a live
+        # screen takes a ring replay and filesystem work, and a detach-and-re-adopt inside that
+        # window means the bytes in hand belong to whoever owns the session now.
+        #
+        # A re-read rather than a lock: locking a session for the duration of a screen read would
+        # order it against deliveries, which is a far heavier promise than this route needs. What
+        # it needs is not to HAND OVER content it has no claim to, and a check after the read is
+        # exactly that — the content is discarded rather than returned.
+        still = await missions.run_admitted(lambda: missions.active_session_keys(mission_id))
+        if key not in still:
+            return _fail(
+                missions.MissionError("this mission no longer holds that session", status=409)
+            )
+        # Live terminal content, whose whole contract is "what the session shows RIGHT NOW". A
+        # cached copy is both a stale-evidence hazard and a data-exposure one — the same headers
+        # `/api/pulse/evidence` sets, for the same reason.
+        return JSONResponse(
+            result,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        )
 
     @app.get("/api/missions/{mission_id}/objectives")
     async def objectives_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:

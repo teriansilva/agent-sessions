@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import time
 from dataclasses import dataclass
 
@@ -495,16 +496,70 @@ def test_ledger_is_0600(tmp_path):
     assert oct(p.stat().st_mode & 0o777) == "0o600"
 
 
+#: A pid that is not running, for claims whose owner is meant to be gone. Above
+#: `/proc/sys/kernel/pid_max` on any Linux, so it cannot be allocated while the test runs.
+DEAD_OWNER = "4194305:1"
+
+
 def test_claimed_recovers_to_indeterminate_and_is_never_retried(tmp_path):
     """Nothing on disk can prove whether a `claimed` action's bytes reached the PTY, so it must
     be parked rather than retried (double-delivery) or assumed delivered (silent drop)."""
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "a", "state": "claimed", "verb": "choose", "option": 1}, p)
+    ledger.append(
+        {"id": "a", "state": "claimed", "verb": "choose", "option": 1, "claim_owner": DEAD_OWNER},
+        p,
+    )
     assert ledger.recover_claimed(p) == ["a"]
     rec = ledger.get("a", p)
     assert rec["state"] == "indeterminate"
     assert rec["verb"] == "choose"  # merge-forward keeps the original payload for the operator
     assert ledger.recover_claimed(p) == []  # idempotent
+
+
+def test_recovery_LEAVES_a_claim_whose_owner_is_still_running(tmp_path):
+    """#903 review 3, finding 4. This store is shared between sibling instances by design, so
+    "every claimed action is orphaned" is false the moment two are running: B starting while A is
+    mid-delivery moved A's action to `indeterminate`, A's own settling CAS then failed, and the
+    ledger recorded an ambiguous outcome for a delivery whose bytes had landed.
+
+    Red against a recovery that moves every global `claimed` row.
+    """
+    p = tmp_path / "l.jsonl"
+    # OUR OWN pid, which is exactly what a sibling's live claim looks like from here.
+    ledger.append({"id": "live", "state": "claimed", "claim_owner": ledger.owner_token()}, p)
+    assert ledger.recover_claimed(p) == []
+    assert ledger.get("live", p)["state"] == "claimed"
+
+
+def test_recovery_LEAVES_a_claim_whose_owner_it_cannot_identify(tmp_path):
+    """`unknown` is not `gone`. An unparseable token, or a `/proc` entry that will not read, is
+    not evidence that the owner died — and recovering a live claim is the harmful direction."""
+    p = tmp_path / "l.jsonl"
+    ledger.append({"id": "odd", "state": "claimed", "claim_owner": "not-a-token"}, p)
+    ledger.append({"id": "mine", "state": "claimed", "claim_owner": f"{os.getpid()}:unknown"}, p)
+    assert ledger.recover_claimed(p) == []
+
+
+def test_a_LEGACY_claim_with_no_owner_is_recovered_only_once_it_is_impossibly_old(tmp_path):
+    """Rows written before claims recorded an owner. Nothing can prove them orphaned, so the only
+    honest handle is their age against a bound the delivery path cannot exceed — and it is a long
+    way past it, because the cost of waiting is a stuck row and the cost of guessing is a stolen
+    claim."""
+    p = tmp_path / "l.jsonl"
+    now = time.time()
+    ledger.append({"id": "fresh", "state": "claimed", "ts": now}, p)
+    assert ledger.recover_claimed(p, now=now) == []
+    assert ledger.recover_claimed(p, now=now + ledger.LEGACY_CLAIM_STALE_S + 1) == ["fresh"]
+
+
+def test_a_CLAIM_records_who_holds_it(tmp_path):
+    """The fact recovery is decided on. Without it the question "may I recover this?" has no
+    answer and every claim looks orphaned."""
+    p = tmp_path / "l.jsonl"
+    ledger.append({"id": "c", "state": "approved"}, p)
+    rec = ledger.claim("c", frozenset({"approved"}), p)
+    assert rec["claim_owner"] == ledger.owner_token()
+    assert ledger.owner_is_live(rec["claim_owner"]) is True
 
 
 def test_expiry_skips_claimed_actions(tmp_path):

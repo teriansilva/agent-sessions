@@ -126,7 +126,10 @@ def test_the_expiry_sweep_retires_through_its_real_path():
 
 def test_startup_recovery_retires_through_its_real_path():
     _alert(action_id="act")
-    _action("act", "claimed")
+    # CLAIMED BY A PROCESS THAT IS GONE — a pid above `pid_max`, so it cannot be allocated while
+    # the test runs. Recovery only acts on claims it can prove orphaned (#903 review 3, finding
+    # 4), and a claim written by THIS process is a live sibling's as far as it can tell.
+    _action("act", "claimed", claim_owner="4194305:1")
 
     assert ledger.recover_claimed() == ["act"]
     assert _bell()["notifications"] == []
