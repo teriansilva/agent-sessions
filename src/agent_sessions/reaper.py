@@ -64,6 +64,13 @@ def interval() -> int:
 # actually frees the session instead of re-logging the same survivor every sweep.
 _REAP_GRACE_S = 3.0
 
+#: How long to keep confirming that a SIGKILLed group has actually gone. SIGKILL is not
+#: refusable, but reaping is not instantaneous and a process in an uninterruptible wait outlives
+#: it briefly. Confirmed rather than assumed, because a caller's whole decision — "may I report
+#: this launch as stopped" — rests on the answer (#898 review 4, finding 1).
+_KILL_CONFIRM_S = 0.25
+_KILL_CONFIRM_TRIES = 8
+
 
 def enabled() -> bool:
     return idle_ttl() > 0
@@ -131,8 +138,15 @@ def _last_activity(row: dict, mtimes: dict[tuple[str, str], float]) -> float | N
 
 
 def _find_master_pid(engine: str, sid: str) -> int | None:
-    """PID of the ``dtach -c <sock>`` master for a session, by scanning /proc for the create-mode
-    process bound to the session's socket. ``None`` if not found. (dtach writes no pidfile.)"""
+    """PID of the ``dtach`` master for a session, by scanning /proc for the create-mode process
+    bound to the session's socket. ``None`` if not found. (dtach writes no pidfile.)
+
+    **Both create modes count** (#739). A headless launch uses ``-n`` rather than ``-c``, and a
+    matcher that knew only about ``-c`` would not see that master at all — so archive-time cleanup
+    and the split-brain guard would silently skip every dispatched session, leaving unreapable
+    agents behind with nothing on screen to say so. The two flags are matched together, and only
+    an ``-a`` attach (the registry's reader) is excluded.
+    """
     try:
         sock = str(ptybridge.socket_path(engine, sid)).encode()
     except Exception:
@@ -145,8 +159,9 @@ def _find_master_pid(engine: str, sid: str) -> int | None:
                 parts = fh.read().split(b"\0")
         except OSError:
             continue
-        # The MASTER is `dtach -c <sock> …`; the registry's reader is `dtach -a <sock>` (skip it).
-        if b"-c" in parts and sock in parts:
+        # The MASTER is `dtach -c <sock> …` (viewer) or `dtach -n <sock> …` (headless, #739);
+        # the registry's reader is `dtach -a <sock>` and is skipped.
+        if sock in parts and (b"-c" in parts or b"-n" in parts):
             with contextlib.suppress(ValueError):
                 return int(name)
     return None
@@ -164,20 +179,209 @@ def _alive(pid: int) -> bool:
     return True
 
 
-def _signal_tree(pid: int, sig: int) -> None:
-    """Send ``sig`` to the session's whole process group (dtach master + the agent + its children).
+def _proc_table() -> dict[int, tuple[int, int, bool]]:
+    """`{pid: (ppid, pgid, is_zombie)}` for every process we can read. Never raises.
 
-    The dtach master is spawned in its own session (``start_new_session=True``), so its pgid == pid
-    and signalling the group takes down the agent too — more reliable than SIGTERM to the master
-    alone (which only HUPs the agent indirectly, and some agents ignore that). Falls back to the
-    bare pid if the group can't be resolved."""
+    One pass, because the callers below ask three questions about the same snapshot and reading
+    procfs three times would let the answers disagree with each other.
+    """
+    out: dict[int, tuple[int, int, bool]] = {}
     try:
-        os.killpg(os.getpgid(pid), sig)
+        names = os.listdir("/proc")
+    except OSError:
+        return out
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue  # it exited while we were looking, which is the answer we wanted anyway
+        # `comm` is parenthesised and may itself contain spaces and brackets, so the fields are
+        # taken after the LAST ')' — state, ppid, pgrp.
+        cut = raw.rfind(b")")
+        fields = raw[cut + 2 :].split()
+        if len(fields) < 3:
+            continue
+        with contextlib.suppress(ValueError):
+            out[int(name)] = (int(fields[1]), int(fields[2]), fields[0] == b"Z")
+    return out
+
+
+#: Where the unified (v2) hierarchy is mounted. A constant rather than a `/proc/mounts` parse:
+#: this is the path on every systemd host the app supports, and a wrong guess degrades to the
+#: process-tree boundary rather than to a wrong answer.
+CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _cgroup_of(pid: int) -> str | None:
+    """The pid's cgroup-v2 path (``/user.slice/…/as-claude-….scope``), or None.
+
+    None means "no usable cgroup boundary here" — a v1-only host, an unreadable procfs entry, or
+    a process that has already gone. Every caller degrades to the process tree on None.
+    """
+    try:
+        with open(f"/proc/{pid}/cgroup", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                # v2 is the single `0::<path>` line; v1 controllers carry a controller list.
+                if line.startswith("0::"):
+                    path = line[3:].strip()
+                    return path or None
+    except OSError:
+        return None
+    return None
+
+
+def _cgroup_members(path: str) -> set[int] | None:
+    """Every pid currently in that cgroup, or None if it cannot be read.
+
+    None and `set()` are different answers and the difference is the point: an empty set is
+    "the boundary is empty", which is what lets a teardown report success, while None is "we
+    could not look", which must never be read as success.
+    """
+    rel = path.lstrip("/")
+    try:
+        with open(f"{CGROUP_ROOT}/{rel}/cgroup.procs", encoding="ascii") as fh:
+            return {int(x) for x in fh.read().split() if x.isdigit()}
+    except OSError:
+        return None
+
+
+def _containment_cgroup(pid: int) -> str | None:
+    """The pid's cgroup, but ONLY when it is a boundary we may treat as the session's.
+
+    The disqualifier is the same one that applies to process groups, for the same reason: this
+    app's own cgroup contains this app. A dispatch that launched through `scopedspawn` sits in a
+    transient scope of its own, which is a strictly smaller set — and if it did not, signalling
+    "the boundary" would be signalling the broker (#898 review 6).
+    """
+    own = _cgroup_of(os.getpid())
+    theirs = _cgroup_of(pid)
+    if theirs is None or theirs == own:
+        return None
+    return theirs
+
+
+def _containment(pid: int) -> tuple[set[int], set[int]]:
+    """`(pids, pgids)` — the process tree rooted at `pid`, and the groups it OWNS.
+
+    **The boundary is the tree, not one process group** (#898 review 5, finding 1). `dtach` calls
+    `setsid()` on the target so the pty gets its own controlling terminal, so the master and the
+    agent it launched are in DIFFERENT groups and different sessions — measured on this host: a
+    master at pgid 1173666 with its agent at 1173667. A group-wide signal aimed at the master
+    therefore contains the master and nothing else, and a teardown that checks only that group
+    reports success over a live, permission-bypassed agent.
+
+    **Captured BEFORE any signal, and that is the whole reason it is a snapshot.** Killing the
+    master reparents its children to init, so a tree walk afterwards finds nothing at all and
+    would report a clean teardown for exactly the case this exists to catch.
+
+    A pgid is included only when its LEADER is inside the tree — a descendant that joined a group
+    somebody else established is signalled by pid, never by group. That is what stops a teardown
+    reaching processes it did not launch (#898 review 5, finding 3), and it is checked here
+    rather than recomputed at the signal site, where the validation was previously thrown away.
+    """
+    table = _proc_table()
+    kids: dict[int, list[int]] = {}
+    for child, (parent, _pg, _z) in table.items():
+        kids.setdefault(parent, []).append(child)
+    pids: set[int] = set()
+    stack = [pid]
+    while stack:
+        cur = stack.pop()
+        if cur in pids or cur not in table:
+            continue
+        pids.add(cur)
+        stack.extend(kids.get(cur, ()))
+    if not pids:
+        return set(), set()
+    try:
+        ours = os.getpgid(0)
+    except OSError:
+        ours = -1
+    pgids = {
+        pg
+        for p in pids
+        for pg in (table[p][1],)
+        # The leader must be IN the tree — otherwise the group is somebody else's — and it must
+        # not be ours, or the escalation is a SIGKILL to this process.
+        if pg in pids and pg != ours
+    }
+    return pids, pgids
+
+
+def _boundary_alive(pids: set[int], cgroup: str | None = None) -> bool:
+    """Is anything in the boundary still running? Zombies do not count.
+
+    The master is spawned by this app, so the instant it exits it is an unreaped child sitting in
+    the process table — and counting that as alive makes every clean teardown report a leak.
+
+    **The cgroup is re-read, not remembered** (#898 review 6). A pid snapshot cannot see a
+    survivor that did not exist when it was taken: a target that answers SIGTERM by forking a
+    child and exiting hands that child to init, and a tree walk rooted at the dead master will
+    never find it again. The cgroup does — membership is inherited across fork and survives
+    reparenting, which is exactly the property a snapshot lacks.
+
+    An unreadable cgroup returns to the pid answer rather than to `False`: "we could not look" is
+    not "it is empty".
+    """
+    table = _proc_table()
+    if cgroup is not None:
+        members = _cgroup_members(cgroup)
+        if members is not None:
+            # Ourselves excluded for the same reason the group check excludes our own group: on a
+            # host with no scope isolation the session can share this app's cgroup, and counting
+            # this process would make every teardown report a leak for ever.
+            live = {p for p in members if p != os.getpid()}
+            if any(p in table and not table[p][2] for p in live):
+                return True
+    return any(p in table and not table[p][2] for p in pids)
+
+
+def _signal_boundary(
+    pids: set[int], pgids: set[int], sig: int, *, cgroup: str | None = None
+) -> None:
+    """Signal a boundary `_containment` captured. **Never recomputes a group.**
+
+    That recomputation was the bug (#898 review 5, finding 3): the caller validated which groups
+    were ours to touch and then the signal path called `os.getpgid(pid)` again and `killpg`'d
+    whatever came back — including the group it had just been told to leave alone. The validated
+    identity is passed in, and a pid whose group did not qualify is signalled on its own.
+
+    Groups first so a group signal reaches members that appeared after the snapshot; then the
+    pids, which covers anything whose group was somebody else's.
+    """
+    # THE CGROUP FIRST, because it is the only member list that includes what was forked after
+    # the snapshot was taken. `_containment_cgroup` has already refused this app's own cgroup, so
+    # this cannot be a signal to the broker; ourselves is skipped again here because that
+    # guarantee is worth two lines rather than one.
+    if cgroup is not None:
+        for p in _cgroup_members(cgroup) or ():
+            if p == os.getpid():
+                continue
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.kill(p, sig)
+    for pg in pgids:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(pg, sig)
+    for p in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(p, sig)
+
+
+def _signal_tree(pid: int, sig: int) -> None:
+    """Signal the tree rooted at `pid`, capturing its boundary first.
+
+    Kept as the one-argument entry point the reaper's other callers use; `terminate_master`
+    captures the boundary itself because it has to ask about it again afterwards.
+    """
+    pids, pgids = _containment(pid)
+    if not pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, sig)
         return
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.kill(pid, sig)
+    _signal_boundary(pids, pgids, sig)
 
 
 def _still_stale(registry, key: str, ttl: int, now: float | None = None) -> bool:
@@ -211,8 +415,17 @@ async def terminate_master(
     ``spare_if`` is an optional predicate re-checked right before SIGTERM **and** right before the
     SIGKILL escalation; returning ``False`` aborts the kill (the reaper uses it to spare a session
     that got (re)attached or became active in the grace window). Returns the outcome:
-    ``"gone"`` (no master found), ``"spared"`` (``spare_if`` vetoed), ``"term"`` (exited on
-    SIGTERM), or ``"kill"`` (needed SIGKILL).
+    ``"gone"`` (no master found), ``"spared"`` (``spare_if`` vetoed), ``"term"`` (the boundary was
+    empty after SIGTERM), ``"kill"`` (needed SIGKILL), or ``"leaked"`` (something in the boundary
+    survived SIGKILL, so the caller must not report a clean teardown).
+
+    **The boundary is the process TREE rooted at the master, captured before anything is
+    signalled** (#898 reviews 4 and 5, finding 1). Two earlier answers were both too small: the
+    master pid alone missed a child that ignores SIGHUP and SIGTERM, and the master's process
+    GROUP missed the agent entirely — `dtach` calls `setsid()` on its target, so the two are in
+    different groups and different sessions. Measured on this host: master pgid 1173666, agent
+    pgid 1173667. A teardown reporting success over a live, permission-bypassed agent is the one
+    answer this function must never give.
     """
 
     pid = _find_master_pid(engine, sid)
@@ -220,16 +433,42 @@ async def terminate_master(
         return "gone"
     if spare_if is not None and not spare_if():
         return "spared"
-    _signal_tree(pid, signal.SIGTERM)
+    # CAPTURED BEFORE THE SIGNAL, because killing the master reparents its children to init and
+    # the tree walk afterwards would find nothing — a clean-looking teardown over a live agent.
+    # THE DURABLE BOUNDARY, when there is one. A transient scope's cgroup contains everything the
+    # session forks and keeps containing it after a reparent, so it answers the question a pid
+    # snapshot cannot (#898 review 6). None on a host with no scope isolation, and then the tree
+    # snapshot below is the whole boundary — reduced, and reported as such by the same rules.
+    cgroup = _containment_cgroup(pid)
+    pids, pgids = _containment(pid)
+    if not pids:
+        pids = {pid}
+    _signal_boundary(pids, pgids, signal.SIGTERM, cgroup=cgroup)
     await asyncio.sleep(grace_s)
     outcome = "term"
-    if _alive(pid):
+    if _boundary_alive(pids, cgroup):
         # The grace window is exactly when a reattach is most likely — re-validate before the
         # harder SIGKILL.
         if spare_if is not None and not spare_if():
             return "spared"
-        _signal_tree(pid, signal.SIGKILL)
+        # RE-CAPTURED: SIGTERM may have caused the agent to fork a cleanup child, and a snapshot
+        # taken before the signal cannot know about it. Unioned rather than replaced, because the
+        # original members are the ones that have to be confirmed gone.
+        more, more_groups = _containment(pid)
+        pids |= more
+        pgids |= more_groups
+        _signal_boundary(pids, pgids, signal.SIGKILL, cgroup=cgroup)
         outcome = "kill"
+        for _ in range(_KILL_CONFIRM_TRIES):
+            await asyncio.sleep(_KILL_CONFIRM_S)
+            if not _boundary_alive(pids, cgroup):
+                break
+            # A survivor the snapshot never knew about — forked during teardown and reparented —
+            # is only reachable through the cgroup, and only by signalling it again now that it
+            # is a member. Re-signalling members already dead is a no-op.
+            _signal_boundary(set(), set(), signal.SIGKILL, cgroup=cgroup)
+        else:
+            outcome = "leaked"
     return outcome
 
 

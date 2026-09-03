@@ -113,10 +113,20 @@ _RECONCILE_INTERVAL_S = 0.5
 _RECONCILE_MAX_POLLS = 600
 
 
-async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot) -> None:
+async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot) -> str | None:
     """Discover a mint-its-own-id engine's real session id for a placeholder launch, persist
     the alias, converge the client (#127 opencode / #315 codex). Engine-agnostic: drives any
     provider exposing ``reconcile_new_session`` (the per-engine store diff lives in the provider).
+
+    ``ws`` may be ``None`` for a HEADLESS launch (#739). Everything before the client frame is
+    identical and is the part that matters — the alias write is what lets a later attach by the
+    real id resolve back to the placeholder's socket and lock, and skipping it would leave a
+    dispatched session invisible to the app, which is exactly why #732 refused these engines
+    outright. Only the ``{"t":"id"}`` converge is a viewer concern, and it is skipped rather than
+    faked.
+
+    Returns the real session id when one was resolved, otherwise ``None`` — a headless caller
+    needs the answer, where a viewer only needed the side effects.
 
     Runs concurrently with the PTY bridge. Polls ``prov.reconcile_new_session(cwd, snapshot)``
     (read-only, fail-soft) for a session id in ``cwd`` not in ``snapshot``:
@@ -137,7 +147,7 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
         if result is None:
             continue  # not written yet → keep polling
         if isinstance(result, list):
-            return  # ambiguous → fail safe, stay on the placeholder
+            return None  # ambiguous → fail safe, stay on the placeholder
         real_key = f"{prov.engine_id}:{result}"
         # Persist the alias FIRST, and ONLY converge the client if that write succeeds. The
         # alias (real → placeholder) is what lets a later attach by the real id resolve back
@@ -149,7 +159,7 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
         try:
             await asyncio.to_thread(metadata.set_alias, placeholder_key, real_key)
         except Exception:
-            return  # alias not durable → never converge; keep serving under the placeholder
+            return None  # alias not durable → never converge; keep serving under the placeholder
         # The real (mint-its-own-id) session is now durable + discoverable → bust the sidebar's
         # scan snapshot so the just-reconciled row shows on the next /api/sessions without the TTL
         # lag (#561). The pinned-id path invalidates at launch in routes/terminal.py; reconciling
@@ -164,12 +174,13 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
             await asyncio.to_thread(handoff_mod.note_reconciled, placeholder_key, real_key)
         # Then converge the client: it replaces /s/opencode/new-… → /s/opencode/ses_…
         # (history replace, no reload, keep the socket) and the sidebar shows one row.
-        with contextlib.suppress(Exception):
-            await ws.send_text(json.dumps({"t": "id", "sid": real_key}))
+        if ws is not None:
+            with contextlib.suppress(Exception):
+                await ws.send_text(json.dumps({"t": "id", "sid": real_key}))
         # The real session now exists + is durable — wake the AI-review loop to summarize it
         # promptly instead of waiting out the interval (#413). Gated/deduped inside the sweep.
         ai_review_loop.request_review_soon()
-        return
+        return result
 
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:

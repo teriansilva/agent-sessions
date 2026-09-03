@@ -263,6 +263,18 @@ class SessionRegistry:
         phys_engine, _, phys_sid = phys_key.partition(":")
         return phys_engine, phys_sid, phys_key
 
+    async def ensure_headless(self, engine: str, sid: str) -> None:
+        """Start the server-owned reader for ONE session, now (#739).
+
+        `discover()` sweeps at startup and the ws routes drive attach/detach; neither helps a
+        session that has just been launched with nobody watching. A `dtach -n` master with no
+        reader has nothing draining it — so no scrollback, no first-paint observation, and no
+        registered writer — and the headless seed delivery then waits for signals that can never
+        arrive. Public because the dispatcher is a legitimate second caller, not because the
+        internals moved.
+        """
+        await self._ensure_headless(engine, sid)
+
     async def _ensure_headless(self, engine: str, sid: str) -> None:
         """Internal: spawn a SessionStream for a headless session under the lock."""
         async with self._lock:

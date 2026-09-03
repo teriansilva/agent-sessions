@@ -102,7 +102,27 @@ def attach_argv(*, engine: str, session_id: str) -> list[str]:
     return [DTACH_BIN, "-a", sock, "-z", "-E", "-r", "winch"]
 
 
-def launch_argv(*, engine: str, session_id: str, launch_argv: Iterable[str]) -> list[str]:
+#: The two create modes, and the difference is the whole reason #732 could not work.
+#:
+#: ``-c`` creates a master and **attaches** the caller to it, so it needs a terminal on stdin.
+#: The viewer path satisfies that by handing dtach a real PTY slave; the headless path passed
+#: ``DEVNULL`` and every launch died with *"Attaching to a session requires a terminal"*, then
+#: fell into the aliveness timeout looking like a slow start rather than a refusal.
+#:
+#: ``-n`` creates the master **detached** — no terminal, no attach. It is the mode that exists
+#: for exactly this case, and it keeps the process tree simpler than allocating a throwaway PTY
+#: and mimicking the viewer path would.
+CREATE_ATTACHED = "-c"
+CREATE_DETACHED = "-n"
+
+
+def launch_argv(
+    *,
+    engine: str,
+    session_id: str,
+    launch_argv: Iterable[str],
+    detached: bool = False,
+) -> list[str]:
     """Build the **create-only** ``dtach`` command — fails loud if a sock exists.
 
     ``dtach -c <sock> -z -E -r winch <launch_argv…>`` — create the master running
@@ -110,6 +130,10 @@ def launch_argv(*, engine: str, session_id: str, launch_argv: Iterable[str]) -> 
     caller must hold the single-writer lock for the session and have unlinked any
     stale sock under that lock (see `unlink_if_stale`). ``launch_argv`` is the
     already-validated absolute-path engine command; no shell is ever involved.
+
+    ``detached=True`` builds the ``-n`` variant for a launch with nobody watching (#739). Only the
+    MODE FLAG changes: the socket path, the validation, and the literal-argv shape are identical,
+    because a second builder is a second place for the shell-free guarantee to be got wrong.
     """
     argv = list(launch_argv)
     if not argv:
@@ -117,7 +141,8 @@ def launch_argv(*, engine: str, session_id: str, launch_argv: Iterable[str]) -> 
     if not argv[0].startswith("/"):
         raise PtyBridgeError(f"launch binary must be an absolute path: {argv[0]!r}")
     sock = str(socket_path(engine, session_id))
-    return [DTACH_BIN, "-c", sock, "-z", "-E", "-r", "winch", *argv]
+    mode = CREATE_DETACHED if detached else CREATE_ATTACHED
+    return [DTACH_BIN, mode, sock, "-z", "-E", "-r", "winch", *argv]
 
 
 def _probe_once(sock_path: Path, timeout: float) -> str:

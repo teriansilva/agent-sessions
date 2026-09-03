@@ -42,7 +42,10 @@ async def cleanup_runtime(engine: str, native: str, *, spare_if=None) -> str:
     runs (outcome ``"spared"``), so a session a viewer just (re)claimed is left intact.
     Archive passes no guard — it is an explicit operator action ⇒ force-style cleanup.
 
-    Returns the ``terminate_master`` outcome: ``"gone" | "spared" | "term" | "kill"``.
+    Returns the ``terminate_master`` outcome:
+    ``"gone" | "spared" | "term" | "kill" | "leaked"``. ``"leaked"`` means something in the
+    session's process group survived SIGKILL — the local state below is still cleaned, but a
+    caller that reports "stopped" on it is reporting a process that is still running (#898).
     Best-effort: every teardown step past the terminate is exception-suppressed; the caller
     should still wrap the whole call so even a resolution error can't block its own work.
     """

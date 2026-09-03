@@ -621,6 +621,31 @@ def commit(handle: str, seed: str | None = None) -> dict:
         return {"id": target_key, "engine": h.target_engine, "native": native, "cwd": h.cwd}
 
 
+def bind_target(handle: str, target_key: str) -> None:
+    """Bind a prepared handle to a target key the CALLER already minted (#739).
+
+    `commit()` mints the id itself, which is right for the picker: the client has no session yet
+    and navigates to whatever `commit` names. A headless dispatch is the other way round — it has
+    already minted the id, taken the single-writer lock on it and named the socket after it, so a
+    second minting here would bind the seed to a session that does not exist and leave the one
+    that does unseeded.
+
+    So this is `commit`'s body minus the minting, and deliberately not a `commit(mint=False)`
+    flag: the two callers want different things from the same store, and a boolean that changes
+    which id a function returns is the kind of parameter that gets passed wrongly once.
+    """
+    with _lock:
+        _sweep_locked()
+        h = _HANDLES.get(handle)
+        if h is None:
+            raise HandoffError(404, "unknown or expired handoff handle")
+        if h.target_key is not None:
+            raise HandoffError(409, "handoff already committed")
+        h.target_key = target_key
+        h.created_at = time.monotonic()  # full TTL again to reach the delivery
+        _BY_TARGET[target_key] = handle
+
+
 def has_pending_seed(target_key: str) -> bool:
     """True while a committed-but-unredeemed seed exists for ``target_key`` (cheap check the
     ws route uses to decide whether to hand ``webterm.run`` a seed source)."""

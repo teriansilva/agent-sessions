@@ -8,6 +8,12 @@ the TTL) and NEVER an active one (attached, or recently-active), is opt-in, and 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import shutil
+import tempfile
+
+import pytest
 
 from agent_sessions import reaper
 
@@ -144,8 +150,17 @@ def test_real_reap_signals_tree_and_frees_mirror(monkeypatch):
     monkeypatch.setattr(reaper, "_REAP_GRACE_S", 0)  # don't actually sleep in the test
     sigs = []
     monkeypatch.setattr(reaper, "_find_master_pid", lambda e, s: 4242)
-    monkeypatch.setattr(reaper, "_signal_tree", lambda pid, sig: sigs.append((pid, sig)))
-    monkeypatch.setattr(reaper, "_alive", lambda pid: False)  # died on SIGTERM
+    # The boundary is a captured TREE now, not one group — see `_containment`. Stubbed at that
+    # seam so the sweep's own wiring is what this test exercises.
+    monkeypatch.setattr(reaper, "_containment", lambda pid: ({pid}, {pid}))
+    monkeypatch.setattr(
+        reaper,
+        "_signal_boundary",
+        lambda pids, pgids, sig, cgroup=None: sigs.append((sorted(pids)[0], sig)),
+    )
+    monkeypatch.setattr(
+        reaper, "_boundary_alive", lambda pids, cgroup=None: False
+    )  # died on SIGTERM
     now = 5000.0
     reg = _FakeRegistry([_row("claude:stale", last_output_at=now - 4000)])
 
@@ -166,8 +181,16 @@ def test_real_reap_escalates_to_sigkill_when_surviving(monkeypatch):
     monkeypatch.setattr(reaper, "_REAP_GRACE_S", 0)
     sigs = []
     monkeypatch.setattr(reaper, "_find_master_pid", lambda e, s: 99)
-    monkeypatch.setattr(reaper, "_signal_tree", lambda pid, sig: sigs.append((pid, sig)))
-    monkeypatch.setattr(reaper, "_alive", lambda pid: True)  # survived SIGTERM
+    monkeypatch.setattr(reaper, "_containment", lambda pid: ({pid}, {pid}))
+    monkeypatch.setattr(
+        reaper,
+        "_signal_boundary",
+        lambda pids, pgids, sig, cgroup=None: sigs.append((sorted(pids)[0], sig)),
+    )
+    # Survives SIGTERM, and then survives SIGKILL too — so the outcome is `leaked`, which is the
+    # answer a caller must not read as a clean teardown.
+    monkeypatch.setattr(reaper, "_boundary_alive", lambda pids, cgroup=None: True)
+    monkeypatch.setattr(reaper, "_KILL_CONFIRM_S", 0)
     now = 5000.0
     reg = _FakeRegistry([_row("claude:stubborn", last_output_at=now - 4000)])
 
@@ -176,3 +199,260 @@ def test_real_reap_escalates_to_sigkill_when_surviving(monkeypatch):
 
     asyncio.run(go())
     assert sigs == [(99, reaper.signal.SIGTERM), (99, reaper.signal.SIGKILL)]
+
+
+def test_a_REAL_DTACH_TARGET_that_ignores_signals_is_still_contained(tmp_path):
+    """[security] #898 reviews 4 and 5, finding 1 — with REAL `dtach`, because that is where it
+    lives and a synthetic stand-in got it wrong twice.
+
+    The first version checked the master PID: a master that exits while its child ignores SIGHUP
+    and SIGTERM answered `term` over a live agent. The second checked the master's process GROUP
+    and was rebuilt against a leader and child that deliberately shared one — which `dtach` does
+    NOT do. It calls `setsid()` on its target so the pty gets its own controlling terminal, so the
+    master and the agent are in different groups AND different sessions. Measured on this host
+    while writing this: master pgid 1173666, agent pgid 1173667. A group-wide signal aimed at the
+    master therefore contains the master and nothing else.
+
+    So the boundary is the process TREE, captured before anything is signalled — and the only
+    honest way to test it is through the launcher the feature actually uses.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    if shutil.which("dtach") is None:  # pragma: no cover - dtach is a hard dependency here
+        pytest.skip("dtach is not installed")
+
+    ready = tmp_path / "ready"
+    # SHORT, because AF_UNIX paths are capped at 108 bytes and a pytest tmp_path can exceed it —
+    # the socket FILE appears either way and only `connect()` fails, which reads like a slow host.
+    sockdir = tempfile.mkdtemp(prefix="as-pty-")
+    sock = os.path.join(sockdir, "s")
+    target = (
+        "import signal,sys,time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "open(sys.argv[1], 'w').close()\n"
+        "time.sleep(300)\n"
+    )
+    subprocess.run(
+        ["dtach", "-n", sock, sys.executable, "-c", target, str(ready)],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 20
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert ready.exists(), "the target never installed its handlers"
+
+    master = None
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            cmd = open(f"/proc/{name}/cmdline", "rb").read()
+        except OSError:
+            continue
+        if b"dtach" in cmd and sock.encode() in cmd:
+            master = int(name)
+            break
+    assert master is not None, "the dtach master was not found"
+
+    pids, _pgids = reaper._containment(master)
+    kids = pids - {master}
+    assert kids, "the target was not inside the captured boundary"
+    # THE PREMISE, asserted rather than assumed: the topology this test exists for is real.
+    child = next(iter(kids))
+    assert os.getpgid(child) != os.getpgid(master), (
+        "dtach did not setsid its target here — the group-only check would have been enough, "
+        "and this test is no longer testing what it claims"
+    )
+
+    real = reaper._find_master_pid
+    reaper._find_master_pid = lambda e, s: master
+    try:
+        outcome = asyncio.run(reaper.terminate_master("claude", "x", grace_s=0.4))
+    finally:
+        reaper._find_master_pid = real
+
+    assert outcome == "kill", outcome
+    for p in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(p, 0)
+            raise AssertionError(f"{p} survived the teardown")
+    with contextlib.suppress(Exception):
+        shutil.rmtree(sockdir)
+
+
+def test_a_FOREIGN_process_group_is_never_signalled(tmp_path):
+    """[security] #898 review 5, finding 3. The validation was thrown away at the signal site.
+
+    `_containment` decides which groups are ours — the leader must be inside the captured tree,
+    and it must not be our own — and the old signal path then recomputed `os.getpgid(pid)` and
+    `killpg`'d whatever it got, including the group it had just been told to leave alone.
+    """
+    sent: list[tuple[str, int, int]] = []
+
+    class FakeOs:
+        @staticmethod
+        def killpg(pg, sig):
+            sent.append(("killpg", pg, sig))
+
+        @staticmethod
+        def kill(pid, sig):
+            sent.append(("kill", pid, sig))
+
+    real_killpg, real_kill = reaper.os.killpg, reaper.os.kill
+    reaper.os.killpg, reaper.os.kill = FakeOs.killpg, FakeOs.kill
+    try:
+        # A REAL pid — this process — whose group was NOT validated as ours to touch. It has to
+        # be real: a pid that does not exist makes `os.getpgid` raise, so the recomputation the
+        # old path performed would be suppressed and the test would pass against it.
+        reaper._signal_boundary({os.getpid()}, set(), reaper.signal.SIGTERM)
+    finally:
+        reaper.os.killpg, reaper.os.kill = real_killpg, real_kill
+
+    assert sent == [("kill", os.getpid(), reaper.signal.SIGTERM)], sent
+    assert not any(s[0] == "killpg" for s in sent), "a group we do not own was signalled"
+
+
+def test_OUR_OWN_process_group_is_never_a_target():
+    """The other disqualifier, and the one that already cost a test runner its life: a boundary
+    whose group is OURS must not be offered as a killpg target, or the escalation is a SIGKILL to
+    this process."""
+    _pids, pgids = reaper._containment(os.getpid())
+    assert os.getpgid(0) not in pgids
+
+
+def test_a_ZOMBIE_leader_is_not_a_live_boundary(tmp_path):
+    """The other half, and the one that makes the check usable rather than a permanent alarm.
+
+    The master is spawned by this app, so when it exits it stays in the process table as an
+    unreaped child — and a zombie is still a group member. Asked with `killpg(pgid, 0)` alone, a
+    perfectly clean teardown reports the group as populated for ever. Measured: the first version
+    of this returned `leaked` for a group whose only remaining member was the exited leader.
+    """
+    import signal as sig
+    import subprocess
+    import sys
+    import time
+
+    leader = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"], start_new_session=True
+    )
+    try:
+        assert reaper._boundary_alive({leader.pid}) is True
+        leader.send_signal(sig.SIGKILL)
+        # NOT reaped — no `wait()` — so it is a zombie in its own group, which is the state a
+        # torn-down master is in the instant after it dies.
+        deadline = time.monotonic() + 10
+        while not reaper._alive(leader.pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert reaper._boundary_alive({leader.pid}) is False, "a zombie was counted as alive"
+    finally:
+        with contextlib.suppress(Exception):
+            leader.wait(timeout=5)
+
+
+def test_a_TARGET_that_FORKS_a_survivor_during_teardown_is_still_contained(tmp_path):
+    """[security] #898 review 6 — the boundary must survive REPARENTING, not just a signal.
+
+    A pid snapshot answers "who existed when I looked". A target that handles SIGTERM by forking
+    a child and then exiting hands that child to init: the tree rooted at the master no longer
+    reaches it, the re-capture walks a dead root, and the teardown reports `term` over a live,
+    permission-bypassed agent. That is the one answer this function must never give.
+
+    Cgroup membership is inherited across `fork()` and does not change when a process is
+    reparented, so the transient scope still contains the survivor. This drives the real thing:
+    real `dtach`, a real scope, a target that really forks and really exits.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from agent_sessions import scopedspawn
+
+    if shutil.which("dtach") is None:  # pragma: no cover - dtach is a hard dependency here
+        pytest.skip("dtach is not installed")
+    scopedspawn.reset_cache_for_tests()
+    if not (scopedspawn.enabled() and scopedspawn.available()):  # pragma: no cover
+        pytest.skip("transient scopes are unavailable on this host")
+
+    ready = tmp_path / "ready"
+    forked = tmp_path / "forked"
+    sockdir = tempfile.mkdtemp(prefix="as-pty-")
+    sock = os.path.join(sockdir, "s")
+    # On SIGTERM: fork a child that ignores everything but SIGKILL, then EXIT. The child is
+    # reparented to init and leaves the tree entirely.
+    target = (
+        "import os,signal,sys,time\n"
+        "def onterm(*a):\n"
+        "    if os.fork() == 0:\n"
+        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "        signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "        open(sys.argv[2], 'w').close()\n"
+        "        time.sleep(300)\n"
+        "        os._exit(0)\n"
+        "    os._exit(0)\n"
+        "signal.signal(signal.SIGTERM, onterm)\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "open(sys.argv[1], 'w').close()\n"
+        "time.sleep(300)\n"
+    )
+    argv, unit = scopedspawn.wrap(
+        ["dtach", "-n", sock, sys.executable, "-c", target, str(ready), str(forked)],
+        engine="claude",
+        session_id="00000000-0000-0000-0000-0000000000ff",
+    )
+    assert unit is not None, "the launch was not scoped, so there is no durable boundary to test"
+    subprocess.run(
+        argv,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 20
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert ready.exists(), "the target never installed its handler"
+
+    master = None
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            cmd = open(f"/proc/{name}/cmdline", "rb").read()
+        except OSError:
+            continue
+        if b"dtach" in cmd and sock.encode() in cmd:
+            master = int(name)
+            break
+    assert master is not None, "the dtach master was not found"
+
+    # THE PREMISE: the scope really is a boundary of its own, not this process's cgroup.
+    cg = reaper._containment_cgroup(master)
+    assert cg is not None, "the master shares this app's cgroup; there is no boundary to prove"
+
+    real = reaper._find_master_pid
+    reaper._find_master_pid = lambda e, s: master
+    try:
+        outcome = asyncio.run(reaper.terminate_master("claude", "x", grace_s=1.0))
+    finally:
+        reaper._find_master_pid = real
+
+    # It forked — the case is real, not hypothetical.
+    assert forked.exists(), "the target never forked; this test proved nothing"
+    # …and nothing is left in the scope. `term` would be the false success.
+    left = reaper._cgroup_members(cg)
+    live = [p for p in (left or ()) if p != os.getpid()]
+    assert not live, f"{live} survived the teardown inside the scope"
+    assert outcome in ("term", "kill"), outcome
+    with contextlib.suppress(Exception):
+        shutil.rmtree(sockdir)
