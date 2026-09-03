@@ -35,7 +35,7 @@ import logging
 import time
 import uuid
 
-from . import missions
+from . import mission_probes, missions
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -211,6 +211,16 @@ def _objective_rows(mission_id: str, *, path=None) -> list[dict]:
         return []
 
 
+def _observation_supports(o: dict) -> bool:
+    """Does the LATEST observation still back this objective's settlement?
+
+    One line, because the answer belongs to the store: `propose_completion` asks the same question
+    inside the transaction that commits a completion, and the two giving different answers was
+    finding 1 of #897's re-review. Kept as a name here so the board's own reasoning still reads.
+    """
+    return missions.observation_supports(o)
+
+
 def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     """The MECHANICAL half. No model call, and it runs on EVERY pass.
 
@@ -233,7 +243,17 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
         gate = bool(o.get("gate"))
         state = str(o.get("state") or "")
         met = state in ("met", "waived")
-        if gate and not met:
+        # …AND, for a gate whose fact can change, the LATEST look must still agree (#897
+        # re-review). Checks go red when the head advances, an approval is dismissed, a deploy is
+        # rolled back — and the probe records that without moving the settlement backwards,
+        # deliberately, because un-meeting a gate silently would restart nudging on a mission
+        # already proposed for completion. But `likely_done` is a claim about NOW, and computing
+        # it from the stored state alone let a mission whose checks had just gone red still
+        # propose completion with `unmet_gates: 0`.
+        #
+        # A waiver is exempt: the operator said it was not required, which does not go stale.
+        current = _observation_supports(o) if state == "met" else True
+        if gate and (not met or not current):
             unmet_gates += 1
         episode, stood_down = missions.objective_episode(mission_id, key, path=path)
         b = budget_state(mission_id, key, episode=episode, path=path)
@@ -245,6 +265,9 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 "gate": gate,
                 "state": state,
                 "met": met,
+                # `met` is the stored settlement; `current` is whether the latest observation
+                # still supports it. The board renders the difference rather than hiding it.
+                "current": current,
                 "episode": episode,
                 "stood_down": stood_down,
                 "spent": b["spent"],
@@ -760,6 +783,13 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
 
     The order is the design, and each step is placed where it is for a reason:
 
+    0. **The probes run FIRST** (#891), before the assessment reads the objective rows. They are
+       what makes a gate become met at all, and running them after the assessment would mean every
+       settlement is acted on a full sweep interval late — the supervisor would nudge about an
+       objective that had just been satisfied by the probe it had not run yet. Off the loop,
+       bounded, and it never raises: a forge outage leaves objectives unsettled and visibly stale,
+       which is a state the console renders, not a pass that fails.
+
     1. **Mechanical assessment**, always. It costs nothing and it is what notices a gate becoming
        met — a change no fingerprint can see.
     2. **Completion proposal** when every gate is satisfied, reached WITHOUT a model call: the
@@ -790,11 +820,21 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
     if state not in _ELIGIBLE_STATES:
         return {"skipped": f"mission is {state}"}
 
+    # THE PROBES. Their own admission slot, before the assessment, and deliberately not fatal:
+    # `run_for_mission` swallows per-objective failures and reports counts, so the worst case is a
+    # pass that assesses the same rows it would have assessed anyway.
+    probes: dict = {}
+    with contextlib.suppress(Exception):
+        probes = await missions.run_admitted(
+            lambda: mission_probes.run_for_mission(mission_id, path=path)
+        )
+
     a = await missions.run_admitted(lambda: assess(mission_id, path=path))
     out: dict = {
         "assessment": None,
         "nudged": None,
         "escalated": None,
+        "probes": probes or None,
         "objectives": a["objectives"],
     }
 

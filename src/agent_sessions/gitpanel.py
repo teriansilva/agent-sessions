@@ -565,6 +565,60 @@ def _upstream_config(commondir: str, branch: str | None) -> str:
     )
 
 
+def head_sha(path: str | None, branch: str | None = None) -> str | None:
+    """The commit a branch (or HEAD) points at, read straight from the refs (#891/#897).
+
+    A READ, on the same terms as `remote_url` beside it: bounded file reads, no subprocess, no
+    include expansion. The mission probes need it to tell one incarnation of a reused branch name
+    from another — `devopsagent/<slug>` is reused constantly here, so the NAME is not identity and
+    a closed PR found by name alone can belong to entirely different work.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return None
+    branch = branch or _head_branch(repo.gitdir)
+    sha = _resolve_head_sha(repo, branch)
+    if sha and sha.startswith("ref:"):
+        return None
+    return sha
+
+
+def remote_url(path: str | None, name: str = "origin") -> str | None:
+    """The configured URL of one remote, read WITHOUT git and WITHOUT following includes (#891).
+
+    A READ, and deliberately the same shape as `_upstream_config` above rather than a second way
+    of getting at the config: bounded `_read_capped`, no `include.path` expansion, no subprocess.
+    The repository being inspected is one an agent is actively writing to, so "just run
+    `git remote get-url`" would let that repository's own config decide what the command does —
+    the class of problem #825 / #842 exist for.
+
+    The value is returned VERBATIM and is treated as untrusted by every caller: the mission probe
+    only ever parses an `owner/name` pair out of it, and never hands it to a subprocess.
+    """
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return None
+    text = _read_capped(os.path.join(_common_dir(repo.gitdir), "config"), 256 * 1024)
+    if text is None:
+        return None
+    want = f'[remote "{name}"]'
+    section = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = line == want
+            continue
+        if not section or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "url":
+            v = value.strip().strip('"')
+            return v or None
+    return None
+
+
 def _copy_refs(src: str, dst: str) -> bool:
     """Copy the ref tree, bounded. False ⇒ too big; the caller degrades to a detached HEAD."""
     count = 0

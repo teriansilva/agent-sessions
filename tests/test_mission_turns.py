@@ -341,6 +341,15 @@ def test_a_prior_v9_database_upgrades_rather_than_failing_every_settlement(tmp_p
         "  state TEXT NOT NULL, owner TEXT, owner_at REAL, fence TEXT NOT NULL,"
         "  write_reserved_at REAL, result TEXT, action_ids TEXT, created_at REAL NOT NULL,"
         "  settled_at REAL, PRIMARY KEY (mission_id, turn_id));"
+        # A real v9 file also carries `mission_objectives` — it has been in the v1 schema since
+        # the store existed. Present here because the walk from v9 crosses migrations that ALTER
+        # it, and a fixture that omits a table the era genuinely had tests a database that never
+        # existed.
+        "CREATE TABLE mission_objectives ("
+        "  mission_id TEXT NOT NULL, key TEXT NOT NULL, ord INTEGER NOT NULL,"
+        "  title TEXT NOT NULL, probe TEXT NOT NULL, probe_args TEXT, gate INTEGER NOT NULL,"
+        "  state TEXT NOT NULL, met_at REAL, observed TEXT, source TEXT NOT NULL,"
+        "  PRIMARY KEY (mission_id, key));"
         "PRAGMA user_version=9;"
     )
     con.commit()

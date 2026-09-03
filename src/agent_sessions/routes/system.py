@@ -121,6 +121,7 @@ def _preflight_prefs(payload: dict) -> None:
                 raise bad(f"{key} must be a list of strings")
     for key, validator in (
         ("ai_review", prefs.validate_ai_review_patch),
+        ("forge", prefs.validate_forge_patch),
         ("auto_sort", prefs.validate_auto_sort_patch),
         ("pulse", prefs.validate_pulse_patch),
         ("orchestrator", prefs.validate_orchestrator_patch),
@@ -414,6 +415,9 @@ def register(
                 # AI session review config (#356) — the PUBLIC view only: the API key is
                 # write-only and surfaces here solely as `api_key_set` (never the value).
                 "ai_review": prefs.public_ai_review(),
+                # Forge connection (#891) — where the objective probes look. PUBLIC view only:
+                # the token is write-only and surfaces here solely as `token_set`.
+                "forge": prefs.public_forge(),
                 # AI auto-sort config (#424 Phase 6) — opt-in; holds no secret of its own,
                 # `configured` mirrors the reused ai_review endpoint readiness.
                 "auto_sort": prefs.public_auto_sort(),
@@ -531,6 +535,16 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_ai_review(payload["ai_review"])
             out["ai_review"] = prefs.public_ai_review()
+        if "forge" in payload:
+            # The forge connection the objective probes read (#891). Same masked-sentinel
+            # contract as the AI key — ""/mask preserve, null clears — so a form that round-trips
+            # the masked value cannot silently erase a working credential. The echo is the PUBLIC
+            # view: the token never comes back out.
+            err = prefs.validate_forge_patch(payload["forge"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            prefs.set_forge(payload["forge"])
+            out["forge"] = prefs.public_forge()
         if "auto_sort" in payload:
             # AI auto-sort opt-in (#424 Phase 6): enable + interval, server-validated
             # (unknown-key rejection, interval bounds). Holds no secret — it reuses the

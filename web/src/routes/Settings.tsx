@@ -43,6 +43,7 @@ import {
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
+import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
@@ -2667,6 +2668,10 @@ export function Settings() {
           <>
             <AiActivityPanel />
             <AiReviewSettings />
+            {/* Where mission objectives are checked (#891). Beside the AI endpoint because it is
+                the other outbound connection the operator configures, and because a mission's
+                follow-through needs both to be useful. */}
+            <ForgeSettings />
             <AutoSortSettings />
             <PulseSettings />
             <OrchestratorSettings />

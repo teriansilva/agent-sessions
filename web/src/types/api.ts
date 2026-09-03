@@ -538,11 +538,28 @@ export interface Folder {
   label: string;
 }
 
+/** The forge the objective probes read (#891). PUBLIC view only — the token is write-only and
+ *  surfaces as `token_set`, never as a value.
+ *
+ *  `configured` deliberately does NOT require a token: a public forge is readable without one, and
+ *  demanding a credential the probes do not need would turn a working setup into a permanent
+ *  `unknown`. */
+export interface ForgeConfig {
+  enabled: boolean;
+  kind: string;
+  base_url: string;
+  owner: string;
+  token_set: boolean;
+  configured: boolean;
+}
+
 export interface AppConfig {
   /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
   csrf: string;
   /** Server hostname (#503), shown in the footer classbar. Absent on older servers. */
   hostname?: string;
+  /** Absent on a server from before #891. */
+  forge?: ForgeConfig;
   /** Engines that are installed AND can start a new session (drives the picker). */
   new_session_engines: string[];
   terminal_backend: "ttyd" | "ws" | string;

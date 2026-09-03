@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 17
 #: What an objective's state reads as once it no longer exists. A distinct value rather than
 #: `None`, so a dropped objective and an objective whose state is unset can never look alike.
 OBJECTIVE_GONE = "<dropped>"
@@ -354,6 +354,13 @@ PROBE_ARG_SCHEMA: dict[str, _ArgSpec] = {
     # a human typed it. A URL-less `http_status` would be a live probe with nothing to check, so
     # it cannot be stored at all.
     "http_status": {"url": (True, _arg_url), "expect_status": (False, _arg_status)},
+    # `expect` is OPTIONAL again, and this time the fallback has a producer (#897 re-review 5,
+    # finding 7). #891's `change_live` contract is "is THIS revision live", and the revision is
+    # normally the merge SHA — which a static playbook cannot name, because it does not exist
+    # when the playbook is written. `forge_merged` observes one and `note_merge_sha` records it,
+    # so the marker is `expect` when the operator supplied one and the mission's own merge SHA
+    # otherwise. With neither, the probe answers `unknown` and says which is missing — it never
+    # reports "live" from a status code, which is the claim it exists to refuse.
     "http_revision": {"url": (True, _arg_url), "expect": (False, _arg_text)},
 }
 #: Every kind must say what it takes. A kind added to `PROBE_KINDS` without a schema entry would
@@ -528,6 +535,23 @@ CREATE TABLE IF NOT EXISTS missions (
   objectives_state TEXT,
   objectives_at    REAL,
   outcome       TEXT,
+  -- THE PROBE GENERATION SOURCE, and it is per MISSION rather than per objective (#897
+  -- re-review, finding 2). A counter living on the objective row restarts at zero when that row
+  -- is dropped and re-added, so an answer issued for the old incarnation matched the new one on
+  -- every check — the "an index is not an identity" family, one level down: a per-row counter is
+  -- an index into a row's history, and the row is a slot that can hold a different question a
+  -- second later. A mission-scoped monotonic value survives row replacement, so a generation is
+  -- never reused within a mission and a stale answer can never match.
+  --
+  -- LAST in the column list: `ALTER TABLE ... ADD COLUMN` appends, so this is where a fresh
+  -- install and an upgraded one agree on the stored DDL.
+  probe_gen_seq INTEGER NOT NULL DEFAULT 0,
+  -- THE MERGE SHA, once something observed one. #891 asks `http_revision` to bind to it — "is
+  -- THIS revision live" needs a revision to look for, and a static playbook cannot know a SHA
+  -- that does not exist yet. Written by the probe runner when `forge_merged` observes a merge,
+  -- and WRITE-ONCE: a merge commit does not change, so a second value would mean the row is
+  -- about a different merge and the objective is about a different question.
+  merge_sha     TEXT,
   -- A draft may exist before its project is resolved (that is the whole point of asking), but
   -- nothing may LAUNCH without a server-resolved cwd. Enforced here, not in a comment.
   CHECK (state IN ('draft','planned','abandoned') OR cwd IS NOT NULL)
@@ -576,6 +600,18 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   met_at     REAL,
   observed   TEXT,
   source     TEXT NOT NULL,
+  -- THE IN-FLIGHT PROBE BINDING (#897 re-review, finding 2). `probe_target` is the fully
+  -- resolved destination digest the current request was issued against — forge config, checkout,
+  -- derived repo/branch/remote and local HEAD, none of which live in `probe_args`. `probe_gen`
+  -- is bumped on every bind, so two runners racing the same row settle at most one answer and a
+  -- rebind invalidates an older request that is still in flight. Compared inside the settling
+  -- transaction, which is what makes the fence atomic rather than a pre/post pair in a caller.
+  probe_target TEXT,
+  probe_gen    INTEGER NOT NULL DEFAULT 0,
+  -- The forge-configuration revision the in-flight probe was bound at. Validated INSIDE the
+  -- settling transaction against the store's own counter, which is what closes the window a
+  -- pre-write digest comparison cannot (#897 re-review 5, finding 1).
+  probe_rev    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (mission_id, key)
 );
 
@@ -827,6 +863,12 @@ def _migrate(con) -> int:
             _migrate_12_to_13(con)
         if version < 14:
             _migrate_13_to_14(con)
+        if version < 15:
+            _migrate_14_to_15(con)
+        if version < 16:
+            _migrate_15_to_16(con)
+        if version < 17:
+            _migrate_16_to_17(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -982,6 +1024,72 @@ def _ddl_from_schema(table: str) -> str:
     start = _SCHEMA.index(marker)
     end = _SCHEMA.index(");", start) + 2
     return _SCHEMA[start:end]
+
+
+def _migrate_16_to_17(con) -> None:
+    """v17 records the merge SHA, so `http_revision` has the revision it is supposed to look for.
+
+    #891's `change_live` contract binds the probe to the merge SHA; without a producer that
+    fallback pointed at a field nothing wrote, so every objective relying on it answered `unknown`
+    for ever. Idempotent by inspection; SQLite's `ADD COLUMN` has no `IF NOT EXISTS`.
+    """
+    have = {r["name"] for r in con.execute("PRAGMA table_info(missions)").fetchall()}
+    if "merge_sha" not in have:
+        con.execute("ALTER TABLE missions ADD COLUMN merge_sha TEXT")
+    # …AND `probe_rev`, WHICH A v16 STORE NEVER GOT (#897 re-review 6, finding 1).
+    #
+    # It was appended to the v14→v15 step after v16 already existed, so a database that had
+    # already reached 16 walks straight past it and lands on 17 without the column — and the
+    # first probe then fails with `no such column: probe_rev`. A fresh install is fine, because
+    # the base `CREATE TABLE` carries it, which is exactly the asymmetry that makes this kind of
+    # edit dangerous: it is invisible to everyone except the operators who already had the app.
+    #
+    # Adding it here rather than editing the v15 step, because a v15 file that already ran that
+    # step would not re-run it either. Every migration is guarded by inspection, so a store that
+    # HAS the column is untouched whichever path it took.
+    ocols = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
+    if "probe_rev" not in ocols:
+        con.execute(
+            "ALTER TABLE mission_objectives ADD COLUMN probe_rev INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _migrate_15_to_16(con) -> None:
+    """v16 moves the probe generation off the objective row and onto the mission (#897 re-review).
+
+    A generation derived from a per-row counter restarts when the row is dropped and re-added, so
+    an answer issued for the previous incarnation of an objective key matched the new one — the
+    exact failure the generation exists to prevent. The source is now mission-scoped and
+    monotonic, so a value is never handed out twice within a mission.
+
+    Idempotent by inspection; SQLite's `ADD COLUMN` has no `IF NOT EXISTS`.
+    """
+    have = {r["name"] for r in con.execute("PRAGMA table_info(missions)").fetchall()}
+    if "probe_gen_seq" not in have:
+        con.execute("ALTER TABLE missions ADD COLUMN probe_gen_seq INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_14_to_15(con) -> None:
+    """v15 binds an in-flight probe to its resolved target durably (#897 re-review, finding 2).
+
+    The fence was a pre/post digest comparison held in the runner's own locals. That does not
+    survive a restart, does not see a second runner probing the same row, and leaves a window
+    between the comparison and the write in which the answer settles against a target nobody
+    checked. Two columns move it into the row, where the settling transaction can read it.
+
+    Idempotent by inspection — SQLite's `ADD COLUMN` has no `IF NOT EXISTS`.
+    """
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
+    if "probe_target" not in have:
+        con.execute("ALTER TABLE mission_objectives ADD COLUMN probe_target TEXT")
+    if "probe_gen" not in have:
+        con.execute(
+            "ALTER TABLE mission_objectives ADD COLUMN probe_gen INTEGER NOT NULL DEFAULT 0"
+        )
+    if "probe_rev" not in have:
+        con.execute(
+            "ALTER TABLE mission_objectives ADD COLUMN probe_rev INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _migrate_13_to_14(con) -> None:
@@ -1468,6 +1576,18 @@ def _objective_row(row) -> dict:
     d = dict(row)
     d["gate"] = bool(d.get("gate"))
     d["probe_args"] = _loads(d.get("probe_args"))
+    # `observed` is stored as JSON like `probe_args` and, until #891, was handed back as the raw
+    # STRING — because nothing wrote it, so nothing ever read it. The console's degraded rendering
+    # (#878) checks `typeof observed === "object"` before showing "last seen … · stale", so a
+    # string silently failed that check and the staleness could never have appeared. Parsed here,
+    # beside its sibling, rather than at each consumer.
+    d["observed"] = _loads(d.get("observed"))
+    # THE IN-FLIGHT PROBE BINDING IS NOT PART OF THE ROW ANYONE READS. `probe_target` and
+    # `probe_gen` exist so the settling transaction can fence a late answer (#897 re-review,
+    # finding 2); handing them to the console and the API would publish an internal digest as
+    # though it were mission state, and invite a client to send one back.
+    d.pop("probe_target", None)
+    d.pop("probe_gen", None)
     return d
 
 
@@ -3008,6 +3128,375 @@ def bump_episode(
             con.close()
 
 
+#: A sentinel for "this argument was not supplied", distinct from `None` — which is a legitimate
+#: `probe_args` value and must be comparable.
+_UNSET: object = object()
+
+#: How much of a probe's own account of what it saw is kept on the objective row. Bounded because
+#: `observed` is a durable column on every objective of every mission, and a forge that starts
+#: returning something verbose must not be able to grow the store without limit.
+OBSERVED_DETAIL_MAX = 300
+
+
+def observation_supports(o: dict) -> bool:
+    """Does the LATEST observation still back this objective's settlement? (#897 re-review)
+
+    Lives here, beside the only writer of `observed`, because **two callers must agree**: the
+    supervisor's board, which renders the difference between "was met" and "still holds", and
+    `propose_completion`, which must not carry a mission into review on a gate that has since
+    gone red. Those two answering differently is finding 1 — the board said not-done and the
+    committing transaction said done, because only one of them asked this question.
+
+    Three answers, and two of them are "no":
+
+    * the last look SAW it hold → yes;
+    * the last look saw it NOT hold (a check went red, a deploy rolled back) → no;
+    * the last look could not happen, so the row is **stale** → no. "We could not check" is not
+      evidence that a gate still holds, and a completion proposed on it would be exactly the
+      stale-200 claim one layer up.
+
+    An objective with no observation at all is supported: it was settled some other way — by a
+    waiver, or by a probe kind that no longer exists — and second-guessing that here would quietly
+    un-meet rows this function does not own.
+    """
+    obs = o.get("observed")
+    if not isinstance(obs, dict):
+        return True
+    if obs.get("stale") is True:
+        return False
+    if "value" in obs:
+        return bool(obs.get("value"))
+    return True
+
+
+def note_merge_sha(
+    mission_id: str, sha: str, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Record the mission's merge commit. **Write-once**; True iff this call set it.
+
+    The producer #891's `change_live` contract needs: `http_revision` asks whether THIS revision
+    is live, and a static playbook cannot name a SHA that does not exist when it is written. The
+    only thing that knows one is an observation — `forge_merged` returns it — so the probe runner
+    records it and every later revision probe has a marker to look for.
+
+    Write-once because a merge commit does not change. A second, different value would mean this
+    row is about a different merge, and quietly overwriting would repoint every revision objective
+    on the mission at it without anything saying so.
+    """
+    validate_id(mission_id)
+    sha = str(sha or "").strip()
+    if not sha or len(sha) > 64 or not re.fullmatch(r"[0-9a-fA-F]+", sha):
+        return False
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                "UPDATE missions SET merge_sha=?, updated_at=? "
+                "WHERE id=? AND (merge_sha IS NULL OR merge_sha='')",
+                (sha, ts, mission_id),
+            )
+            con.execute("COMMIT")
+            return bool(cur.rowcount)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def bind_probe_target(
+    mission_id: str,
+    objective_key: str,
+    *,
+    target: str,
+    expect_probe: str | None = None,
+    expect_args: object = _UNSET,
+    path: Path | None = None,
+) -> int | None:
+    """Claim this objective for a probe against `target`. Returns the new generation, or `None`.
+
+    Called immediately BEFORE the request goes out. It records, durably, what the answer that is
+    about to be fetched will have been fetched *from*, and stamps a generation onto the row.
+    `observe_objective` then refuses any answer whose `(target, generation)` is not the one the
+    row is still bound to.
+
+    That is the difference between this and the digest comparison it replaces (#897 re-review,
+    finding 2). A pair of comparisons around the request lived in one caller's locals: it could
+    not see a second runner probing the same row, did not survive a restart, and left the window
+    between the second comparison and the write unguarded. A generation in the row is visible to
+    everyone who writes it, and is checked by the transaction that settles.
+
+    `None` means the objective is gone or is no longer the one being asked about — the caller
+    should not issue the request at all.
+    """
+    validate_id(mission_id)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT probe, probe_args FROM mission_objectives WHERE mission_id=? AND key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            if row is None:
+                con.execute("ROLLBACK")
+                return None
+            if expect_probe is not None and str(row["probe"] or "") != expect_probe:
+                con.execute("ROLLBACK")
+                return None
+            if expect_args is not _UNSET and _loads(row["probe_args"]) != expect_args:
+                con.execute("ROLLBACK")
+                return None
+            # ALLOCATED FROM THE MISSION, not from this row (#897 re-review, finding 2). A
+            # per-row counter restarts at zero when the objective is dropped and re-added, so an
+            # answer issued for the old incarnation matched the new one on every check. The
+            # mission's counter only ever goes up, so a generation is never reused — and a
+            # re-added row starts at the column default, which no outstanding answer can match.
+            mrow = con.execute(
+                "SELECT probe_gen_seq FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if mrow is None:
+                con.execute("ROLLBACK")
+                return None
+            gen = int(mrow["probe_gen_seq"] or 0) + 1
+            con.execute("UPDATE missions SET probe_gen_seq=? WHERE id=?", (gen, mission_id))
+            # …AND THE CONFIG REVISION THIS PROBE IS ABOUT. Read on THIS connection inside the
+            # binding transaction, so the value stamped on the row is the one in force at the
+            # moment the request is issued.
+            rrow = con.execute(
+                "SELECT value FROM supervisor_state WHERE key=?", (FORGE_REV_KEY,)
+            ).fetchone()
+            try:
+                rev = int((rrow["value"] if rrow else "0") or 0)
+            except (TypeError, ValueError):
+                rev = 0
+            con.execute(
+                "UPDATE mission_objectives SET probe_target=?, probe_gen=?, probe_rev=? "
+                "WHERE mission_id=? AND key=?",
+                (target, gen, rev, mission_id, objective_key),
+            )
+            con.execute("COMMIT")
+            return gen
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def observe_objective(
+    mission_id: str,
+    objective_key: str,
+    *,
+    observed: bool,
+    value: bool,
+    detail: str = "",
+    extra: dict | None = None,
+    expect_probe: str | None = None,
+    expect_args: object = _UNSET,
+    expect_target: str | None = None,
+    expect_gen: int | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict | None:
+    """Record what a PROBE saw. **The only path that may write `met` from evidence (#891).**
+
+    `patch_objectives` — the operator's path — refuses `state` / `met_at` / `observed` outright, so
+    an edit can never retroactively claim an objective holds. This is the other side of that rule:
+    a settlement written here is always backed by a fetch that actually happened, and the row keeps
+    the fact that settled it.
+
+    **Three outcomes, and the third is not the second.**
+
+    * ``observed=True, value=True``  — settle ``met``, stamp ``met_at``, advance the episode.
+    * ``observed=True, value=False`` — record what was seen and leave the objective UNMET. The
+      supervisor's nudge budget is what acts on this; the probe does not.
+    * ``observed=False``            — **we could not look.** Nothing settles, ``met_at`` is not
+      touched, and the row is marked ``stale`` with the reason and the time. This is the case the
+      whole three-way split exists for: collapsing it into "false" makes a forge outage read as a
+      mission going backwards, and collapsing it into "true" is the stale-200 lie.
+
+    An **already-settled** objective is never re-opened by a probe. A `met` that later reads false
+    (a PR reopened, a check re-run red) is a fact the operator needs, but silently un-meeting a
+    gate would let the supervisor resume nudging a mission it had already proposed for completion —
+    so the observation is recorded and the state is left alone. Moving a settled objective
+    backwards is an operator decision, through the edit path.
+
+    **`expect_probe` / `expect_args` are the objective's IDENTITY, compared inside this
+    transaction.** A probe is an external call that can outlive the row it was issued for: drop and
+    re-add the same key pointing at a different target while a request is in flight, and the old
+    answer would settle the new objective. `(mission_id, key)` is not identity — it is a slot, and
+    the same slot can hold a different question a second later. Refused rather than applied, and
+    reported as ``None`` like any other row that is not there to write (#897 review).
+
+    **A `could not look` never destroys the last successful observation.** The prior value is
+    carried forward under ``last``, so the console's "last seen … · stale" has something to name
+    and the operator can tell "it was green an hour ago and the forge is down" from "we have never
+    seen this". Blanking it was the first version's bug.
+
+    Returns the updated row, or ``None`` if the objective does not exist or has moved on.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    obs: dict = {
+        "at": ts,
+        "detail": _cap(str(detail or ""), OBSERVED_DETAIL_MAX),
+    }
+    if not observed:
+        # `stale` is the flag `MissionObjectives` already reads to render "last seen … · stale"
+        # with its reason — the console's degraded rendering shipped in #878 against no producer,
+        # and this is the producer.
+        obs["stale"] = True
+        obs["reason"] = obs["detail"]
+    else:
+        obs["value"] = bool(value)
+    # THE EXTERNAL TARGET is ADJUDICATED here now, against the binding the row carries.
+    #
+    # Where a probe went is not row state — it is the configured forge plus the mission's checkout
+    # plus what those resolve to — and this module still does not read any of it (it must not
+    # import prefs to settle a row). What it CAN do is compare: `bind_probe_target` wrote the
+    # resolved digest and a generation onto the row before the request went out, the caller passes
+    # the digest it re-resolved *after* the answer came back, and the transaction below requires
+    # the two to be the same row-generation and the same destination. An operator who repointed
+    # the forge mid-flight, or a second runner that rebound the row, is refused by the transaction
+    # that would otherwise commit (#897 re-review, finding 2).
+    #
+    # Set BEFORE the blob is serialised: `obs` is frozen into JSON above the transaction, so a
+    # field added inside it never reaches the row (which is exactly what happened first).
+    if expect_target is not None:
+        obs["target"] = expect_target
+    if isinstance(extra, dict):
+        for k, v in list(extra.items())[:10]:
+            if v is None:
+                continue
+            if isinstance(v, str | int | float | bool):
+                obs[k] = _cap(v, OBSERVED_DETAIL_MAX) if isinstance(v, str) else v
+    # Serialised BEFORE the transaction opens, so an over-bound observation is refused without
+    # having held the write lock — and refused rather than truncated, because a truncated blob
+    # reads back as `None` and would report a write that silently lost its evidence.
+    blob = _json_or_none(obs, OBSERVED_MAX, field="observed")
+    blob_source = None  # set inside the tx when a prior observation is carried forward
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT state, probe, probe_args, observed, probe_target, probe_gen, probe_rev "
+                "FROM mission_objectives WHERE mission_id=? AND key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            if row is None:
+                con.execute("ROLLBACK")
+                return None
+            # THE IDENTITY CHECK, inside the transaction that writes. Outside it, this is
+            # check-then-act and the row can change between the two.
+            if expect_probe is not None and str(row["probe"] or "") != expect_probe:
+                con.execute("ROLLBACK")
+                return None
+            if expect_args is not _UNSET and _loads(row["probe_args"]) != expect_args:
+                con.execute("ROLLBACK")
+                return None
+            # THE TARGET FENCE, in the same transaction as the write. `probe_target` is what the
+            # request was issued against; `expect_target` is what the caller resolved after it
+            # returned. Different ⇒ the destination moved under the request. A generation that
+            # has moved on ⇒ somebody rebound this row, and this answer is the older one.
+            if expect_gen is not None and int(row["probe_gen"] or 0) != expect_gen:
+                con.execute("ROLLBACK")
+                return None
+            if expect_target is not None and str(row["probe_target"] or "") != expect_target:
+                con.execute("ROLLBACK")
+                return None
+            # THE CONFIG REVISION, READ HERE — which is the whole point (#897 re-review 5,
+            # finding 1). Every other fence compares two values the caller supplied, so all of
+            # them are answers about a moment BEFORE this transaction: an operator who repoints
+            # the forge between the caller's last resolution and this write leaves every one of
+            # them agreeing while the answer came from an authority nobody is configured for any
+            # more. A counter this transaction reads for itself has no such window.
+            rrow = con.execute(
+                "SELECT value FROM supervisor_state WHERE key=?", (FORGE_REV_KEY,)
+            ).fetchone()
+            try:
+                now_rev = int((rrow["value"] if rrow else "0") or 0)
+            except (TypeError, ValueError):
+                now_rev = 0
+            if expect_target is not None and int(row["probe_rev"] or 0) != now_rev:
+                con.execute("ROLLBACK")
+                return None
+            # THE MISSION HAS TO STILL BE ONE A PROBE MAY WRITE TO (#897 re-review 5, finding 3).
+            # A probe issued while the mission was running can resolve after the operator has
+            # failed or abandoned it, and marking an objective `met` on a finished record edits
+            # history — the settlement is about a mission that no longer exists in that form.
+            mrow = con.execute(
+                "SELECT state, archived_at FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if mrow is None:
+                con.execute("ROLLBACK")
+                return None
+            if str(mrow["state"] or "") in TERMINAL_STATES or mrow["archived_at"] is not None:
+                con.execute("ROLLBACK")
+                return None
+            # CARRY THE LAST SUCCESSFUL OBSERVATION FORWARD. `unknown` says nothing new; it must
+            # not erase what was known.
+            if not observed:
+                prior = _loads(row["observed"]) or {}
+                keep = prior.get("last") if isinstance(prior, dict) else None
+                if keep is None and isinstance(prior, dict) and "value" in prior:
+                    keep = {k: v for k, v in prior.items() if k not in ("stale", "reason")}
+                if keep is not None:
+                    obs["last"] = keep
+                    blob_source = obs
+            state = str(row["state"] or "")
+            settle = observed and value and state not in ("met", "waived")
+            if settle:
+                con.execute(
+                    "UPDATE mission_objectives SET state='met', met_at=?, observed=? "
+                    "WHERE mission_id=? AND key=?",
+                    (ts, blob, mission_id, objective_key),
+                )
+                # A settlement is a transition, so the nudge budget starts again — in the SAME
+                # transaction, because an episode advance that a crash could lose while keeping
+                # the settlement would leave a met objective carrying a spent budget.
+                _bump_episode_con(con, mission_id, objective_key, ts)
+                _append_event(
+                    con,
+                    mission_id,
+                    "probe",
+                    at=ts,
+                    text=_cap(f"{objective_key}: {obs['detail']}", EVENT_TEXT_MAX) or None,
+                    meta={"objective": objective_key, "settled": "met", "probe": row["probe"]},
+                )
+            else:
+                # `met_at` is deliberately NOT in this UPDATE. An objective that was met keeps the
+                # time it was met even when a later probe cannot look, which is what lets the
+                # console say "last seen … · stale" rather than losing the settlement's own stamp.
+                con.execute(
+                    "UPDATE mission_objectives SET observed=? WHERE mission_id=? AND key=?",
+                    (
+                        _json_or_none(blob_source, OBSERVED_MAX, field="observed")
+                        if blob_source
+                        else blob,
+                        mission_id,
+                        objective_key,
+                    ),
+                )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    rows = objectives(mission_id, path=path)
+    for r in rows:
+        if r["key"] == objective_key:
+            return r
+    return None
+
+
 def stand_down(
     mission_id: str,
     objective_key: str,
@@ -3464,6 +3953,62 @@ def ensure_held_event(
             con.close()
 
 
+#: The key holding the FORGE CONFIGURATION REVISION — a counter this store owns and `prefs`
+#: advances whenever the forge block is written.
+#:
+#: It lives here rather than in `prefs.json` for one reason: the transaction that settles an
+#: objective has to be able to READ it (#897 re-review 5, finding 1). A digest captured before
+#: that transaction cannot close the window between the last resolution and the write — the
+#: operator can repoint the forge inside it, and the old authority's answer still lands. A
+#: counter in the same database the settlement writes to can be validated by the settlement
+#: itself, which is the only thing that closes it.
+FORGE_REV_KEY = "forge_config_revision"
+
+
+def forge_revision(*, path: Path | None = None) -> int:
+    """The current forge-configuration revision. 0 when it has never been written."""
+    raw = get_supervisor_state(FORGE_REV_KEY, path=path)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def bump_forge_revision(*, now: float | None = None, path: Path | None = None) -> int:
+    """Advance the forge revision. Called by `prefs.set_forge` after a successful write.
+
+    Monotonic and read-modify-write under the store's own write lock, so two concurrent config
+    writes cannot both produce the same number — a repeated revision is a window in which a stale
+    answer matches.
+    """
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT value FROM supervisor_state WHERE key=?", (FORGE_REV_KEY,)
+            ).fetchone()
+            try:
+                nxt = int((row["value"] if row else "0") or 0) + 1
+            except (TypeError, ValueError):
+                nxt = 1
+            con.execute(
+                "INSERT INTO supervisor_state (key, value, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at",
+                (FORGE_REV_KEY, str(nxt), ts),
+            )
+            con.execute("COMMIT")
+            return nxt
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
 def get_supervisor_state(key: str, *, path: Path | None = None) -> str | None:
     """One durable supervisor-loop value, or None."""
     con = _ready(path)
@@ -3577,9 +4122,30 @@ def propose_completion(
             if not rows:
                 con.execute("ROLLBACK")
                 return False
-            unmet = sum(
-                1 for r in rows if int(r["gate"] or 0) and str(r["state"]) not in ("met", "waived")
-            )
+            parsed = [_objective_row(r) for r in rows]
+            # THE SAME PREDICATE THE BOARD USES, not a second, weaker one (#897 re-review,
+            # finding 1). `state == 'met'` is the stored settlement — it says a probe once saw the
+            # gate hold, and nothing more. For a gate whose truth can move (a check re-run red, a
+            # deploy rolled back, a PR reopened) the stored settlement is stale the moment the
+            # world changes, and a probe that observes the change records it in `observed` without
+            # un-meeting the row, deliberately: un-meeting is an operator decision.
+            #
+            # So the board reported `likely_done: false` while THIS transaction, asking only about
+            # `state`, happily carried the mission into review and posted a completion proposal
+            # over a gate that had gone red. Two answers to one question is the whole defect;
+            # `observation_supports` is now the one place it is answered.
+            #
+            # A WAIVER is exempt. The operator said the objective was not required, and that
+            # decision does not go stale when a probe cannot look.
+            unmet = 0
+            for o in parsed:
+                if not o.get("gate"):
+                    continue
+                state = str(o.get("state") or "")
+                if state == "waived":
+                    continue
+                if state != "met" or not observation_supports(o):
+                    unmet += 1
             if unmet:
                 con.execute("ROLLBACK")
                 return False
@@ -3597,7 +4163,7 @@ def propose_completion(
                 at=ts,
                 meta={"from": from_state, "to": "review", "why": "every gate is met"},
             )
-            text, meta = render([_objective_row(r) for r in rows])
+            text, meta = render(parsed)
             _append_event(con, mission_id, "completion", at=ts, text=text, meta=meta)
             con.execute("COMMIT")
             return True

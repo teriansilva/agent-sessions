@@ -75,12 +75,17 @@ TRANSPORT_FUNC = "_post_chat"
 HTTP_CLIENT_LIBS = frozenset(
     {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client"}
 )
-HTTP_MODULES = frozenset({"review", "webpush", "appproxy"})
+HTTP_MODULES = frozenset({"review", "webpush", "appproxy", "forge", "mission_probes"})
 
 # Layer 2 — inside those modules, every outbound call is pinned to a function AND a count, so
 # a SECOND call added to an already-approved function is a mismatch rather than a free ride.
 # Any verb counts here: `post`, `request`, `stream`, `send` — these modules do nothing else.
-HTTP_VERBS = frozenset({"post", "put", "patch", "delete", "request", "stream", "send"})
+# `get` joins these with #891's probes: a READ against an operator-configured address is an
+# outbound call and belongs in the inventory like any other. It is safe to add here because
+# `_is_http_call` also requires an HTTP-shaped receiver (or an HTTP keyword), so `dict.get` in one
+# of these modules is not mistaken for a request — the receiver test is what makes the verb list
+# extensible at all.
+HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
     # THE chat-completions transport and its two ORDERED degrade retries (#841): attempt 1
     # carries both optional fields; a refusal drops `chat_template_kwargs` (the thinking
@@ -88,8 +93,27 @@ POST_SITES = {
     # doors, deliberately counted — this number is an inventory of outbound calls, so bumping
     # it is a statement that a third call was added on purpose, never a ratchet refresh.
     ("review", TRANSPORT_FUNC): 3,
+    # `GET <base>/models` — the Settings model dropdown's proxy (#382). It carries no prompt and
+    # is not a completion, which is why it lives beside the transport rather than behind it.
+    #
+    # It has ALWAYS been here and was never inventoried: `get` was outside `HTTP_VERBS` until
+    # #891 added the objective probes, so this door was invisible to the layer-2 count. Recorded
+    # now rather than exempted — an inventory whose coverage depends on which verbs somebody
+    # happened to list is an inventory that can be widened by accident.
+    ("review", "list_models"): 1,
     ("webpush", "send"): 1,  # Web Push delivery to the browser's push service — no prompts
     ("appproxy", "do"): 1,  # Home Free reverse proxy to the local app — no prompts
+    # THE OBJECTIVE PROBES (#891). Both are GETs against an address a HUMAN configured — a forge
+    # the operator pointed at, or a URL they typed into a playbook. Neither carries a prompt, and
+    # neither can be aimed by model output: `probe` / `probe_args` are refused as model input at
+    # every route, so the planner selects a template INDEX and the target comes from the stored
+    # row. That is the property `tests/test_mission_objectives.py` asserts on the HTTP client
+    # itself, and `tests/test_mission_probes.py` re-asserts against this runner.
+    #
+    # ONE call site each, counted. A second GET added beside either is a mismatch here rather than
+    # an inherited pass — which is the entire point of counting rather than listing.
+    ("forge", "_get"): 1,  # `ForgeClient._get` — the adapter's single read
+    ("mission_probes", "_probe_http"): 1,  # `http_status` / `http_revision`
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

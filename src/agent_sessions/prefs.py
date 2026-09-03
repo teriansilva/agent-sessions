@@ -1585,6 +1585,231 @@ def set_agent_budgets(patch: dict, path: Path | None = None) -> dict:
     return _mutate("agent_budgets", merge, path)
 
 
+# ---------------------------------------------------------------- forge connection (#891)
+#
+# WHERE MISSION CONTROL LOOKS for the facts its objectives are about: a PR, its checks, the
+# reviewer's verdict, the merge. Operator-authority config in exactly the same class as
+# `ai_review.base_url` — the operator points it at their own forge, and nothing model-authored
+# can reach it.
+#
+# The TOKEN never leaves the process: `public_forge()` replaces it with `token_set`, which is what
+# `/api/config` and `POST /api/prefs` echo. It is sent as a request header and nowhere else — never
+# a query parameter, never an argv (`ps` is readable by any local user on this host).
+
+FORGE_BASE_URL_MAX = 300
+FORGE_TEXT_MAX = 120
+
+_FORGE_DEFAULTS: dict[str, object] = {
+    #: Off until an operator configures it. An unconfigured forge makes every forge probe answer
+    #: `unknown` — never `failed`, because "we were not told where to look" is not evidence.
+    "enabled": False,
+    "kind": "forgejo",
+    "base_url": "",
+    "token": "",
+    #: Default repository owner, so a playbook objective can name a bare repo (or none at all, and
+    #: let the mission's own git remote answer).
+    "owner": "",
+}
+
+#: The response shapes the adapter knows. Kept in step with `forge.ForgeClient.KINDS` by a test
+#: rather than by import, so prefs does not depend on the HTTP module.
+FORGE_KINDS = ("forgejo", "gitea", "github")
+
+
+def _coerce_forge(raw: object) -> dict:
+    """Defaults + per-field coercion, fail-soft on read exactly like `_coerce_ai_review`.
+
+    A malformed stored block degrades to "not configured" rather than raising: an unreadable forge
+    setting must make the probes answer `unknown`, not take the supervisor down.
+    """
+    out = dict(_FORGE_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in ("base_url", "token", "owner"):
+            v = raw.get(k)
+            if isinstance(v, str):
+                out[k] = v
+        if isinstance(raw.get("enabled"), bool):
+            out["enabled"] = raw["enabled"]
+        if raw.get("kind") in FORGE_KINDS:
+            out["kind"] = raw["kind"]
+    return out
+
+
+def get_forge(path: Path | None = None) -> dict:
+    """The full stored block **including the token**. Server-side only — every HTTP surface goes
+    through `public_forge()`."""
+    return _coerce_forge(_load(path or _default_path()).get("forge"))
+
+
+def public_forge(path: Path | None = None) -> dict:
+    """The client-safe view: the token becomes `token_set`, plus a derived `configured`."""
+    full = get_forge(path)
+    pub = {k: v for k, v in full.items() if k != "token"}
+    pub["token_set"] = bool(full["token"])
+    # `configured` is what the probes gate on, and it deliberately does NOT require a token: a
+    # public forge is readable without one, and demanding a credential we do not need would turn
+    # a working setup into a permanent `unknown`.
+    pub["configured"] = bool(full["enabled"] and str(full["base_url"]).strip())
+    return pub
+
+
+def validate_forge_patch(patch: object) -> str | None:
+    """Server-side schema validation for a partial `forge` write. Returns an error (→ 422) or None.
+
+    Unknown keys are REJECTED rather than ignored, like every other block: an ignored key is how a
+    typo silently no-ops and the operator concludes the setting does not work.
+    """
+    if not isinstance(patch, dict):
+        return "forge must be an object"
+    unknown = set(patch) - set(_FORGE_DEFAULTS)
+    if unknown:
+        return f"unknown forge fields: {sorted(unknown)}"
+    if "enabled" in patch and not isinstance(patch["enabled"], bool):
+        return "forge.enabled must be a boolean"
+    if "kind" in patch and patch["kind"] not in FORGE_KINDS:
+        return f"forge.kind must be one of {list(FORGE_KINDS)}"
+    if "base_url" in patch:
+        v = patch["base_url"]
+        if not isinstance(v, str) or len(v) > FORGE_BASE_URL_MAX:
+            return "forge.base_url must be a string"
+        s = v.strip()
+        if s:
+            try:
+                parts = urlsplit(s)
+            except ValueError:
+                return "forge.base_url is not a URL"
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                return "forge.base_url must be an http(s) URL"
+            # USERINFO IS REJECTED. `https://user:password@host` is a credential in a field that
+            # is echoed back to the browser through `public_forge()` — which would drive a hole
+            # straight through the write-only boundary the separate `token` field exists to keep.
+            # Rejected rather than stripped: silently dropping half of what the operator typed
+            # changes where the request goes without saying so.
+            if parts.username or parts.password or "@" in parts.netloc:
+                return "forge.base_url may not carry a username or password — use the token field"
+            # A query or fragment cannot be part of an API authority, and a stored `?token=…` is
+            # the other way a credential ends up in the public view.
+            if parts.query or parts.fragment:
+                return "forge.base_url may not carry a query string or fragment"
+    if "owner" in patch:
+        v = patch["owner"]
+        if not isinstance(v, str) or len(v) > FORGE_TEXT_MAX:
+            return "forge.owner must be a string"
+    if "token" in patch:
+        v = patch["token"]
+        # `None` clears; the mask sentinel and "" preserve — the same three-way contract the AI
+        # endpoint's key already uses, so the Settings form behaves identically.
+        if v is not None and (not isinstance(v, str) or len(v) > 500):
+            return "forge.token must be a string or null"
+    return None
+
+
+def forge_authority(base_url: object) -> tuple[str, str, str]:
+    """``(scheme, host, port)`` — WHO a credential would be sent to.
+
+    Compared rather than the whole URL because a path change is not an authority change: moving
+    from ``https://git.example`` to ``https://git.example/`` must not throw the operator's token
+    away, while moving to ``https://evil.example`` must.
+    """
+    if not isinstance(base_url, str) or not base_url.strip():
+        return ("", "", "")
+    try:
+        p = urlsplit(base_url.strip())
+    except ValueError:
+        return ("", "", "")
+    return (p.scheme.lower(), (p.hostname or "").lower(), str(p.port or ""))
+
+
+def set_forge(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block and persist, inside `_mutate`'s lock.
+
+    **A token belongs to ONE authority.** Changing the scheme, host or port DROPS the stored token
+    rather than carrying it across — otherwise editing the endpoint silently re-points an existing
+    credential at whatever was typed, and the operator's next save sends their forge token to a
+    host they have not authorised it for. Found in review on #897; the rule is the same one the
+    browser applies to a cookie, and for the same reason.
+
+    **A stored token requires HTTPS.** A credential on a plaintext endpoint is a credential on the
+    wire. Loopback is exempted explicitly and narrowly — a forge on `127.0.0.1` has no network to
+    be sniffed on, and refusing it would make a perfectly ordinary local setup impossible — and
+    that exemption is a named list rather than a substring check on "local".
+    """
+
+    def merge(raw: object) -> dict:
+        cur = _coerce_forge(raw)
+        new = dict(cur)
+        for k in ("enabled", "kind", "base_url", "owner"):
+            if k in patch:
+                new[k] = patch[k]
+        if "token" in patch:
+            v = patch["token"]
+            if v is None:
+                new["token"] = ""
+            elif isinstance(v, str) and v.strip() and v != AI_REVIEW_KEY_MASK:
+                new["token"] = v
+            # "" or the mask preserves what is stored, so a form that round-trips the masked
+            # value cannot silently erase a working credential. `AI_REVIEW_KEY_MASK` is shared
+            # rather than re-declared: one sentinel for the Settings form to know about, not one
+            # per block.
+        # THE AUTHORITY CHECK, after the merge and against what was STORED: an explicit new token
+        # in the same request is the operator saying "this credential, that host", which is fine.
+        # A retained one is not.
+        retained = "token" not in patch or not (
+            isinstance(patch.get("token"), str)
+            and patch["token"].strip()
+            and patch["token"] != AI_REVIEW_KEY_MASK
+        )
+        if (
+            retained
+            and new["token"]
+            and forge_authority(new["base_url"]) != forge_authority(cur["base_url"])
+        ):
+            new["token"] = ""
+        if new["token"] and not _forge_transport_ok(new["base_url"]):
+            new["token"] = ""
+        return new
+
+    # ADVANCE THE CONFIG REVISION **BEFORE** THE WRITE, and again after (#897 re-review 6,
+    # finding 2).
+    #
+    # The counter lives in the mission store because that is the only place the transaction that
+    # SETTLES an objective can read it: every fence the caller supplies is an answer about a
+    # moment before that transaction, so a forge change landing inside it leaves them all
+    # agreeing while the evidence came from an authority nobody is configured for any more.
+    #
+    # But the two stores are different files and cannot be written atomically together, so the
+    # ORDER decides which way the gap fails. Bumping only afterwards leaves a window in which the
+    # config is already B and the revision still says A — and a probe settling inside it sees its
+    # bound revision match and lands an answer from A under B. Bumping FIRST inverts that window
+    # to "the revision says B while the config is still A", where a settling probe is refused. It
+    # costs a discarded probe that would have been fine, and the next pass re-binds; the other
+    # direction costs a wrong settlement, which is durable.
+    #
+    # The second bump covers the write itself: a save that changed nothing observable still ends
+    # with a revision that reflects a completed write rather than one taken mid-flight. The
+    # counter is monotonic, so two advances per save are free.
+    #
+    # Not suppressed. If this cannot land, a probe already in flight against the OLD forge can
+    # still settle a row — the exact thing the revision exists to prevent — so the operator is
+    # told the save half-completed rather than left believing a fence is in force that is not.
+    from . import missions as _m
+
+    _m.bump_forge_revision()
+    out = _mutate("forge", merge, path)
+    _m.bump_forge_revision()
+    return out
+
+
+#: Hosts on which a plaintext forge may still hold a token. Loopback only, by name and by literal
+#: — never a substring test, which `evil-127.0.0.1.example` walks straight through.
+_FORGE_PLAINTEXT_OK = frozenset({"localhost", "127.0.0.1", "::1", "ip6-localhost"})
+
+
+def _forge_transport_ok(base_url: object) -> bool:
+    scheme, host, _ = forge_authority(base_url)
+    return scheme == "https" or host in _FORGE_PLAINTEXT_OK
+
+
 # ---------------------------------------------------------------- mission playbooks (#883)
 #
 # A playbook is an operator-authored list of objective TEMPLATES a mission can be instantiated
