@@ -657,13 +657,23 @@
   align-self: center;
 }
 
-.supReady { color: var(--status-up); }
-.supSpent { color: var(--status-degraded); }
-.supWaiting { color: var(--status-unknown); }
+.supReady {
+  color: var(--status-up);
+}
+.supSpent {
+  color: var(--status-degraded);
+}
+.supWaiting {
+  color: var(--status-unknown);
+}
 /* An unreadable ledger is a fact about the FILE, not about the objective — amber, because it
  * needs a human, and never the same paint as a budget the supervisor genuinely spent. */
-.supUnknown { color: var(--status-degraded); }
-.supHeld { color: var(--status-unknown); }
+.supUnknown {
+  color: var(--status-degraded);
+}
+.supHeld {
+  color: var(--status-unknown);
+}
 .supMet {
   color: var(--text-3);
   border-style: dashed;
@@ -691,7 +701,9 @@
   white-space: nowrap;
 }
 
-.supEpisode { color: var(--text-3); }
+.supEpisode {
+  color: var(--text-3);
+}
 
 /* The refusal sentence spans the full row under the title — it is prose, and cramming it into the
  * title column makes every row a different height. */
@@ -712,10 +724,36 @@
   background: var(--glass);
 }
 
-.supProposal { border-left-color: var(--status-up); }
+.supProposal {
+  border-left-color: var(--status-up);
+}
 .supGates {
   border-left-color: var(--status-degraded);
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--text-3);
+}
+
+/* A control inside a turn's own block — retry, dismiss, check again (#890). Sized to the 44px
+   touch floor the rest of the console holds to, and inline rather than a bar, because it belongs
+   to the one turn it is about rather than to the thread. */
+.missionQBtn {
+  min-height: 44px;
+  margin: 8px 8px 0 0;
+  padding: 0 12px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 11px var(--font-sans, inherit);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.missionQBtn:hover {
+  border-color: var(--accent);
+}
+
+.missionQBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

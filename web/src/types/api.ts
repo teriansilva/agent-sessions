@@ -1021,6 +1021,26 @@ export interface GitWriteResult {
 // ---------------------------------------------------------------------------------------------
 
 /** One entry in a mission's timeline. `kind` is `missions.EVENT_KINDS`. */
+/** One durable operator turn (#871, wired in #890).
+ *
+ *  `state` is the whole reason this route exists rather than a second Ask box:
+ *
+ *  - `in_progress` — the model is running, or the turn is waiting on an action that has not
+ *    settled. A reload finds it here rather than finding nothing.
+ *  - `done` — settled; `answer` is the stored answer and a replay returns exactly this.
+ *  - `indeterminate` — **nobody can say whether the instruction went out.** It is never retried
+ *    automatically: a retry could be a second copy of an instruction the agent already has.
+ *  - `failed` — settled with an honest failure outcome. */
+export interface MissionTurn {
+  turn_id: string;
+  state: "in_progress" | "done" | "indeterminate" | "failed" | string;
+  intent?: string | null;
+  answer?: string | null;
+  delivery_error?: string | null;
+  matches?: PulseAskMatch[];
+  actions?: OrchestratorAction[];
+}
+
 export interface MissionEvent {
   seq: number;
   mission_id: string;
@@ -1156,6 +1176,21 @@ export interface Mission {
   /** DERIVED at read time from the ledger, never stored (#840). */
   needs_you?: boolean;
   needs_you_why?: string[];
+  /** The turn the operator is still owed an outcome for, from the STORE (#890). Absent/null when
+   *  there is none. This is what makes "still working" and an ambiguous turn survive a reload —
+   *  a durable turn whose only representation is component state is not durable. */
+  turn?: MissionOpenTurn | null;
+}
+
+/** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —
+ *  a finished turn's answer is a timeline event, which is where finished turns live. */
+export interface MissionOpenTurn {
+  turn_id: string;
+  state: "in_progress" | "indeterminate";
+  /** The operator's own words, read back from the event the claim wrote. */
+  text: string;
+  delivery_error: string;
+  created_at: number;
 }
 
 export interface MissionSession {

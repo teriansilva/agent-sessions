@@ -721,3 +721,54 @@ def test_the_page_still_RENDERS_when_the_supervisor_reading_fails(api, monkeypat
     r = c.get(f"/api/missions/{mid}", headers=hdr)
     assert r.status_code == 200, r.text
     assert "supervisor" not in r.json(), "a failed reading was reported as an empty one"
+
+
+# ---- The open turn rides on the mission detail (#902 review, finding 1) -----------------------
+
+
+def test_the_mission_DETAIL_carries_the_turn_the_operator_is_still_owed(api):
+    """What a reload finds. The composer used to hold this in component state, so closing the tab
+    lost the fact that work was in flight — a durable turn nobody could read back is not one."""
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    missions.claim_turn(m["id"], "t1", "sha", text="run the tests")
+
+    r = c.get(f"/api/missions/{m['id']}", headers=hdr)
+    assert r.status_code == 200, r.text
+    turn = r.json().get("turn")
+    assert turn and turn["turn_id"] == "t1"
+    assert turn["state"] == "in_progress"
+    assert turn["text"] == "run the tests"
+
+
+def test_only_an_AMBIGUOUS_turn_can_be_dismissed_and_the_dismissal_STICKS(api):
+    """`indeterminate` is terminal and the server cannot resolve it, so the operator's "I have
+    seen this" is the only thing that ends it — and it has to outlive the tab that said it."""
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    _, row = missions.claim_turn(m["id"], "t1", "sha", text="restart it")
+
+    # Still running: not dismissible, and the route says so rather than pretending.
+    bad = c.post(f"/api/missions/{m['id']}/turns/t1/ack", headers=hdr)
+    assert bad.status_code == 404, bad.text
+    assert c.get(f"/api/missions/{m['id']}", headers=hdr).json().get("turn")
+
+    missions.reserve_turn_write(m["id"], "t1", row["fence"])
+    missions.abandon_turn(m["id"], "t1", row["fence"])
+    assert c.get(f"/api/missions/{m['id']}", headers=hdr).json()["turn"]["state"] == (
+        "indeterminate"
+    )
+
+    ok = c.post(f"/api/missions/{m['id']}/turns/t1/ack", headers=hdr)
+    assert ok.status_code == 200, ok.text
+    # …and it is gone from the next read, which is the whole point of it being durable.
+    assert c.get(f"/api/missions/{m['id']}", headers=hdr).json().get("turn") is None
+
+
+def test_dismissing_a_turn_REQUIRES_login_and_csrf(api, auth_cfg):
+    """It is a state-changing write like every other mission mutation."""
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    assert c.post(f"/api/missions/{m['id']}/turns/t1/ack").status_code == 403
+    fresh = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    assert fresh.post(f"/api/missions/{m['id']}/turns/t1/ack").status_code in (401, 403)

@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 #: What an objective's state reads as once it no longer exists. A distinct value rather than
 #: `None`, so a dropped objective and an objective whose state is unset can never look alike.
 OBJECTIVE_GONE = "<dropped>"
@@ -776,6 +776,21 @@ CREATE TABLE IF NOT EXISTS mission_turns (
   action_ids        TEXT,
   created_at        REAL NOT NULL,
   settled_at        REAL,
+  -- The operator has SEEN this turn's outcome and dismissed it. Only meaningful for a turn the
+  -- console would otherwise keep showing for ever — an `indeterminate` one, which is terminal
+  -- and unresolvable by the server (#903-era review of #902, finding 1). New columns go LAST,
+  -- because the DDL of a fresh store and an upgraded one are asserted equal.
+  acked_at          REAL,
+  -- THE OPERATOR'S MESSAGE, bounded, stored WITH the turn (#902 review 2, finding 2).
+  --
+  -- It used to be reached by joining to the operator's timeline event, and the timeline is a
+  -- capped FEED: past the soft cap the event goes and the open turn comes back with no text at
+  -- all. After a reload the question is missing, and CHECK AGAIN on an ambiguous turn resends an
+  -- empty message and gets a 422 instead of replaying the stable id.
+  --
+  -- The turn is durable state; a feed row is not a place to keep durable state. `msg_sha` stays
+  -- because it is what the idempotency check compares — this is for display and for the replay.
+  message           TEXT,
   PRIMARY KEY (mission_id, turn_id)
 );
 
@@ -869,6 +884,8 @@ def _migrate(con) -> int:
             _migrate_15_to_16(con)
         if version < 17:
             _migrate_16_to_17(con)
+        if version < 18:
+            _migrate_17_to_18(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1024,6 +1041,58 @@ def _ddl_from_schema(table: str) -> str:
     start = _SCHEMA.index(marker)
     end = _SCHEMA.index(");", start) + 2
     return _SCHEMA[start:end]
+
+
+def _has_table(con, name: str) -> bool:
+    """Does this database have that table? Asked before a step ALTERs one.
+
+    A migration step runs against whatever the previous version actually left behind, which is
+    not always the version's full schema — the ladder's own v9 regression builds a store with two
+    tables in it. A step that assumes more raises `no such table` and strands the upgrade, which
+    is precisely the failure the ladder exists to prevent, one level up.
+    """
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _migrate_17_to_18(con) -> None:
+    """v18 gives a turn its own durable state: `acked_at` and `message` (#902).
+
+    `acked_at` is the operator's dismissal of an ambiguous turn — terminal, unresolvable by the
+    server, and therefore something only they can end. `message` is their own words, which used
+    to be reached by joining to the timeline; the timeline is a capped FEED, so on a busy mission
+    an open turn came back with no text at all.
+
+    **AND IT BACKFILLS** (#902 review 2, the rollout finding). An existing store already has
+    `in_progress` / `indeterminate` rows whose message lives in the linked `operator_msg` event —
+    adding the column and leaving it NULL means the upgrade itself drops a question that was
+    recoverable the moment before it ran, and CHECK AGAIN then replays an empty message. Only the
+    UNSETTLED rows are copied: a `done` turn's answer is on the timeline, which is where finished
+    turns live, so nothing needs its prompt back.
+
+    A legacy row whose event has already been trimmed away stays NULL, which reads as "" — the
+    same state it was in before this column existed, and the honest one: the words are gone.
+
+    Idempotent by inspection, and skipped where the table is not there to alter.
+    """
+    if not _has_table(con, "mission_turns"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_turns)").fetchall()}
+    if "acked_at" not in have:
+        con.execute("ALTER TABLE mission_turns ADD COLUMN acked_at REAL")
+    if "message" not in have:
+        con.execute("ALTER TABLE mission_turns ADD COLUMN message TEXT")
+    if _has_table(con, "mission_events"):
+        con.execute(
+            "UPDATE mission_turns SET message = ("
+            "  SELECT e.text FROM mission_events e"
+            "  WHERE e.mission_id = mission_turns.mission_id"
+            "    AND e.seq = mission_turns.operator_seq) "
+            "WHERE message IS NULL AND operator_seq IS NOT NULL "
+            "  AND state IN ('in_progress','indeterminate')"
+        )
 
 
 def _migrate_16_to_17(con) -> None:
@@ -1963,6 +2032,20 @@ def get_mission(
             "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
             (mission_id,),
         ).fetchall()
+        # THE OPEN TURN, IN THE SAME SNAPSHOT AS THE TIMELINE (#902 review 2, finding 3).
+        #
+        # Read on its own connection it was a torn answer: a claim committing between the two
+        # returned a turn with no operator event, and a settlement between them returned
+        # `turn: null` beside a timeline that did not yet carry the answer — a mission whose
+        # parts disagree, which is the whole reason this function holds one transaction.
+        turn = con.execute(
+            "SELECT turn_id, state, result_meta, created_at, message "
+            "FROM mission_turns "
+            "WHERE mission_id=? AND state IN ('in_progress','indeterminate') "
+            "  AND acked_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            (mission_id,),
+        ).fetchone()
         con.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -1980,6 +2063,7 @@ def get_mission(
     if _backfill_settlements(mission["events"], path=path):
         _attach_settlements(mission["events"], path=path)
     mission["events_next_seq"] = mission["events"][-1]["seq"] if len(events) == limit else None
+    mission["turn"] = _turn_row(turn)
     return mission
 
 
@@ -5671,9 +5755,19 @@ def claim_turn(
             try:
                 n = con.execute(
                     "INSERT INTO mission_turns "
-                    "(mission_id, turn_id, msg_sha, state, owner, owner_at, fence, created_at) "
-                    "VALUES (?,?,?,'in_progress',?,?,?,?) ON CONFLICT DO NOTHING",
-                    (mission_id, turn_id, msg_sha, PROCESS_EPOCH, ts, fence, ts),
+                    "(mission_id, turn_id, msg_sha, state, owner, owner_at, fence, created_at, "
+                    " message) "
+                    "VALUES (?,?,?,'in_progress',?,?,?,?,?) ON CONFLICT DO NOTHING",
+                    (
+                        mission_id,
+                        turn_id,
+                        msg_sha,
+                        PROCESS_EPOCH,
+                        ts,
+                        fence,
+                        ts,
+                        _cap(text, EVENT_TEXT_MAX) if text else None,
+                    ),
                 ).rowcount
             except sqlite3.IntegrityError:
                 # The mission went away between the caller's existence check and this insert —
@@ -5875,6 +5969,85 @@ def note_turn_delivery_error(
             con.close()
 
 
+def _turn_row(row) -> dict | None:
+    """One `mission_turns` row as the console reads it, or None. Shared by both readers."""
+    if row is None:
+        return None
+    meta = _loads(row["result_meta"]) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        "turn_id": str(row["turn_id"]),
+        "state": str(row["state"]),
+        "text": str(row["message"] or ""),
+        "delivery_error": str(meta.get("delivery_error") or ""),
+        "created_at": float(row["created_at"] or 0),
+    }
+
+
+def open_turn(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The turn the operator is still owed an outcome for, or None. Read at DETAIL time.
+
+    The composer used to hold this in component state, which meant a reload lost it: an
+    `in_progress` turn came back as an ordinary message with no "still working", and an
+    `indeterminate` one — the state that exists precisely because nobody can say whether the
+    instruction went out — came back as a settled Answer with no way to ask again. A durable turn
+    whose only representation is a React ref is not durable (#902 review, finding 1).
+
+    Two states qualify, and for different reasons: `in_progress` because the work is genuinely
+    unfinished, and `indeterminate` because it is terminal and *ambiguous*, so the operator has a
+    decision to make and must be able to find it after a reload. `done` never qualifies — its
+    answer is on the timeline, which is where a finished turn lives.
+
+    The TEXT comes from the TURN, not from the timeline (#902 review 2, finding 2). The first
+    version joined to the operator's event on `operator_seq`, which reads well and is wrong: the
+    timeline is a capped FEED, so past the soft cap an open turn came back with no text — the
+    question missing after a reload, and CHECK AGAIN resending an empty message and getting a 422
+    instead of replaying the stable id. Durable state does not live in a feed. `msg_sha` still
+    stores the hash, because that is what the idempotency check compares.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT turn_id, state, result_meta, created_at, message "
+            "FROM mission_turns "
+            "WHERE mission_id=? AND state IN ('in_progress','indeterminate') "
+            "  AND acked_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            (mission_id,),
+        ).fetchone()
+        return _turn_row(row)
+    finally:
+        con.close()
+
+
+def ack_turn(
+    mission_id: str, turn_id: str, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """The operator dismissed an ambiguous turn. True if a row moved.
+
+    ONLY `indeterminate`. Dismissing an `in_progress` turn would hide work that is still running,
+    and dismissing a `done` one is meaningless — its answer is on the timeline. The predicate is
+    in the UPDATE rather than in a prior read, so a turn that settles between the two cannot be
+    dismissed by a request that was authorised against its earlier state.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            n = con.execute(
+                "UPDATE mission_turns SET acked_at=? "
+                "WHERE mission_id=? AND turn_id=? AND state='indeterminate' AND acked_at IS NULL",
+                (ts, mission_id, turn_id),
+            ).rowcount
+            con.commit()
+            return bool(n)
+        finally:
+            con.close()
+
+
 def settle_turn(
     mission_id: str,
     turn_id: str,
@@ -5932,13 +6105,22 @@ def settle_turn(
                     (mission_id, turn_id),
                 ).fetchone()
                 if row is not None and row["assistant_seq"] is None:
+                    # THE TURN ID RIDES ON THE ANSWER, exactly as it rides on the operator's own
+                    # message (#902 review 2, finding 1). It is what lets a client correlate a
+                    # request whose response was LOST with the answer the server already stored —
+                    # without it, "my request failed" and "the turn never happened" are the same
+                    # observation, and the composer showed TRY AGAIN beside a stored answer for
+                    # ever. Stamped here rather than left to the caller, because a correlation
+                    # key that depends on a call site is one a later call site will omit.
+                    meta = dict(assistant_meta) if isinstance(assistant_meta, dict) else {}
+                    meta.setdefault("turn_id", turn_id)
                     seq = _append_event(
                         con,
                         mission_id,
                         "assistant_msg",
                         at=ts,
                         text=assistant_text,
-                        meta=assistant_meta,
+                        meta=meta,
                     )
                     con.execute(
                         "UPDATE mission_turns SET assistant_seq=? WHERE mission_id=? AND turn_id=?",

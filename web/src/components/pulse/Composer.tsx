@@ -1,9 +1,12 @@
-/** The composer — `find` / `history` against the existing `/api/pulse/ask` (#878).
+/** The UNTRACKED view's Ask — `find` / `history` against `/api/pulse/ask` (#878).
  *
- * **These turns are transient by design, until #871.** `/api/pulse/ask` stores nothing, so there
- * is no mission turn to persist yet; the history here is component-local and says so on screen
- * rather than letting the operator believe a conversation was kept. Do not "fix" that by
- * inventing storage — #871 is specified to provide it.
+ * **These turns are transient because this view has no mission to keep them in**, and that is
+ * now a statement about the surface rather than about unfinished work. A mission's turns ARE
+ * durable: they go to `POST /api/missions/{id}/message` and live in the mission's timeline
+ * (`MissionComposer`, #890). UNTRACKED is the sentinel view — a list of sessions no mission
+ * owns — so there is no mission to own a turn either, and the honest answer is to say so on
+ * screen rather than to invent a home for it. Creating a mission is how an operator makes a
+ * conversation durable.
  *
  * **A reply may never land in a mission that did not ask for it.** The failure is easy to write
  * and invisible in review: select A, ask, switch to B before it resolves, and the late `then`
@@ -159,9 +162,15 @@ export function Composer({
                   {/* The matched sessions, each with why it matched and a way in. An answer that
                       names a session the operator cannot reach is half an answer. */}
                   {t.matches.map((m) => (
-                    <div key={m.id} className={styles.matchRow} data-testid="ask-match">
+                    <div
+                      key={m.id}
+                      className={styles.matchRow}
+                      data-testid="ask-match"
+                    >
                       <div className={styles.eventText}>{m.title}</div>
-                      {m.why ? <div className={styles.objReason}>{m.why}</div> : null}
+                      {m.why ? (
+                        <div className={styles.objReason}>{m.why}</div>
+                      ) : null}
                       <Link
                         className={styles.openSession}
                         to={matchRoute(m.id)}
@@ -182,7 +191,9 @@ export function Composer({
             </div>
           ))}
           <div className={styles.objReason} data-testid="ask-transient">
-            These answers are not kept — they disappear when you reload.
+            These answers are not kept — this view has no mission to keep them
+            in, so they disappear when you reload. A mission's own conversation
+            is saved.
           </div>
         </div>
       ) : null}

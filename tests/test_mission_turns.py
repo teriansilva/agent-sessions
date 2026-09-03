@@ -1228,3 +1228,185 @@ def test_a_MIXED_batch_is_not_reported_as_undelivered(states, expect_word):
     assert result.startswith(expect_word), (states, result)
     if "delivered" in states and any(s != "delivered" for s in states):
         assert "without delivery" not in result, result
+
+
+# ---- The turn as a DURABLE fact the console can read back (#902 review, finding 1) ------------
+
+
+def test_a_RUNNING_turn_is_readable_from_the_store_with_the_operators_own_words(store):
+    """A durable turn whose only representation is component state is not durable.
+
+    The composer held "still working" in a React ref, so a reload found an ordinary message and
+    no sign that work was in flight. The state is in this table; the console just could not ask
+    for it. The TEXT comes from the operator's own timeline event — the turn row keeps a hash,
+    and a second copy of the message beside the timeline's would be two things to keep in step.
+    """
+    mid = _mission(store)
+    missions.claim_turn(mid, "t1", "sha", text="run the tests", path=store)
+    open_turn = missions.open_turn(mid, path=store)
+    assert open_turn is not None
+    assert open_turn["turn_id"] == "t1"
+    assert open_turn["state"] == "in_progress"
+    assert open_turn["text"] == "run the tests"
+
+
+def test_an_AMBIGUOUS_turn_stays_readable_until_the_operator_dismisses_it(store):
+    """`indeterminate` is terminal AND unresolvable — which is exactly why it must survive.
+
+    Nobody can say whether the instruction reached the agent, so the decision is the operator's;
+    losing it on reload resolves the ambiguity in their favour silently, which is the opposite of
+    what the state means. And because the server can never settle it, "I have seen this" has to
+    be durable too, or the banner returns on every reload for ever.
+    """
+    mid = _mission(store)
+    _, row = missions.claim_turn(mid, "t1", "sha", text="restart it", path=store)
+    missions.reserve_turn_write(mid, "t1", row["fence"], path=store)
+    missions.abandon_turn(mid, "t1", row["fence"], path=store)
+
+    open_turn = missions.open_turn(mid, path=store)
+    assert open_turn is not None and open_turn["state"] == "indeterminate"
+
+    assert missions.ack_turn(mid, "t1", path=store) is True
+    assert missions.open_turn(mid, path=store) is None
+    # …and dismissing it twice is not a second dismissal.
+    assert missions.ack_turn(mid, "t1", path=store) is False
+
+
+def test_a_SETTLED_turn_is_not_an_open_one(store):
+    """Its answer is a timeline event, which is where finished turns live. Reporting it here
+    would make the composer say "still working" over an answer already on screen."""
+    mid = _mission(store)
+    _, row = missions.claim_turn(mid, "t1", "sha", text="what happened?", path=store)
+    missions.settle_turn(
+        mid, "t1", row["fence"], result="all green", assistant_text="all green", path=store
+    )
+    assert missions.open_turn(mid, path=store) is None
+
+
+def test_a_RUNNING_turn_can_NEVER_be_dismissed(store):
+    """Dismissing work that is still running hides it; the predicate is in the UPDATE rather than
+    in a prior read, so a turn cannot be dismissed by a request authorised against an earlier
+    state of it."""
+    mid = _mission(store)
+    missions.claim_turn(mid, "t1", "sha", text="run the tests", path=store)
+    assert missions.ack_turn(mid, "t1", path=store) is False
+    assert missions.open_turn(mid, path=store) is not None
+
+
+def test_the_UPGRADE_backfills_an_open_turns_message_from_its_event(tmp_path, monkeypatch):
+    """Adding the column and leaving it NULL drops a question that was recoverable the moment
+    before the upgrade ran (#902 review 2, the rollout finding).
+
+    An existing store already holds `in_progress` / `indeterminate` turns whose message lives in
+    the linked `operator_msg` event. Without the backfill the open turn comes back with no text
+    after a deployment, and CHECK AGAIN on an ambiguous one replays an empty message.
+
+    Red against a migration that only ALTERs.
+    """
+    import sqlite3 as sq
+
+    db = tmp_path / "old.db"
+    con = sq.connect(db)
+    con.executescript(
+        "CREATE TABLE missions (id TEXT PRIMARY KEY);"
+        "CREATE TABLE mission_events ("
+        "  seq INTEGER PRIMARY KEY AUTOINCREMENT, mission_id TEXT NOT NULL, at REAL,"
+        "  kind TEXT, session_key TEXT, action_id TEXT, text TEXT, meta TEXT);"
+        "CREATE TABLE mission_turns ("
+        "  mission_id TEXT NOT NULL, turn_id TEXT NOT NULL, msg_sha TEXT NOT NULL,"
+        "  state TEXT NOT NULL, owner TEXT, owner_at REAL, fence TEXT NOT NULL,"
+        "  write_reserved_at REAL, result TEXT, result_meta TEXT, operator_seq INTEGER,"
+        "  assistant_seq INTEGER, action_ids TEXT, created_at REAL NOT NULL, settled_at REAL,"
+        "  PRIMARY KEY (mission_id, turn_id));"
+        "INSERT INTO missions (id) VALUES ('msn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');"
+        "INSERT INTO mission_events (mission_id, at, kind, text)"
+        "  VALUES ('msn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1, 'operator_msg',"
+        "          'which PR did you mean?');"
+        "INSERT INTO mission_turns"
+        "  (mission_id, turn_id, msg_sha, state, fence, operator_seq, created_at)"
+        "  VALUES ('msn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','t1','sha','in_progress','f',1,1);"
+        "INSERT INTO mission_turns"
+        "  (mission_id, turn_id, msg_sha, state, fence, operator_seq, created_at)"
+        "  VALUES ('msn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','t_done','sha2','done','f',1,1);"
+        "PRAGMA user_version=17;"
+    )
+    con.commit()
+    con.close()
+
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(db))
+    missions.reset_schema_cache_for_test()
+
+    open_turn = missions.open_turn("msn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", path=db)
+    assert open_turn is not None
+    assert open_turn["text"] == "which PR did you mean?", "the upgrade dropped the question"
+
+    c = missions._ready(db)
+    try:
+        assert int(c.execute("PRAGMA user_version").fetchone()[0]) == missions.SCHEMA_VERSION
+        # A SETTLED turn is NOT backfilled: its answer is on the timeline, which is where
+        # finished turns live, so nothing needs its prompt back.
+        row = c.execute("SELECT message FROM mission_turns WHERE turn_id='t_done'").fetchone()
+        assert row[0] is None
+    finally:
+        c.close()
+
+
+def test_an_OPEN_TURNS_MESSAGE_survives_the_timeline_cap(store, monkeypatch):
+    """A turn is durable state; the timeline is a capped FEED (#902 review 2, finding 2).
+
+    The first version reached the operator's words by joining to their timeline event, so on a
+    busy mission the event was trimmed and the open turn came back with no text at all: after a
+    reload the question was missing, and CHECK AGAIN on an ambiguous turn resent an empty message
+    and got a 422 instead of replaying the stable id.
+
+    Red against the JOIN: `text` comes back empty once the cap has run.
+    """
+    mid = _mission(store)
+    missions.claim_turn(mid, "t1", "sha", text="which PR did you mean?", path=store)
+
+    monkeypatch.setattr(missions, "MISSION_EVENTS_MAX", 5)
+    monkeypatch.setattr(missions, "MISSION_EVENTS_HARD_MAX", 6)
+    for i in range(40):
+        missions.append_event(mid, "recap", text=f"noise {i}", path=store)
+
+    open_turn = missions.open_turn(mid, path=store)
+    assert open_turn is not None
+    assert open_turn["text"] == "which PR did you mean?"
+
+
+def test_the_MISSION_READ_carries_the_open_turn_from_its_OWN_snapshot(store):
+    """Read on a second connection it was a torn answer in both directions (#902 review 2, 3).
+
+    A claim committing between the two reads returned a turn with no operator event; a settlement
+    between them returned `turn: null` beside a timeline that did not yet carry the answer. One
+    transaction is what `get_mission` already holds for the other four reads, and for the same
+    reason.
+    """
+    mid = _mission(store)
+    _, row = missions.claim_turn(mid, "t1", "sha", text="run the tests", path=store)
+    got = missions.get_mission(mid, path=store)
+    assert got["turn"]["turn_id"] == "t1"
+    assert got["turn"]["text"] == "run the tests"
+    # …and the operator's event is in the SAME response, because it is the same snapshot.
+    assert any(
+        e["kind"] == "operator_msg" and (e.get("meta") or {}).get("turn_id") == "t1"
+        for e in got["events"]
+    )
+
+    missions.settle_turn(
+        mid, "t1", row["fence"], result="ok", assistant_text="all green", path=store
+    )
+    after = missions.get_mission(mid, path=store)
+    assert after["turn"] is None
+    assert any(e["kind"] == "assistant_msg" for e in after["events"])
+
+
+def test_the_ANSWER_carries_the_TURN_ID_so_a_lost_response_can_be_reconciled(store):
+    """Without it, "my request failed" and "the turn never happened" are the same observation —
+    and the composer showed TRY AGAIN beside an answer the server had already stored."""
+    mid = _mission(store)
+    _, row = missions.claim_turn(mid, "t1", "sha", text="go", path=store)
+    missions.settle_turn(mid, "t1", row["fence"], result="ok", assistant_text="done", path=store)
+    events = missions.get_mission(mid, path=store)["events"]
+    answer = next(e for e in events if e["kind"] == "assistant_msg")
+    assert (answer.get("meta") or {}).get("turn_id") == "t1"

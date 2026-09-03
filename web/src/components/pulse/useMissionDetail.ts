@@ -7,9 +7,11 @@
  * forgets it. A remount cannot forget. A late response from the previous mission resolves into
  * an unmounted instance and updates nothing.
  *
- * The composer's transient turns deliberately do NOT live here — they belong to the console,
- * keyed by mission, so that switching away and back does not silently discard an answer the
- * operator asked for.
+ * **A turn is not transient and does not live in this component.** It is a row in the store, and
+ * the mission read carries it (`mission.turn`) — which is what makes "still working" and an
+ * ambiguous turn survive a reload. This hook's only job around it is CADENCE: while one is open
+ * the detail is re-read on a short bounded interval, because a model call takes seconds and the
+ * supervisor cadence is two and a half minutes (#890, #902 review 2).
  */
 import { useCallback, useEffect, useState } from "react";
 
@@ -30,6 +32,19 @@ const EVENTS_PAGE = 40;
  *  each sweep and show the previous one's state forever. */
 const SUPERVISOR_POLL_MS = 150_000;
 
+/** …and how often it is refetched while a TURN is open (#902 review 2, finding 4).
+ *
+ *  A model call takes seconds; the supervisor cadence is two and a half MINUTES. On a fresh page
+ *  there is no outstanding composer request whose callback could ask again, so a reloaded
+ *  `in_progress` turn sat saying "Still working" — and withheld an answer the server already
+ *  had — until the next supervisor tick. That is not a stale board, it is a stale conversation.
+ *
+ *  Bounded for the same reason the pending-objective poll is: a turn that never settles is a real
+ *  state (a worker can die mid-turn; recovery re-drives it), and an unbounded cadence would hit
+ *  the endpoint for the life of the page. Past the bound the ordinary cadence still runs. */
+const TURN_POLL_MS = 3_000;
+const TURN_POLL_MAX = 60;
+
 export interface MissionDetailState {
   mission: Mission | null;
   events: MissionEvent[];
@@ -38,6 +53,17 @@ export interface MissionDetailState {
   cursor: number | null;
   loadingMore: boolean;
   loadOlder: () => void;
+  /** Re-read everything from the server.
+   *
+   *  The composer calls it on every settlement, success or failure: the route writes the
+   *  operator's message inside its CLAIM transaction, so even a turn that then failed has
+   *  changed what the timeline says (#890).
+   *
+   *  Implemented as a bump of the effect's identity rather than as a second fetch path, so it
+   *  inherits the SAME `live` fence the mount load already has. A superseded response resolves
+   *  into a cleaned-up effect and updates nothing; a second, hand-rolled guard would be a second
+   *  thing to keep correct. */
+  reload: () => void;
 }
 
 /** Loads one mission. Split from the panes so the panes stay pure and the loading lives in one
@@ -50,6 +76,10 @@ export function useMissionDetail(missionId: string): MissionDetailState {
   const [context, setContext] = useState<MissionContext | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** Bumped by `reload`. Part of the load effect's identity, which is what makes a manual re-read
+   *  take the same cleanup-fenced path as the mount load. */
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     let live = true;
@@ -95,7 +125,40 @@ export function useMissionDetail(missionId: string): MissionDetailState {
       live = false;
       clearInterval(t);
     };
-  }, [missionId]);
+  }, [missionId, nonce]);
+
+  // THE OPEN-TURN CADENCE. Runs only while one is open, and stops the moment it settles — so a
+  // console with nothing in flight is exactly as quiet as it was before.
+  const openTurnId = mission?.turn?.turn_id ?? null;
+  useEffect(() => {
+    if (!openTurnId) return;
+    let live = true;
+    let attempts = 0;
+    const tick = () => {
+      if (!live) return;
+      attempts += 1;
+      if (attempts > TURN_POLL_MAX) {
+        clearInterval(t);
+        return;
+      }
+      api
+        .mission(missionId, { eventsLimit: EVENTS_PAGE })
+        .then((m) => {
+          if (!live) return;
+          setMission(m);
+          setEvents(m.events ?? []);
+          setCursor(m.events_next_seq ?? null);
+        })
+        .catch(() => undefined);
+    };
+    const t = setInterval(tick, TURN_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+    // Keyed on the turn ID, so a NEW turn restarts the budget and a settled one tears the
+    // interval down. Keyed on the mission's identity would restart it on every poll response.
+  }, [missionId, openTurnId]);
 
   const loadOlder = useCallback(() => {
     if (cursor == null || loadingMore) return;
@@ -113,5 +176,14 @@ export function useMissionDetail(missionId: string): MissionDetailState {
       .finally(() => setLoadingMore(false));
   }, [missionId, cursor, loadingMore]);
 
-  return { mission, events, objectives, context, cursor, loadingMore, loadOlder };
+  return {
+    mission,
+    events,
+    objectives,
+    context,
+    cursor,
+    loadingMore,
+    loadOlder,
+    reload,
+  };
 }

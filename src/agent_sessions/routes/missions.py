@@ -249,6 +249,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row["supervisor"] = await missions.run_admitted(
                 lambda: mission_supervisor.assess(mission_id)
             )
+        # THE OPEN TURN comes back inside `get_mission`'s own transaction (#902 review 2,
+        # finding 3), so it is never read here. A second read on a second connection was a torn
+        # answer in both directions — a claim between them returned a turn with no operator
+        # event, a settlement between them returned `turn: null` beside a timeline that did not
+        # yet carry the answer — and, worse, its failure was SUPPRESSED, so a store error and a
+        # settled turn arrived at the client as the same thing: no field. The client cleared a
+        # live "still working" row on it. One snapshot, one field, and a read failure now fails
+        # the read rather than quietly meaning "settled".
         return JSONResponse(row)
 
     @app.post("/api/missions/{mission_id}/adopt")
@@ -382,6 +390,35 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
+
+    @app.post("/api/missions/{mission_id}/turns/{turn_id}/ack")
+    async def ack_turn_route(
+        mission_id: str,
+        turn_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Dismiss an AMBIGUOUS turn. Nothing else is dismissible (#902 review, finding 1).
+
+        `indeterminate` is terminal and the server cannot resolve it — that is what the state
+        means. Once the console reads its open turn from the store, "I have seen this" has to be
+        durable too, or the banner comes back on every reload and the operator can never clear a
+        turn nobody can settle for them.
+
+        A 404 rather than a 409 for the not-applicable cases: from the operator's side there is
+        no ambiguous turn by that id to dismiss, whether it settled, was already dismissed, or
+        never existed.
+        """
+        try:
+            missions.validate_id(mission_id)
+            ok = await missions.run_admitted(lambda: missions.ack_turn(mission_id, turn_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        if not ok:
+            return JSONResponse(
+                {"detail": "there is no unresolved ambiguous turn by that id"}, status_code=404
+            )
+        return JSONResponse({"turn_id": turn_id, "acked": True})
 
     @app.post("/api/missions/{mission_id}/message")
     async def message_route(
@@ -750,6 +787,13 @@ def _replay(row: dict | None) -> dict:
         # action stayed `approved`, and nothing in the response said why. An outcome the operator
         # cannot see is not an outcome that was reported.
         "delivery_error": meta.get("delivery_error"),
+        # THE SESSIONS THE ANSWER IS ABOUT (#890). `find` and `history` answer by naming sessions,
+        # and an answer naming a session the operator cannot reach is half an answer — the Ask box
+        # rendered them and the durable turn has to carry them too, or moving the composer onto
+        # this route would quietly lose half of every answer it gives. Frozen at settlement like
+        # the actions beside them, for the same reason: a stored answer that changes is not a
+        # stored answer.
+        "matches": meta.get("matches") if isinstance(meta.get("matches"), list) else [],
         "actions": snapshot if isinstance(snapshot, list) else _hydrate_actions(actions),
     }
 
@@ -1149,7 +1193,11 @@ async def _run_turn(
                 # this store already uses for "we will not guess". The action's own ledger state
                 # rides in the response beside it, so the operator sees what is actually true.
                 state="indeterminate" if delivery_error else "done",
-                result_meta={"intent": result.get("intent"), "delivery_error": delivery_error},
+                result_meta={
+                    "intent": result.get("intent"),
+                    "delivery_error": delivery_error,
+                    "matches": result.get("matches") or [],
+                },
                 action_ids=actions,
                 # Frozen here, so every later replay returns exactly this.
                 action_snapshot=_hydrate_actions(actions),
@@ -1158,6 +1206,9 @@ async def _run_turn(
                     "turn_id": turn_id,
                     "intent": result.get("intent"),
                     "actions": actions,
+                    # …on the EVENT too, because the thread renders from the timeline rather than
+                    # from the response: a reload has only the event to work from.
+                    "matches": result.get("matches") or [],
                 },
             )
         )

@@ -47,6 +47,7 @@ import type {
   Mission,
   MissionContext,
   MissionList,
+  MissionTurn,
   MissionObjective,
 } from "../types/api";
 import { clearSent } from "./sentHistory";
@@ -885,12 +886,18 @@ export const api = {
   /** One mission with a page of its timeline. `before` is the cursor from a previous page's
    *  `events_next_seq` — older events, never a page offset, so a new event arriving between
    *  pages cannot shift the window and duplicate or skip a row. */
-  mission: (id: string, opts?: { eventsLimit?: number; before?: number | null }) => {
+  mission: (
+    id: string,
+    opts?: { eventsLimit?: number; before?: number | null },
+  ) => {
     const p = new URLSearchParams();
-    if (opts?.eventsLimit != null) p.set("events_limit", String(opts.eventsLimit));
+    if (opts?.eventsLimit != null)
+      p.set("events_limit", String(opts.eventsLimit));
     if (opts?.before != null) p.set("events_before_seq", String(opts.before));
     const q = p.toString();
-    return getJson<Mission>(`/api/missions/${encodeURIComponent(id)}${q ? `?${q}` : ""}`);
+    return getJson<Mission>(
+      `/api/missions/${encodeURIComponent(id)}${q ? `?${q}` : ""}`,
+    );
   },
 
   /** Folder, git summary and session roster. Sends NO path — the server resolves the mission's
@@ -911,13 +918,44 @@ export const api = {
       { ops },
     ),
 
+  /** One durable operator turn on a mission (#871, wired in #890).
+   *
+   *  **`turnId` is minted once per send and REUSED on every retry**, which is what makes the
+   *  route's idempotency real rather than decorative: one model execution per id, across crashes
+   *  and retries, with each produced action delivered at most once. A fresh id per attempt would
+   *  make every retry a new execution — precisely the double-instruct the route was built to
+   *  prevent — so it is the caller's job to keep it stable, and the caller here is the composer.
+   *
+   *  `mutateJson` so the server's own `detail` survives: "turn_id was already used for a
+   *  different message" and "a question is already running" are different problems with
+   *  different fixes, and a flattened failure tells the operator neither (#834). */
+  missionMessage: (id: string, body: { message: string; turnId: string }) =>
+    mutateJson<MissionTurn>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/message`,
+      { message: body.message, turn_id: body.turnId },
+    ),
+
+  /** Dismiss an AMBIGUOUS turn. Only `indeterminate` is dismissible — the server cannot resolve
+   *  it, so "I have seen this" has to be durable or the banner returns on every reload (#890). */
+  ackMissionTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn_id: string; acked: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/ack`,
+      {},
+    ),
+
   /** Take a live session into a mission. Membership is exclusive: a session already held by
    *  another mission comes back 409 NAMING the holder, so the operator is told where it went
    *  rather than being told "no". `mutateJson` so that detail survives (#834). */
   adoptMissionSession: (id: string, sessionKey: string) =>
-    mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/adopt`, {
-      session_key: sessionKey,
-    }),
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/adopt`,
+      {
+        session_key: sessionKey,
+      },
+    ),
 
   /** Hide the settled rows the client DISPLAYED — never "the current window" (#862). Passing
    *  what was on screen is what stops a decision that settled between the render and the click

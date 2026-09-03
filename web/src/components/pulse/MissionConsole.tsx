@@ -24,8 +24,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { actionOutcome } from "../../lib/orchestratorAction";
 import type {
+  MissionEvent,
   MissionListRow,
   OrchestratorAction,
+  PulseAskMatch,
   PulseCard,
 } from "../../types/api";
 
@@ -34,6 +36,7 @@ import { Link } from "react-router-dom";
 import { HudFrame } from "../hud/HudFrame";
 import { ActionRow } from "./ActionRow";
 import { Composer, type AskTurn } from "./Composer";
+import { MissionComposer } from "./MissionComposer";
 import { MissionDrawer } from "./MissionDrawer";
 import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
 import { BAND_LABEL } from "./bands";
@@ -66,13 +69,49 @@ const PAGE = 100;
 const STOPS = ["THREAD", "OBJECTIVES", "TIMELINE"] as const;
 type Stop = (typeof STOPS)[number];
 
+/** One timeline row.
+ *
+ *  Most kinds are a label and a line of text. The two the composer produces are not: an operator
+ *  message and the answer to it are a CONVERSATION, and `find` / `history` answer by naming
+ *  sessions — an answer that names a session the operator cannot reach is half an answer, which
+ *  is why the Ask box rendered the matches and why the durable turn carries them onto the event
+ *  (#890). Model-derived text renders as TEXT; there is no `dangerouslySetInnerHTML` anywhere in
+ *  these components. */
+function ThreadEvent({ event }: { event: MissionEvent }) {
+  const meta = (event.meta ?? {}) as { matches?: PulseAskMatch[] };
+  const matches = Array.isArray(meta.matches) ? meta.matches : [];
+  const label =
+    event.kind === "operator_msg"
+      ? "You"
+      : event.kind === "assistant_msg"
+        ? "Answer"
+        : event.kind;
+  return (
+    <div className={styles.event} data-testid="thread-event">
+      <div className={styles.eventHead}>{label}</div>
+      <div className={styles.eventText}>{event.text ?? ""}</div>
+      {matches.map((m) => (
+        <div key={m.id} className={styles.matchRow} data-testid="ask-match">
+          <div className={styles.eventText}>{m.title}</div>
+          {m.why ? <div className={styles.objReason}>{m.why}</div> : null}
+          <Link
+            className={styles.openSession}
+            to={sessionRoute(m.id)}
+            aria-label={`Jump into ${m.title}`}
+          >
+            Jump in
+          </Link>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Everything that belongs to ONE mission. Keyed by the parent — see the module note. */
 function MissionBody({
   missionId,
   stop,
   configured,
-  turns,
-  onTurns,
   onTitle,
   onSessions,
   cards,
@@ -83,8 +122,6 @@ function MissionBody({
   missionId: string;
   stop: Stop;
   configured: boolean;
-  turns: AskTurn[];
-  onTurns: (missionId: string, fn: (prev: AskTurn[]) => AskTurn[]) => void;
   onTitle: (t: string | null) => void;
   onSessions: (keys: string[]) => void;
   /** UNFILTERED — a mission's decisions must not depend on the chips (see `allCards`). */
@@ -169,25 +206,18 @@ function MissionBody({
             {d.events.length === 0 && decisions.length === 0 ? (
               <div className={styles.empty}>Nothing has happened yet.</div>
             ) : (
-              d.events.map((e) => (
-                <div
-                  key={e.seq}
-                  className={styles.event}
-                  data-testid="thread-event"
-                >
-                  <div className={styles.eventHead}>{e.kind}</div>
-                  {/* Model-derived text as TEXT. React escapes it; there is no
-                      `dangerouslySetInnerHTML` anywhere in these components. */}
-                  <div className={styles.eventText}>{e.text ?? ""}</div>
-                </div>
-              ))
+              d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
             )}
-            <Composer
+            {/* THE COMPOSER SENDS DURABLE TURNS (#890). The transcript above IS the mission
+                timeline — the route writes the operator's message in its claim transaction and
+                the answer in its settlement — so the composer owns only the draft and the turn
+                in flight. */}
+            <MissionComposer
               missionId={missionId}
               configured={configured}
-              turns={turns}
-              onTurns={onTurns}
               isCurrent={isCurrent}
+              onSettled={d.reload}
+              detail={d.mission ?? null}
             />
           </>
         ) : stop === "OBJECTIVES" ? (
@@ -257,8 +287,10 @@ export function MissionConsole({
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const [heldExtra, setHeldExtra] = useState<string[]>([]);
-  /** Ask turns, keyed by mission. Transient until #871 — see `Composer`. They live HERE rather
-   *  than in the keyed body so switching away and back does not discard an answer. */
+  /** Ask turns for the UNTRACKED view ONLY (#890). A mission's turns are durable and live in its
+   *  timeline; this view has no mission to keep them in, so its Ask stays transient and says so
+   *  on screen. Keyed by view rather than kept bare, because the sentinel is one of several
+   *  things the console can be showing. */
   const [turns, setTurns] = useState<Record<string, AskTurn[]>>({});
 
   const drawerBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -774,8 +806,6 @@ export function MissionConsole({
             missionId={shown}
             stop={stop}
             configured={configured}
-            turns={turns[shown] ?? []}
-            onTurns={onTurns}
             onTitle={setTitle}
             onSessions={setHeldExtra}
             cards={allCards}
