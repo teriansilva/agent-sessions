@@ -1959,17 +1959,20 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
             raise PlaybookError(f"objective {key!r} does not take {', '.join(sorted(unknown))}")
         return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
 
-    ok = True
+    why = ""
     try:
         _validate_probe_args(probe if isinstance(probe, str) else "", args)
-    except Exception:
-        # Every rejection reason collapses to the same outcome here — a WRITE refuses and a READ
-        # degrades — so the specific message is not carried. It is the store's message, phrased
-        # for the objectives route, and a playbook write reports the objective KEY instead.
-        ok = False
-    if not ok:
+    except Exception as e:  # noqa: BLE001
+        # A READ degrades and says nothing — the objective simply stops being able to probe. A
+        # strict WRITE is the operator sitting in front of the editor, and the refusal is their
+        # only instruction for fixing the template, so it carries the store's own reason as well
+        # as the objective key: "invalid probe arguments" alone does not say which argument or
+        # why (#900 review, finding 6). The text is the store's phrasing about operator-typed
+        # config; it names no path, no token and nothing about the host.
+        why = str(e)
+    if why:
         if strict:
-            raise PlaybookError(f"objective {key!r} has invalid probe arguments")
+            raise PlaybookError(f"objective {key!r} has invalid probe arguments — {why}")
         # DEGRADED: visible, but unable to probe and unable to gate.
         return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
 
@@ -2009,16 +2012,22 @@ def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
     if not isinstance(raw, dict):
         if strict:
             raise PlaybookError("mission_playbooks must be an object")
-        return {"default_id": "", "playbooks": []}
-    unknown = set(raw) - {"default_id", "playbooks"}
+        return {"default_id": "", "playbooks": [], "revision": 0}
+    unknown = set(raw) - {"default_id", "playbooks", "revision"}
     if unknown and strict:
         raise PlaybookError(f"mission_playbooks does not take {', '.join(sorted(unknown))}")
+
+    # SERVER-OWNED, and carried through every normalisation so a read always reports it. A client
+    # may send it back — that is the whole point — but it is never taken from the client: the
+    # write increments the stored one (#900 review 5, finding 7).
+    revision = raw.get("revision")
+    revision = int(revision) if isinstance(revision, int) and not isinstance(revision, bool) else 0
 
     raw_list = raw.get("playbooks")
     if not isinstance(raw_list, list):
         if strict:
             raise PlaybookError("playbooks must be a list")
-        return {"default_id": "", "playbooks": []}
+        return {"default_id": "", "playbooks": [], "revision": 0}
     if strict and len(raw_list) > PLAYBOOKS_MAX:
         raise PlaybookError(f"at most {PLAYBOOKS_MAX} playbooks")
 
@@ -2080,7 +2089,7 @@ def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
     # gating objectives with probe targets nobody chose for that mission (#883).
     if did not in {p["id"] for p in out}:
         did = ""
-    return {"default_id": did, "playbooks": out}
+    return {"default_id": did, "playbooks": out, "revision": revision}
 
 
 def get_mission_playbooks(path: Path | None = None) -> dict:
@@ -2092,11 +2101,43 @@ def get_mission_playbooks(path: Path | None = None) -> dict:
     return _coerce_mission_playbooks(raw)
 
 
-def set_mission_playbooks(value: object, path: Path | None = None) -> dict:
+class PlaybookConflict(PlaybookError):
+    """The stored block moved under the writer. Carries the CURRENT block so the caller can show
+    it rather than making the operator reload to find out what happened."""
+
+    def __init__(self, message: str, current: dict) -> None:
+        super().__init__(message)
+        self.current = current
+
+
+def set_mission_playbooks(
+    value: object, path: Path | None = None, *, expect_revision: int | None = None
+) -> dict:
     """Replace the block. STRICT — raises :class:`PlaybookError` rather than repairing.
 
     A whole-block replace rather than a merge: a playbook list is edited as a list, and a partial
     merge of one would make "remove the third objective" impossible to express.
+
+    **Which is exactly why it needs a comparand** (#900 review 5, finding 7). A whole-block write
+    with no version is last-writer-wins over everything: a second tab that added a playbook, or
+    edited another one's probe targets and completion gates, has that work deleted by a stale
+    tab's save — silently, with both operators told it worked.
+
+    `revision` is server-owned and monotonic. A caller states the one it read; a mismatch raises
+    `PlaybookConflict` carrying the current block, and the write does not happen. `None` means
+    "no comparand" and is accepted, because the shipped defaults and the installer write this
+    block too and have nothing to compare against — the UI always sends one.
+
+    The compare and the write are ONE `_mutate` call, so they are under the prefs flock together:
+    read-then-write across two holds is the race this exists to close, not a smaller version of it.
     """
     checked = _coerce_mission_playbooks(value, strict=True)
-    return _mutate("mission_playbooks", lambda _cur: checked, path)
+
+    def merge(cur: object) -> dict:
+        have = _coerce_mission_playbooks(cur if cur is not _ABSENT else _ABSENT)
+        rev = int(have.get("revision") or 0)
+        if expect_revision is not None and int(expect_revision) != rev:
+            raise PlaybookConflict("the playbooks changed in another tab; read them again", have)
+        return {**checked, "revision": rev + 1}
+
+    return _mutate("mission_playbooks", merge, path)

@@ -1042,6 +1042,35 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/ack`,
       {},
     ),
+  /** Answer the mission's open question (#892).
+   *
+   *  **The INDEX, never the label.** The option's label is display text the model wrote; the
+   *  action it maps to lives in the server's closed set and is looked up there. Sending the
+   *  label back would be the one thing the whole design refuses — model text deciding what runs.
+   *
+   *  `seq` names WHICH question is being answered, so a stale console answering a superseded
+   *  question is a 409 rather than a second application of an action. `mutateJson` so the
+   *  server's `detail` — "that question is no longer the open one" — reaches the operator (#834).
+   */
+  answerMissionQuestion: (
+    id: string,
+    seq: number,
+    answer: { optionIndex?: number; text?: string },
+  ) =>
+    mutateJson<{
+      action: string;
+      objective: string;
+      answer: string;
+      applied: string;
+      /** Whether the chosen EFFECT happened. Not derivable from `applied`, which is prose. */
+      applied_ok: boolean;
+    }>("POST", `/api/missions/${encodeURIComponent(id)}/answer`, {
+      seq,
+      ...(answer.optionIndex != null
+        ? { option_index: answer.optionIndex }
+        : {}),
+      ...(answer.text ? { text: answer.text } : {}),
+    }),
 
   /** Take a live session into a mission. Membership is exclusive: a session already held by
    *  another mission comes back 409 NAMING the holder, so the operator is told where it went

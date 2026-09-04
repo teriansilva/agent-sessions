@@ -37,6 +37,7 @@ import { HudFrame } from "../hud/HudFrame";
 import { ActionRow } from "./ActionRow";
 import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
+import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionDrawer } from "./MissionDrawer";
 import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
 import { BAND_LABEL } from "./bands";
@@ -195,6 +196,24 @@ function MissionBody({
                   timeline, approvals.
                 </div>
               </div>
+            ) : null}
+            {/* THE QUESTION, above the thread and above the composer — it is the thing the
+                mission is waiting on, and burying it under the history would make `needs_you`
+                point at something the operator has to scroll to find (#892). */}
+            {d.mission?.question ? (
+              /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
+                 question is superseded in place: the answer 409s, the reload lands question B in
+                 the same prop, and an unkeyed card keeps its state across the swap — so the free
+                 text the operator typed about A is sitting in the box, enabled, over B. The key
+                 makes the replacement a remount, which is the only thing that reliably clears
+                 state a child owns. */
+              <MissionQuestionCard
+                key={d.mission.question.seq}
+                missionId={missionId}
+                question={d.mission.question}
+                onAnswered={d.reload}
+                onNote={onNote}
+              />
             ) : null}
             {decisions.map((a) => (
               <ActionRow

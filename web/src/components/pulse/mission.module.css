@@ -854,3 +854,117 @@
 .tlRelay[data-relay-kind="bad"] {
   color: var(--status-down);
 }
+/* The mission's open question (#892). Framed in the attention accent because it is the one thing
+   on the page that is waiting on the operator — and above the thread, so `needs_you` points at
+   something on screen rather than at something to scroll for. A section, not a modal: the page's
+   only focus trap is the rail drawer (#878) and this does not add a second. */
+.question {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  padding: 12px;
+}
+
+.questionHead {
+  font-size: 10.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 7px;
+}
+
+.questionText {
+  font-size: 13.5px;
+  line-height: 1.45;
+  margin: 0 0 11px;
+  color: var(--text-1);
+}
+
+/* WRAPS rather than truncating: an option the operator cannot read in full is one they cannot
+   choose safely, and on a phone three concrete options do not fit on one line. */
+.questionOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* One option: the model's label on the button, the SERVER's consequence under it. Stacked rather
+   than inline so the consequence cannot be pushed off a phone by a long label. */
+.questionOption {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.questionConsequence {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.questionFree {
+  display: flex;
+  gap: 8px;
+}
+
+.questionInput {
+  flex: 1;
+  min-height: 44px;
+  padding: 0 11px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 12px var(--font-sans, inherit);
+  min-width: 0;
+}
+
+.questionInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.questionNote {
+  color: var(--text-3);
+  font-size: 10.5px;
+  margin: 9px 0 0;
+  line-height: 1.45;
+}
+
+/* The option buttons. >=44px because they are the primary control of a card whose whole job is to
+   be tapped, and because #878's inventory already holds every other control on this page to it. */
+.questionBtn {
+  min-height: 44px;
+  padding: 0 13px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 12px var(--font-sans, inherit);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  text-align: left;
+  max-width: 100%;
+}
+
+.questionBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.questionBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.questionBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.questionBtnPrimary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  flex: none;
+}

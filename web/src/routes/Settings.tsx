@@ -45,6 +45,7 @@ import { AiActivityPanel } from "./AiActivityPanel";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
+import { MissionPlaybooks } from "./MissionPlaybooks";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
@@ -2675,6 +2676,10 @@ export function Settings() {
             <AutoSortSettings />
             <PulseSettings />
             <OrchestratorSettings />
+            {/* The checklists MISSION CONTROL starts a mission with (#892). Here rather than on
+                its own tab because a playbook's objectives are what the supervisor above acts
+                on — they are the same subject, one tap apart. */}
+            <MissionPlaybooks />
             {/* Every system prompt, in one catalog (#824) — including the three that used to
                 have an inline editor in the panels above. */}
             <PromptsSettings />

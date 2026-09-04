@@ -307,10 +307,17 @@ async def test_the_pass_STOPS_when_the_mission_needs_the_operator(store, monkeyp
     """Typing `continue` into a mission that is waiting on a human talks over the question."""
     _running(store)
     _objective(store, KEY)
+    # PRODUCER-FAITHFUL: `derive_needs_you` returns `why`, not `needs_you_why` (that is the name
+    # of the field on the mission ROW). The old stub used the wrong key and passed anyway, because
+    # the gate only read `needs_you` — #892 made the reasons load-bearing and surfaced it.
+    #
+    # `decision` rather than `question`: a pending decision is about a SESSION, which is what a
+    # nudge would type into, so it stops the pass. An open question stands its own objective down
+    # instead — see the case below.
     monkeypatch.setattr(
         missions,
         "derive_needs_you",
-        lambda ids, **k: {store: {"needs_you": True, "needs_you_why": ["an open question"]}},
+        lambda ids, **k: {store: {"needs_you": True, "why": ["decision"]}},
     )
     asked: list = []
 
@@ -322,6 +329,49 @@ async def test_the_pass_STOPS_when_the_mission_needs_the_operator(store, monkeyp
     out = await sup.run_pass(store)
     assert out["skipped"] == "the mission needs the operator"
     assert asked == [], "the model was asked about a mission already waiting on a human"
+
+
+@pytest.mark.anyio
+async def test_an_open_QUESTION_does_not_stop_the_whole_mission(store, monkeypatch):
+    """#892: a question is about ONE objective, and `open_question` stands that one down.
+
+    A pending decision and an intervention are about a session — the thing a nudge types into — so
+    they stop the pass. Stopping the whole mission for a question would stall follow-through on
+    every other objective because one of them is waiting on an answer.
+    """
+    _running(store)
+    _objective(store, KEY)
+    monkeypatch.setattr(
+        missions,
+        "derive_needs_you",
+        lambda ids, **k: {store: {"needs_you": True, "why": ["question"]}},
+    )
+    asked: list = []
+
+    async def _spy(mission_id, session_key, *, path=None):
+        asked.append(session_key)
+        return {"skipped": "x", "assessment": None}
+
+    monkeypatch.setattr(sup, "consider", _spy)
+    out = await sup.run_pass(store)
+    assert "skipped" not in out, out
+    assert asked, "the other objectives must keep being followed through"
+
+
+@pytest.mark.anyio
+async def test_a_question_ALONGSIDE_a_decision_still_stops_the_pass(store, monkeypatch):
+    """The decision is what stops it; the question neither adds to nor cancels that."""
+    _running(store)
+    _objective(store, KEY)
+    monkeypatch.setattr(
+        missions,
+        "derive_needs_you",
+        lambda ids, **k: {store: {"needs_you": True, "why": ["question", "decision"]}},
+    )
+    monkeypatch.setattr(sup, "consider", lambda *a, **k: None)
+    out = await sup.run_pass(store)
+    assert out["skipped"] == "the mission needs the operator"
+    assert out["needs_you_why"] == ["decision"]
 
 
 # =================================================================================== finding 12
@@ -1490,10 +1540,15 @@ async def test_the_route_fence_does_not_DEADLOCK_the_event_loop(store):
 
     _running(store, SESSION, OTHER)
 
+    # THE MISSION, not a list of keys (#900 review 7, finding 1). The fence enumerates the roster
+    # itself now — fail-closed, under the roster's own pseudo-key, re-read inside the lock — so a
+    # caller naming keys could not participate in the protocol it is supposed to share with the
+    # question producer. The deadlock this test exists for is unchanged: the lock and the write go
+    # onto one worker thread together, and the loop never touches the lock.
     async def _one(i: int):
-        return await R._fenced_write([f"claude:k{i}"], lambda: i)
+        return await R._fenced_write(store, lambda: i)
 
-    # Two concurrent fenced writes. If the lock is taken on the loop thread this never returns.
+    # Three concurrent fenced writes. If the lock is taken on the loop thread this never returns.
     got = await asyncio.wait_for(asyncio.gather(_one(1), _one(2), _one(3)), timeout=10)
     assert got == [1, 2, 3]
 
@@ -2048,3 +2103,68 @@ def test_the_authority_snapshot_reads_the_BINDING_atomically(store):
         "same transaction as the objective"
     )
     assert got[4] == 1, "the snapshot did not carry the binding episode"
+
+
+def _ask(mid, key):
+    return missions.open_question(
+        mid,
+        key,
+        "which one did you mean?",
+        [
+            {"label": "the first", "action": "note_answer"},
+            {"label": "the second", "action": "waive_objective"},
+        ],
+    )
+
+
+def test_an_open_question_REFUSES_a_new_supervisor_reservation(store):
+    """A question is a hold, and a hold belongs in the RESERVATION (#900 review, finding 1).
+
+    `may_nudge` reads the hold, but reading it there only covers the pass that has not started
+    yet. The question can open *after* that read and *before* the reservation — the supervisor
+    escalates on one objective and asks about it in the same breath — and then a nudge is minted
+    for an objective the console is showing a question about.
+
+    Red against checking only `(objective, episode, stood_down)`: the reservation is taken.
+    """
+    _running(store)
+    _objective(store, KEY)
+    _ask(store, KEY)
+    took = missions.record_supervisor_action(
+        store, session_key=SESSION, objective_key=KEY, episode=1, action_id="a1"
+    )
+    assert took is False
+
+
+def test_an_open_question_is_IN_the_authority_fingerprint_and_the_verdict(store):
+    """The write fence re-reads the tuple immediately before byte one; the hold must be in it.
+
+    Two assertions, because a verdict that refuses on a field the fingerprint does not carry is
+    only half a fence: the fingerprint is what a delivery already in flight compares against, and
+    a term missing from it is invisible to that comparison.
+
+    Red against a verdict that stops at `stood_down`: the write is still authorized.
+    """
+    _running(store)
+    _objective(store, KEY)
+    missions.record_supervisor_action(
+        store, session_key=SESSION, objective_key=KEY, episode=1, action_id="a1"
+    )
+    before = missions.supervisor_authority(store, KEY, session_key=SESSION, action_id="a1")
+    assert missions.supervisor_action_verdict(store, before) == (True, "")
+
+    q = _ask(store, KEY)
+
+    after = missions.supervisor_authority(store, KEY, session_key=SESSION, action_id="a1")
+    assert after != before, (
+        "opening a question did not change the authority fingerprint, so a delivery already in "
+        "flight cannot see that the objective is now waiting on the operator"
+    )
+    ok, why = missions.supervisor_action_verdict(store, after)
+    assert ok is False
+    assert "waiting for you" in why
+
+    # ...and answering it lifts the hold, rather than latching the objective shut.
+    missions.answer_question(store, q["seq"], option_index=0)
+    lifted = missions.supervisor_authority(store, KEY, session_key=SESSION, action_id="a1")
+    assert int(lifted[5] or 0) == 0

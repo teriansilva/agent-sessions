@@ -895,7 +895,8 @@ def test_a_stored_NULL_playbook_block_fails_CLOSED(tmp_path):
 
     p = tmp_path / "p.json"
     atomic_write_json(p, {"mission_playbooks": None})
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": []}
+    # `revision` is 0: nothing has ever been WRITTEN through the versioned path.
+    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 0}
 
     # …and the control: the key genuinely absent still gets the shipped defaults.
     q = tmp_path / "q.json"

@@ -23,8 +23,11 @@ this route had to be added to that boundary explicitly or it would have served a
 which carries absolute paths — as a cacheable response, on the 401 as well as on success.
 
 ``/message`` LANDS HERE (#871, split out of #852 after its lifecycle proved to need its own
-design pass). Notably absent, on purpose: ``/plan``, ``/dispatch``, ``/answer`` and the playbook
-routes are Phases 3–5. And there is **no new decision endpoint** — approve/reject stay
+design pass), and so does ``/answer`` (#892, Phase 3b) — the operator's reply to a bounded
+question the supervisor is waiting on. Still absent, on purpose: ``/plan`` and ``/dispatch`` are
+Phase 4, and the playbook templates are edited through ``PATCH /api/prompts`` and ``POST
+/api/prefs`` rather than through a mission route, because they are operator config rather than
+mission state. And there is **no new decision endpoint** — approve/reject stay
 ``/api/pulse/actions/{id}/approve|reject`` (#840 §14).
 """
 
@@ -48,7 +51,9 @@ from .. import (
     engines,
     gitpanel,
     mission_archive,
+    mission_fence,
     mission_objectives,
+    mission_questions,
     mission_relay_reconcile,
     mission_supervisor,
     mission_turn_reconcile,
@@ -239,30 +244,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     ) -> JSONResponse:
         qp = request.query_params
         before = qp.get("events_before_seq")
+
+        def _read():
+            return missions.get_mission(
+                mission_id,
+                events_limit=_int(qp.get("events_limit"), missions.EVENTS_PAGE_DEFAULT),
+                events_before_seq=_cursor(before),
+                # ONE SNAPSHOT FOR THE WHOLE ANSWER (#900 review 8, finding 1). The attention
+                # projection and the actionable question are read inside the same transaction as
+                # the mission row and its timeline — see `get_mission`.
+                attention=True,
+            )
+
         try:
             missions.validate_id(mission_id)
-            row = await missions.run_admitted(
-                lambda: missions.safe_get_mission(
-                    mission_id,
-                    events_limit=_int(qp.get("events_limit"), missions.EVENTS_PAGE_DEFAULT),
-                    events_before_seq=_cursor(before),
-                )
-            )
+            row = await missions.run_admitted(_read)
         except missions.MissionError as e:
             return _fail(e)
+        except Exception:  # noqa: BLE001
+            # NOT SUPPRESSED, and not a 404 either (#900 review 5, finding 6, carried forward).
+            # "we could not look" and "there is nothing there" are different answers, and the
+            # console renders its own error for the first rather than a mission that silently
+            # lost its question.
+            return _fail(missions.MissionError("the mission could not be read", status=503))
         if row is None:
             return JSONResponse({"detail": f"unknown mission {mission_id}"}, status_code=404)
-        with contextlib.suppress(Exception):
-            flags = await missions.run_admitted(lambda: missions.derive_needs_you([mission_id]))
-            row["needs_you"] = bool(flags.get(mission_id, {}).get("needs_you"))
-            row["needs_you_why"] = flags.get(mission_id, {}).get("why") or []
-        # THE SUPERVISOR'S READING (#885), derived at read time like `needs_you` above and for the
-        # same reason: it is a projection of the ledger and the objective store, so caching it
-        # would just be a second copy that can disagree with both.
-        #
-        # Suppressed rather than fatal: a mission's page must still render when the ledger is
-        # unreadable. The console shows nothing rather than something wrong, which is the same
-        # posture `MissionObjectives` already takes for a probe that could not run.
         # A RELAY RECORD THAT OUTLIVED ITS REQUEST is resolved here, from the ledger row under the
         # same action id (#903 review 2, finding 3). The record is written before the bytes, so a
         # process that exits in that window leaves one saying `sending` — a claim about NOW that
@@ -272,15 +278,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if await asyncio.to_thread(
                 mission_relay_reconcile.reconcile, mission_id, row.get("events") or []
             ):
-                fresh = await missions.run_admitted(
-                    lambda: missions.safe_get_mission(
-                        mission_id,
-                        events_limit=_int(qp.get("events_limit"), missions.EVENTS_PAGE_DEFAULT),
-                        events_before_seq=_cursor(before),
-                    )
-                )
+                fresh = await missions.run_admitted(_read)
                 if fresh is not None:
                     row = fresh
+        # THE SUPERVISOR'S READING (#885), derived at read time like the attention snapshot
+        # below and for the same reason: it is a projection of the ledger and the objective
+        # store, so caching it would just be a second copy that can disagree with both.
+        #
+        # Suppressed rather than fatal: a mission's page must still render when the ledger is
+        # unreadable. The console shows nothing rather than something wrong, which is the same
+        # posture `MissionObjectives` already takes for a probe that could not run.
         with contextlib.suppress(Exception):
             row["supervisor"] = await missions.run_admitted(
                 lambda: mission_supervisor.assess(mission_id)
@@ -290,9 +297,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # answer in both directions — a claim between them returned a turn with no operator
         # event, a settlement between them returned `turn: null` beside a timeline that did not
         # yet carry the answer — and, worse, its failure was SUPPRESSED, so a store error and a
-        # settled turn arrived at the client as the same thing: no field. The client cleared a
-        # live "still working" row on it. One snapshot, one field, and a read failure now fails
-        # the read rather than quietly meaning "settled".
+        # settled turn arrived at the client as the same thing: no field.
+
+        # THE ATTENTION FLAG, THE QUESTION AND THE TIMELINE ALL CAME FROM `_read` — one
+        # transaction, one answer (#900 review 8, finding 1). There is deliberately no second
+        # read here: every version of one produced a page that contradicted itself, and the last
+        # one was subtle enough to pass its own regression — the flag and the question agreed
+        # with each other while disagreeing with the events array beside them.
         return JSONResponse(row)
 
     @app.post("/api/missions/{mission_id}/adopt")
@@ -305,17 +316,32 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             body = await _body(request)
             key = _session_key(body.get("session_key"))
+            role = "primary" if body.get("role") is None else body.get("role")
+
+            def _adopt():
+                # UNDER THE SAME FENCE THE QUESTION TAKES (#900 review 6, finding 1). A question
+                # locks the sessions it knows about, which cannot order it against an ADOPTION —
+                # the session being adopted is by definition not in that set. Both sides take the
+                # roster's own pseudo-key, so "the roster is changing" and "a question is being
+                # committed against it" cannot interleave.
+                with session_input.sessions_transaction(
+                    [mission_fence.roster_key(mission_id), engines.physical_key(key)]
+                ):
+                    return missions.adopt(mission_id, key, role=role)
+
+            return JSONResponse(await missions.run_admitted(_adopt))
+        except session_input.AuthorityFenceBusy:
+            # RETRYABLE, NOT BROKEN (#900 review 7, finding 5). The shared fence being held is
+            # ordinary contention — a question is committing against this very roster — and the
+            # adoption did NOT happen. Every sibling mutation answers 503 for it; this route
+            # caught only `MissionError` and turned the same condition into a 500, which tells
+            # the operator the app failed when the honest answer is "in a moment".
+            #
+            # Kept here as well as in `mission_fence` (review 8, finding 2) because this route
+            # takes the lock ITSELF rather than through the shared helper — the adopting session
+            # is by definition not in the roster the helper enumerates.
             return JSONResponse(
-                await missions.run_admitted(
-                    # `body.get("role") or "primary"` silently turned a malformed falsy value
-                    # (`{}`, `[]`, `0`) into the default instead of rejecting it. Absent means
-                    # default; present means it has to be a real string the store recognises.
-                    lambda: missions.adopt(
-                        mission_id,
-                        key,
-                        role="primary" if body.get("role") is None else body.get("role"),
-                    )
-                )
+                {"detail": "the authorization fence is busy; retry"}, status_code=503
             )
         except missions.MissionError as e:
             return _fail(e)
@@ -330,7 +356,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             body = await _body(request)
             key = _session_key(body.get("session_key"))
-            phys = engines.physical_key(key)
             # FENCED. Detaching withdraws this session's authority, and an automatic delivery may
             # be mid-flight: the write fence compares the per-session epoch immediately before
             # byte one, holding the registry lock. Committing the detach inside that same lock is
@@ -338,7 +363,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # sees the new epoch. Unfenced, the withdrawal could land between the fence's
             # comparison and `os.write()` and the old mission still typed into the session
             # (#888 review, finding 1).
-            out = await _fenced_write([phys], lambda: missions.detach(mission_id, key))
+            out = await _fenced_write(mission_id, lambda: missions.detach(mission_id, key))
             return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
@@ -364,10 +389,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # withdraws the authority behind any in-flight nudge. Committing it outside the fence
             # let a closed mission's nudge still land (#888 review, finding 3). Non-terminal
             # transitions pay only an epoch bump, which costs a re-proposal at worst.
-            keys = await _held_physical_keys(mission_id)
             return JSONResponse(
                 await _fenced_write(
-                    keys,
+                    mission_id,
                     lambda: missions.set_state(
                         mission_id,
                         str(body.get("from") or ""),
@@ -908,6 +932,77 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
+    @app.post("/api/missions/{mission_id}/answer")
+    async def answer_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Answer the mission's open question — an option index, or free text (#892).
+
+        **The action is looked up server-side from the STORED option, by index.** Nothing the
+        model wrote is executed: the `label` is display text, and the action name it maps to must
+        be in `mission_questions.ACTIONS` or the request is refused. Rejected rather than clamped
+        — an action outside the closed set is a question the operator answered and nothing
+        happened to, which is worse than an error.
+
+        **Free text is an ANSWER, not an instruction.** It is recorded on the timeline for the
+        next supervisor pass to read; it never becomes agent input. That is what keeps this route
+        from being a second, unfenced path to a PTY.
+        """
+        try:
+            body = await _body(request)
+            missions.validate_id(mission_id)
+            seq = body.get("seq")
+            if isinstance(seq, bool) or not isinstance(seq, int):
+                return _fail(
+                    missions.MissionError(
+                        "seq is required and names the question being answered", status=422
+                    )
+                )
+            idx = body.get("option_index")
+            if idx is not None and (isinstance(idx, bool) or not isinstance(idx, int)):
+                return _fail(missions.MissionError("option_index must be an integer", status=422))
+            raw_text = body.get("text")
+            if raw_text is not None and not isinstance(raw_text, str):
+                return _fail(missions.MissionError("text must be a string", status=422))
+            text = (raw_text or "").strip()
+            if len(text) > missions.QUESTION_TEXT_MAX:
+                return _fail(
+                    missions.MissionError(
+                        f"text is longer than {missions.QUESTION_TEXT_MAX} characters", status=422
+                    )
+                )
+
+            # FENCED, like every other authority change on this route (#900 review 7, finding
+            # 13, correcting the note that used to sit here). Answering releases the objective
+            # back into the follow-through by advancing its episode, which invalidates an
+            # in-flight nudge aimed at the old one — it does NOT withdraw a stand-down the
+            # operator set separately, and the store carries that across deliberately.
+            #
+            # It takes the same protocol the question OPENING takes: fail-closed enumeration,
+            # the roster pseudo-key, and a re-read inside the lock.
+            out = await _fenced_write(
+                mission_id,
+                lambda: missions.answer_question(mission_id, int(seq), option_index=idx, text=text),
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+
+        # THE CLOSED SET, enforced after the store has told us which action the chosen option
+        # names. A stored option can only have come from `mission_questions`, but this is the
+        # boundary that makes that a property rather than a chain of assumptions.
+        #
+        # The effect itself ran inside the settlement's transaction (#900 review, finding 2), so
+        # `applied` is what the store DID, not what this route intended: settling here and acting
+        # afterwards left a window where a crash lost the operator's choice for good, because the
+        # retry is a 409 once the hold is released.
+        action = str(out.get("action") or "")
+        if action not in mission_questions.ACTION_NAMES:
+            return _fail(missions.MissionError(f"unknown answer action {action!r}", status=422))
+        return JSONResponse(out)
+
     @app.get("/api/missions/{mission_id}/objectives")
     async def objectives_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
         try:
@@ -946,9 +1041,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 )
             # Fenced for the same reason as detach: a stand-down withdraws the authority behind
             # any in-flight nudge for this objective, on every session the mission holds.
-            keys = await _held_physical_keys(mission_id)
             ok = await _fenced_write(
-                keys, lambda: missions.stand_down(mission_id, objective_key, episode=episode)
+                mission_id, lambda: missions.stand_down(mission_id, objective_key, episode=episode)
             )
         except missions.MissionError as e:
             return _fail(e)
@@ -987,9 +1081,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             body = await _body(request)
             # Dropping or waiving an objective withdraws the authority behind any in-flight nudge
             # aimed at it, so the edit commits inside the write fence — see `detach_route`.
-            keys = await _held_physical_keys(mission_id)
             rows = await _fenced_write(
-                keys,
+                mission_id,
                 lambda: missions.patch_objectives(
                     mission_id, body.get("ops") or [], source="operator"
                 ),
@@ -999,48 +1092,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         return JSONResponse({"objectives": rows})
 
 
-async def _fenced_write(keys: list[str], fn):
-    """Run a store mutation INSIDE the write fence, entirely on a worker thread.
+async def _fenced_write(mission_id: str, fn):
+    """Run a mission mutation INSIDE the write fence. One protocol, shared with the producer.
 
-    Both halves matter and they pull in opposite directions.
+    THE PROTOCOL IS `mission_fence.fenced_write`, and this is the reason it moved there (#900
+    review 7, finding 1). Every mutation on this route file withdraws authority — a terminal
+    transition and a detach release sessions, an objective edit or a stand-down retires the thing
+    a nudge was aimed at, an answer releases the objective back into the follow-through — and
+    each has to be ordered against an in-flight PTY write and against a concurrent ADOPTION.
 
-    The fence must be held across the store write, or the mutation can land between the fence's
-    comparison and byte one. But `session_input._lock` is a plain `threading.Lock`, and holding it
-    around an `await` on the event loop is a deadlock: request A suspends inside the lock waiting
-    for its worker, request B enters the same block on the loop thread and blocks it, and A can
-    never resume to release. Hermes reproduced exactly that hang (#888 review, finding 4).
-
-    So the lock and the synchronous mutation go into the SAME callable and that callable runs off
-    the loop. The fence still encloses the write; the loop thread never touches the lock.
+    The version that lived here got two of the three parts wrong, and the answer path is where
+    that showed: `_held_physical_keys` mapped a store read failure to `[]`, so a fence that could
+    not see the sessions locked nothing and said it had; and nothing re-read the roster inside the
+    lock, so a session adopted between the enumeration and the transaction was never held at all.
+    The question producer had both fixes. Sharing one function is what stops them drifting again.
     """
-
-    def _run():
-        with session_input.sessions_transaction(keys):
-            return fn()
-
-    return await missions.run_admitted(_run)
-
-
-async def _held_physical_keys(mission_id: str) -> list[str]:
-    """The physical keys of every session this mission currently holds.
-
-    Physical, not app-facing: the write fence is keyed on the pty, which is what `session_input`
-    bumps and compares.
-    """
-    try:
-        row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
-    except Exception:  # noqa: BLE001 — a fence that cannot enumerate still must not block the edit
-        return []
-    out: list[str] = []
-    for srow in (row or {}).get("sessions") or []:
-        if srow.get("removed_at") is not None:
-            continue
-        key = str(srow.get("session_key") or "")
-        if not key:
-            continue
-        with contextlib.suppress(Exception):
-            out.append(engines.physical_key(key))
-    return out
+    return await mission_fence.fenced_write(mission_id, fn)
 
 
 def _cursor(raw: object):

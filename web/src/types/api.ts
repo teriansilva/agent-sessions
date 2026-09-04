@@ -699,6 +699,49 @@ export interface AppConfig {
    *  reuses the ai_review endpoint for synthesis (no secret). */
   pulse?: PulseConfig;
   orchestrator?: OrchestratorConfig;
+  /** The mission playbooks (#883), so Settings can edit them (#892). Normalized server-side, so
+   *  this is exactly the shape `POST /api/prefs` accepts back. */
+  mission_playbooks?: MissionPlaybooks;
+  /** What each probe kind takes, FROM THE SERVER'S OWN SCHEMA — never a second copy here. The
+   *  editor offers the right fields per kind so an unknown argument is prevented rather than
+   *  refused on save; validation itself stays entirely server-side. */
+  mission_probes?: MissionProbeSchema;
+}
+
+export interface MissionPlaybookObjective {
+  key: string;
+  title: string;
+  probe: string;
+  probe_args: Record<string, unknown> | null;
+  gate: boolean;
+}
+
+export interface MissionPlaybook {
+  id: string;
+  label: string;
+  objectives: MissionPlaybookObjective[];
+}
+
+export interface MissionPlaybooks {
+  /** The playbook a new mission gets when none is named. `""` means notes-only — NOT "the first
+   *  one": substituting a playbook would arm gating objectives nobody chose (#883). */
+  default_id: string;
+  playbooks: MissionPlaybook[];
+  /** SERVER-OWNED and monotonic. A save sends back the one it read; a mismatch is a 409 rather
+   *  than a whole-block overwrite of whatever another tab did in the meantime (#900 review 5,
+   *  finding 7). Never chosen by the client — the server increments its own. */
+  revision?: number;
+}
+
+export interface MissionProbeSchema {
+  kinds: string[];
+  /** Probes that may never gate alone — "the agent believes it wrote tests" is not evidence. */
+  non_gating: string[];
+  args: Record<string, { required: string[]; optional: string[] }>;
+  /** The JSON type each argument takes, keyed the same way. `"text"` means send a string;
+   *  `"int"` means send a number, which is the only way `http_status.expect_status` can be
+   *  authored at all (#900 review, finding 6). Absent on an older server — treat as `"text"`. */
+  types?: Record<string, Record<string, string>>;
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never
@@ -1239,6 +1282,10 @@ export interface Mission {
   /** The turn the operator is still owed an outcome for, from the STORE (#890). Absent/null when
    *  there is none. This is what makes "still working" and an ambiguous turn survive a reload —
    *  a durable turn whose only representation is component state is not durable. */
+  /** The question awaiting an answer, or null (#892). Carried on the mission rather than found
+   *  in `events`, which is paginated — a question older than the newest page would disappear
+   *  from the console while `needs_you` still said the mission wanted an answer. */
+  question?: MissionQuestion | null;
   turn?: MissionOpenTurn | null;
 }
 
@@ -1251,6 +1298,31 @@ export interface MissionOpenTurn {
   text: string;
   delivery_error: string;
   created_at: number;
+}
+
+/** A bounded choice the supervisor is waiting on (#892).
+ *
+ *  `label` is DISPLAY TEXT and carries no authority: the client sends back the option's INDEX,
+ *  and the server looks the action up from its own closed set. Nothing the model wrote is ever
+ *  executed, which is why the label is never sent back.
+ *
+ *  **That is not the whole threat, and `consequence` is the rest of it.** The model authors the
+ *  label AND picks the action, and the operator sees only the label — so a label reading "Keep
+ *  working; leave this required" over a hidden `waive_objective` obtains a confirmation under
+ *  false pretences (#900 review 2, finding 1). `consequence` is the SERVER's own sentence about
+ *  what the option does, and `settling` marks the ones that change something beyond the
+ *  timeline. Both are server-owned; neither can be model-authored. */
+export interface MissionQuestion {
+  seq: number;
+  question: string;
+  objective?: string | null;
+  episode?: number | null;
+  options: {
+    label: string;
+    action: string;
+    consequence?: string;
+    settling?: boolean;
+  }[];
 }
 
 export interface MissionSession {

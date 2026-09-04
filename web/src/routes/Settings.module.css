@@ -888,6 +888,28 @@
   .aiKeyRow button {
     min-height: 44px;
   }
+
+  /* THE PLAYBOOK EDITOR IS A PHONE SURFACE TOO (#900 review 2, finding 5).
+     `docs/design.md` sets a >=44px floor for touch targets, and these controls were sized by
+     padding alone — which lands around 33px and is exactly the kind of control that gets
+     mis-tapped when the thing it edits is what a mission checks before calling itself done.
+     Scoped to this panel rather than applied to `.aiInput` globally, so it cannot silently
+     re-lay-out every other Settings form. */
+  [data-testid="mission-playbooks"] input,
+  [data-testid="mission-playbooks"] select,
+  [data-testid="mission-playbooks"] button {
+    min-height: 44px;
+  }
+
+  /* …except the checkbox, which is a control the browser sizes itself and whose 44px target is
+     the LABEL around it. Stretching the box itself would make a giant square, not a bigger
+     target — so the height goes on the label and the box keeps its own size. */
+  [data-testid="mission-playbooks"] input[type="checkbox"] {
+    min-height: 0;
+  }
+  [data-testid="mission-playbooks"] label {
+    min-height: 44px;
+  }
 }
 .aiIntervalRow {
   display: flex;
@@ -1566,4 +1588,51 @@
      not use, which is worse than no preview. Line-height 1.15 so the box rules join, the way
      they do in xterm. */
   line-height: 1.15;
+}
+
+/* Mission playbooks (#892). A playbook is a small nested form — a header row and a list of
+   objective rows — so it gets a frame of its own rather than sitting flush against the section:
+   without one, two adjacent playbooks read as a single long list of inputs. */
+.playbook {
+  border: 1px solid var(--border);
+  padding: 10px;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.playbookHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.playbookId {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+}
+
+/* WRAPS rather than scrolls: an objective carries a key, a title, a probe, its arguments and a
+   gate, and on a phone that is more controls than a row can hold. A horizontal scroller would
+   hide the gate checkbox off-screen, which is the one control whose meaning is "this can block
+   the mission from ever finishing". */
+.objective {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+}
+
+.objective > input[type="text"],
+.objective > input:not([type]),
+.objective > select {
+  flex: 1 1 160px;
+  min-width: 0;
 }

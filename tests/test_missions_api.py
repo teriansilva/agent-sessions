@@ -1736,6 +1736,241 @@ def test_dismissing_a_turn_REQUIRES_login_and_csrf(api, auth_cfg):
     assert fresh.post(f"/api/missions/{m['id']}/turns/t1/ack").status_code in (401, 403)
 
 
+# #900 review round 7
+# ==============================================================================================
+
+
+def test_ANSWERING_takes_the_SAME_fence_a_question_takes(api, monkeypatch):
+    """#900 review 7, finding 1, at the route — where the hole was.
+
+    A question OPENING already enumerated fail-closed, locked the roster pseudo-key, and re-read
+    inside the lock. The ANSWER route approximated all three: `_held_physical_keys` mapped a store
+    read failure to `[]`, so a fence that could not see the sessions locked nothing and said it
+    had, and nothing re-read the roster — so a session adopted between the enumeration and the
+    transaction was never held while the answer withdrew the authority behind an in-flight nudge.
+
+    Asserted on the LOCK the write takes, because that is the mechanism: a timing test would pass
+    against the unfixed code most of the time, which is the worst kind of green.
+
+    Red against a route with its own enumerate-and-lock.
+    """
+    import contextlib as _c
+
+    from agent_sessions import mission_fence, session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    q = _asked(m["id"])
+
+    taken: list[list[str]] = []
+    real = session_input.sessions_transaction
+
+    @_c.contextmanager
+    def watched(keys):
+        taken.append(list(keys))
+        with real(keys):
+            yield
+
+    monkeypatch.setattr(session_input, "sessions_transaction", watched)
+    r = c.post(
+        f"/api/missions/{m['id']}/answer",
+        json={"seq": q["seq"], "option_index": 0},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert taken, "the answer committed outside the write fence"
+    assert (
+        mission_fence.roster_key(m["id"]) in taken[0]
+    ), "the answer did not take the roster's own lock, so an adoption can still interleave"
+
+
+def test_an_UNREADABLE_roster_REFUSES_the_answer_rather_than_locking_nothing(api, monkeypatch):
+    """#900 review 7, finding 1, the other half. A fence that cannot enumerate the sessions it is
+    meant to lock does not become a fence by locking nothing — and the answer route swallowed the
+    read failure into an empty set, so the write proceeded believing it was ordered.
+
+    Red against `except Exception: return []`.
+    """
+    from agent_sessions import mission_fence
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    q = _asked(m["id"])
+
+    def boom(*a, **k):
+        raise OSError("the roster could not be read")
+
+    monkeypatch.setattr(mission_fence, "held_keys", boom)
+    r = c.post(
+        f"/api/missions/{m['id']}/answer",
+        json={"seq": q["seq"], "option_index": 0},
+        headers=hdr,
+    )
+    assert r.status_code == 503, r.text
+    # …and nothing was written: the question is still there to answer once the store recovers.
+    assert missions.open_question_row(m["id"]) is not None
+
+
+def test_ADOPT_takes_the_ROSTER_lock_a_question_serialises_against(api, monkeypatch):
+    """#900 review 7, finding 12. The "adoption and a question share one fence" property was
+    asserted by calling `_fenced_open()` alone — the QUESTION side — so removing the adoption
+    side's lock left it green, and the two operations went back to checking in one lock domain
+    and writing in another.
+
+    This drives `POST /adopt`, which is the participant the other test cannot see.
+    """
+    import contextlib as _c
+
+    from agent_sessions import mission_fence, session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    taken: list[list[str]] = []
+    real = session_input.sessions_transaction
+
+    @_c.contextmanager
+    def watched(keys):
+        taken.append(list(keys))
+        with real(keys):
+            yield
+
+    monkeypatch.setattr(session_input, "sessions_transaction", watched)
+    key = "claude:11111111-1111-1111-1111-111111111111"
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": key}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert taken, "the adoption committed outside any fence"
+    assert (
+        mission_fence.roster_key(m["id"]) in taken[0]
+    ), "the adoption did not take the roster's own lock, so a question can still interleave"
+    # …and the session being adopted is locked too: it is the one a nudge could be writing into.
+    assert any("11111111" in k for k in taken[0])
+
+
+def test_the_QUESTION_a_mission_GET_offers_is_one_its_TIMELINE_carries(api, monkeypatch):
+    """#900 review 8, finding 1. The previous fix made the flag and the question agree with EACH
+    OTHER, and that was not enough: they came from a different transaction than the mission row
+    and its timeline, so a question opening between the two reads produced a 200 carrying an
+    actionable question whose own event was not in the `events` array — an answer the console
+    could offer and then not show.
+
+    The interleaving is injected at `_attention_rows`, which the read reaches AFTER it has taken
+    its snapshot of the timeline. Under one transaction the late question is invisible to both
+    halves, so the answer stays consistent; under two it is visible to the attention half only.
+
+    Red against a mission GET that reads the attention projection on its own connection.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    missions.patch_objectives(
+        m["id"], [{"op": "add", "key": "pr_open", "title": "A PR is open", "gate": True}]
+    )
+
+    real = missions._attention_rows
+    fired: list[int] = []
+
+    def open_then_read(con, ids):
+        # A question committed on ANOTHER connection, in the window the two-read version left
+        # open. Once only: the read below must not recurse into itself.
+        if not fired:
+            fired.append(1)
+            missions.open_question(
+                m["id"],
+                "pr_open",
+                "which of the two open PRs is this mission's?",
+                [
+                    {"label": "The one from Tuesday", "action": "note_answer"},
+                    {"label": "Neither", "action": "waive_objective"},
+                ],
+            )
+        return real(con, ids)
+
+    monkeypatch.setattr(missions, "_attention_rows", open_then_read)
+    r = c.get(f"/api/missions/{m['id']}", headers=hdr)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert fired, "the interleaving never happened, so this test proves nothing"
+
+    # THE WHOLE ANSWER AGREES WITH ITSELF. Not "the flag matches the question" — the question the
+    # console is offered has to be one the timeline it was sent actually carries.
+    q = body.get("question")
+    seqs = {e["seq"] for e in body.get("events") or []}
+    if q is not None:
+        assert (
+            q["seq"] in seqs
+        ), "the mission was handed a question whose own event is not in the timeline beside it"
+    assert ("question" in (body.get("needs_you_why") or [])) == (q is not None)
+
+    # …and the NEXT read, which is a fresh snapshot, carries both.
+    again = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    assert again["question"] is not None
+    assert again["question"]["seq"] in {e["seq"] for e in again["events"]}
+
+
+def test_a_BUSY_FENCE_on_EVERY_fenced_route_is_a_RETRY_not_a_500(api, monkeypatch):
+    """#900 review 8, finding 2. The shared helper let `AuthorityFenceBusy` escape, and every
+    route that uses it catches only `MissionError` — so a held fence, which is ordinary
+    contention and means the write did NOT happen, surfaced as an internal server error on the
+    one path whose next move is simply "try again".
+
+    Asserted on ALL of them, because the defect was that they shared a helper and not a contract.
+
+    Red against a `fenced_write` that does not translate.
+    """
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    q = _asked(m["id"])
+    c.post(f"/api/missions/{m['id']}/state", json={"from": "draft", "to": "planned"}, headers=hdr)
+
+    def busy(keys):
+        raise session_input.AuthorityFenceBusy("the fence is held")
+
+    monkeypatch.setattr(session_input, "sessions_transaction", busy)
+    calls = [
+        ("answer", {"seq": q["seq"], "option_index": 0}),
+        ("state", {"from": "planned", "to": "abandoned", "outcome": "abandoned"}),
+        ("detach", {"session_key": CLAUDE_A}),
+        ("objectives", {"ops": [{"op": "drop", "key": "pr_open"}]}),
+    ]
+    for path, body in calls:
+        r = (
+            c.patch(f"/api/missions/{m['id']}/{path}", json=body, headers=hdr)
+            if path == "objectives"
+            else c.post(f"/api/missions/{m['id']}/{path}", json=body, headers=hdr)
+        )
+        assert r.status_code == 503, (path, r.status_code, r.text)
+        assert "retry" in r.json()["detail"], path
+    # …and nothing was written: the question is still there to answer once the fence frees.
+    assert missions.open_question_row(m["id"]) is not None
+
+
+def test_a_BUSY_FENCE_at_ADOPT_is_a_RETRY_not_a_500(api, monkeypatch):
+    """#900 review 7, finding 5. The shared fence being held is ordinary contention — a question
+    is committing against this very roster — and the adoption did NOT happen. Every sibling
+    mutation answers 503 for it; this route caught only `MissionError`, so the same condition
+    became a 500 that tells the operator the app failed.
+    """
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    def busy(keys):
+        raise session_input.AuthorityFenceBusy("the fence is held")
+
+    monkeypatch.setattr(session_input, "sessions_transaction", busy)
+    r = c.post(
+        f"/api/missions/{m['id']}/adopt",
+        json={"session_key": "claude:11111111-1111-1111-1111-111111111111"},
+        headers=hdr,
+    )
+    assert r.status_code == 503, r.text
+    assert "retry" in r.json()["detail"]
+    assert missions.get_mission(m["id"])["sessions"] == []
+
+
 def test_an_OWED_terminalization_is_discharged_WITHOUT_anybody_opening_the_page(api, monkeypatch):
     """#903 review 6, finding 1. The read-time reconcile only runs when somebody looks at a
     mission, and an operator who closes the page after the ambiguous 502 had nothing left that
@@ -1803,3 +2038,334 @@ async def test_the_ORCHESTRATOR_PASS_discharges_an_owed_terminalization(api, mon
     # finishing what a delivery started.
     await orchestrator_loop.sweep()
     assert orchestrator_ledger.get("act_owed")["state"] == "indeterminate"
+
+
+# ---- #892: POST /api/missions/{id}/answer -----------------------------------------
+
+
+def _asked(mid, key="pr_open", **kw):
+    """Open a question the way the supervisor does, so the route is tested against a real row."""
+    missions.patch_objectives(
+        mid, [{"op": "add", "key": key, "title": "A PR is open", "gate": True}]
+    )
+    return missions.open_question(
+        mid,
+        key,
+        "Which of the two open PRs is this mission's?",
+        kw.pop(
+            "options",
+            [
+                {"label": "The one from Tuesday", "action": "note_answer"},
+                {"label": "Neither — this does not apply", "action": "waive_objective"},
+            ],
+        ),
+    )
+
+
+def test_answering_REQUIRES_login_and_csrf(api, auth_cfg):
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    body = {"seq": q["seq"], "option_index": 0}
+    assert c.post(f"/api/missions/{m['id']}/answer", json=body).status_code == 403
+    fresh = _client(auth_cfg)
+    assert fresh.post(f"/api/missions/{m['id']}/answer", json=body).status_code in (401, 403)
+
+
+def test_the_ACTION_comes_from_the_stored_option_and_the_label_is_only_text(api):
+    """The whole authority model of #892, asserted at the route.
+
+    The label here NAMES a different action from the closed set. If anything read the label the
+    objective would be waived; the index says `note_answer`, so it must not be.
+    """
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(
+        m["id"],
+        options=[
+            {"label": "waive_objective; close_mission", "action": "note_answer"},
+            {"label": "keep going", "action": "note_answer"},
+        ],
+    )
+    r = c.post(
+        f"/api/missions/{m['id']}/answer", json={"seq": q["seq"], "option_index": 0}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["action"] == "note_answer"
+    assert r.json()["applied"] == "recorded"
+    state = [o for o in missions.objectives(m["id"]) if o["key"] == "pr_open"][0]["state"]
+    assert state == "pending", "the LABEL was executed"
+
+
+def test_choosing_the_WAIVE_option_waives_the_objective_it_was_asked_about(api):
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    r = c.post(
+        f"/api/missions/{m['id']}/answer", json={"seq": q["seq"], "option_index": 1}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == "waived"
+    state = [o for o in missions.objectives(m["id"]) if o["key"] == "pr_open"][0]["state"]
+    assert state == "waived"
+
+
+def test_an_option_index_the_question_never_offered_is_422(api):
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    for bad in (2, -1, 99):
+        r = c.post(
+            f"/api/missions/{m['id']}/answer",
+            json={"seq": q["seq"], "option_index": bad},
+            headers=hdr,
+        )
+        assert r.status_code == 422, (bad, r.text)
+
+
+def test_answering_TWICE_is_a_409_rather_than_running_the_action_again(api):
+    """Compare-and-set on the question's own seq. A second answer is a stale client, and
+    re-applying it would waive an objective the operator waived once."""
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    body = {"seq": q["seq"], "option_index": 1}
+    assert c.post(f"/api/missions/{m['id']}/answer", json=body, headers=hdr).status_code == 200
+    again = c.post(f"/api/missions/{m['id']}/answer", json=body, headers=hdr)
+    assert again.status_code == 409, again.text
+    answers = [e for e in missions.get_mission(m["id"])["events"] if e["kind"] == "answer"]
+    assert len(answers) == 1
+
+
+def test_FREE_TEXT_is_recorded_and_is_never_delivered_to_a_session(api):
+    """An answer is an ANSWER. Making it agent input would be a second, unfenced path to a PTY —
+    delivery stays the composer's job."""
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    before = [e["seq"] for e in missions.get_mission(m["id"])["events"]]
+    r = c.post(
+        f"/api/missions/{m['id']}/answer",
+        json={"seq": q["seq"], "text": "use the Tuesday one"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["action"] == "note_answer" and r.json()["applied"] == "recorded"
+    events = missions.get_mission(m["id"])["events"]
+    answer = [e for e in events if e["kind"] == "answer"][0]
+    assert "Tuesday" in (answer.get("text") or "")
+    # Asserted on what the ANSWER added, not on what the timeline contains: creating a mission
+    # already records the operator's instruction, so "no operator_msg on the mission" would be a
+    # test of `create_mission` that passes for the wrong reason.
+    added = [e["kind"] for e in events if e["seq"] not in before]
+    assert added == ["answer"], added
+
+
+def test_an_answer_with_NEITHER_an_option_nor_text_is_422(api):
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    r = c.post(f"/api/missions/{m['id']}/answer", json={"seq": q["seq"]}, headers=hdr)
+    assert r.status_code == 422, r.text
+
+
+def test_a_missing_or_MISTYPED_seq_is_422_rather_than_answering_whatever_is_open(api):
+    """The client states WHICH question it is answering. Without that the route would answer
+    whatever happens to be open when the request lands, which is the check-then-act shape."""
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    _asked(m["id"])
+    for body in ({"option_index": 0}, {"seq": "1", "option_index": 0}, {"seq": True}):
+        r = c.post(f"/api/missions/{m['id']}/answer", json=body, headers=hdr)
+        assert r.status_code == 422, (body, r.text)
+
+
+def test_an_OVERLONG_free_text_answer_is_refused_before_it_becomes_a_durable_event(api):
+    c, hdr, _ = api
+    m = _create(c, hdr)
+    q = _asked(m["id"])
+    r = c.post(
+        f"/api/missions/{m['id']}/answer",
+        json={"seq": q["seq"], "text": "x" * (missions.QUESTION_TEXT_MAX + 1)},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+    assert not [e for e in missions.get_mission(m["id"])["events"] if e["kind"] == "answer"]
+
+
+def test_an_UNREADABLE_question_is_an_ERROR_not_a_mission_without_one(api, monkeypatch):
+    """#900 review 5, finding 6. The contract is that the attention flag and the thing the
+    operator has to do about it cannot disagree — and swallowing this read produced exactly that
+    disagreement with a 200: the rail kept saying "needs an answer" while the console removed the
+    only way to answer it, and nothing on screen said a read had failed.
+
+    Red against a `contextlib.suppress` around the attention read.
+
+    Patched at `_open_question_row`, which is the query `get_mission(attention=True)` actually
+    runs — the flag, the question and the timeline come from ONE transaction now (review 8,
+    finding 1), so there is no separate read left on this route to fail.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    def boom(*a, **k):
+        raise OSError("the question store could not be read")
+
+    monkeypatch.setattr(missions, "_open_question_row", boom)
+    r = c.get(f"/api/missions/{m['id']}", headers=hdr)
+    # AN EXPLICIT DEGRADED CONTRACT, not a 200 with the field quietly missing.
+    assert r.status_code == 503, r.text
+    assert "could not be read" in r.json()["detail"]
+
+
+def test_a_QUESTION_OPENED_MID_READ_never_arrives_without_its_own_event(api, monkeypatch):
+    """#900 review 8, finding 1. The previous fix put the FLAG and the QUESTION in one
+    transaction, and they agreed with each other — while disagreeing with the timeline returned
+    beside them. A question opening between the mission read and the attention read produced a
+    200 carrying an actionable question whose own event was not in `events`: an answer the
+    console could offer and then not show.
+
+    The interleaving is injected at the attention read itself, which is the gap that used to
+    exist. With one snapshot the question is simply not visible yet — `question: null` beside a
+    timeline that does not carry it, which is consistent — and the next poll shows both.
+
+    Red against a second transaction for the attention projection.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    missions.patch_objectives(
+        m["id"], [{"op": "add", "key": "pr_open", "title": "A PR is open", "gate": True}]
+    )
+
+    real = missions._attention_rows
+    fired: list[int] = []
+
+    def open_then_read(con, ids):
+        if not fired:
+            fired.append(1)
+            # A DIFFERENT connection, exactly as the supervisor's own producer would be.
+            missions.open_question(
+                m["id"],
+                "pr_open",
+                "Which of the two open PRs is this mission's?",
+                [
+                    {"label": "The one from Tuesday", "action": "note_answer"},
+                    {"label": "Neither", "action": "waive_objective"},
+                ],
+            )
+        return real(con, ids)
+
+    monkeypatch.setattr(missions, "_attention_rows", open_then_read)
+    r = c.get(f"/api/missions/{m['id']}", headers=hdr)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert fired, "the interleaving never ran, so this test proves nothing"
+
+    q = body.get("question")
+    seqs = {e["seq"] for e in body.get("events") or []}
+    assert (
+        q is None or q["seq"] in seqs
+    ), "the response offered a question whose own event it did not carry"
+    # …and the flag agrees with what was returned, not with what landed mid-read.
+    assert ("question" in (body.get("needs_you_why") or [])) == (q is not None)
+
+    # THE NEXT READ carries all three, so nothing is lost — only deferred to a consistent answer.
+    monkeypatch.setattr(missions, "_attention_rows", real)
+    later = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    assert later["question"] is not None
+    assert later["question"]["seq"] in {e["seq"] for e in later["events"]}
+    assert "question" in later["needs_you_why"]
+
+
+def test_a_CONCURRENT_playbook_save_is_refused_rather_than_overwriting(api):
+    """#900 review 5, finding 7. A whole-block write with no comparand is last-writer-wins over
+    everything another tab did — a playbook it added, a probe target it fixed, a gate it set —
+    deleted silently, with both operators told the save worked.
+
+    Red against a `set_mission_playbooks` that ignores the revision it was handed.
+    """
+    from agent_sessions import prefs
+
+    c, hdr, proj = api
+    first = c.get("/api/config", headers=hdr).json()["mission_playbooks"]
+    rev = first["revision"]
+
+    # TAB A saves, and the revision moves.
+    a = c.post(
+        "/api/prefs",
+        json={
+            "mission_playbooks": {
+                "default_id": "",
+                "playbooks": [{"id": "from_a", "label": "A", "objectives": []}],
+                "revision": rev,
+            }
+        },
+        headers=hdr,
+    )
+    assert a.status_code == 200, a.text
+    assert a.json()["mission_playbooks"]["revision"] == rev + 1
+
+    # TAB B still holds the OLD revision, and its block does not contain A's playbook.
+    b = c.post(
+        "/api/prefs",
+        json={
+            "mission_playbooks": {
+                "default_id": "",
+                "playbooks": [{"id": "from_b", "label": "B", "objectives": []}],
+                "revision": rev,
+            }
+        },
+        headers=hdr,
+    )
+    assert b.status_code == 409, b.text
+    assert "another tab" in b.json()["detail"]
+
+    # A'S WORK SURVIVES, which is the whole point.
+    now = prefs.get_mission_playbooks()
+    assert [p["id"] for p in now["playbooks"]] == ["from_a"]
+
+    # …and B can save once it has read the current revision.
+    ok = c.post(
+        "/api/prefs",
+        json={
+            "mission_playbooks": {
+                "default_id": "",
+                "playbooks": [{"id": "from_b", "label": "B", "objectives": []}],
+                "revision": now["revision"],
+            }
+        },
+        headers=hdr,
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_a_playbook_save_with_NO_revision_is_refused_at_the_route(api):
+    """#900 review 6, finding 2. `None` means "no comparand" and exists for the installer and the
+    shipped defaults, which have nothing to compare against — but over HTTP it made the whole
+    concurrency check OPTIONAL: an authenticated stale client, including an older cached PWA
+    build, could omit the field and overwrite a newer block wholesale.
+
+    Red against a route that passes `None` through when the field is absent or mistyped.
+    """
+    c, hdr, proj = api
+    block = {"default_id": "", "playbooks": [{"id": "x", "label": "X", "objectives": []}]}
+
+    missing = c.post("/api/prefs", json={"mission_playbooks": block}, headers=hdr)
+    assert missing.status_code == 422, missing.text
+    assert "revision is required" in missing.json()["detail"]
+
+    for bad in ("3", True, None, 1.5):
+        r = c.post(
+            "/api/prefs",
+            json={"mission_playbooks": {**block, "revision": bad}},
+            headers=hdr,
+        )
+        assert r.status_code == 422, (bad, r.text)
+
+    # …and a real one works.
+    rev = c.get("/api/config", headers=hdr).json()["mission_playbooks"]["revision"]
+    ok = c.post("/api/prefs", json={"mission_playbooks": {**block, "revision": rev}}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+# =======================================================================================

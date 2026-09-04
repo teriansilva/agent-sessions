@@ -466,10 +466,25 @@ def test_needs_you_reads_intervention_from_the_same_sidecar_pulse_does(store, mo
 
 
 def test_an_open_question_needs_you_until_it_is_answered(store):
+    # Driven through `open_question` / `answer_question` rather than by appending bare events.
+    # This test predates the producer (#846 shipped the flag against nothing), and an open
+    # question is now a HOLD on an objective, not "a `question` event newer than any `answer`" —
+    # which could not express a superseded question or an answer to a different one (#892).
     mid = _running()
-    missions.append_event(mid, "question", text="which project?")
+    missions.patch_objectives(
+        mid, [{"op": "add", "key": "pr_open", "title": "A PR is open", "gate": True}]
+    )
+    q = missions.open_question(
+        mid,
+        "pr_open",
+        "which project?",
+        [
+            {"label": "this one", "action": "note_answer"},
+            {"label": "the other", "action": "note_answer"},
+        ],
+    )
     assert missions.derive_needs_you([mid])[mid]["why"] == ["question"]
-    missions.append_event(mid, "answer", text="abc")
+    missions.answer_question(mid, q["seq"], option_index=0)
     assert missions.derive_needs_you([mid])[mid]["needs_you"] is False
 
 
@@ -1431,7 +1446,9 @@ def test_a_PRESENT_but_malformed_block_still_fails_closed(tmp_path):
 
     p = tmp_path / "p.json"
     atomic_write_json(p, {"mission_playbooks": {"playbooks": "not a list"}})
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": []}
+    # `revision` is 0: nothing has ever been WRITTEN through the versioned path, and a corrupt
+    # block carries no version of its own to trust (#900 review 5, finding 7).
+    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 0}
 
 
 def test_an_operator_who_CLEARS_their_playbooks_does_not_get_them_back(tmp_path):
@@ -1440,7 +1457,7 @@ def test_an_operator_who_CLEARS_their_playbooks_does_not_get_them_back(tmp_path)
 
     p = tmp_path / "p.json"
     prefs.set_mission_playbooks({"default_id": "", "playbooks": []}, p)
-    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": []}
+    assert prefs.get_mission_playbooks(p) == {"default_id": "", "playbooks": [], "revision": 1}
 
 
 @pytest.mark.parametrize(
@@ -1886,3 +1903,115 @@ def test_a_FRESH_install_and_an_UPGRADED_one_get_the_SAME_supervisor_schema(tmp_
 
     for t in tables:
         assert ddl(t) == fresh[t], f"{t} differs between a fresh install and an upgraded one"
+
+
+def test_every_probe_ARGUMENT_publishes_the_json_type_it_takes():
+    """Names alone cannot author an argument, and `expect_status` is the proof (#900, finding 6).
+
+    The config route publishes `PROBE_ARG_SCHEMA`'s NAMES so the playbook editor can offer the
+    right fields per kind. Every HTML input yields a string; `_arg_status` requires a real
+    integer. So the editor offered a field the server could only ever refuse, and the operator
+    who typed `204` got "must be an integer" with no way to comply.
+
+    This asserts the type table covers the schema exactly — a contract added later without a wire
+    name would otherwise default to `"text"` and reintroduce the same silent mismatch.
+    """
+    assert set(missions.PROBE_ARG_TYPES) == set(missions.PROBE_ARG_SCHEMA)
+    for kind, spec in missions.PROBE_ARG_SCHEMA.items():
+        published = missions.PROBE_ARG_TYPES[kind]
+        assert set(published) == set(spec), f"{kind}: the type table and the schema disagree"
+        for name, (_required, contract) in spec.items():
+            assert contract in missions._ARG_TYPE_NAME, (
+                f"probe {kind}: argument {name} is validated by a contract with no published "
+                "wire type, so an editor cannot know what JSON to send for it"
+            )
+            assert published[name] == missions._ARG_TYPE_NAME[contract]
+    # ...and the one that started this: it is published as an int, not as text.
+    assert missions.PROBE_ARG_TYPES["http_status"]["expect_status"] == "int"
+
+
+def test_an_integer_status_ROUND_TRIPS_through_a_playbook_while_the_string_is_refused(tmp_path):
+    """The round trip the review asked for: what the editor now sends is what the store takes."""
+    from agent_sessions import prefs
+
+    p = tmp_path / "p.json"
+    good = {
+        "default_id": "ship",
+        "playbooks": [
+            {
+                "id": "ship",
+                "label": "Ship it",
+                "objectives": [
+                    {
+                        "key": "live",
+                        "title": "It is live",
+                        "probe": "http_status",
+                        "probe_args": {"url": "https://example.test/healthz", "expect_status": 204},
+                        "gate": True,
+                    }
+                ],
+            }
+        ],
+    }
+    prefs.set_mission_playbooks(good, p)
+    back = prefs.get_mission_playbooks(p)
+    args = back["playbooks"][0]["objectives"][0]["probe_args"]
+    assert args["expect_status"] == 204
+    assert isinstance(args["expect_status"], int) and not isinstance(args["expect_status"], bool)
+
+    # ...and the UI-shaped string is still refused, rather than quietly coerced at the boundary.
+    import copy
+
+    bad = copy.deepcopy(good)
+    bad["playbooks"][0]["objectives"][0]["probe_args"]["expect_status"] = "204"
+    with pytest.raises(Exception) as e:
+        prefs.set_mission_playbooks(bad, p)
+    assert "integer" in str(e.value)
+
+
+def test_a_MIGRATION_STEP_survives_a_store_that_never_had_the_table(tmp_path, monkeypatch):
+    """A step runs against what the PREVIOUS version left behind, not against its full schema.
+
+    `mission_objectives` is in the base `CREATE` and therefore in every store built from v1 — but
+    a step that assumes it raises `no such table` on any store where it is absent, and an upgrade
+    that raises is an install that will not start. The ladder's own v9 regression builds a store
+    with two tables in it and caught this; the rule deserves its own test, because the next step
+    added here will be written the same way.
+
+    Red against an unguarded `ALTER TABLE` / `SELECT` in the step.
+    """
+    import sqlite3 as sq
+
+    db = tmp_path / "partial.db"
+    con = sq.connect(db)
+    con.executescript(
+        "CREATE TABLE missions (id TEXT PRIMARY KEY);"
+        "CREATE TABLE mission_turns ("
+        "  mission_id TEXT NOT NULL, turn_id TEXT NOT NULL, msg_sha TEXT NOT NULL,"
+        "  state TEXT NOT NULL, owner TEXT, owner_at REAL, fence TEXT NOT NULL,"
+        "  write_reserved_at REAL, result TEXT, action_ids TEXT, created_at REAL NOT NULL,"
+        "  settled_at REAL, PRIMARY KEY (mission_id, turn_id));"
+        "PRAGMA user_version=9;"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(db))
+    missions.reset_schema_cache_for_test()
+
+    c = missions._ready(db)
+    try:
+        assert int(c.execute("PRAGMA user_version").fetchone()[0]) == missions.SCHEMA_VERSION
+    finally:
+        c.close()
+
+    # …and where the table IS present, the column really is added — the guard skips, it does not
+    # silently make the migration a no-op everywhere.
+    fresh = tmp_path / "fresh.db"
+    monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(fresh))
+    missions.reset_schema_cache_for_test()
+    c = missions._ready(fresh)
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(mission_objectives)")}
+    finally:
+        c.close()
+    assert "incarnation" in cols

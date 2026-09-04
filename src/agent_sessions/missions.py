@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 20
 #: What an objective's state reads as once it no longer exists. A distinct value rather than
 #: `None`, so a dropped objective and an objective whose state is unset can never look alike.
 OBJECTIVE_GONE = "<dropped>"
@@ -371,6 +371,27 @@ assert set(PROBE_ARG_SCHEMA) == set(PROBE_KINDS), (
     f"{sorted(set(PROBE_KINDS) - set(PROBE_ARG_SCHEMA))}"
 )
 
+#: The WIRE NAME of each argument contract, so an editor can send the right JSON TYPE.
+#:
+#: Names alone are not enough to author an argument, and `http_status.expect_status` is the proof:
+#: every input in an HTML form yields a string, `_arg_status` requires a real integer, and the
+#: playbook that a perfectly reasonable operator typed was refused with "must be an integer" and
+#: no way to comply (#900 review, finding 6). The type belongs beside the contract that enforces
+#: it — one table, exported to the client, rather than a second opinion in TypeScript.
+#:
+#: `"text"` is the only value that means "send a string"; everything else names a JSON type the
+#: client has to produce deliberately.
+_ARG_TYPE_NAME: dict[object, str] = {
+    _arg_text: "text",
+    _arg_url: "text",
+    _arg_status: "int",
+}
+
+PROBE_ARG_TYPES: dict[str, dict[str, str]] = {
+    kind: {name: _ARG_TYPE_NAME.get(fn, "text") for name, (_req, fn) in spec.items()}
+    for kind, spec in PROBE_ARG_SCHEMA.items()
+}
+
 #: Keys the INSTANTIATOR mints for model-proposed notes (#883). A playbook objective key may not
 #: use this prefix — rejected at prefs-write time — which is what makes a note/template collision
 #: UNREACHABLE rather than merely detected. It lives here, with the other objective-key rules,
@@ -612,6 +633,15 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   -- settling transaction against the store's own counter, which is what closes the window a
   -- pre-write digest comparison cannot (#897 re-review 5, finding 1).
   probe_rev    INTEGER NOT NULL DEFAULT 0,
+  -- THE INCARNATION. `(mission_id, key)` is a SLOT, not an identity: drop the key and re-add it
+  -- and the new row is a different question wearing the same name. Anything that spends real
+  -- time deciding something ABOUT an objective — a model call, an in-flight probe — has to be
+  -- able to say "the row I was asked about" rather than "a row with that key", and this is the
+  -- value it compares (#900 review, finding 4).
+  --
+  -- Minted on insert and never rewritten. LAST in the column list, because `ALTER TABLE …
+  -- ADD COLUMN` appends and a fresh install must agree with an upgraded one on the stored DDL.
+  incarnation TEXT,
   PRIMARY KEY (mission_id, key)
 );
 
@@ -668,6 +698,21 @@ CREATE TABLE IF NOT EXISTS mission_objective_episode (
   -- met, and an objective transition starts a new episode, which ends the silence.
   stood_down    INTEGER NOT NULL DEFAULT 0,
   at            REAL NOT NULL,
+  -- THE QUESTION HOLD, and it is a SEPARATE cause from `stood_down` above (#892, and the issue
+  -- review said so before the code existed). `stood_down` means the OPERATOR chose silence; this
+  -- means the SUPERVISOR is waiting on an answer. Folding the second into the first would make
+  -- answering a question erase a manual silence the operator had also set, and would leave the
+  -- board unable to say which of the two reasons an objective is quiet for.
+  --
+  -- It holds the `seq` of the question, not a boolean, which is what makes the lifecycle exact:
+  -- a second question on the same objective SUPERSEDES by overwriting it, an answer clears it
+  -- only when it names the question that is actually holding, and "is there an open question"
+  -- stops being a comparison of two global MAX(seq) values that cannot express either.
+  --
+  -- LAST in the column list, deliberately: `ALTER TABLE ... ADD COLUMN` appends, so a fresh
+  -- install and an upgraded one only agree on the stored DDL if the create says it here. That
+  -- equality is asserted by a test, which is how this was caught.
+  question_seq  INTEGER,
   PRIMARY KEY (mission_id, objective_key)
 );
 
@@ -886,6 +931,10 @@ def _migrate(con) -> int:
             _migrate_16_to_17(con)
         if version < 18:
             _migrate_17_to_18(con)
+        if version < 19:
+            _migrate_18_to_19(con)
+        if version < 20:
+            _migrate_19_to_20(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1101,7 +1150,13 @@ def _migrate_16_to_17(con) -> None:
     #891's `change_live` contract binds the probe to the merge SHA; without a producer that
     fallback pointed at a field nothing wrote, so every objective relying on it answered `unknown`
     for ever. Idempotent by inspection; SQLite's `ADD COLUMN` has no `IF NOT EXISTS`.
+
+    Skipped where `mission_objectives` is not there to alter, for the reason `_has_table` gives:
+    a step runs against what the PREVIOUS version left behind, not against that version's
+    full schema, and one that raises strands the upgrade.
     """
+    if not _has_table(con, "mission_objectives"):
+        return
     have = {r["name"] for r in con.execute("PRAGMA table_info(missions)").fetchall()}
     if "merge_sha" not in have:
         con.execute("ALTER TABLE missions ADD COLUMN merge_sha TEXT")
@@ -1138,6 +1193,32 @@ def _migrate_15_to_16(con) -> None:
         con.execute("ALTER TABLE missions ADD COLUMN probe_gen_seq INTEGER NOT NULL DEFAULT 0")
 
 
+def _migrate_19_to_20(con) -> None:
+    """v20 gives every objective a stable incarnation (#900 review, finding 4).
+
+    A key is a slot. Without something that survives a drop-and-re-add, a decision made ABOUT an
+    objective during a model call could land on the row that replaced it.
+
+    Existing rows are backfilled with one each, so the column is meaningful immediately rather
+    than only for objectives created after the upgrade. Idempotent by inspection, and skipped
+    entirely where the table is not there to alter — see `_has_table`.
+    """
+    if not _has_table(con, "mission_objectives"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
+    if "incarnation" not in have:
+        con.execute("ALTER TABLE mission_objectives ADD COLUMN incarnation TEXT")
+    rows = con.execute(
+        "SELECT mission_id, key FROM mission_objectives "
+        "WHERE incarnation IS NULL OR incarnation=''"
+    ).fetchall()
+    for r in rows:
+        con.execute(
+            "UPDATE mission_objectives SET incarnation=? WHERE mission_id=? AND key=?",
+            (uuid.uuid4().hex, r["mission_id"], r["key"]),
+        )
+
+
 def _migrate_14_to_15(con) -> None:
     """v15 binds an in-flight probe to its resolved target durably (#897 re-review, finding 2).
 
@@ -1147,7 +1228,13 @@ def _migrate_14_to_15(con) -> None:
     checked. Two columns move it into the row, where the settling transaction can read it.
 
     Idempotent by inspection — SQLite's `ADD COLUMN` has no `IF NOT EXISTS`.
+
+    Skipped where `mission_objectives` is not there to alter, for the reason `_has_table` gives:
+    a step runs against what the PREVIOUS version left behind, not against that version's
+    full schema, and one that raises strands the upgrade.
     """
+    if not _has_table(con, "mission_objectives"):
+        return
     have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
     if "probe_target" not in have:
         con.execute("ALTER TABLE mission_objectives ADD COLUMN probe_target TEXT")
@@ -1159,6 +1246,23 @@ def _migrate_14_to_15(con) -> None:
         con.execute(
             "ALTER TABLE mission_objectives ADD COLUMN probe_rev INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_18_to_19(con) -> None:
+    """v19 gives the question hold a column of its own (#892).
+
+    Reusing `stood_down` would have made two different facts share one boolean — the operator's
+    "stop telling me" and the supervisor's "waiting on your answer" — so answering a question
+    would clear a silence the operator set, and the board could not name which applied.
+
+    Idempotent by inspection: SQLite's `ADD COLUMN` has no `IF NOT EXISTS`. And skipped where the
+    table is not there to alter, for the reason `_has_table` gives.
+    """
+    if not _has_table(con, "mission_objective_episode"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objective_episode)")}
+    if "question_seq" not in have:
+        con.execute("ALTER TABLE mission_objective_episode ADD COLUMN question_seq INTEGER")
 
 
 def _migrate_13_to_14(con) -> None:
@@ -1173,7 +1277,13 @@ def _migrate_13_to_14(con) -> None:
     Idempotent by inspection rather than by `IF NOT EXISTS`, which SQLite's `ADD COLUMN` does not
     support: a v13 file that never had the columns gets them, and one that did (created after the
     definition changed) is left alone.
+
+    Skipped where `mission_supervisor` is not there to alter, for the reason `_has_table` gives:
+    a step runs against what the PREVIOUS version left behind, not against that version's
+    full schema, and one that raises strands the upgrade.
     """
+    if not _has_table(con, "mission_supervisor"):
+        return
     have = {r["name"] for r in con.execute("PRAGMA table_info(mission_supervisor)").fetchall()}
     if "growth_mark" not in have:
         con.execute("ALTER TABLE mission_supervisor ADD COLUMN growth_mark INTEGER")
@@ -1902,6 +2012,10 @@ def _trim_hard(con, mission_id: str) -> int:
     Drop order is stated rather than incidental: the high-volume operator-generated kinds
     (``objective``, ``session``) go before the lifecycle ones, so what a reader loses first is the
     edit noise rather than the shape of what happened.
+
+    The one row this ceiling will not take is a **question that is currently holding an
+    objective** — see the query. That row is referenced state, not feed, and deleting it produces
+    an objective nobody can release.
     """
     total = int(
         con.execute(
@@ -1913,9 +2027,22 @@ def _trim_hard(con, mission_id: str) -> int:
         return 0
     doomed = con.execute(
         "SELECT seq, action_id FROM mission_events WHERE mission_id=? "
+        # A QUESTION THAT IS STILL HOLDING AN OBJECTIVE IS NOT A FEED ROW (#900 review, finding 3).
+        #
+        # The hold stores the question's `seq` and both the display and the answer JOIN back to
+        # this row for the text and the options. Deleting it leaves `question_seq` pointing at
+        # nothing: `open_question_row` returns None, so no question is on screen, while the
+        # objective stays held and `answer_question` can only 409 — an objective silenced by a
+        # question the operator can neither see nor answer.
+        #
+        # It stays a bound: there is at most one hold per objective and objectives are capped, so
+        # the ceiling is `MISSION_EVENTS_HARD_MAX` plus that count, not "unbounded again".
+        "AND seq NOT IN ("
+        "  SELECT question_seq FROM mission_objective_episode "
+        "  WHERE mission_id=? AND question_seq IS NOT NULL) "
         "ORDER BY CASE kind WHEN 'objective' THEN 0 WHEN 'session' THEN 0 ELSE 1 END ASC, "
         "seq ASC LIMIT ?",
-        (mission_id, over),
+        (mission_id, mission_id, over),
     ).fetchall()
     if not doomed:
         return 0
@@ -1992,12 +2119,25 @@ def get_mission(
     *,
     events_limit: int = EVENTS_PAGE_DEFAULT,
     events_before_seq: int | None = None,
+    attention: bool = False,
     path: Path | None = None,
 ) -> dict | None:
     """One mission with its roster, objectives and a bounded timeline page.
 
     The timeline pages **newest-first on ``seq``**, not on an offset: ``seq`` is monotonic and
     a concurrent append therefore cannot shift a page under the reader.
+
+    ``attention=True`` also returns ``needs_you`` / ``needs_you_why`` / ``question`` **from this
+    same transaction** (#900 review 8, finding 1). Reading them beside this call rather than
+    inside it was a torn answer with a subtler shape than the one before it: the flag and the
+    question agreed with EACH OTHER and disagreed with the TIMELINE returned next to them, so a
+    question opening between the two reads produced a 200 carrying an actionable question whose
+    own event was not in the `events` array — an answer the console could offer and then not
+    show.
+
+    The LEDGER and SIDECAR terms are folded on afterwards, deliberately: they live outside this
+    store, so no transaction here could cover them, and they answer a different question ("is an
+    action pending on one of this mission's sessions").
     """
     validate_id(mission_id)
     limit = max(1, min(EVENTS_PAGE_MAX, int(events_limit or EVENTS_PAGE_DEFAULT)))
@@ -2046,6 +2186,9 @@ def get_mission(
             "ORDER BY created_at DESC LIMIT 1",
             (mission_id,),
         ).fetchone()
+        # THE ATTENTION PROJECTION, IN THIS SAME SNAPSHOT (#900 review 8, finding 1).
+        attention_rows = _attention_rows(con, [mission_id]) if attention else None
+        question = _open_question_row(con, mission_id) if attention else None
         con.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -2064,6 +2207,13 @@ def get_mission(
         _attach_settlements(mission["events"], path=path)
     mission["events_next_seq"] = mission["events"][-1]["seq"] if len(events) == limit else None
     mission["turn"] = _turn_row(turn)
+    if attention_rows is not None:
+        merged = _attention_merge(
+            {mission_id: {"needs_you": False, "why": []}}, [mission_id], *attention_rows
+        )[mission_id]
+        mission["needs_you"] = bool(merged["needs_you"])
+        mission["needs_you_why"] = merged["why"]
+        mission["question"] = question
     return mission
 
 
@@ -2468,6 +2618,20 @@ def set_state(
             if not cur.rowcount:
                 con.execute("ROLLBACK")
                 raise MissionError(f"mission {mission_id} is no longer {from_state}", status=409)
+            # A QUESTION IS ONLY WORTH ASKING ON A MISSION AN ANSWER CAN ACT ON (#900 review 6,
+            # finding 3). Clearing the holds only for TERMINAL states left `review` stranding
+            # them: `propose_completion` moves a mission there while another objective still has
+            # a question, `needs_you` kept reporting it, and `_question_answerable` then rejected
+            # every answer — flagged for a decision the server refuses to take.
+            #
+            # The predicate is the same one that decides whether a question may be OPENED, so the
+            # two cannot disagree about which states are answerable.
+            if to_state in UNQUESTIONABLE_STATES:
+                con.execute(
+                    "UPDATE mission_objective_episode SET question_seq=NULL "
+                    "WHERE mission_id=? AND question_seq IS NOT NULL",
+                    (mission_id,),
+                )
             released: list[str] = []
             if to_state in TERMINAL_STATES:
                 held = con.execute(
@@ -3168,39 +3332,71 @@ def objective_episode(
 
     Absent means episode 1, not "no episode": an objective that has never stalled has still had
     exactly one run at it, and numbering it 0 would make the first budget look like a reset.
+
+    `stood_down` here is the OPERATOR's silence only. The question hold is a separate fact with a
+    separate reason and a separate way of ending — see :func:`objective_hold`.
+    """
+    episode, stood_down, _ = objective_hold(mission_id, objective_key, path=path)
+    return episode, stood_down
+
+
+def objective_hold(
+    mission_id: str, objective_key: str, *, path: Path | None = None
+) -> tuple[int, bool, int | None]:
+    """`(episode, stood_down, question_seq)` — BOTH reasons an objective can be quiet (#892).
+
+    They are different facts and they end differently: a stand-down is the operator saying "stop
+    telling me" and lasts the episode; a question hold is the supervisor saying "I am waiting on
+    you" and ends when the question is answered or superseded. A supervisor pass skips an
+    objective for either reason; a board has to be able to say which, because "you silenced this"
+    and "this is waiting on you" ask opposite things of the reader.
     """
     validate_id(mission_id)
     con = _ready(path)
     try:
         row = con.execute(
-            "SELECT episode, stood_down FROM mission_objective_episode "
+            "SELECT episode, stood_down, question_seq FROM mission_objective_episode "
             "WHERE mission_id=? AND objective_key=?",
             (mission_id, objective_key),
         ).fetchone()
-        return (int(row["episode"]), bool(row["stood_down"])) if row else (1, False)
+        if row is None:
+            return (1, False, None)
+        q = row["question_seq"]
+        return (int(row["episode"]), bool(row["stood_down"]), int(q) if q is not None else None)
     finally:
         con.close()
 
 
-def _bump_episode_con(con, mission_id: str, objective_key: str, ts: float) -> int:
+def _bump_episode_con(
+    con, mission_id: str, objective_key: str, ts: float, *, keep_stand_down: bool = False
+) -> int:
     """Advance one objective's episode ON AN OPEN TRANSACTION. Returns the new number.
 
     Split out so an objective transition can advance the episode in the SAME transaction that
     performs the transition. The standalone `bump_episode` opens its own connection under
     `_write_lock`, so calling it from inside an op would deadlock — and, more importantly, would
     make the advance a separate commit that a crash could lose while keeping the transition.
+
+    **`keep_stand_down` is for answering a question, and only for that (#892).** A new episode
+    normally ends the operator's silence, because the silence was about the run that just ended.
+    Answering a question is not that: it is the operator engaging with an objective they may also
+    have separately told the supervisor to stop mentioning, and clearing that silence as a side
+    effect of the answer would undo a decision they never revisited. The question hold is cleared
+    by its own caller; this flag keeps the two from being the same switch.
     """
     row = con.execute(
-        "SELECT episode FROM mission_objective_episode WHERE mission_id=? AND objective_key=?",
+        "SELECT episode, stood_down FROM mission_objective_episode "
+        "WHERE mission_id=? AND objective_key=?",
         (mission_id, objective_key),
     ).fetchone()
     nxt = int(row["episode"]) + 1 if row else 2
+    held = bool(row["stood_down"]) if (row and keep_stand_down) else False
     con.execute(
         "INSERT INTO mission_objective_episode "
-        "(mission_id, objective_key, episode, stood_down, at) VALUES (?,?,?,0,?) "
+        "(mission_id, objective_key, episode, stood_down, at) VALUES (?,?,?,?,?) "
         "ON CONFLICT(mission_id, objective_key) DO UPDATE SET "
-        "episode=excluded.episode, stood_down=0, at=excluded.at",
-        (mission_id, objective_key, nxt, ts),
+        "episode=excluded.episode, stood_down=excluded.stood_down, at=excluded.at",
+        (mission_id, objective_key, nxt, 1 if held else 0, ts),
     )
     return nxt
 
@@ -3600,6 +3796,625 @@ def observe_objective(
     return None
 
 
+def _question_answerable(con, mission_id: str) -> bool:
+    """Is this mission one an open question may still be ANSWERED on?
+
+    The same predicate that decides whether one may be opened, read inside the answering
+    transaction (#900 review 5, finding 2). The hold alone was the only comparand, and a hold
+    survives nothing but its own clearing — so an answer landing after the mission closed still
+    ran its action against work that was over.
+    """
+    row = con.execute(
+        "SELECT state, archived_at FROM missions WHERE id=?", (mission_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    return str(row["state"] or "") not in UNQUESTIONABLE_STATES and row["archived_at"] is None
+
+
+#: The mission states a question may NOT be opened on — spelled as the exclusion rather than the
+#: allowance, so a state added to the lifecycle later is questionable by default rather than
+#: silently unaskable.
+#:
+#: A question is a request for a decision about work that is still going on. On a TERMINAL mission
+#: there is no decision left to make, and on one in `review` the operator is already being asked a
+#: different question about the same mission — a second one arriving underneath it flags work that
+#: is over, or double-asks. Everything else is a mission somebody could still act on.
+UNQUESTIONABLE_STATES: frozenset[str] = TERMINAL_STATES | {"review"}
+
+#: Bounds on a stored question. Small: a question nobody can read at a glance is not a question.
+QUESTION_TEXT_MAX = 300
+QUESTION_OPTIONS_MAX = 4
+
+
+def objective_content(o) -> str:
+    """A digest of what an objective MEANS, for "the question I wrote is about this" (#900 rev 6,
+    finding 4).
+
+    The incarnation says the ROW is the same one; it does not say the row still says the same
+    thing. `retitle` changes neither the incarnation nor the episode nor the state, so a question
+    written about "a PR is open" opened unchanged against an objective that now reads "ship the
+    release notes" — and a settling answer then waived work nobody asked about.
+
+    Covers the fields the question is generated FROM and the answer acts ON: the title, whether
+    it gates, and the probe that settles it. Not `state` or `observed` — those move on their own
+    while a model call runs, and refusing on them would make the feature unusable on a live
+    mission; the settled-state check beside this one is what covers that direction.
+    """
+    get = o.get if isinstance(o, dict) else (lambda k, d=None: o[k] if k in o.keys() else d)
+    blob = "\x1f".join(
+        [
+            str(get("title") or ""),
+            "1" if get("gate") else "0",
+            str(get("probe") or ""),
+        ]
+    )
+    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def objective_incarnation(mission_id: str, objective_key: str, *, path: Path | None = None) -> str:
+    """The stable identity of the objective currently in this slot, or `""`.
+
+    Read before anything that spends real time deciding something ABOUT the objective — a model
+    call, an in-flight probe — and compared when the decision lands. `(mission_id, key)` is a
+    slot: drop the key and re-add it and the new row is a different question wearing the same
+    name (#900 review, finding 4).
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT incarnation FROM mission_objectives WHERE mission_id=? AND key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        return str((row["incarnation"] if row else "") or "")
+    finally:
+        con.close()
+
+
+def open_question(
+    mission_id: str,
+    objective_key: str,
+    question: str,
+    options: list[dict],
+    *,
+    expect_incarnation: str = "",
+    expect_episode: int | None = None,
+    expect_content: str = "",
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Open ONE question about one objective, and stand that objective down (#892).
+
+    Both halves in ONE transaction, because they are one fact: a question the supervisor is
+    waiting on is an objective it must stop nudging about, and a crash between them would leave
+    either a question nobody stopped nudging around, or an objective silenced by a question that
+    does not exist.
+
+    **The objective, not the mission.** A mission may have five objectives and be stuck on one;
+    standing the whole mission down would stall follow-through on the other four.
+
+    A second question on the same objective SUPERSEDES the first rather than stacking: two open
+    questions about one thing is a state the operator cannot act on coherently, and the newer one
+    is the one the supervisor actually wants answered.
+
+    **The MISSION'S OWN LIFECYCLE is part of the comparand, not only the objective's identity**
+    (#900 review 4, finding 2). Producing a question takes a model call, and a mission can be
+    closed, abandoned or carried into review while it runs — so a question could open on a
+    terminal mission and `needs_you` would then flag work that is over, asking the operator to
+    decide something about a mission nobody can act on any more. The objective's incarnation
+    cannot see that: the row is still there, unchanged, on a mission that has finished.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    text = _cap(question, QUESTION_TEXT_MAX)
+    if not text:
+        raise MissionError("a question needs text", status=422)
+    opts = []
+    for o in (options or [])[:QUESTION_OPTIONS_MAX]:
+        if not isinstance(o, dict):
+            continue
+        label = _cap(o.get("label"), 120)
+        action = str(o.get("action") or "")
+        if label and action:
+            # `consequence` and `settling` are the SERVER'S words about what this option does,
+            # carried with the stored option so the card can never render a model-authored label
+            # on its own (#900 review 2, finding 1). Stored rather than joined at read time
+            # because a question is durable and its meaning must not shift under a later edit of
+            # the table; capped like every other text field that reaches a timeline.
+            opts.append(
+                {
+                    "label": label,
+                    "action": action,
+                    "consequence": _cap(o.get("consequence"), 200),
+                    "settling": bool(o.get("settling")),
+                }
+            )
+    if len(opts) < 2:
+        raise MissionError("a question needs at least two options", status=422)
+
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            # THE MISSION MUST STILL BE ONE A QUESTION MEANS ANYTHING ABOUT. Read here rather
+            # than by the caller before its model call, for the reason every other comparand in
+            # this file is read here: a state read before an await cannot be trusted after it.
+            mrow = con.execute(
+                "SELECT state, archived_at FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if mrow is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            mstate = str(mrow["state"] or "")
+            if mstate in UNQUESTIONABLE_STATES or mrow["archived_at"] is not None:
+                raise MissionError(
+                    f"mission {mission_id} is {mstate}, so there is nothing to ask about",
+                    status=409,
+                )
+            known = con.execute(
+                "SELECT incarnation, state, observed, title, gate, probe FROM mission_objectives "
+                "WHERE mission_id=? AND key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            if known is None:
+                raise MissionError(f"unknown objective {objective_key!r}", status=404)
+            # THE OBJECTIVE MUST STILL BE UNRESOLVED (#900 review 5, finding 3). Producing a
+            # question takes a model call, and a probe or an operator can settle the objective
+            # inside it — the incarnation is unchanged, because it is the same row, and the
+            # question then asks the operator to decide about work that is already done.
+            # …AND IT MUST STILL SAY THE SAME THING (#900 review 6, finding 4). A retitle
+            # changes no identity the checks above compare, so a question written about one piece
+            # of work opened unchanged against an objective that now describes another.
+            if expect_content and objective_content(known) != expect_content:
+                raise MissionError(
+                    f"objective {objective_key!r} was rewritten while the question was being "
+                    "written",
+                    status=409,
+                )
+            if str(known["state"] or "") in {"met", "waived"}:
+                raise MissionError(
+                    f"objective {objective_key!r} was settled while the question was being "
+                    "written",
+                    status=409,
+                )
+            # THE INCARNATION, compared inside the transaction that opens the question (#900
+            # review, finding 4). Producing a question takes a model call, and the objective can
+            # be dropped and re-added while it runs — "a row with this key exists" then passes
+            # while the row is a different objective, and the question opens against work nobody
+            # asked about. The key is a slot; this is the identity.
+            if expect_incarnation and str(known["incarnation"] or "") != expect_incarnation:
+                raise MissionError(
+                    f"objective {objective_key!r} was replaced while the question was being "
+                    "written",
+                    status=409,
+                )
+            # Read on THIS connection, inside the transaction — `objective_episode` opens its
+            # own and would read outside the fence it is being written under.
+            erow = con.execute(
+                "SELECT episode, stood_down FROM mission_objective_episode "
+                "WHERE mission_id=? AND objective_key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            episode = int(erow["episode"]) if erow else 1
+            # …AND THE OPERATOR MUST NOT HAVE SAID "STOP TELLING ME" (#900 review 9, finding 1).
+            #
+            # A stand-down deliberately does NOT advance the episode — it silences the episode it
+            # is in — so every comparand above stays satisfied while it commits. A question
+            # written before it and landing after it therefore opened on an objective the
+            # operator had just silenced, and `needs_you` then flagged the mission for exactly
+            # the thing they had asked to stop hearing about.
+            #
+            # An invariant rather than a comparand: there is no version of this that is correct
+            # while the operator's silence is in force, so nothing is compared against a captured
+            # value — the row is simply asked whether it is silent.
+            if erow is not None and int(erow["stood_down"] or 0):
+                raise MissionError(
+                    f"objective {objective_key!r} was stood down while the question was being "
+                    "written",
+                    status=409,
+                )
+            # …AND IN THE SAME EPISODE IT WAS ASKED ABOUT. An episode advances when the objective
+            # is stood down or re-opened, so a question written about episode 3 landing in
+            # episode 4 is a question about a situation that has already been closed out.
+            if expect_episode is not None and episode != int(expect_episode):
+                raise MissionError(
+                    f"objective {objective_key!r} moved on while the question was being written",
+                    status=409,
+                )
+            seq = _append_event(
+                con,
+                mission_id,
+                "question",
+                at=ts,
+                text=text,
+                meta={
+                    "objective": objective_key,
+                    "episode": episode,
+                    "options": opts,
+                },
+            )
+            # HOLD the objective while the question is open — in its OWN column, never in
+            # `stood_down`. They are different facts: `stood_down` is the operator saying "stop
+            # telling me", this is the supervisor saying "I am waiting on you", and they end
+            # differently. Sharing one boolean would make answering a question clear a silence
+            # the operator set separately, and would leave the board unable to say which applied.
+            #
+            # Storing the SEQ rather than a flag is what makes the lifecycle exact: a second
+            # question overwrites it (superseding the first), and an answer clears it only when
+            # it names the question that is actually holding.
+            con.execute(
+                "INSERT INTO mission_objective_episode "
+                "(mission_id, objective_key, episode, stood_down, question_seq, at) "
+                "VALUES (?,?,?,0,?,?) "
+                "ON CONFLICT(mission_id, objective_key) DO UPDATE SET "
+                "question_seq=excluded.question_seq, at=excluded.at",
+                (mission_id, objective_key, episode, seq, ts),
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "seq": seq,
+        "mission_id": mission_id,
+        "objective": objective_key,
+        "episode": episode,
+        "question": text,
+        "options": opts,
+    }
+
+
+def open_question_row(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The question currently awaiting an answer, or None.
+
+    Read from the HOLD, not from the timeline. The first version compared the mission's newest
+    `question` seq against its newest `answer` seq, which cannot express any of the states this
+    feature actually has (#892 issue review): a question on one objective while another is
+    answered, a superseded question, or a late answer to an older one. The hold is per objective
+    and holds the question's own seq, so all three fall out of reading it.
+
+    The NEWEST hold is returned when several objectives are each waiting — the console shows one
+    question at a time, and the newest is the one the supervisor most recently could not proceed
+    without.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return _open_question_row(con, mission_id)
+    finally:
+        con.close()
+
+
+def _open_question_row(con, mission_id: str) -> dict | None:
+    """The hold's question, on a caller-supplied connection — so `get_mission` can read it in the
+    same transaction as the timeline and the flag it both has to agree with."""
+    row = con.execute(
+        "SELECT e.seq AS seq, e.text AS text, e.meta AS meta "
+        "FROM mission_objective_episode ep "
+        "JOIN mission_events e ON e.mission_id = ep.mission_id AND e.seq = ep.question_seq "
+        "WHERE ep.mission_id=? AND ep.question_seq IS NOT NULL "
+        "ORDER BY e.seq DESC LIMIT 1",
+        (mission_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    meta = _loads(row["meta"]) or {}
+    return {
+        "seq": int(row["seq"]),
+        "question": row["text"],
+        "objective": meta.get("objective"),
+        "episode": meta.get("episode"),
+        "options": meta.get("options") or [],
+    }
+
+
+#: What answering a question is allowed to CAUSE, and the whole of it. The strings are what the
+#: route reports back as `applied`, so a branch that did nothing has to say so rather than borrow
+#: the success wording (#900 review, finding 2).
+#: What an answer may name, duplicated from `mission_questions.ACTIONS` on purpose: the store
+#: cannot import that module (it imports this one), and a validation that runs only in the caller
+#: is one a second caller will not run. Asserted equal by a test, so the two cannot drift.
+ANSWER_ACTIONS: frozenset[str] = frozenset(
+    {"note_answer", "waive_objective", "stand_down_objective", "close_mission"}
+)
+
+
+def unmet_gate_count(rows) -> int:
+    """How many required objectives are NOT satisfied, observation and all (#900 rev 5, f.4).
+
+    `state == 'met'` is the stored SETTLEMENT; `observation_supports` asks whether the latest look
+    still backs it — checks go red when the head advances, a deploy is rolled back, an approval
+    is dismissed. `assess()` and `propose_completion()` already read both, and counting only the
+    stored state here made two answers to one question: the supervisor's board correctly said not
+    done, while `close_mission` was offered and, when answered, carried the mission into review.
+    A waiver is exempt — the operator said it was not required, and that does not go stale.
+
+    One function so the three callers cannot drift, which is how they drifted in the first place.
+    """
+    n = 0
+    for r in rows:
+        if not int((r["gate"] if not isinstance(r, dict) else r.get("gate")) or 0):
+            continue
+        state = str((r["state"] if not isinstance(r, dict) else r.get("state")) or "")
+        if state == "waived":
+            continue
+        if state != "met":
+            n += 1
+            continue
+        raw = r["observed"] if not isinstance(r, dict) else r.get("observed")
+        obs = _loads(raw) if isinstance(raw, str) else raw
+        if not observation_supports({"observed": obs}):
+            n += 1
+    return n
+
+
+def _apply_answer_con(
+    con, mission_id: str, action: str, objective_key: str, ts: float
+) -> tuple[str, bool]:
+    """Run the chosen action on the answer's own connection. Returns `(what happened, did it)`.
+
+    **The boolean is not a summary of the string** (#900 review 7, finding 9). The client has to
+    tell "waived" from "not waived — the objective was already met", and it was left to do that by
+    reading English: every refusal happens to begin with "not ", and a phrasing change would
+    silently turn a refusal into a success on screen. A flag says it in the one place that knows.
+
+    Called from inside `answer_question`'s transaction, which is the point: settle-then-act over
+    two connections has a window where the settlement is durable and the action is not, and the
+    answer cannot be retried because the hold is gone.
+
+    A refusal here does not roll the answer back. The operator answered — that is a fact worth
+    keeping, and the timeline records it — but the return value says plainly that the effect did
+    not happen, because "waived" over an objective that was never waived is the failure this was
+    written to end.
+    """
+    if action == "waive_objective" and objective_key:
+        row = con.execute(
+            "SELECT state FROM mission_objectives WHERE mission_id=? AND key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        if row is None:
+            return "not waived — the objective is gone", False
+        if str(row["state"] or "") == "met":
+            return "not waived — the objective was already met", False
+        # `_op_waive` also advances the episode, which is right: waiving is a state change, and
+        # the answer's own bump above was for the hold, not for this.
+        _op_waive(con, mission_id, {"key": objective_key}, ts)
+        return "waived", True
+    if action == "stand_down_objective" and objective_key:
+        # The CURRENT episode, read on this connection AFTER the answer's bump. Reading it over a
+        # second connection — as the route did — is a check-then-act: the episode it read could
+        # already have moved, and `stand_down` would then silently do nothing and still be
+        # reported as a stand-down.
+        row = con.execute(
+            "SELECT episode FROM mission_objective_episode "
+            "WHERE mission_id=? AND objective_key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        if row is None:
+            return "not stood down — the objective is gone", False
+        con.execute(
+            "UPDATE mission_objective_episode SET stood_down=1, at=? "
+            "WHERE mission_id=? AND objective_key=? AND episode=?",
+            (ts, mission_id, objective_key, int(row["episode"])),
+        )
+        return "stood down", True
+    if action == "close_mission":
+        # A PROPOSAL, never a close — and it takes THE SAME GATE the supervisor's own proposal
+        # takes (#900 review 3, finding 2).
+        #
+        # Appending the event alone was a claim the lifecycle had not accepted: a mission with an
+        # unmet required objective answered `close_mission` and got a completion event on its
+        # timeline while its state stayed `running` and the gate stayed unmet. A proposal the
+        # mission never entered `review` for is a document about a decision nobody made.
+        #
+        # The gate is re-read HERE, on this connection, inside the answer's own transaction —
+        # `propose_completion` opens its own, and calling it would put the check and the write in
+        # two transactions, which is the exact split it exists to close.
+        rows = con.execute(
+            "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
+            (mission_id,),
+        ).fetchall()
+        unmet = unmet_gate_count(rows)
+        if not rows:
+            return "not proposed — this mission has no objectives, so it is unmeasured", False
+        if unmet:
+            # The operator's answer is still RECORDED — they said what they think — and the
+            # effect honestly did not happen.
+            return f"not proposed — {unmet} required objective(s) are still unmet", False
+        state_row = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+        from_state = str((state_row["state"] if state_row else "") or "")
+        moved = con.execute(
+            "UPDATE missions SET state='review', updated_at=? WHERE id=? AND state='running'",
+            (ts, mission_id),
+        ).rowcount
+        if moved:
+            # …AND THE QUESTION HOLDS GO WITH IT (#900 review 6, finding 3). `review` is an
+            # unanswerable state — see `UNQUESTIONABLE_STATES` — so a hold surviving into it
+            # flags the mission for a decision every answer is then refused. Same transaction as
+            # the transition, because "this mission is in review" is one fact.
+            con.execute(
+                "UPDATE mission_objective_episode SET question_seq=NULL "
+                "WHERE mission_id=? AND question_seq IS NOT NULL",
+                (mission_id,),
+            )
+        if not moved:
+            return f"not proposed — the mission is {from_state}, not running", False
+        _append_event(
+            con,
+            mission_id,
+            "state",
+            at=ts,
+            meta={"from": from_state, "to": "review", "why": "you answered that it is finished"},
+        )
+        _append_event(
+            con,
+            mission_id,
+            "completion",
+            at=ts,
+            text="You answered that there is nothing further to do. "
+            "Confirm from the mission's controls to close it.",
+        )
+        return "proposed completion", True
+    # `note_answer` is deliberately a no-op beyond the answer event already on the timeline:
+    # recording the operator's words IS the action, and the next supervisor pass reads them.
+    return "recorded", True
+
+
+def answer_question(
+    mission_id: str,
+    seq: int,
+    *,
+    option_index: int | None = None,
+    text: str = "",
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Answer the open question. Returns ``{action, objective, episode, answer}``.
+
+    **Compare-and-set on the question's own `seq`.** The caller states WHICH question it is
+    answering, and a question that has been superseded or already answered is a 409 rather than a
+    second application — the same rule `set_state` follows, and for the same reason: a value read
+    before an await cannot be trusted after it. Answering twice must not run the action twice.
+
+    **The action comes from the stored OPTION, by index.** The label is display text; nothing the
+    model wrote is executed. An index outside the stored list is a 422.
+
+    Answering **advances the episode and CARRIES THE STAND-DOWN ACROSS IT**, in the same
+    transaction (#900 review 7, finding 13; this docstring said "clears the stand-down" and the
+    code has done the opposite since review 4). A question that unblocked the work must not
+    resume against a budget the previous episode spent — that is what the bump is for — but a
+    silence the operator set SEPARATELY is their decision, and answering a question is not
+    withdrawing it. Two different things, and conflating them let an answer resume nudging on a
+    mission the operator had told to be quiet.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            # COMPARE-AND-SET ON THE HOLD, not on "is this the newest question event".
+            #
+            # The hold is what makes an answer valid: a question that has been superseded or
+            # already answered no longer holds anything, so this row simply is not there. That
+            # covers a late answer to an older question, an answer to a question about a
+            # different objective, and a second answer to the same one — three states the
+            # newest-question comparison could not tell apart (#892 issue review).
+            q = con.execute(
+                "SELECT e.seq AS seq, e.meta AS meta, ep.objective_key AS objective_key "
+                "FROM mission_objective_episode ep "
+                "JOIN mission_events e "
+                "  ON e.mission_id = ep.mission_id AND e.seq = ep.question_seq "
+                "WHERE ep.mission_id=? AND ep.question_seq=?",
+                (mission_id, int(seq)),
+            ).fetchone()
+            if q is None:
+                raise MissionError(
+                    "that question is no longer the open one — it was answered or superseded",
+                    status=409,
+                )
+            # …AND THE MISSION MUST STILL BE ONE AN ANSWER MEANS ANYTHING ON (#900 review 5,
+            # finding 2). The hold was the only comparand, and a hold survives nothing but its
+            # own clearing — so an answer landing after the mission closed still ran its action
+            # against work that was over, and the timeline recorded a `waived` objective on a
+            # mission that had failed hours earlier.
+            if not _question_answerable(con, mission_id):
+                raise MissionError(
+                    "this mission is closed, so there is nothing left to decide",
+                    status=409,
+                )
+
+            meta = _loads(q["meta"]) or {}
+            opts = meta.get("options") or []
+            objective_key = str(meta.get("objective") or "")
+            action = ""
+            answer_text = _cap(text, QUESTION_TEXT_MAX)
+            if option_index is not None:
+                if (
+                    isinstance(option_index, bool)
+                    or not isinstance(option_index, int)
+                    or not 0 <= option_index < len(opts)
+                ):
+                    raise MissionError("that option does not exist", status=422)
+                chosen = opts[option_index]
+                action = str(chosen.get("action") or "")
+                answer_text = answer_text or _cap(chosen.get("label"), QUESTION_TEXT_MAX)
+            elif not answer_text:
+                raise MissionError("an answer needs an option or some text", status=422)
+
+            # THE CLOSED SET, BEFORE THE MUTATION (#900 review 2, non-blocking follow-up).
+            #
+            # The route checks it after `answer_question` returns, which is after the hold has
+            # been released and the effect has run — so a stored option naming something outside
+            # the set would consume the question and then be reported as a 422, leaving the
+            # operator with neither the answer nor the question. The producer is allowlisted, so
+            # this is defence rather than a live hole; it belongs before the write anyway,
+            # because a validation that runs after the commit is a validation of the past.
+            if action and action not in ANSWER_ACTIONS:
+                raise MissionError(f"unknown answer action {action!r}", status=422)
+
+            _append_event(
+                con,
+                mission_id,
+                "answer",
+                at=ts,
+                text=answer_text or None,
+                meta={
+                    "question_seq": int(seq),
+                    "objective": objective_key,
+                    "action": action or "note_answer",
+                },
+            )
+            # THE HOLD IS RELEASED, and only this question's hold: the `question_seq=?` predicate
+            # means a newer question that arrived between the read and the write keeps holding.
+            # The episode advances so the objective does not resume against a budget the previous
+            # one spent — carrying the operator's own stand-down across it, because answering a
+            # question is not withdrawing a silence they set separately.
+            hold_key = str(q["objective_key"] or "") or objective_key
+            if hold_key:
+                _bump_episode_con(con, mission_id, hold_key, ts, keep_stand_down=True)
+                con.execute(
+                    "UPDATE mission_objective_episode SET question_seq=NULL "
+                    "WHERE mission_id=? AND objective_key=? AND question_seq=?",
+                    (mission_id, hold_key, int(seq)),
+                )
+            # THE CHOICE AND WHAT IT CAUSES, IN ONE TRANSACTION (#900 review, finding 2).
+            #
+            # It used to settle here and let the route run the effect afterwards, over its own
+            # connections. That gap is unrecoverable in both directions: a crash or a cancelled
+            # request between them loses the effect for good, because the retry is now a 409 — the
+            # hold is already released — and the operator has no second chance to answer. And the
+            # route's waiver branch suppressed `MissionError`, so an objective that had been met
+            # in the meantime returned `applied: "waived"` over an objective that was not waived.
+            #
+            # Every action in the closed set writes to THIS store, so there is nothing to
+            # co-ordinate: they are statements on this connection, inside this transaction,
+            # committed with the answer or not at all.
+            applied, applied_ok = _apply_answer_con(
+                con, mission_id, action or "note_answer", hold_key or objective_key, ts
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "action": action or "note_answer",
+        "objective": objective_key,
+        "answer": answer_text,
+        "applied": applied,
+        # DID IT HAPPEN, as a fact rather than as a prefix on a sentence (review 7, finding 9).
+        "applied_ok": applied_ok,
+    }
+
+
 def stand_down(
     mission_id: str,
     objective_key: str,
@@ -3791,6 +4606,28 @@ def supervisor_action_ids(
         con.close()
 
 
+def escalated_objectives(mission_id: str, *, path: Path | None = None) -> dict[str, int]:
+    """`{objective_key: episode}` for every terminal escalation this mission has recorded.
+
+    Read by the supervisor to find an ASK IT STILL OWES (#900 review 4, finding 1): an escalation
+    is the durable record that the supervisor decided it could not resolve an objective alone, and
+    a question that never landed beside one is an obligation, not a missed opportunity. Returning
+    the episode is what lets the caller compare it against the objective's CURRENT one — an
+    escalation from a previous episode says nothing about this one.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT objective_key, MAX(episode) AS episode FROM mission_escalations "
+            "WHERE mission_id=? GROUP BY objective_key",
+            (mission_id,),
+        ).fetchall()
+        return {str(r["objective_key"]): int(r["episode"] or 0) for r in rows}
+    finally:
+        con.close()
+
+
 def escalate_once(
     mission_id: str,
     *,
@@ -3881,6 +4718,13 @@ def supervisor_authority_verdict(
         return False, f"the objective was {obj_state} while this was being prepared"
     if stood_down:
         return False, "the operator stood this objective down while this was being prepared"
+    # THE QUESTION HOLD IS AUTHORITY, not display. It rides in the tuple — and therefore in the
+    # fingerprint the write fence re-reads immediately before byte one — because the window
+    # between the decision and the write is exactly where the ask lands: the supervisor escalates,
+    # opens a question, and a pass already in flight would otherwise type into a session the
+    # console is showing a question about (#900 review, finding 1).
+    if len(state) > 5 and int(state[5] or 0):
+        return False, "a question about this objective is waiting for you"
     if episode is not None and int(current) != int(episode):
         return False, "the objective started a new episode while this was being prepared"
     return True, ""
@@ -3911,7 +4755,7 @@ def supervisor_authority(
     action_id: str = "",
     path: Path | None = None,
 ) -> tuple:
-    """`(holder, objective_state, episode, stood_down, bound_episode)` read in ONE transaction.
+    """`(holder, objective_state, episode, stood_down, bound_episode, question_seq)` — one read.
 
     `bound_episode` is the episode the supervisor BINDING records for `action_id`, or `None` when
     no binding exists. It is part of this tuple — rather than a separate lookup the caller does
@@ -3949,7 +4793,7 @@ def supervisor_authority(
             (mission_id, objective_key),
         ).fetchone()
         ep = con.execute(
-            "SELECT episode, stood_down FROM mission_objective_episode "
+            "SELECT episode, stood_down, question_seq FROM mission_objective_episode "
             "WHERE mission_id=? AND objective_key=?",
             (mission_id, objective_key),
         ).fetchone()
@@ -3974,6 +4818,7 @@ def supervisor_authority(
         1 if ep is None else int(ep["episode"]),
         bool(ep["stood_down"]) if ep is not None else False,
         bound,
+        0 if ep is None else int(ep["question_seq"] or 0),
     )
 
 
@@ -4323,6 +5168,16 @@ def propose_completion(
                 "UPDATE missions SET state='review', updated_at=? WHERE id=? AND state=?",
                 (ts, mission_id, from_state),
             )
+            if cur.rowcount:
+                # …AND THE QUESTION HOLDS GO WITH IT (#900 review 6, finding 3). `review` is an
+                # unanswerable state, so a hold surviving into it flags the mission for a
+                # decision every answer is then refused — `needs_you` says one thing and
+                # `_question_answerable` says another. Same transaction as the transition.
+                con.execute(
+                    "UPDATE mission_objective_episode SET question_seq=NULL "
+                    "WHERE mission_id=? AND question_seq IS NOT NULL",
+                    (mission_id,),
+                )
             if not cur.rowcount:
                 con.execute("ROLLBACK")
                 return False
@@ -4890,9 +5745,21 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     try:
         con.execute(
             "INSERT INTO mission_objectives "
-            "(mission_id, key, ord, title, probe, probe_args, gate, state, source) "
-            "VALUES (?,?,?,?,?,?,?, 'pending', ?)",
-            (mission_id, key, int(nxt), title, probe, args, 1 if gate else 0, source),
+            "(mission_id, key, ord, title, probe, probe_args, gate, state, source, incarnation) "
+            "VALUES (?,?,?,?,?,?,?, 'pending', ?, ?)",
+            (
+                mission_id,
+                key,
+                int(nxt),
+                title,
+                probe,
+                args,
+                1 if gate else 0,
+                source,
+                # A FRESH ONE, every time. Re-adding a dropped key is a new objective wearing an
+                # old name, and this is what says so to anything holding a reference.
+                uuid.uuid4().hex,
+            ),
         )
     except sqlite3.IntegrityError:
         raise MissionError(f"objective {key} already exists", status=409) from None
@@ -4931,12 +5798,19 @@ def _objective_is_current(con, mission_id: str, objective_key: str, episode: int
     if obj is None:
         return False
     row = con.execute(
-        "SELECT episode, stood_down FROM mission_objective_episode "
+        "SELECT episode, stood_down, question_seq FROM mission_objective_episode "
         "WHERE mission_id=? AND objective_key=?",
         (mission_id, objective_key),
     ).fetchone()
     current = int(row["episode"]) if row else 1
     if int(episode) != current:
+        return False
+    # AN OPEN QUESTION IS A HOLD, and it belongs in the RESERVATION, not only in the pass that
+    # decides to nudge (#900 review, finding 1). `may_nudge` reads the hold, but a question opened
+    # between that read and this insert would otherwise still get a reservation — and the
+    # supervisor would type into a session while it is on screen asking the operator what to do.
+    # Checking it in the same transaction as the insert is what leaves the race no window.
+    if row is not None and int(row["question_seq"] or 0):
         return False
     # STOOD DOWN is part of "current authority", not a separate question. `escalate()` reads the
     # episode, the operator's stand-down commits, and the stale pass then announces after they
@@ -5260,60 +6134,89 @@ def derive_needs_you(mission_ids: list[str], *, path: Path | None = None) -> dic
     2. ``intervention_required`` on one of those sessions, read from the metadata sidecar, which
        is where ``pulse.build_cards`` reads the card's own flag from (identical source, and no
        ``scan_all()`` on a list request);
-    3. an **open question** — a ``question`` event with no later ``answer`` on the mission. It
-       has no producer until Phase 3 and is included now so Phase 3 need not reopen this.
+    3. an **open question** — a ``question`` event with no later ``answer`` on the mission. The
+       producer landed in #892: the supervisor asks after a terminal escalation, and because
+       `open_question` stands the objective down, term 4 below drops for that objective in the
+       same moment — so the answerable reason REPLACES the vague one rather than stacking on it.
 
     Best-effort per term: a ledger or sidecar hiccup degrades the flag, it never fails the list.
     """
-    from . import metadata, orchestrator_ledger
-
     out: dict[str, dict] = {m: {"needs_you": False, "why": []} for m in mission_ids}
     if not mission_ids:
         return out
 
     con = _ready(path)
     try:
-        placeholders = ",".join("?" for _ in mission_ids)
-        rows = con.execute(
-            # noqa justification: `placeholders` is a run of `?` sized by len(mission_ids); every
-            # id is BOUND, never interpolated. Same for the grouped query below.
-            f"SELECT mission_id, session_key FROM mission_sessions "  # noqa: S608
-            f"WHERE mission_id IN ({placeholders}) AND removed_at IS NULL",
-            tuple(mission_ids),
-        ).fetchall()
-        open_q = con.execute(
-            f"SELECT mission_id, MAX(CASE WHEN kind='question' THEN seq END) AS q, "  # noqa: S608
-            f"MAX(CASE WHEN kind='answer' THEN seq END) AS a "
-            f"FROM mission_events WHERE mission_id IN ({placeholders}) GROUP BY mission_id",
-            tuple(mission_ids),
-        ).fetchall()
-        # ESCALATIONS ARE AN ATTENTION SOURCE. The supervisor's terminal "this needs you" is
-        # durable and arbitrated, and it was reaching the timeline and the bell while
-        # `needs_you` stayed false — so the console's own "waiting on you" filter, and the
-        # supervisor's own gate against nudging a mission that needs its operator, both looked
-        # straight past it. An escalation IS the mission needing the operator; that is what the
-        # word means (#888 review, finding 5).
-        # CURRENT, UNRESOLVED escalations only. Selecting any historical row meant a mission
-        # stayed "needs you" forever: waiving the objective advanced the episode and the old row
-        # kept the flag set, and "Stop telling me" — the whole point of a stand-down — did not
-        # quiet it either (#888 review, finding 3). The rows stay as history; attention is a claim
-        # about NOW, so it joins the objective's live state, its current episode and its
-        # stand-down. An escalation for an objective that has since been dropped resolves too,
-        # because the inner join finds nothing.
-        escalated = con.execute(
-            f"SELECT DISTINCT e.mission_id AS mission_id FROM mission_escalations e "  # noqa: S608
-            f"JOIN mission_objectives o "
-            f"  ON o.mission_id = e.mission_id AND o.key = e.objective_key "
-            f"LEFT JOIN mission_objective_episode ep "
-            f"  ON ep.mission_id = e.mission_id AND ep.objective_key = e.objective_key "
-            f"WHERE e.mission_id IN ({placeholders}) "
-            f"  AND o.state NOT IN ('met','waived') "
-            f"  AND e.episode = COALESCE(ep.episode, 1) "
-            f"  AND COALESCE(ep.stood_down, 0) = 0",
-            tuple(mission_ids),
-        ).fetchall()
+        rows, open_q, escalated = _attention_rows(con, mission_ids)
     finally:
         con.close()
+    return _attention_merge(out, mission_ids, rows, open_q, escalated)
+
+
+def _attention_rows(con, mission_ids: list[str]):
+    """The three STORE terms of the attention flag, from one connection (#900 rev 7, finding 4).
+
+    Split out so the mission-detail read can take them and the open question from the SAME
+    snapshot. Two connections answered a torn state — `needs_you: ["question"]` beside
+    `question: null`, or the reverse — which is the one disagreement this whole phase exists to
+    prevent: a mission flagged for an answer with nothing on screen to answer.
+    """
+    placeholders = ",".join("?" for _ in mission_ids)
+    rows = con.execute(
+        # noqa justification: `placeholders` is a run of `?` sized by len(mission_ids); every
+        # id is BOUND, never interpolated. Same for the grouped query below.
+        f"SELECT mission_id, session_key FROM mission_sessions "  # noqa: S608
+        f"WHERE mission_id IN ({placeholders}) AND removed_at IS NULL",
+        tuple(mission_ids),
+    ).fetchall()
+    # AN OPEN QUESTION IS A HOLD, not a comparison of two MAX(seq) values. The first version
+    # asked whether the mission's newest `question` was newer than its newest `answer`, which
+    # cannot express a question on one objective while another is answered, a superseded
+    # question, or a late answer to an older one (#892 issue review). The hold names the
+    # question that is actually waiting, per objective.
+    open_q = con.execute(
+        f"SELECT DISTINCT mission_id FROM mission_objective_episode "  # noqa: S608
+        f"WHERE mission_id IN ({placeholders}) AND question_seq IS NOT NULL",
+        tuple(mission_ids),
+    ).fetchall()
+    # ESCALATIONS ARE AN ATTENTION SOURCE. The supervisor's terminal "this needs you" is
+    # durable and arbitrated, and it was reaching the timeline and the bell while
+    # `needs_you` stayed false — so the console's own "waiting on you" filter, and the
+    # supervisor's own gate against nudging a mission that needs its operator, both looked
+    # straight past it. An escalation IS the mission needing the operator; that is what the
+    # word means (#888 review, finding 5).
+    # CURRENT, UNRESOLVED escalations only. Selecting any historical row meant a mission
+    # stayed "needs you" forever: waiving the objective advanced the episode and the old row
+    # kept the flag set, and "Stop telling me" — the whole point of a stand-down — did not
+    # quiet it either (#888 review, finding 3). The rows stay as history; attention is a claim
+    # about NOW, so it joins the objective's live state, its current episode and its
+    # stand-down. An escalation for an objective that has since been dropped resolves too,
+    # because the inner join finds nothing.
+    escalated = con.execute(
+        f"SELECT DISTINCT e.mission_id AS mission_id FROM mission_escalations e "  # noqa: S608
+        f"JOIN mission_objectives o "
+        f"  ON o.mission_id = e.mission_id AND o.key = e.objective_key "
+        f"LEFT JOIN mission_objective_episode ep "
+        f"  ON ep.mission_id = e.mission_id AND ep.objective_key = e.objective_key "
+        f"WHERE e.mission_id IN ({placeholders}) "
+        f"  AND o.state NOT IN ('met','waived') "
+        f"  AND e.episode = COALESCE(ep.episode, 1) "
+        f"  AND COALESCE(ep.stood_down, 0) = 0 "
+        # …AND NOT WHILE A QUESTION IS HOLDING IT (#892). The supervisor escalates and then
+        # asks about the same objective, and the question SUPERSEDES the escalation: one says
+        # something is wrong, the other says what would fix it, and showing both would name
+        # the same situation twice with only one of them answerable.
+        f"  AND ep.question_seq IS NULL",
+        tuple(mission_ids),
+    ).fetchall()
+    return rows, open_q, escalated
+
+
+def _attention_merge(out, mission_ids, rows, open_q, escalated):
+    """The LEDGER and SIDECAR terms, folded onto the store's. Both are outside the store, so they
+    are read after the snapshot and degrade rather than fail — a hiccup dims the flag, it never
+    fails the list."""
+    from . import metadata, orchestrator_ledger
 
     by_mission: dict[str, list[str]] = {}
     for r in rows:
@@ -5348,10 +6251,8 @@ def derive_needs_you(mission_ids: list[str], *, path: Path | None = None) -> dic
         out[mid]["needs_you"] = bool(why)
 
     for r in open_q:
-        q, a = r["q"], r["a"]
-        if q is not None and (a is None or a < q):
-            out[r["mission_id"]]["why"].append("question")
-            out[r["mission_id"]]["needs_you"] = True
+        out[r["mission_id"]]["why"].append("question")
+        out[r["mission_id"]]["needs_you"] = True
     for r in escalated:
         out[r["mission_id"]]["why"].append("escalation")
         out[r["mission_id"]]["needs_you"] = True
@@ -5488,6 +6389,23 @@ def begin_archive(
                     raise MissionError(
                         f"mission {mission_id} is no longer {row['state']}", status=409
                     )
+                # …AND THE QUESTION HOLDS GO WITH IT (#900 review 7, finding 3). This is the
+                # THIRD entrance to an unanswerable state and it writes the row directly rather
+                # than going through `set_state`, so it inherited none of that path's cleanup: an
+                # explicit `{"abandon": true}` archive left `question_seq` set on an `abandoned`
+                # mission, `derive_needs_you` kept reporting `question`, and every answer was
+                # then refused by `_question_answerable`. Flagged for a decision the server will
+                # not take, for ever.
+                #
+                # Unconditional and in the same transaction as the transition: the destination
+                # is `abandoned`, which is in `TERMINAL_STATES` and therefore in
+                # `UNQUESTIONABLE_STATES` — there is no version of this write that lands somewhere
+                # a question could still be answered.
+                con.execute(
+                    "UPDATE mission_objective_episode SET question_seq=NULL "
+                    "WHERE mission_id=? AND question_seq IS NOT NULL",
+                    (mission_id,),
+                )
                 _append_event(
                     con,
                     mission_id,

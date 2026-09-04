@@ -703,3 +703,299 @@ async def test_one_stuck_mission_does_not_stop_the_FLEET(store, monkeypatch):
     report = await loop.sweep()
     assert len(seen) == 2, "the sweep stopped at the first failure"
     assert report["swept"] == 1
+
+
+# ---- #892: when it is unsure, it ASKS ---------------------------------------------------------
+
+
+def _two_replies(monkeypatch, review, *, recap, question):
+    """One `complete_json` stub for two different calls, told apart by the SYSTEM PROMPT.
+
+    Told apart by which registry prompt was sent rather than by call ORDER: an order-keyed stub
+    passes just as happily when the two calls swap, which is exactly the mistake a test about
+    "the escalation happens, and then the question" must not make.
+    """
+    from agent_sessions import prompts
+
+    question_prompt = prompts.effective("mission_question")
+    seen: list[str] = []
+
+    async def fake(messages, **kw):
+        system = str(messages[0].get("content") or "")
+        if system == question_prompt:
+            seen.append("question")
+            return question
+        seen.append("recap")
+        return recap
+
+    monkeypatch.setattr(review, "complete_json", fake)
+    return seen
+
+
+_A_QUESTION = {
+    "question": "Which of the two open PRs is this mission's?",
+    "options": [
+        {"label": "The one from Tuesday", "action_index": 0},
+        {"label": "Neither — this does not apply here", "action_index": 1},
+    ],
+}
+
+
+@pytest.mark.anyio
+async def test_a_SPENT_budget_escalates_AND_THEN_ASKS(store, configured, monkeypatch):
+    """The producer #840 asked for, wired to the one moment it described.
+
+    An escalation says SOMETHING is wrong without saying what would fix it — which is #840's own
+    complaint about it. So the terminal escalation is now followed by a bounded question about the
+    same objective, and the question supersedes it: standing the objective down drops the vague
+    reason, and the answerable one takes its place. The mission is flagged throughout; it never
+    blinks through "fine".
+    """
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    seen = _two_replies(
+        monkeypatch,
+        configured,
+        recap={"recap": "still stuck", "assessment": "stalled"},
+        question=_A_QUESTION,
+    )
+
+    out = await sup.run_pass(store)
+    assert out["escalated"]["objective_key"] == KEY
+    assert out["asked"]["objective_key"] == KEY, "the escalation was not followed by a question"
+    assert seen == ["recap", "question"], seen
+
+    q = missions.open_question_row(store)
+    assert q is not None and q["objective"] == KEY
+    # The ACTIONS came from the closed set by index; the labels are display text.
+    assert [o["action"] for o in q["options"]] == ["note_answer", "waive_objective"]
+
+    why = missions.derive_needs_you([store])[store]
+    assert why["needs_you"] is True
+    assert "question" in why["why"], why
+    assert "escalation" not in why["why"], "the vague reason outlived the answerable one"
+
+
+@pytest.mark.anyio
+async def test_a_question_that_COULD_NOT_BE_PRODUCED_leaves_the_escalation_standing(
+    store, configured, monkeypatch
+):
+    """Asking degrades to the status quo, never to silence.
+
+    A fresh install has no AI endpoint and a configured one can answer with something unusable.
+    In both cases the operator must still be told the mission needs them — which is why the ask
+    is hung off the escalation rather than replacing it.
+    """
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    _two_replies(
+        monkeypatch,
+        configured,
+        recap={"recap": "still stuck", "assessment": "stalled"},
+        question={"question": "Which?", "options": [{"label": "only one", "action_index": 0}]},
+    )
+
+    out = await sup.run_pass(store)
+    assert out["escalated"]["objective_key"] == KEY
+    assert out["asked"] is None
+    assert missions.open_question_row(store) is None
+    why = missions.derive_needs_you([store])[store]
+    assert why["needs_you"] is True and "escalation" in why["why"]
+    # …and it SAID SO on the timeline, under `error` rather than `question`: a "could not ask"
+    # filed as a question would flag the mission for ever with nothing on screen to answer.
+    kinds = [e["kind"] for e in missions.get_mission(store)["events"]]
+    assert "error" in kinds and "question" not in kinds
+
+
+@pytest.mark.anyio
+async def test_ONE_question_per_objective_EPISODE(store, configured, monkeypatch):
+    """Bounded without a second counter to keep honest.
+
+    `escalate_once` already arbitrates on `(mission, objective, episode)`, and the ask hangs off
+    its win — so a mission that is asked and not answered is not asked again. Questions that keep
+    arriving train the operator to ignore them, which costs more than the feature is worth.
+    """
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    _two_replies(
+        monkeypatch,
+        configured,
+        recap={"recap": "still stuck", "assessment": "stalled"},
+        question=_A_QUESTION,
+    )
+
+    first = await sup.run_pass(store)
+    assert first["asked"] is not None
+    _input(monkeypatch, configured, fp="moved-again")
+    second = await sup.run_pass(store)
+    assert second["asked"] is None, "a second question arrived for the same episode"
+    questions = [e for e in missions.get_mission(store)["events"] if e["kind"] == "question"]
+    assert len(questions) == 1, f"asked {len(questions)} times about one episode"
+
+
+@pytest.mark.anyio
+async def test_a_question_on_ONE_objective_does_not_stall_the_others(
+    store, configured, monkeypatch
+):
+    """The reason a question stands down the OBJECTIVE and not the mission.
+
+    A mission may have five objectives and be stuck on one. Silencing the whole mission would
+    stall follow-through on the other four — so the pass keeps nudging the objective nobody is
+    being asked about.
+    """
+    _running(store)
+    _objective(store, KEY)
+    _objective(store, "other_thing")
+    missions.open_question(
+        store,
+        KEY,
+        "Which of the two open PRs is this mission's?",
+        [
+            {"label": "The one from Tuesday", "action": "note_answer"},
+            {"label": "Neither", "action": "waive_objective"},
+        ],
+    )
+    _input(monkeypatch, configured, fp="moved")
+    _reply(
+        monkeypatch,
+        configured,
+        {
+            "recap": "working",
+            "assessment": "blocked",
+            "nudge": {"objective_key": "other_thing", "why": "no movement on the other one"},
+        },
+    )
+    sent: list[dict] = []
+
+    async def _nudge(*a, **k):
+        sent.append(k)
+        return {"sent": True}
+
+    monkeypatch.setattr(sup, "nudge", _nudge)
+
+    out = await sup.run_pass(store)
+    assert out.get("skipped") is None, f"the whole mission stopped: {out.get('skipped')}"
+    assert sent and sent[0]["objective_key"] == "other_thing", sent
+
+
+@pytest.mark.anyio
+async def test_an_ASK_THAT_PRODUCED_NOTHING_is_retried_on_a_later_pass(
+    store, configured, monkeypatch
+):
+    """#900 review 4, finding 1, and the reason the escalation's uniqueness is the wrong hook.
+
+    `escalate_once` is arbitrated on `(mission, objective, episode)`, so the pass that WINS it is
+    the only pass that ever entered the ask branch. An ask that produced nothing — a busy
+    authority fence, an unconfigured endpoint, an unusable reply — therefore lost the episode's
+    only question permanently: the operator kept the vague escalation and never got the concrete
+    choice, on an objective the supervisor had already decided it could not resolve alone.
+
+    Red against an ask hung off the escalation's win.
+    """
+    from agent_sessions import prompts
+
+    _running(store)
+    _objective(store, KEY)
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+
+    question_prompt = prompts.effective("mission_question")
+    asks = {"n": 0}
+
+    async def fake(messages, **kw):
+        if str(messages[0].get("content") or "") == question_prompt:
+            asks["n"] += 1
+            # The FIRST ask is unusable — one option is not a choice, so nothing opens.
+            if asks["n"] == 1:
+                return {"question": "Which?", "options": [{"label": "one", "action_index": 0}]}
+            return _A_QUESTION
+        return {"recap": "still stuck", "assessment": "stalled"}
+
+    monkeypatch.setattr(configured, "complete_json", fake)
+
+    first = await sup.run_pass(store)
+    assert first["escalated"]["objective_key"] == KEY
+    assert first["asked"] is None
+    assert missions.open_question_row(store) is None
+
+    # THE SECOND PASS. The escalation already exists, so `escalate_once` loses — and that must not
+    # be what decides whether the operator gets a question.
+    _input(monkeypatch, configured, fp="moved-again")
+    second = await sup.run_pass(store)
+    assert second["escalated"] is None, "the escalation is still once per episode"
+    assert second["asked"] is not None, "the episode's only ask was lost to one bad reply"
+    q = missions.open_question_row(store)
+    assert q is not None and q["objective"] == KEY
+    assert asks["n"] == 2
+
+    # …and the bound still holds: with a question open, a THIRD pass asks nothing.
+    _input(monkeypatch, configured, fp="moved-thrice")
+    third = await sup.run_pass(store)
+    assert third["asked"] is None
+    questions = [e for e in missions.get_mission(store)["events"] if e["kind"] == "question"]
+    assert len(questions) == 1, f"asked {len(questions)} times about one episode"
+
+
+@pytest.mark.anyio
+async def test_ONE_UNANSWERABLE_objective_does_not_starve_the_others(
+    store, configured, monkeypatch
+):
+    """#900 review 5, finding 5. `_ask_owed` returned after the first eligible objective whatever
+    happened, so one persistently unanswerable objective — an endpoint that keeps refusing, a
+    fence that keeps being busy — starved every later owed one: each pass retried the same fixed
+    prefix and the second was never asked about at all.
+
+    Red against a return that is not conditional on the ask having landed.
+    """
+    from agent_sessions import prompts
+
+    _running(store)
+    _objective(store, KEY)
+    _objective(store, "second")
+    for i in range(sup.NUDGE_BUDGET):
+        _sent(store, f"d{i}", "delivered")
+    _input(monkeypatch, configured, fp="moved")
+    # BOTH ALREADY ESCALATED — which is the state the starvation needs and the one a mission
+    # reaches over successive episodes. The pass skips (the mission needs the operator), so the
+    # only thing that runs is `_ask_owed`, which is precisely what this is about.
+    for key in (KEY, "second"):
+        assert missions.escalate_once(
+            store,
+            session_key=SESSION,
+            objective_key=key,
+            episode=1,
+            reason=f"{key} has not moved",
+        )
+
+    question_prompt = prompts.effective("mission_question")
+    asked_about: list[str] = []
+
+    async def fake(messages, **kw):
+        if str(messages[0].get("content") or "") == question_prompt:
+            body = "\n".join(str(mm.get("content") or "") for mm in messages)
+            key = KEY if f"Objective in question: {KEY}" in body else "second"
+            asked_about.append(key)
+            # The FIRST objective is permanently unanswerable; the second is fine.
+            if key == KEY:
+                return {"question": "Which?", "options": [{"label": "one", "action_index": 0}]}
+            return _A_QUESTION
+        return {"recap": "still stuck", "assessment": "stalled"}
+
+    monkeypatch.setattr(configured, "complete_json", fake)
+
+    out = await sup.run_pass(store)
+    # BOTH were tried in the same pass, and the one that could produce a question did.
+    assert KEY in asked_about and "second" in asked_about, asked_about
+    assert out["asked"] is not None and out["asked"]["objective_key"] == "second"
+    q = missions.open_question_row(store)
+    assert q is not None and q["objective"] == "second"

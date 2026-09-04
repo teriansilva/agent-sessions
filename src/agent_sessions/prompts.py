@@ -216,6 +216,34 @@ class Prompt:
     guarded: bool = False
 
 
+_MISSION_QUESTION = """You are the supervisor of one mission, and you have hit something you \
+cannot decide. Ask the operator, in one question, with concrete choices.
+
+You are given the mission's instruction, its objective checklist, a bounded view of what its \
+session has done recently, and a NUMBERED LIST of the actions the server can take. You choose \
+WHICH of those actions each option maps to. You never describe a new one.
+
+Answer with JSON only:
+
+{"question": "<one sentence, the thing you cannot decide>",
+ "options": [{"label": "<what the operator would be choosing, in their words>",
+              "action_index": int}]}
+
+Rules:
+
+- Two to four options. One is not a question; five is a menu nobody reads.
+- `action_index` is an index into the numbered action list you were given. It is the ONLY thing \
+that decides what happens; the `label` is what the operator reads and does nothing on its own.
+- Every option must be genuinely available. Do not offer a choice you know is blocked.
+- Ask only when the answer changes what you would do next. If either answer leads to the same \
+action, there is no question — say nothing.
+- The question is about the WORK, not about the operator's preferences. "Should I keep going?" is \
+not a question; "the branch has two open PRs, which is this mission's?" is.
+- Never ask the operator to confirm something you could observe. If a probe can answer it, it is \
+not a question.
+"""
+
+
 _MISSION_SUPERVISOR = """You are the supervisor of one mission. You are given the mission's \
 instruction, its objective checklist with each objective's state, and a bounded view of what its \
 session has done recently.
@@ -393,6 +421,28 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
         # narrow a reading: an objective list is what the follow-through loop nudges against, so
         # text that shapes it shapes autonomous action a phase later (#840 §13).
+        guarded=True,
+    ),
+    Prompt(
+        id="mission_question",
+        group="Missions",
+        label="Mission question",
+        description=(
+            "Asks the operator ONE bounded question with concrete options, instead of guessing. "
+            "The model picks which server action each option maps to; it never authors one."
+        ),
+        # INDEX-SHAPED, exactly like `mission_objectives` and for the same reason: the model
+        # selects from a server-built list, so there is no path from model text to something
+        # executed. The `label` is display text and carries no authority — which is what makes
+        # "an option's label is never executed" an assertable test rather than a hope (#840 §6).
+        contract='{"question": str, "options": [{"label": str, "action_index": int}]}',
+        default=_MISSION_QUESTION,
+        max_chars=4000,
+        block=BLOCK,
+        field="mission_question",
+        # GUARDED. Answering a question moves a mission's objectives and stands objectives down,
+        # so the text that shapes the question shapes autonomous action a step later — the same
+        # reasoning that makes `mission_objectives` guarded despite emitting no verbs.
         guarded=True,
     ),
     Prompt(

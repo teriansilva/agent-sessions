@@ -124,7 +124,11 @@ def test_onboarded_must_be_boolean(tmp_home, auth_cfg, monkeypatch):
 
 
 def _PB(**over):
+    """A playbook block as the CLIENT sends one — `revision` included, because the route requires
+    it (#900 review 6, finding 2): a whole-block write with no comparand is last-writer-wins over
+    whatever another tab did. `0` is the revision of a store nothing has written yet."""
     pb = {
+        "revision": 0,
         "default_id": "p",
         "playbooks": [
             {
@@ -217,7 +221,38 @@ def test_the_prefs_API_refuses_an_explicit_null_playbook_block(auth_cfg, tmp_hom
 
     # …and the empty block IS accepted, so "clear my playbooks" remains expressible.
     ok = c.post(
-        "/api/prefs", json={"mission_playbooks": {"default_id": "", "playbooks": []}}, headers=hdr
+        "/api/prefs",
+        json={"mission_playbooks": {"default_id": "", "playbooks": [], "revision": 0}},
+        headers=hdr,
     )
     assert ok.status_code == 200, ok.text
-    assert prefs.get_mission_playbooks() == {"default_id": "", "playbooks": []}
+    assert prefs.get_mission_playbooks() == {"default_id": "", "playbooks": [], "revision": 1}
+
+
+def test_a_MIXED_payload_with_a_REVISIONLESS_playbook_persists_NOTHING(auth_cfg, tmp_home):
+    """#900 review 7, finding 2. The required `revision` was checked at the WRITE, several
+    setters later — so `{theme, mission_playbooks}` with no revision answered 422 having already
+    changed the theme. That is precisely the all-or-nothing contract the preflight exists for.
+
+    Red against a revision check that lives only beside `set_mission_playbooks`.
+    """
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    c.post("/api/prefs", json={"theme": "dark"}, headers=hdr)
+
+    block = _PB()
+    block.pop("revision")
+    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": block}, headers=hdr)
+    assert r.status_code == 422, r.text
+    assert "revision is required" in r.json()["detail"]
+    assert prefs.get_theme() == "dark", "the valid key landed despite the request being refused"
+    assert [pb["id"] for pb in prefs.get_mission_playbooks()["playbooks"]] == [
+        "ship_a_change",
+        "investigate",
+    ]
+    # …and a boolean is not an integer, on the same door.
+    block["revision"] = True
+    r = c.post("/api/prefs", json={"theme": "light", "mission_playbooks": block}, headers=hdr)
+    assert r.status_code == 422, r.text
+    assert prefs.get_theme() == "dark"

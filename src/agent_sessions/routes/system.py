@@ -18,6 +18,7 @@ from .. import (
     discover,
     engines,
     handoff,
+    missions,
     perfstats,
     prefs,
     project_dirs,
@@ -101,8 +102,18 @@ def _preflight_prefs(payload: dict) -> None:
         # still fix it, rather than have it silently degrade to a template that cannot gate. The
         # read path stays lenient because `prefs.json` is a file a person can also hand-edit, and
         # a whole install must not lose its playbooks over one bad row (#883).
+        #
+        # THE REVISION IS PART OF THE SHAPE, and it is checked HERE (#900 review 7, finding 2).
+        # It used to be validated at the write, several setters later — so a mixed request such
+        # as `{theme, mission_playbooks}` with no revision answered 422 having already changed
+        # the theme. That is exactly the all-or-nothing contract this preflight exists for: a 422
+        # must mean nothing was persisted, not that the keys before the bad one already landed.
+        block = payload["mission_playbooks"]
+        expect = block.get("revision") if isinstance(block, dict) else None
+        if isinstance(expect, bool) or not isinstance(expect, int):
+            raise bad("mission_playbooks.revision is required and names the version you read")
         try:
-            prefs._coerce_mission_playbooks(payload["mission_playbooks"], strict=True)
+            prefs._coerce_mission_playbooks(block, strict=True)
         except prefs.PlaybookError as e:
             raise bad(f"invalid mission_playbooks: {e}") from None
     for key in ("default_project", "default_project_id"):
@@ -430,6 +441,35 @@ def register(
                 # `auto_verbs_ceiling` so the UI can SHOW that choose/answer/dispatch always
                 # need a tap, rather than implying the tier alone decides.
                 "orchestrator": prefs.public_orchestrator(),
+                # Mission playbooks (#883), so Settings can EDIT them (#892). Until now the
+                # templates that decide what "done" means were reachable only by hand-editing
+                # `prefs.json` — the block was validated, defaulted and consumed, and had no
+                # surface at all. Normalized on the way out like every other read, so the editor
+                # is shown the same shape the server will accept back. No secret: a playbook
+                # holds an operator-typed probe target and nothing else.
+                "mission_playbooks": prefs.get_mission_playbooks(),
+                # …and WHAT A PROBE TAKES, from `PROBE_ARG_SCHEMA` itself rather than a second
+                # copy in the client. The editor uses it to offer the right fields per kind, so
+                # an unknown argument is prevented rather than merely refused on save — and a
+                # kind added to the schema gains its fields here without a client change. The
+                # names are the schema's; the VALIDATION stays entirely server-side.
+                "mission_probes": {
+                    "kinds": sorted(missions.PROBE_KINDS),
+                    "non_gating": sorted(missions.NON_GATING_PROBES),
+                    "args": {
+                        kind: {
+                            "required": sorted(n for n, (req, _) in spec.items() if req),
+                            "optional": sorted(n for n, (req, _) in spec.items() if not req),
+                        }
+                        for kind, spec in missions.PROBE_ARG_SCHEMA.items()
+                    },
+                    # …and the JSON TYPE of each one. Without it the editor can only ever send
+                    # strings, and `http_status.expect_status` — which strictly requires an
+                    # integer — is a field the UI offers and the server always refuses (#900
+                    # review, finding 6). The names say WHICH arguments exist; these say what a
+                    # well-formed value looks like. Validation is still entirely server-side.
+                    "types": missions.PROBE_ARG_TYPES,
+                },
             }
         )
 
@@ -605,7 +645,39 @@ def register(
             # comment above: this pass and the write are edited at different times, so the write
             # fails closed on its own rather than trusting that a preflight ran.
             try:
-                out["mission_playbooks"] = prefs.set_mission_playbooks(payload["mission_playbooks"])
+                block = payload["mission_playbooks"]
+                # THE REVISION THE CLIENT READ, as a comparand (#900 review 5, finding 7). Taken
+                # from the block itself because that is what the client round-trips; absent means
+                # "no comparand", which the installer and the shipped defaults rely on.
+                #
+                # REQUIRED AT THE HTTP BOUNDARY (#900 review 6, finding 2), and REJECTED IN THE
+                # PREFLIGHT (review 7, finding 2) so a mixed payload cannot persist a theme and
+                # then 422. `None` means "no comparand" and exists for the installer and the
+                # shipped defaults, which have nothing to compare against — but over HTTP it made
+                # the whole concurrency check OPTIONAL: an authenticated stale client, including
+                # an older cached PWA build, could omit the field and overwrite a newer block
+                # wholesale. Re-read rather than trusted, for the reason above the write: this
+                # pass and the preflight are edited at different times.
+                expect = block.get("revision") if isinstance(block, dict) else None
+                if isinstance(expect, bool) or not isinstance(expect, int):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "mission_playbooks.revision is required and names the version you "
+                            "read"
+                        ),
+                    )
+                out["mission_playbooks"] = prefs.set_mission_playbooks(
+                    block, expect_revision=expect
+                )
+            except prefs.PlaybookConflict as e:
+                # 409, WITH THE CURRENT BLOCK. A conflict the operator cannot see is one they can
+                # only resolve by reloading and guessing what changed.
+                raise HTTPException(
+                    status_code=409,
+                    detail=str(e),
+                    headers={},
+                ) from None
             except prefs.PlaybookError as e:
                 raise HTTPException(
                     status_code=422, detail=f"invalid mission_playbooks: {e}"

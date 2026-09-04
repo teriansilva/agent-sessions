@@ -35,7 +35,7 @@ import logging
 import time
 import uuid
 
-from . import mission_probes, missions
+from . import mission_probes, mission_questions, missions
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,10 @@ log = logging.getLogger(__name__)
 #: can distinguish "the agent needed a reminder" from "the agent is not moving", which is the
 #: distinction the escalation is about.
 NUDGE_BUDGET = 3
+
+#: How much of the latest recap the question prompt is shown. Bounded because a recap is
+#: model-authored text of unbounded length and this is the second model call it feeds.
+QUESTION_CONTEXT_MAX = 2000
 
 #: Terminal states that mean the bytes reached the agent. Only these cost a unit.
 _CHARGED: frozenset[str] = frozenset({"delivered"})
@@ -179,9 +183,16 @@ def may_nudge(mission_id: str, objective_key: str, *, path=None) -> tuple[bool, 
     Every refusal names itself, because "the supervisor did nothing" is the state the operator
     complained about and an unexplained silence is indistinguishable from a broken feature.
     """
-    episode, stood_down = missions.objective_episode(mission_id, objective_key, path=path)
+    episode, stood_down, question_seq = missions.objective_hold(
+        mission_id, objective_key, path=path
+    )
     if stood_down:
         return False, "the operator asked not to be told about this objective again"
+    # A QUESTION IS ITS OWN REASON, and it reads differently: the operator has not asked for
+    # silence, the supervisor has asked THEM something and is waiting. Naming it separately is
+    # what lets the board say "waiting on your answer" rather than "you silenced this" (#892).
+    if question_seq is not None:
+        return False, "this objective is waiting on your answer to its question"
     b = budget_state(mission_id, objective_key, episode=episode, path=path)
     if b["unreadable"]:
         return False, "the action ledger could not be read, so the budget is unknown"
@@ -238,6 +249,11 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     rows = _objective_rows(mission_id, path=path)
     out: list[dict] = []
     unmet_gates = 0
+    # ONE READ FOR THE WHOLE MISSION, outside the per-objective loop.
+    try:
+        escalated = missions.escalated_objectives(mission_id, path=path)
+    except Exception:  # noqa: BLE001 — an unreadable table is "nothing owed", never a failed pass
+        escalated = {}
     for o in rows:
         key = str(o.get("key") or "")
         gate = bool(o.get("gate"))
@@ -255,7 +271,7 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
         current = _observation_supports(o) if state == "met" else True
         if gate and (not met or not current):
             unmet_gates += 1
-        episode, stood_down = missions.objective_episode(mission_id, key, path=path)
+        episode, stood_down, question_seq = missions.objective_hold(mission_id, key, path=path)
         b = budget_state(mission_id, key, episode=episode, path=path)
         allowed, why = may_nudge(mission_id, key, path=path)
         out.append(
@@ -270,6 +286,15 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 "current": current,
                 "episode": episode,
                 "stood_down": stood_down,
+                # THE SECOND HOLD, carried separately (#892). The pass skips an objective for
+                # either reason, but they are not the same thing to a reader: one says the
+                # operator asked for quiet, the other says the operator owes an answer.
+                "awaiting_answer": question_seq is not None,
+                # WHETHER THE SUPERVISOR HAS ALREADY GIVEN UP ON THIS EPISODE (#900 review 4,
+                # finding 1). Read from the escalation table rather than inferred, because it is
+                # the durable record of that decision — and compared against THIS episode, since
+                # an escalation from a previous one says nothing about the current attempt.
+                "escalated": escalated.get(key) == episode,
                 "spent": b["spent"],
                 "remaining": b["remaining"],
                 "may_nudge": allowed,
@@ -835,6 +860,7 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
         "nudged": None,
         "escalated": None,
         "probes": probes or None,
+        "asked": None,
         "objectives": a["objectives"],
     }
 
@@ -862,17 +888,42 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
             out["proposed_review"] = moved
         return out
 
-    # (3) THE OPERATOR IS ALREADY BEING ASKED SOMETHING. A mission with a pending decision, an open
-    # question or a flagged intervention is waiting on a human, and typing `continue` into it talks
-    # over the very question it is waiting on. This is read from the durable attention sources
-    # BEFORE any model call or PTY write, not inferred from the model's own opinion.
+    # (3) THE OPERATOR IS ALREADY BEING ASKED SOMETHING. A mission with a pending decision or a
+    # flagged intervention is waiting on a human, and typing `continue` into it talks over the very
+    # question it is waiting on. Read from the durable attention sources BEFORE any model call or
+    # PTY write, not inferred from the model's own opinion.
+    #
+    # **An open QUESTION is deliberately not in that set (#892).** A pending decision and an
+    # intervention are about a SESSION — the thing a nudge would type into — so they stop the
+    # pass. A question is about ONE OBJECTIVE, and `open_question` already stands that objective
+    # down in the same transaction that opens it. Stopping the whole mission would stall
+    # follow-through on the other four objectives because one of them is waiting on an answer,
+    # which is the behaviour #840 §6 says to avoid.
     needs = await missions.run_admitted(lambda: missions.derive_needs_you([mission_id], path=path))
     attention = (needs or {}).get(mission_id) or {}
-    if attention.get("needs_you"):
+    why = [w for w in (attention.get("why") or []) if w != "question"]
+    if attention.get("needs_you") and why:
         out["skipped"] = "the mission needs the operator"
         # `derive_needs_you` spells the reasons `why`; reading `needs_you_why` here made
         # this field silently always empty.
-        out["needs_you_why"] = attention.get("why") or []
+        out["needs_you_why"] = why
+        # …EXCEPT FOR THE ASK IT ALREADY OWES (#900 review 4, finding 1).
+        #
+        # An escalation is one of the reasons a mission "needs the operator", so this skip fires
+        # on the very missions that have just escalated — and the ask lives below it. That made
+        # the episode's only attempt the pass that raised the escalation: a busy authority fence,
+        # an unconfigured endpoint or an unusable reply lost the question for ever, and what the
+        # operator was left with was the vague escalation this feature exists to replace.
+        #
+        # The escalation row IS the durable intent, so there is nothing new to persist: an
+        # escalation for the current episode, with no question holding and the objective not
+        # stood down, is an ask that was owed and not delivered. Discharged here, before the
+        # return, because after it there is no "later pass" that ever reaches the asking code.
+        # Nothing else in the skipped path runs: no nudge, no model recap, no PTY write.
+        # NO RECAP CONTEXT HERE, and that is the honest trade: the recap is a model call that
+        # this skipped path deliberately does not make, and a question about the objective —
+        # whose title, state and gate `ask` reads for itself — is worth more than no question.
+        await _ask_owed(mission_id, a, "", out, path=path)
         return out
 
     # (3b) CURRENTLY-HELD SESSIONS ONLY. `get_mission` returns the complete historical roster, so
@@ -927,6 +978,10 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
             out["escalated"] = r["escalated"]
             break
     for r in per_session:
+        if r.get("asked"):
+            out["asked"] = r["asked"]
+            break
+    for r in per_session:
         if r.get("assessment"):
             out["assessment"] = r["assessment"]
             break
@@ -960,6 +1015,7 @@ async def _pass_one_session(
         "assessment": None,
         "nudged": None,
         "escalated": None,
+        "asked": None,
     }
 
     # (3d) STALLED? A session whose engine store has not grown since it was dispatched is stuck,
@@ -1041,7 +1097,7 @@ async def _pass_one_session(
             out["held_back"] = "another session in this pass already acted"
             return out
         for o in a["objectives"]:
-            if o["met"] or o["stood_down"]:
+            if o["met"] or o["stood_down"] or o.get("awaiting_answer"):
                 continue
             reason = f"{o['title'] or o['key']}: {escalate_because}"
             if await escalate(
@@ -1083,24 +1139,98 @@ async def _pass_one_session(
     # is a fact about the file, not about the objective. Only exhaustion and indeterminacy end an
     # episode, and `assess` computes that as `terminal`.
     for o in a["objectives"]:
-        if o["met"] or o["stood_down"] or o["may_nudge"] or not o.get("terminal"):
+        if (
+            o["met"]
+            or o["stood_down"]
+            # ALREADY ASKED. Escalating an objective whose question is still open would name the
+            # same situation twice, and only one of the two is answerable (#892).
+            or o.get("awaiting_answer")
+            or o["may_nudge"]
+            or not o.get("terminal")
+        ):
             continue
         reason = (
             f"{o['title'] or o['key']}: {o['why_not']}"
             if o["why_not"]
             else f"{o['title'] or o['key']} has not moved"
         )
-        if await escalate(
+        won = await escalate(
             mission_id,
             session_key=session_key,
             objective_key=o["key"],
             reason=reason,
             path=path,
-        ):
+        )
+        if won:
             out["escalated"] = {"objective_key": o["key"], "reason": reason}
             _announce(row, session_key, reason)
-            break
+        # THE ASK IS NOT HUNG OFF THE WIN (#900 review 4, finding 1).
+        #
+        # It was, and that made the episode's only ask a single attempt: `escalate_once` is
+        # arbitrated on `(mission, objective, episode)`, so the pass that wins is the only pass
+        # that ever entered this branch — and an ask that produced nothing (a busy authority
+        # fence, an unconfigured endpoint, an unusable reply) lost the question permanently. The
+        # operator was left with the vague escalation and no concrete choice, for ever, on an
+        # objective the supervisor had already decided it could not resolve alone.
+        #
+        # Reaching this line is the condition, and it already says everything needed: this
+        # objective is terminal, unmet, not stood down and — from the filter above — has NO open
+        # question. Whether the escalation record was created on this pass or an earlier one is
+        # not a fact about whether the operator needs a question. So a later pass retries, and
+        # the "one question per objective episode" bound is kept by `awaiting_answer` and by
+        # `open_question`'s own stand-down rather than by the escalation's uniqueness.
+        # …AND THEN ASK (#892). An escalation says SOMETHING is wrong without saying what
+        # would fix it, which is the whole complaint #840 files against it: "when it is
+        # unsure, it asks — a bounded choice with concrete options, never a guess dressed up
+        # as a decision."
+        #
+        # Ordered AFTER the escalation deliberately, for two reasons:
+        #
+        # * the escalation is the DURABLE record, so a mission whose question could not be
+        #   produced — no AI endpoint, an unusable reply — still tells the operator it needs
+        #   them. Asking degrades to the status quo rather than to silence;
+        # * `open_question` stands the objective down in its own transaction, and
+        #   `derive_needs_you` drops an escalation for a stood-down objective — so a question
+        #   that lands SUPERSEDES the vague escalation with a concrete choice, and the mission
+        #   stays flagged across the swap rather than blinking through "fine".
+        asked = await mission_questions.ask(
+            mission_id,
+            o["key"],
+            context=str(reading.get("recap") or "")[:QUESTION_CONTEXT_MAX],
+            path=path,
+        )
+        if asked is not None:
+            out["asked"] = {"objective_key": o["key"], "seq": asked["seq"]}
+        break
     return out
+
+
+async def _ask_owed(mission_id: str, a: dict, context: str, out: dict, *, path=None) -> None:
+    """Ask about an objective whose escalation exists and whose question never landed.
+
+    The retry half of #900 review 4, finding 1. Deliberately narrow: it asks only where an
+    escalation has ALREADY been recorded for the current episode, which is what bounds it — the
+    escalation is once per `(mission, objective, episode)`, so this cannot ask about an objective
+    the supervisor never decided it was stuck on.
+
+    `awaiting_answer` is the other half of the bound: once a question lands it stands the
+    objective down and holds it, so the next pass finds nothing owed and this does nothing.
+    """
+    for o in a["objectives"]:
+        if o["met"] or o["stood_down"] or o.get("awaiting_answer") or not o.get("escalated"):
+            continue
+        asked = await mission_questions.ask(
+            mission_id, o["key"], context=context[:QUESTION_CONTEXT_MAX], path=path
+        )
+        # A FAILED ATTEMPT DOES NOT END THE PASS (#900 review 5, finding 5). Returning after the
+        # first eligible objective whatever happened meant one persistently unanswerable
+        # objective — an endpoint that keeps refusing, a fence that keeps being busy — starved
+        # every later owed one: each pass retried the same fixed prefix and the second objective
+        # was never asked about at all. The loop stops at the first question that actually LANDS,
+        # which is what keeps "one question at a time" true.
+        if asked is not None:
+            out["asked"] = {"objective_key": o["key"], "seq": asked["seq"]}
+            return
 
 
 def _announce(row: dict, session_key: str, reason: str) -> None:
