@@ -7,7 +7,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from "react";
-import { useBlocker, useNavigate, useParams } from "react-router-dom";
+import { useBlocker, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Copy, ImagePlus, Plus, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { UploadImage } from "../components/templates/UploadImage";
@@ -90,10 +90,30 @@ export default function TemplateEditor() {
 function TemplateEditorFor() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const isMobile = useIsMobile();
   const isNew = !id;
+  // #905 P3: "Save as template" from the composer or its history lands here with the body and
+  // the image paths prefilled (router state, read once). The snapshot stays EMPTY, so the form
+  // is dirty from the start — Save enables as soon as it has a name.
+  // Captured on the first render only (a lazy initializer, not a ref: refs must not be read
+  // during render), so clearing the entry's state below cannot take the payload away again.
+  const [prefill] = useState(() =>
+    isNew
+      ? (location.state as { prefill?: { body: string; images: TemplateImage[] } } | null)?.prefill
+      : undefined,
+  );
+  // Consumed ONCE: the history entry's state is replaced the moment the form has taken it, so
+  // a reload — or Back after the save and Forward — lands on an empty new-template editor
+  // instead of resurrecting the same payload as a fresh dirty template (Hermes on #908). Same
+  // pathname, so the router blocker below lets it through.
+  useEffect(() => {
+    if (prefill) navigate(location.pathname, { replace: true, state: null });
+  }, [prefill, navigate, location.pathname]);
 
-  const [form, setForm] = useState<Form>(EMPTY);
+  const [form, setForm] = useState<Form>(() =>
+    prefill ? { ...EMPTY, body: prefill.body, images: prefill.images } : EMPTY,
+  );
   // What the form holds RIGHT NOW, for code that runs after an await (the save fence below).
   const formRef = useRef(form);
   useEffect(() => {
@@ -108,7 +128,9 @@ function TemplateEditorFor() {
     isNew ? "ready" : "loading",
   );
   const [error, setError] = useState("");
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(
+    prefill ? "Prefilled from a sent message — give it a name and save." : "",
+  );
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
@@ -179,8 +201,8 @@ function TemplateEditorFor() {
     load();
   }, [load]);
 
-  // A reload / tab close with unsaved edits: the browser asks. In-app navigation is asked
-  // through the dialog below (Cancel / the gallery link); there is no router blocker to hook.
+  // A reload / tab close: the browser asks. In-app navigation is the router blocker's above —
+  // this effect covers the one exit the router cannot see.
   useEffect(() => {
     // An upload in flight counts too: its bytes are being stored, and leaving now would orphan
     // them before the form ever committed the reference (Hermes on #907, round 2). So does a

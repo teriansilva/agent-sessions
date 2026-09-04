@@ -1,8 +1,9 @@
-import { Copy, RotateCcw, X } from "lucide-react";
+import { Bookmark, Copy, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { relTime } from "../../lib/format";
 import type { SentMessage } from "../../lib/sentHistory";
+import { useInertBehind } from "../templates/useInertBehind";
 import styles from "./SentMessagesModal.module.css";
 
 /** Sent-messages recovery modal (#619): the history chip in the compose key bar opens this.
@@ -19,6 +20,7 @@ export function SentMessagesModal({
   entries,
   currentSession,
   onRestore,
+  onSaveAsTemplate,
   onClose,
   returnFocusTo,
 }: {
@@ -27,6 +29,9 @@ export function SentMessagesModal({
   /** Engine-qualified id of the session this composer belongs to (null for a fresh launch). */
   currentSession: string | null;
   onRestore: (entry: SentMessage) => void;
+  /** #905 P3: keep this message as a template — hands the text + attachment paths to the
+   *  gallery's editor. Absent ⇒ the button is not rendered. */
+  onSaveAsTemplate?: (entry: SentMessage) => void;
   onClose: () => void;
   returnFocusTo?: HTMLElement | null;
 }) {
@@ -38,8 +43,8 @@ export function SentMessagesModal({
 
   useEffect(() => {
     closeRef.current?.focus();
-    return () => returnFocusTo?.focus?.();
-  }, [returnFocusTo]);
+  }, []);
+  useInertBehind(returnFocusTo);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -139,6 +144,17 @@ export function SentMessagesModal({
                       : "Copy failed"
                     : "Copy"}
                 </button>
+                {onSaveAsTemplate && (
+                  <button
+                    type="button"
+                    className={styles.act}
+                    onClick={() => onSaveAsTemplate(e)}
+                    aria-label="Save as template"
+                  >
+                    <Bookmark size={12} aria-hidden="true" />
+                    Save as template
+                  </button>
+                )}
               </div>
             </li>
           ))}

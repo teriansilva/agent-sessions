@@ -550,3 +550,59 @@ test("uncommitted tag text is unsaved work: beforeunload arms and Back asks whil
   expect(router.state.location.pathname).toBe("/templates/pr-review");
   added.mockRestore();
 });
+
+test("Save-as-template lands prefilled from router state: body + images, dirty, save enabled once named (#905 P3)", async () => {
+  mocked.createTemplate.mockResolvedValue(tpl({ id: "kept", name: "Kept" }));
+  const router = makeRouter([
+    {
+      pathname: "/templates/new",
+      state: {
+        prefill: {
+          body: "keep me {{x}}",
+          images: [{ name: "a.png", path: "/u/.agent-sessions/uploads/20260903-1-a.png" }],
+        },
+      },
+    },
+  ]);
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByLabelText(/instructions/i)).toHaveValue("keep me {{x}}");
+  expect(await screen.findByRole("img", { name: "a.png" })).toHaveAttribute("src", "blob:test/1");
+  expect(mocked.uploadBlob).toHaveBeenCalledWith("/u/.agent-sessions/uploads/20260903-1-a.png", expect.anything());
+  expect(screen.getByText(/prefilled from a sent message/i)).toBeInTheDocument();
+  expect(screen.getByText(/\{\{x\}\} names no field/i)).toBeInTheDocument();
+  const save = screen.getByRole("button", { name: /^save$/i });
+  expect(save).toBeDisabled();
+  await userEvent.type(screen.getByLabelText(/^name/i), "Kept");
+  expect(save).toBeEnabled();
+  await userEvent.click(save);
+  await waitFor(() => expect(mocked.createTemplate).toHaveBeenCalledTimes(1));
+  expect(mocked.createTemplate.mock.calls[0][0]).toMatchObject({
+    name: "Kept",
+    body: "keep me {{x}}",
+    images: [{ name: "a.png", path: "/u/.agent-sessions/uploads/20260903-1-a.png" }],
+  });
+  expect(await screen.findByText("gallery route")).toBeInTheDocument();
+});
+
+test("the save-as-template prefill is consumed once: the entry's state is cleared, and Back after the save is an empty editor (#908 review)", async () => {
+  mocked.createTemplate.mockResolvedValue(tpl({ id: "kept", name: "Kept" }));
+  const router = makeRouter([
+    { pathname: "/templates/new", state: { prefill: { body: "keep me", images: [] } } },
+  ]);
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByLabelText(/instructions/i)).toHaveValue("keep me");
+  // The history entry's state is gone the moment the form has taken it — a reload of this
+  // route cannot resurrect the payload — while the form keeps what it took.
+  await waitFor(() => expect(router.state.location.state).toBeNull());
+  expect(router.state.location.pathname).toBe("/templates/new");
+  expect(screen.getByLabelText(/instructions/i)).toHaveValue("keep me");
+  await userEvent.type(screen.getByLabelText(/^name/i), "Kept");
+  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+  expect(await screen.findByText("gallery route")).toBeInTheDocument();
+  // Back returns to /templates/new as an EMPTY new template, not the saved payload again.
+  await act(async () => {
+    await router.navigate(-1);
+  });
+  expect(await screen.findByLabelText(/instructions/i)).toHaveValue("");
+  expect(screen.queryByText(/prefilled from a sent message/i)).toBeNull();
+});

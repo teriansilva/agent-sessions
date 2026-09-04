@@ -2,6 +2,8 @@ import {
   ArrowDown,
   ArrowRightToLine,
   ArrowUp,
+  Bookmark,
+  BookMarked,
   CornerDownLeft,
   History,
   Mic,
@@ -32,7 +34,13 @@ import {
   confirmSent,
   readSent,
 } from "../../lib/sentHistory";
-import { assembleMessage } from "../../lib/templateMessage";
+import {
+  assembleMessage,
+  substituteFields,
+  uploadStoredName,
+} from "../../lib/templateMessage";
+import type { Template } from "../../types/api";
+import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { SentMessagesModal } from "./SentMessagesModal";
 import {
   assembleSpoken,
@@ -43,7 +51,7 @@ import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { KeyBar, type KeyAction } from "./KeyBar";
 import styles from "./Compose.module.css";
 
-interface Attachment {
+export interface Attachment {
   name: string;
   path: string;
 }
@@ -214,6 +222,32 @@ export interface ComposeHandle {
   /** Splice a ready-made token (a file path from the panel, #792) into the draft at the caret,
    *  replacing any selection. Never sends — the user still writes the sentence and presses send. */
   insertToken: (token: string) => void;
+  /** Open the template picker (#905 P3), optionally on one template — the gallery's USE
+   *  lands a session here with the template staged. Never sends. */
+  openTemplates: (templateId?: string) => void;
+  /** Offer a raw pty write (a keystroke typed into the terminal) to the composer's delivery
+   *  fence. `true` = it fell inside an in-flight clear→paste→Enter window and is now HELD, to be
+   *  written right after that Enter; `false` = nothing in flight, the caller writes it itself
+   *  (#908 round 5). */
+  deferInput: (data: string) => boolean;
+}
+
+/** What `sendPayload` resolves to (#905 P3). `delivered` means every frame — the clear, the
+ *  bracketed paste and the deferred Enter — reached the socket; it never claims the agent read
+ *  or submitted anything (the #619 honesty boundary). `not_ready` is the readiness gate giving
+ *  up on a booting agent, `failed` a frame that found no open socket (or a Send superseded by a
+ *  newer one), `empty` a payload with nothing to paste. */
+export type SendOutcome = "delivered" | "not_ready" | "failed" | "empty";
+
+export interface SendPayload {
+  text: string;
+  attachments: Attachment[];
+}
+
+/** What "Save as template" hands the gallery (#905 P3): the composer's or a recent's content. */
+export interface TemplateDraft {
+  body: string;
+  images: Attachment[];
 }
 
 /** Mobile compose + action bar (the legacy bottom bar). The action row is a single collapsible
@@ -241,6 +275,11 @@ export const Compose = forwardRef<
      *  persist the draft server-side (#477). `null`/absent ⇒ drafts disabled (a not-yet-real
      *  `new-…` placeholder session has no metadata key — out of scope). */
     sessionId?: string | null;
+    /** "Save as template" (#905 P3): hand the current draft, or a recent's content, to the
+     *  gallery's editor. Absent ⇒ the affordance is not offered (older callers / tests). */
+    onSaveAsTemplate?: (draft: TemplateDraft) => void;
+    /** The picker's gallery links (#908 round 4): an in-app navigation, after the draft is flushed. */
+    onOpenGallery?: (to: string) => void;
   }
 >(function Compose(
   {
@@ -249,6 +288,8 @@ export const Compose = forwardRef<
     waitInputReady,
     defaultOpen = true,
     sessionId = null,
+    onSaveAsTemplate,
+    onOpenGallery,
   },
   ref,
 ) {
@@ -260,11 +301,45 @@ export const Compose = forwardRef<
   const taRef = useRef<HTMLTextAreaElement>(null);
   // #533: token guarding the fresh-launch readiness hold — a newer Send supersedes a pending one.
   const holdRef = useRef(0);
+  const sendChainRef = useRef<Promise<unknown>>(Promise.resolve()); // one send transaction at a time
+  // The DELIVERY window — clear → paste → deferred Enter — is the part of a transaction no other
+  // pty write may enter: a key-bar Up, or a keystroke typed into the terminal, landing between the
+  // paste and its Enter replaces the paste while the transaction still confirms it (Hermes on
+  // #908, round 5). Raw input arriving inside the window is held and written, in order, right
+  // after the transaction's Enter. Outside the window — including a readiness hold, whose boot
+  // prompt may be waiting for exactly that keystroke — it goes straight through.
+  const deliveringRef = useRef(false);
+  // `onDropped` is a held write's provenance: an upload's path that the socket never took is
+  // restored as a visible attachment instead of vanishing (Hermes on #908, round 7).
+  const pendingRawRef = useRef<{ data: string; onDropped?: () => void }[]>([]);
+  const deferInput = (data: string, onDropped?: () => void): boolean => {
+    if (!deliveringRef.current) return false;
+    pendingRawRef.current.push({ data, onDropped });
+    return true;
+  };
+  const rawInput = (data: string, onDropped?: () => void) => {
+    if (deferInput(data, onDropped)) return;
+    if (!sendInput(data)) onDropped?.();
+  };
+  // An unchanged composer snapshot already on its way is not sent twice: a second Send or Enter
+  // inside the window joins the pending transaction instead of queuing a duplicate of it
+  // (Hermes on #908, round 5).
+  const pendingComposerRef = useRef<{ rev: number; turn: Promise<SendOutcome> } | null>(null);
+  // Every committed edit bumps the revision. Value equality is not ownership (Hermes on #908,
+  // round 7): edit A → B → A while a send of A waits, and the box holds a NEW A that the old send
+  // must neither coalesce with nor clear. A send captures the revision and acts only on it.
+  const revRef = useRef(0);
+  useEffect(() => {
+    revRef.current += 1;
+  }, [text, attachments]);
   // #619: recoverable history of sent messages. Read lazily (localStorage) and refreshed on every
   // send / modal open, so a send from another tab shows up without a reload.
   const [history, setHistory] = useState<SentMessage[]>(() => readSent());
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyBtnRef = useRef<HTMLElement | null>(null);
+  // #905 P3: the template picker. `preselect` carries the gallery's USE target.
+  const [templatesOpen, setTemplatesOpen] = useState<{ preselect?: string } | null>(null);
+  const templatesBtnRef = useRef<HTMLElement | null>(null);
 
   // Push-to-talk dictation (#483, made a REAL hold in #738). At most one active recognizer
   // (`recogRef`); `dictBaseRef` is the draft text present when dictation began. Each result event
@@ -339,6 +414,10 @@ export const Compose = forwardRef<
   const lastSavedRef = useRef<string | null>(null);
   const saveTimerRef = useRef<number | undefined>(undefined);
   const latestRef = useRef({ text: "", attachments: [] as Attachment[] });
+  // Draft PUTs are applied in the order they were issued: the server is last-writer-wins, so a
+  // converge-time save of the held text completing AFTER the post-delivery clear would resurrect
+  // a prompt that was already sent (Hermes on #908, round 7).
+  const draftChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const sidRef = useRef<string | null>(sessionId);
   latestRef.current = { text, attachments };
   sidRef.current = sessionId;
@@ -347,18 +426,25 @@ export const Compose = forwardRef<
   // attachments clears it server-side. Skips a no-op when nothing changed since the last save.
   const flushDraft = useCallback(
     (t: string, a: Attachment[]) => {
-      if (!sessionId) return;
+      // The id is read at CALL time, never captured: a send held on readiness across the
+      // placeholder → real converge settles with the closure it started in, and a clearing PUT
+      // aimed at the old null id was a no-op — the just-sent text survived as the real session's
+      // draft and a reload offered it again (Hermes on #908, round 6).
+      const sid = sidRef.current;
+      if (!sid) return;
       const sig = draftSignature(t, a);
       if (sig === lastSavedRef.current) return;
       lastSavedRef.current = sig;
       window.clearTimeout(saveTimerRef.current);
-      void api.saveDraft(sessionId, { text: t, attachments: a }).catch(() => {
-        // fail-soft: a dropped save just means the draft isn't persisted this beat; the next
-        // edit (or the unmount flush) retries. Re-arm so a transient failure isn't sticky.
-        lastSavedRef.current = null;
-      });
+      const put = () =>
+        api.saveDraft(sid, { text: t, attachments: a }).catch(() => {
+          // fail-soft: a dropped save just means the draft isn't persisted this beat; the next
+          // edit (or the unmount flush) retries. Re-arm so a transient failure isn't sticky.
+          lastSavedRef.current = null;
+        });
+      draftChainRef.current = draftChainRef.current.then(put, put);
     },
-    [sessionId],
+    [],
   );
 
   // Clear the draft after a successful send: cancel any pending debounce and PUT an empty
@@ -374,6 +460,16 @@ export const Compose = forwardRef<
   useEffect(() => {
     if (!sessionId) return;
     const token = ++loadTokenRef.current;
+    const held = latestRef.current;
+    if (held.text || held.attachments.length) {
+      // The box already holds the operator's content: a `new-…` placeholder that just converged
+      // to its real id (#908 round 5). Local wins, and it becomes this id's draft right now —
+      // the debounce is gated on `dirty`, which the load below would have reset.
+      dirtyRef.current = true;
+      lastSavedRef.current = null;
+      flushDraft(held.text, held.attachments);
+      return;
+    }
     dirtyRef.current = false;
     lastSavedRef.current = null;
     api
@@ -391,7 +487,7 @@ export const Compose = forwardRef<
       .catch(() => {
         /* fail-soft: no draft restore (offline / older server) */
       });
-  }, [sessionId]);
+  }, [sessionId, flushDraft]);
 
   // Debounced auto-save on user edits. Gated on `dirty` so the mount-load's setText doesn't
   // echo straight back as a PUT; the signature check skips saves that change nothing.
@@ -411,12 +507,15 @@ export const Compose = forwardRef<
   // aren't lost. `[]` deps → cleanup runs only on real unmount, reading the latest via refs.
   useEffect(() => {
     return () => {
-      if (dirtyRef.current && sidRef.current) {
+      const sid = sidRef.current;
+      if (dirtyRef.current && sid) {
         const { text: t, attachments: a } = latestRef.current;
-        if (draftSignature(t, a) !== lastSavedRef.current && sidRef.current) {
-          void api
-            .saveDraft(sidRef.current, { text: t, attachments: a })
-            .catch(() => {});
+        if (draftSignature(t, a) !== lastSavedRef.current) {
+          // Through the same ordered chain as every other write (Hermes on #908, round 8): a
+          // direct PUT here could complete before a still-pending save of the previous
+          // revision, which would then land last and win on the server.
+          const put = () => api.saveDraft(sid, { text: t, attachments: a }).catch(() => {});
+          draftChainRef.current = draftChainRef.current.then(put, put);
         }
       }
     };
@@ -604,9 +703,11 @@ export const Compose = forwardRef<
   ) => {
     if (!dictWantedRef.current) {
       // The user let go. This `onend` is the engine confirming it has delivered everything it had,
-      // so the release completes here: drop the recognizer, close the finalizing window, and let the
-      // next hold through (#738).
+      // so the release completes here: drop the recognizer, land any path tokens that were queued
+      // behind this stop() (a release must not leave them to the fallback timer — #908 round 8),
+      // close the finalizing window, and let the next hold through (#738).
       recogRef.current = null;
+      applyPendingTokens();
       window.clearTimeout(finalizeTimerRef.current);
       finalizingRef.current = false;
       setFinalizing(false);
@@ -942,151 +1043,356 @@ export const Compose = forwardRef<
   // #619: drop a recorded message back into the composer. It takes the SAME path as typing and the
   // attachment pills — mark dirty, then flush the draft immediately — or a restore made just before
   // a refresh / session switch would be lost again before the autosave debounce ever ran.
-  const restoreSent = (entry: SentMessage) => {
-    const atts: Attachment[] = entry.attachments.map((path) => ({
-      name: path.split("/").pop() || path,
-      path,
-    }));
-    setText(entry.text);
+  const fillComposer = (nextText: string, atts: Attachment[]) => {
+    setText(nextText);
     setAttachments(atts);
     dirtyRef.current = true;
-    flushDraft(entry.text, atts);
-    setHistoryOpen(false);
-    setOpen(true); // the composer may be collapsed (desktop default) — surface what we restored
+    flushDraft(nextText, atts);
+    setOpen(true); // the composer may be collapsed (desktop default) — surface what we filled
     requestAnimationFrame(() => {
       taRef.current?.focus();
       grow();
     });
   };
-
-  const send = () => {
-    const savedText = text; // restore exactly these if a (re)paste can't be delivered (#287)
-    const savedAttachments = attachments;
-    // The same helper the template editor's preview uses (#905): what the preview shows is,
-    // by construction, what this paste carries.
-    const msg = assembleMessage(
-      text,
-      attachments.map((a) => a.path),
+  const restoreSent = (entry: SentMessage) => {
+    setHistoryOpen(false);
+    fillComposer(
+      entry.text,
+      entry.attachments.map((path) => ({ name: path.split("/").pop() || path, path })),
     );
-    if (!msg) {
-      // Empty compose box (no trimmed text, no attachments): act as a bare Return so the Send
-      // button — and Enter in the empty field — submit whatever the user typed DIRECTLY into the
-      // console (#474). Just a single \r, like a real terminal keypress / the return chip:
-      // NO Ctrl-A Ctrl-K clear, NO bracketed paste, NO deferred second Enter (those belong to the
-      // content path and would erase or double-submit the console-typed prompt line). If the socket
-      // is mid-reconnect (`sendInput` returns false) surface the same note instead of dropping it.
-      if (!sendInput(KEYSEQ.enter)) {
-        setNote("reconnecting — not sent, try again");
-        setTimeout(() => setNote(""), 3000);
-      }
+  };
+
+  // #905 P3: a template's images are upload paths, exactly like a recent's attachments.
+  const templateAttachments = (t: Template): Attachment[] =>
+    t.images.map((i) => ({ name: uploadStoredName(i.path), path: i.path }));
+  // INSERT = the Restore semantics: fill, mark dirty, flush the draft, focus; the operator
+  // presses Send.
+  const insertTemplate = (t: Template, values: Record<string, string>) => {
+    setTemplatesOpen(null);
+    fillComposer(substituteFields(t.body, t.fields, values), templateAttachments(t));
+  };
+  // Where focus returns when a modal closes. A chip may be inline or inside KeyBar's "…" overflow
+  // menu — and that menu item UNMOUNTS the moment it is clicked, so returning focus to it lands
+  // on a detached node (document.body). The stable "More keys" trigger stands in for it
+  // (Hermes on #908, round 7).
+  const modalTrigger = (): HTMLElement | null => {
+    const el = document.activeElement as HTMLElement | null;
+    if (el?.closest('[role="menu"]')) {
+      return document.querySelector<HTMLElement>('button[aria-label="More keys"]') ?? el;
+    }
+    return el;
+  };
+
+  const saveDraftAsTemplate = (draft: TemplateDraft) => {
+    if (!onSaveAsTemplate) return;
+    // A fresh `new-…` placeholder has no session id yet, so the draft has nowhere to live:
+    // `flushDraft` would be a no-op and the navigation would unmount the only copy. Say so
+    // instead of losing it (Hermes on #908, round 4 addendum).
+    if (!sessionId) {
+      setNote("Save as template needs a started session — this one has no id to keep the draft under yet");
+      setTimeout(() => setNote(""), 4000);
       return;
     }
-    // #619: record the submission BEFORE anything is delivered or cleared. Whatever happens next —
-    // a dropped frame, or an agent that silently swallows the paste (#616) — the text is recoverable
-    // from the history modal. Recorded unconfirmed; the deferred Enter below flips it. Fail-soft:
-    // a null id (no localStorage / quota) just means no safety net, never a blocked send.
-    const historyId = appendSent({
-      text: savedText,
-      attachments: savedAttachments.map((a) => a.path),
-      session: sessionId,
-    });
-    setHistory(readSent());
+    // The composer's own content is flushed first so nothing is lost on the way to the editor.
+    if (draft.body === text) flushDraft(text, attachments);
+    onSaveAsTemplate(draft);
+  };
+  // A2: the picker's gallery links leave through the router, never a document navigation —
+  // a full unload could abort the debounced draft PUT (Hermes on #908, round 4 addendum).
+  const openGallery = (to: string) => {
+    setTemplatesOpen(null);
+    if (!sessionId && (text.trim() || attachments.length > 0)) {
+      // No id yet (a `new-…` placeholder): the flush would be a no-op and the navigation would
+      // unmount the only copy. Stay, and say why (Hermes on #908, round 5).
+      setNote("The gallery can wait until this session has started — leaving now would lose the draft, which has no id to live under yet");
+      setTimeout(() => setNote(""), 4000);
+      return;
+    }
+    flushDraft(text, attachments);
+    onOpenGallery?.(to);
+  };
 
-    // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
-    // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
-    const abortNotDelivered = (why = "reconnecting — not sent, try again") => {
-      setText(savedText);
-      setAttachments(savedAttachments);
-      // #477: the turn wasn't submitted — guarantee the restored content is persisted (it may not
-      // have been debounce-saved yet, and a later clear must not win), so a reload / session switch
-      // keeps the draft. flushDraft is a no-op when the server already holds this exact content.
-      dirtyRef.current = true;
-      flushDraft(savedText, savedAttachments);
-      setNote(why);
-      setTimeout(() => setNote(""), 3000);
-    };
-    const deliver = () => {
-      // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
-      // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
-      // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
-      // → one PTY write → one read, so the agent could read the trailing ``\r`` as still inside the
-      // bracketed-paste buffer and leave the prompt typed but unsubmitted. Splitting the ``\r``
-      // into its own frame made it a discrete keystroke after the paste-end marker.
-      // (#197) Even split, an attachment's async image-path ingestion still raced an immediate
-      // Enter and dropped it, so the Enter was deferred for attachments.
-      // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
-      // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
-      // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
-      const enterDelay =
-        savedAttachments.length > 0
-          ? ENTER_DELAY_AFTER_ATTACHMENT_MS
-          : ENTER_DELAY_MS;
-      // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
-      // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it
-      // submits an EMPTY turn (#287). Keep the text so the user can resend, and say why.
-      sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-      if (!sendInput(bracketedPaste(msg))) {
-        abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
+  // ---- delivery: ONE seam, two callers (#905 P3) ----------------------------------------
+  // `send()` is the composer's button; the template picker's SEND is the second caller. Both go
+  // through `sendPayload`, which takes the payload EXPLICITLY — never the render-captured
+  // `text`/`attachments` — and resolves only when the outcome is known. "Set state, then call
+  // send()" would have pasted the old draft (Hermes on #905), and the usage bump needs a real
+  // `delivered` to hang off. `fromComposer` decides whose state the failure paths restore and
+  // whose the success path clears: the picker's send leaves the operator's draft untouched.
+  const runSend = (
+    payload: SendPayload,
+    opts: { fromComposer: boolean },
+    historyId: ReturnType<typeof appendSent>,
+    rev: number,
+  ): Promise<SendOutcome> =>
+    new Promise<SendOutcome>((resolve) => {
+      const savedText = payload.text; // restore exactly these if a (re)paste can't be delivered (#287)
+      const savedAttachments = payload.attachments;
+      // Every exit of a delivery releases the raw-input hold and writes what was held, in order,
+      // after the transaction's own frames (#908 round 5).
+      const settle = (outcome: SendOutcome) => {
+        deliveringRef.current = false;
+        const held = pendingRawRef.current;
+        pendingRawRef.current = [];
+        for (const h of held) if (!sendInput(h.data)) h.onDropped?.();
+        resolve(outcome);
+      };
+      // The same helper the template editor's preview uses (#905): what the preview shows is,
+      // by construction, what this paste carries.
+      const msg = assembleMessage(
+        savedText,
+        savedAttachments.map((a) => a.path),
+      );
+      if (!msg) {
+        if (!opts.fromComposer) {
+          resolve("empty");
+          return;
+        }
+        // Empty compose box (no trimmed text, no attachments): act as a bare Return so the Send
+        // button — and Enter in the empty field — submit whatever the user typed DIRECTLY into the
+        // console (#474). Just a single \r, like a real terminal keypress / the return chip:
+        // NO Ctrl-A Ctrl-K clear, NO bracketed paste, NO deferred second Enter (those belong to the
+        // content path and would erase or double-submit the console-typed prompt line). If the socket
+        // is mid-reconnect (`sendInput` returns false) surface the same note instead of dropping it.
+        if (!sendInput(KEYSEQ.enter)) {
+          setNote("reconnecting — not sent, try again");
+          setTimeout(() => setNote(""), 3000);
+        }
+        resolve("empty");
         return;
       }
-      // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end
-      // marker (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead
-      // socket while the Enter would hit a FRESH socket that never received it → empty turn. Gate on
-      // the socket id: if it changed, re-send clear+paste on the new socket first (the clear
-      // prevents any doubling) — and if THAT re-paste also fails (a second reconnect), abort
-      // instead of submitting empty.
-      const epoch = connEpoch?.();
-      setTimeout(() => {
-        if (epoch !== undefined && connEpoch?.() !== epoch) {
-          sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-          if (!sendInput(bracketedPaste(msg))) {
+      // `historyId` was recorded by `sendPayload` when this payload was ACCEPTED (#619; Hermes on
+      // #908, round 4) — unconfirmed; the deferred Enter below flips it.
+
+      // A (re)paste that didn't reach the socket means the message isn't there — restore the composer
+      // and surface why, and (the caller) must NOT submit a bare Enter (that's the empty-turn bug).
+      const abortNotDelivered = (
+        why = "reconnecting — not sent, try again",
+        outcome: SendOutcome = "failed",
+      ) => {
+        if (opts.fromComposer) {
+          const live = latestRef.current;
+          if (revRef.current === rev) {
+            setText(savedText);
+            setAttachments(savedAttachments);
+            // #477: the turn wasn't submitted — guarantee the restored content is persisted (it may
+            // not have been debounce-saved yet, and a later clear must not win), so a reload / session
+            // switch keeps the draft. flushDraft is a no-op when the server already holds this content.
+            dirtyRef.current = true;
+            flushDraft(savedText, savedAttachments);
+          } else {
+            // A revision typed after this send was queued (the chain below) is newer than the
+            // payload and wins; the unsent payload stays recoverable from the history ring,
+            // unconfirmed (#619; Hermes on #908, round 3).
+            dirtyRef.current = true;
+            flushDraft(live.text, live.attachments);
+          }
+        }
+        setNote(why);
+        setTimeout(() => setNote(""), 3000);
+        settle(outcome);
+      };
+      const deliver = () => {
+        deliveringRef.current = true;
+        // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover input doesn't mix in, then bracketed-
+        // paste the message, then submit the Enter as a SEPARATE, DEFERRED frame.
+        // (#180) The original form bundled ``bracketedPaste(msg) + KEYSEQ.enter`` into one WS frame
+        // → one PTY write → one read, so the agent could read the trailing ``\r`` as still inside the
+        // bracketed-paste buffer and leave the prompt typed but unsubmitted. Splitting the ``\r``
+        // into its own frame made it a discrete keystroke after the paste-end marker.
+        // (#197) Even split, an attachment's async image-path ingestion still raced an immediate
+        // Enter and dropped it, so the Enter was deferred for attachments.
+        // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
+        // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
+        // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
+        const enterDelay =
+          savedAttachments.length > 0
+            ? ENTER_DELAY_AFTER_ATTACHMENT_MS
+            : ENTER_DELAY_MS;
+        // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
+        // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it
+        // submits an EMPTY turn (#287). Keep the text so the user can resend, and say why.
+        sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+        if (!sendInput(bracketedPaste(msg))) {
+          abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
+          return;
+        }
+        // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end
+        // marker (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead
+        // socket while the Enter would hit a FRESH socket that never received it → empty turn. Gate on
+        // the socket id: if it changed, re-send clear+paste on the new socket first (the clear
+        // prevents any doubling) — and if THAT re-paste also fails (a second reconnect), abort
+        // instead of submitting empty.
+        const epoch = connEpoch?.();
+        setTimeout(() => {
+          if (epoch !== undefined && connEpoch?.() !== epoch) {
+            sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+            if (!sendInput(bracketedPaste(msg))) {
+              abortNotDelivered();
+              return;
+            }
+          }
+          // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
+          // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
+          // than clearing it. Previously the composer + server draft were cleared synchronously before
+          // this point, so a dropped final Enter lost both the message and the draft (Hermes #480).
+          if (!sendInput(KEYSEQ.enter)) {
             abortNotDelivered();
             return;
           }
-        }
-        // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
-        // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
-        // than clearing it. Previously the composer + server draft were cleared synchronously before
-        // this point, so a dropped final Enter lost both the message and the draft (Hermes #480).
-        if (!sendInput(KEYSEQ.enter)) {
-          abortNotDelivered();
-          return;
-        }
-        // Delivered: every frame reached the socket. Flip the history entry out of UNCONFIRMED —
-        // which asserts delivery to the SOCKET, never that the agent processed the turn (#619).
-        if (historyId) {
-          confirmSent(historyId);
-          setHistory(readSent());
-        }
-        // Clear the composer AND the server draft (a just-sent turn must not linger as a
-        // draft). clearDraft cancels any pending debounce so a trailing flush can't resurrect it.
-        setText("");
-        setAttachments([]);
-        clearDraft();
-        if (taRef.current) taRef.current.style.height = "auto";
-      }, enterDelay);
-    };
-    // Fresh-launch readiness hold (#533): input written into a still-booting agent is swallowed
-    // (the composed text) or mis-submitted (the incident's first turn was the literal Ctrl-A of
-    // the clear). `true` — the common case, including every attach to a running session — keeps
-    // the delivery fully synchronous so the established frame sequencing is untouched. Otherwise
-    // hold visibly, deliver on readiness, and give up (draft intact) when the bounded wait fails.
-    const ready = waitInputReady?.(READY_WAIT_MS) ?? true;
-    if (ready === true) {
-      deliver();
-      return;
-    }
-    const token = ++holdRef.current;
-    setNote("waiting for agent…");
-    void ready.then((ok) => {
-      if (holdRef.current !== token) return; // superseded by a newer Send
-      if (!ok) {
-        abortNotDelivered("agent not ready — not sent, try again");
+          // Delivered: every frame reached the socket. Flip the history entry out of UNCONFIRMED —
+          // which asserts delivery to the SOCKET, never that the agent processed the turn (#619).
+          if (historyId) {
+            confirmSent(historyId);
+            setHistory(readSent());
+          }
+          if (opts.fromComposer) {
+            // Clear only what was SENT. A send can be queued behind another transaction (the
+            // chain below), and a revision typed meanwhile is newer than this payload: it stays,
+            // in the box and as the draft (Hermes on #908, round 3). Unchanged content — the
+            // common, unqueued case — clears the composer AND the server draft (a just-sent turn
+            // must not linger as a draft; clearDraft cancels any pending debounce so a trailing
+            // flush can't resurrect it).
+            const live = latestRef.current;
+            if (revRef.current === rev) {
+              setText("");
+              setAttachments([]);
+              clearDraft();
+              if (taRef.current) taRef.current.style.height = "auto";
+            } else {
+              dirtyRef.current = true;
+              flushDraft(live.text, live.attachments);
+            }
+          }
+          settle("delivered");
+        }, enterDelay);
+      };
+      // Fresh-launch readiness hold (#533): input written into a still-booting agent is swallowed
+      // (the composed text) or mis-submitted (the incident's first turn was the literal Ctrl-A of
+      // the clear). `true` — the common case, including every attach to a running session — keeps
+      // the delivery fully synchronous so the established frame sequencing is untouched. Otherwise
+      // hold visibly, deliver on readiness, and give up (draft intact) when the bounded wait fails.
+      const ready = waitInputReady?.(READY_WAIT_MS) ?? true;
+      if (ready === true) {
+        deliver();
         return;
       }
-      setNote("");
-      deliver();
+      const token = ++holdRef.current;
+      setNote("waiting for agent…");
+      void ready.then((ok) => {
+        if (holdRef.current !== token) {
+          resolve("failed"); // superseded by a newer Send
+          return;
+        }
+        if (!ok) {
+          abortNotDelivered("agent not ready — not sent, try again", "not_ready");
+          return;
+        }
+        setNote("");
+        deliver();
+      });
     });
+
+  // ONE transaction at a time (Hermes on #908, round 2). A delivery is three frames spread over
+  // up to ENTER_DELAY_AFTER_ATTACHMENT_MS, and a second caller starting inside that window
+  // interleaves them: `clear, paste(A), clear, paste(B), Enter, Enter` submits B, erases A, then
+  // submits an empty turn — while A still resolved `delivered` and bumped its usage. So every
+  // entry point — the button, Enter in the box, the bare-Enter path, the picker's SEND — queues
+  // behind the in-flight transaction and starts only once its outcome is known. Each payload
+  // was captured by its caller at call time, so a queued send pastes what was asked for.
+  const sendPayload = (
+    payload: SendPayload,
+    opts: { fromComposer: boolean },
+  ): Promise<SendOutcome> => {
+    // #619: recorded at ACCEPTANCE, not when the transaction reaches the head of the chain. A
+    // payload queued behind a readiness hold exists nowhere else — a navigation or reload before
+    // the hold settles must still find it in the sent ring (Hermes on #908, round 4). Recorded
+    // unconfirmed; the transaction's Enter confirms it. Fail-soft: a null id (no localStorage /
+    // quota) just means no safety net, never a blocked send. An empty payload (the bare-Enter
+    // path) records nothing, as before.
+    const msg = assembleMessage(
+      payload.text,
+      payload.attachments.map((a) => a.path),
+    );
+    const rev = revRef.current;
+    const owned = opts.fromComposer && !!msg;
+    if (owned && pendingComposerRef.current?.rev === rev) return pendingComposerRef.current.turn;
+    const historyId = msg
+      ? appendSent({
+          text: payload.text,
+          attachments: payload.attachments.map((a) => a.path),
+          session: sessionId,
+        })
+      : null;
+    if (msg) setHistory(readSent());
+    const turn = sendChainRef.current.then(() => runSend(payload, opts, historyId, rev));
+    sendChainRef.current = turn.catch(() => undefined);
+    if (owned) {
+      pendingComposerRef.current = { rev, turn };
+      const done = () => {
+        if (pendingComposerRef.current?.turn === turn) pendingComposerRef.current = null;
+      };
+      void turn.then(done, done);
+    }
+    return turn;
+  };
+
+  // Send must not snapshot the draft while dictation still owes it words (Hermes on #908,
+  // round 7): after a push-to-talk release the engine delivers its buffered final result before
+  // `onend` closes the finalizing window, and a token inserted during a live dictation waits
+  // behind `recognizer.stop()`. Either way the click is HELD and re-issued by the effect below
+  // once the draft has settled — the payload is captured then, not now.
+  const sendAfterDictationRef = useRef(false);
+  // Settled = no recognizer at all (an ACTIVE hold still owes its final result too — Hermes on
+  // #908, round 8), no finalizing window, and no token waiting behind `stop()`.
+  // …and no hold in progress at all — `dictWanted` is set before the mic grant resolves, so a
+  // pending grant has no recognizer yet and would arm one right after the send (Hermes on
+  // #908, round 9).
+  const dictationSettled = () =>
+    !dictWantedRef.current &&
+    !recogRef.current &&
+    !finalizingRef.current &&
+    pendingTokensRef.current.length === 0;
+  const sendPayloadRef = useRef(sendPayload);
+  sendPayloadRef.current = sendPayload;
+  const send = () => {
+    if (!dictationSettled()) {
+      sendAfterDictationRef.current = true;
+      setNote("finishing dictation…");
+      // A hold still down: end capture the way letting go would, so the engine delivers its
+      // tail and `onend` (or the bounded finalization timeout) settles the draft. A hold whose
+      // mic grant is still pending has nothing to deliver: the release cancels the grant token
+      // (no recognizer may start after the send) and the draft is settled right here.
+      if (!finalizingRef.current) releaseDictation();
+      if (dictationSettled()) {
+        sendAfterDictationRef.current = false;
+        setNote("");
+        void sendPayload({ text, attachments }, { fromComposer: true });
+      }
+      return;
+    }
+    void sendPayload({ text, attachments }, { fromComposer: true });
+  };
+  useEffect(() => {
+    if (!sendAfterDictationRef.current) return;
+    if (finalizing || !dictationSettled()) return;
+    sendAfterDictationRef.current = false;
+    setNote("");
+    void sendPayloadRef.current({ text, attachments }, { fromComposer: true });
+  }, [finalizing, listening, text, attachments]);
+
+  // The picker's SEND: the assembled template goes through the seam with an explicit payload;
+  // the operator's draft is left alone; the usage bump fires on `delivered` alone and is
+  // bookkeeping — it never blocks or reports on the send (#905 §3/§5).
+  const sendTemplate = async (t: Template, values: Record<string, string>) => {
+    setTemplatesOpen(null);
+    const outcome = await sendPayload(
+      { text: substituteFields(t.body, t.fields, values), attachments: templateAttachments(t) },
+      { fromComposer: false },
+    );
+    if (outcome === "delivered") {
+      void api.markTemplateUsed(t.id).catch(() => {});
+    }
   };
 
   const uploadFiles = async (files: File[], forceAttachment = false) => {
@@ -1099,7 +1405,18 @@ export const Compose = forwardRef<
           dirtyRef.current = true; // #477: an attached image is draftable content
           setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
         } else {
-          sendInput(bracketedPaste(up.path) + " ");
+          // Collapsed: the path is pasted straight into the console — through the delivery
+          // fence, so an upload landing inside a template's paste→Enter window cannot splice
+          // itself into that paste (Hermes on #908, round 6).
+          rawInput(bracketedPaste(up.path) + " ", () => {
+            // The console did not take it (a dead socket, mid-delivery or not): keep it in
+            // sight as an attachment rather than losing the upload.
+            setOpen(true);
+            dirtyRef.current = true;
+            setAttachments((prev) => [...prev, { name: up.name, path: up.path }]);
+            setNote("the console did not take the upload — kept as an attachment");
+            setTimeout(() => setNote(""), 4000);
+          });
         }
       }
       setNote("");
@@ -1117,6 +1434,11 @@ export const Compose = forwardRef<
   // Compose if it was collapsed (desktop default) and always upload as an attachment pill,
   // so the user actually sees the screenshot landed.
   useImperativeHandle(ref, () => ({
+    deferInput,
+    openTemplates: (templateId?: string) => {
+      templatesBtnRef.current = null;
+      setTemplatesOpen({ preselect: templateId });
+    },
     attachImages: (files: File[]) => {
       if (!files.length) return;
       if (!open) setOpen(true);
@@ -1216,35 +1538,39 @@ export const Compose = forwardRef<
       aria: "Up",
       title: "Up",
       icon: <ArrowUp size={16} />,
-      run: () => sendInput(KEYSEQ.up),
+      run: () => rawInput(KEYSEQ.up),
     },
     {
       id: "down",
       aria: "Down",
       title: "Down",
       icon: <ArrowDown size={16} />,
-      run: () => sendInput(KEYSEQ.down),
+      run: () => rawInput(KEYSEQ.down),
     },
     {
       id: "enter",
       aria: "Return",
       title: "Return",
       icon: <CornerDownLeft size={16} />,
-      run: () => sendInput(KEYSEQ.enter),
+      // Through the delivery fence like every other raw key (#908 rounds 4-5): a bare Return
+      // inside another send's paste→Enter window would submit that paste early and leave its own
+      // Enter to submit an empty turn. Outside the window — a boot prompt during a readiness
+      // hold, say — it goes straight through, because that prompt may be waiting for it.
+      run: () => rawInput(KEYSEQ.enter),
     },
     {
       id: "esc",
       aria: "Escape",
       title: "Escape",
       text: "esc",
-      run: () => sendInput(KEYSEQ.esc),
+      run: () => rawInput(KEYSEQ.esc),
     },
     {
       id: "tab",
       aria: "Tab",
       title: "Tab",
       icon: <ArrowRightToLine size={16} />,
-      run: () => sendInput(KEYSEQ.tab),
+      run: () => rawInput(KEYSEQ.tab),
     },
     {
       id: "attach",
@@ -1263,11 +1589,33 @@ export const Compose = forwardRef<
             run: () => {
               // The chip may be inline or inside KeyBar's "…" overflow menu — either way the
               // trigger is whatever holds focus, and focus returns there on close.
-              historyBtnRef.current =
-                document.activeElement as HTMLElement | null;
+              historyBtnRef.current = modalTrigger();
               setHistory(readSent()); // another tab may have sent since we last looked
               setHistoryOpen(true);
             },
+          },
+        ]
+      : []),
+    {
+      id: "templates",
+      aria: "Use a template",
+      title: "Use a saved template — fill it in, then send or insert",
+      icon: <BookMarked size={16} />,
+      run: () => {
+        templatesBtnRef.current = modalTrigger();
+        setTemplatesOpen({});
+      },
+    },
+    ...(onSaveAsTemplate && (text.trim() || attachments.length > 0)
+      ? [
+          {
+            id: "save-template",
+            aria: "Save as template",
+            title: sessionId
+              ? "Save this message as a template"
+              : "Save as template — available once the session has started",
+            icon: <Bookmark size={16} />,
+            run: () => saveDraftAsTemplate({ body: text, images: attachments }),
           },
         ]
       : []),
@@ -1408,8 +1756,29 @@ export const Compose = forwardRef<
           entries={history}
           currentSession={sessionId}
           onRestore={restoreSent}
+          onSaveAsTemplate={
+            onSaveAsTemplate && sessionId
+              ? (e) => {
+                  setHistoryOpen(false);
+                  saveDraftAsTemplate({
+                    body: e.text,
+                    images: e.attachments.map((p) => ({ name: uploadStoredName(p), path: p })),
+                  });
+                }
+              : undefined
+          }
           onClose={() => setHistoryOpen(false)}
           returnFocusTo={historyBtnRef.current}
+        />
+      )}
+      {templatesOpen && (
+        <TemplatePickerModal
+          preselect={templatesOpen.preselect}
+          onInsert={insertTemplate}
+          onSend={(t, values) => void sendTemplate(t, values)}
+          onClose={() => setTemplatesOpen(null)}
+          onOpenGallery={onOpenGallery ? openGallery : undefined}
+          returnFocusTo={templatesBtnRef.current}
         />
       )}
     </div>

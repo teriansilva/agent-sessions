@@ -1,10 +1,19 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createMemoryRouter, MemoryRouter, Route, Routes, RouterProvider } from "react-router-dom";
+import {
+  createMemoryRouter,
+  MemoryRouter,
+  Route,
+  Routes,
+  RouterProvider,
+  useLocation,
+} from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError, setApiFetch } from "../lib/api";
 import type { Template, TemplatesResponse } from "../types/api";
 import Templates from "./Templates";
+import { SessionsCtx } from "../app/sessionsStore";
+import type { Session } from "../types/api";
 
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
@@ -294,4 +303,38 @@ test("a failed first load is not 'loading' forever: the header says not loaded, 
   expect(await screen.findByText("PR review checklist")).toBeInTheDocument();
   expect(screen.getByText("1 saved")).toBeInTheDocument();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+function ShowState() {
+  const loc = useLocation();
+  return <p>session route {JSON.stringify(loc.state)}</p>;
+}
+
+test("USE picks a session from the sidebar's store and lands there with the template staged (#905 P3)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [tpl()], limits: LIMITS });
+  const rows = [
+    { id: "claude:abc", engine: "claude", uuid: "abc", short_uuid: "abc", cwd: "/home/u/proj", title: "Older one", working: false, last_mtime: 10, archived: false },
+    { id: "codex:def", engine: "codex", uuid: "def", short_uuid: "def", cwd: "/home/u/other", title: "Working one", working: true, last_mtime: 5, archived: false },
+  ] as unknown as Session[];
+  const store = { sessions: rows, setSessions: vi.fn(), looked: new Map(), lookup: vi.fn(), remember: vi.fn(), forget: vi.fn(), retryGen: 0 };
+  render(
+    <SessionsCtx.Provider value={store as never}>
+      <MemoryRouter initialEntries={["/templates"]}>
+        <Routes>
+          <Route path="/templates" element={<Templates />} />
+          <Route path="/s/:engine/:id" element={<ShowState />} />
+        </Routes>
+      </MemoryRouter>
+    </SessionsCtx.Provider>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /use pr review checklist/i }));
+  const dialog = screen.getByRole("dialog");
+  const options = within(dialog).getAllByRole("button", { name: /^use in /i });
+  // Working sessions first, then most recent.
+  expect(options.map((o) => o.getAttribute("aria-label"))).toEqual([
+    "Use in Working one",
+    "Use in Older one",
+  ]);
+  await userEvent.click(options[0]);
+  expect(await screen.findByText(/session route/i)).toHaveTextContent('{"template":"pr-review"}');
 });

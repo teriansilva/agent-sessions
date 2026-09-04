@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Copy, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
+import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
 import { api, ApiError } from "../lib/api";
 import type { Template, TemplateLimits } from "../types/api";
@@ -42,6 +43,10 @@ export default function Templates() {
     t: Template;
     returnTo: HTMLElement | null;
   } | null>(null);
+  // #905 P3: USE → pick a session → land there with the template staged.
+  const [chooser, setChooser] = useState<{ t: Template; returnTo: HTMLElement | null } | null>(
+    null,
+  );
 
   // Resolves to whether the refresh succeeded: a caller that just deleted or hit a conflict
   // must not claim "reloaded" over a failed reload (Hermes on #907, round 3).
@@ -312,6 +317,15 @@ export default function Templates() {
                 <p className={styles.cmeta}>{metaLine(t)}</p>
               </div>
               <div className={styles.acts}>
+                <button
+                  type="button"
+                  className={`${styles.act} ${styles.actUse}`}
+                  aria-label={`Use ${t.name}`}
+                  onClick={(e) => setChooser({ t, returnTo: e.currentTarget })}
+                >
+                  <Send size={13} aria-hidden="true" />
+                  Use
+                </button>
                 <Link
                   to={`/templates/${encodeURIComponent(t.id)}`}
                   className={styles.act}
@@ -344,6 +358,14 @@ export default function Templates() {
             </li>
           ))}
         </ul>
+      )}
+
+      {chooser && (
+        <SessionChooserModal
+          template={chooser.t}
+          onClose={() => setChooser(null)}
+          returnFocusTo={chooser.returnTo}
+        />
       )}
 
       {pendingDelete && (

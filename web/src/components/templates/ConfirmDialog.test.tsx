@@ -62,13 +62,20 @@ test("the app root is inert while the dialog is open, and live again after (#907
 test("focus lands on the safe action and returns to the trigger", async () => {
   const trigger = document.createElement("button");
   trigger.textContent = "trigger";
-  document.body.appendChild(trigger);
+  root.appendChild(trigger); // inside the app root, like every real trigger
   trigger.focus();
+  // A real browser refuses focus inside an inert root: the restore must come AFTER the release
+  // (Hermes on #908, round 7 — jsdom never enforces inert, so this pins the ORDER).
+  let inertAtFocus: boolean | null = null;
+  trigger.addEventListener("focus", () => {
+    inertAtFocus = root.hasAttribute("inert");
+  });
   const { unmount } = render(
     <ConfirmDialog tag="Delete" title="Thing" confirmLabel="Delete" onCancel={() => {}} onConfirm={() => {}} returnFocusTo={trigger} />,
   );
   expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
   unmount();
   expect(trigger).toHaveFocus();
+  expect(inertAtFocus).toBe(false);
   trigger.remove();
 });

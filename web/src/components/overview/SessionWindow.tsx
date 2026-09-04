@@ -1,7 +1,9 @@
 import { Maximize2, X } from "lucide-react";
-import { memo, type PointerEvent as ReactPointerEvent, useRef, useState } from "react";
+import { memo, type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { engineBadge, engineName } from "../../lib/format";
 import type { TermRole } from "../../lib/termSocket";
+import type { TemplateDraft } from "../terminal/Compose";
 import { Terminal } from "../terminal/Terminal";
 import styles from "./sessionWindow.module.css";
 import { clampRect, type Rect, type Size } from "./workspace";
@@ -56,6 +58,16 @@ export const SessionWindow = memo(function SessionWindow({
   onRole: (key: string, role: TermRole) => void;
 }) {
   const [dragging, setDragging] = useState(false);
+  // The template picker and "Save as template" leave through the ROUTER, never a document
+  // navigation: a full unload could abort the draft flush the composer issues on the way out —
+  // the loss SessionView's callbacks were added to prevent, and this host shares the same
+  // `<Terminal>` (Hermes on #908, round 9). `navigate` is stable, so `memo` still holds.
+  const navigate = useNavigate();
+  const onOpenGallery = useCallback((to: string) => navigate(to), [navigate]);
+  const onSaveAsTemplate = useCallback(
+    (draft: TemplateDraft) => navigate("/templates/new", { state: { prefill: draft } }),
+    [navigate],
+  );
   // Pointer origin + the rect at gesture start. A ref, not state: it is read inside the move
   // handler and must never re-render on its own.
   const gestureRef = useRef<{ px: number; py: number; rect: Rect } | null>(null);
@@ -179,6 +191,8 @@ export const SessionWindow = memo(function SessionWindow({
           engine={engine}
           id={id}
           onRole={(r) => onRole(wkey, r)}
+          onOpenGallery={onOpenGallery}
+          onSaveAsTemplate={onSaveAsTemplate}
           // Decision 3 (#208): the Files panel is SessionView's sibling pane, not part of the
           // terminal, so it does not come into a window. The trigger stays VISIBLE and disabled
           // with the reason — the same treatment a cwd-less session gets (#783) — rather than

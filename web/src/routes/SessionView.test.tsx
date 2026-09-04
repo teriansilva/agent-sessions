@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { act } from "react";
+import { act, StrictMode, useImperativeHandle, type Ref } from "react";
 import {
   MemoryRouter,
   Route,
@@ -14,19 +14,29 @@ import { SessionView } from "./SessionView";
 // Capture the props the real Terminal would receive (engine/id/onReconcileId) without
 // mounting xterm. The mock also renders the id so we can assert it stays frozen.
 const reconcileHandlers: ((sid: string) => void)[] = [];
+const openTemplatesCalls: (string | undefined)[] = [];
 vi.mock("../components/terminal/Terminal", () => ({
   Terminal: ({
     engine,
     id,
     rowKey,
     onReconcileId,
+    ref,
   }: {
     engine: string;
     id: string;
     rowKey?: string;
     onReconcileId?: (sid: string) => void;
+    ref?: Ref<{ insertToken: (t: string) => void; openTemplates: (t?: string) => void }>;
   }) => {
     if (onReconcileId) reconcileHandlers.push(onReconcileId);
+    // The handle SessionView drives for the gallery's USE (#905 P3).
+    useImperativeHandle(ref, () => ({
+      insertToken: () => {},
+      openTemplates: (t?: string) => {
+        openTemplatesCalls.push(t);
+      },
+    }));
     return (
       <>
         <div data-testid="term">{`${engine}:${id}`}</div>
@@ -72,6 +82,7 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   reconcileHandlers.length = 0;
+  openTemplatesCalls.length = 0;
 });
 
 test("opens under the placeholder id from the URL", () => {
@@ -150,4 +161,22 @@ test("after the converge the terminal is told the REAL key to look its row up un
   expect(screen.getByTestId("term-rowkey").textContent).toBe(
     "opencode:ses_realreal0000",
   );
+});
+
+test("USE from the gallery opens the picker on the staged template under StrictMode's mount → cleanup → mount (#908 round 4)", async () => {
+  render(
+    <StrictMode>
+      <MemoryRouter
+        initialEntries={[{ pathname: "/s/claude/cla_1111", state: { template: "pr-review" } }]}
+      >
+        <Routes>
+          <Route path="/s/:engine/:id" element={<SessionView />} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  // Unfixed: the first effect consumed the ref and scheduled the frame, StrictMode's cleanup
+  // cancelled it, and the replay found nothing staged — the session opened, the picker never did.
+  await waitFor(() => expect(openTemplatesCalls).toEqual(["pr-review"]));
 });

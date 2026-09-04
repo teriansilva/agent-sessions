@@ -287,6 +287,7 @@
 }
 .acts {
   display: flex;
+  flex-wrap: wrap; /* four actions (Use / Edit / Duplicate / Delete) never clip at 320px (#908 round 7) */
   gap: 6px;
   padding: 8px 12px 10px;
   border-top: 1px solid var(--line);
@@ -312,6 +313,10 @@
 }
 .act:hover,
 .act:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.actUse {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
@@ -720,7 +725,7 @@
     min-height: 44px;
   }
   .act {
-    flex: 1;
+    flex: 1 1 calc(50% - 3px); /* 2 × 2 on a phone: every action a full-width-ish 44px target */
   }
   .ed {
     grid-template-columns: minmax(0, 1fr);

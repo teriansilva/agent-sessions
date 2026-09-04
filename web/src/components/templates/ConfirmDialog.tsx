@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useInertBehind } from "./useInertBehind";
 import styles from "./ConfirmDialog.module.css";
 
 /** A small confirm dialog for the templates surfaces (#905): delete-a-template, leave-with-
@@ -40,10 +41,8 @@ export function ConfirmDialog({
 
   useEffect(() => {
     cancelRef.current?.focus();
-    return () => {
-      returnFocusTo?.focus?.();
-    };
-  }, [returnFocusTo]);
+  }, []);
+  useInertBehind(returnFocusTo);
 
   // `busy` means a confirm is in flight: NO dismissal path may fire (Escape, backdrop, the
   // close glyph, the footer) — a Reload-theirs chosen while an overwrite is already on the
@@ -58,16 +57,6 @@ export function ConfirmDialog({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel, busy]);
-
-  // The page behind an `aria-modal` dialog is inert while it is open: nothing behind it can be
-  // focused or activated, so Tab cannot walk out of the dialog into page actions. The dialog
-  // itself is portalled to <body>, outside the app root, so it stays live.
-  useEffect(() => {
-    const root = document.getElementById("root");
-    if (!root || root.hasAttribute("inert")) return;
-    root.setAttribute("inert", "");
-    return () => root.removeAttribute("inert");
-  }, []);
 
   return createPortal(
     <div className={styles.backdrop} onMouseDown={() => (busy ? undefined : onCancel())}>

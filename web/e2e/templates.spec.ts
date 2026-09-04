@@ -376,3 +376,26 @@ test("the gallery loads only the images near the viewport, not one full-size dow
   await expect.poll(() => fetched, { timeout: 5000 }).toBeGreaterThan(initial);
   expect(fetched).toBeLessThan(40);
 });
+
+test("mobile: the four card actions never clip — at 320px and at the 800px breakpoint edge (#908 round 7)", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "narrow-width layout fact");
+  await mockTemplates(page, [tpl()]);
+  for (const width of [320, 800]) {
+    await page.setViewportSize({ width, height: 700 });
+    await page.goto("/templates");
+    await expect(page.getByRole("list", { name: "Templates" }).getByRole("listitem").first()).toBeVisible();
+    for (const name of [
+      /^use pr review checklist$/i,
+      /^edit pr review checklist$/i,
+      /^duplicate pr review checklist$/i,
+      /^delete pr review checklist$/i,
+    ]) {
+      const box = (await page.getByRole("link", { name }).or(page.getByRole("button", { name })).first().boundingBox())!;
+      expect(box.x, `${String(name)} @${width}`).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${String(name)} @${width}`).toBeLessThanOrEqual(width + 0.5);
+      expect(box.height, `${String(name)} @${width}`).toBeGreaterThanOrEqual(44);
+    }
+    // No horizontal overflow hidden behind a suppressed page scroll.
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  }
+});

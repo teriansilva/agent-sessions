@@ -1,6 +1,7 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Terminal, type TerminalHandle } from "../components/terminal/Terminal";
+import type { TemplateDraft } from "../components/terminal/Compose";
 import { FilePanel } from "../components/files/FilePanel";
 import { pathToken } from "../lib/pathToken";
 import panel from "../components/files/filePanel.module.css";
@@ -36,6 +37,12 @@ export function SessionView() {
   const navigate = useNavigate();
   const fresh = (location.state as { fresh?: FreshSession } | null)?.fresh;
   const liveKey = `${engine ?? ""}:${id ?? ""}`;
+  // #905 P3: the gallery's USE lands here with a template staged in router state. It is read
+  // ONCE, consumed out of the history entry (so a reload lands with nothing staged — the safe
+  // failure), and handed to the composer's picker once the terminal has mounted.
+  const stagedTemplateRef = useRef<string | undefined>(
+    (location.state as { template?: string } | null)?.template,
+  );
 
   // React Router reuses this component instance across a param-only change (no remount),
   // so we can't read the URL params directly for the terminal identity — our own
@@ -80,6 +87,30 @@ export function SessionView() {
     },
     [navigate],
   );
+
+  const onSaveAsTemplate = useCallback(
+    (draft: TemplateDraft) => navigate("/templates/new", { state: { prefill: draft } }),
+    [navigate],
+  );
+
+  const onOpenGallery = useCallback((to: string) => navigate(to), [navigate]);
+
+  useEffect(() => {
+    const staged = stagedTemplateRef.current;
+    if (!staged) return;
+    // The history entry is cleared here, idempotently — a reload lands with nothing staged —
+    // but the ref is consumed only when the callback actually RUNS: StrictMode's development
+    // mount → cleanup → mount cancels the first frame, and a replay that found the ref already
+    // empty opened the session without the picker (Hermes on #908, round 4).
+    navigate(location.pathname, { replace: true, state: fresh ? { fresh } : null });
+    const raf = requestAnimationFrame(() => {
+      stagedTemplateRef.current = undefined;
+      termRef.current?.openTemplates(staged);
+    });
+    return () => cancelAnimationFrame(raf);
+    // Mount-only by design: the staging is consumed exactly once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const sessionKey = `${shown.engine}:${shown.id}`;
   // Look the row up under BOTH identities. The terminal identity stays frozen on the placeholder
@@ -191,6 +222,8 @@ export function SessionView() {
           rowKey={liveKey}
           fresh={fresh}
           onReconcileId={onReconcileId}
+          onSaveAsTemplate={onSaveAsTemplate}
+          onOpenGallery={onOpenGallery}
           filesOpen={filesOpen}
           // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
           // during reconciliation. Dropping the action made it vanish and reappear, which reads

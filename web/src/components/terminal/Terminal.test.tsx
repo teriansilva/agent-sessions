@@ -1,3 +1,4 @@
+import { KEYSEQ } from "../../lib/termKeys";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode } from "react";
@@ -50,6 +51,8 @@ type FakeXterm = {
   scrollToBottom: ReturnType<typeof vi.fn>;
   fireScroll: () => void;
   paste: ReturnType<typeof vi.fn>;
+  /** Drive a keystroke as if typed into the terminal (#908 round 5). */
+  fireData: (d: string) => void;
 };
 const xterms: FakeXterm[] = [];
 // Drives a CHANGING grid for the connect-when-quiet test: each fit() applies the next entry to the
@@ -69,9 +72,11 @@ vi.mock("@xterm/xterm", () => ({
       this.scrollCb?.();
     });
     public paste = vi.fn();
+    private dataCb: ((d: string) => void) | undefined;
     constructor() {
       const self = this as unknown as FakeXterm;
       self.fireScroll = () => this.scrollCb?.();
+      self.fireData = (d: string) => this.dataCb?.(d);
       xterms.push(self);
     }
     loadAddon(addon: unknown) {
@@ -79,7 +84,9 @@ vi.mock("@xterm/xterm", () => ({
     }
     open() {}
     write() {}
-    onData() {}
+    onData(cb: (d: string) => void) {
+      this.dataCb = cb;
+    }
     onResize() {}
     attachCustomKeyEventHandler() {}
     onScroll(cb: () => void) {
@@ -144,7 +151,7 @@ vi.mock("../../lib/termSocket", () => ({
     url: (have: number) => string;
     connect: ReturnType<typeof vi.fn>;
     close = vi.fn();
-    send = vi.fn();
+    send = vi.fn(() => true);
     emitRole: (role: "owner" | "secondary") => void;
     connectCols?: number;
     connectRows?: number;
@@ -611,4 +618,53 @@ test("after the converge, actions target the REAL id — not the frozen placehol
   );
   await userEvent.click(screen.getByRole("button", { name: /review now/i }));
   expect(api.reviewNow).toHaveBeenCalledWith(real);
+});
+
+// --- Round 5 on #908: the draft's home is the CONVERGED id, and a terminal keystroke respects the
+// composer's delivery window ---------------------------------------------------------------------
+
+test("a draft typed on a placeholder is kept under the CONVERGED id once the URL settles (#908 round 5)", async () => {
+  setCoarsePointer(true); // compose open by default (touch heuristic)
+  vi.mocked(api.saveDraft).mockClear(); // earlier tests' drafts must not count here
+  try {
+    const { rerender } = render(
+      wrap(<Terminal engine="opencode" id={PLACEHOLDER} rowKey={`opencode:${PLACEHOLDER}`} />),
+    );
+    const ta = await screen.findByRole("textbox");
+    fireEvent.change(ta, { target: { value: "hold me" } });
+    expect(api.saveDraft).not.toHaveBeenCalled(); // a placeholder has nowhere to keep it
+    // The URL converges to the real id; the terminal identity stays frozen on the placeholder.
+    rerender(wrap(<Terminal engine="opencode" id={PLACEHOLDER} rowKey="opencode:ses_real0000" />));
+    // Unfixed: Compose stayed keyed on the frozen placeholder — drafts disabled for the rest of
+    // the session, and "Save as template" kept saying it had no id.
+    await vi.waitFor(() =>
+      expect(api.saveDraft).toHaveBeenCalledWith("opencode:ses_real0000", { text: "hold me", attachments: [] }),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("hold me");
+  } finally {
+    setCoarsePointer(false);
+  }
+});
+
+test("a keystroke typed into the terminal inside a compose delivery's paste→Enter window lands AFTER that Enter (#908 round 5)", async () => {
+  setCoarsePointer(true);
+  try {
+    render(wrap(<Terminal engine="claude" id="abc123" rowKey="claude:abc123" />));
+    await vi.waitFor(() => expect(sockets.length).toBe(1));
+    const ta = await screen.findByRole("textbox");
+    fireEvent.change(ta, { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: /^send/i }));
+    const frames = () =>
+      sockets[0].send.mock.calls.map((c) => c[0]).filter((f) => f.t === "i").map((f) => f.d as string);
+    // The transaction starts a microtask later (the send chain); clear + paste are then out
+    // and the Enter is deferred — that gap is the window.
+    await vi.waitFor(() => expect(frames()).toHaveLength(2));
+    // The operator types into the terminal itself inside that window.
+    xterms[xterms.length - 1].fireData("k");
+    expect(frames()).toHaveLength(2); // unfixed: "k" went straight to the pty as the third frame
+    await vi.waitFor(() => expect(frames()).toHaveLength(4));
+    expect(frames().slice(2)).toEqual([KEYSEQ.enter, "k"]);
+  } finally {
+    setCoarsePointer(false);
+  }
 });

@@ -1,22 +1,11 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { appendSent, readSent } from "../../lib/sentHistory";
-import {
-  Compose,
-  DICTATION_FINALIZE_MS,
-  DICTATION_IDLE_STOP_MS,
-  type ComposeHandle,
-} from "./Compose";
+import { Compose, DICTATION_FINALIZE_MS, DICTATION_IDLE_STOP_MS, type ComposeHandle } from "./Compose";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -27,6 +16,9 @@ vi.mock("../../lib/api", () => ({
       Promise.resolve({ id: "", text: "", attachments: [], updated_at: null }),
     ),
     saveDraft: vi.fn(() => Promise.resolve({ id: "", has_draft: false })),
+    // #905 P3: the template picker + the usage bump.
+    templates: vi.fn(() => Promise.resolve({ templates: [], limits: {} })),
+    markTemplateUsed: vi.fn(() => Promise.resolve({})),
   },
 }));
 
@@ -1782,4 +1774,612 @@ test("a queued selection starting where an earlier one ended keeps that path (#8
   await flushRearm();
 
   expect(ta.value).toBe("src/b.py src/a.py ghi");
+});
+
+// --- Templates: the picker's SEND goes through the sendPayload seam (#905 P3) ---------------------
+
+const TEMPLATE = {
+  id: "pr-review",
+  name: "PR review checklist",
+  description: "Review a PR.",
+  tags: ["review"],
+  body: "Review PR {{pr_url}} for {{issue_ref}}.",
+  fields: [
+    { name: "pr_url", label: "PR link", default: "", required: true },
+    { name: "issue_ref", label: "Issue", default: "the linked issue", required: false },
+  ],
+  images: [{ name: "shot.png", path: "/up/shot.png" }],
+  created_at: 1,
+  updated_at: 2,
+  used_count: 0,
+  last_used_at: null,
+};
+
+async function openPickerAndFill(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^use a template$/i }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(await within(dialog).findByRole("button", { name: /^pr review checklist/i }));
+  await user.type(within(dialog).getByLabelText(/^pr link$/i), "https://x/1");
+  return dialog;
+}
+
+test("SEND from the picker pastes the substituted template as one message, leaves the draft alone, and bumps /used only after the Enter (#905)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  renderCompose();
+  // Pre-existing composer text: the template send must not paste THIS, nor clear it.
+  await user.type(screen.getByRole("textbox"), "my own draft");
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
+    KEYSEQ.enter,
+  ]);
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledWith("pr-review"));
+  expect(screen.getByRole("textbox")).toHaveValue("my own draft");
+  // Recorded in the sent ring like any other send, and confirmed once the Enter landed.
+  const ring = readSent();
+  expect(ring[0].text).toBe("Review PR https://x/1 for the linked issue.");
+  expect(ring[0].attachments).toEqual(["/up/shot.png"]);
+  expect(ring[0].confirmed).toBe(true);
+});
+
+test("a template SEND whose Enter never reaches the socket bumps nothing and keeps the draft (#905)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  sendInput = vi.fn((d: string) => d !== KEYSEQ.enter);
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "my own draft");
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(3));
+  expect(await screen.findByText(/not sent/i)).toBeInTheDocument();
+  await new Promise((r) => setTimeout(r, 100));
+  expect(api.markTemplateUsed).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox")).toHaveValue("my own draft");
+  expect(readSent()[0].confirmed).toBe(false);
+});
+
+test("a template SEND that times out on readiness bumps nothing (#905)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  render(
+    <Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={() => Promise.resolve(false)} />,
+  );
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  expect(await screen.findByText(/agent not ready/i)).toBeInTheDocument();
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(api.markTemplateUsed).not.toHaveBeenCalled();
+});
+
+test("INSERT fills the composer with the substituted body and the image pill, sends nothing (#905)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  // A real session id: INSERT takes the Restore path, which flushes the server draft (#477).
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId="claude:s1" />);
+  const dialog = await openPickerAndFill(user);
+  await user.click(
+    within(dialog).getByRole("button", { name: /insert pr review checklist into composer/i }),
+  );
+  expect(screen.getByRole("textbox")).toHaveValue("Review PR https://x/1 for the linked issue.");
+  expect(screen.getByTitle("/up/shot.png")).toBeInTheDocument();
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(api.markTemplateUsed).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(api.saveDraft).toHaveBeenCalledWith(expect.anything(), {
+      text: "Review PR https://x/1 for the linked issue.",
+      attachments: [{ name: "shot.png", path: "/up/shot.png" }],
+    }),
+  );
+});
+
+test("Save as template hands the composer's draft — and a recent's content — to the gallery (#905)", async () => {
+  const onSave = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <Compose sendInput={sendInput} connEpoch={() => 1} sessionId="claude:s1" onSaveAsTemplate={onSave} />,
+  );
+  expect(screen.queryByRole("button", { name: /^save as template$/i })).toBeNull(); // nothing to save
+  await user.type(screen.getByRole("textbox"), "keep me");
+  await user.click(screen.getByRole("button", { name: /^save as template$/i }));
+  expect(onSave).toHaveBeenCalledWith({ body: "keep me", images: [] });
+  // From the history modal too.
+  appendSent({ text: "an older one", attachments: ["/up/a.png"], session: null });
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  await user.click(screen.getByRole("button", { name: /sent messages/i }));
+  const dialog = await screen.findByRole("dialog");
+  const saves = within(dialog).getAllByRole("button", { name: /^save as template$/i });
+  await user.click(saves[saves.length - 1]);
+  expect(onSave).toHaveBeenLastCalledWith({
+    body: "an older one",
+    images: [{ name: "a.png", path: "/up/a.png" }],
+  });
+});
+
+test("the ComposeHandle can open the picker on one template (the gallery's USE) (#905)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const handle = createRef<ComposeHandle>();
+  render(<Compose ref={handle} sendInput={sendInput} connEpoch={() => 1} />);
+  act(() => handle.current!.openTemplates("pr-review"));
+  const dialog = await screen.findByRole("dialog");
+  await waitFor(() =>
+    expect(within(dialog).getByRole("button", { name: /^pr review checklist/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    ),
+  );
+});
+
+test("two sends back-to-back are serialized: a template (image → the long Enter delay) then the composer's own — two intact, ordered transactions, both delivered (#908 round 2)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "my own draft");
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  // Inside the template's deferred-Enter window (the attachment delay): the composer's own Send.
+  // Unserialized, the frames interleave — clear, paste(template), clear, paste(draft), Enter,
+  // Enter — submitting the draft, erasing the template, then submitting an empty turn.
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(6));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
+    KEYSEQ.enter,
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("my own draft"),
+    KEYSEQ.enter,
+  ]);
+  // Truthful outcomes: the template's usage bumped once, the composer cleared by ITS delivery,
+  // both entries confirmed in the ring.
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+  const ring = readSent();
+  expect(ring.map((e) => e.text).sort()).toEqual(
+    ["Review PR https://x/1 for the linked issue.", "my own draft"].sort(),
+  );
+  expect(ring.filter((e) => e.confirmed)).toHaveLength(2);
+});
+
+test("a revision typed after a queued composer send is newer than its payload and survives the delivery (#908 round 3)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "my own draft");
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  // Queued behind the template's transaction: the composer send captured "my own draft"…
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // …and the operator keeps typing before that queued transaction runs.
+  await user.type(screen.getByRole("textbox"), "!");
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(6));
+  expect(sendInput.mock.calls[4][0]).toBe(bracketedPaste("my own draft")); // the captured snapshot
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r, 60));
+  // Unfixed: the delivery cleared the CURRENT text and the newer edit was gone.
+  expect(screen.getByRole("textbox")).toHaveValue("my own draft!");
+  expect(readSent().filter((e) => e.confirmed)).toHaveLength(2);
+});
+
+// --- Round 4 on #908: the fence covers the Return chip, the ring records at acceptance, fresh
+// sessions and the picker's links cannot lose a draft ------------------------------------------
+
+test("the Return chip rides the send fence: pressed inside a template's paste→Enter window it waits for that Enter (#908 round 4)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  renderCompose();
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await user.click(screen.getByRole("button", { name: /^return$/i }));
+  // Unfixed: the chip's Enter went straight to the pty as the THIRD frame, submitting the paste
+  // early and leaving the transaction's own Enter to submit an empty turn.
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
+    KEYSEQ.enter,
+    KEYSEQ.enter,
+  ]);
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+});
+
+test("a send queued behind a readiness hold is in the sent ring the moment it is accepted, and survives an unmount (#908 round 4)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  const { unmount } = render(
+    <Compose
+      sendInput={sendInput}
+      connEpoch={() => 1}
+      waitInputReady={() => new Promise<boolean>(() => {})} // the hold never settles
+    />,
+  );
+  await user.type(screen.getByRole("textbox"), "first");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(await screen.findByText(/waiting for agent/i)).toBeInTheDocument();
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  // Unfixed: the queued template existed only in a promise closure — the ring held "first" alone.
+  expect(readSent().map((e) => e.text).sort()).toEqual(
+    ["Review PR https://x/1 for the linked issue.", "first"].sort(),
+  );
+  expect(readSent().every((e) => !e.confirmed)).toBe(true);
+  unmount();
+  expect(readSent()).toHaveLength(2);
+  expect(sendInput).not.toHaveBeenCalled();
+});
+
+test("Save as template on a fresh session (no id yet) keeps the draft where it is and says why (#908 round 4 addendum)", async () => {
+  const onSave = vi.fn();
+  const user = userEvent.setup();
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId={null} onSaveAsTemplate={onSave} />);
+  await user.type(screen.getByRole("textbox"), "keep me");
+  const chip = screen.getByRole("button", { name: /^save as template$/i });
+  expect(chip).toHaveAttribute("title", expect.stringMatching(/once the session has started/i));
+  await user.click(chip);
+  // Unfixed: the handoff navigated away with `flushDraft` a no-op — the only copy was gone.
+  expect(onSave).not.toHaveBeenCalled();
+  expect(await screen.findByText(/needs a started session/i)).toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toHaveValue("keep me");
+  expect(api.saveDraft).not.toHaveBeenCalled();
+});
+
+test("the picker's gallery link flushes a still-debounced draft and leaves through the router (#908 round 4 addendum)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const onOpenGallery = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <Compose sendInput={sendInput} connEpoch={() => 1} sessionId="claude:s1" onOpenGallery={onOpenGallery} />,
+  );
+  await user.type(screen.getByRole("textbox"), "abc");
+  expect(api.saveDraft).not.toHaveBeenCalled(); // the debounce has not fired
+  await user.click(screen.getByRole("button", { name: /^use a template$/i }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("link", { name: /manage in the gallery/i }));
+  // Unfixed: a plain anchor — a full document navigation, the PUT left to unload's mercy.
+  expect(onOpenGallery).toHaveBeenCalledWith("/templates");
+  expect(api.saveDraft).toHaveBeenCalledWith("claude:s1", { text: "abc", attachments: [] });
+});
+
+// --- Round 5 on #908: every raw pty write respects the delivery window, one snapshot is one
+// transaction, and the draft's home is the durable session id ----------------------------------
+
+test("a key-bar Up inside a template's paste→Enter window is held until that Enter, then written (#908 round 5)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  renderCompose();
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await user.click(screen.getByRole("button", { name: /^up$/i }));
+  expect(sendInput).toHaveBeenCalledTimes(2); // unfixed: Up went out as the third frame
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
+    KEYSEQ.enter,
+    KEYSEQ.up,
+  ]);
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+});
+
+test("a keystroke typed into the terminal is HELD only inside the delivery window, and written after its Enter (#908 round 5)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const user = userEvent.setup();
+  const ref = renderWithHandle();
+  // Nothing in flight: the terminal writes it itself.
+  expect(ref.current!.deferInput("x")).toBe(false);
+  expect(sendInput).not.toHaveBeenCalled();
+  const dialog = await openPickerAndFill(user);
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  // Inside the window: held.
+  expect(ref.current!.deferInput("y")).toBe(true);
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  expect(sendInput.mock.calls.slice(2).map((c) => c[0])).toEqual([KEYSEQ.enter, "y"]);
+  // The window is closed again.
+  expect(ref.current!.deferInput("z")).toBe(false);
+});
+
+test("a double Send of one unchanged snapshot is ONE transaction and one history entry (#908 round 5)", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "do this once");
+  const send = screen.getByRole("button", { name: /^send/i });
+  await user.click(send);
+  await user.click(send);
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  await new Promise((r) => setTimeout(r, 120));
+  // Unfixed: six frames and two confirmed entries for one draft.
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("do this once"),
+    KEYSEQ.enter,
+  ]);
+  expect(readSent()).toHaveLength(1);
+  expect(readSent()[0].confirmed).toBe(true);
+  expect(screen.getByRole("textbox")).toHaveValue("");
+});
+
+test("a draft typed while the session was a placeholder becomes the real id's draft the moment it converges (#908 round 5)", async () => {
+  const user = userEvent.setup();
+  const { rerender } = render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId={null} />);
+  await user.type(screen.getByRole("textbox"), "hold me");
+  expect(api.saveDraft).not.toHaveBeenCalled(); // nowhere to keep it yet
+  rerender(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId="opencode:ses_real0000" />);
+  // Unfixed: the load reset `dirty`, nothing was flushed, and the next reload found no draft.
+  await waitFor(() =>
+    expect(api.saveDraft).toHaveBeenCalledWith("opencode:ses_real0000", { text: "hold me", attachments: [] }),
+  );
+  expect(screen.getByRole("textbox")).toHaveValue("hold me");
+});
+
+test("the picker's gallery link refuses to leave a fresh session with a draft, and leaves once there is nothing to lose (#908 round 5)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  const onOpenGallery = vi.fn();
+  const user = userEvent.setup();
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId={null} onOpenGallery={onOpenGallery} />);
+  await user.type(screen.getByRole("textbox"), "abc");
+  await user.click(screen.getByRole("button", { name: /^use a template$/i }));
+  await user.click(within(await screen.findByRole("dialog")).getByRole("link", { name: /manage in the gallery/i }));
+  // Unfixed: navigated with the draft unflushed (no id) — the only copy gone.
+  expect(onOpenGallery).not.toHaveBeenCalled();
+  expect(await screen.findByText(/gallery can wait/i)).toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toHaveValue("abc");
+  await user.clear(screen.getByRole("textbox"));
+  await user.click(screen.getByRole("button", { name: /^use a template$/i }));
+  await user.click(within(await screen.findByRole("dialog")).getByRole("link", { name: /manage in the gallery/i }));
+  expect(onOpenGallery).toHaveBeenCalledWith("/templates");
+});
+
+// --- Round 6 on #908: the draft flush reads the CURRENT id, and a collapsed upload respects the
+// delivery window ----------------------------------------------------------------------------
+
+test("a send held on readiness across the placeholder → real converge clears the draft under the REAL key when it lands (#908 round 6)", async () => {
+  let ready: (ok: boolean) => void = () => {};
+  const wait = () => new Promise<boolean>((r) => { ready = r; });
+  const user = userEvent.setup();
+  const { rerender } = render(
+    <Compose sendInput={sendInput} connEpoch={() => 1} sessionId={null} waitInputReady={wait} />,
+  );
+  await user.type(screen.getByRole("textbox"), "send me once");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(await screen.findByText(/waiting for agent/i)).toBeInTheDocument();
+  // The URL converges while the send is still held: the held text becomes the real id's draft…
+  rerender(
+    <Compose sendInput={sendInput} connEpoch={() => 1} sessionId="opencode:ses_real0000" waitInputReady={wait} />,
+  );
+  await waitFor(() =>
+    expect(api.saveDraft).toHaveBeenCalledWith("opencode:ses_real0000", { text: "send me once", attachments: [] }),
+  );
+  await act(async () => {
+    ready(true);
+  });
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  // …and the delivery must clear it under THAT key. Unfixed: the clearing PUT went to the old
+  // null id, a no-op, and a reload restored the message that had already been sent.
+  await waitFor(() =>
+    expect(api.saveDraft).toHaveBeenLastCalledWith("opencode:ses_real0000", { text: "", attachments: [] }),
+  );
+  expect(screen.getByRole("textbox")).toHaveValue("");
+});
+
+test("a collapsed-composer upload that lands inside a template's paste→Enter window is pasted AFTER that Enter (#908 round 6)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  let resolveUpload: (v: { name: string; path: string }) => void = () => {};
+  vi.mocked(api.upload).mockImplementation(() => new Promise((r) => { resolveUpload = r; }));
+  const user = userEvent.setup();
+  const ref = createRef<ComposeHandle>();
+  render(<Compose ref={ref} sendInput={sendInput} connEpoch={() => 1} defaultOpen={false} />);
+  expect(screen.queryByRole("textbox")).toBeNull(); // collapsed: an upload pastes its path to the console
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  await user.upload(input, new File([new Uint8Array([1])], "shot.png", { type: "image/png" }));
+  act(() => ref.current!.openTemplates());
+  const dialog = await screen.findByRole("dialog");
+  await user.click(await within(dialog).findByRole("button", { name: /^pr review checklist/i }));
+  await user.type(within(dialog).getByLabelText(/^pr link$/i), "https://x/1");
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(2));
+  // The upload resolves inside the window.
+  await act(async () => {
+    resolveUpload({ name: "shot.png", path: "/up/late.png" });
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2); // unfixed: its paste went out as the third frame
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  expect(sendInput.mock.calls.slice(2).map((c) => c[0])).toEqual([
+    KEYSEQ.enter,
+    bracketedPaste("/up/late.png") + " ",
+  ]);
+  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+});
+
+// --- Round 7 on #908 -----------------------------------------------------------------------------
+
+test("draft PUTs are applied in order: the post-delivery clear waits for a still-pending converge-time save (#908 round 7)", async () => {
+  let resolveFirst: (v: { id: string; has_draft: boolean }) => void = () => {};
+  vi.mocked(api.saveDraft).mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+  const user = userEvent.setup();
+  const { rerender } = render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId={null} />);
+  await user.type(screen.getByRole("textbox"), "hold me");
+  rerender(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId="opencode:ses_real0000" />);
+  await waitFor(() => expect(api.saveDraft).toHaveBeenCalledTimes(1)); // the converge-time save, pending
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  await new Promise((r) => setTimeout(r, 60));
+  // Unfixed: the clearing PUT was issued at once; last-writer-wins on the server let the older
+  // save land second and resurrect the sent prompt.
+  expect(api.saveDraft).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    resolveFirst({ id: "opencode:ses_real0000", has_draft: true });
+  });
+  await waitFor(() => expect(api.saveDraft).toHaveBeenCalledTimes(2));
+  expect(api.saveDraft).toHaveBeenLastCalledWith("opencode:ses_real0000", { text: "", attachments: [] });
+});
+
+test("value equality is not ownership: edit A → B → A while a send of A waits, Send again — two transactions (#908 round 7)", async () => {
+  let ready: (ok: boolean) => void = () => {};
+  let holds = 0;
+  // Only the FIRST send is held; the second (queued behind it) finds the agent ready.
+  const wait = (): true | Promise<boolean> =>
+    holds++ === 0 ? new Promise<boolean>((r) => { ready = r; }) : true;
+  const user = userEvent.setup();
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} waitInputReady={wait} />);
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "A");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  expect(await screen.findByText(/waiting for agent/i)).toBeInTheDocument();
+  await user.clear(ta);
+  await user.type(ta, "B");
+  await user.clear(ta);
+  await user.type(ta, "A"); // a NEW revision that happens to read the same
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await act(async () => {
+    ready(true);
+  });
+  // Unfixed: the second Send joined the first transaction — three frames, one entry.
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(6));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("A"),
+    KEYSEQ.enter,
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("A"),
+    KEYSEQ.enter,
+  ]);
+  expect(readSent()).toHaveLength(2);
+  await waitFor(() => expect(ta).toHaveValue(""));
+});
+
+test("a held collapsed upload whose write the socket refuses is kept as a visible attachment (#908 round 7)", async () => {
+  vi.mocked(api.templates).mockResolvedValue({ templates: [TEMPLATE], limits: {} } as never);
+  let resolveUpload: (v: { name: string; path: string }) => void = () => {};
+  vi.mocked(api.upload).mockImplementation(() => new Promise((r) => { resolveUpload = r; }));
+  let dead = false;
+  sendInput = vi.fn(() => !dead);
+  const user = userEvent.setup();
+  const ref = createRef<ComposeHandle>();
+  render(<Compose ref={ref} sendInput={sendInput} connEpoch={() => 1} defaultOpen={false} />);
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  await user.upload(input, new File([new Uint8Array([1])], "shot.png", { type: "image/png" }));
+  act(() => ref.current!.openTemplates());
+  const dialog = await screen.findByRole("dialog");
+  await user.click(await within(dialog).findByRole("button", { name: /^pr review checklist/i }));
+  await user.type(within(dialog).getByLabelText(/^pr link$/i), "https://x/1");
+  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(2));
+  dead = true; // the socket dies inside the window: the deferred Enter fails, so does the held paste
+  await act(async () => {
+    resolveUpload({ name: "shot.png", path: "/up/late.png" });
+  });
+  // Unfixed: the held paste's false result was ignored — the upload was neither sent nor shown.
+  expect(await screen.findByText("shot.png")).toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toBeInTheDocument(); // the composer opened to show it
+  expect(api.markTemplateUsed).not.toHaveBeenCalled();
+});
+
+test("Send after a push-to-talk release waits for the buffered final tail, then sends the full text (#908 round 7)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice();
+  lastRecog!.deferEnd = true;
+  act(() => lastRecog!.emit([{ transcript: "deploy the staging", isFinal: false }]));
+  releaseVoice();
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // Unfixed: the interim text was pasted at once; the tail landed as a separate draft.
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(screen.getByText(/finishing dictation/i)).toBeInTheDocument();
+  act(() => lastRecog!.emit([{ transcript: "deploy the staging build", isFinal: true }]));
+  act(() => lastRecog!.endSession());
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("deploy the staging build")));
+  await waitFor(() => expect(ta.value).toBe(""));
+});
+
+test("Send while a token waits behind the recognizer's stop() sends once the token has landed (#908 round 7)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  const ref = renderWithHandle();
+  const ta = screen.getByRole("textbox") as HTMLTextAreaElement;
+  await startVoice();
+  lastRecog!.deferEnd = true;
+  act(() => ref.current!.insertToken("src/a.py")); // queued: the engine is asked to stop first
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  // Unfixed: an empty box sent a bare Enter immediately, and the token arrived afterwards.
+  expect(sendInput).not.toHaveBeenCalled();
+  act(() => lastRecog!.endSession());
+  // The token landed and THEN the send fired — the paste is the proof (the delivery clears
+  // the box right after, so the textarea is not the thing to read).
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("src/a.py")));
+  expect(ta.value === "" || ta.value.includes("src/a.py")).toBe(true);
+});
+
+// --- Round 8 on #908 -----------------------------------------------------------------------------
+
+test("the unmount flush rides the ordered chain: a newer revision's PUT waits for the older one still in flight (#908 round 8)", async () => {
+  let resolveA: (v: { id: string; has_draft: boolean }) => void = () => {};
+  vi.mocked(api.saveDraft).mockImplementationOnce(() => new Promise((r) => { resolveA = r; }));
+  const user = userEvent.setup();
+  const { unmount } = render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId="claude:s1" />);
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "A");
+  await waitFor(() => expect(api.saveDraft).toHaveBeenCalledWith("claude:s1", { text: "A", attachments: [] }), { timeout: 4000 });
+  await user.clear(ta);
+  await user.type(ta, "B"); // the debounce has not fired when the session switches
+  unmount();
+  await new Promise((r) => setTimeout(r, 30));
+  // Unfixed: the cleanup PUT B went out at once; A, completing later, was the server's last write.
+  expect(api.saveDraft).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    resolveA({ id: "claude:s1", has_draft: true });
+  });
+  await waitFor(() => expect(api.saveDraft).toHaveBeenCalledTimes(2));
+  expect(api.saveDraft).toHaveBeenLastCalledWith("claude:s1", { text: "B", attachments: [] });
+});
+
+test("Send during an ACTIVE push-to-talk hold ends the capture and sends only once the final tail has landed (#908 round 8)", async () => {
+  installSpeech();
+  const user = userEvent.setup();
+  renderCompose();
+  await startVoice();
+  lastRecog!.deferEnd = true;
+  act(() => lastRecog!.emit([{ transcript: "partial", isFinal: false }]));
+  await user.click(screen.getByRole("button", { name: /^send/i })); // the hold is still down
+  // Unfixed: clear + paste("partial") went out immediately; the final tail became a stray draft.
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(lastRecog!.stop).toHaveBeenCalled(); // capture ended the way letting go would
+  expect(screen.getByText(/finishing dictation/i)).toBeInTheDocument();
+  act(() => lastRecog!.emit([{ transcript: "partial complete", isFinal: true }]));
+  act(() => lastRecog!.endSession());
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("partial complete")));
+  expect(sendInput.mock.calls.filter((c) => String(c[0]).includes("partial"))).toHaveLength(1);
+});
+
+// --- Round 9 on #908 -----------------------------------------------------------------------------
+
+test("Send while the mic grant is still pending sends the draft and cancels the grant — no recognizer starts after it (#908 round 9)", async () => {
+  installSpeech();
+  let grant: (s: MediaStream) => void = () => {};
+  vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation(
+    () => new Promise<MediaStream>((r) => { grant = r; }),
+  );
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "draft");
+  fireEvent.pointerDown(micChip(), HOLD); // the hold is down; the grant has not resolved
+  expect(lastRecog).toBeNull();
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(bracketedPaste("draft")));
+  // The grant resolves after the send. Unfixed: the unchanged token armed a recognizer and left
+  // dictation running into a draft that no longer existed.
+  await act(async () => {
+    grant({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream);
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  expect(recogCount).toBe(0);
+  expect(lastRecog).toBeNull();
+  expect(micChip()).toHaveAttribute("aria-pressed", "false");
 });

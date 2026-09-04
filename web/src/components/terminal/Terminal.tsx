@@ -64,7 +64,8 @@ import { useTermFont } from "../../theme/termFontStore";
 import { useTermSize } from "../../theme/termSizeStore";
 import { xtermTheme } from "../../theme/themes";
 import { useTheme } from "../../theme/themeStore";
-import { Compose, type ComposeHandle } from "./Compose";
+import { Compose, type ComposeHandle, type TemplateDraft } from "./Compose";
+import { draftSessionKey } from "../../lib/draftSessionKey";
 import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { SessionRecapModal } from "./SessionRecapModal";
@@ -120,6 +121,8 @@ function headStatus(s: TermStatus): { label: string; led: string } {
 export interface TerminalHandle {
   /** Splice a path token into the compose draft at the caret. Never sends. */
   insertToken: (token: string) => void;
+  /** Open the composer's template picker, optionally on one template (#905 P3). Never sends. */
+  openTemplates: (templateId?: string) => void;
 }
 
 export function Terminal({
@@ -128,6 +131,8 @@ export function Terminal({
   rowKey,
   fresh,
   onReconcileId,
+  onSaveAsTemplate,
+  onOpenGallery,
   filesOpen,
   onToggleFiles,
   filesDisabledReason,
@@ -147,6 +152,10 @@ export function Terminal({
    *  terminal's identity, so the frozen socket is untouched (#867). */
   rowKey?: string;
   fresh?: FreshSession;
+  /** "Save as template" from the composer or its history (#905 P3) — straight through to Compose. */
+  onSaveAsTemplate?: (draft: TemplateDraft) => void;
+  /** The picker's gallery links (#908 round 4) — straight through to Compose. */
+  onOpenGallery?: (to: string) => void;
   /** File panel (#783). The panel itself is owned by SessionView (it lays out beside this pane);
    *  the terminal only carries its trigger, because the pane head is where the trigger belongs. */
   filesOpen?: boolean;
@@ -177,6 +186,7 @@ export function Terminal({
     // Straight pass-through: the panel's token is Compose's business, and Terminal only owns the
     // ref that reaches it.
     insertToken: (token: string) => composeRef.current?.insertToken(token),
+    openTemplates: (templateId?: string) => composeRef.current?.openTemplates(templateId),
   }));
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -1210,7 +1220,12 @@ export function Terminal({
 
     refitSoonRef.current = refitSoon;
 
-    term.onData((d) => sock.send({ t: "i", d }));
+    // A keystroke typed into the terminal inside a compose delivery's paste→Enter window is
+    // held by Compose and written right after that Enter (Hermes on #908, round 5); otherwise
+    // it goes to the pty as it always has.
+    term.onData((d) => {
+      if (!composeRef.current?.deferInput(d)) sock.send({ t: "i", d });
+    });
     term.onResize(sendResize);
     // A separate listener, not folded into sendResize: that one dedupes on (cols, rows) and
     // returns early, which is right for the pty and wrong for a readout that must also be
@@ -1987,15 +2002,18 @@ export function Terminal({
       </div>
       {/* Action/compose bar everywhere; default state per the compose pref (#254), falling back
           to the device heuristic — expanded on touch, collapsed-to-the-bar on desktop. */}
-      {/* #477: persist the compose draft server-side per session. A not-yet-real
-          `new-…` placeholder has no metadata key (out of scope) → drafts disabled. */}
+      {/* #477: persist the compose draft server-side per session, under the DURABLE key —
+          the converged `rowKey`, never this pane's frozen placeholder identity (#908 round 5).
+          A not-yet-real `new-…` placeholder has no metadata key → drafts disabled until then. */}
       <Compose
         ref={composeRef}
         sendInput={sendInput}
         connEpoch={connEpoch}
         waitInputReady={waitInputReady}
         defaultOpen={composeDefaultOpen}
-        sessionId={id.startsWith("new-") ? null : `${engine}:${id}`}
+        sessionId={draftSessionKey(engine, id, rowKey)}
+        onSaveAsTemplate={onSaveAsTemplate}
+        onOpenGallery={onOpenGallery}
       />
     </div>
   );
