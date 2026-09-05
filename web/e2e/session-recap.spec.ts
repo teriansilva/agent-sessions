@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { setupBench } from "./terminal/harness";
 
 // Real-browser coverage for the session-brief modal (#481): the recap icon in the terminal
@@ -208,7 +208,6 @@ test("the collapse ladder follows the pane width, not the viewport (#744)", asyn
   const head = page.locator('[class*="panelHead"]');
   const project = head.locator('[class*="headProject"]');
   const updated = head.locator('[class*="headUpdated"]');
-  const recap = head.getByRole("button", { name: /open session brief/i });
   await expect(updated).toBeVisible();
 
   const squeeze = (px: number) =>
@@ -223,8 +222,44 @@ test("the collapse ladder follows the pane width, not the viewport (#744)", asyn
   await squeeze(320);
   await expect(project).toBeHidden();
   await expect(head.locator('[class*="headEng"]')).toBeVisible();
-  await expect(recap).toBeVisible();
+  // Recap must stay REACHABLE at 320px — inline, or behind "…" once HeadActions' measured
+  // overflow has folded it. On a fine pointer the settled state at this width IS the fold: the
+  // old `expect(recap).toBeVisible()` only ever passed by polling before the ResizeObserver
+  // callback ran, so a quiet box was a false green and a loaded one failed 12/12 (#909). The
+  // contract is the ladder following the PANE width, not where the control physically sits.
+  await expectRecapReachable(page, head, 320);
 });
+
+/** Recap is one tap away once the pane's OWN width has been measured and applied. `HeadActions`
+ *  stamps the bar width its committed fit was measured at (`data-fit-width`), so waiting for the
+ *  stamp to reach the squeezed width is waiting for exactly that measurement — not for the "…"
+ *  trigger, which already exists at the 430px rung on a fine pointer and let a stale placement
+ *  pass (Hermes on #911). In the settled placement Recap must be reachable: the inline button, or
+ *  the "…" menu's item. A settled overflow that omits Recap fails here — neither exists. */
+async function expectRecapReachable(page: Page, head: Locator, paneWidth: number) {
+  const stamp = head.locator("[data-fit-width]");
+  await expect
+    .poll(
+      async () => {
+        const v = await stamp.getAttribute("data-fit-width");
+        return v === null || v === "unmeasured" ? Number.POSITIVE_INFINITY : Number(v);
+      },
+      { timeout: 15000, message: `the head never applied a fit measured at <= ${paneWidth}px` },
+    )
+    .toBeLessThanOrEqual(paneWidth);
+  const recap = head.getByRole("button", { name: /open session brief/i });
+  const more = head.getByRole("button", { name: /more session actions/i });
+  if (await more.isVisible()) {
+    await more.click();
+    await expect(page.getByRole("menu")).toBeVisible();
+    const item = page.getByRole("menuitem", { name: /open session brief/i });
+    await expect(item.or(recap).first()).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toBeHidden();
+    return;
+  }
+  await expect(recap).toBeVisible();
+}
 
 test("the session brief carries the sidebar's identity and an ordered timeline (#744)", async ({
   page,

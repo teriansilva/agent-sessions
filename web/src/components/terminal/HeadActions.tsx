@@ -49,7 +49,10 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
   const moreRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const widths = useRef<number[]>([]);
-  const [fit, setFit] = useState({ sig: "", n: actions.length });
+  // `w` is the bar width the committed fit was measured at — the measurement-complete invariant
+  // the #744 ladder spec waits on (`data-fit-width`), since "the '…' trigger exists" cannot tell a
+  // settled narrower rung from the previous wider one (#909). Absent until the first measurement.
+  const [fit, setFit] = useState<{ sig: string; n: number; w?: number }>({ sig: "", n: actions.length });
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -90,7 +93,11 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
       const MORE_W = 34; // the "…" chip, reserved only when something will actually overflow
       const total = widths.current.reduce((a, b) => a + b, 0) + GAP * (actions.length - 1);
       if (total <= avail) {
-        setFit((prev) => (prev.sig === sig && prev.n === actions.length ? prev : { sig, n: actions.length }));
+        setFit((prev) =>
+          prev.sig === sig && prev.n === actions.length && prev.w === bar
+            ? prev
+            : { sig, n: actions.length, w: bar },
+        );
         return;
       }
       let used = 0;
@@ -102,7 +109,9 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
         fitCount++;
       }
       const next = Math.max(1, fitCount);
-      setFit((prev) => (prev.sig === sig && prev.n === next ? prev : { sig, n: next }));
+      setFit((prev) =>
+        prev.sig === sig && prev.n === next && prev.w === bar ? prev : { sig, n: next, w: bar },
+      );
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -180,7 +189,11 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
   }, [open, pos]);
 
   return (
-    <div className={className} ref={wrapRef}>
+    <div
+      className={className}
+      ref={wrapRef}
+      data-fit-width={fit.sig === sig && fit.w !== undefined ? fit.w : "unmeasured"}
+    >
       {inline.map((a) => (
         <button
           key={a.id}
