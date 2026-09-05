@@ -989,6 +989,33 @@ def test_every_chunk_of_a_payload_is_written_under_the_fence(pty_pair):
     )
 
 
+class _ObservedLock:
+    """A stand-in for `session_input._lock` that reports the moment ANOTHER thread attempts to
+    take it — the acquisition boundary itself, not a statement before the call (#910). An
+    `attempted` flag set by the writer just before its call still left a descheduling window in
+    which unfenced code could false-pass; a flag raised inside `acquire()` cannot: once it is
+    set, the only way to `finished` is through this lock."""
+
+    def __init__(self, attempted: threading.Event):
+        self._lock = threading.Lock()
+        self._owner = threading.get_ident()  # the test thread, whose own hold is not an attempt
+        self._attempted = attempted
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if threading.get_ident() != self._owner:
+            self._attempted.set()
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
 def test_a_policy_write_is_ordered_against_an_in_flight_send(tmp_path, monkeypatch):
     """Hermes's remaining window: the policy fingerprint was READ inside the fence, but
     `prefs.set_orchestrator` never took that lock, so a write could still land between the read
@@ -1006,7 +1033,11 @@ def test_a_policy_write_is_ordered_against_an_in_flight_send(tmp_path, monkeypat
     prefs.set_orchestrator({"enabled": True})
 
     started = threading.Event()
+    attempted = threading.Event()
     finished = threading.Event()
+    # The registry lock is observed AT its acquisition boundary (#910): `policy_transaction`
+    # looks `_lock` up on the module at call time, so the writer's attempt lands here.
+    monkeypatch.setattr(session_input, "_lock", _ObservedLock(attempted))
 
     def writer():
         started.wait(timeout=5)
@@ -1017,9 +1048,12 @@ def test_a_policy_write_is_ordered_against_an_in_flight_send(tmp_path, monkeypat
     t.start()
     with session_input._lock:  # stand in for a send holding the fence
         started.set()
-        # While the fence is held, the policy write must not complete.
-        blocked = not finished.wait(timeout=1.0)
-    t.join(timeout=5)
+        # A starved thread that never reached the lock is a FAILURE, not "blocked" (the old 1 s
+        # wait read it as a pass). Once the attempt is at the lock, exclusion is immediate.
+        assert attempted.wait(timeout=10), "the policy writer never reached the registry lock"
+        blocked = not finished.is_set()
+    # Released: completion is bounded generously — a deadlock escape, never a scheduling window.
+    t.join(timeout=20)
 
     assert blocked, (
         "a policy write completed while the write fence was held — policy mutation is not "
@@ -1051,7 +1085,9 @@ def test_a_per_session_opt_out_is_ordered_against_an_in_flight_send(tmp_path, mo
     earlier is caught by the session epoch compare.
     """
     started = threading.Event()
+    attempted = threading.Event()
     finished = threading.Event()
+    monkeypatch.setattr(session_input, "_lock", _ObservedLock(attempted))  # see above (#910)
 
     def excluder():
         started.wait(timeout=5)
@@ -1063,8 +1099,9 @@ def test_a_per_session_opt_out_is_ordered_against_an_in_flight_send(tmp_path, mo
     t.start()
     with session_input._lock:  # stands in for a send holding the fence
         started.set()
-        blocked = not finished.wait(timeout=1.0)
-    t.join(timeout=5)
+        assert attempted.wait(timeout=10), "the opt-out never reached the registry lock"
+        blocked = not finished.is_set()
+    t.join(timeout=20)
 
     assert blocked, (
         "a per-session opt-out committed while the write fence was held — it can land between "

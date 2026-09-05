@@ -105,6 +105,25 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_lock_dir(tmp_path, monkeypatch) -> None:
+    """Point the shared lock directory (#910) — the per-session `dtach` locks AND the cross-process
+    authorization fence (`authfence.hold`, a `flock` on `locks/authorization.lock`) — at a per-test
+    tmp dir.
+
+    Measured, not hypothetical: ``sessionlock.lock_dir()`` defaults to ``~/.agent-sessions/locks``
+    and ``tmp_home`` is opt-in, so every test that did not request it took the fence in the REAL
+    directory — the one the live ``agent-sessions`` service on the same host and every concurrent
+    CI job on the runner also use. Whenever another process held it, a test's
+    ``session_transaction`` waited on the 10 s mutation budget and either timed out
+    (``AuthorityFenceBusy … held elsewhere for more than 10s``) or outlasted its own bound
+    ("never completed after the fence was released"). That was the whole "flaky under load"
+    story for the ``*_is_ordered_against_*`` tests: load was when two jobs overlapped. The fence
+    keeps its exact cross-process semantics — it is still a real ``flock`` — on a file that is the
+    test's own. Autouse so no test can reach the production fence by forgetting to override."""
+    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_usage(tmp_path, monkeypatch) -> None:
     """Point the per-agent usage store (#839) at a per-test tmp file.
 
