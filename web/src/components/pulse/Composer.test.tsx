@@ -18,7 +18,17 @@ import { Composer, type AskTurn } from "./Composer";
 vi.mock("../../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
-  return { ...actual, api: { pulseAsk: vi.fn() } };
+  return {
+    ...actual,
+    api: {
+      pulseAsk: vi.fn(),
+      // NEW MISSION's two calls (#889). Present on the mock so a test that opens the mode does
+      // not fall over on an undefined member — and so a component that calls the WRONG one
+      // (`folders`, the picker these are not interchangeable with) fails loudly here.
+      projectEntities: vi.fn(),
+      createMission: vi.fn(),
+    },
+  };
 });
 
 /** A host that owns per-mission turns exactly as the console does, and can switch missions.
@@ -35,19 +45,26 @@ vi.mock("../../lib/api", async () => {
 function Host({ initial = "m1" }: { initial?: string }) {
   const [missionId, setMissionId] = useState(initial);
   const [turns, setTurns] = useState<Record<string, AskTurn[]>>({});
-  // A REF, exactly as the console does it. A closure over `missionId` would be captured by the
-  // unmounted composer's last render and answer "yes, still current" for ever — which is the
-  // question this test exists to ask, so getting it wrong here would make the test pass against
-  // a component that discards nothing.
-  const currentRef = useRef(missionId);
+  // THE CONSOLE'S VISIT COUNTER, in a REF exactly as the console keeps it. A closure over the
+  // current visit would be captured by the composer's last render and answer "yes, still
+  // current" for ever — which is the question this file exists to ask, so getting it wrong here
+  // would make every test pass against a component that discards nothing.
+  const visitRef = useRef(0);
   useEffect(() => {
-    currentRef.current = missionId;
+    visitRef.current += 1;
   }, [missionId]);
-  const isCurrent = useCallback((id: string) => currentRef.current === id, []);
+  const visit = useCallback(() => visitRef.current, []);
+  const isVisitCurrent = useCallback(
+    (at: number) => at === visitRef.current,
+    [],
+  );
   return (
     <>
       <button type="button" onClick={() => setMissionId("m2")}>
         switch
+      </button>
+      <button type="button" onClick={() => setMissionId("m1")}>
+        back
       </button>
       <div data-testid="which">{missionId}</div>
       <Composer
@@ -58,7 +75,9 @@ function Host({ initial = "m1" }: { initial?: string }) {
         onTurns={(id, fn) =>
           setTurns((prev) => ({ ...prev, [id]: fn(prev[id] ?? []) }))
         }
-        isCurrent={isCurrent}
+        visit={visit}
+        isVisitCurrent={isVisitCurrent}
+        onCreated={() => {}}
       />
       {/* Renders BOTH missions' turn counts, so a mis-filed answer is visible rather than
           merely absent from the mission on screen. */}
@@ -86,12 +105,17 @@ test("a question renders its answer in the thread (#522)", async () => {
     configured: true,
   });
   render(<Host />);
-  await userEvent.type(screen.getByTestId("composer-input"), "when did I merge it");
+  await userEvent.type(
+    screen.getByTestId("composer-input"),
+    "when did I merge it",
+  );
   await userEvent.click(screen.getByTestId("composer-send"));
   // Scoped to the thread: the harness also mirrors both missions' answers for the switch test,
   // so an unscoped query matches the mirror as well as the real rendering.
   const turns = await screen.findByTestId("ask-turns");
-  expect(within(turns).getByText("You merged it on Tuesday.")).toBeInTheDocument();
+  expect(
+    within(turns).getByText("You merged it on Tuesday."),
+  ).toBeInTheDocument();
 });
 
 test("a busy 409 surfaces the server's detail, not a generic error (#522)", async () => {
@@ -146,7 +170,15 @@ test("a follow-up replays the prior turns as history (#522)", async () => {
 
 test("an unconfigured endpoint disables the control and makes no call (#522)", async () => {
   render(
-    <Composer missionId="m1" configured={false} turns={[]} onTurns={() => {}} />,
+    <Composer
+      missionId="m1"
+      configured={false}
+      turns={[]}
+      onTurns={() => {}}
+      visit={() => 0}
+      isVisitCurrent={() => true}
+      onCreated={() => {}}
+    />,
   );
   expect(screen.getByTestId("composer-input")).toBeDisabled();
   expect(screen.getByTestId("composer-send")).toBeDisabled();
@@ -203,7 +235,9 @@ test("a reply that lands AFTER a mission switch is DISCARDED — by both mission
   });
 
   // A's pending turn is withdrawn rather than completed…
-  await waitFor(() => expect(screen.getByTestId("count-m1")).toHaveTextContent("0"));
+  await waitFor(() =>
+    expect(screen.getByTestId("count-m1")).toHaveTextContent("0"),
+  );
   expect(screen.getByTestId("answers-m1")).toHaveTextContent("");
   // …and B never sees it either — not the answer, and not a turn.
   expect(screen.getByTestId("count-m2")).toHaveTextContent("0");
@@ -226,4 +260,49 @@ test("mission two's composer does not inherit mission one's in-flight busy state
   // enables it, which a `busy` carried over from mission one would not.
   await userEvent.type(screen.getByTestId("composer-input"), "b");
   expect(screen.getByTestId("composer-send")).toBeEnabled();
+});
+
+test("an answer from a PREVIOUS visit is discarded even when you come back", async () => {
+  // #896 review 11, finding 2. The fence was `isCurrent(asked)`, which is true again the moment
+  // the operator returns — so m1 → m2 → m1 admitted a reply produced for a visit that is over
+  // into a visit that is not.
+  //
+  // I argued the other way one round earlier, on the grounds that the turns live in the console
+  // "so switching away and back does not discard an answer". The contract is the opposite and
+  // this file already asserted it: moving away DELETES the pending turn. The id fence did not
+  // preserve answers, it preserved the arbitrary subset whose operator happened to return in
+  // time.
+  //
+  // Red against an id fence.
+  let release: (v: unknown) => void = () => {};
+  vi.mocked(api.pulseAsk).mockImplementation(
+    () =>
+      new Promise((res) => {
+        release = res;
+      }) as ReturnType<typeof api.pulseAsk>,
+  );
+
+  render(<Host />);
+  await userEvent.type(screen.getByTestId("composer-input"), "what happened?");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await waitFor(() => expect(api.pulseAsk).toHaveBeenCalled());
+
+  await userEvent.click(screen.getByText("switch"));
+  await waitFor(() =>
+    expect(screen.getByTestId("which")).toHaveTextContent("m2"),
+  );
+  await userEvent.click(screen.getByText("back"));
+  await waitFor(() =>
+    expect(screen.getByTestId("which")).toHaveTextContent("m1"),
+  );
+
+  release({ answer: "from a visit that is over", matches: [] });
+
+  // The turn is GONE — the same thing navigating away has always done to it — rather than being
+  // completed in a visit that did not ask for it.
+  await waitFor(() =>
+    expect(screen.getByTestId("count-m1")).toHaveTextContent("0"),
+  );
+  expect(screen.getByTestId("answers-m1")).toHaveTextContent("");
+  expect(screen.getByTestId("count-m2")).toHaveTextContent("0");
 });

@@ -43,6 +43,8 @@ export function MissionContextPanel({
   context,
   onMembershipChanged,
   loading,
+  onDetach,
+  busy,
 }: {
   context: MissionContextData | null;
   /** The server told a control that this mission no longer holds its session. The roster the
@@ -50,6 +52,15 @@ export function MissionContextPanel({
    *  is the console's to do because the roster is the console's (#903 review 3, finding 1). */
   onMembershipChanged?: () => void;
   loading?: boolean;
+  /** Release one session from the mission (#889). Absent ⇒ read-only, which is what an archived
+   *  or closed mission gets — detaching from a finished record changes history for no purpose.
+   *
+   *  Server-side this is FENCED: the withdrawal commits inside the same lock the write fence
+   *  takes around its first byte, so an in-flight nudge either lands first or sees the new epoch.
+   *  A detached session can never still be typed into, which is why this is a plain control
+   *  rather than a confirm. */
+  onDetach?: (sessionKey: string) => void;
+  busy?: boolean;
 }) {
   if (loading && !context) {
     return (
@@ -94,25 +105,43 @@ export function MissionContextPanel({
 
       {sessions.length ? (
         <>
-          {/* The roster is now a COUNT rather than a list of keys: every key is printed on its
-              own block below, beside the controls that act on it, and printing them twice made
-              the ones above look like the labels for the blocks below when they are not
-              necessarily in the same order (#903 review 2, finding 2). */}
+          {/* The roster is a COUNT rather than a list of keys: every key is printed on its own
+              block below, beside the controls that act on it, and printing them twice made the
+              ones above look like the labels for the blocks below when they are not necessarily
+              in the same order (#903 review 2, finding 2). */}
           <div className={styles.roster}>
             {sessions.length} session{sessions.length === 1 ? "" : "s"}
           </div>
-          {/* VIEW SCREEN per session (#894). Per session rather than one control for the
-              mission, because a mission can hold several and "the screen" is not a thing a
-              mission has — each session has one. Read-only: looking takes no lease and does not
-              mark the viewer busy, so it cannot silently pause the follow-through. */}
+          {/* ONE BLOCK PER SESSION, and every control in it acts on THAT session (#894, #889).
+              VIEW SCREEN is read-only — looking takes no lease and does not mark the viewer
+              busy, so it cannot silently pause the follow-through — and RELEASE sits beside it
+              rather than in a separate list, because a control whose target is named two
+              elements away is the ambiguity #903's review was about. */}
           {sessions.map((s) => (
-            <MissionScreen
+            <div
               key={s.session_key}
-              missionId={context.id}
-              sessionKey={s.session_key}
-              role={s.role ?? null}
-              onGone={onMembershipChanged}
-            />
+              className={styles.rosterRow}
+              data-testid="roster-session"
+            >
+              <MissionScreen
+                missionId={context.id}
+                sessionKey={s.session_key}
+                role={s.role ?? null}
+                onGone={onMembershipChanged}
+              />
+              {onDetach ? (
+                <button
+                  type="button"
+                  className={styles.objEditBtn}
+                  disabled={busy}
+                  onClick={() => onDetach(s.session_key)}
+                  data-testid="session-detach"
+                  aria-label={`Release ${s.session_key} from this mission`}
+                >
+                  RELEASE
+                </button>
+              ) : null}
+            </div>
           ))}
         </>
       ) : (

@@ -21,9 +21,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../../lib/api";
+import { ApiError, api } from "../../lib/api";
 import { actionOutcome } from "../../lib/orchestratorAction";
 import type {
+  Mission,
   MissionEvent,
   MissionListRow,
   OrchestratorAction,
@@ -39,6 +40,8 @@ import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionDrawer } from "./MissionDrawer";
+import { MissionLifecycle } from "./MissionLifecycle";
+import { type ObjectiveOp } from "./MissionObjectives";
 import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
 import { BAND_LABEL } from "./bands";
 import { ObjectivesPane, TimelinePane } from "./MissionDetail";
@@ -66,8 +69,41 @@ function actionSpeaks(c: PulseCard): boolean {
 
 /** One page of the rail. The server caps `limit` itself; this is the client's step size. */
 const PAGE = 100;
+/** The server's own page ceiling (`missions.LIST_LIMIT_MAX`). Up to this many rows come back from
+ *  ONE request, and one request is one server statement over one snapshot — which is the only
+ *  thing that actually proves a refresh read a consistent list (#896 review 16, finding 1). */
+const SNAPSHOT_MAX = 200;
+
+/** How many times a stitched refresh re-pages when a duplicate proves it read a torn snapshot.
+ *  Bounded, because a rail that keeps re-fetching under a busy install is worse than one that
+ *  says plainly it could not prove the read and offers to try again. */
+const RELOAD_RETRIES = 2;
+
+/** `rows` with anything already in `have` dropped, first occurrence winning.
+ *
+ *  **OFFSET PAGING IS NOT A SNAPSHOT** (#896 review 15, finding 2). The server orders the mutable
+ *  set by `updated_at DESC`, so a mission touched between two page requests moves to the front
+ *  and shifts everything after it down one. The client then receives one row TWICE and never
+ *  receives the row that was pushed past the boundary. Both paths that page are exposed to it —
+ *  LOAD MORE appends the next offset to what is on screen, and a refresh re-reads every open page
+ *  — and in both the duplicate is what makes the COUNT lie: `rows.length` reaches `total` while a
+ *  mission is missing, LOAD MORE disappears, and that mission is unreachable without a reload.
+ *
+ *  A duplicate id is exact proof, because within one consistent snapshot the server cannot return
+ *  the same mission twice. Dropping it does not recover the missed row — nothing client-side can
+ *  — but it keeps the count honest, and an honest count leaves LOAD MORE on screen, which is the
+ *  way back to it. */
+function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
+  const seen = new Set(have.map((m) => m.id));
+  return rows.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+}
 
 const STOPS = ["THREAD", "OBJECTIVES", "TIMELINE"] as const;
+
+/** The states that have RELEASED the mission's roster (#896 review 20, finding 2). A mission in
+ *  one of these holds no sessions and follows nothing through, so it cannot be the target of an
+ *  adoption — the store refuses it, and the rail must not aim a control at a refusal. */
+const CLOSED_STATES = new Set(["done", "failed", "abandoned"]);
 type Stop = (typeof STOPS)[number];
 
 /** One timeline row.
@@ -119,6 +155,7 @@ function MissionBody({
   onResolved,
   onNote,
   isCurrent,
+  onMissionChanged,
 }: {
   missionId: string;
   stop: Stop;
@@ -129,7 +166,19 @@ function MissionBody({
   cards: PulseCard[];
   onResolved: (a: OrchestratorAction) => void;
   onNote: (msg: string) => void;
+  /** Forwarded to this body's composer. The durable one (#890) needs only the id: its turns are
+   *  a mission's own rows, not console-global state, so there is no visit for it to outlive. */
   isCurrent: (missionId: string) => boolean;
+  /** A lifecycle change landed (or was refused). The RAIL has to re-read too: closing, archiving
+   *  or abandoning a mission changes the row the operator is looking at and, for archive, which
+   *  scope it belongs in. `moved` says the mission left this rail entirely, and where it went. */
+  onMissionChanged: (opts?: {
+    /** Set only when THIS mount is still the one on screen — it clears the SELECTION. */
+    scopeCleared?: boolean;
+    /** WHICH mission moved and WHERE IT WENT, as one value. Global: never mount-fenced. */
+    moved?: { id: string; to: "active" | "archived" };
+    membershipChanged?: boolean;
+  }) => void;
 }) {
   const d = useMissionDetail(missionId);
 
@@ -162,13 +211,200 @@ function MissionBody({
       .map((c) => c.pending_action as OrchestratorAction);
   }, [cards, keys]);
 
+  /** THIS MOUNT, as an immutable fact — the fence every late outcome below is measured against
+   *  (#896 review 10, finding 3).
+   *
+   *  It replaces `isCurrent(missionId)`, which asked the wrong question: an id says whether this
+   *  mission is showing, and a late outcome only needs that to be true AGAIN. The body is keyed
+   *  on the mission, so A1 → B → A2 is two different mounts of the same id; the id test admits
+   *  A1's refusal into A2 and the operator sees a note about something they did before they left.
+   *  A mount cannot be re-entered, so this cannot. */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  /** THE ONE FENCE for anything this body says out loud (#889).
+   *
+   *  `onNote` belongs to the CONSOLE, which outlives this body — so it is the one surface a late
+   *  outcome can still reach after the operator has moved on. Everything else is safe by
+   *  construction: the body is keyed on the mission, so a switch unmounts it and its own state
+   *  writes land on a dead instance harmlessly.
+   *
+   *  So the fence lives HERE, wrapping the note, and every consumer gets the fenced version —
+   *  the lifecycle bar included. Fencing only this file's own `mutate` was not enough and the
+   *  browser gate caught it: `MissionLifecycle` owns its own error handling and called `onNote`
+   *  directly, so a refused transition for mission A still appeared over mission B. One fence,
+   *  at the boundary where the mission is known, rather than one per caller.
+   *
+   *  Liveness is read at RESOLUTION time, never captured: a boolean captured when the request
+   *  started answers the question as it was at the moment that does not matter. */
+  const noteIfCurrent = useCallback(
+    (msg: string) => {
+      if (!mounted.current) return;
+      onNote(msg);
+    },
+    [onNote],
+  );
+
+  /** …and the same fence on the CONSEQUENCES a mutation asks the console to apply (#896 review 5,
+   *  finding 3).
+   *
+   *  The re-read is unconditional and must stay that way: the mission changed on the server
+   *  whoever happens to be looking at it. The EFFECTS are a different thing — a scope move
+   *  tells the console the mission left this rail, and the console acts on that by clearing the
+   *  selection. Applying that for a mission the operator has already navigated away from moves
+   *  them off a DIFFERENT one, which is a late outcome reaching past its own mission exactly as
+   *  a late note would. Same rule, same place, read at resolution time. */
+  const changedIfCurrent = useCallback(
+    (opts?: {
+      movedTo?: "active" | "archived";
+      membershipChanged?: boolean;
+    }) => {
+      // FENCED PER EFFECT, not as a whole (#896 review 6, finding 1). The previous version
+      // dropped BOTH effects for a mission the operator had left, which is right for one of them
+      // and wrong for the other:
+      //
+      // * clearing the SELECTION is mission-local — doing it for a mission nobody is looking
+      //   at moves the operator off a different one;
+      // * `membershipChanged` refreshes the OVERVIEW, which is global. Closing, archiving or
+      //   detaching releases the mission's sessions server-side, and the cards keep their old
+      //   `mission_id` until something re-reads them — so suppressing it leaves those sessions
+      //   in neither the roster nor UNTRACKED until the outer poll happens to run. The operator
+      //   having navigated away does not un-release them.
+      const current = mounted.current;
+      const next = {
+        // VIEW-LOCAL: clearing the selection is fenced on this mount.
+        ...(current && opts?.movedTo ? { scopeCleared: true } : {}),
+        // GLOBAL, LIKE `membershipChanged` (#896 review 12, finding 1). WHICH MISSION MOVED is
+        // a fact about the SERVER — it is in the other scope now — and it was riding on the
+        // view-local half, so a late archive settling after the operator had walked away lost
+        // the row removal and left the archived mission in the Active rail whenever the refresh
+        // that followed it failed. The console cannot infer the id: `onMissionChanged` is
+        // console-wide and the body is the only thing that knows whose lifecycle changed.
+        //
+        // …AND IT CARRIES THE DESTINATION WITH IT (#896 review 14). Forwarding the id without
+        // the direction made the removal unanswerable: the console applied it to whichever rail
+        // was on screen, so a held archive released after the operator switched to Archived
+        // deleted the row from the rail the mission had just correctly arrived in. One value,
+        // both halves, so the two can never be forwarded apart.
+        ...(opts?.movedTo
+          ? { moved: { id: missionId, to: opts.movedTo } }
+          : {}),
+        ...(opts?.membershipChanged ? { membershipChanged: true } : {}),
+      };
+      onMissionChanged(Object.keys(next).length ? next : undefined);
+    },
+    [missionId, onMissionChanged],
+  );
+
+  /** Operator edits and the stand-down share one busy flag and one re-read, because they are the
+   *  same kind of act: a mutation whose OUTCOME the server owns. Both re-read unconditionally —
+   *  on failure especially, since a 409 means this client's picture is the stale one. */
+  const [mutating, setMutating] = useState(false);
+  const mutate = useCallback(
+    async (
+      fn: () => Promise<unknown>,
+      what: string,
+      opts?: { membershipChanged?: boolean },
+    ): Promise<boolean> => {
+      // Returns whether the SERVER accepted it, so a caller holding the operator's typing can
+      // keep it on a refusal (#896 review 6, non-blocking note). Clearing a draft the server
+      // rejected makes the retry a retype.
+      if (mutating) return false;
+      setMutating(true);
+      let ok = false;
+      try {
+        await fn();
+        ok = true;
+      } catch (err) {
+        noteIfCurrent(
+          err instanceof ApiError && err.message
+            ? err.message
+            : `${what} did not work.`,
+        );
+      } finally {
+        setMutating(false);
+        d.reload();
+        // ON SETTLEMENT, not on success (#896 review 3, finding 4). A stale detach that 404s
+        // because the session was already released still CHANGED what the operator sees: the
+        // detail drops it from the roster while the overview card keeps its old `mission_id`, so
+        // the session is in neither the roster nor UNTRACKED until the outer poll. A refresh is
+        // cheap; a session that has vanished from both lists is not.
+        // THE RAIL, ON EVERY MUTATION (#896 review 23, finding 3). Waiving, dropping,
+        // reordering or standing down an objective can clear the very thing the rail derives
+        // `needs_you` from — so re-reading only the DETAIL left the pane current and the rail
+        // still saying the mission needs you, with no later list poll to reconcile them. The
+        // membership refresh stays conditional; it is a different, global effect.
+        changedIfCurrent(
+          opts?.membershipChanged ? { membershipChanged: true } : undefined,
+        );
+      }
+      return ok;
+    },
+    [mutating, noteIfCurrent, d, changedIfCurrent],
+  );
+
+  /** Editing is withdrawn on a mission nobody can act on any more.
+   *
+   *  ARCHIVED **and** TERMINAL — finding 5 from #896's review, where the comment said both and the
+   *  check tested only the first. A `done` / `failed` / `abandoned` mission is a finished record;
+   *  the routes would still take the write, which is exactly why the control has to be withdrawn
+   *  here rather than relied on to be refused. Reopening is available from the lifecycle bar and
+   *  is the honest way to edit a closed mission: it says the mission is open again.
+   *
+   *  The set is spelled out rather than imported from a shared constant because the client has no
+   *  copy of the server's `TERMINAL_STATES` — and inventing one that silently drifts is worse than
+   *  three literals with a test over all three. */
+  const terminalState =
+    d.mission?.state === "done" ||
+    d.mission?.state === "failed" ||
+    d.mission?.state === "abandoned";
+  const editable =
+    !!d.mission && d.mission.archived_at == null && !terminalState;
+
+  const onOps = useCallback(
+    (ops: ObjectiveOp[]) =>
+      mutate(() => api.patchMissionObjectives(missionId, ops), "That edit"),
+    [mutate, missionId],
+  );
+  const onStandDown = useCallback(
+    (key: string, episode: number) =>
+      void mutate(
+        () => api.standDownObjective(missionId, key, episode),
+        "Standing that objective down",
+      ),
+    [mutate, missionId],
+  );
+  /** Release a session from the mission. The overview is refreshed too, not just the mission: a
+   *  released session becomes UNTRACKED, and that list is derived from the cards. */
+  const onDetach = useCallback(
+    (sessionKey: string) =>
+      void mutate(
+        () => api.detachMissionSession(missionId, sessionKey),
+        "Releasing that session",
+        // The released session has to reappear under UNTRACKED, and that list comes from the
+        // overview's cards rather than from the mission list — on settlement, success or not.
+        { membershipChanged: true },
+      ),
+    [mutate, missionId],
+  );
+
   const objectives = (
     <ObjectivesPane
       objectives={d.objectives}
+      objectivesState={d.mission?.objectives_state}
       context={d.context}
       loading={!d.context}
       supervisor={d.mission?.supervisor}
       onMembershipChanged={d.reloadContext}
+      onOps={editable ? onOps : undefined}
+      onStandDown={editable ? onStandDown : undefined}
+      onDetach={editable ? onDetach : undefined}
+      busy={mutating}
     />
   );
   const timeline = (
@@ -183,6 +419,19 @@ function MissionBody({
   return (
     <>
       <div className={styles.pane} data-testid="pane">
+        {/* The mission's own controls, above its content and on every stop — closing a mission
+            from the timeline is as reasonable as closing it from the thread, and hiding them
+            behind one stop would make the control depend on where you happened to be. */}
+        {d.mission ? (
+          <MissionLifecycle
+            mission={d.mission}
+            onChanged={(opts) => {
+              d.reload();
+              changedIfCurrent(opts);
+            }}
+            onNote={noteIfCurrent}
+          />
+        ) : null}
         {stop === "THREAD" ? (
           <>
             {!configured ? (
@@ -212,7 +461,12 @@ function MissionBody({
                 missionId={missionId}
                 question={d.mission.question}
                 onAnswered={d.reload}
-                onNote={onNote}
+                // THE SAME FENCE AS EVERY OTHER CONSUMER (#896 review 23, finding 4). An
+                // answer settles asynchronously — a 409 for a superseded question, or
+                // `applied_ok: false` — and the raw callback let mission A's refusal paint
+                // over mission B after the operator had navigated. This is what makes the
+                // claim above ("every consumer gets the one fence") true rather than nearly.
+                onNote={noteIfCurrent}
               />
             ) : null}
             {decisions.map((a) => (
@@ -220,7 +474,13 @@ function MissionBody({
                 key={a.id}
                 action={a}
                 onResolved={onResolved}
-                onNote={onNote}
+                // FENCED, like every other note this body emits (finding 6 from #896's review).
+                // `ActionRow` calls this from its own 409 path — a compare-and-execute that lost
+                // carries the settled record — so an approval decided on mission A and refused
+                // while the operator moved to B would otherwise show A's refusal over B. The
+                // browser test that caught the lifecycle instance of this now covers this path
+                // too; it is the same bug one consumer further along.
+                onNote={noteIfCurrent}
               />
             ))}
             {d.events.length === 0 && decisions.length === 0 ? (
@@ -298,7 +558,31 @@ export function MissionConsole({
   filtered?: boolean;
   onClearFilters?: () => void;
 }) {
-  const [missions, setMissions] = useState<MissionListRow[]>([]);
+  /** THE RAIL'S ROWS AND ITS COUNT, as ONE value (#896 review 13, finding 1).
+   *
+   *  "How many are there" is a fact about the same list the rows came from, and holding them in
+   *  two `useState`s let them disagree — a local removal decremented the count whether or not it
+   *  removed anything, and `rows.length >= total` then hid LOAD MORE over a mission that is
+   *  still there. Every write below sets both halves in one updater. */
+  const [list, setRail] = useState<{
+    rows: MissionListRow[];
+    total: number;
+    /** HOW MANY SERVER ROWS HAVE BEEN CONSUMED, which is not `rows.length` (#896 review 17,
+     *  finding 1). Deduping drops rows the server DID return, so using the rendered count as the
+     *  next offset asks for a row already on screen — and LOAD MORE then sticks there for ever,
+     *  one short, with the missing mission unreachable. The cursor counts what was asked for and
+     *  answered; the rows are what survived the merge. */
+    consumed: number;
+    /** The last read was STITCHED from several pages, so it cannot prove it saw one snapshot
+     *  (#896 review 17, finding 2). The rail offers a re-read rather than pretending. */
+    stitched?: boolean;
+    /** WHICH ordered set the cursor counts into — the server's digest of the full filtered list
+     *  (#896 review 19, finding 1). A later page is a continuation of this read only if it was
+     *  cut from the same one; otherwise the offsets index into two different lists and the rail
+     *  cannot be proved whole, however consistent its counts look. */
+    snapshot?: string | null;
+  }>({ rows: [], total: 0, consumed: 0 });
+  const missions = list.rows;
   const [storeError, setStoreError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [stop, setStop] = useState<Stop>("THREAD");
@@ -318,6 +602,28 @@ export function MissionConsole({
    *  value because a captured boolean answers the question as it was when the request started,
    *  which is exactly the moment that does not matter. */
   const shownRef = useRef<string | null>(null);
+  /** …and WHICH VISIT to it this is (#896 review 10, findings 3 and 4).
+   *
+   *  An id answers "is this view showing?", and a late outcome only needs that to be true AGAIN.
+   *  Selecting A, leaving for B and coming back to A is three visits, two of them over — and an
+   *  id-equality fence admits a request issued in the first one into the third, which is the
+   *  A1 → B → A2 round trip the id test cannot see.
+   *
+   *  The counter also moves on a SCOPE change, which is finding 4: the UNTRACKED composer is not
+   *  unmounted by the Active → Archived flip and keeps the same sentinel id, so without the scope
+   *  in the identity a create begun in Active still resolves as `focus: true` while Archived is
+   *  on screen — selecting an active mission into an archived rail.
+   *
+   *  Captured at SEND time and compared at RESOLUTION time. Both halves are load-bearing:
+   *  capturing the ANSWER rather than the token is the bug this replaces. */
+  const visitRef = useRef(0);
+  /** …and the same number as STATE, for the one consumer that cannot capture it itself.
+   *
+   *  `ActionRow` calls `onNote` at RESOLUTION time and takes no token — it is shared with the
+   *  bell and has no notion of a console visit. What it does do is hold the `onNote` prop its
+   *  in-flight handler was created with, so a callback whose identity changes per visit carries
+   *  the visit with it. That is what the state is for: the ref cannot change a closure. */
+  const [visitTk, setVisitTk] = useState(0);
   // `?? UNTRACKED_VIEW` is load-bearing, not defensive. With nothing selected the console still
   // renders a composer — that is the empty state, and Ask must work on a fresh install — and its
   // `missionId` is the sentinel. Comparing against a null selection would make that composer
@@ -327,8 +633,51 @@ export function MissionConsole({
     (id: string) => (shownRef.current ?? UNTRACKED_VIEW) === id,
     [],
   );
+  /** The visit to capture. Read from an event handler — after the effect below has published it
+   *  — never during a render, where the effect for the current selection has not run yet. */
+  const visit = useCallback(() => visitRef.current, []);
+  /** Strictly stronger than `isCurrent`: the counter moves on every view AND scope change, so an
+   *  equal token already implies the same view is showing, in the same visit, in the same scope. */
+  const isVisitCurrent = useCallback(
+    (at: number) => at === visitRef.current,
+    [],
+  );
 
-  const [total, setTotal] = useState(0);
+  /** The same fence the mission body's notes take, for the UNTRACKED view's own decisions.
+   *
+   *  That view is not inside the keyed mission body, so selecting a mission does not unmount it
+   *  and a late `ActionRow` refusal would paint over whatever the operator moved to.
+   *
+   *  **On the VISIT, not the view's id** (#896 review 11, finding 2). `isCurrent(UNTRACKED_VIEW)`
+   *  is true again the moment the operator comes back, so UNTRACKED → mission B → UNTRACKED
+   *  admitted a settled-action 409 raised two views ago into a list that has since been re-read:
+   *  "Not sent — already settled", about something the operator did before they stepped out.
+   *
+   *  The token is captured HERE, in the closure `ActionRow` holds — because that component
+   *  reports at resolution time and cannot capture one itself. A new callback identity per visit
+   *  is the capture. */
+  const noteIfUntracked = useCallback(
+    (msg: string) => {
+      if (!isVisitCurrent(visitTk)) return;
+      setNote(msg);
+    },
+    [isVisitCurrent, visitTk],
+  );
+
+  const total = list.total;
+  /** …and how many server rows have been consumed, which is the next page's offset. */
+  const consumed = list.consumed;
+  /** ONE SOURCE FOR THE AFFORDANCE AND THE HANDLER (#896 review 18). The rail used to render
+   *  LOAD MORE on `rows.length < total` while `loadMoreMissions` stopped on `consumed >= total` —
+   *  and dedupe is exactly what drives those apart: 299 rendered, 300 consumed, total 300. The
+   *  button was visible and the handler returned immediately, so the missing mission stayed
+   *  unreachable behind a control that looked like the way to it. */
+  const hasMore = consumed < total;
+  /** …and when there is nothing left to consume and the rail is STILL short, the pages did not
+   *  agree. An offset append cannot fill that hole — only a fresh read can — so the honest
+   *  affordance is the re-read, not a button that would ask past the end. */
+  const needsReRead =
+    Boolean(list.stitched) || (!hasMore && missions.length < total);
   const [loadingMore, setLoadingMore] = useState(false);
   /** Which scope the rail lists. Archiving is not deletion, so there has to be a way back in:
    *  without one, a mission's objectives, timeline and decisions become unreachable the moment
@@ -346,35 +695,152 @@ export function MissionConsole({
    *  captured boolean match again, so the stale response would be accepted by a fence that
    *  looks like it is working. Every list write checks the generation it was issued under. */
   const listGen = useRef(0);
+  /** The highest generation whose response has been APPLIED.
+   *
+   *  `listGen` alone only fences a SCOPE change, so every same-scope request — the mount, a
+   *  post-mutation `reload()`, a Load More page — shared one generation and the LAST to arrive
+   *  won regardless of when it was issued. A mount response landing after a refresh restored the
+   *  pre-mutation rows, quietly undoing the refresh matrix this console depends on
+   *  (#896 review 3, finding 2). Every authoritative refresh now takes its own epoch and an older
+   *  response is dropped rather than applied. */
+  const appliedGen = useRef(0);
+  /** The scope a request must have been issued for. `reload` is a callback and its captured
+   *  `archived` can be a render behind the rail — so a late create's `reload()` issued an Active
+   *  request that was then accepted into the Archived scope (finding 3). Read at ISSUE time. */
+  const archivedRef = useRef(false);
+  /** …and HOW MANY ROWS ARE OPEN, for exactly the same reason (#896 review 25, finding 1). A
+   *  refresh re-reads the pages the operator has opened, and a callback captured before they
+   *  opened another one would re-read fewer — collapsing the rail rather than refreshing it.
+   *
+   *  **The window the operator has ASKED FOR, moved at ISSUE time — never a mirror of what has
+   *  rendered** (review 26, finding 1). Mirroring `missions.length` in a passive effect left a
+   *  gap exactly one paint wide: LOAD MORE issues its request, and until that page comes back
+   *  and React commits it the ref still says 100. A create settling inside that gap — the
+   *  ordinary case, since the click is what the operator does WHILE waiting — refreshed the old
+   *  window and collapsed the rail, which is the very bug this ref was added for. So the ask
+   *  raises it synchronously, and only an authoritative answer sets it back to what exists. */
+  const openRef = useRef(PAGE);
+  /** …and WHEN it was last raised, so an OLDER answer cannot narrow a NEWER ask (review 26,
+   *  finding 1, inverse ordering). A refresh issued for 100 rows is in flight; the operator
+   *  clicks LOAD MORE and the window becomes 200; then the older refresh returns and, reading
+   *  only its own width, set the window back to 100 — erasing an intent that was recorded after
+   *  it was issued. The generation the ask was made at is the whole comparand: an answer may
+   *  narrow the window only when nothing was asked for at or after its own generation. */
+  const openAskGen = useRef(0);
+
+  const nextGen = useCallback(() => {
+    listGen.current += 1;
+    return listGen.current;
+  }, []);
 
   const applyList = useCallback(
-    (r: {
-      missions: MissionListRow[];
-      total?: number;
-      store_error?: string | null;
-    }) => {
-      setMissions(r.missions);
-      setTotal(r.total ?? r.missions.length);
+    (
+      gen: number,
+      scope: boolean,
+      r: {
+        missions: MissionListRow[];
+        total?: number;
+        store_error?: string | null;
+        consumed?: number;
+        stitched?: boolean;
+        snapshot?: string | null;
+      },
+    ) => {
+      // Two fences, and they answer different questions: `gen` is "is this the newest answer",
+      // `scope` is "is this even about the rail we are showing".
+      //
+      // AGAINST THE NEWEST *ISSUED* GENERATION, not the newest applied one (#896 review 23,
+      // finding 2). `appliedGen` only advances on SUCCESS, so a refresh that FAILED left it
+      // where it was — and an older mount response arriving afterwards compared equal and was
+      // accepted, resurrecting a row the operator had just archived until some later refresh
+      // happened to succeed. The failure path already fences on `listGen` for exactly this
+      // reason; the success path was the half that did not.
+      if (gen < listGen.current || scope !== archivedRef.current) return;
+      appliedGen.current = gen;
+      // …AND THE WINDOW IS WHAT THIS ANSWER OPENED. An authoritative read replaces the rail, so
+      // it also decides how wide the rail now is — including narrower, when the scope changed or
+      // rows were archived elsewhere. `consumed` rather than the merged length: it is what the
+      // SERVER sent, so a dedupe inside one read cannot ratchet the window down a row at a time.
+      //
+      // NARROWER ONLY IF NOTHING WAS ASKED FOR SINCE THIS ANSWER WAS ISSUED (review 26, inverse
+      // ordering). A LOAD MORE recorded at or after `gen` is a newer statement of what is open
+      // than this answer can be, and letting the answer win discarded it.
+      const width = Math.max(PAGE, r.consumed ?? r.missions.length);
+      openRef.current =
+        openAskGen.current >= gen ? Math.max(openRef.current, width) : width;
+      const answered = r.consumed ?? r.missions.length;
+      const snapshot = r.snapshot ?? null;
+      setRail((prev) => {
+        // A NARROWER ANSWER DOES NOT UNMAKE A PROVEN CONTINUATION (#896 review 28, finding 1).
+        // An authoritative read replaces the rail, and that is right when it is an answer about a
+        // DIFFERENT list. But a refresh issued for 100 rows, landing after the operator's page
+        // brought the rail to 200, was replacing rows 0–199 of a list with rows 0–99 of the SAME
+        // list — the pages visibly collapsed back, which is the review-25 symptom arriving by a
+        // third route. The digest covers the whole filtered set, so when it agrees, the rows this
+        // answer does not carry are still exactly the rest of it and are kept behind it.
+        //
+        // When the digest DISAGREES the list has moved and the answer is the whole truth about
+        // it: replaced outright, because keeping a tail from a list that no longer exists is how
+        // an archived mission walks back onto the rail.
+        //
+        // BEYOND THE WINDOW, not merely ABSENT FROM THE ANSWER. Those are different sets and the
+        // difference is a resurrection: a row REMOVED from inside the answer's own window is also
+        // "in the rail and not in the answer", so keeping it would put an archived mission back
+        // on the rail — the exact defect the digest is here to prevent. The rail only holds
+        // anything this answer cannot speak for when its cursor reaches FURTHER than the answer's.
+        const same = snapshot !== null && snapshot === prev.snapshot;
+        const tail =
+          same && prev.consumed > answered
+            ? dedupe(prev.rows.slice(r.missions.length), r.missions)
+            : [];
+        return {
+          rows: tail.length ? [...r.missions, ...tail] : r.missions,
+          total: r.total ?? r.missions.length,
+          // An authoritative answer RESETS the cursor: it is a fresh read of the window, so what
+          // has been consumed is exactly what it returned — plus whatever of the same snapshot
+          // the rail is still holding beyond it.
+          consumed: tail.length ? Math.max(answered, prev.consumed) : answered,
+          stitched: r.stitched,
+          // THE SNAPSHOT THE CURSOR INDEXES INTO. A later page is only a continuation of this
+          // read if it was cut from the same one (#896 review 19, finding 1).
+          snapshot,
+        };
+      });
       setStoreError(r.store_error ?? null);
     },
     [],
   );
 
   useEffect(() => {
+    archivedRef.current = archived;
     let live = true;
-    const gen = listGen.current;
+    const gen = nextGen();
     api
       .missions({ limit: PAGE, archived })
-      .then((r) => live && gen === listGen.current && applyList(r))
+      .then((r) => live && applyList(gen, archived, r))
       // A read that fails empties the rail and SAYS SO; it never takes the console down, and it
       // is never conflated with "you have no missions".
-      .catch(
-        () => live && setStoreError("the mission list could not be loaded"),
-      );
+      //
+      // …and the FAILURE takes the same ownership test as the success (#896 review 9, finding
+      // 3). `live` is the effect's lifetime, which is a different question: a mount request held
+      // open while a mutation's reload installs fresh rows and clears the error is still `live`
+      // when it rejects, and it painted a store outage over data that had just arrived.
+      .catch(() => {
+        if (!live) return;
+        // FENCED ON THE LATEST ISSUED GENERATION, not the applied one (#896 review 10, finding
+        // 1). `appliedGen` only advances on SUCCESS, so a failure of the current request — the
+        // ordinary case, and the one this notice exists for — compared its own `gen` against a
+        // lower applied value and suppressed itself. The rail then painted "Nothing tracked
+        // yet" over a store that would not answer, which is the exact conflation the notice was
+        // written to prevent. The question here is "has a NEWER request been issued", and
+        // `listGen` is what answers it.
+        if (gen !== listGen.current || archived !== archivedRef.current) return;
+        setStoreError("the mission list could not be loaded");
+      });
     return () => {
       live = false;
     };
-  }, [applyList, archived]);
+  }, [applyList, archived, nextGen]);
 
   /** Refresh the pages the operator has already opened.
    *
@@ -387,52 +853,232 @@ export function MissionConsole({
    *  `total` comes from the LAST page, so a mission created or archived mid-refresh is still
    *  reflected in the "Load more" affordance. */
   const reload = useCallback(async () => {
-    const pages = Math.max(1, Math.ceil(missions.length / PAGE));
-    const gen = listGen.current;
-    try {
+    // THE WINDOW AT ISSUE TIME, from the ref — not the `missions.length` this callback closed
+    // over (#896 review 25, finding 1). An async child holds a `reload` across its own await:
+    // the composer's create resolves and calls `onCreated`, which reloads. If the operator opened
+    // another page while that request was in flight, the captured length is the OLD one, so the
+    // refresh asks for 100 rows and REPLACES the 200-row rail — every opened page gone, and a
+    // selected mission from the later page with it. Same reasoning as the scope ref two lines
+    // down, and the same failure it was written for.
+    const open = Math.max(PAGE, openRef.current);
+    // The scope at ISSUE time, from the ref — not the `archived` this callback closed over, which
+    // can be a render behind. A late create's `reload()` otherwise requested the scope that was
+    // current when its closure was made and had the answer accepted into the one on screen
+    // (#896 review 3, finding 3).
+    const scope = archivedRef.current;
+    const gen = nextGen();
+
+    // ONE REQUEST IS THE ONLY PROOF (#896 reviews 16 and 17).
+    //
+    // Deduplicating page overlaps catches a REORDER, because a repeated id cannot happen inside
+    // one snapshot. It cannot catch a REMOVAL: another client archives M50 between page 0 and
+    // page 1, offset 100 then starts one row later, and the merged rail has 199 unique rows —
+    // no duplicate, `total` 199, LOAD MORE hidden — while still holding the stale M50 and
+    // permanently missing M101. A duplicate is proof of tearing; the absence of one is not proof
+    // of a snapshot.
+    //
+    // The server clamps a page at `SNAPSHOT_MAX`, so up to that size the whole open window comes
+    // back from a single statement over a single snapshot and there is nothing to stitch.
+    if (open <= SNAPSHOT_MAX) {
+      try {
+        const r = await api.missions({ limit: open, archived: scope });
+        if (scope !== archivedRef.current) return;
+        applyList(gen, scope, {
+          missions: dedupe(r.missions),
+          total: r.total,
+          store_error: r.store_error,
+          consumed: r.missions.length,
+          snapshot: r.snapshot ?? null,
+        });
+      } catch {
+        /* A failed refresh leaves the rail as it stands; it never empties it. */
+      }
+      return;
+    }
+
+    const pages = Math.ceil(open / PAGE);
+
+    /** One pass over the open pages. `torn` says the pages did not come from one snapshot. */
+    const fetchPages = async () => {
       const results = [];
       for (let i = 0; i < pages; i += 1) {
         results.push(
-          await api.missions({ limit: PAGE, offset: i * PAGE, archived }),
+          await api.missions({
+            limit: PAGE,
+            offset: i * PAGE,
+            archived: scope,
+          }),
         );
         // Checked between pages as well as at the end: a multi-page refresh is the request most
         // likely to still be running when the operator switches scope.
-        if (gen !== listGen.current) return;
+        if (scope !== archivedRef.current) return null;
       }
-      const last = results[results.length - 1];
-      applyList({
-        missions: results.flatMap((r) => r.missions),
-        total: last.total,
-        store_error: last.store_error,
+      const fetched = results.flatMap((r) => r.missions);
+      const rows = dedupe(fetched);
+      // TORN IS NOW A PROOF (#896 review 19, finding 1). A repeated id proves the pages did not
+      // come from one snapshot; the ABSENCE of one proves nothing, because a removal between
+      // pages shifts every later offset back by one and leaves no duplicate behind — a rail with
+      // 199 unique rows, `total` 199, a stale M50 still on it and M101 gone for good.
+      //
+      // The server now says which ordered set each page was cut from, so equal digests across
+      // every page is the guarantee the offsets needed. A page with no digest is a degraded read
+      // and counts as a mismatch, never as agreement.
+      const snap = results[0].snapshot ?? null;
+      const oneSnapshot =
+        snap !== null && results.every((r) => (r.snapshot ?? null) === snap);
+      return {
+        rows,
+        torn: rows.length !== fetched.length || !oneSnapshot,
+        consumed: fetched.length,
+        total: results[results.length - 1].total,
+        store_error: results[results.length - 1].store_error,
+        snapshot: snap,
+      };
+    };
+
+    try {
+      // …and a torn read is RETRIED rather than shown. The window is small and uncorrelated with
+      // this client, so a second pass almost always lands consistent.
+      let out = await fetchPages();
+      for (
+        let attempt = 0;
+        out?.torn && attempt < RELOAD_RETRIES;
+        attempt += 1
+      ) {
+        out = await fetchPages();
+      }
+      if (!out) return;
+      applyList(gen, scope, {
+        missions: out.rows,
+        total: out.total,
+        store_error: out.store_error,
+        consumed: out.consumed,
+        // A STITCHED READ THAT COULD NOT BE PROVED (#896 reviews 17 and 18). Every opened page
+        // is kept — dropping them is the failure a previous review was about — but a read that
+        // is still torn after its retries drives something the operator can ACT on rather than a
+        // LOAD MORE that would return immediately: a RE-READ. An offset append can never fill an
+        // interior hole; only a fresh read can.
+        //
+        // `out.torn`, not `true`: paging is not itself a defect. A multi-page read whose pages
+        // agreed is complete — and now it can PROVE it agreed, which is what makes narrowing the
+        // control honest rather than optimistic. Saying "unproven" of every stitched read would
+        // leave it on screen for ever on any rail past the server's one-page cap.
+        stitched: out.torn,
+        snapshot: out.snapshot,
       });
     } catch {
       /* A failed refresh leaves the rail as it stands; it never empties it. */
     }
-  }, [applyList, missions.length, archived]);
+  }, [applyList, nextGen]);
 
   /** Follow the list rather than hard-capping it. The rail's contract is "every mission", and
    *  the first version stopped at 100 with no continuation — so mission 101 was unreachable
    *  with nothing on screen to say so. One explicit page at a time, because the alternative
    *  (fetch until exhausted on mount) makes an install with a long history pay for rows nobody
    *  asked to see. */
+  /** The newest pagination attempt. An attempt owns the busy flag and the append only while it
+   *  is still this one — see `loadMoreMissions`. */
+  const pageAttempt = useRef(0);
+  /** …and the newest ADOPT, for the same reason, plus the view it was started from. */
+  const adoptAttempt = useRef(0);
+
   const loadMoreMissions = useCallback(() => {
-    if (loadingMore || missions.length >= total) return;
+    // THE CURSOR, not the rendered count (#896 review 17, finding 1). Deduping drops rows the
+    // server DID return, so `missions.length` is short of what has been consumed — asking for it
+    // as the next offset re-requests a row already on screen, and the rail sticks there for ever
+    // with the mission that moved ahead of page 0 unreachable.
+    if (loadingMore || consumed >= total) return;
     setLoadingMore(true);
-    const gen = listGen.current;
+    // THE ASK, RECORDED BEFORE THE REQUEST GOES OUT (#896 review 26, finding 1). This is the
+    // moment the operator opened another page; waiting for the answer to paint would leave a
+    // refresh issued in between re-reading the narrower window and throwing this page away.
+    openRef.current = Math.max(openRef.current, consumed + PAGE);
+    // …STAMPED WITH THE NEWEST ISSUED GENERATION, so an answer already in flight cannot undo it.
+    openAskGen.current = listGen.current;
+    const scope = archivedRef.current;
+    // AN IMMUTABLE TOKEN PER ATTEMPT, owned by both the apply and the cleanup (#896 review 9,
+    // finding 5). The scope alone is not ownership: it round-trips. A1 can still be in flight
+    // while the operator visits Archived and comes back, and A2 starts — then A1 settles, sees
+    // its own scope again, and clears A2's busy flag. A3 then starts at the same offset, shares
+    // A2's base and generation, and both append the same rows.
+    const attempt = ++pageAttempt.current;
+    // AN APPEND TAKES NO GENERATION OF ITS OWN (#896 review 4, finding 2).
+    //
+    // It is not an authoritative answer about the rail — it extends whatever the newest
+    // authoritative answer was. Allocating a generation made it outrank one: a page issued
+    // before a mutation and arriving after that mutation's reload advanced `appliedGen` past
+    // the reload, which `applyList` then dropped. The rail kept its stale first page — a
+    // just-archived or just-closed row still on it — with a fresh page appended underneath.
+    //
+    // So it records what it is an extension OF, and answers to that instead.
+    const base = appliedGen.current;
+    const issued = listGen.current;
     api
-      .missions({ limit: PAGE, offset: missions.length, archived })
+      .missions({ limit: PAGE, offset: consumed, archived: scope })
       .then((r) => {
-        // The append this fence exists for. Without it a page issued against the active scope
-        // lands in the archived rail and mixes the two sets.
-        if (gen !== listGen.current) return;
-        setMissions((prev) => [...prev, ...r.missions]);
-        setTotal(r.total ?? total);
+        // Three questions, and an append has to answer all three:
+        //
+        // * is this even the rail we are showing — without it a page issued against the active
+        //   scope lands in the archived one and mixes the two sets;
+        // * has the list this page was computed as an OFFSET INTO been replaced since — if it
+        //   has, this page names rows from a list that no longer exists;
+        // * has an authoritative refresh been ISSUED since — because its answer is the one that
+        //   must win whenever it lands, and an append that slipped in first would be silently
+        //   overwritten by it anyway.
+        // * …and is this still the attempt anyone is waiting on, which a scope that has been
+        //   round-tripped cannot answer.
+        if (attempt !== pageAttempt.current) return;
+        if (scope !== archivedRef.current) return;
+        if (listGen.current !== issued) return;
+        // HAS THE LIST THIS PAGE IS AN OFFSET INTO BEEN REPLACED SINCE? Read at ARRIVAL, which is
+        // when the question has an answer — the merge below only decides what to do about it.
+        //
+        // This used to be the whole test, and it was a PROXY (review 26, inverse ordering). A
+        // refresh issued before the operator clicked LOAD MORE, landing after it, advances
+        // `appliedGen` and the page was thrown away — the click lost, with nothing on screen to
+        // say so. But the server names the ordered set every page was cut from, and that digest
+        // covers the whole filtered list rather than the slice: page 0 and page 1 of one list
+        // carry the SAME digest. So "is this a continuation of what is on the rail" has a real
+        // answer now, and the proxy is only needed where the digest cannot say.
+        const replaced = appliedGen.current !== base;
+        // DEDUPED AGAINST WHAT IS ALREADY ON SCREEN, not merely within the page. An append is
+        // the other half of the torn-snapshot problem and the one the operator meets first: the
+        // page is an OFFSET INTO a list that may have reordered since the page before it, so its
+        // first rows can be rows the rail already has.
+        setRail((prev) => {
+          // AN OFFSET INTO A LIST THAT MAY HAVE MOVED (#896 review 19, finding 1). The append
+          // has exactly the tearing problem the refresh has, and the same proof settles it: this
+          // page is a continuation only if it was cut from the set the cursor counts into. When
+          // it was not, the rows are still kept — dropping what the server sent is the failure an
+          // earlier review was about — and the rail says the list could not be proved whole, so
+          // the operator is offered the RE-READ that can actually close an interior hole.
+          const same =
+            (r.snapshot ?? null) !== null &&
+            (r.snapshot ?? null) === prev.snapshot;
+          // REPLACED AND UNPROVEN IS THE ONE CASE THAT IS DROPPED. Keeping it would append rows
+          // from a list that no longer exists — a mission archived elsewhere walks back onto the
+          // rail — which is worse than losing a page the operator can ask for again. Replaced but
+          // PROVEN is an ordinary continuation, and unreplaced keeps the review-19 behaviour
+          // exactly: the rows are kept and the rail says it could not be proved whole.
+          if (replaced && !same) return prev;
+          return {
+            ...prev,
+            rows: [...prev.rows, ...dedupe(r.missions, prev.rows)],
+            total: r.total ?? prev.total,
+            // …and the cursor advances by what the SERVER sent, whether or not the merge kept it.
+            consumed: prev.consumed + r.missions.length,
+            stitched: prev.stitched || !same,
+            snapshot: r.snapshot ?? null,
+          };
+        });
       })
       .catch(() => undefined)
       .finally(() => {
-        if (gen === listGen.current) setLoadingMore(false);
+        // The SAME ownership test. A superseded attempt unlocking the current one is how two
+        // requests end up at one offset.
+        if (attempt === pageAttempt.current) setLoadingMore(false);
       });
-  }, [loadingMore, missions.length, total, archived]);
+  }, [loadingMore, consumed, total]);
 
   /** Live sessions no mission holds. `heldExtra` folds in the selected mission's own roster so a
    *  freshly adopted session leaves UNTRACKED immediately, without waiting for the list refetch.
@@ -487,40 +1133,221 @@ export function MissionConsole({
   // and, more to the point, a render that is thrown away would still have published.
   useEffect(() => {
     shownRef.current = shown;
-  }, [shown]);
+    // ONE COUNTER FOR VIEW AND SCOPE. Two would let a request captured under the old view and the
+    // new scope compare equal on the half that happened to move.
+    visitRef.current += 1;
+    setVisitTk(visitRef.current);
+  }, [shown, archived]);
 
   /** Adoption needs a real, LIVE mission. In the UNTRACKED view `shown` is the sentinel, so the
-   *  target is the first mission — and when there is none the control is disabled and says why.
+   *  target is the first mission that can actually hold work — and when there is none the
+   *  control is disabled and says why.
    *
    *  `null` in the archived scope, deliberately: the server refuses every ordinary mutation on
    *  an archived mission ("unarchive it first", 409), so offering ADOPT there would advertise a
-   *  control the backend will not honour. */
+   *  control the backend will not honour.
+   *
+   *  **A CLOSED MISSION IS THE SAME CASE** (#896 review 20, finding 2). Reaching `done` /
+   *  `failed` / `abandoned` RELEASES the roster, so adopting into one leaves an active session on
+   *  a mission nobody follows through on. The store refuses it — that is where the guarantee
+   *  lives — and picking the first *unarchived* row regardless of state meant the rail happily
+   *  aimed the control at a mission the server was always going to reject. It aims at an eligible
+   *  one instead, and offers nothing when there is none. */
   const adoptTarget = archived
     ? null
     : shown && shown !== UNTRACKED_VIEW
       ? shown
-      : (missions[0]?.id ?? null);
+      : (missions.find((m) => !CLOSED_STATES.has(m.state))?.id ?? null);
 
   /** Flipping the scope drops the explicit selection so the derivation re-picks WITHIN the new
    *  scope. Without this the console kept showing the active mission it was on while the rail
    *  listed archived ones — a body and a rail describing different sets, with nothing on screen
    *  saying so. */
   const setScope = useCallback((next: boolean) => {
-    // FIRST, so every response already in flight is stale before anything else changes.
+    // FIRST, so every response already in flight is stale before anything else changes. The ref
+    // moves here rather than in the effect, because a response can resolve between this call and
+    // the effect's re-run and must already be seen as belonging to the old scope.
     listGen.current += 1;
+    appliedGen.current = listGen.current;
+    archivedRef.current = next;
     setLoadingMore(false);
     setArchived(next);
     setSelected(null);
-    setMissions([]);
-    setTotal(0);
+    setRail({ rows: [], total: 0, consumed: 0 });
     setStoreError(null);
   }, []);
+
+  /** A mission was created from a composer (#889).
+   *
+   *  Selected from the CREATE RESPONSE, not after the rail refetch: the row is what the server
+   *  just returned, so waiting for a list round trip would leave the operator looking at the view
+   *  they started from with nothing to show that anything happened.
+   *
+   *  A mission created while the ARCHIVED scope is shown is not in that list, so the scope is
+   *  reset through `setScope` — which bumps the list generation, so any response already in
+   *  flight for the archived rail is stale before the new selection lands. Setting `archived`
+   *  directly would leave that fence unbumped and let an archived page append underneath the new
+   *  mission.
+   *
+   *  `setScope` clears the selection; ours is applied after it, and React batches both, so the
+   *  final state is the new mission selected in the active scope. The rail refresh follows and
+   *  simply finds the row already there — deliberately not awaited, because a slow or failing
+   *  list must not swallow a mission that was created. */
+  /** A mission's lifecycle changed. #889, finding 4 of #896's review.
+   *
+   *  Archiving a mission from the ACTIVE rail moves it out of that rail — so re-reading the list
+   *  alone leaves the row gone from the rail while the console still renders that mission's body:
+   *  a rail and a body describing different sets, which is precisely what `setScope` exists to
+   *  prevent for the scope toggle. Unarchiving from Archived is the symmetric case.
+   *
+   *  So a scope-changing transition DROPS the explicit selection and lets the derivation re-pick
+   *  inside the scope that is actually shown. The selection is dropped rather than followed across
+   *  the scope: following it would silently flip the operator's rail to Archived because of one
+   *  archive, which is a bigger surprise than landing on the next live mission.
+   *
+   *  **Which rail "actually shown" means is the caller's to say, not ours to assume** (#896
+   *  review 10, finding 6). Archiving and unarchiving are the same event in opposite directions
+   *  and the mission is in the OTHER scope afterwards either way, so "reload the scope on screen"
+   *  is right for exactly one of them. From Archived, an unarchive that reloads Archived re-reads
+   *  the one list the mission has just left: the rail keeps the row until the server drops it,
+   *  and the operator is left in a scope where the mission they just restored does not belong.
+   *
+   *  A move INTO `active` therefore SWITCHES scope, through `setScope` rather than by setting
+   *  `archived` — the generation bump is what makes every archived response already in flight
+   *  stale, and the scope's own effect is what fetches the destination list. Archiving keeps the
+   *  operator where they are (they are watching the active rail and a row left it); unarchiving
+   *  moves them, because the mission they acted on is only visible there. */
+  const onMissionChanged = useCallback(
+    (opts?: {
+      scopeCleared?: boolean;
+      moved?: { id: string; to: "active" | "archived" };
+      membershipChanged?: boolean;
+    }) => {
+      // THE MOVED ROW GOES NOW, not when the refresh says so (#896 review 11, finding 3).
+      //
+      // `reload()` swallows its failures and keeps the list it has — deliberately, because a
+      // failed refresh must not empty a rail. But a SUCCESSFUL archive whose refresh then fails
+      // left the archived row in the Active list, `autoSelected` picked it straight back up, and
+      // the operator was looking at an archived mission's body under an Active rail with nothing
+      // on screen saying anything had gone wrong, and no later poll to repair it.
+      //
+      // The server has already told us the mission left this scope. That is not a guess, so the
+      // local list can act on it immediately and the re-read becomes a confirmation rather than
+      // the only source of truth.
+      // ON `moved` ALONE, not on `scopeCleared && moved` (#896 review 12, finding 1). The
+      // second is the view-local half and is suppressed for a mission the operator has left —
+      // which is exactly when this matters, because the rail is the thing they are looking at.
+      //
+      // …AND ONLY FROM THE RAIL IT LEFT (#896 review 14). A rail is not "the list"; there are
+      // two, and `moved.to` says which one the mission is in NOW. Removing the row from whatever
+      // happens to be on screen deleted it from the DESTINATION: archive A from Active, hold the
+      // response, switch to Archived where a fresh list correctly installs A, then release the
+      // held response — and A vanished from the one rail it belongs in, unreachable until a
+      // reload. The row goes only when the rail on screen is the scope the mission LEFT.
+      if (
+        opts?.moved &&
+        archivedRef.current !== (opts.moved.to === "archived")
+      ) {
+        const gone = opts.moved.id;
+        // THE ROWS AND THE COUNT MOVE TOGETHER, OR NOT AT ALL (#896 review 13, finding 1).
+        //
+        // They were two `useState`s and the decrement was unconditional, so a removal a NEWER
+        // list had already made was counted twice: hold A's archive, let a fresh list install
+        // without A, release the old response — the filter removes nothing and `total` still
+        // drops, so `rows.length >= total` hides LOAD MORE and the last mission is unreachable.
+        //
+        // One updater over one value, which is what makes them consistent by construction rather
+        // than by the order two hooks happen to be declared in.
+        setRail((prev) => {
+          const rows = prev.rows.filter((m) => m.id !== gone);
+          if (rows.length === prev.rows.length) return prev;
+          return {
+            ...prev,
+            rows,
+            total: Math.max(0, prev.total - 1),
+            // …AND THE CURSOR WITH IT (#896 review 18). The row that just left was one of the
+            // rows the server had already handed over, so a removal that decrements `total`
+            // alone leaves `consumed` over-counting by one — and LOAD MORE, which now stops on
+            // `consumed >= total`, disappears from a rail that still has a page to fetch.
+            consumed: Math.max(rows.length, prev.consumed - 1),
+          };
+        });
+      }
+      if (
+        opts?.scopeCleared &&
+        opts.moved?.to === "active" &&
+        archivedRef.current
+      ) {
+        // `setScope` clears the selection, bumps the generation and empties the rail, and its
+        // effect fetches the active list. Reloading as well would issue a SECOND request under
+        // the same new generation, from a `reload` closed over the old scope — the exact race
+        // `setScope` was introduced to end (#896 review 8, finding 3).
+        setScope(false);
+        if (opts.membershipChanged) onMembershipChanged?.();
+        return;
+      }
+      if (opts?.scopeCleared) setSelected(null);
+      void reload();
+      // THE OVERVIEW, not just the rail — finding 1 of #896's second review.
+      //
+      // UNTRACKED is derived from the overview CARDS, and each card carries the `mission_id` the
+      // server stamped on it. So releasing a session, or closing a mission (which releases every
+      // session it holds, server-side), leaves the card still stamped with the old mission: the
+      // session is gone from the roster and absent from UNTRACKED at the same time, until the
+      // outer poll happens to run. Reloading the mission list cannot fix that, because the list is
+      // not where the ownership fact lives.
+      if (opts?.membershipChanged) onMembershipChanged?.();
+    },
+    [reload, onMembershipChanged, setScope],
+  );
+
+  const onCreated = useCallback(
+    (m: Mission, opts: { focus: boolean } = { focus: true }) => {
+      // The mission EXISTS whatever happened on the client, so the rail is refreshed either way.
+      // Only the focus is conditional: a completion that arrived after the operator cancelled or
+      // moved on must not switch scope and selection out from under them (#896 review 2).
+      if (!opts.focus) {
+        void reload();
+        return;
+      }
+      setNote(null);
+      if (archived) {
+        // SCOPE SWITCH ONLY — no `reload()` here, and that is finding 3 from #896's review.
+        // `reload` is a callback closed over `archived`, so the instance in hand at this moment
+        // still requests `archived=1`; and `setScope` has already bumped the list generation, so
+        // that archived response would share the NEW generation with the active-scope effect and
+        // overwrite the active rail with archived rows.
+        //
+        // Nothing is lost by dropping it: `setScope` changes `archived`, which is in the list
+        // effect's dependencies, so the active list is fetched by the effect that owns that scope.
+        // One owner per scope, rather than two requests racing under one generation.
+        setScope(false);
+      } else {
+        void reload();
+      }
+      setSelected(m.id);
+      setStop("THREAD");
+    },
+    [archived, setScope, reload],
+  );
 
   const adopt = useCallback(
     (sessionKey: string) => {
       if (!adoptTarget) return;
       setAdopting(sessionKey);
       setNote(null);
+      // WHICH VISIT THE OPERATOR PRESSED IT FROM (#896 review 9 finding 4; review 10 finding 3).
+      //
+      // The refusal is a fact about THIS attempt — "already held by mission X" — and the console
+      // note is a surface that outlives the view it was raised in. Started in UNTRACKED and
+      // resolved after the operator selected mission B, an unfenced error appeared over B with
+      // nothing to say which mission it was about.
+      //
+      // A VISIT, not the id it had: `from !== shownRef.current` was satisfied again the moment
+      // the operator came back, so UNTRACKED → B → UNTRACKED admitted a refusal raised two views
+      // ago into a list that has since been re-read. The token cannot be re-entered.
+      const from = visit();
+      const attempt = ++adoptAttempt.current;
       api
         .adoptMissionSession(adoptTarget, sessionKey)
         .then(() => {
@@ -533,18 +1360,34 @@ export function MissionConsole({
           onMembershipChanged?.();
           return reload();
         })
-        .catch((e: unknown) =>
+        .catch((e: unknown) => {
+          // AUTHORITATIVE FIRST, AND UNCONDITIONALLY (#896 review 10, finding 5). A refusal is
+          // not "nothing happened": the 409 this path exists to report says the session is held
+          // by a mission the displayed card claims nothing about, so the picture that produced
+          // the attempt is the stale one. Refreshing only on success leaves UNTRACKED asserting
+          // an ownership the server has just denied, until the outer poll happens to run.
+          //
+          // Outside the attempt fence deliberately — a re-read is a fact about the SERVER, and
+          // it is correct for whoever is looking. Only the NOTE below is view-local.
+          onMembershipChanged?.();
           // Exclusive membership: a session already held comes back 409 NAMING the holder, and
-          // that detail is the useful half — "no" without "where it went" is not an answer.
+          // that detail is the useful half — "no" without "where it went" is not an answer. It
+          // is only an answer for the visit it was asked from, though.
+          if (attempt !== adoptAttempt.current || !isVisitCurrent(from)) return;
           setNote(
             e instanceof Error
               ? e.message
               : "That session could not be adopted.",
-          ),
-        )
-        .finally(() => setAdopting(null));
+          );
+        })
+        .finally(() => {
+          // The busy flag is owned by the attempt, for the reason the pagination token is: a
+          // superseded request clearing the current one's spinner re-enables a control that is
+          // still working.
+          if (attempt === adoptAttempt.current) setAdopting(null);
+        });
     },
-    [adoptTarget, reload, onMembershipChanged],
+    [adoptTarget, reload, onMembershipChanged, visit, isVisitCurrent],
   );
 
   const onTurns = useCallback(
@@ -579,6 +1422,9 @@ export function MissionConsole({
       onSelect={select}
       storeError={storeError}
       total={total}
+      hasMore={hasMore}
+      needsReRead={needsReRead}
+      onReRead={reload}
       loadingMore={loadingMore}
       onLoadMore={loadMoreMissions}
       archived={archived}
@@ -609,7 +1455,7 @@ export function MissionConsole({
           >
             ☰
           </button>
-          <span className={styles.missionTitle}>
+          <span className={styles.missionTitle} data-testid="console-title">
             {title ??
               (missions.length ? "Select a mission" : "MISSION CONTROL")}
           </span>
@@ -767,7 +1613,9 @@ export function MissionConsole({
                           ? "Archived missions cannot take new sessions — unarchive it first"
                           : adoptTarget
                             ? "Take this session into the selected mission"
-                            : "Select a mission first"
+                            : missions.length
+                              ? "Every mission here is closed — reopen one, or start a new mission, before adopting a session"
+                              : "Select a mission first"
                     }
                     data-testid="rail-adopt"
                   >
@@ -782,7 +1630,13 @@ export function MissionConsole({
                     <ActionRow
                       action={c.pending_action as OrchestratorAction}
                       onResolved={onResolved}
-                      onNote={setNote}
+                      /* FENCED, like every other late outcome (#896 review 5, finding 4). This
+                         path is not inside the keyed mission body, so nothing unmounts it when
+                         the operator selects a mission — and `ActionRow`'s settled-record 409
+                         calls the parent note, so an approval started here would paint its
+                         refusal over whatever the operator moved to. `UNTRACKED_VIEW` is the id
+                         this view holds, which is exactly what `isCurrent` compares against. */
+                      onNote={noteIfUntracked}
                       embedded
                     />
                   ) : c.last_action ? (
@@ -817,7 +1671,9 @@ export function MissionConsole({
               configured={configured}
               turns={turns[UNTRACKED_VIEW] ?? []}
               onTurns={onTurns}
-              isCurrent={isCurrent}
+              visit={visit}
+              isVisitCurrent={isVisitCurrent}
+              onCreated={onCreated}
             />
           </div>
         ) : shown ? (
@@ -832,6 +1688,7 @@ export function MissionConsole({
             onResolved={onResolved}
             onNote={setNote}
             isCurrent={isCurrent}
+            onMissionChanged={onMissionChanged}
           />
         ) : (
           <div className={styles.pane} data-testid="pane">
@@ -880,7 +1737,9 @@ export function MissionConsole({
               configured={configured}
               turns={turns[UNTRACKED_VIEW] ?? []}
               onTurns={onTurns}
-              isCurrent={isCurrent}
+              visit={visit}
+              isVisitCurrent={isVisitCurrent}
+              onCreated={onCreated}
             />
           </div>
         )}

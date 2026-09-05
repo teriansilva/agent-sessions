@@ -111,11 +111,27 @@ def _async_noop(name, sink=None):
     return _inner
 
 
-def _mission(state="done"):
+def _mission(state="done", holding=()):
+    """A mission in `state`, having HELD `holding` — adopted while it still could.
+
+    Each entry is a session key, or a `(key, role)` pair where the role matters.
+
+    The sessions are taken while the mission is `running` and the close comes after, because a
+    terminal mission may not adopt at all (#896 review 20, finding 2): reaching `done` releases
+    the roster, so a closed mission holding an active session is the state that refusal exists to
+    prevent. The membership rows are still there with `removed_at` set, which is what every
+    archive path here reads — `sessions_barred_from_automation` says so in as many words.
+
+    So this is not a workaround for the new refusal; it is the fixture finally building the state
+    production can actually reach.
+    """
     m = missions.create_mission("ship it", cwd="/repo")
     missions.set_state(m["id"], "draft", "planned")
     missions.set_state(m["id"], "planned", "dispatching")
     missions.set_state(m["id"], "dispatching", "running")
+    for held in holding:
+        key, role = held if isinstance(held, tuple) else (held, "primary")
+        missions.adopt(m["id"], key, role=role)
     if state != "running":
         missions.set_state(m["id"], "running", state, outcome=state)
     return m["id"]
@@ -146,8 +162,7 @@ def test_abandon_true_is_the_explicit_two_transition_path(env):
 
 
 def test_a_terminal_mission_archives_its_whole_roster(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.set_state(mid, "done", "running")  # reopen so a second session can be adopted
     missions.adopt(mid, CLAUDE_A)
     missions.adopt(mid, CLAUDE_B, role="sub")
@@ -164,8 +179,7 @@ def test_a_terminal_mission_archives_its_whole_roster(env):
 
 
 def test_a_session_that_cannot_be_archived_is_named_not_hidden(env, monkeypatch):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     monkeypatch.setattr(
         mission_archive.transcript_owner,
         "transcript_is_owned",
@@ -182,9 +196,7 @@ def test_a_session_that_cannot_be_archived_is_named_not_hidden(env, monkeypatch)
 
 
 def test_one_failure_does_not_abort_the_others(env, monkeypatch):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
-    missions.adopt(mid, CLAUDE_B, role="sub")
+    mid = _mission("done", holding=[CLAUDE_A, (CLAUDE_B, "sub")])
     monkeypatch.setattr(
         mission_archive.transcript_owner,
         "transcript_is_owned",
@@ -205,8 +217,7 @@ def test_a_crash_between_the_move_and_the_sidecar_settles_already_archived(env):
     leaves the file in the archive tree with the sidecar unset, and a naive retry raises
     "not found to archive" — recording a failure against a session that is already archived.
     """
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     env.tear_after_move = True
     with pytest.raises(RuntimeError):
         asyncio.run(mission_archive.archive_mission(mid))
@@ -225,8 +236,7 @@ def test_a_crash_between_the_move_and_the_sidecar_settles_already_archived(env):
 
 
 def test_an_already_archived_session_never_calls_the_provider_again(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     env.rows["11111111-1111-1111-1111-111111111111"].archived = True
     asyncio.run(mission_archive.archive_mission(mid))
     assert env.archive_calls == []
@@ -236,8 +246,7 @@ def test_an_already_archived_session_never_calls_the_provider_again(env):
 def test_a_genuine_archive_error_is_still_a_failure(env):
     """The wrapper must not turn every ArchiveError into `already_archived` — only the ones where
     the session really is archived."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     env.fail_with = archive_mod.ArchiveError("disk is full")
     out = asyncio.run(mission_archive.archive_mission(mid))
     rows = missions.archive_sessions_for(mid)
@@ -249,8 +258,7 @@ def test_a_genuine_archive_error_is_still_a_failure(env):
 
 
 def test_a_crash_before_teardown_is_resumed_at_boot(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)  # step 1 committed, then the process died
     assert missions.pending_archives() == [mid]
     assert missions.get_mission(mid)["archived_at"] is None
@@ -260,9 +268,7 @@ def test_a_crash_before_teardown_is_resumed_at_boot(env):
 
 
 def test_a_crash_between_sessions_resumes_only_the_unfinished_one(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
-    missions.adopt(mid, CLAUDE_B, role="sub")
+    mid = _mission("done", holding=[CLAUDE_A, (CLAUDE_B, "sub")])
     missions.begin_archive(mid)
     asyncio.run(mission_archive._teardown_session(mid, CLAUDE_A))  # first one landed, then crash
     env.archive_calls.clear()
@@ -275,8 +281,7 @@ def test_a_crash_after_teardown_before_settlement_reconciles_without_a_false_fai
     """The teardown succeeded but the settling transaction never ran, so the row is still
     `pending`. Resume re-runs it — and because the provider archive is idempotent, that is
     `already_archived`, not a failure for work that actually completed."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     env.rows["11111111-1111-1111-1111-111111111111"].archived = True  # teardown had landed
     metadata.patch(CLAUDE_A, archived=True)
@@ -339,8 +344,7 @@ def test_a_second_archive_caller_is_refused_before_it_can_finalise_anything(env)
     then unarchive it, all while the first worker was still inside `cleanup_runtime` killing a
     session. The operation needs an owner, not just its sessions.
     """
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     begun = missions.begin_archive(mid)
     assert [r["session_key"] for r in begun["sessions"]] == [CLAUDE_A]
     assert begun["op_token"]
@@ -359,8 +363,7 @@ def test_a_second_archive_caller_is_refused_before_it_can_finalise_anything(env)
 def test_finish_refuses_while_a_teardown_lease_is_still_open(env):
     """An open lease is not a failure to report — it is a reason not to finish yet. Reporting it
     was how the API came to say "archived" while a destructive worker was still running."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     begun = missions.begin_archive(mid)
     verdict, token = missions.claim_session_teardown(mid, CLAUDE_A)  # a worker is mid-teardown
     assert verdict == "claimed"
@@ -385,8 +388,7 @@ def test_finish_refuses_a_token_that_did_not_begin_this_archive(env):
 def test_boot_recovery_reopens_a_crashed_restore_lease_and_re_drives_it(env):
     """Skipping a `restoring` row meant recovery invoked no provider restore, then reported the
     mission unarchived and cleared the fence — declaring complete an operation that never ran."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid)
     assert missions.claim_session_restore(mid, CLAUDE_A)[0] == "claimed"
@@ -404,8 +406,7 @@ def test_a_session_queued_for_teardown_cannot_be_adopted_away(env):
     """The roster snapshot goes stale — reaching a terminal state released the key, and the
     partial unique index only guards `removed_at IS NULL`. That used to be caught at the teardown
     write boundary; it is now refused at the adopt boundary, one step earlier."""
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     missions.set_state(a, "done", "running")
     missions.adopt(a, CLAUDE_A)
     missions.set_state(a, "running", "done", outcome="done")
@@ -421,8 +422,7 @@ def test_a_session_queued_for_teardown_cannot_be_adopted_away(env):
 def test_boot_recovery_reopens_a_crashed_worker_s_lease(env):
     """An `in_progress` lease at boot can only belong to a process that died holding it — this
     app is single-instance — so recovery re-opens it. A live request must NOT."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     assert missions.claim_session_teardown(mid, CLAUDE_A)[0] == "claimed"
     assert missions.claim_session_teardown(mid, CLAUDE_A)[0] == "taken"
@@ -436,8 +436,7 @@ def test_a_stale_skip_is_re_evaluated_on_the_next_archive(env):
     """A row skipped because another mission held the key must not STAY skipped once that holder
     releases it — a re-archive after an unarchive would silently omit a session that is now safe
     to reap."""
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     missions.set_state(a, "done", "running")
     missions.adopt(a, CLAUDE_A)
     missions.set_state(a, "running", "done", outcome="done")
@@ -458,8 +457,7 @@ def test_unarchive_claims_before_it_moves_anything(env):
     """Restoring the providers first and clearing `archived_at` afterwards left a crash window in
     which live sessions sat under a mission still recorded archived — and boot recovery only
     looked at `archiving_at`, so the torn state was invisible and permanent."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid)  # claimed, then the process died mid-restore
     assert missions.pending_unarchives() == [mid]
@@ -475,8 +473,7 @@ def test_a_second_unarchive_request_is_refused_before_it_moves_anything(env):
     """Handing a concurrent caller `resumed=True` let BOTH walk the same provider restores: one
     reported success and the other a provider failure for the same session. A request loses; only
     recovery resumes."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid)
     with pytest.raises(missions.MissionError) as e:
@@ -491,8 +488,7 @@ def test_a_second_unarchive_request_is_refused_before_it_moves_anything(env):
 def test_the_unarchive_claim_remembers_the_mode_it_was_made_with(env):
     """A crash from `sessions=False` used to come back with the sessions unarchived anyway —
     recovery was finishing a differently-shaped operation."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid, sessions=False)  # claimed, then the process died
     assert missions.pending_unarchives() == [mid]
@@ -504,8 +500,7 @@ def test_the_unarchive_claim_remembers_the_mode_it_was_made_with(env):
 
 
 def test_each_restore_is_leased(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid)
     assert missions.claim_session_restore(mid, CLAUDE_A)[0] == "claimed"
@@ -523,9 +518,7 @@ def test_a_session_that_will_not_restore_does_not_hold_the_mission_hostage(env):
     So: the mission comes back, the failed row stays **reserved**, and calling unarchive again
     retries exactly those rows.
     """
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
-    missions.adopt(mid, CLAUDE_B, role="sub")
+    mid = _mission("done", holding=[CLAUDE_A, (CLAUDE_B, "sub")])
     asyncio.run(mission_archive.archive_mission(mid))
     env.refuse_unarchive.add("11111111-1111-1111-1111-111111111111")
 
@@ -626,8 +619,7 @@ def test_an_archived_session_stays_reserved_until_it_is_restored(env):
     reservation lasts until an explicit restore puts the session back, not until the teardown step
     happens to settle.
     """
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(a)
     b = _mission("running")
 
@@ -660,8 +652,7 @@ def test_an_archived_session_stays_reserved_until_it_is_restored(env):
 def test_a_restore_re_checks_ownership_before_moving_provider_files(env):
     """The mirror of the teardown-side check: restoring a session another mission has since taken
     would move the provider files underneath a live holder."""
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(a))
     b = _mission("running")
     _force_hold(b, CLAUDE_A)  # the state the adopt guard normally prevents
@@ -673,8 +664,7 @@ def test_a_restore_re_checks_ownership_before_moving_provider_files(env):
 def test_the_teardown_holder_re_check_is_the_second_line_not_the_only_one(env):
     """Adoption now refuses a queued session at the boundary, so this path is unreachable through
     the API. It stays as defence in depth, and is exercised directly rather than left unproven."""
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(a)
     _release_row(a, CLAUDE_A)  # make room in the partial unique index
     b = _mission("running")
@@ -688,8 +678,7 @@ def test_retention_will_not_delete_a_mission_mid_operation(env):
     it was about to reap."""
     import time as _t
 
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)  # an operation is now in flight
     con = missions._ready()
     try:  # age it well past the window
@@ -722,8 +711,7 @@ def test_the_fence_lifts_once_the_archive_finishes(env):
 
 
 def test_unarchive_restores_the_sessions_and_never_destroys_history(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     assert env.rows["11111111-1111-1111-1111-111111111111"].archived is True
     out = asyncio.run(mission_archive.unarchive_mission(mid))
@@ -736,8 +724,7 @@ def test_unarchive_restores_the_sessions_and_never_destroys_history(env):
 
 
 def test_unarchive_can_leave_the_sessions_archived(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     out = asyncio.run(mission_archive.unarchive_mission(mid, sessions=False))
     assert out["sessions"] == []
@@ -755,8 +742,7 @@ def test_a_session_another_mission_now_holds_is_skipped_not_killed(env):
     """Reaching a terminal state RELEASES a session, so it can legitimately be re-adopted before
     the archive runs. Tearing it down then would kill a live agent belonging to a different
     mission — so it is named as `skipped` rather than archived or silently omitted."""
-    a = _mission("done")
-    missions.adopt(a, CLAUDE_A)
+    a = _mission("done", holding=[CLAUDE_A])
     missions.set_state(a, "done", "running")
     missions.adopt(a, CLAUDE_A)
     missions.adopt(a, CLAUDE_B, role="sub")
@@ -885,8 +871,7 @@ def test_a_crash_inside_the_provider_unarchive_settles_restored_not_failed(env):
     back" trusts the tree, because in this direction the sidecar is exactly the thing that is
     wrong.
     """
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     assert metadata.load()[CLAUDE_A].archived is True
 
@@ -906,8 +891,7 @@ def test_the_torn_restore_is_told_apart_from_a_provider_refusal(env):
     """A tree/sidecar disagreement is the torn state and restores; a provider that refuses while
     the tree still says archived is a real failure. Conflating them would turn every refusal into
     a silent success."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     env.refuse_unarchive.add("11111111-1111-1111-1111-111111111111")
     out = asyncio.run(mission_archive.unarchive_mission(mid))
@@ -919,8 +903,7 @@ def test_a_failed_sidecar_repair_is_a_failed_restore(env, monkeypatch):
     """Suppressing the repair error and reporting `restored` anyway recreated the split-brain it
     exists to end: the sidecar still says archived, `_effective_archived` gives it precedence, and
     the caller then clears the session's archive state and the mission's fence over the top."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     env.rows["11111111-1111-1111-1111-111111111111"].archived = False  # the torn state
 
@@ -946,8 +929,7 @@ def test_recovery_never_reopens_a_lease_this_process_is_holding(env):
     """Recovery runs as a background task while the app is already serving, so "any lease here
     belongs to a crashed worker" is false. Reproduced before the fix: recovery reset a live
     request's lease and claimed the same session, so two workers ran the same external effect."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     # A live request takes the lease…
     assert missions.claim_session_teardown(mid, CLAUDE_A)[0] == "claimed"
@@ -971,8 +953,7 @@ def test_recovery_never_reopens_a_lease_this_process_is_holding(env):
 
 
 def test_a_restore_lease_is_owned_the_same_way(env):
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     asyncio.run(mission_archive.archive_mission(mid))
     missions.begin_unarchive(mid)
     assert missions.claim_session_restore(mid, CLAUDE_A)[0] == "claimed"
@@ -992,8 +973,7 @@ def test_a_worker_that_raises_settles_its_own_lease(env):
     """Recovery only reopens leases that have gone quiet for the full expiry window. So an
     exception inside a LIVE worker must not leave the lease behind: nothing would reopen it for
     five minutes, and until then the mission could not finish archiving."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     env.tear_after_move = True  # the provider raises after its file move
 
@@ -1011,8 +991,7 @@ def test_a_worker_that_raises_settles_its_own_lease(env):
 def test_recovery_re_drives_a_failed_teardown_once(env):
     """A worker that died mid-teardown settles `failed`, but the effect may have landed first —
     which only a retry can discover, and which the idempotent wrapper makes safe."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     env.tear_after_move = True
     with pytest.raises(RuntimeError):
@@ -1092,8 +1071,7 @@ def test_a_stale_worker_cannot_settle_the_operation_that_replaced_it(env):
     """The fencing-token property. Worker A's lease expires, worker B reclaims it, and A finishes
     late: without a token A's settlement clears B's fresh lease, the stale result wins, and the
     external effect can run twice."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     verdict, a_token = missions.claim_session_teardown(mid, CLAUDE_A)
     assert verdict == "claimed"
@@ -1117,8 +1095,7 @@ def test_a_stale_worker_cannot_settle_the_operation_that_replaced_it(env):
 def test_a_mission_teardown_and_a_session_route_exclude_each_other(env):
     """A read-only guard answers about the past and the caller then acts. The reservation IS the
     act, so the two paths cannot both be inside the provider call."""
-    mid = _mission("done")
-    missions.adopt(mid, CLAUDE_A)
+    mid = _mission("done", holding=[CLAUDE_A])
     missions.begin_archive(mid)
     verdict, token = missions.claim_session_teardown(mid, CLAUDE_A)
     assert verdict == "claimed"
@@ -1190,9 +1167,18 @@ def test_a_session_RELEASED_by_a_bare_abandon_is_not_barred_for_ever(env):
 
 
 def test_a_DONE_mission_does_not_bar_its_sessions(env):
-    """`done` and `failed` are outcomes, not withdrawals."""
-    mid = _mission("done")
+    """`done` and `failed` are outcomes, not withdrawals.
+
+    Adopted while the mission could still hold it and released BY the close, which is the state a
+    finished mission actually leaves behind (#896 review 20, finding 2 made the old shortcut —
+    adopting into a mission that is already `done` — impossible, and rightly: a closed mission
+    holding an active session is the thing that refusal exists to stop). The membership row is
+    still there with `removed_at` set, which is exactly the case this fence reads regardless of.
+    """
+    mid = _mission("running")
     missions.adopt(mid, CLAUDE_A)
+    missions.set_state(mid, "running", "done", outcome="done")
+    assert missions.active_session_keys(mid) == [], "the close should have released it"
     assert missions.sessions_barred_from_automation() == set()
 
 
@@ -1409,10 +1395,13 @@ def test_a_session_RE_ADOPTED_by_another_mission_is_not_barred(env):
     actions, purely because A stayed archived: a cross-mission availability failure (review
     on #881).
     """
-    a = _mission("done")
+    a = _mission("running")
     missions.adopt(a, CLAUDE_A)
-    # A releases it explicitly — the operator saying it is no longer part of A.
+    # A releases it explicitly — the operator saying it is no longer part of A — and then closes.
+    # Adopted while A was RUNNING, because a closed mission may not take a session at all (#896
+    # review 20, finding 2); the history this test is about is unchanged either way.
     missions.detach(a, CLAUDE_A)
+    missions.set_state(a, "running", "done", outcome="done")
 
     b = _mission("running")
     missions.adopt(b, CLAUDE_A)  # B legitimately owns it now

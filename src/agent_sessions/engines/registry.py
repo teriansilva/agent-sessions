@@ -220,6 +220,55 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
     return prov, native
 
 
+def archive_state(prov, native: str) -> str:
+    """Has the ENGINE'S OWN store archived this session? ``archived`` · ``not-archived`` ·
+    ``unreadable`` (#896 review 24, finding 1).
+
+    **This is deliberately NOT an existence check, and the difference is the whole design.** An
+    earlier version classified a session as live/archived/absent, which meant re-implementing every
+    scanner's semantics — and got two of them wrong in opposite directions: a `claude -p` one-shot
+    (`entrypoint: "sdk-cli"`, which `scanner` skips because it is not a session anyone can attach
+    to) read as a live session, and a malformed `shell` record did too, while Gemini — which pins
+    its id BEFORE writing its chat file — was refused because "no file yet" was reported as "cannot
+    tell".
+
+    Existence is what `scan()` is for, and its fail-soft answer is fine THERE because it is only
+    ever used as POSITIVE evidence: finding a semantically valid row proves a session exists, and
+    not finding one simply means the live writer has to prove it instead. What `scan()` cannot be
+    trusted for is the NEGATIVE half — "there is no archived row" — because a swallowed read
+    produces exactly that answer. So only that question gets its own reader.
+
+    Most engines have no engine-side archive at all: the flag lives only in the sidecar, which the
+    caller reads under the writer's own flock and asks first. For them "no row in a tree that does
+    not exist" is a real `not-archived`. `claude` is the one that also MOVES the transcript, and it
+    implements this.
+    """
+    fn = getattr(prov, "archive_state", None)
+    if fn is not None:
+        try:
+            state = str(fn(native))
+        except Exception:  # noqa: BLE001 — a provider that raises has told us it cannot answer
+            return "unreadable"
+        return state if state in ("archived", "not-archived", "unreadable") else "unreadable"
+    try:
+        for row in prov.scan() or []:
+            rid = _row_field(row, "id")
+            ruuid = _row_field(row, "uuid")
+            if ruuid == native or (rid and rid.endswith(native)):
+                return "archived" if _row_field(row, "archived", raw=True) else "not-archived"
+    except Exception:  # noqa: BLE001
+        return "unreadable"
+    # NO ROW. For a sidecar-only engine there is no tree an archived session could be hiding in,
+    # and the sidecar has already been read under its writer's flock. An engine that grows one
+    # implements `archive_state` — this default cannot answer for a tree it does not know about.
+    return "not-archived"
+
+
+def _row_field(row, name: str, *, raw: bool = False):
+    value = row.get(name) if isinstance(row, dict) else getattr(row, name, None)
+    return value if raw else str(value or "")
+
+
 def physical_key(key: str, aliases: dict[str, str] | None = None) -> str:
     """Resolve an engine-qualified ``key`` to the PHYSICAL key its live resources are
     under (#127 alias layer).

@@ -137,7 +137,17 @@ TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "abandoned"})
 #: answer in one readable table.
 _ALLOWED: dict[str, frozenset[str]] = {
     "draft": frozenset({"planned", "abandoned"}),
-    "planned": frozenset({"dispatching", "draft", "abandoned"}),
+    # `planned -> running` is the ADOPTED path, and it is not a shortcut around `dispatching`.
+    # The two say different things: `dispatching` is "we are launching a session", `running` is
+    # "work is underway". A session the operator started themselves and then adopted makes the
+    # second true without the first ever happening, and routing it through `dispatching` would
+    # write a dispatch into the timeline that never occurred (#889).
+    #
+    # It is guarded rather than free: the transition requires the mission to actually HOLD an
+    # active session (see `_require_a_session_to_run`). Without that guard the console could mark
+    # an empty mission `running`, the supervisor would sweep it every pass, find nothing to
+    # follow through on, and report a mission in flight that has no work in it.
+    "planned": frozenset({"dispatching", "running", "draft", "abandoned"}),
     "dispatching": frozenset({"running", "failed", "abandoned"}),
     "running": frozenset({"review", "done", "failed", "abandoned"}),
     "review": frozenset({"running", "done", "failed", "abandoned"}),
@@ -2289,6 +2299,20 @@ def _backfill_settlements(events: list[dict], *, path: Path | None = None) -> in
     return filled
 
 
+def _snapshot_digest(rows: list[dict]) -> str:
+    """A digest of the ORDERED ids a page was sliced out of — the comparand for a stitched read.
+
+    The order is part of it, so a reorder that preserves the set still changes the answer: the
+    thing a client needs to know is whether OFFSETS meant the same rows, not whether the same
+    missions exist.
+    """
+    h = hashlib.sha256()
+    for r in rows:
+        h.update(str(r.get("id") or "").encode("utf-8", "replace"))
+        h.update(b"\x00")
+    return h.hexdigest()[:32]
+
+
 def list_missions(
     *,
     q: str = "",
@@ -2348,6 +2372,24 @@ def list_missions(
         "limit": lim,
         "offset": off,
         "facets": facets,
+        # THE SNAPSHOT THIS PAGE WAS SLICED OUT OF (#896 review 19, finding 1).
+        #
+        # Offsets only compose if the thing they index has not moved, and a client stitching
+        # several pages had no way to establish that. Deduplication catches a REORDER — a
+        # repeated id cannot occur inside one snapshot — and cannot catch a REMOVAL: archive one
+        # mission between page 0 and page 1 and the second page starts one row late, so the rail
+        # ends up count-consistent, duplicate-free, holding a stale row and permanently missing
+        # a live one. A duplicate is proof of tearing; the absence of one is not proof of a
+        # snapshot.
+        #
+        # So the page carries a digest of the ORDERED ids of the full filtered set it was cut
+        # from. Equal digests across two pages is a proof rather than a heuristic: the sequence
+        # the offsets index into was identical, so the pages compose exactly. Any insert,
+        # removal or reorder changes it.
+        #
+        # Over `filtered`, not the scoped set: the client compares digests only between pages of
+        # one read, which by construction carry the same filters.
+        "snapshot": _snapshot_digest(filtered),
     }
 
 
@@ -2594,6 +2636,29 @@ def set_state(
                     f"(abandon it instead)",
                     status=409,
                 )
+            # THE ADOPTED PATH'S GUARD (#889). `planned -> running` exists so a session the
+            # operator started themselves can be tracked without inventing a dispatch — so it
+            # means nothing unless the mission actually holds one. Checked INSIDE the transaction
+            # against the same connection that is about to write, because "read the roster, then
+            # set the state" is two moments and a concurrent detach lands between them.
+            #
+            # Deliberately not applied to `dispatching -> running`: there, the session is created
+            # BY the dispatch and its association is written by that path.
+            if from_state == "planned" and to_state == "running":
+                live = con.execute(
+                    "SELECT 1 FROM mission_sessions "
+                    "WHERE mission_id=? AND removed_at IS NULL LIMIT 1",
+                    (mission_id,),
+                ).fetchone()
+                if live is None:
+                    # No explicit ROLLBACK: the `except BaseException` below owns it, exactly as
+                    # the cwd check above relies on. The two refusals are the same shape and must
+                    # stay that way — a second rollback path is a second thing to get wrong.
+                    raise MissionError(
+                        f"mission {mission_id}: adopt a session before marking it running "
+                        f"(a running mission with no session has nothing to follow through on)",
+                        status=409,
+                    )
             terminal = to_state in TERMINAL_STATES
             cur = con.execute(
                 # `outcome` is CLEARED on a non-terminal transition rather than carried forward.
@@ -2672,6 +2737,7 @@ def adopt(
     *,
     role: str = "primary",
     spawned_by: str | None = None,
+    expect_token: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
@@ -2685,6 +2751,11 @@ def adopt(
     Re-adopting into the **same** mission is an UPDATE, not an INSERT: the composite primary key
     means the historical row is still there after a detach, so a fresh insert would collide with
     the mission's own history rather than with another mission's claim.
+
+    ``expect_token`` is the caller's RESERVATION, checked in this transaction (#896 review 21).
+    A caller that reserved the session before doing slow work must prove it still holds the same
+    claim at the moment of the insert — a heartbeat reduces the chance of losing one, it does not
+    detect having lost it.
     """
     validate_id(mission_id)
     role = _require_str(role, "role")
@@ -2698,7 +2769,7 @@ def adopt(
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
-            _adopt_tx(con, mission_id, key, role, spawned_by, ts, path)
+            _adopt_tx(con, mission_id, key, role, spawned_by, ts, path, expect_token)
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -2712,9 +2783,61 @@ def adopt(
     return get_mission(mission_id, path=path) or {}
 
 
-def _adopt_tx(con, mission_id: str, key: str, role: str, spawned_by, ts: float, path) -> None:
+def _adopt_tx(
+    con,
+    mission_id: str,
+    key: str,
+    role: str,
+    spawned_by,
+    ts: float,
+    path,
+    expect_token: str | None = None,
+) -> None:
     """The adopt transaction. Caller owns BEGIN/COMMIT so the read can happen outside the lock."""
     _fence_busy(con, mission_id)
+    # THE FENCING TOKEN, IN THIS TRANSACTION (#896 review 21).
+    #
+    # A caller that reserved the session and then did slow work — ADOPT's eligibility scan reaches
+    # the engines and the filesystem — can LOSE that reservation while it works: the heartbeat's
+    # writes can fail until the row ages out, and a rival then reclaims it, archives the session
+    # and releases its own row. The holder check below is a check on a STRING, so it sees nothing
+    # and the original operation adopts a session that has since been archived.
+    #
+    # A heartbeat reduces the likelihood of expiry; it is not a fencing check after expiry has
+    # occurred. The token is: it changes on every reclaim, so requiring the exact one turns
+    # "nobody else holds it now" into "nobody has held it since I took it".
+    if expect_token is not None:
+        mine = con.execute(
+            "SELECT token, at FROM session_reservations WHERE session_key=?", (key,)
+        ).fetchone()
+        if (
+            mine is None
+            or str(mine["token"]) != expect_token
+            or float(mine["at"] or 0) < ts - RESERVATION_MAX_AGE_S
+        ):
+            raise MissionError(
+                f"the reservation on {key} was lost while this adoption was being prepared; "
+                "try again",
+                status=409,
+            )
+    # A CLOSED MISSION HOLDS NOTHING (#896 review 20, finding 2).
+    #
+    # Reaching `done` / `failed` / `abandoned` RELEASES the roster — that is what the terminal
+    # transition is for — so adopting into one puts an active session on a mission nobody is
+    # following through on: the supervisor will not nudge it, the board does not render it, and
+    # the mission reads finished while owning live work. `_fence_busy` covers archived and
+    # mid-operation missions and deliberately not this, because a terminal state is a legal
+    # resting place rather than an in-flight one; it needs its own refusal, and the refusal has
+    # to name the way out.
+    #
+    # At the STORE boundary, not in the console: the rail picking an eligible mission is the good
+    # affordance, and it is not the guarantee — the route is reachable without it.
+    st = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+    if st is not None and st["state"] in TERMINAL_STATES:
+        raise MissionError(
+            f"mission {mission_id} is {st['state']}; reopen it before adopting a session",
+            status=409,
+        )
     # A leased teardown is a RESERVATION on the session key, and adoption has to honour it.
     # Reaching a terminal state already set `removed_at`, so the partial unique index does not
     # stop this insert — and the archive worker that holds the lease is about to call
@@ -2908,7 +3031,7 @@ async def holding(
     session_key: str,
     token: str | None,
     *,
-    interval: float = RESERVATION_RENEW_S,
+    interval: float | None = None,
     path: Path | None = None,
 ) -> AsyncIterator[None]:
     """Keep a claim alive for as long as the external effect inside actually runs.
@@ -2938,18 +3061,24 @@ async def holding(
     if not token:
         yield
         return
+    # READ AT CALL TIME, not bound at import. A default evaluated in the signature freezes the
+    # module constant into the function object, so the cadence cannot be changed — including by a
+    # test that needs to prove the beat happens at all without waiting a minute for it (#896
+    # review 20, finding 1). Every other knob in this file is read live; this one only looked
+    # like it was.
+    beat_every = RESERVATION_RENEW_S if interval is None else interval
     stop = threading.Event()
 
     def _beat() -> None:
-        wait = interval
+        wait = beat_every
         while not stop.wait(wait):
             try:
                 verdict = renew_session(session_key, token, path=path)
             except Exception as exc:  # transient — retry SOON, not on the ordinary cadence
                 log.debug("mission: heartbeat on %s deferred (%s)", session_key, type(exc).__name__)
-                wait = beat_wait(False, interval)
+                wait = beat_wait(False, beat_every)
                 continue
-            wait = beat_wait(True, interval)
+            wait = beat_wait(True, beat_every)
             if verdict == SUPERSEDED:
                 log.warning("mission: claim on %s was reclaimed while still working", session_key)
                 return
@@ -8064,6 +8193,10 @@ def safe_list_missions(**kw) -> dict:
             "offset": kw.get("offset") or 0,
             "facets": {"projects": [], "states": []},
             "store_error": _store_reason(e),
+            # NO SNAPSHOT, because there was no read. A client stitching pages must treat a
+            # missing digest as "cannot prove one snapshot" rather than as one more page that
+            # happened to match — the degraded answer is the one case where it certainly did not.
+            "snapshot": None,
         }
 
 

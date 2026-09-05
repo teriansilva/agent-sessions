@@ -30,7 +30,13 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(tmp_path / "m.db"))
     monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
     missions.reset_schema_cache_for_test()
-    return missions.create_mission("ship it", cwd="/tmp")["id"]
+    mid = missions.create_mission("ship it", cwd="/tmp")["id"]
+    # A SESSION, because `may_nudge` now refuses a mission that holds none — a nudge is a write
+    # into a session, and with none there is nothing to write to (#896 review 7, finding 2).
+    # Every test in this file is about a mission the supervisor is following through on, which by
+    # definition has one; the tests that are about the EMPTY case adopt nothing and say so.
+    missions.adopt(mid, SESSION)
+    return mid
 
 
 def _running(store, *sessions):
@@ -501,8 +507,11 @@ async def test_a_session_ADOPTED_ELSEWHERE_mid_pass_is_not_written_to(store, tmp
 
 
 def test_the_authority_predicate_refuses_a_session_this_mission_never_held(store):
+    # A key this mission has never adopted — the fixture holds SESSION, so naming that one would
+    # be asking about a session it DOES hold.
+    never = "claude:99999999-9999-9999-9999-999999999999"
     _objective(store, KEY)
-    ok, why = sup._still_authorized(store, KEY, session_key=SESSION)
+    ok, why = sup._still_authorized(store, KEY, session_key=never)
     assert ok is False and "left this mission" in why
 
 

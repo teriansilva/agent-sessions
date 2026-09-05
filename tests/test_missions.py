@@ -617,6 +617,56 @@ def test_facets_are_computed_before_the_filters(store):
     assert out["facets"]["projects"] == ["p1", "p2"]
 
 
+def test_every_page_names_the_ORDERED_SET_it_was_SLICED_from(store):
+    """#896 review 19, finding 1. Offsets only compose if the thing they index has not moved.
+
+    A client stitching several pages had no way to establish that. Deduplicating overlaps catches
+    a REORDER — a repeated id cannot occur inside one snapshot — and cannot catch a REMOVAL:
+    archive one mission between page 0 and page 1 and the second page starts one row late, so the
+    merged list is count-consistent, duplicate-free, still holding the archived row and missing a
+    live one. A duplicate is proof of tearing; the absence of one is not proof of a snapshot.
+
+    So every page carries a digest of the ordered ids of the full filtered set it was cut from,
+    and equal digests across two pages is the proof the offsets needed.
+
+    Red against a page that carries no snapshot, and against one computed over the page rather
+    than over the set the offsets index into.
+    """
+    ids = [missions.create_mission(f"m{i}", title=f"M{i}")["id"] for i in range(6)]
+
+    first = missions.list_missions(limit=2, offset=0)
+    second = missions.list_missions(limit=2, offset=2)
+    assert first["snapshot"], "a page with no snapshot cannot be composed with another"
+    # THE SET, NOT THE PAGE — two different windows over one list must agree, or the digest
+    # answers a question nobody asked.
+    assert first["snapshot"] == second["snapshot"]
+
+    # A REMOVAL changes it, which is the case a duplicate can never reveal.
+    missions.delete_mission(ids[2])
+    after = missions.list_missions(limit=2, offset=0)
+    assert after["snapshot"] != first["snapshot"]
+
+    # …and so does a REORDER that preserves the set, because what the client needs to know is
+    # whether the OFFSETS meant the same rows.
+    order = [r["id"] for r in missions.list_missions(limit=10)["missions"]]
+    missions.set_state(order[-1], "draft", "planned")
+    moved = missions.list_missions(limit=10)
+    assert [r["id"] for r in moved["missions"]] != order
+    assert moved["snapshot"] != after["snapshot"]
+
+    # …while a read that did not happen carries NO snapshot rather than one more value that
+    # happens to match: a degraded answer is the one case where the pages certainly did not
+    # compose.
+    def _boom(**kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    real, missions.list_missions = missions.list_missions, _boom
+    try:
+        assert missions.safe_list_missions()["snapshot"] is None
+    finally:
+        missions.list_missions = real
+
+
 def test_archived_missions_are_a_separate_scope(store):
     mid = _running()
     missions.set_state(mid, "running", "done", outcome="done")
@@ -1903,6 +1953,99 @@ def test_a_FRESH_install_and_an_UPGRADED_one_get_the_SAME_supervisor_schema(tmp_
 
     for t in tables:
         assert ddl(t) == fresh[t], f"{t} differs between a fresh install and an upgraded one"
+
+
+# ---- the adopted path: `planned -> running` without a dispatch (#889) ---------------------
+
+
+def test_an_adopted_mission_reaches_running_without_claiming_a_dispatch(store):
+    """A session the operator started themselves makes "work is underway" true.
+
+    The alternative — routing it through `dispatching` — writes a dispatch into the timeline that
+    never happened, and the timeline is the one artefact that must not contain events which did
+    not occur. So the transition exists, and the `state` event it emits says `planned -> running`
+    rather than naming a launch.
+    """
+    m = missions.create_mission("track what I started", cwd="/repo")
+    missions.set_state(m["id"], "draft", "planned")
+    missions.adopt(m["id"], CLAUDE_A)
+
+    out = missions.set_state(m["id"], "planned", "running")
+    assert out["state"] == "running"
+
+    kinds = [(e["kind"], (e["meta"] or {}).get("to")) for e in out["events"]]
+    assert ("state", "running") in kinds
+    # Nothing anywhere claims a dispatch happened.
+    assert not any(e["kind"] == "dispatched" for e in out["events"])
+
+
+def test_running_without_a_session_is_refused(store):
+    """The guard that keeps `planned -> running` honest.
+
+    Without it the console could mark an empty mission running, the supervisor would sweep it
+    every pass, find nothing to follow through on, and report a mission in flight with no work in
+    it. `dispatching -> running` is deliberately NOT guarded this way: there the session is
+    created by the dispatch itself.
+    """
+    m = missions.create_mission("nothing adopted yet", cwd="/repo")
+    missions.set_state(m["id"], "draft", "planned")
+
+    with pytest.raises(missions.MissionError) as e:
+        missions.set_state(m["id"], "planned", "running")
+    assert e.value.status == 409
+    assert "adopt a session" in str(e.value)
+    # And it is REFUSED, not partially applied.
+    assert missions.get_mission(m["id"])["state"] == "planned"
+
+
+def test_a_detached_session_does_not_keep_the_adopted_path_open(store):
+    """`removed_at IS NULL` is the test, not "has ever held one".
+
+    A mission whose only session was detached holds nothing, and the roster keeps the historical
+    row — so a guard written against the roster rather than against ACTIVE membership would read
+    the history as a live claim and let an empty mission run.
+    """
+    m = missions.create_mission("held then released", cwd="/repo")
+    missions.set_state(m["id"], "draft", "planned")
+    missions.adopt(m["id"], CLAUDE_A)
+    missions.detach(m["id"], CLAUDE_A)
+
+    with pytest.raises(missions.MissionError) as e:
+        missions.set_state(m["id"], "planned", "running")
+    assert e.value.status == 409
+    assert missions.get_mission(m["id"])["state"] == "planned"
+
+
+def test_the_adopted_path_still_needs_a_cwd(store):
+    """The schema CHECK is not bypassed by the new edge.
+
+    `running` is not in `CWD_OPTIONAL_STATES`, and adding a transition into it must not become a
+    way to reach it without a resolved path — the cwd check runs before the roster guard, so a
+    cwd-less mission is refused for the cwd, not for the roster.
+    """
+    m = missions.create_mission("no project chosen")
+    missions.set_state(m["id"], "draft", "planned")
+    missions.adopt(m["id"], CLAUDE_A)
+
+    with pytest.raises(missions.MissionError) as e:
+        missions.set_state(m["id"], "planned", "running")
+    assert e.value.status == 409
+    assert "cwd" in str(e.value)
+
+
+def test_draft_still_cannot_become_running(store):
+    """The new edge is from `planned`, and only from `planned`.
+
+    A draft has not been decided on yet; #846 refused `draft -> running` deliberately and #889
+    does not widen that. Pinned separately from the transition-map test because this is the edge
+    the new one is most likely to be mistaken for.
+    """
+    m = missions.create_mission("x", cwd="/repo")
+    missions.adopt(m["id"], CLAUDE_A)
+    with pytest.raises(missions.MissionError) as e:
+        missions.set_state(m["id"], "draft", "running")
+    assert e.value.status == 409
+    assert "draft cannot become running" in str(e.value)
 
 
 def test_every_probe_ARGUMENT_publishes_the_json_type_it_takes():

@@ -40,7 +40,11 @@ export function MissionDrawer({
 
   return createPortal(
     <>
-      <div className={styles.scrim} onClick={onClose} data-testid="rail-scrim" />
+      <div
+        className={styles.scrim}
+        onClick={onClose}
+        data-testid="rail-scrim"
+      />
       <div
         className={styles.panel}
         role="dialog"

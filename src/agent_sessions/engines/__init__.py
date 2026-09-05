@@ -49,6 +49,7 @@ from .kimi import KimiProvider
 from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
 from .registry import (  # noqa: F401 — public re-exports
     all_providers,
+    archive_state,
     canonical_key,
     expects_raw_tty,
     get,
@@ -91,6 +92,7 @@ __all__ = [
     "parse_key",
     "canonical_key",
     "physical_key",
+    "archive_state",
     "logical_key",
     "is_new_session_placeholder",
     "is_opencode_new_placeholder",

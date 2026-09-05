@@ -50,6 +50,8 @@ from .. import (
     aitasks,
     engines,
     gitpanel,
+    headless_dispatch,
+    metadata,
     mission_archive,
     mission_fence,
     mission_objectives,
@@ -156,6 +158,114 @@ async def _settle_relay(mission_id: str, action_id: str, state: str, detail: str
                 mission_id, action_id=action_id, state=state, detail=detail
             )
         )
+
+
+async def _session_exists(key: str) -> bool:
+    """Is there a real session behind this key? (#896 review 11, finding 1)
+
+    `_session_key` proves the key is well FORMED, which is a different question — and the gap
+    between them was reachable: a syntactically perfect `claude:<uuid>` naming nothing at all was
+    adopted, and the mission then reached `running` on the strength of a row it had just written
+    about a session that does not exist. `planned -> running` means "work is under way"; a
+    fabricated key makes that a claim with nothing behind it, and the supervisor then follows
+    through on it.
+
+    TWO independent proofs, either of which is enough, because a session can legitimately be one
+    without the other:
+
+    * the ENGINE'S OWN STORE knows it — a transcript, a row — which is #898's condition 5 and the
+      evidence that survives a restart;
+    * a live master answers for it — a session started moments ago whose store record has not
+      landed yet is still a real session to attach to.
+
+    An unreadable store answers "no evidence", never "yes": #898's helper already swallows its own
+    errors that way. That direction is the safe one here — a refused adoption is retryable and
+    says why, while an accepted one silently underwrites a `running` mission.
+
+    **AND AN ARCHIVED SESSION IS NOT ONE TO ADOPT** (#896 review 15, finding 1). `scanner.scan()`
+    returns live **and** archived rows — deliberately, because the sidebar lists both — so "the
+    store knows it" was satisfied by a session that has been put away. The mission then reached
+    `running` with no live or resumable agent behind it, which is the same claim-with-nothing-
+    behind-it the existence check was added to stop, one door along.
+
+    **The archive question is asked FIRST, and it can refuse on its own** (review 16, findings 2
+    and 3). Two things were wrong with asking it second:
+
+    * a live writer short-circuited it. `is_live` returned early, and an archived session CAN
+      still have one — the archive route suppresses runtime-cleanup failures and archives the
+      record anyway — so a teardown that left a writer behind turned an archived record into a
+      `running` mission;
+    * an unreadable sidecar answered "not archived". `metadata.load()` collapses missing,
+      corrupt and unreadable into `{}`, and for the engines whose archive lives ONLY in the
+      sidecar the provider row then says `archived=False` — so the gate accepted an archived
+      session precisely when it could not tell. `metadata.archive_override_under_lock()` is
+      that missing answer, and it takes the WRITER'S OWN FLOCK (review 17, finding 3): `patch()`
+      truncates in place before serializing, so every ordinary edit has a window in which the
+      file exists and is zero bytes, and a lock-free reader calls that "no override".
+
+    The precedence within the archive question is the app's own — the sidecar override wins where
+    it is set, the engine's scan answers otherwise — so this asks `mission_archive` rather than
+    growing a second opinion about what archived means. Anything but a definite "not archived"
+    refuses, because this is the direction where being wrong underwrites a running mission.
+    """
+    try:
+        prov, native = engines.parse_key(key)
+    except Exception:  # noqa: BLE001
+        return False
+
+    def _adoptable() -> bool:
+        # THE ARCHIVE QUESTION, BEFORE EITHER KIND OF EVIDENCE, and from ONE locked snapshot.
+        #
+        # FOUR ANSWERS, because the sidecar can say four things and two of them used to arrive
+        # as one (review 29). "Nobody recorded an override" and "the operator explicitly set this
+        # ACTIVE" both read as `False`, so both fell through to the engine's own store — and for
+        # opencode, whose store this app may not write, UNARCHIVE deliberately sets only the
+        # sidecar and leaves the native `time_archived` in place. The session moved into the
+        # active list and ADOPT went on 404ing against a native flag the operator had already
+        # overridden.
+        sidecar = metadata.archive_override_under_lock(f"{prov.engine_id}:{native}")
+        if sidecar == "unreadable":
+            log.warning("refusing to adopt %s: the metadata sidecar could not be read", key)
+            return False
+        if sidecar == "archived":
+            return False
+        # …and where the sidecar says nothing, the ENGINE'S own view decides — the same
+        # precedence the sidebar and `mission_archive` use, with the override already applied
+        # above. **In THREE answers, not two** (#896 review 22).
+        #
+        # `_effective_archived` collapses "the store has no row for this session" and "the store
+        # could not be read" into one `None`, and this gate refused on both. Those are opposite
+        # facts: a store that cannot be read must not underwrite an adoption, while a store with
+        # no row is the ordinary state of a session started moments ago — some engines persist
+        # only after the first turn. The documented second proof, a live writer, was therefore
+        # unreachable, and a real live UNTRACKED session could not be adopted at all, potentially
+        # for as long as it stayed silent.
+        # …and the ENGINE'S OWN ARCHIVE, as a question that can say "I could not tell" (#896
+        # reviews 23 and 24). `scan()` cannot answer the negative half — every provider swallows
+        # its read failures, so "no archived row" and "could not look" arrive identically, and a
+        # gate built on it accepted a live writer while an archived row may have been hidden.
+        #
+        # …AND ONLY WHERE THE SIDECAR IS SILENT. An explicit `active` is the operator's own
+        # answer to this exact question, and the override winning where it is set is the app's
+        # precedence everywhere else (the sidebar, `mission_archive`); consulting the engine
+        # after it would be a second opinion this gate has no business forming.
+        if sidecar == "unset":
+            state = engines.archive_state(prov, native)
+            if state != "not-archived":
+                if state == "unreadable":
+                    log.warning("refusing to adopt %s: the engine's store could not be read", key)
+                return False
+        # …THEN EITHER PROOF IS ENOUGH, because a session can legitimately be one without the
+        # other. `scan()` is the right source HERE and its fail-soft answer is fine, because it is
+        # used only as POSITIVE evidence: a semantically valid row proves the session exists, and
+        # not finding one simply means the live writer has to prove it instead — which is the
+        # ordinary state of a session started moments ago, and of every engine that pins its id
+        # before it writes anything (review 24, finding 1).
+        if headless_dispatch._has_store_record(prov, native, ""):
+            return True
+        return session_input.is_live(engines.physical_key(key))
+
+    return await asyncio.to_thread(_adoptable)
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -316,20 +426,67 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         try:
             body = await _body(request)
             key = _session_key(body.get("session_key"))
+            # `body.get("role") or "primary"` silently turned a malformed falsy value (`{}`,
+            # `[]`, `0`) into the default instead of rejecting it. Absent means default; present
+            # means it has to be a real string the store recognises.
             role = "primary" if body.get("role") is None else body.get("role")
+            # THE RESERVATION SPANS BOTH HALVES (#896 review 19, finding 2).
+            #
+            # Eligibility was decided in one moment and the row inserted in another, and the
+            # archive routes hold their own reservation only until the provider settles — so
+            # `eligible → archive → release → adopt` inserted a session that had been archived
+            # in between, and the adopt transaction had nothing left to notice it by. A check is
+            # a statement about the past; the reservation is the mutex the sibling routes already
+            # take, so taking it here is what makes the two exclude each other.
+            #
+            # It is a ROW, not a held lock, so it composes with the roster fence below rather
+            # than ordering against it: `reserve_session` commits and returns, and nothing here
+            # holds the store's write lock across `session_input`'s.
+            #
+            # Held as `mission:<id>`, which is the holder `_adopt_tx` recognises as its own — so
+            # it still refuses a reservation belonging to anybody else, and a session another
+            # mission owns is still the store's 409 naming that mission rather than this one.
+            token = await missions.run_admitted(
+                lambda: missions.reserve_session(key, f"mission:{mission_id}")
+            )
+            try:
+                # …AND RENEWED WHILE IT IS HELD (#896 review 20, finding 1). A reservation is
+                # reclaimable after `RESERVATION_MAX_AGE_S` without proof of life, and the scan
+                # below is unbounded provider and filesystem work — so a slow engine store turned
+                # the mutex into a five-minute bet: an archive could reclaim it, archive the
+                # session, release, and this insert would still land. `holding` beats on its own
+                # thread for exactly that, and the archive route already takes it. The expiry is
+                # a property of the WORK's duration, so both sides of a mutex have to defend
+                # against it or only one of them is fenced.
+                async with missions.holding(key, token):
+                    # EXISTENCE, not just shape (#896 review 11, finding 1). Checked here rather
+                    # than in the store, because "is there a session" is a question about the
+                    # ENGINES and the store deliberately does not know about them. Inside the
+                    # fence, so the answer is still true when the row is written.
+                    if not await _session_exists(key):
+                        return _fail(
+                            missions.MissionError(f"no session {key} exists to adopt", status=404)
+                        )
 
-            def _adopt():
-                # UNDER THE SAME FENCE THE QUESTION TAKES (#900 review 6, finding 1). A question
-                # locks the sessions it knows about, which cannot order it against an ADOPTION —
-                # the session being adopted is by definition not in that set. Both sides take the
-                # roster's own pseudo-key, so "the roster is changing" and "a question is being
-                # committed against it" cannot interleave.
-                with session_input.sessions_transaction(
-                    [mission_fence.roster_key(mission_id), engines.physical_key(key)]
-                ):
-                    return missions.adopt(mission_id, key, role=role)
+                    def _adopt():
+                        # UNDER THE SAME FENCE THE QUESTION TAKES (#900 review 6, finding 1). A
+                        # question locks the sessions it knows about, which cannot order it
+                        # against an ADOPTION — the session being adopted is by definition not in
+                        # that set. Both sides take the roster's own pseudo-key, so "the roster is
+                        # changing" and "a question is being committed against it" cannot
+                        # interleave.
+                        with session_input.sessions_transaction(
+                            [mission_fence.roster_key(mission_id), engines.physical_key(key)]
+                        ):
+                            # THE TOKEN, not just the lock (#896 review 21). The heartbeat above
+                            # keeps the claim fresh; this proves it was never lost — the store
+                            # refuses unless the reservation is still the exact one taken here.
+                            return missions.adopt(mission_id, key, role=role, expect_token=token)
 
-            return JSONResponse(await missions.run_admitted(_adopt))
+                    return JSONResponse(await missions.run_admitted(_adopt))
+            finally:
+                with contextlib.suppress(Exception):
+                    missions.release_session(key, token)
         except session_input.AuthorityFenceBusy:
             # RETRYABLE, NOT BROKEN (#900 review 7, finding 5). The shared fence being held is
             # ordinary contention — a question is committing against this very roster — and the

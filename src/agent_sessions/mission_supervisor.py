@@ -177,12 +177,44 @@ def budget_state(
     }
 
 
-def may_nudge(mission_id: str, objective_key: str, *, path=None) -> tuple[bool, str]:
+def may_nudge(
+    mission_id: str,
+    objective_key: str,
+    *,
+    held_sessions: int | None = None,
+    roster_unreadable: bool = False,
+    path=None,
+) -> tuple[bool, str]:
     """``(allowed, why_not)`` for one more automatic nudge against this objective.
 
     Every refusal names itself, because "the supervisor did nothing" is the state the operator
     complained about and an unexplained silence is indistinguishable from a broken feature.
+
+    `held_sessions` lets a caller that has already counted them pass the count in rather than
+    have this re-read it once per objective; None means "read it here".
+
+    `roster_unreadable` is how a caller says "I TRIED AND COULD NOT", which is a third answer and
+    not the same as either (#896 review 9, finding 1). Overloading `None` for both left `assess`
+    publishing a split-brain reading: it reported `sessions_unreadable: true` from its own failed
+    read, passed `None` down, and a second read that happened to succeed then returned
+    `may_nudge: true` — so the board said "nothing can be sent" above a READY row. One snapshot,
+    one verdict; a caller that could not look does not get a second opinion.
     """
+    if roster_unreadable:
+        return False, "the mission's sessions could not be read, so nothing may be sent"
+    # A NUDGE IS A WRITE INTO A SESSION, so with no session there is nothing this could do
+    # (#896 review 7, finding 2). The pass itself already does nothing — it iterates the
+    # currently-held sessions and there are none — but the VERDICT said READY, so releasing the
+    # last session left a board promising an action that could never happen. The refusal is here,
+    # beside the others, so the board and the pass cannot disagree about it.
+    held = held_sessions
+    if held is None:
+        try:
+            held = len(missions.active_session_keys(mission_id, path=path))
+        except Exception:  # noqa: BLE001
+            return False, "the mission's sessions could not be read, so nothing may be sent"
+    if held <= 0:
+        return False, "this mission holds no session, so there is nothing to nudge"
     episode, stood_down, question_seq = missions.objective_hold(
         mission_id, objective_key, path=path
     )
@@ -247,6 +279,18 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     """
     ts = time.time() if now is None else now
     rows = _objective_rows(mission_id, path=path)
+    # Counted ONCE and passed down, rather than re-read per objective — and read BEFORE the loop
+    # because `may_nudge` needs it (see below).
+    #
+    # **None is not zero** (#896 review 8, finding 2). Suppressing the exception and reporting `0`
+    # turned an I/O failure into the factual claim "this mission holds no session" — an "we could
+    # not look" rendered as "there is nothing there", which is the same lie the probe runner's
+    # three-way answer exists to prevent and the same one `unreadable` prevents on the budget.
+    held: int | None
+    try:
+        held = len(missions.active_session_keys(mission_id, path=path))
+    except Exception:  # noqa: BLE001
+        held = None
     out: list[dict] = []
     unmet_gates = 0
     # ONE READ FOR THE WHOLE MISSION, outside the per-objective loop.
@@ -273,7 +317,13 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
             unmet_gates += 1
         episode, stood_down, question_seq = missions.objective_hold(mission_id, key, path=path)
         b = budget_state(mission_id, key, episode=episode, path=path)
-        allowed, why = may_nudge(mission_id, key, path=path)
+        allowed, why = may_nudge(
+            mission_id,
+            key,
+            held_sessions=held,
+            roster_unreadable=held is None,
+            path=path,
+        )
         out.append(
             {
                 "key": key,
@@ -313,12 +363,32 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 ),
             }
         )
+    # NOTHING TO FOLLOW THROUGH ON, said out loud (#896 review 6, finding 3).
+    #
+    # `planned -> running` refuses a mission with no active session, on the reasoning that a
+    # running mission with nothing to supervise reports work in flight that has none. Releasing
+    # the last session reaches that same state from the other side — and neither of the obvious
+    # repairs is right: refusing the detach takes away an ordinary operator act, and forcing the
+    # mission to `planned` takes away its ability to be closed, because `planned` means "never
+    # launched" by an existing deliberate CHECK and cannot become `done` or `failed`.
+    #
+    # So the state stays and the READING tells the truth. The supervisor already does nothing
+    # here — it iterates currently-held sessions and there are none — and this is that silence
+    # made legible, so the board can say "no session" rather than showing a running mission with
+    # an empty board and no explanation.
     return {
         "objectives": out,
         # `likely_done` is a PROPOSAL, never a close: nothing here marks anything met, and a
         # mission with no objectives is not "done" — it is unmeasured, which is a different fact.
         "likely_done": bool(rows) and unmet_gates == 0,
         "unmet_gates": unmet_gates,
+        "held_sessions": held,
+        # Not "idle" and not "stalled": those are claims about an agent. This is a claim about
+        # the MISSION — there is no agent for it to be either. And it is a CLAIM, so it is made
+        # only from a roster we actually read: `None` means the read failed, and an unread roster
+        # is neither empty nor full.
+        "no_session": held == 0,
+        "sessions_unreadable": held is None,
         "checked_at": ts,
     }
 

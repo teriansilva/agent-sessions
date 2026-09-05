@@ -328,12 +328,17 @@
   color: var(--text-3);
 }
 /* A probe that could not run reports its LAST OBSERVED state, visibly stale, naming the reason.
- * Nothing is ever marked met or failed on data the server could not fetch. */
+ * Nothing is ever marked met or failed on data the server could not fetch.
+ *
+ * `--git-mod-fg`, not the raw `--status-degraded` this shipped with (#878): it is the SAME amber,
+ * already darkened toward `--text-1` for the light ground, where the raw hue measures ~2.15:1 as
+ * small text. Reusing the existing text-safe amber rather than minting a third one keeps the
+ * palette one palette; the meaning (attention, not failure) is unchanged. */
 .objStale {
   overflow-wrap: anywhere;
   display: block;
   font-size: 0.68rem;
-  color: var(--status-degraded);
+  color: var(--git-mod-fg);
 }
 .objReason {
   overflow-wrap: anywhere;
@@ -657,22 +662,26 @@
   align-self: center;
 }
 
+/* TEXT TOKENS, not the raw hues. These badges are small mono WORDS, and the raw status hues are
+   signal colours sized for LEDs and borders — `--status-degraded` measures ≈2.15:1 as small text
+   on the light ground, well under AA. `contrast.test.ts` asserts the rule rather than the
+   instance, which is how this pairing was caught the moment the two branches met. */
 .supReady {
-  color: var(--status-up);
+  color: var(--ok-text);
 }
 .supSpent {
-  color: var(--status-degraded);
+  color: var(--warn-text);
 }
 .supWaiting {
-  color: var(--status-unknown);
+  color: var(--git-unknown-fg);
 }
 /* An unreadable ledger is a fact about the FILE, not about the objective — amber, because it
  * needs a human, and never the same paint as a budget the supervisor genuinely spent. */
 .supUnknown {
-  color: var(--status-degraded);
+  color: var(--warn-text);
 }
 .supHeld {
-  color: var(--status-unknown);
+  color: var(--git-unknown-fg);
 }
 .supMet {
   color: var(--text-3);
@@ -689,7 +698,9 @@
   font-family: var(--font-mono);
   font-size: 0.6rem;
   letter-spacing: 0.08em;
-  color: var(--status-degraded);
+  /* Text-safe amber, same reason as `.objStale` above — and this one is 0.6rem, the smallest
+     type on the surface, where the raw hue is least readable. */
+  color: var(--git-mod-fg);
   margin-left: 0.5rem;
 }
 
@@ -734,6 +745,212 @@
   color: var(--text-3);
 }
 
+/* ---------------------------------------------------------------------------------------------
+   #889 — the operator's controls.
+
+   Every interactive element here carries `min-height: 44px` and a visible `:focus-visible` ring,
+   because the Playwright inventory measures EVERY interactive control on the mobile viewport, not
+   a list somebody remembered to update. A control added without them fails that gate.
+
+   Colour follows the same rule as the rest of the console: `--accent` is brand and affordance
+   (the primary action), the semantic `--status-*` tokens carry state. Nothing here means a state,
+   so nothing here uses a status token. No radius, no gradients.
+   --------------------------------------------------------------------------------------------- */
+
+.composerModes {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px 0;
+}
+.modeBtn {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+.modeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.modeOn {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+
+.newMissionRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.newMissionProject {
+  flex: 0 1 210px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+}
+.newMissionProject:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.newMissionActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+/* The NEW MISSION form STACKS, where `.composer` is a row — so it gets its own class rather than
+   an override on `.composer`. Two layouts sharing one class is how the ask form starts drifting
+   the day this one changes. */
+.newMissionForm {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* A secondary control: same geometry as `.send`, no accent fill. Used for CANCEL and for every
+   mission lifecycle action that is not the primary one. */
+.missionBtn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.missionBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.missionBtn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+/* The destructive controls. `--danger-text`, NOT a raw status hue.
+   `--status-degraded` (#f59e0b) is a signal colour sized for LEDs and borders; as small text on
+   the light ground it measures ~1.93:1 on `--panel`, well under AA's 4.5:1 — and `tokens.css`
+   documents exactly that ("the raw status hues are unreadable as small text"). `--danger-text` is
+   the repo's existing text-safe destructive token, theme-aware and measured at 5.5:1 on `--panel`.
+   It also reads better: a control that terminates agents is DANGER, not "degraded".
+   The BORDER may stay a signal colour — a 1px edge is not text — but it uses the same token so the
+   control reads as one thing. */
+.missionBtnDanger {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
+
+.missionBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.missionBarState {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  color: var(--text-2);
+  margin-right: auto;
+}
+.missionConfirm {
+  flex: 1 1 100%;
+  color: var(--text-2);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.objEdit {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.objEditBtn {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.objEditBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.objEditBtn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+.objAddRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-top: 10px;
+}
+.objAddInput {
+  flex: 1 1 160px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+}
+.objAddInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The session roster, now a list because each row carries a control (#889). */
+.rosterList {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.rosterRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.rosterKey {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+/* A control inside a turn's own block — retry, dismiss, check again (#890). Sized to the 44px
+   touch floor the rest of the console holds to, and inline rather than a bar, because it belongs
+   to the one turn it is about rather than to the thread. */
 /* VIEW SCREEN (#894). A `pre` because it is terminal output: proportional text turns a TUI's
    box drawing and column alignment into noise, which is most of what the operator is looking at.
    Scrolls in BOTH axes rather than wrapping — a wrapped 120-column screen is unreadable in a way
@@ -839,9 +1056,13 @@
 }
 
 /* What happened to a relayed message, beside the message (#894). Status colour is load-bearing
- * here rather than decorative: `--status-degraded` (amber) is "needs a human / not current" and
- * `--status-down` (red) is failure, which is exactly the distinction between "we cannot tell
- * whether this arrived" and "it did not". */
+ * here rather than decorative: amber is "needs a human / not current" and red is failure, which
+ * is exactly the distinction between "we cannot tell whether this arrived" and "it did not".
+ *
+ * Through the *-TEXT tokens, not the raw status hues (#889's contrast gate). The raw signal
+ * colours fail AA as small text on the light ground, and this is small monospace text — the
+ * token is the same hue mixed toward `--text-1` so the meaning survives and the reading does
+ * too. The gate is a test, so this is not a matter of remembering. */
 .tlRelay {
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
@@ -849,10 +1070,10 @@
   color: var(--text-2);
 }
 .tlRelay[data-relay-kind="warn"] {
-  color: var(--status-degraded);
+  color: var(--warn-text);
 }
 .tlRelay[data-relay-kind="bad"] {
-  color: var(--status-down);
+  color: var(--danger-text);
 }
 /* The mission's open question (#892). Framed in the attention accent because it is the one thing
    on the page that is waiting on the operator — and above the thread, so `needs_you` points at

@@ -37,6 +37,48 @@ class ClaudeProvider:
         # if a future scanner ever yields more than one engine.
         return [s for s in scanner.scan() if s.engine == self.engine_id]
 
+    def archive_state(self, native_id: str) -> str:
+        """`archived` · `not-archived` · `unreadable` (#896 review 24, finding 1).
+
+        Claude is the one engine that also MOVES the transcript on archive, so its tree can hold
+        the fact the sidecar does not. `scan()` cannot answer the NEGATIVE half of that question:
+        `scanner._walk` swallows a per-file `stat` failure and a whole unreadable tree raises past
+        it, so "no archived row" and "could not look" arrive identically.
+
+        Deliberately NOT an existence check. This asks only whether the archive tree holds a
+        transcript for this id, and it uses the scanner's own semantic read to decide — a
+        `claude -p` one-shot (`entrypoint: "sdk-cli"`) is not a session anyone can attach to, so
+        one sitting in the tree is not an archived session either.
+
+        `stat`, not `glob` or `is_file`: both of those swallow a permission error and answer "no
+        such file", which is the conflation this method exists to remove. Only `ENOENT` means
+        "not here".
+        """
+        if not self.id_pattern.match(native_id or ""):
+            return "not-archived"
+        root = Path.home() / ".claude" / "projects-archive"
+        try:
+            if not root.is_dir():
+                return "not-archived"
+            dirs = list(root.iterdir())
+        except OSError:
+            return "unreadable"
+        for project_dir in dirs:
+            jsonl = project_dir / f"{native_id}.jsonl"
+            try:
+                jsonl.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                return "unreadable"
+            try:
+                _cwd, _first, headless = scanner._read_session_meta(jsonl)
+            except OSError:
+                return "unreadable"
+            # A one-shot transcript is not a session, so it is not an ARCHIVED session either.
+            return "not-archived" if headless else "archived"
+        return "not-archived"
+
     def launch_argv(self, native_id, *, cwd, bypass):
         # Resume command for the per-session PTY bridge (issue #49); cwd is set by the
         # launcher, not an argv arg here.

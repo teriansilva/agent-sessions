@@ -125,6 +125,12 @@ export const MISSION = {
 export function missionList(
   missions: unknown[],
   storeError: string | null = null,
+  /** The digest of the ORDERED ids the page was sliced out of (#896 review 19). The server sends
+   *  one on every page and a stitching client requires them to agree, so a fixture that omits it
+   *  is a fixture the console must — correctly — treat as unprovable. Default `"snap"`: one
+   *  quiet snapshot, which is what almost every test means. A test about tearing passes a
+   *  different value for the pages that came from a different list. */
+  snapshot: string | null = "snap",
 ) {
   return {
     missions,
@@ -133,5 +139,6 @@ export function missionList(
     offset: 0,
     facets: { projects: [], states: [] },
     store_error: storeError,
+    snapshot,
   };
 }

@@ -43,6 +43,19 @@ export interface MissionRailProps {
    *  showing a page, not the set — and the operator is told, rather than the remainder simply
    *  not existing. */
   total?: number;
+  /** Whether there is anything left to PAGE — from the same cursor the handler stops on, never
+   *  from the rendered count (#896 review 18). Deduping drives those apart, and a LOAD MORE
+   *  rendered on the rendered count while the handler had already reached the end was a control
+   *  that looked like the way to the missing mission and did nothing.
+   *
+   *  REQUIRED, so there is exactly one rule rather than a fallback that could reintroduce the
+   *  rendered-count one. */
+  hasMore: boolean;
+  /** The list could not be proved complete: it was stitched from several offset pages, or every
+   *  row has been consumed and the rail is still short of `total`. An offset append cannot fill
+   *  that hole — only a fresh read can — which is why this is not another LOAD MORE. */
+  needsReRead?: boolean;
+  onReRead?: () => void;
   loadingMore?: boolean;
   onLoadMore?: () => void;
   /** Which scope the rail is listing. Archiving is not deletion — an archived mission keeps its
@@ -59,6 +72,9 @@ export function MissionRail({
   onSelect,
   storeError,
   total = 0,
+  hasMore,
+  needsReRead = false,
+  onReRead,
   loadingMore,
   onLoadMore,
   archived = false,
@@ -69,7 +85,11 @@ export function MissionRail({
       {storeError ? (
         // A store that would not answer is NOT "you have no missions". Saying the second when
         // the first is true is the lie this notice exists to prevent.
-        <div className={styles.notice} role="status">
+        <div
+          className={styles.notice}
+          role="status"
+          data-testid="rail-store-error"
+        >
           <div className={styles.noticeLead}>
             The mission store could not be read.
           </div>
@@ -128,7 +148,18 @@ export function MissionRail({
         </button>
       ))}
 
-      {missions.length < total ? (
+      {needsReRead && onReRead ? (
+        <button
+          type="button"
+          className={styles.more}
+          onClick={onReRead}
+          disabled={loadingMore}
+          data-testid="rail-re-read"
+        >
+          This list was read in pages — re-read it
+        </button>
+      ) : null}
+      {hasMore ? (
         <button
           type="button"
           className={styles.more}

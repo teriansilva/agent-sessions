@@ -185,3 +185,36 @@ for (const [name, selector, ground] of [
     }
   });
 }
+
+// ---------------------------------------------------------------- raw status hues as TEXT (#889)
+//
+// #896's review found `.missionBtnDanger` painting small button text in raw `--status-degraded`
+// (#f59e0b): 1.93:1 on `--panel` in the light theme, against AA's 4.5:1. `tokens.css` already
+// documents that the raw status hues are unreadable as light-theme text, and `--danger-text` /
+// `--git-*-fg` exist precisely so nobody has to rediscover it.
+//
+// So this asserts the RULE rather than the one instance. Pinning only the fixed colour would let
+// the next component reach for `color: var(--status-degraded)` and fail the same way, in a file
+// this test does not name.
+
+test("no console stylesheet paints TEXT in a raw status hue", () => {
+  const files = [
+    "src/components/pulse/mission.module.css",
+    "src/components/pulse/missionDrawer.module.css",
+  ];
+  const offenders: string[] = [];
+  for (const rel of files) {
+    const css = readFileSync(resolve(process.cwd(), rel), "utf8");
+    css.split("\n").forEach((line, i) => {
+      // `color:` only. `background`, `border-color` and `fill` are signals rather than text: a
+      // 1px edge or a 6px LED has no contrast requirement, and `tokens.css` says so explicitly.
+      const m = line.match(/^\s*color:\s*var\(--status-([a-z]+)\)/);
+      if (m) offenders.push(`${rel}:${i + 1} → color: var(--status-${m[1]})`);
+    });
+  }
+  expect(
+    offenders,
+    "use --danger-text (or a color-mix toward --text-1) for text; the raw status hues are " +
+      "signal colours and fail AA as small text on the light ground",
+  ).toEqual([]);
+});

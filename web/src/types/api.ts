@@ -1246,6 +1246,17 @@ export interface MissionSupervisor {
    *  objectives, which is unmeasured rather than done. */
   likely_done: boolean;
   unmet_gates: number;
+  /** How many sessions the mission currently holds, and the discriminator derived from it.
+   *
+   *  `no_session` is NOT "idle" and NOT "stalled" — those are claims about an agent. This is a
+   *  claim about the MISSION: there is no agent for it to be either. Releasing the last session
+   *  from a `running` mission reaches that state, and the board has to say so rather than paint
+   *  a follow-through it cannot perform (#896 review 7, finding 2). */
+  held_sessions?: number | null;
+  no_session?: boolean;
+  /** The roster could not be READ. Not the same claim as `no_session`, and the difference is the
+   *  point: "we could not look" is not "there is nothing there". Both cannot be true. */
+  sessions_unreadable?: boolean;
   checked_at: number;
 }
 
@@ -1267,6 +1278,15 @@ export interface Mission {
   archiving_at: number | null;
   unarchiving_at: number | null;
   outcome: string | null;
+  /** How the objective PRODUCER finished, or `pending` while it is still running (#883).
+   *
+   *  Load-bearing for the console's honesty: `POST /api/missions` returns 201 before the model
+   *  has been asked, so a mission legitimately has an empty checklist for a moment. Rendering
+   *  that as "no objectives" states a fact the server has not established. `null` is a mission
+   *  from before the producer existed; `skipped` and `failed` each carry their own reason into
+   *  the timeline. */
+  objectives_state?: "pending" | "done" | "failed" | "skipped" | null;
+  objectives_at?: number | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
   /** The supervisor's mechanical reading, attached at read time (#885). ABSENT when the
@@ -1343,6 +1363,16 @@ export interface MissionList {
    *  down — the same fail-soft the opencode reader gives the sidebar. Never conflate this with
    *  "you have no missions": one is a store that would not answer, the other is an answer. */
   store_error?: string | null;
+  /** A digest of the ORDERED ids of the full filtered set this page was sliced out of (#896
+   *  review 19). Offsets only compose if the thing they index has not moved, and a client
+   *  stitching several pages had no way to establish that: deduplication catches a reorder and
+   *  cannot catch a removal, so an archive between two pages leaves a rail that is
+   *  count-consistent, duplicate-free, holding a stale row and permanently missing a live one.
+   *
+   *  Equal digests across two pages is a proof rather than a heuristic. **A missing one is not a
+   *  match** — a degraded read carries `null`, and the honest reading of that is "cannot prove
+   *  one snapshot". */
+  snapshot?: string | null;
 }
 
 /** Project, cwd, branch, git summary and session roster for one mission. Takes NO client path —

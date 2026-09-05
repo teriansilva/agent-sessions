@@ -1084,6 +1084,77 @@ export const api = {
       },
     ),
 
+  /** Start a mission from an instruction. #889.
+   *
+   *  **`cwd` is never sent and the route refuses it outright (422).** The server resolves the
+   *  working directory from `project_id`, which is what keeps a mission's cwd out of the
+   *  client's hands — a field the server must author cannot also be one the client may supply.
+   *
+   *  Returns 201 immediately: the objective list is produced by a background task, so the
+   *  response carries `objectives_state: "pending"` and the pane says so rather than rendering
+   *  an empty checklist as "no objectives". */
+  createMission: (body: {
+    instruction: string;
+    title?: string;
+    project_id?: string | null;
+    playbook_id?: string | null;
+  }) => mutateJson<Mission>("POST", "/api/missions", body),
+
+  /** Compare-and-set the lifecycle state. #889.
+   *
+   *  `from` is REQUIRED and is the state the client believes the mission is in — the server
+   *  compares it rather than re-reading, because a state read before an await cannot be trusted
+   *  after it. A lost race is a **409**, never a silent retry, and the caller's job is to re-read
+   *  and render what the mission actually is rather than what was asked for. */
+  setMissionState: (
+    id: string,
+    body: { from: string; to: string; outcome?: string; detail?: string },
+  ) => mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/state`, body),
+
+  /** Archive the mission AND tear down its sessions' runtime. #889.
+   *
+   *  Terminal-state-only: a live mission is a 409, not a prompt. `abandon: true` is the explicit
+   *  two-transition path and is only sent after the operator has been told plainly that it stops
+   *  the agents. A real boolean, because the route type-checks it — `"false"` is truthy and this
+   *  is the flag that authorises terminating agents. */
+  archiveMission: (id: string, opts?: { abandon?: boolean }) =>
+    mutateJson<{ mission: Mission; sessions?: unknown[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/archive`,
+      { abandon: opts?.abandon === true },
+    ),
+
+  /** Reverse an archive. `sessions: false` restores the mission row without unarchiving its
+   *  sessions — the default is to bring them back with it. */
+  unarchiveMission: (id: string, opts?: { sessions?: boolean }) =>
+    mutateJson<{ mission: Mission; sessions?: unknown[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/unarchive`,
+      { sessions: opts?.sessions !== false },
+    ),
+
+  /** Release one session from a mission. Fenced server-side: an in-flight nudge either lands
+   *  first or sees the new epoch, so a detached session can never still be typed into. */
+  detachMissionSession: (id: string, sessionKey: string) =>
+    mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/detach`, {
+      session_key: sessionKey,
+    }),
+
+  /** "Stop telling me about this one", for the EPISODE the operator was looking at (#885).
+   *
+   *  The episode is required and is the one the board was RENDERED at — not "whatever is current".
+   *  If the objective has moved since, the tap is about a situation that no longer exists, and the
+   *  server answers 409 with the current episode so the console can re-render instead of silently
+   *  silencing a report nobody has seen.
+   *
+   *  It silences; it does not settle. The objective stays visibly unmet. */
+  standDownObjective: (id: string, objectiveKey: string, episode: number) =>
+    mutateJson<{ episode: number; stood_down: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/objectives/${encodeURIComponent(objectiveKey)}/stand-down`,
+      { episode },
+    ),
+
   /** Hide the settled rows the client DISPLAYED — never "the current window" (#862). Passing
    *  what was on screen is what stops a decision that settled between the render and the click
    *  from being hidden without ever being seen. */

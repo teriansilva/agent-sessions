@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import sqlite3
 import threading
+import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +43,13 @@ def _login(c, cfg):
 
 
 @pytest.fixture
-def api(auth_cfg, tmp_home, tmp_path):
+def api(auth_cfg, tmp_home, tmp_path, fake_jsonl):
+    """A logged-in client, a real project entity — and REAL SESSIONS on disk.
+
+    `fake_jsonl` is not decoration: adoption now proves the session EXISTS, not merely that its
+    key is well formed (#896 review 11, finding 1), and `CLAUDE_A` is one of the transcripts that
+    fixture writes. Without it every adopt in this module would 404 — which is the correct answer
+    for a key naming nothing, and exactly the hole the check closes."""
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
@@ -695,6 +705,10 @@ def test_the_mission_detail_carries_the_SUPERVISOR_reading(api):
     ledger and the objective store, so a cached copy could disagree with both."""
     c, hdr, proj = api
     mid = _with_objective(c, hdr, proj)
+    # HOLDING A SESSION, because a nudge is a write into one: `may_nudge` refuses a mission with
+    # none, and a board promising READY over nothing to write to is the bug that added the rule
+    # (#896 review 7, finding 2).
+    missions.adopt(mid, CLAUDE_A)
     row = c.get(f"/api/missions/{mid}", headers=hdr).json()
     assert "supervisor" in row, "the console has nothing to render the boards from"
     sup = row["supervisor"]
@@ -702,6 +716,27 @@ def test_the_mission_detail_carries_the_SUPERVISOR_reading(api):
     o = sup["objectives"][0]
     assert o["episode"] == 1 and o["remaining"] > 0 and o["may_nudge"] is True
     assert sup["likely_done"] is False and sup["unmet_gates"] == 1
+    assert sup["no_session"] is False and sup["held_sessions"] == 1
+
+
+def test_a_mission_with_NO_SESSION_says_so_instead_of_offering_READY(api):
+    """Releasing the last session leaves a `running` mission with nothing to supervise.
+
+    Neither obvious repair is right — refusing the detach takes away an ordinary operator act,
+    and forcing `planned` takes away the mission's ability to be closed — so the state stays and
+    the READING tells the truth. `may_nudge` refuses, because a nudge is a write into a session
+    and there is none, and the board has the discriminator to explain it (#896 review 7).
+    """
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    missions.adopt(mid, CLAUDE_A)
+    missions.detach(mid, CLAUDE_A)
+
+    sup = c.get(f"/api/missions/{mid}", headers=hdr).json()["supervisor"]
+    assert sup["no_session"] is True and sup["held_sessions"] == 0
+    o = sup["objectives"][0]
+    assert o["may_nudge"] is False, "READY over a mission with nothing to write to"
+    assert "no session" in o["why_not"], o["why_not"]
 
 
 def test_the_page_still_RENDERS_when_the_supervisor_reading_fails(api, monkeypatch):
@@ -722,6 +757,157 @@ def test_the_page_still_RENDERS_when_the_supervisor_reading_fails(api, monkeypat
     r = c.get(f"/api/missions/{mid}", headers=hdr)
     assert r.status_code == 200, r.text
     assert "supervisor" not in r.json(), "a failed reading was reported as an empty one"
+
+
+# ---- the adopted path, through the route (#889) -----------------------------------
+
+
+def test_an_adopted_mission_can_be_marked_running_through_the_route(api):
+    """`planned -> running` end to end: create with a project, adopt, begin.
+
+    The console's whole "start and steer" story runs through these four calls, and the reason it
+    is asserted at the ROUTE rather than only at the store is the fence: `set_state` into a
+    terminal state is wrapped in `_fenced_write` over the mission's held sessions, and a
+    non-terminal transition has to pass through the same wrapper without tripping it.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, "track what I started", project_id=proj.id)
+    assert m["cwd"], "a project-backed mission resolves its cwd server-side"
+
+    assert (
+        c.post(
+            f"/api/missions/{m['id']}/state",
+            json={"from": "draft", "to": "planned"},
+            headers=hdr,
+        ).status_code
+        == 200
+    )
+    assert (
+        c.post(
+            f"/api/missions/{m['id']}/adopt",
+            json={"session_key": CLAUDE_A},
+            headers=hdr,
+        ).status_code
+        == 200
+    )
+    r = c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "planned", "to": "running"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "running"
+
+
+def test_marking_running_without_a_session_is_a_409_that_says_what_to_do(api):
+    """The refusal names the fix. "409" alone leaves the operator with a dead button."""
+    c, hdr, proj = api
+    m = _create(c, hdr, "nothing adopted", project_id=proj.id)
+    c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "draft", "to": "planned"},
+        headers=hdr,
+    )
+    r = c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "planned", "to": "running"},
+        headers=hdr,
+    )
+    assert r.status_code == 409
+    assert "adopt a session" in r.json()["detail"]
+    # And the mission is untouched — a refused transition is not a partial one.
+    assert c.get(f"/api/missions/{m['id']}").json()["state"] == "planned"
+
+
+def test_a_project_less_mission_is_refused_for_its_CWD_not_its_roster(api):
+    """Order matters in the refusal, because the two fixes are different.
+
+    "adopt a session" would send the operator to adopt one they have already adopted, when the
+    actual problem is that the mission has no project. The cwd check runs first.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, "no project")
+    assert m["cwd"] is None
+    c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "draft", "to": "planned"},
+        headers=hdr,
+    )
+    c.post(
+        f"/api/missions/{m['id']}/adopt",
+        json={"session_key": CLAUDE_A},
+        headers=hdr,
+    )
+    r = c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "planned", "to": "running"},
+        headers=hdr,
+    )
+    assert r.status_code == 409
+    assert "cwd" in r.json()["detail"]
+
+
+def test_an_UNREADABLE_session_roster_is_not_reported_as_an_EMPTY_one(api, monkeypatch):
+    """ "We could not look" is not "there is nothing there" (#896 review 8, finding 2).
+
+    Suppressing the read error and reporting `0` turned an I/O failure into the factual claim
+    that this mission holds no session — the same lie the probe runner's three-way answer exists
+    to prevent, and the same one `unreadable` already prevents on the nudge budget.
+
+    Red against `held = 0` with the exception suppressed: `no_session` comes back true.
+    """
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    missions.adopt(mid, CLAUDE_A)
+
+    def boom(*a, **k):
+        raise OSError("the roster could not be read")
+
+    monkeypatch.setattr(missions, "active_session_keys", boom)
+    sup = c.get(f"/api/missions/{mid}", headers=hdr).json()["supervisor"]
+
+    assert sup["sessions_unreadable"] is True
+    assert sup["no_session"] is False, "an unread roster was reported as an empty one"
+    assert sup["held_sessions"] is None
+    # …and nothing may be sent, because authority that cannot be verified is not authority.
+    o = sup["objectives"][0]
+    assert o["may_nudge"] is False
+    assert "could not be read" in o["why_not"], o["why_not"]
+
+
+def test_a_ROSTER_READ_THAT_RECOVERS_does_not_produce_a_split_brain_reading(api, monkeypatch):
+    """One snapshot, one verdict (#896 review 9, finding 1).
+
+    Overloading `None` for both "read it yourself" and "I could not read it" let `assess` publish
+    a contradiction: its own read failed, so it reported `sessions_unreadable: true` — and the
+    second read inside `may_nudge` happened to succeed, so the row came back READY. The board
+    then said "nothing can be sent" directly above a row promising to send something.
+
+    Red against passing the same overloaded value down: `may_nudge` reads again and disagrees.
+    """
+    c, hdr, proj = api
+    mid = _with_objective(c, hdr, proj)
+    missions.adopt(mid, CLAUDE_A)
+
+    calls = {"n": 0}
+    real = missions.active_session_keys
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("the roster could not be read")
+        return real(*a, **k)
+
+    monkeypatch.setattr(missions, "active_session_keys", flaky)
+    sup = c.get(f"/api/missions/{mid}", headers=hdr).json()["supervisor"]
+
+    assert sup["sessions_unreadable"] is True
+    o = sup["objectives"][0]
+    assert o["may_nudge"] is False, "a recovered second read overruled the failed first one"
+    assert "could not be read" in o["why_not"], o["why_not"]
+
+
+# ---- The open turn rides on the mission detail (#902 review, finding 1) -----------------------
 
 
 # ---- #894: relay — the operator's own words, through the actuator's fence -------------------
@@ -2040,6 +2226,724 @@ async def test_the_ORCHESTRATOR_PASS_discharges_an_owed_terminalization(api, mon
     assert orchestrator_ledger.get("act_owed")["state"] == "indeterminate"
 
 
+def test_a_FABRICATED_session_cannot_be_adopted_or_carry_a_mission_to_running(api):
+    """#896 review 11, finding 1. A key that is well FORMED is not a session.
+
+    `_session_key` proves the shape; nothing proved existence. A syntactically perfect
+    `claude:<uuid>` naming nothing at all was adopted, the `planned -> running` guard then found
+    the row it had just written, and the mission reached `running` — "work is under way", with
+    nothing behind it, for the supervisor to follow through on.
+
+    Red against an adopt route that checks only the shape.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    fake = "claude:99999999-9999-4999-8999-999999999999"
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": fake}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert "no session" in r.json()["detail"]
+
+    # …and the mission cannot reach `running` on it, because it never held it.
+    c.post(f"/api/missions/{m['id']}/state", json={"from": "draft", "to": "planned"}, headers=hdr)
+    bad = c.post(
+        f"/api/missions/{m['id']}/state", json={"from": "planned", "to": "running"}, headers=hdr
+    )
+    assert bad.status_code == 409, bad.text
+    assert "adopt a session" in bad.json()["detail"]
+
+    # The REAL one still works, so the check refuses fabrications rather than adoption.
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_an_ARCHIVED_session_cannot_be_adopted_or_carry_a_mission_to_running(api):
+    """#896 review 15, finding 1. "The store knows it" is not "there is an agent there".
+
+    `scanner.scan()` returns live AND archived rows — deliberately, because the sidebar lists both
+    — so a session that has been put away satisfied the existence gate, and the mission reached
+    `running` with nothing live or resumable behind it for the supervisor to follow through on.
+    That is the same claim-with-nothing-behind-it the fabricated-key check was added to stop, one
+    door along.
+
+    Red against a gate that asks only whether the row exists.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    # The `fake_jsonl` fixture writes this one under `projects-archive/`, so the provider
+    # genuinely returns it — this is not a stub of the door.
+    archived = "claude:44444444-4444-4444-4444-444444444444"
+    from agent_sessions import engines as _e
+
+    prov, native = _e.parse_key(archived)
+    assert any(
+        getattr(s, "uuid", None) == native for s in prov.scan()
+    ), "the fixture's archived session is not in the scan, so this test proves nothing"
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": archived}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert "no session" in r.json()["detail"]
+
+    # …and the mission cannot reach `running` on it, because it never held it.
+    c.post(f"/api/missions/{m['id']}/state", json={"from": "draft", "to": "planned"}, headers=hdr)
+    bad = c.post(
+        f"/api/missions/{m['id']}/state", json={"from": "planned", "to": "running"}, headers=hdr
+    )
+    assert bad.status_code == 409, bad.text
+
+    # The LIVE one still adopts, so the gate refuses archived sessions rather than adoption.
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_the_SIDECAR_archive_flag_is_enough_to_refuse_an_adoption(api):
+    """The other half of finding 1, and the reason this asks `mission_archive` rather than the
+    scan row alone: several engines have no on-disk archive tree at all, so app-archive is a
+    SIDECAR flag and the provider keeps reporting the session as live. The sidecar override wins
+    where it is set — the same precedence the sidebar, `pulse.build_cards` and `mission_archive`
+    already use.
+
+    Red against a check that reads only `row.archived`.
+    """
+    from agent_sessions import metadata
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    # Archived through the APP, which for this engine also moves the JSONL — but the sidecar is
+    # what makes the answer engine-agnostic, so that is what is set here.
+    metadata.patch(CLAUDE_A, archived=True)
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert r.status_code == 404, r.text
+
+    # …and unarchiving makes it adoptable again: the refusal is about the flag, not the key.
+    metadata.patch(CLAUDE_A, archived=False)
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_a_LIVE_SESSION_the_ENGINE_HAS_NOT_WRITTEN_DOWN_YET_can_be_adopted(api, monkeypatch):
+    """#896 review 22. "There is no row" and "we could not look" are opposite facts.
+
+    The gate documents two independent proofs — a store record, or a live writer — because a
+    session can legitimately be one without the other: a record survives a restart, and a session
+    started moments ago has not written one yet. Several engines persist only after the first
+    turn, so that state can last as long as the operator stays quiet.
+
+    But it asked the archive question through a helper that collapses *no row* and *unreadable
+    store* into one `None`, and refused on both. The live-writer proof was therefore unreachable,
+    and a real UNTRACKED session could not be adopted at all — the exact control this PR adds.
+
+    Red against a gate that treats an absent provider row as an unknown archive state.
+    """
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    # A UUID `fake_jsonl` does NOT lay down — 1111/2222/3333/5555 are live and 4444 is the
+    # fixture's ARCHIVED one, so picking either would test something else entirely.
+    fresh = "claude:66666666-6666-6666-6666-666666666666"
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": fresh}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert [s["session_key"] for s in missions.get_mission(m["id"])["sessions"]] == [fresh]
+
+    # …and with NO writer either there is no proof at all, so it is still a 404. This accepts a
+    # live session, not any well-formed key.
+    m2 = _create(c, hdr, project_id=proj.id)
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: False)
+    gone = c.post(
+        f"/api/missions/{m2['id']}/adopt",
+        json={"session_key": "claude:77777777-7777-7777-7777-777777777777"},
+        headers=hdr,
+    )
+    assert gone.status_code == 404, gone.text
+
+
+def test_an_UNREADABLE_ARCHIVE_TREE_still_refuses_even_with_a_live_writer(api, monkeypatch):
+    """#896 reviews 23 and 24. `scan()` cannot answer the NEGATIVE half of the archive question.
+
+    Every provider catches its own read failures and returns an empty or partial list — on purpose,
+    so one bad directory cannot take the sidebar down. That makes "there is no archived row" and "I
+    could not look" arrive identically, and a gate built on it accepted a live writer while an
+    archived transcript may simply have been hidden by the failed read.
+
+    So only that question gets its own reader, and only `claude` needs one: it is the engine that
+    also MOVES the transcript on archive, so its tree can hold a fact the sidecar does not.
+
+    The seam is real — the archive tree is made unreadable on disk. `stat` rather than `glob` or
+    `is_file` is what makes that visible: both of those swallow a permission error and answer "no
+    such file".
+
+    Red against an archive question answered through `scan()`.
+    """
+    import os
+
+    from agent_sessions import engines as _e
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+    prov, native = _e.parse_key(CLAUDE_A)
+    tree = Path(os.environ["HOME"]) / ".claude" / "projects-archive"
+    assert tree.is_dir(), "the fixture's archive tree is the premise of this test"
+
+    os.chmod(tree, 0o000)
+    try:
+        assert prov.archive_state(native) == "unreadable"
+        r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    finally:
+        os.chmod(tree, 0o755)
+
+    assert r.status_code == 404, r.text
+    assert missions.active_session_keys(m["id"]) == []
+    # …and once it is readable again the same request is fine, so this refuses the unreadable tree
+    # rather than the session.
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_a_claude_ONE_SHOT_transcript_is_not_a_session_to_adopt(api, monkeypatch):
+    """#896 review 24, finding 1. A `claude -p` transcript is not a session anyone can attach to.
+
+    `scanner` skips them on an in-stream marker (`entrypoint: "sdk-cli"`) precisely because the
+    usage probe writes one every few minutes. An earlier version of the store lookup matched on
+    the FILENAME, so one of those underwrote an adoption — and the mission could then reach
+    `running` over a process that had already exited.
+
+    Existence is `scan()`'s question, and it answers it semantically. Red against a lookup that
+    treats any correctly named file as a session.
+    """
+    import os
+
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    probe = "77777777-7777-7777-7777-777777777777"
+    d = Path(os.environ["HOME"]) / ".claude" / "projects" / "-home-user-claude-repo-a"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{probe}.jsonl").write_text(
+        json.dumps({"type": "user", "entrypoint": "sdk-cli", "message": {"content": "/usage"}})
+        + "\n"
+    )
+    # THE PREMISE, asserted: the scanner does not call this a session, so the only thing that
+    # could have adopted it is a lookup that reads the filename instead.
+    from agent_sessions import engines as _e
+
+    prov, _n = _e.parse_key(CLAUDE_A)
+    assert all(getattr(row, "uuid", None) != probe for row in prov.scan())
+    assert prov.archive_state(probe) == "not-archived"
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: False)
+
+    r = c.post(
+        f"/api/missions/{m['id']}/adopt", json={"session_key": f"claude:{probe}"}, headers=hdr
+    )
+    assert r.status_code == 404, r.text
+    assert missions.active_session_keys(m["id"]) == []
+
+    # …AND THE SAME MARKER IN THE ARCHIVE TREE MUST NOT BLOCK A LIVE SESSION. The usage probe runs
+    # every few minutes and its transcripts get archived like anything else; one sitting there is
+    # not an archived SESSION, so a live master with that id is still adoptable. Without the
+    # semantic read this is a permanent refusal for a session that is running right now.
+    arch = Path(os.environ["HOME"]) / ".claude" / "projects-archive" / "-home-user-claude-old"
+    arch.mkdir(parents=True, exist_ok=True)
+    live = "12121212-1212-4121-8121-121212121212"
+    (arch / f"{live}.jsonl").write_text(
+        json.dumps({"type": "user", "entrypoint": "sdk-cli", "message": {"content": "/usage"}})
+        + "\n"
+    )
+    assert prov.archive_state(live) == "not-archived"
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+    ok = c.post(
+        f"/api/missions/{m['id']}/adopt", json={"session_key": f"claude:{live}"}, headers=hdr
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_a_LIVE_WRITER_does_not_rescue_an_ARCHIVED_session(api, monkeypatch):
+    """#896 review 16, finding 2. The archive question was asked SECOND, and `is_live` returned
+    before it — so an archived session that still has a writer was adopted.
+
+    That state is reachable rather than theoretical: the archive route suppresses runtime-cleanup
+    failures and archives the record anyway, so a teardown that left a writer behind produces
+    exactly it. The gate must not turn an archived record into a `running` mission because the
+    teardown was incomplete.
+
+    Red against a gate that checks `is_live` first.
+    """
+    from agent_sessions import metadata, session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    metadata.patch(CLAUDE_A, archived=True)
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert missions.get_mission(m["id"])["sessions"] == []
+
+    # …and a LIVE, unarchived session still adopts on the writer alone, so this refuses the
+    # archive rather than the evidence.
+    metadata.patch(CLAUDE_A, archived=False)
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_an_UNREADABLE_sidecar_REFUSES_the_adoption(api, monkeypatch):
+    """#896 review 16, finding 3. `metadata.load()` collapses missing, corrupt and unreadable into
+    `{}` — the right trade for the list surfaces, the wrong one at an authorization boundary.
+
+    For the engines whose archive lives ONLY in the sidecar the provider row then reports
+    `archived=False`, so the gate answered "not archived" precisely when it could not tell, and an
+    archived session was adopted on the strength of a store nobody could read.
+
+    Red against a gate that asks only `_effective_archived`, whose fall-through cannot distinguish
+    "no sidecar entry" from "no readable sidecar".
+    """
+    from agent_sessions import metadata
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    # A sidecar that EXISTS and does not parse — the state `load()` cannot tell from an empty one.
+    metadata._default_path().parent.mkdir(parents=True, exist_ok=True)
+    metadata._default_path().write_text("{not json at all")
+    assert metadata.archive_override_under_lock(CLAUDE_A) == "unreadable"
+    assert metadata.load() == {}, "the premise: load() cannot see the difference"
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert missions.get_mission(m["id"])["sessions"] == []
+
+    # …and a readable sidecar adopts, so the refusal is about the unreadable store rather than
+    # about the session.
+    metadata._default_path().write_text("{}")
+    assert metadata.archive_override_under_lock(CLAUDE_A) == "unset"
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+def test_a_MALFORMED_archive_FLAG_refuses_the_adoption(api):
+    """#896 review 28, finding 2. `False` had two meanings and only one of them was true.
+
+    `archive_override_under_lock` answered `False` — which this gate read as "definitively not
+    archived", its one licence to continue — for a row that EXISTS and is damaged: a row that is
+    not an object, or an `archived` that is not a boolean. That is not an absent override, it is a
+    session whose archive state could not be determined; and for a sidecar-only engine the
+    sidecar is the ONLY place the answer lives. A live writer then supplied the second proof and
+    an archived session was adopted into a running mission on the strength of damage.
+
+    Absence stays `False`, because a sidecar that has never been told about a session is not
+    asserting anything about it. Damage is `None`, and `None` already fails closed here.
+
+    Red against a gate whose store answers `False` for a value it cannot interpret.
+    """
+    from agent_sessions import metadata
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    metadata._default_path().parent.mkdir(parents=True, exist_ok=True)
+
+    # A ROW THAT IS NOT A ROW. The ROUTE is asserted first in each case, deliberately: the
+    # store's answer is the mechanism, and a regression that fails on the mechanism alone would
+    # not say whether the boundary still held.
+    metadata._default_path().write_text(json.dumps({CLAUDE_A: "archived"}))
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert missions.get_mission(m["id"])["sessions"] == []
+    assert (
+        metadata.archive_override_under_lock(CLAUDE_A) == "unreadable"
+    ), "…and this is why it refused"
+
+    # A FLAG THAT IS NOT A BOOLEAN — the shape review 28 reproduced, and the one that reads most
+    # like a real archive: a string where the writer meant a flag.
+    metadata._default_path().write_text(json.dumps({CLAUDE_A: {"archived": "true"}}))
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert r.status_code == 404, r.text
+    assert missions.get_mission(m["id"])["sessions"] == []
+    assert (
+        metadata.archive_override_under_lock(CLAUDE_A) == "unreadable"
+    ), "…and this is why it refused"
+
+    # …and a row with NO override is still an ordinary readable answer, so the refusal is about
+    # the damage rather than about the row being there at all.
+    metadata._default_path().write_text(json.dumps({CLAUDE_A: {"title": "a name"}}))
+    assert metadata.archive_override_under_lock(CLAUDE_A) == "unset"
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+
+
+# The opencode row whose archive lives in the ENGINE's own database (`time_archived` set), which
+# this app is read-only against. Same fixture row `test_api` uses for the unarchive route.
+OC_NATIVELY_ARCHIVED = "ses_bbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def test_an_UNARCHIVED_session_can_be_ADOPTED_even_where_the_ENGINE_still_says_archived(
+    api, opencode_db
+):
+    """#896 review 29. `False` still had two meanings, and this was the other one.
+
+    The sidecar answered `False` both for "nobody has recorded an override" and for an explicit
+    `archived: false`, so the gate could not tell them apart and asked the ENGINE in both cases.
+    For opencode that is fatal rather than merely redundant: this app does not write
+    `opencode.db`, so UNARCHIVE deliberately sets the sidecar override and leaves the native
+    `time_archived` exactly where it is. The session correctly leaves the archived list and joins
+    the active one — and ADOPT went on refusing it for ever, against a native flag the operator
+    had already overridden through the app's own supported route.
+
+    The override winning where it is SET is the app's precedence everywhere else (the sidebar's
+    `archived` column, `mission_archive`); consulting the engine after an explicit answer is a
+    second opinion this gate has no business forming.
+
+    Driven end to end through the real routes — unarchive, create, adopt — because the defect is
+    in how they compose, not in any one of them.
+
+    Red against a gate that consults the engine after an explicit `active`: the adopt 404s.
+    """
+    from agent_sessions import metadata
+
+    c, hdr, proj = api
+    key = f"opencode:{OC_NATIVELY_ARCHIVED}"
+
+    # THE PREMISE: archived in the engine's own store, and nothing here will ever change that.
+    arch = c.get("/api/sessions?engine=opencode&archived=1&limit=200").json()["sessions"]
+    assert any(s["id"] == key for s in arch), "the fixture row is not natively archived"
+    assert metadata.archive_override_under_lock(key) == "unset"
+
+    # THE OPERATOR UNARCHIVES IT, through the route that exists for exactly this.
+    r = c.post(f"/api/sessions/{key}/unarchive", headers=hdr)
+    assert r.status_code == 200, r.text
+    assert r.json()["archived"] is False
+    assert metadata.archive_override_under_lock(key) == "active"
+    active = c.get("/api/sessions?engine=opencode&archived=0&limit=200").json()["sessions"]
+    assert any(s["id"] == key for s in active), "unarchive did not move it into the active list"
+    # …and the ENGINE still says archived, which is the whole point.
+    assert engines.archive_state(*engines.parse_key(key)) == "archived"
+
+    # SO IT CAN BE ADOPTED.
+    m = _create(c, hdr, project_id=proj.id)
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": key}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+    assert [x["session_key"] for x in missions.get_mission(m["id"])["sessions"]] == [key]
+
+
+def test_an_ARCHIVE_cannot_LAND_BETWEEN_the_eligibility_check_and_the_adopt(api, monkeypatch):
+    """#896 review 19, finding 2. The check and the insert were two moments.
+
+    `_session_exists` answered about the past and `missions.adopt` wrote the row afterwards, and
+    the sibling archive route holds its own reservation only until the provider settles — so
+    `eligible -> archive -> release -> adopt` inserted a session that had been archived in
+    between, with nothing left in the adopt transaction to notice it. Every earlier archive gate
+    in this file is a check, and a check cannot fence a window it has already left.
+
+    So the route takes the reservation the archive routes already take, and holds it across both
+    halves. The interleaving is driven at the exact instant it used to land: from inside
+    `_session_exists`, past the answer, using `routes.sessions._reserve_or_refuse` — the first
+    act of `POST /api/sessions/{id}/archive` and the only thing standing between it and
+    `cleanup_runtime`.
+
+    Red against an adopt that does not hold the reservation: the archive takes the mutex, the
+    sidecar flips, and the mission ends up holding an archived session.
+    """
+    from fastapi import HTTPException
+
+    from agent_sessions import metadata
+    from agent_sessions.routes import missions as routes_missions
+    from agent_sessions.routes import sessions as routes_sessions
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    real = routes_missions._session_exists
+    refused: list[int] = []
+
+    async def _archive_in_the_window(key: str) -> bool:
+        answer = await real(key)
+        # WHAT THE ARCHIVE ROUTE DOES FIRST. If it can take this, it goes on to tear the session
+        # down and set the sidecar, and the adopt below writes a row for something that is gone.
+        try:
+            token = routes_sessions._reserve_or_refuse(key)
+        except HTTPException as e:
+            refused.append(e.status_code)
+        else:
+            metadata.patch(key, archived=True)
+            missions.release_session(key, token)
+        return answer
+
+    monkeypatch.setattr(routes_missions, "_session_exists", _archive_in_the_window)
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+
+    assert refused == [409], "the archive was allowed inside the adopt's own window"
+    assert metadata.archive_override_under_lock(CLAUDE_A) == "unset"
+    assert r.status_code == 200, r.text
+    assert [s["session_key"] for s in missions.get_mission(m["id"])["sessions"]] == [CLAUDE_A]
+
+    # …and the reservation is GIVEN BACK: an archive after the adopt has finished is refused by
+    # mission ownership, not by a reservation nobody released.
+    with pytest.raises(missions.SessionBusy) as e:
+        missions.reserve_session(CLAUDE_A, "session-route")
+    assert m["id"] in str(e.value) and "using it" in str(e.value)
+
+
+def test_an_ADOPT_that_takes_ITS_TIME_still_holds_its_reservation(api, monkeypatch):
+    """#896 review 20, finding 1. Taking a mutex is not holding one.
+
+    A reservation is reclaimable after `RESERVATION_MAX_AGE_S` WITHOUT PROOF OF LIFE, and the
+    eligibility scan in front of the insert is unbounded provider and filesystem work — a cold
+    engine store, a loaded box. So the fence added in review 19 was really a five-minute bet: an
+    archive could reclaim the reservation, archive the session, release it, and this insert would
+    still land. `holding` beats on its own thread for exactly that, and the archive route already
+    takes it; an expiry is a property of the WORK's duration, so both sides of a mutex have to
+    defend against it or only one of them is fenced.
+
+    Driven by AGEING the reservation from inside the scan — the same interleaving, made
+    deterministic and instant — and asked through `_reserve_or_refuse`, the first act of
+    `POST /api/sessions/{id}/archive`.
+
+    Red against an adopt that reserves and then does not renew.
+    """
+    from fastapi import HTTPException
+
+    from agent_sessions import metadata
+    from agent_sessions.routes import missions as routes_missions
+    from agent_sessions.routes import sessions as routes_sessions
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    real = routes_missions._session_exists
+    refused: list[int] = []
+
+    async def _slow_scan(key: str) -> bool:
+        answer = await real(key)
+        # THE SCAN TOOK LONGER THAN THE RESERVATION'S PATIENCE. Written straight into the row so
+        # the test does not have to sleep for five minutes to ask the question.
+        con = missions._ready(None)
+        try:
+            con.execute(
+                "UPDATE session_reservations SET at=? WHERE session_key=?",
+                (time.time() - missions.RESERVATION_MAX_AGE_S - 5, key),
+            )
+            con.commit()
+        finally:
+            con.close()
+        # …and the heartbeat gets a chance to notice before anybody tries to take it. Bounded
+        # by a beat that is actually observed, not by a bare sleep: the assertion below is about
+        # the renewal, so waiting for it is the honest wait.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            con = missions._ready(None)
+            try:
+                row = con.execute(
+                    "SELECT at FROM session_reservations WHERE session_key=?", (key,)
+                ).fetchone()
+            finally:
+                con.close()
+            if row is not None and float(row["at"]) > time.time() - 5:
+                break
+            time.sleep(0.02)
+        try:
+            token = routes_sessions._reserve_or_refuse(key)
+        except HTTPException as e:
+            refused.append(e.status_code)
+        else:
+            metadata.patch(key, archived=True)
+            missions.release_session(key, token)
+        return answer
+
+    # A BEAT FAST ENOUGH TO SEE. The production interval is 60s and this test is not going to
+    # wait for it; the property is that a beat happens at all while the work runs.
+    monkeypatch.setattr(missions, "RESERVATION_RENEW_S", 0.05)
+    monkeypatch.setattr(routes_missions, "_session_exists", _slow_scan)
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+
+    assert refused == [409], "the reservation aged out and the archive took it"
+    assert metadata.archive_override_under_lock(CLAUDE_A) == "unset"
+    assert r.status_code == 200, r.text
+    assert [s["session_key"] for s in missions.get_mission(m["id"])["sessions"]] == [CLAUDE_A]
+
+
+def test_an_ADOPT_that_LOST_its_reservation_does_not_commit_anyway(api, monkeypatch):
+    """#896 review 21. A heartbeat reduces the chance of expiry; it is not a check for it.
+
+    Review 20 kept the claim beating across the eligibility scan, which makes losing it unlikely
+    and not impossible: the heartbeat's own writes can fail — a locked store, a busy disk — until
+    the row ages out, and a rival then reclaims the reservation, archives the session and releases
+    its own row. The holder check inside the adopt transaction is a check on a STRING, so it sees
+    nothing, and the original operation attaches a session that has since been archived.
+
+    The fencing TOKEN is what tells those apart: it changes on every reclaim, so requiring the
+    exact one turns "nobody else holds it now" into "nobody has held it since I took it".
+
+    Driven at the moment it happens — the beats fail, the claim is reclaimed, the archive lands
+    and releases — all from inside the scan the adoption is waiting on.
+
+    Red against an adopt that takes a reservation and never proves it still has it.
+    """
+    from agent_sessions import metadata
+    from agent_sessions.routes import missions as routes_missions
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+
+    beats: list[str] = []
+
+    def _no_beat(session_key, token, *, path=None):
+        beats.append(token)
+        raise sqlite3.OperationalError("database is locked")
+
+    real = routes_missions._session_exists
+
+    async def _scan_that_loses_the_claim(key: str) -> bool:
+        answer = await real(key)
+        # WAIT FOR A BEAT TO HAVE BEEN TRIED, so "every beat failed" is a fact rather than a
+        # hope. Without this the test raced the heartbeat thread and passed or failed on how
+        # busy the box was — green alone, red in a full run.
+        deadline = time.time() + 5
+        while not beats and time.time() < deadline:
+            time.sleep(0.01)
+        # THE CLAIM AGES OUT while the scan is running, because every beat failed.
+        con = missions._ready(None)
+        try:
+            con.execute(
+                "UPDATE session_reservations SET at=? WHERE session_key=?",
+                (time.time() - missions.RESERVATION_MAX_AGE_S - 5, key),
+            )
+            con.commit()
+        finally:
+            con.close()
+        # A RIVAL takes it, archives, and gives it back — so by the time this adoption resumes
+        # there is no competing row left for a holder check to notice.
+        token = missions.reserve_session(key, "session-route")
+        metadata.patch(key, archived=True)
+        assert missions.release_session(key, token)
+        return answer
+
+    monkeypatch.setattr(missions, "RESERVATION_RENEW_S", 0.02)
+    monkeypatch.setattr(missions, "renew_session", _no_beat)
+    monkeypatch.setattr(routes_missions, "_session_exists", _scan_that_loses_the_claim)
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+
+    assert beats, "the heartbeat never ran, so nothing was lost and this proves nothing"
+    assert r.status_code == 409, r.text
+    assert "reservation" in r.json()["detail"]
+    assert missions.active_session_keys(m["id"]) == [], "an archived session was adopted anyway"
+
+
+def test_a_CLOSED_mission_cannot_ADOPT_a_session_back_into_itself(api):
+    """#896 review 20, finding 2. A terminal transition RELEASES the roster — that is what it is
+    for — so adopting into a closed mission puts an active session on something nobody follows
+    through on: the supervisor will not nudge it, the board does not render it, and the mission
+    reads finished while owning live work.
+
+    `_fence_busy` covers archived and mid-operation missions and deliberately not this, because a
+    terminal state is a legal resting place rather than an in-flight one. It needs its own
+    refusal, and the refusal has to name the way out.
+
+    At the STORE boundary, because the route is reachable without the console.
+
+    Red against an adopt that fences only archived and in-flight missions.
+    """
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    ok = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert ok.status_code == 200, ok.text
+    c.post(f"/api/missions/{m['id']}/state", json={"from": "draft", "to": "planned"}, headers=hdr)
+    c.post(f"/api/missions/{m['id']}/state", json={"from": "planned", "to": "running"}, headers=hdr)
+    closed = c.post(
+        f"/api/missions/{m['id']}/state",
+        json={"from": "running", "to": "done", "outcome": "done"},
+        headers=hdr,
+    )
+    assert closed.status_code == 200, closed.text
+    # THE PREMISE: closing released the roster, so the session is genuinely loose again.
+    assert missions.active_session_keys(m["id"]) == []
+
+    again = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert again.status_code == 409, again.text
+    assert "reopen" in again.json()["detail"]
+    assert missions.get_mission(m["id"])["state"] == "done"
+    assert missions.active_session_keys(m["id"]) == []
+
+    # …and REOPENING is the way out the refusal names, so this refuses a state rather than the
+    # adoption.
+    back = c.post(
+        f"/api/missions/{m['id']}/state", json={"from": "done", "to": "running"}, headers=hdr
+    )
+    assert back.status_code == 200, back.text
+    fine = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    assert fine.status_code == 200, fine.text
+
+
+def test_the_ENGINE_STORE_check_reads_the_rows_a_provider_actually_returns(api):
+    """The helper the check above rests on, against the REAL provider.
+
+    `_has_store_record` read `row.get("id")`, and every provider's `scan()` returns a
+    `scanner.Session` dataclass — so it raised `AttributeError` on the first row, swallowed it in
+    its own broad `except`, and answered "no evidence" for every session that has ever existed.
+    Invisible because #898's tests stub `scan()` with dicts: a door production cannot reach.
+
+    Red against the dict-only reader.
+    """
+    from agent_sessions import engines, headless_dispatch
+
+    prov, native = engines.parse_key(CLAUDE_A)
+    assert headless_dispatch._has_store_record(prov, native, "") is True
+    assert (
+        headless_dispatch._has_store_record(prov, "99999999-9999-4999-8999-999999999999", "")
+        is False
+    )
+
+
+def test_a_CONCURRENT_sidecar_WRITE_does_not_make_an_archived_session_adoptable(api):
+    """#896 review 17, finding 3. `patch()` truncates the sidecar in place and then serializes, so
+    every ordinary edit has a window in which the file EXISTS and is ZERO BYTES.
+
+    A lock-free reader in that window sees no archive override at all — and for the engines whose
+    archive lives only in the sidecar, the provider row then reports `archived=False`. So an
+    archived session was adoptable for as long as somebody else's write took, on a store that was
+    perfectly healthy.
+
+    Red against a reader that does not take the writer's flock: the truncated window reads as
+    "no override" and the adoption is accepted.
+    """
+    import threading
+
+    from agent_sessions import metadata
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    metadata.patch(CLAUDE_A, archived=True)
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_writer():
+        # A NORMAL write, held open after the truncate — which is exactly what `_rewrite_in_place`
+        # does between `fh.truncate()` and `json.dump`.
+        with metadata._exclusive(metadata._default_path()) as fh:
+            fh.seek(0)
+            fh.truncate()
+            started.set()
+            release.wait(timeout=10)
+            fh.write(json.dumps({CLAUDE_A: {"archived": True}}))
+            fh.flush()
+
+    w = threading.Thread(target=_slow_writer, daemon=True)
+    w.start()
+    assert started.wait(timeout=5)
+    assert metadata._default_path().stat().st_size == 0, "the premise: the file is truncated"
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": CLAUDE_A}, headers=hdr)
+    release.set()
+    w.join(timeout=10)
+
+    assert r.status_code == 404, r.text
+    assert missions.get_mission(m["id"])["sessions"] == []
+
+
 # ---- #892: POST /api/missions/{id}/answer -----------------------------------------
 
 
@@ -2369,3 +3273,41 @@ def test_a_playbook_save_with_NO_revision_is_refused_at_the_route(api):
 
 
 # =======================================================================================
+
+
+def test_a_LIVE_session_whose_engine_PINS_THE_ID_FIRST_can_be_adopted(api, monkeypatch):
+    """#896 review 24, finding 1, the opposite false answer.
+
+    Gemini starts with a caller-pinned id BEFORE it writes its chat file, so "the store has no row"
+    is the ordinary state of a fresh live session on that engine — not a hint that something could
+    not be read. Reporting it as "cannot tell" refused a real live master outright, which is the
+    very capability this gate was widened to allow.
+
+    The fix is to stop asking the store an existence question it cannot answer negatively: the
+    store proves existence POSITIVELY (a semantically valid row), the live writer proves it
+    otherwise, and the only thing the store must answer three ways is whether it has ARCHIVED the
+    session — which, for an engine with no archive tree, is a definite no.
+
+    Red against a lookup that answers `unreadable` for every no-row result.
+    """
+    from agent_sessions import session_input
+
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    # Nothing on disk for this one: gemini has written no chat file yet.
+    fresh = "gemini:88888888-8888-8888-8888-888888888888"
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: True)
+
+    r = c.post(f"/api/missions/{m['id']}/adopt", json={"session_key": fresh}, headers=hdr)
+    assert r.status_code == 200, r.text
+    assert [s["session_key"] for s in missions.get_mission(m["id"])["sessions"]] == [fresh]
+
+    # …and with NO writer there is no proof at all, so it is still a 404.
+    m2 = _create(c, hdr, project_id=proj.id)
+    monkeypatch.setattr(session_input, "is_live", lambda *a, **k: False)
+    gone = c.post(
+        f"/api/missions/{m2['id']}/adopt",
+        json={"session_key": "gemini:99999999-9999-4999-8999-999999999999"},
+        headers=hdr,
+    )
+    assert gone.status_code == 404, gone.text

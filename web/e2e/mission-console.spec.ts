@@ -287,15 +287,110 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
   page,
 }) => {
   await stub(page);
+  // …AND A LOOSE SESSION, so the rail carries an UNTRACKED view: NEW MISSION lives there now
+  // that the mission body's composer is the durable one (#890). `mission_id: null` is
+  // membership KNOWN and empty — `undefined` means "could not be read", which is a different
+  // state and correctly hides the view.
+  await page.route(/\/api\/pulse$/, (r) =>
+    r.fulfill({
+      json: {
+        ...OVERVIEW,
+        cards: [
+          CARD,
+          // A DIFFERENT key from the one the mission holds: `claude:aaa` is `HELD_ROW`'s, so a
+          // card wearing it is that mission's, not an untracked one.
+          { ...CARD, id: "claude:loose", title: "Nobody's", mission_id: null },
+        ],
+      },
+    }),
+  );
+  // AN ARCHIVED MISSION TOO, so the inventory can reach the UNARCHIVE confirmation — two controls
+  // that exist only after it is opened, on a scope the default stops never visit (#896 review 7,
+  // finding 3). Resolved from the query, because the two scopes are disjoint sets.
+  const ARCHIVED_ROW = missionRow({
+    id: "msn_arch",
+    title: "Shelved",
+    archived_at: T - 900,
+  });
+  // …AND A MISSION IN EACH STATE WHOSE CONTROL ONLY EXISTS THERE (#896 review 15, finding 3).
+  //
+  // A running mission renders neither BEGIN nor REOPEN, so a sweep over one measured neither —
+  // and a fixture whose only objective is already MET renders NOT REQUIRED and the reorder arrows
+  // DISABLED, which the selector excludes. Every one of those is a control this PR added, and
+  // "the inventory covers every new control" was the acceptance claim.
+  const PLANNED_ROW = missionRow({
+    id: "msn_plan",
+    title: "Not started",
+    state: "planned",
+  });
+  const DONE_ROW = missionRow({
+    id: "msn_done",
+    title: "Finished",
+    state: "done",
+  });
   await mockMissions(page, {
-    missions: missionList([HELD_ROW]),
-    mission: { ...HELD, events: [], events_next_seq: null },
+    missions: (q: URLSearchParams) =>
+      missionList(
+        q.get("archived") === "1"
+          ? [ARCHIVED_ROW]
+          : [HELD_ROW, PLANNED_ROW, DONE_ROW],
+      ),
+    mission: {
+      ...HELD,
+      events: [],
+      events_next_seq: null,
+      // THE SUPERVISOR'S BOARD, without which STAND DOWN does not exist. It is offered only for
+      // an objective that is unmet and not already stood down — silencing a met one would be a
+      // control with no effect — so the fixture has to produce that state rather than any state.
+      supervisor: {
+        objectives: [
+          {
+            key: "checks_green",
+            title: "Checks are green",
+            gate: true,
+            state: "open",
+            met: false,
+            episode: 1,
+            stood_down: false,
+            spent: 1,
+            remaining: 2,
+            may_nudge: true,
+            unreadable: false,
+            indeterminate: false,
+            live: 0,
+            terminal: false,
+            why_not: "",
+          },
+        ],
+        likely_done: false,
+        unmet_gates: 1,
+        held_sessions: 1,
+        no_session: false,
+        checked_at: T - 30,
+      },
+    },
     objectives: {
       objectives: [
         {
           mission_id: HELD.id,
-          key: "pr_opened",
+          key: "checks_green",
           ord: 0,
+          title: "Checks are green",
+          probe: "none",
+          probe_args: null,
+          gate: true,
+          // UNMET, and that is the point: NOT REQUIRED and the reorder arrows are disabled on a
+          // settled objective, and `:not([disabled])` in the sweep's selector excludes exactly
+          // those — so a fixture whose only objective was met measured neither.
+          state: "open",
+          met_at: null,
+          observed: null,
+          source: "operator",
+        },
+        {
+          mission_id: HELD.id,
+          key: "pr_opened",
+          ord: 1,
           title: "PR opened",
           probe: "none",
           probe_args: null,
@@ -308,29 +403,146 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       ],
     },
   });
+  // …and its DETAIL, resolved by id, so selecting it actually paints the archived lifecycle bar.
+  await page.route(/\/api\/missions\/msn_arch(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        ...HELD,
+        id: "msn_arch",
+        title: "Shelved",
+        archived_at: T - 900,
+        sessions: [],
+        events: [],
+        events_next_seq: null,
+      },
+    }),
+  );
+  // …and the two lifecycle states whose controls exist nowhere else. BEGIN needs a `planned`
+  // mission that HOLDS a session (it is disabled without one, and a disabled control is excluded
+  // from the sweep); REOPEN exists only on a terminal one.
+  await page.route(/\/api\/missions\/msn_plan(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        ...HELD,
+        id: "msn_plan",
+        title: "Not started",
+        state: "planned",
+        events: [],
+        events_next_seq: null,
+      },
+    }),
+  );
+  await page.route(/\/api\/missions\/msn_done(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        ...HELD,
+        id: "msn_done",
+        title: "Finished",
+        state: "done",
+        closed_at: T - 60,
+        events: [],
+        events_next_seq: null,
+      },
+    }),
+  );
   await page.setViewportSize({ width: 412, height: 900 });
   await page.goto("/pulse");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
   // Walk all three stops AND the drawer, so the inventory covers every control the operator can
   // reach on a phone — not just the ones on the first screen.
+  //
+  // …and the HIDDEN states too (#896 review 3, finding 5). NEW MISSION and an objective rename
+  // are controls that do not exist until something is opened, so a sweep of the default screens
+  // measures neither — and they are exactly where a new control gets added without anyone
+  // re-checking the touch floor.
   const surfaces: (() => Promise<void>)[] = [
     async () => {},
     async () => void (await page.getByTestId("stop-objectives").click()),
+    async () => {
+      // The objective row's own edit controls, plus the rename field it swaps in.
+      await page.getByTestId("stop-objectives").click();
+      const rename = page.getByTestId("objective-rename").first();
+      if (await rename.isVisible().catch(() => false)) await rename.click();
+    },
     async () => void (await page.getByTestId("stop-timeline").click()),
     async () => {
-      await page.getByTestId("stop-thread").click();
+      // NEW MISSION: a composer MODE, so its form is only in the DOM once opened — and it lives
+      // in the UNTRACKED view, because the mission body's composer is the DURABLE one (#890).
       await page.getByTestId("rail-drawer-open").click();
+      await page.locator('[data-testid="rail-untracked-view"]:visible').click();
+      await page.keyboard.press("Escape");
+      const mode = page.getByTestId("composer-mode-new");
+      if (await mode.isVisible().catch(() => false)) await mode.click();
+    },
+    async () => {
+      await page.getByTestId("stop-thread").click();
+      const mode = page.getByTestId("composer-mode-ask");
+      if (await mode.isVisible().catch(() => false)) await mode.click();
+      await page.getByTestId("rail-drawer-open").click();
+    },
+    async () => {
+      // THE FOLLOW-THROUGH BOARD, where STAND DOWN lives. It is offered only for an objective
+      // that is unmet and not already stood down, which is why the fixture above had to grow one.
+      await page.keyboard.press("Escape");
+      await page.getByTestId("stop-objectives").click();
+    },
+    async () => {
+      // BEGIN: a `planned` mission holding a session. It exists in no other state, so a sweep
+      // over the running mission alone never saw it.
+      await page.getByTestId("rail-drawer-open").click();
+      await page.locator('[data-testid="rail-mission"]:visible').nth(1).click();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("mission-begin")).toBeVisible();
+    },
+    async () => {
+      // REOPEN: a terminal mission. Same argument, other end of the lifecycle.
+      await page.getByTestId("rail-drawer-open").click();
+      await page.locator('[data-testid="rail-mission"]:visible').nth(2).click();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("mission-reopen")).toBeVisible();
+    },
+    async () => {
+      // …and back to the running one, so the surfaces after this see the state they expect.
+      await page.getByTestId("rail-drawer-open").click();
+      await page
+        .locator('[data-testid="rail-mission"]:visible')
+        .first()
+        .click();
+      await page.keyboard.press("Escape");
+    },
+    async () => {
+      // THE UNARCHIVE CONFIRMATION. RECORD ONLY and RESTART AGENTS do not exist until it is
+      // opened, and they live on the archived scope, which none of the surfaces above visits —
+      // exactly the shape a new control slips through in.
+      await page.keyboard.press("Escape");
+      await page.getByTestId("rail-drawer-open").click();
+      await page.locator('[data-testid="rail-scope"]:visible').first().click();
+      await page
+        .locator('[data-testid="rail-mission"]:visible')
+        .first()
+        .click();
+      const drawer = page.getByTestId("rail-drawer");
+      if (await drawer.isVisible().catch(() => false))
+        await page.keyboard.press("Escape");
+      await page.getByTestId("mission-unarchive").click();
+      await expect(page.getByTestId("mission-unarchive-record")).toBeVisible();
     },
   ];
 
   const offenders: string[] = [];
+  const seen: string[] = [];
   let measured = 0;
+  let focusChecked = 0;
   for (const visit of surfaces) {
     await visit();
     const found = await page.evaluate(() => {
+      // `select` IS on this list, and its absence was a real gap rather than an oversight of
+      // taste: the project picker #896 made REQUIRED is a `<select>`, so the one control an
+      // operator cannot start a mission without was the one control the inventory never
+      // measured (#896 review 10, finding 8).
       const sel =
-        'button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), [role="tab"], [tabindex]:not([tabindex="-1"])';
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [role="tab"], [tabindex]:not([tabindex="-1"])';
       // Scoped to the CONSOLE and its drawer — this PR's surface. That is a region, not a list:
       // everything interactive inside it is enumerated, so a control added later is covered
       // automatically. The app shell's own topbar and sidebar are out of this PR's scope and
@@ -341,6 +553,13 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
         document.querySelector('[data-testid="rail-drawer"]'),
       ].filter(Boolean) as HTMLElement[];
       const bad: string[] = [];
+      const names: string[] = [];
+      // THE DRAWER IS A FOCUS TRAP (#878), and while it is open the controls behind it are
+      // correctly unreachable — focus snaps back to its close button. So focusability is asked
+      // of what the operator can actually reach right now: everything, or, with the drawer open,
+      // what is inside it. Asserting it unconditionally would fail on the trap WORKING.
+      const trap = document.querySelector('[data-testid="rail-drawer"]');
+      let focusChecked = 0;
       const els = roots.flatMap((r) =>
         Array.from(r.querySelectorAll<HTMLElement>(sel)),
       );
@@ -351,21 +570,65 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
         const cs = getComputedStyle(el);
         if (cs.visibility === "hidden" || cs.display === "none") continue;
         const label = `${el.tagName}.${el.className}`.slice(0, 70);
+        const id = el.getAttribute("data-testid");
+        if (id) names.push(id);
         // The 44px floor applies to the TAP TARGET, so height is what matters; a control may be
         // narrow (an icon button) but must not be short.
         if (r.height < 44) bad.push(`${label} h=${Math.round(r.height)}`);
         if (r.right > window.innerWidth + 1 || r.left < -1) {
           bad.push(`${label} x=${Math.round(r.left)}..${Math.round(r.right)}`);
         }
+        // FOCUSABLE, as the title of this test has always claimed and as nothing in it used to
+        // check (#896 review 10, finding 8). A geometry sweep under a title promising focus is
+        // worse than no claim: it reads as covered. Measured LAST, after the rectangle, so
+        // focus-driven scrolling cannot move what was measured.
+        if (!trap || trap.contains(el)) {
+          el.focus({ preventScroll: true });
+          focusChecked += 1;
+          if (document.activeElement !== el) bad.push(`${label} not focusable`);
+        }
       }
-      return { bad, seen: els.length };
+      (document.activeElement as HTMLElement | null)?.blur();
+      return { bad, seen: els.length, names, focusChecked };
     });
     offenders.push(...found.bad);
     measured += found.seen;
+    focusChecked += found.focusChecked;
+    seen.push(...found.names);
+  }
+  // THE HIDDEN CONTROLS WERE ACTUALLY REACHED. Without this the walk above can silently stop
+  // finding them — a changed testid, a surface that no longer opens — and the region sweep goes
+  // on passing over whatever it happened to see. Named because they are the ones this PR added
+  // behind a confirmation (#896 review 7, finding 3).
+  for (const id of [
+    "mission-unarchive-record",
+    "mission-unarchive-sessions",
+    "objective-rename",
+    "composer-mode-new",
+    // #896 review 15, finding 3. Each of these exists in exactly one lifecycle or objective
+    // state, and the previous fixture rendered none of them: a running mission shows neither
+    // BEGIN nor REOPEN, and a settled objective renders NOT REQUIRED and the reorder arrows
+    // DISABLED — which `:not([disabled])` excludes. Naming them is what stops the region sweep
+    // from passing over whatever it happened to see.
+    "mission-begin",
+    "mission-reopen",
+    "objective-waive",
+    "objective-up",
+    "objective-down",
+    "objective-stand-down",
+    // The REQUIRED project picker — the control the sweep could not see at all until `select`
+    // joined the selector above.
+    "new-mission-project",
+  ]) {
+    expect(seen, `the inventory never reached ${id}`).toContain(id);
   }
   // An inventory that measured nothing passes vacuously — the exact failure this test's own
   // wording warns about, one level up. Four surfaces, each with several controls.
-  expect(measured).toBeGreaterThan(12);
+  // Six surfaces now, including the two hidden states.
+  expect(measured).toBeGreaterThan(18);
+  // …and the FOCUS half of the title was checked on a real share of them, not skipped into
+  // vacuity by a trap that happened to be open (#896 review 10, finding 8).
+  expect(focusChecked).toBeGreaterThan(12);
   expect(offenders).toEqual([]);
 });
 
@@ -567,6 +830,12 @@ function pagedMissions(opts: {
       offset,
       facets: { projects: [], states: [] },
       store_error: null,
+      // THE ORDERED SET THE PAGE WAS CUT FROM (#896 review 19). The server sends one on every
+      // page and a stitching client requires them to agree; this fixture serves every page from
+      // one unchanging array, so the digest is constant — which is exactly what "these pages
+      // came from one snapshot" looks like, and what makes the re-read control's ABSENCE below
+      // an assertion rather than an accident.
+      snapshot: q.get("archived") === "1" ? "arch" : "live",
     };
   };
 }
@@ -710,6 +979,11 @@ test("a refresh after an adopt keeps every page the operator opened, past the se
   await expect(page.getByTestId("rail-mission").last()).toContainText(
     "Mission 250",
   );
+  // …AND PAGING IS NOT ITSELF A DEFECT (#896 review 18). This refresh spanned three pages that
+  // AGREED, so the list is complete and no recovery is offered: the re-read exists for a read
+  // that could not be proved, not for every rail past the server's one-page cap. Asserting the
+  // control's ABSENCE here is what stops it becoming permanent furniture on a long install.
+  await expect(page.getByTestId("rail-re-read")).toHaveCount(0);
   // One request per opened page, each within the server's cap — never one oversized ask that the
   // server silently clamps.
   for (const q of listReqs)

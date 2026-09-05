@@ -26,7 +26,13 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(tmp_path / "m.db"))
     monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "led.jsonl"))
     missions.reset_schema_cache_for_test()
-    return missions.create_mission("ship it", cwd="/tmp")["id"]
+    mid = missions.create_mission("ship it", cwd="/tmp")["id"]
+    # A SESSION, because `may_nudge` now refuses a mission that holds none — a nudge is a write
+    # into a session, and with none there is nothing to write to (#896 review 7, finding 2).
+    # Every test in this file is about a mission the supervisor is following through on, which by
+    # definition has one; the tests that are about the EMPTY case adopt nothing and say so.
+    missions.adopt(mid, SESSION)
+    return mid
 
 
 def _ensure_objective(mid: str, key: str = KEY) -> None:

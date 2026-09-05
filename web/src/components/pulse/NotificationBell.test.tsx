@@ -164,7 +164,9 @@ test("the settled window renders as history, with no controls", async () => {
       <NotificationBell />
     </MemoryRouter>,
   );
-  await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /notifications/i }),
+  );
   const row = await screen.findByTestId("bell-settled-row");
   expect(row).toHaveTextContent("delivered: continue");
   // History offers nothing to decide — that is the whole contract of the window.
@@ -214,7 +216,9 @@ test("Clear sends exactly the settled ids that were DISPLAYED (#862)", async () 
       <NotificationBell />
     </MemoryRouter>,
   );
-  await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /notifications/i }),
+  );
   await screen.findByTestId("bell-settled-row");
 
   // …a second decision settles between the render and the click. The client must not send it.

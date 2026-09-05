@@ -324,8 +324,8 @@ export function NotificationBell() {
           acting. Said plainly instead, which is the true thing. */}
       {uncertain > 0 && (
         <p className={styles.uncertain} data-testid="bell-uncertain">
-          {uncertain} {uncertain === 1 ? "decision" : "decisions"} could not be read
-          — the store is unavailable, so they cannot be acted on yet.
+          {uncertain} {uncertain === 1 ? "decision" : "decisions"} could not be
+          read — the store is unavailable, so they cannot be acted on yet.
         </p>
       )}
 
@@ -348,10 +348,16 @@ export function NotificationBell() {
           </div>
           <ul className={styles.list}>
             {settled.map((n) => (
-              <li key={n.id} className={styles.row} data-testid="bell-settled-row">
+              <li
+                key={n.id}
+                className={styles.row}
+                data-testid="bell-settled-row"
+              >
                 <div className={styles.title}>{n.title}</div>
                 <div className={styles.foot}>
-                  {n.project && <span className={styles.proj}>{n.project}</span>}
+                  {n.project && (
+                    <span className={styles.proj}>{n.project}</span>
+                  )}
                   <span className={styles.age}>{relTime(n.ts)}</span>
                 </div>
               </li>

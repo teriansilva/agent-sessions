@@ -132,6 +132,23 @@ class Dispatch:
         return self.briefed and self.started
 
 
+def _row_ids(row) -> tuple[str, str]:
+    """`(id, native)` from a scan row, whatever shape the provider returns.
+
+    **Every provider's `scan()` returns `scanner.Session`, a dataclass** — so the original
+    `row.get("id")` raised `AttributeError` on the first row, the broad `except` below swallowed
+    it, and this function answered "no evidence" for every session that has ever existed (#896
+    review 11, finding 1, found while wiring the adopt-time existence check to it).
+
+    It was invisible because the tests stub `prov.scan()` with dicts: a door production cannot
+    reach. Dicts are still accepted — a provider is free to return them — but the dataclass is
+    the shape that actually arrives.
+    """
+    if isinstance(row, dict):
+        return str(row.get("id") or ""), str(row.get("native") or row.get("uuid") or "")
+    return str(getattr(row, "id", "") or ""), str(getattr(row, "uuid", "") or "")
+
+
 def _has_store_record(prov, native: str, cwd: str) -> bool:
     """Does the ENGINE'S OWN store know about this session?
 
@@ -142,7 +159,8 @@ def _has_store_record(prov, native: str, cwd: str) -> bool:
     """
     try:
         for row in prov.scan() or []:
-            if str(row.get("id") or "").endswith(native) or str(row.get("native") or "") == native:
+            rid, ruuid = _row_ids(row)
+            if ruuid == native or (rid and rid.endswith(native)):
                 return True
     except Exception:  # noqa: BLE001 — an unreadable store is "no evidence", never "yes"
         return False

@@ -322,6 +322,83 @@ def invalidate_raw_cache() -> None:
         _raw_cache.clear()
 
 
+def archive_override_under_lock(key: str, path: Path | None = None) -> str:
+    """What the SIDECAR says about `key`'s archive state — `unset`/`active`/`archived`/`unreadable`.
+
+    `load()` deliberately collapses missing, empty and corrupt into `{}`, because for the list
+    surfaces "no metadata" and "unreadable metadata" produce the same rows, and failing them would
+    take the sidebar down over a sidecar. That is the right trade there and the wrong one at an
+    authorization boundary (#896 reviews 16 and 17): the ADOPT gate refuses an ARCHIVED session,
+    and for the engines whose archive lives only in the sidecar an unreadable one answers "not
+    archived" — so the gate fails OPEN exactly when it cannot see.
+
+    Two states have to be told apart from "empty", and neither is visible to a lock-free read:
+
+    * a **corrupt** file — bytes that do not parse;
+    * an **ordinary concurrent write**. `patch()` truncates in place and then serializes, so every
+      edit has a window in which the file exists and is ZERO BYTES. A reader that reads "empty"
+      there concludes there is no archive override, and an archived session becomes adoptable for
+      as long as somebody else's write takes.
+
+    So this takes the same exclusive flock every writer takes — the read equivalent of `patch()`'s
+    own "read the authoritative on-disk bytes under flock, never this cache". Deliberately NOT on
+    the list path, which must stay lock-free and fail soft.
+
+    **FOUR answers, because the sidecar can say four different things** (review 29). It used to
+    say two, and the pair it conflated was the damaging one: "nobody has recorded an override"
+    and "the operator explicitly set this session ACTIVE" both came back `False`, so the caller
+    could not tell them apart and went on to ask the engine's own store in both cases. For an
+    engine whose store is READ-ONLY — opencode — unarchiving deliberately writes only the sidecar
+    and leaves the native `time_archived` alone, so the engine still reports archived and an
+    explicitly unarchived session could never be adopted.
+
+    * ``unset``      — read, and silent about this session. The engine's own view decides.
+    * ``active``     — an explicit `archived: false`. The operator has SAID so, and the override
+      is the app's own precedence, so nothing else gets a vote.
+    * ``archived``   — an explicit `archived: true`.
+    * ``unreadable`` — the file could not be read, did not parse, or the row EXISTS and is
+      damaged (not an object, or an `archived` that is not a boolean). Not "not archived"
+      (review 28, finding 2): it is a session whose archive state nobody can determine.
+    """
+    path = path or _default_path()
+    try:
+        if not path.exists():
+            return "unset"  # no sidecar is an empty sidecar, and that is a real answer
+        with _exclusive(path) as fh:
+            body = fh.read()
+    except OSError:
+        return "unreadable"
+    if not body.strip():
+        # Zero bytes UNDER THE LOCK is not a write in progress — a writer would still be holding
+        # it — so this is a genuinely empty file, which is what `touch` leaves behind.
+        return "unset"
+    try:
+        raw = json.loads(body)
+    except json.JSONDecodeError:
+        return "unreadable"
+    if not isinstance(raw, dict):
+        return "unreadable"
+    raw, _ = _normalize_keys(raw)
+    # ABSENT AND MALFORMED ARE OPPOSITE FACTS (#896 review 28, finding 2), and this collapsed them
+    # into `False` — the one answer the adoption gate reads as permission to continue. A row that
+    # is not a row, or an `archived` that is not a boolean, is damage: the sidecar was read and
+    # this session's archive state could not be determined from it. Answering "definitively not
+    # archived" there let a sidecar-only archived session with a surviving live writer be adopted
+    # into a running mission. Absence is still a real answer, because a sidecar that has never
+    # been told about a session is not asserting anything about it.
+    if key not in raw:
+        return "unset"  # no row at all: read, and silent about this session
+    row = raw[key]
+    if not isinstance(row, dict):
+        return "unreadable"  # there IS a row and it is not one
+    if "archived" not in row:
+        return "unset"  # a row with no override recorded, which is the ordinary shape
+    flag = row["archived"]
+    if not isinstance(flag, bool):
+        return "unreadable"  # a value nobody can interpret is not "not archived"
+    return "archived" if flag else "active"
+
+
 def load(path: Path | None = None) -> dict[str, SessionMeta]:
     """Read sidecar; tolerate missing/empty/corrupt files by returning empty dict."""
     path = path or _default_path()
