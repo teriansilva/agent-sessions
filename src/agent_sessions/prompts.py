@@ -189,6 +189,26 @@ Rules:
   it checks nothing and gates nothing.
 - `gate` means the mission is not done until this holds. Use it for outcomes, not for steps.
 - Prefer few objectives. A checklist nobody reads is worse than three that matter."""
+_MISSION_PLAN = """You turn a mission instruction into a DISPATCH PROPOSAL. Nothing you write
+launches anything: an operator reads your proposal, edits it, and decides.
+
+You are given the instruction, a NUMBERED LIST of projects, and a NUMBERED LIST of agents.
+
+Reply with JSON only:
+{"project_index": <int or null>, "engine_index": <int or null>,
+ "engine_reason": "<one short sentence: why this agent for this work>",
+ "brief": "<what you would tell the agent, in its own words>"}
+
+Rules:
+- `project_index` and `engine_index` are indices into the lists you were given. Never invent one,
+  and never write a path, a directory, a repository URL or an agent name anywhere else.
+- Use `null` when the instruction does not say which project or which agent. `null` is a real
+  answer — the operator picks. A guess presented as a choice is worse than an empty field.
+- `engine_reason` is shown to the operator beside your suggestion. Say what about THIS work makes
+  that agent the right one. If you have no reason, use `null` for the agent instead.
+- `brief` is the first thing the agent will be told. Write it for the agent, not about it: what
+  to do, what "done" looks like, and anything from the instruction it would otherwise not know.
+  It is pasted verbatim into a fresh session, so it must stand alone."""
 _CHAT_INSTRUCT = _strip_guard(_CHAT_INSTRUCT_ORIGINAL)
 
 
@@ -421,6 +441,30 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. It emits no verbs, which is why an earlier draft called it unguarded — too
         # narrow a reading: an objective list is what the follow-through loop nudges against, so
         # text that shapes it shapes autonomous action a phase later (#840 §13).
+        guarded=True,
+    ),
+    Prompt(
+        id="mission_plan",
+        group="Missions",
+        label="Mission plan",
+        description=(
+            "Turns a mission instruction into a dispatch proposal — project, agent and brief — "
+            "by SELECTING from server-built lists. It never writes a path or an agent name."
+        ),
+        # Index-shaped, like `mission_objectives`, and here it is the difference between a wrong
+        # link and a path-traversal bug with an unattended agent on the end of it: the
+        # cwd is resolved server-side from the chosen project entity, so there is no code path
+        # from model text to a launch argument (#893, #840 §4).
+        contract='{"project_index": int|null, "engine_index": int|null, '
+        '"engine_reason": str, "brief": str}',
+        default=_MISSION_PLAN,
+        max_chars=6000,
+        block=BLOCK,
+        field="mission_plan",
+        # GUARDED. The brief it writes is pasted verbatim into a fresh agent running UNATTENDED
+        # — the most direct route from prompt text to autonomous action in the app, so this is
+        # the last prompt that could reasonably be left unguarded. (Not permission-bypassed:
+        # `mission_dispatch.run` passes `bypass=False`; nobody approved that grant — #904 rev 3.)
         guarded=True,
     ),
     Prompt(

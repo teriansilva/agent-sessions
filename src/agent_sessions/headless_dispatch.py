@@ -64,11 +64,14 @@ import asyncio
 import contextlib
 import logging
 import os
+import subprocess
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import engines, handoff, ptybridge, scopedspawn, sessionlock
+from . import engines, handoff, ptybridge, scopedspawn, session_input, sessionlock
 
 log = logging.getLogger(__name__)
 
@@ -149,22 +152,42 @@ def _row_ids(row) -> tuple[str, str]:
     return str(getattr(row, "id", "") or ""), str(getattr(row, "uuid", "") or "")
 
 
+def store_record_state(prov, native: str) -> str:
+    """`"found"` / `"absent"` / `"unreadable"` — the THREE answers (#904 review 2, finding 4).
+
+    `unknown` is not `absent`, and collapsing them here is what made a caller's careful tri-state
+    a fiction: recovery intended an exception to mean "we could not look", but the helper below
+    swallowed every provider-scan error and returned `False`, so a transiently corrupt or locked
+    provider store read as "that session never existed" — and a possibly live agent was torn down
+    and its mission settled failed on the strength of it.
+
+    The only test that covered it monkeypatched this function to raise, which asserts the
+    caller's handling of an answer this function could not produce.
+    """
+    try:
+        rows = prov.scan() or []
+    except Exception:  # noqa: BLE001
+        log.debug("could not read the store of %s", getattr(prov, "engine_id", "?"))
+        return "unreadable"
+    for row in rows:
+        rid, ruuid = _row_ids(row)
+        if ruuid == native or (rid and rid.endswith(native)):
+            return "found"
+    return "absent"
+
+
 def _has_store_record(prov, native: str, cwd: str) -> bool:
     """Does the ENGINE'S OWN store know about this session?
 
     Asked of the provider's scan rather than of a file path, so it is engine-agnostic by
     construction: claude writes a transcript JSONL, the SQLite engines write a row, and this asks
-    each of them the question in their own terms. A provider that cannot answer returns nothing,
-    and "no evidence" is then the honest result rather than a guess.
+    each of them the question in their own terms.
+
+    **The boolean form, for callers that genuinely have only two branches** — the start-evidence
+    poll, where "not yet" and "cannot tell" both mean "keep waiting". A caller that must not
+    conclude absence from a failed read wants `store_record_state`.
     """
-    try:
-        for row in prov.scan() or []:
-            rid, ruuid = _row_ids(row)
-            if ruuid == native or (rid and rid.endswith(native)):
-                return True
-    except Exception:  # noqa: BLE001 — an unreadable store is "no evidence", never "yes"
-        return False
-    return False
+    return store_record_state(prov, native) == "found"
 
 
 async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) -> tuple[bool, str]:
@@ -185,18 +208,26 @@ async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) 
     )
 
 
-async def _abandon(key: str, engine: str, native: str, out: Dispatch) -> None:
+async def _abandon(key: str, out: Dispatch) -> None:
     """Stop a launch that will never be briefed, and say so in the record.
 
     Reuses `runtime_cleanup.cleanup_runtime` — the same teardown archiving performs — rather than
     signalling a pid here: it terminates the master and the agent's process group, clears the
     scrollback and the owner lease, and unlinks the stale socket under the single-writer lock, so
     a later relaunch is a LAUNCH rather than a BUSY. One teardown, not a second one that drifts.
+
+    **Through the mission fence, because this session can be ADOPTED while it is being stopped**
+    (#904 review 9, finding 2). This runs on the failure paths of a launch a mission asked for,
+    and between the launcher giving up and the signal going out that mission — or another — can
+    commit an adoption of the very key here. Ownership is therefore asked and answered INSIDE the
+    session's own fence, which is the lock an adoption itself takes, rather than before it. The
+    module fence is imported lazily: this is the launcher, and it must not grow a load-time
+    dependency on the mission store.
     """
-    from . import runtime_cleanup
+    from . import mission_fence
 
     try:
-        outcome = await runtime_cleanup.cleanup_runtime(engine, native)
+        outcome = await mission_fence.fenced_teardown(key)
         # A NON-RAISING TEARDOWN IS NOT A STOPPED AGENT (#898 review 4, finding 1). The signal
         # path now answers about the whole process GROUP, and `leaked` means something in it
         # survived SIGKILL — a child that outlived its master. Reporting `abandoned` over that
@@ -219,6 +250,13 @@ async def _abandon(key: str, engine: str, native: str, out: Dispatch) -> None:
         out.reason = f"{out.reason} (and the launched session could not be stopped)"
 
 
+#: The spawn itself, as ONE name (#904 review 7, finding 2). A test that wants to stand in for
+#: `dtach` patches THIS, not `subprocess.Popen` — patching the stdlib module object replaces it
+#: for every other caller in the process, which is how a stubbed launch turned into unrelated
+#: failures somewhere else entirely.
+_popen = subprocess.Popen
+
+
 async def dispatch(
     *,
     engine: str,
@@ -227,6 +265,8 @@ async def dispatch(
     registry,
     bypass: bool = False,
     start_timeout: float | None = None,
+    on_key: Callable[[str], None] | None = None,
+    authorize: Callable[[int], str | None] | None = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -242,6 +282,19 @@ async def dispatch(
     approval-required until it has been exercised in anger. A default of `True` here would have
     made this function that grant, decided by the module that implements it. The caller opts in
     explicitly, at the layer that knows whether an operator authorised it.
+
+    **`on_key` sees the session key before anything is spawned.** A caller that has to be able to
+    reconcile a crash needs the id written down while the launch is still only an intention — a
+    record that can name a session which never came to be is recoverable, one that can miss a
+    session which did is not. It runs before the master exists, and a caller that refuses (by
+    raising) stops the launch.
+
+    **`authorize` runs INSIDE the launch fence, immediately before `create_subprocess_exec`.** It
+    is handed the policy epoch as observed under the fence and returns a refusal reason or None.
+    That ordering is the point and a later check is not equivalent: a policy withdrawal either
+    completes before the fence is entered — in which case the epoch has moved and the caller
+    refuses — or waits for the spawn it could not have prevented anyway. See
+    `session_input.launch_fence`.
 
     **`registry` is required**, not optional. A `dtach -n` master has no reader, so nothing drains
     it, nothing observes first paint and no writer is registered — and the seed delivery then
@@ -299,6 +352,17 @@ async def dispatch(
     key = f"{engine}:{native}"
     out = Dispatch(key=key, engine=engine, native=native, cwd=cwd)
 
+    # BEFORE THE LOCK, BEFORE THE SPAWN. Nothing exists yet, so a caller that records this and
+    # then dies has a record of an intention — which is precisely what it can reconcile against
+    # the engine's own store. Recording it after the spawn would leave the one window that cannot
+    # be reconciled: a live agent nobody wrote down.
+    if on_key is not None:
+        try:
+            on_key(key)
+        except Exception as e:  # noqa: BLE001
+            out.reason = f"the dispatch could not be recorded ({type(e).__name__})"
+            return out
+
     # THE SINGLE-WRITER LOCK, taken before anything is spawned. A held lock means somebody else
     # owns this session and we do nothing — the arbiter is the flock, never a check-then-act.
     lock = await asyncio.to_thread(sessionlock.acquire, key)
@@ -308,6 +372,28 @@ async def dispatch(
 
     handed_off = False
     may_have_inherited = False
+    # The spawn worker and its give-up flag, declared out here because the `finally` owns them:
+    # a thread cannot be cancelled, so the only way this frame can promise "nothing was launched"
+    # is to still be holding the thread that could launch it.
+    spawn: asyncio.Future | None = None
+    abandoned = threading.Event()
+    # BOUND BEFORE THE TRY, because the `finally` reads it (#904 review 8). It used to be
+    # declared partway down the block, so anything that raised before that line — an engine whose
+    # launch binary is not an absolute path, a handle the seed store refuses — reached the
+    # cleanup with the name unbound. The `UnboundLocalError` then replaced the real reason AND
+    # aborted the rest of the teardown, so the single-writer lock was never released and the
+    # session was BUSY for the life of the process. A cleanup that can itself fail is not one.
+    dirfd: int | None = None
+    spawn_cwd = cwd
+
+    async def _reclaim() -> None:
+        """Wait out the spawn worker, and reap whatever it produced after we stopped wanting it."""
+        late, _why = await spawn
+        if late is not None and late.returncode is None:
+            # `dtach -n` forks its master and exits, so this returns at once. A launch nobody
+            # waited on would otherwise leave a zombie behind for the life of the process.
+            await asyncio.to_thread(late.wait)
+
     try:
         # The brief goes into the ONE seed store, so delivery redeems it through the same
         # atomic claim/ack every other seed uses — exactly-once across a retry or a second
@@ -320,10 +406,18 @@ async def dispatch(
         )
         handoff.bind_target(handle, key)
 
-        launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass)
-        argv = ptybridge.launch_argv(
-            engine=engine, session_id=native, launch_argv=launch, detached=True
-        )
+        try:
+            launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass)
+            argv = ptybridge.launch_argv(
+                engine=engine, session_id=native, launch_argv=launch, detached=True
+            )
+        except ptybridge.PtyBridgeError as e:
+            # NOTHING HAS BEEN SPAWNED, so this is a dispatch that did not happen rather than a
+            # mission that failed (#904 review 2, finding 7) — the same shape the seed store's
+            # refusal already takes a few lines above. `ptybridge` refuses a launch binary that
+            # is not an absolute path, which is a real refusal on an install where the engine is
+            # not where the provider expects it, and the operator can fix it and press again.
+            raise DispatchError(str(e)) from None
         # A TRANSIENT SCOPE, exactly as the interactive launch takes (#346 Phase B) — and here it
         # is a containment boundary rather than only a resource one (#898 review 6).
         #
@@ -353,31 +447,126 @@ async def dispatch(
         #
         # So the question the cleanup asks is not "did we finish handing over" but "could a
         # process have inherited this", and the answer becomes yes before the call, not after it.
+        # THE DIRECTORY THE OPERATOR APPROVED, AS A HANDLE (#904 review 3, finding 4).
+        #
+        # Every check on the path is a check on a NAME, and a name is re-resolved by whoever
+        # follows it: the route compares, `authorize` compares again inside the fence, and the
+        # kernel resolves `cwd=` after all of that. A project repointed in the last window still
+        # launches somewhere nobody approved.
+        #
+        # An open descriptor is not a name. It refers to the inode that was there when the
+        # approved path was resolved, and no later rename, symlink swap or config edit moves it.
+        # `/proc/self/fd/N` in the CHILD resolves through the inherited fd, so the spawn happens
+        # in exactly the directory this process opened.
+        #
+        # Falls back to the path where `/proc` is unavailable, which is not Linux — the same
+        # place `dtach`, the reaper and the scope wrapper already assume they are.
+        try:
+            dirfd = os.open(cwd, os.O_RDONLY | os.O_DIRECTORY)
+            proc_path = f"/proc/self/fd/{dirfd}"
+            if os.path.isdir(proc_path):
+                spawn_cwd = proc_path
+            else:  # pragma: no cover - non-Linux
+                os.close(dirfd)
+                dirfd = None
+        except OSError:
+            out.reason = f"the working directory {cwd} could not be opened"
+            return out
+
         may_have_inherited = True
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(
-                    *argv,
-                    # NO terminal, which is the whole reason for `-n`. `-c` fails here with
-                    # "Attaching to a session requires a terminal" and then times out looking
-                    # like a slow start — #732's actual cause of death.
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    cwd=cwd,
-                    env=env,
-                    start_new_session=True,
-                    close_fds=True,
-                    # The lock fd goes to the dtach master, so the flock lives exactly as long as
-                    # the agent and survives an app restart.
-                    pass_fds=(lock.fd,),
-                ),
-                timeout=SPAWN_TIMEOUT_S,
-            )
+            # THE LAUNCH FENCE, AND IT RUNS OFF THE EVENT LOOP (#904 review 7, finding 2).
+            #
+            # `authorize` compares the policy fingerprint it is handed against the one the caller
+            # captured, under the same two locks `policy_transaction` holds across a withdrawal —
+            # so "switch orchestration off" and "start an unattended agent" cannot interleave
+            # (#904 review 4). The fence has to be held across the spawn itself: a check released
+            # before it would be a check again, and checks are what this fence exists to stop
+            # being the whole answer.
+            #
+            # The first version held it across `await create_subprocess_exec(...)`, which is the
+            # #888 deadlock in a new place: `session_input._lock` is a `threading.Lock`, the
+            # viewer attach path calls `bump_epoch()` synchronously ON THE LOOP, and an attach
+            # arriving while the spawn was suspended blocked the loop — so the spawn could never
+            # complete and the lock was never released. Neither side can make progress.
+            #
+            # So the lock and the spawn go onto ONE worker thread together, the idiom
+            # `_fenced_write` uses, and the spawn becomes a plain `Popen`. That is not a
+            # workaround for the lock: `dtach -n` forks its master and returns immediately, so
+            # there was never anything to await except asyncio's own subprocess-watcher setup —
+            # which is precisely the machinery that needs the loop this was blocking.
+            #
+            # Still a literal argv list, never a command string, so the shell-free guarantee and
+            # its `pr-validate` grep are untouched.
+            def _fenced_spawn():
+                # BOUNDED, so the caller's worker is bounded (#904 review 8, finding 2). A thread
+                # cannot be cancelled, so whatever this does, the caller is going to have to wait
+                # for it — which is only safe if "it" has a deadline.
+                with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as policy_epoch:
+                    if authorize is not None:
+                        why = authorize(policy_epoch)
+                        if why:
+                            return None, why
+                    # …AND ABANDONED IS A REFUSAL. The caller sets this when it has given up, and
+                    # the check is inside the fence, immediately before the spawn: the common
+                    # shape of a late worker is one still queued for the fence when the deadline
+                    # passes, and it must not start an agent for a dispatch already reported as
+                    # having launched nothing. Losing this race is survivable — the caller waits
+                    # for this thread before tearing down — but not starting is much better than
+                    # starting and killing.
+                    if abandoned.is_set():
+                        return None, "the launch was abandoned before anything was spawned"
+                    return (
+                        _popen(  # noqa: S603 — literal argv, no shell
+                            argv,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            cwd=spawn_cwd,
+                            env=env,
+                            start_new_session=True,
+                            close_fds=True,
+                            # The lock fd goes to the dtach master, so the flock lives exactly as
+                            # long as the agent and survives an app restart. The DIRECTORY fd
+                            # rides along because `cwd=/proc/self/fd/N` is resolved by the child,
+                            # which needs to have inherited it — `close_fds=True` would otherwise
+                            # take it.
+                            pass_fds=((lock.fd,) if dirfd is None else (lock.fd, dirfd)),
+                        ),
+                        "",
+                    )
+
+            # THE WORKER STAYS OURS UNTIL IT HAS DEFINITIVELY FINISHED (#904 review 8, finding
+            # 2). `wait_for(to_thread(...))` reads like a bounded spawn and is not one: cancelling
+            # the await cancels nothing on the thread. On a timeout — or on a cancelled request —
+            # the coroutine returned "nothing was launched", the cleanup below released the
+            # single-writer lock and closed the directory handle, and the worker then went on to
+            # `_popen()` a permission-bypassed agent nobody was ever told about, outside the
+            # teardown that would have stopped it.
+            #
+            # So the task is SHIELDED from the deadline: the wait ends, the worker does not, and
+            # `finally` joins it before it touches the lock or the descriptor. Every path out of
+            # this frame therefore leaves the thread finished, and a spawn that won the race is
+            # covered by the same teardown as any other failed launch.
+            spawn = asyncio.ensure_future(asyncio.to_thread(_fenced_spawn))
+            proc, refused = await asyncio.wait_for(asyncio.shield(spawn), timeout=SPAWN_TIMEOUT_S)
+            if proc is None:
+                out.reason = refused
+                return out
+        except session_input.AuthorityFenceBusy:
+            out.reason = "the launch could not be ordered against a policy change; try again"
+            return out
         except (TimeoutError, OSError) as e:
             out.reason = f"the launch could not be spawned ({type(e).__name__})"
             return out
-        await proc.wait()  # `dtach -n` forks its master and returns immediately
+        # The child has the directory it needs; ours has done its job.
+        if dirfd is not None:
+            with contextlib.suppress(OSError):
+                os.close(dirfd)
+            dirfd = None
+        # `dtach -n` forks its master and returns immediately, so this is a formality — but
+        # it is a BLOCKING wait now, and blocking calls do not belong on the loop.
+        await asyncio.to_thread(proc.wait)
         if proc.returncode:
             out.reason = f"dtach exited {proc.returncode} without creating the session"
             return out
@@ -443,6 +632,26 @@ async def dispatch(
             out.reason = f"the dispatch failed ({type(e).__name__})"
             return out
     finally:
+        # FIRST, RECLAIM THE SPAWN WORKER (#904 review 8, finding 2). Nothing below may run while
+        # a thread might still be inside `_popen` with these descriptors: closing `dirfd` would
+        # hand the child a recycled fd, and releasing the lock would let the next attempt start a
+        # second permission-bypassed agent beside the one this thread is about to create.
+        #
+        # `abandoned` first, so a worker still queued for the fence refuses instead of spawning;
+        # then the join, which is bounded because the fence acquisition is. Shielded for the same
+        # reason the teardown below is: this runs on the cancellation path, where an unshielded
+        # await is cancelled at its first suspension point — exactly when the guarantee matters.
+        if spawn is not None:
+            abandoned.set()
+            with contextlib.suppress(Exception):
+                await asyncio.shield(asyncio.ensure_future(_reclaim()))
+        # The directory handle, on every path out. Ours is only needed until the child has been
+        # spawned with it inherited; a return between the open and that point would otherwise
+        # leak a descriptor per refused dispatch.
+        if dirfd is not None:
+            with contextlib.suppress(OSError):
+                os.close(dirfd)
+            dirfd = None
         # THREE STATES, not two (#898 review 5, finding 2).
         #
         # * nothing was ever spawned — release the lock, or the session is BUSY for ever with
@@ -469,7 +678,7 @@ async def dispatch(
                 lock.release()
         elif not out.ok:
             with contextlib.suppress(Exception):
-                await asyncio.shield(asyncio.ensure_future(_abandon(key, engine, native, out)))
+                await asyncio.shield(asyncio.ensure_future(_abandon(key, out)))
             if not handed_off:
                 # The teardown has stopped whatever inherited it, so the lock is ours to drop —
                 # and it must be dropped, or a launch that failed before the transfer leaves the

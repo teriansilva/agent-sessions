@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
+import json
 import logging
 import os
 import select
@@ -133,6 +135,7 @@ _epochs: dict[str, int] = {}
 # lock-order inversion and it deadlocks. Policy therefore announces itself as a plain
 # in-memory counter — the fence compares an integer with no I/O at all.
 _policy_epoch: int = 0
+
 
 # The FOURTH domain: the screen itself. `check_precondition` compares a screen fingerprint, but
 # that read happens in the final guard — which must run OUTSIDE the fence, because it does I/O.
@@ -244,8 +247,112 @@ def policy_transaction():
 
 
 def current_policy_epoch() -> int:
+    """The WRITE fence's comparand: this interpreter's own counter.
+
+    Process-local on purpose and unchanged. A sibling instance cannot write to a pty this process
+    owns — the single-writer lock sees to that — so ordering a write against withdrawals made
+    HERE is the whole requirement, and the file fence orders it against the sibling's commit.
+    """
     with _lock:
         return _policy_epoch
+
+
+def policy_fingerprint() -> str | None:
+    """The LAUNCH fence's comparand: a digest of the POLICY ITSELF, from its own file.
+
+    Not a counter beside it (#904 review 3, finding 3). A second file is a second thing that can
+    fail, and its failure mode was fail-OPEN: `set_orchestrator` persisted the withdrawal, the
+    version write failed and was swallowed, and a launch comparing an unchanged integer authorized
+    the spawn against policy the operator had already turned off. One durable authority record,
+    and it is the one the operator actually edited.
+
+    **`None` means "could not read", and a launch refuses on it.** An unreadable authority record
+    is not permission; it is the absence of a check.
+
+    Reading prefs is safe here: `set_orchestrator` takes `_lock` (via `policy_transaction`) and
+    then the prefs flock, so a reader taking `_lock` and then reading prefs takes the SAME order.
+    """
+    from . import prefs
+
+    try:
+        cfg = prefs.get_orchestrator()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        blob = json.dumps(cfg, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return None
+    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()[:32]
+
+
+@contextlib.contextmanager
+def adoption_fence(key: str):
+    """Hold the write fence across a change to WHO OWNS a session (#904 review 7, finding 1).
+
+    Two things decide a session's fate and must never interleave:
+
+    * a mission ADOPTING it — the route, and the dispatch settlement that adopts the session it
+      has just started;
+    * a recovery pass deciding it is an ORPHAN and tearing it down.
+
+    Every ownership read on the teardown side is otherwise a snapshot: `holder_of` answers "nobody"
+    and an adoption commits before the signal lands, so the agent the new owner has just taken
+    responsibility for is killed. Narrowing that window — a later read, a `spare_if` re-checked
+    before each signal — moves it without closing it, because the check and the kill are still two
+    steps.
+
+    So both sides take THIS, keyed on the session's physical key, and the race stops existing.
+    Callers must run it OFF the event loop, like every other holder of `_lock`: the attach path
+    calls `bump_epoch()` synchronously from the loop, and a lock held across an await is the #888
+    deadlock.
+    """
+    with sessions_transaction([key]):
+        yield
+
+
+@contextlib.contextmanager
+def launch_fence(timeout: float | None = None):
+    """Hold the write fence across a LAUNCH, and hand out the policy epoch inside it (#904 rev 4).
+
+    The same ordering `_write_all` gets, for the other thing an operator's "off" has to be able to
+    stop: not a write into a session that already exists, but the CREATION of one. A dispatch
+    reads `prefs.get_orchestrator()`, then awaits a database claim and a process spawn — and a
+    check, however late it is moved, is still a check. `policy_transaction` holds exactly these
+    two locks across the persist and bumps the epoch on the way out, so a withdrawal either
+    completes before this block starts (and the epoch inside it does not match what the caller
+    captured) or waits until the launch has happened.
+
+    The fingerprint is yielded rather than read by the caller because `policy_fingerprint` takes
+    `_lock`, which is not re-entrant: asking for it inside the fence would deadlock.
+
+    The comparand covers the WHOLE orchestrator block, so an unrelated edit landing in this exact
+    window refuses a launch that would have been legal. Refusing a legal launch is the safe
+    direction and the operator can press the button again.
+
+    **`timeout` bounds the acquisition, and that is what makes the caller's worker bounded**
+    (#904 review 8, finding 2). `_lock` is a plain `threading.Lock` with no deadline, so a
+    launch worker queued behind a slow holder could sit here indefinitely — and a caller that
+    gave up on it (a spawn timeout, a cancelled request) cannot cancel a thread. Refusing to be
+    ordered is already an outcome this module knows how to report, so an expiry raises
+    `AuthorityFenceBusy` exactly like a busy file fence rather than inventing a second answer.
+    `None` keeps the old unbounded behaviour for callers that are not racing a deadline.
+    """
+    if timeout is None:
+        acquired = _lock.acquire()
+    else:
+        acquired = _lock.acquire(timeout=timeout)
+    if not acquired:
+        raise AuthorityFenceBusy("the launch fence is held elsewhere")
+    try:
+        with _authority_fence():
+            # THE POLICY ITSELF, read INSIDE the fence — which is what makes the read meaningful:
+            # a withdrawal cannot be in progress while we hold it, because `policy_transaction`
+            # holds the same two locks across its persist. A process-local counter was invisible
+            # to a sibling instance; a shared counter was a second file that could fail open.
+            # This is the record the operator edited, and if it cannot be read the launch refuses.
+            yield policy_fingerprint()
+    finally:
+        _lock.release()
 
 
 def _bump_epoch_locked(key: str) -> None:

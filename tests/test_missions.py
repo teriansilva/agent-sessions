@@ -549,6 +549,50 @@ def test_retention_deletes_closed_missions_and_their_rows(store):
         con.close()
 
 
+def test_retention_never_deletes_an_OUTSTANDING_TEARDOWN_OBLIGATION(store):
+    """#904 review 17, finding 1. Retention could delete the only trace of a live agent.
+
+    A `mission_dispatches` row beside an ALREADY-TERMINAL mission means one thing, and the
+    recovery module's header says it: a teardown could not prove the process boundary empty, so
+    something may still be running and this row is the only durable record of it. The row is
+    `ON DELETE CASCADE`, and retention selected purely on age and closure — so once the mission
+    aged out, the mission and the obligation went together and recovery could no longer discover
+    or retry what it could no longer find. The leak became permanent at exactly the moment the
+    record mattered most.
+
+    Red against an eligibility predicate that does not exclude an outstanding dispatch: the pass
+    returns 1 and the row is gone.
+    """
+    old = time.time() - 400 * 86400
+    m = missions.create_mission("do the thing", cwd="/repo")
+    mid = m["id"]
+    missions.set_state(mid, "draft", "planned")
+    plan = missions.put_plan(mid, project_id="prj", cwd="/repo", engine="claude", brief="go")
+    missions.claim_plan(mid, plan["plan_id"])
+    missions.note_dispatch_session(mid, CLAUDE_A, expect_plan=plan["plan_id"])
+    # TERMINAL, and the record KEPT — the teardown could not prove the boundary empty.
+    missions.settle_dispatch(
+        mid,
+        to="failed",
+        detail="the session could not be proved stopped",
+        keep_record=True,
+        expect_plan=plan["plan_id"],
+        now=old,
+    )
+    assert missions.get_mission(mid)["state"] == "failed"
+    assert missions.get_dispatch(mid) is not None
+
+    # OLD ENOUGH TO PRUNE, and it must survive anyway.
+    assert missions.retention_pass() == 0, "retention deleted a mission that still owed a teardown"
+    assert missions.get_mission(mid) is not None
+    assert missions.get_dispatch(mid) is not None
+
+    # …AND ONLY ONCE RECOVERY DISCHARGES IT does the mission become collectable.
+    assert missions.clear_dispatch(mid, expect_plan=plan["plan_id"])
+    assert missions.retention_pass() == 1
+    assert missions.get_mission(mid) is None
+
+
 def test_retention_leaves_open_missions_alone(store):
     mid = _running()
     assert missions.retention_pass() == 0

@@ -29,6 +29,7 @@ import type {
   MissionContext,
   MissionList,
   MissionObjective,
+  MissionPlan,
   MissionTurn,
   NotificationList,
   OrchestratorAction,
@@ -268,7 +269,11 @@ async function deleteVoid(path: string): Promise<void> {
     } catch {
       /* non-JSON body */
     }
-    throw new ApiError(r.status, detail || `DELETE ${path} → ${r.status}`, parsed);
+    throw new ApiError(
+      r.status,
+      detail || `DELETE ${path} → ${r.status}`,
+      parsed,
+    );
   }
 }
 
@@ -309,7 +314,10 @@ export function uploadUrl(path: string): string {
  *  `<img src>` would hit the relay instead (a 404, and the stored name in its logs). Callers turn
  *  the blob into an object URL and revoke it (`components/templates/UploadImage.tsx`). */
 async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-  const r = await apiFetch(uploadUrl(path), { credentials: "same-origin", signal });
+  const r = await apiFetch(uploadUrl(path), {
+    credentials: "same-origin",
+    signal,
+  });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) throw new ApiError(r.status, `upload read-back → ${r.status}`);
   return await r.blob();
@@ -318,7 +326,9 @@ async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
 /** Upload a file (image/context) → server saves it under ~/.agent-sessions/uploads/
  *  and returns a path the agent can read. Multipart, CSRF-guarded (not JSON). `stored` is the
  *  basename actually written (absent on servers before #905). */
-async function upload(file: File): Promise<{ path: string; name: string; stored?: string }> {
+async function upload(
+  file: File,
+): Promise<{ path: string; name: string; stored?: string }> {
   const fd = new FormData();
   fd.append("file", file, file.name || "pasted");
   const r = await apiFetch("/api/upload", {
@@ -451,7 +461,11 @@ export const api = {
   templates: () => getJsonWithDetail<TemplatesResponse>("/api/templates"),
   createTemplate: (input: TemplateInput) =>
     mutateJson<Template>("POST", "/api/templates", input),
-  updateTemplate: (id: string, input: TemplateInput, expectedUpdatedAt: number) =>
+  updateTemplate: (
+    id: string,
+    input: TemplateInput,
+    expectedUpdatedAt: number,
+  ) =>
     mutateJson<Template>("PATCH", `/api/templates/${enc(id)}`, {
       ...input,
       expected_updated_at: expectedUpdatedAt,
@@ -1075,6 +1089,63 @@ export const api = {
   /** Take a live session into a mission. Membership is exclusive: a session already held by
    *  another mission comes back 409 NAMING the holder, so the operator is told where it went
    *  rather than being told "no". `mutateJson` so that detail survives (#834). */
+  /** Produce a dispatch PROPOSAL. Launches nothing — that is a separate, explicit call (#893).
+   *  `mutateJson` because a refusal carries a `detail` the operator needs (no AI endpoint
+   *  configured, the mission is already running). */
+  planMission: (id: string) =>
+    mutateJson<MissionPlan>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/plan`,
+      {},
+    ),
+
+  /** The operator's own edit of the proposal. Sends a PROJECT ID, never a path — the server
+   *  resolves the working directory. Every edit comes back with a NEW `plan_id`.
+   *
+   *  **`planId` is the proposal being edited, and it is a comparand, not a hint.** This route
+   *  replaces the whole row, so two tabs editing different fields of one plan would both be told
+   *  the save worked while the later write restored its own stale copy of the other's field. The
+   *  server compares it inside the transaction and answers 409 (#904 review 6). */
+  editMissionPlan: (
+    id: string,
+    planId: string,
+    body: {
+      project_id?: string | null;
+      engine?: string | null;
+      brief?: string;
+    },
+  ) =>
+    mutateJson<MissionPlan>(
+      "PATCH",
+      `/api/missions/${encodeURIComponent(id)}/plan`,
+      { plan_id: planId, ...body },
+    ),
+
+  /** RUN the proposal. The highest-privilege call the client can make: it starts an agent with
+   *  nobody watching it, so it names the plan it is dispatching and the server refuses any other
+   *  (`claim_plan`'s compare-and-set). A stale id is a 409 that says to read the plan again. */
+  dispatchMission: (
+    id: string,
+    planId: string,
+    expectCwd: string,
+    expectObjectives: string,
+  ) =>
+    mutateJson<{ state: string; reason: string; session_key: string | null }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/dispatch`,
+      // `expect_cwd` is a COMPARAND, never a launch argument: the server resolves the path from
+      // the project entity and refuses if what it resolves is not what the operator confirmed
+      // (#904 review 2, finding 6). The client still cannot choose where an agent runs.
+      // …and `expect_objectives` is the same kind of assertion about WHAT DONE MEANS: the
+      // checklist the card showed, digested, so "settled" and "the one you read" are one check
+      // (#904 review 3, finding 5).
+      {
+        plan_id: planId,
+        expect_cwd: expectCwd,
+        expect_objectives: expectObjectives,
+      },
+    ),
+
   adoptMissionSession: (id: string, sessionKey: string) =>
     mutateJson<Mission>(
       "POST",

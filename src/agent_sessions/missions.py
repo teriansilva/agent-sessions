@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 #: What an objective's state reads as once it no longer exists. A distinct value rather than
 #: `None`, so a dropped objective and an objective whose state is unset can never look alike.
 OBJECTIVE_GONE = "<dropped>"
@@ -129,6 +129,12 @@ STATES: frozenset[str] = frozenset(
 #: step with it — a draft exists before its project is resolved, which is exactly when the console
 #: needs to ask which project was meant.
 CWD_OPTIONAL_STATES: frozenset[str] = frozenset({"draft", "planned", "abandoned"})
+
+#: States a mission may be PLANNED in (#893). A plan is a proposal to start work, so a mission
+#: that has already started — or finished — cannot take one: re-planning a `running` mission is a
+#: proposal to launch it twice, and the store refuses rather than leaving the operator a button
+#: whose meaning depends on when they press it.
+PLANNABLE_STATES: frozenset[str] = frozenset({"draft", "planned"})
 #: A mission here is closed. ``abandoned`` alone is un-reopenable (see :data:`_ALLOWED`).
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "abandoned"})
 
@@ -148,7 +154,13 @@ _ALLOWED: dict[str, frozenset[str]] = {
     # an empty mission `running`, the supervisor would sweep it every pass, find nothing to
     # follow through on, and report a mission in flight that has no work in it.
     "planned": frozenset({"dispatching", "running", "draft", "abandoned"}),
-    "dispatching": frozenset({"running", "failed", "abandoned"}),
+    # `dispatching -> planned` is the NO-SPAWN retreat (#904 review 2, finding 7). A refusal
+    # that happens before anything is launched — an ineligible engine, a policy withdrawal, a
+    # host that cannot contain the agent — is not a mission that failed; it is a dispatch that
+    # did not happen. Settling those as `failed` consumed the plan (the claim deletes it) into a
+    # state only `running` leads out of, so the operator could neither re-plan nor retry: the
+    # mission was stuck by a refusal whose whole point was that nothing had changed.
+    "dispatching": frozenset({"running", "planned", "failed", "abandoned"}),
     "running": frozenset({"review", "done", "failed", "abandoned"}),
     "review": frozenset({"running", "done", "failed", "abandoned"}),
     "done": frozenset({"running"}),
@@ -858,6 +870,58 @@ CREATE TABLE IF NOT EXISTS store_flags (
   value TEXT
 );
 
+-- THE DISPATCH PROPOSAL (#893, Phase 4 of #840). One row per mission: a re-plan SUPERSEDES the
+-- previous proposal rather than stacking, because two live plans for one mission is a state the
+-- operator cannot act on coherently and the newer one is the one they are looking at.
+--
+-- `plan_id` is the IDENTITY dispatch compares against, and it is why this is a row rather than an
+-- event: DISPATCH must run the plan the operator SAW. A model call sits between `/plan` and the
+-- button, the project list can move under it, and "the mission's current plan" is a slot, not a
+-- plan. The operator sends the id back and a mismatch is a 409.
+--
+-- The cwd is stored RESOLVED, server-side, from a project id — the same rule `POST /api/missions`
+-- follows, and the reason no model-authored path can reach a launch argument.
+CREATE TABLE IF NOT EXISTS mission_plans (
+  mission_id    TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+  plan_id       TEXT NOT NULL,
+  project_id    TEXT,
+  cwd           TEXT,
+  engine        TEXT,
+  engine_reason TEXT,
+  brief         TEXT NOT NULL,
+  created_at    REAL NOT NULL
+);
+-- THE DISPATCH IN FLIGHT (#904 review 2). `dispatching` is a promise the process makes and a
+-- process can die; the plan row is consumed by the claim, so without this there is nothing left
+-- on disk that says a launch was ever attempted — and a mission is left `dispatching` for ever,
+-- possibly beside a live unattended agent nobody owns.
+--
+-- Written in the SAME transaction as the claim, so the intent is durable before anything is
+-- spawned, and stamped with `session_key` the moment the key is minted and before the master
+-- exists. That ordering is the whole value: the record can be ahead of reality (a key that never
+-- launched) and never behind it (a launch with no record).
+CREATE TABLE IF NOT EXISTS mission_dispatches (
+  mission_id  TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+  plan_id     TEXT NOT NULL,
+  engine      TEXT NOT NULL,
+  cwd         TEXT NOT NULL,
+  session_key TEXT,
+  started_at  REAL NOT NULL,
+  -- THE WHOLE PROPOSAL, not just what the launch needs. The claim DELETES the plan row, so this
+  -- is the only copy while the dispatch is in flight — and a refusal that spawned nothing has to
+  -- be able to put it back verbatim rather than leave the operator with a consumed plan and a
+  -- mission they cannot re-plan (#904 review 2, finding 7).
+  project_id    TEXT,
+  engine_reason TEXT,
+  brief         TEXT,
+  -- WHO IS DRIVING THIS DISPATCH (#904 review 2, finding 3). `dispatching` alone says a launch is
+  -- somewhere between claimed and settled; it does not say whether the process doing it still
+  -- exists. Startup recovery ran against every such row, so a request that was actively
+  -- launching — in this instance or a sibling over the same store — was snapshotted as crashed
+  -- and torn down. `pid:starttime`, both read from `/proc`, so the comparison is between two
+  -- readings of the same kernel fact rather than between a fact and a memory of one.
+  owner         TEXT
+);
 CREATE TABLE IF NOT EXISTS mission_settlements (
   action_id TEXT PRIMARY KEY,
   verb      TEXT,
@@ -945,6 +1009,8 @@ def _migrate(con) -> int:
             _migrate_18_to_19(con)
         if version < 20:
             _migrate_19_to_20(con)
+        if version < 21:
+            _migrate_20_to_21(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1152,6 +1218,32 @@ def _migrate_17_to_18(con) -> None:
             "WHERE message IS NULL AND operator_seq IS NOT NULL "
             "  AND state IN ('in_progress','indeterminate')"
         )
+
+
+def _migrate_20_to_21(con) -> None:
+    """v21 adds `mission_plans` and `mission_dispatches` — the proposal and the launch (#893).
+
+    Renumbered from v19 while this branch was in review: `main` took 19 for the objective
+    incarnation and 20 for the question hold. The ladder has to stay a ladder, so a migration
+    that arrives late goes on the END rather than into the middle of somebody else's.
+
+    New tables only, so the in-place upgrade is the same statement a fresh install runs. Nothing
+    backfills: a plan is produced on request and there is no history to reconstruct, and a
+    dispatch that predates this table was never durable to begin with.
+    """
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS mission_plans ("
+        "  mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,"
+        "  plan_id TEXT NOT NULL, project_id TEXT, cwd TEXT,"
+        "  engine TEXT, engine_reason TEXT, brief TEXT NOT NULL, created_at REAL NOT NULL)"
+    )
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS mission_dispatches ("
+        "  mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,"
+        "  plan_id TEXT NOT NULL, engine TEXT NOT NULL, cwd TEXT NOT NULL,"
+        "  session_key TEXT, started_at REAL NOT NULL,"
+        "  project_id TEXT, engine_reason TEXT, brief TEXT, owner TEXT)"
+    )
 
 
 def _migrate_16_to_17(con) -> None:
@@ -2752,6 +2844,15 @@ def adopt(
     means the historical row is still there after a detach, so a fresh insert would collide with
     the mission's own history rather than with another mission's claim.
 
+    **There is deliberately no lifecycle predicate here** (#904 review 3). A closed mission taking
+    a session back is a legitimate operator act — reopening the record of work that turned out not
+    to be finished — and barring it would break the case #895's teardown tests pin, where a
+    `done` mission still holds the sessions it ran. The window the review found is the DISPATCH
+    one: a launch awaits for tens of seconds while the operator can abandon the mission in one
+    tap, and the late adopt then attaches a live unattended agent to a mission that is
+    over. That predicate belongs where the two halves are one act — `settle_dispatch`, which
+    adopts and transitions under a single ``state='dispatching'`` comparand — not on every adopt
+    in the app.
     ``expect_token`` is the caller's RESERVATION, checked in this transaction (#896 review 21).
     A caller that reserved the session before doing slow work must prove it still holds the same
     claim at the moment of the insert — a heartbeat reduces the chance of losing one, it does not
@@ -5567,6 +5668,765 @@ def _playbook_policy_held(mission_id: str, expect_binding: str | None, *, path: 
         yield
 
 
+# ---------------------------------------------------------------- the dispatch proposal (#893)
+
+#: Bounds on a stored plan. The brief becomes a bracketed paste into a real agent, so it is capped
+#: at the same order as a nudge rather than left to whatever a model produced.
+PLAN_BRIEF_MAX = 4000
+PLAN_REASON_MAX = 300
+
+
+def put_plan(
+    mission_id: str,
+    *,
+    project_id: str | None,
+    cwd: str | None,
+    engine: str | None,
+    engine_reason: str = "",
+    brief: str,
+    expect_plan_id: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Store THE proposal for this mission, superseding any previous one. Returns the stored row.
+
+    **A re-plan supersedes rather than stacks.** Two live plans for one mission is a state the
+    operator cannot act on coherently, and the newer one is the one on their screen. The primary
+    key does the superseding, so there is no window where both exist.
+
+    **`plan_id` is minted here and is the identity DISPATCH compares against.** A plan is not
+    "whatever the mission's current proposal is": a model call sits between this and the button,
+    the project list can move under it, and the operator dispatches the plan they SAW. The id is
+    what makes that assertable — the same reason an objective has an incarnation and an action has
+    a binding.
+
+    **Storing a plan MAKES the mission `planned`, in this transaction** (#904 review 1). A plan
+    is not a note beside the mission; it is the thing `planned` means — and `claim_plan` only
+    claims from `planned`, so a plan that left a fresh mission in `draft` was a proposal that
+    could never be dispatched. Every dispatch test had to move the state by hand, which is what
+    hid it: the one path an operator actually takes was the one path nothing exercised.
+
+    **`expect_plan_id` is a compare-and-set on the proposal being replaced** (#904 review 6). An
+    edit reads a plan, changes one field and writes the whole row back, so two tabs editing
+    different fields of the same proposal both succeed and the later write restores its own stale
+    copy of the field the first one changed. The caller states which plan it edited; a plan that
+    moved underneath it is a 409, not a silent overwrite. `None` means "there was nothing to
+    replace" and requires that to be true.
+
+    Refused for a mission that has already left the planning states, because a plan for a mission
+    that is running is a proposal to start something twice.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    text = _cap(brief, PLAN_BRIEF_MAX)
+    if not text:
+        raise MissionError("a plan needs a brief", status=422)
+    plan_id = f"pln_{uuid.uuid4().hex}"
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            row = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if row is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            state = str(row["state"] or "")
+            if state not in PLANNABLE_STATES:
+                raise MissionError(f"a mission that is {state} cannot be planned", status=409)
+            # THE PROPOSAL BEING REPLACED, compared under the same lock that replaces it. Read in
+            # the route and compared here would be two moments and no fence at all.
+            if expect_plan_id is not None:
+                cur_plan = con.execute(
+                    "SELECT plan_id FROM mission_plans WHERE mission_id=?", (mission_id,)
+                ).fetchone()
+                have = str(cur_plan["plan_id"]) if cur_plan else None
+                if have != expect_plan_id:
+                    raise MissionError(
+                        "the plan changed while you were editing it; read it again",
+                        status=409,
+                    )
+            con.execute(
+                "INSERT INTO mission_plans "
+                "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(mission_id) DO UPDATE SET "
+                "plan_id=excluded.plan_id, project_id=excluded.project_id, cwd=excluded.cwd, "
+                "engine=excluded.engine, engine_reason=excluded.engine_reason, "
+                "brief=excluded.brief, created_at=excluded.created_at",
+                (
+                    mission_id,
+                    plan_id,
+                    project_id,
+                    cwd,
+                    engine,
+                    _cap(engine_reason, PLAN_REASON_MAX),
+                    text,
+                    ts,
+                ),
+            )
+            # …AND THE MISSION BECOMES `planned`, here, not in a second call the client is
+            # trusted to make. `draft -> planned` is exactly "a proposal now exists", which is
+            # what this statement just made true.
+            if state == "draft":
+                con.execute(
+                    "UPDATE missions SET state='planned', updated_at=? "
+                    "WHERE id=? AND state='draft'",
+                    (ts, mission_id),
+                )
+                _append_event(
+                    con,
+                    mission_id,
+                    "state",
+                    at=ts,
+                    text="draft -> planned",
+                    meta={"from": "draft", "to": "planned", "plan_id": plan_id},
+                )
+            _append_event(
+                con,
+                mission_id,
+                "plan",
+                at=ts,
+                text=text,
+                meta={
+                    "plan_id": plan_id,
+                    "project_id": project_id,
+                    "engine": engine,
+                    "engine_reason": _cap(engine_reason, PLAN_REASON_MAX),
+                },
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "plan_id": plan_id,
+        "mission_id": mission_id,
+        "project_id": project_id,
+        "cwd": cwd,
+        "engine": engine,
+        "engine_reason": _cap(engine_reason, PLAN_REASON_MAX),
+        "brief": text,
+        "created_at": ts,
+        # What the mission IS now, so the card renders the state this call established rather
+        # than the one the client last read.
+        "mission_state": "planned" if state == "draft" else state,
+    }
+
+
+def get_plan(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The mission's current proposal, or None."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT plan_id, project_id, cwd, engine, engine_reason, brief, created_at "
+            "FROM mission_plans WHERE mission_id=?",
+            (mission_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "plan_id": str(row["plan_id"]),
+            "mission_id": mission_id,
+            "project_id": row["project_id"],
+            "cwd": row["cwd"],
+            "engine": row["engine"],
+            "engine_reason": str(row["engine_reason"] or ""),
+            "brief": str(row["brief"] or ""),
+            "created_at": float(row["created_at"] or 0),
+        }
+    finally:
+        con.close()
+
+
+def objectives_digest(rows) -> str:
+    """A stable digest of a mission's checklist, for "the set you approved" (#904 rev 3, f.5).
+
+    Covers the fields the operator is actually approving — the key, the title and whether it
+    GATES — and deliberately not the state: an objective becoming met between the card and the
+    button is progress, not a different checklist, and refusing on it would make the button
+    unpressable on an active mission. Ordered by key rather than by `ord`, so a pure reorder does
+    not invalidate an approval of the same set.
+
+    **LENGTH-PREFIXED, because delimiters are forgeable** (#904 review 10, finding 3). The first
+    encoding joined fields with U+001F and rows with U+001E while a TITLE may contain either, so a
+    one-row checklist whose title embedded them serialized identically to a different two-row one
+    — and the second DISPATCH tap could then pass the server's compare-and-set for a checklist the
+    first tap never showed. A separator can always be spelled by the data it separates; a length
+    cannot, so the encoding is unambiguous by construction rather than by what titles happen to
+    contain. (Control characters are also refused at the write boundary now — belt and braces, not
+    the guarantee.)
+
+    Lengths are **UTF-8 BYTE counts**, which is the one measure Python and JavaScript agree on:
+    `len(str)` is code points here and UTF-16 code units there, and they differ for anything
+    outside the BMP. The client computes the identical string, and one shared fixture
+    (`tests/fixtures/objectives_digest_cases.json`) drives both so they cannot drift.
+
+    Sorted by KEY, not by the encoded row: keys are `[a-z0-9_-]` slugs, which order identically
+    under Python's code-point sort and JavaScript's UTF-16 one. Sorting encoded rows would put a
+    title's astral characters into the comparison and the two languages would disagree.
+    """
+
+    def _field(text: str) -> str:
+        return f"{len(text.encode('utf-8', 'replace'))}:{text}"
+
+    parts = [
+        _field(str(r.get("key") or ""))
+        + _field(str(r.get("title") or ""))
+        + f"{1 if r.get('gate') else 0}"
+        for r in sorted(rows or [], key=lambda r: str(r.get("key") or ""))
+    ]
+    return hashlib.sha256("".join(parts).encode("utf-8", "replace")).hexdigest()[:32]
+
+
+def clear_dispatch(
+    mission_id: str, *, expect_plan: str | None = None, path: Path | None = None
+) -> bool:
+    """Drop the in-flight dispatch record. True if a row went.
+
+    Called when a teardown has PROVED the boundary empty and the record's obligation is therefore
+    discharged (#904 review 3, finding 1). Separate from `settle_dispatch` because the two facts
+    arrive in that order: the settlement happens first and may refuse, and only then does the
+    caller learn whether the session it started could be stopped.
+    """
+    validate_id(mission_id)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            # Two literal statements rather than one built by concatenation: the shell-free /
+            # no-string-built-SQL rule is a property of the source, not of the values.
+            if expect_plan is None:
+                n = con.execute(
+                    "DELETE FROM mission_dispatches WHERE mission_id=?", (mission_id,)
+                ).rowcount
+            else:
+                n = con.execute(
+                    "DELETE FROM mission_dispatches WHERE mission_id=? AND plan_id=?",
+                    (mission_id, expect_plan),
+                ).rowcount
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return bool(n)
+
+
+def process_owner() -> str:
+    """This process's identity, for a lease another process can evaluate (#904 review 2, f.3).
+
+    `pid:starttime`, both from ``/proc``: the pid makes the question answerable and the start
+    time makes the pid trustworthy, because pids are reused. Single-host by construction, which
+    this app is — sibling INSTANCES share a store on one machine.
+    """
+    return f"{os.getpid()}:{_proc_started(os.getpid()) or 'unknown'}"
+
+
+def _proc_started(pid: int) -> str | None:
+    """The kernel's start-time stamp for ``pid``, or None. Field 22 of ``/proc/<pid>/stat``,
+    parsed from the LAST ``)`` because field 2 is the executable name and may contain spaces and
+    parentheses of its own."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    cut = raw.rfind(")")
+    if cut < 0:
+        return None
+    fields = raw[cut + 2 :].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def owner_is_live(token: object) -> bool | None:
+    """Is the process that took this lease still running? ``None`` means we cannot tell.
+
+    Three answers, and the third is the point: an unparseable token, or a ``/proc`` entry that
+    will not read, is not evidence that the owner is gone — and acting on a live dispatch is the
+    harmful direction, because it tears down an agent that is being launched right now.
+    """
+    if not isinstance(token, str) or ":" not in token:
+        return None
+    pid_s, _, started = token.partition(":")
+    try:
+        pid = int(pid_s)
+    except ValueError:
+        return None
+    now = _proc_started(pid)
+    if now is None:
+        return False  # no such process: provably gone
+    if started == "unknown":
+        return None
+    return now == started
+
+
+def claim_plan(
+    mission_id: str,
+    plan_id: str,
+    *,
+    cwd: str | None = None,
+    project_id: str | None = None,
+    owner: str | None = None,
+    expect_objectives: str | None = None,
+    require_objectives: bool = False,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Take the plan the operator SAW and move the mission to `dispatching`. One winner.
+
+    **Compare-and-set on `plan_id`, and the state transition in the SAME transaction.** Those two
+    halves are one fact — "this proposal is the one being launched" — and splitting them is the
+    approval race in its usual shape: two taps both read a matching plan, both transition, and two
+    unattended agents start against one mission. The `planned -> dispatching` UPDATE
+    carries its own `WHERE state='planned'`, so the loser changes nothing and is told.
+
+    The plan row is DELETED here rather than left behind: it has been consumed, and a proposal
+    that survives its own dispatch is a button the operator can press again — and a
+    `mission_dispatches` row takes its place, so the launch about to happen is durable BEFORE it
+    happens (#904 review 2). A crash between here and the settlement is then recoverable, which
+    is the difference between "the app died" and "this mission is `dispatching` for ever".
+
+    **`cwd` and `project_id` are the caller's FRESHLY RESOLVED values, not the ones the plan was
+    stored with** (#904 review 5). A plan can sit on screen while its project is archived, or
+    while its default folder is repointed; launching an unattended agent into the
+    directory that project used to mean is the `stale policy across the await` family with a
+    filesystem path on the end of it. The route resolves the project entity immediately before
+    this call and passes the answer in; omitting it keeps the stored value, which is only correct
+    for a caller that has nothing newer.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            row = con.execute(
+                "SELECT plan_id, project_id, cwd, engine, engine_reason, brief "
+                "FROM mission_plans WHERE mission_id=?",
+                (mission_id,),
+            ).fetchone()
+            if row is None:
+                raise MissionError("this mission has no plan to dispatch", status=409)
+            if str(row["plan_id"]) != plan_id:
+                raise MissionError(
+                    "the plan was replaced while you were looking at it; read it again",
+                    status=409,
+                )
+            # WHAT DONE MEANS, COMPARED IN THIS TRANSACTION (#904 review 4, finding 2). The
+            # route reads the objectives and compares the digest, and then claims the plan in a
+            # SEPARATE transaction — `patch_objectives` is legal in the gap, so a concurrent edit
+            # could replace the checklist the operator approved after they approved it and the
+            # dispatch still launched against the new one. The comparand belongs where the claim
+            # commits, which is here.
+            if expect_objectives is not None or require_objectives:
+                objs = [
+                    dict(r)
+                    for r in con.execute(
+                        "SELECT key, title, gate, state FROM mission_objectives "
+                        "WHERE mission_id=? ORDER BY ord ASC",
+                        (mission_id,),
+                    ).fetchall()
+                ]
+                if require_objectives and not objs:
+                    raise MissionError(
+                        "this mission has no objectives, so it does not know what finishing "
+                        "means",
+                        status=409,
+                    )
+                if expect_objectives is not None and objectives_digest(objs) != expect_objectives:
+                    raise MissionError(
+                        "the objectives changed since you read them; read the plan again",
+                        status=409,
+                    )
+            use_cwd = cwd if cwd is not None else row["cwd"]
+            use_project = project_id if cwd is not None else row["project_id"]
+            if not use_cwd:
+                raise MissionError("a plan without a project cannot be dispatched", status=422)
+            if not row["engine"]:
+                raise MissionError("a plan without an agent cannot be dispatched", status=422)
+            # THE MISSION ACQUIRES ITS WORKING DIRECTORY HERE, in the same statement that starts
+            # it. That is not a convenience: the schema's launch CHECK — `state IN
+            # ('draft','planned','abandoned') OR cwd IS NOT NULL` — makes a cwd-less
+            # `dispatching` unrepresentable, so a mission planned from the picker (the whole
+            # point of a draft with no project) could not be dispatched at all without it.
+            #
+            # And it is the honest moment for it: the plan is where the project was CHOSEN, and
+            # `POST /api/missions` resolved the path from the entity exactly as `put_plan` did.
+            # The mission takes the resolved values, never a client's.
+            moved = con.execute(
+                "UPDATE missions SET state='dispatching', project_id=?, cwd=?, updated_at=? "
+                "WHERE id=? AND state='planned'",
+                (use_project, use_cwd, ts, mission_id),
+            ).rowcount
+            if not moved:
+                cur = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+                raise MissionError(
+                    f"the mission is {str(cur['state']) if cur else 'gone'}, not planned",
+                    status=409,
+                )
+            _append_event(
+                con,
+                mission_id,
+                "state",
+                at=ts,
+                text="planned -> dispatching",
+                meta={"from": "planned", "to": "dispatching", "plan_id": plan_id},
+            )
+            con.execute("DELETE FROM mission_plans WHERE mission_id=?", (mission_id,))
+            # THE INTENT, DURABLE BEFORE THE LAUNCH. `session_key` is NULL until the key is
+            # minted; recovery reads that difference as "nothing was spawned" versus "something
+            # may have been", which are the two crash outcomes that need different answers.
+            con.execute(
+                "INSERT INTO mission_dispatches "
+                "(mission_id, plan_id, engine, cwd, session_key, started_at, project_id, "
+                " engine_reason, brief, owner) "
+                "VALUES (?,?,?,?,NULL,?,?,?,?,?) "
+                "ON CONFLICT(mission_id) DO UPDATE SET plan_id=excluded.plan_id, "
+                "engine=excluded.engine, cwd=excluded.cwd, session_key=NULL, "
+                "started_at=excluded.started_at, project_id=excluded.project_id, "
+                "engine_reason=excluded.engine_reason, brief=excluded.brief, "
+                "owner=excluded.owner",
+                (
+                    mission_id,
+                    plan_id,
+                    str(row["engine"]),
+                    str(use_cwd),
+                    ts,
+                    use_project,
+                    str(row["engine_reason"] or ""),
+                    str(row["brief"] or ""),
+                    owner or process_owner(),
+                ),
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "plan_id": plan_id,
+        "mission_id": mission_id,
+        "project_id": use_project,
+        "cwd": use_cwd,
+        "engine": row["engine"],
+        "engine_reason": str(row["engine_reason"] or ""),
+        "brief": str(row["brief"] or ""),
+    }
+
+
+def note_dispatch_session(
+    mission_id: str,
+    session_key: str,
+    *,
+    expect_plan: str | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Stamp the key a dispatch is about to launch, BEFORE it exists (#904 review 2).
+
+    Called from inside the launcher the instant the id is minted and before anything is spawned.
+    The record is therefore allowed to name a session that never came to be — recovery probes the
+    engine's own store rather than trusting it — and is never allowed to miss one that did, which
+    is the only ordering under which a crashed dispatch can be reconciled at all.
+
+    Returns whether a row was stamped. False means the dispatch has already been settled (or was
+    never claimed), which the launcher treats as "this launch no longer has an owner".
+
+    **`expect_plan` is the dispatch's IDENTITY, and without it this stamps whoever is there**
+    (#904 review 15). `dispatching -> planned` is a legal retreat, so an attempt can still be in
+    flight while the mission goes back, a NEW plan is proposed and claimed — overwriting this row
+    through `ON CONFLICT(mission_id)` — and the old attempt then resumes and writes its session
+    key onto the new attempt's row. Every mutation after the claim was keyed on `mission_id`
+    alone, which is a name for the MISSION, not for the attempt. `plan_id` is minted per plan and
+    is already on the row, so it is the generation; passing it makes each write a CAS.
+    """
+    validate_id(mission_id)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if expect_plan is None:
+                n = con.execute(
+                    "UPDATE mission_dispatches SET session_key=? WHERE mission_id=?",
+                    (session_key, mission_id),
+                ).rowcount
+            else:
+                n = con.execute(
+                    "UPDATE mission_dispatches SET session_key=? "
+                    "WHERE mission_id=? AND plan_id=?",
+                    (session_key, mission_id, expect_plan),
+                ).rowcount
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return bool(n)
+
+
+def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The in-flight dispatch record, or None."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT plan_id, engine, cwd, session_key, started_at, project_id, engine_reason, "
+            "brief, owner FROM mission_dispatches WHERE mission_id=?",
+            (mission_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "mission_id": mission_id,
+            "plan_id": str(row["plan_id"]),
+            "engine": str(row["engine"]),
+            "cwd": str(row["cwd"]),
+            "session_key": row["session_key"],
+            "started_at": float(row["started_at"] or 0),
+            "project_id": row["project_id"],
+            "engine_reason": str(row["engine_reason"] or ""),
+            "brief": str(row["brief"] or ""),
+            "owner": row["owner"],
+        }
+    finally:
+        con.close()
+
+
+def unsettled_dispatches(*, path: Path | None = None) -> list[dict]:
+    """Every dispatch record still on disk, with its mission's state. For the recovery pass.
+
+    **Not filtered on `dispatching`** (#904 review 4, finding 1). A record survives its settlement
+    only when the teardown could not prove the boundary empty — and those paths move the mission
+    to `failed`/`abandoned` FIRST, so a lifecycle filter skipped exactly the rows that represent
+    a possibly-live unattended agent nobody has accounted for. Every pass ignored them for ever.
+
+    A row is therefore one of THREE things, and `state` and `held` are how the caller tells them
+    apart:
+
+    * mission still `dispatching` — a launch that may be in flight. The owner lease decides.
+    * `held` — **SOME open mission owns this session**, so nothing is owed. The row is
+      bookkeeping, not an obligation: drop it, and never touch the session.
+    * neither — a RETAINED CLEANUP OBLIGATION. An ordinary settlement deletes the row, so a row
+      beside a session nobody owns exists only because a teardown could not prove the boundary
+      empty and somebody asked to keep it.
+
+    **`held` is a membership question, not a lifecycle one**, and that is the point twice over:
+
+    * keying the obligation on "the mission is not `dispatching`" would have torn down the live
+      agent of a dispatch that had just SUCCEEDED, because `running` is not `dispatching` either;
+    * and asking only whether THIS mission holds it (#904 review 5, finding 1) would have torn
+      down ANOTHER mission's agent: a failed dispatch can retain its row without owning the
+      session, and once a second mission legitimately adopts that key, "my mission does not hold
+      it" is true and "it is an orphan" is false.
+
+    So the question is global — does anybody hold it — and the answer here is a SNAPSHOT, which
+    is not sufficient on its own: an adoption can commit between this read and the teardown. That
+    half is closed at the teardown itself, by `cleanup_runtime`'s `spare_if` guard, which is
+    re-checked before every signal.
+    """
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT d.mission_id, d.plan_id, d.engine, d.cwd, d.session_key, d.started_at, "
+            "d.owner, m.state AS state, "
+            # The mission's ACTIVE membership of this row's own session. `removed_at IS NULL` is
+            # what "owns it now" means everywhere else in this store, so it means it here too.
+            # ANY open mission, not this row's own: the question is whether the session has an
+            # owner at all, because that is what makes it not an orphan.
+            "  (SELECT 1 FROM mission_sessions s "
+            "     JOIN missions om ON om.id = s.mission_id "
+            "   WHERE s.session_key = d.session_key AND s.removed_at IS NULL "
+            "     AND om.archived_at IS NULL) AS held "
+            "FROM mission_dispatches d "
+            "JOIN missions m ON m.id = d.mission_id ORDER BY d.started_at"
+        ).fetchall()
+        return [
+            {
+                "mission_id": str(r["mission_id"]),
+                "plan_id": str(r["plan_id"]),
+                "engine": str(r["engine"]),
+                "cwd": str(r["cwd"]),
+                "session_key": r["session_key"],
+                "started_at": float(r["started_at"] or 0),
+                "owner": r["owner"],
+                "state": str(r["state"] or ""),
+                "held": bool(r["held"]),
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+def settle_dispatch(
+    mission_id: str,
+    *,
+    to: str,
+    detail: str,
+    session_key: str | None = None,
+    keep_record: bool = False,
+    expect_plan: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """End a dispatch: adopt its session and leave `dispatching`, in ONE transaction.
+
+    **The adoption and the final state are one settlement, and that is the point** (#904 review
+    3). Adopting first and transitioning after is two moments, and the gap is exactly long enough
+    for the operator to abandon the mission: the terminal transition releases the roster, the late
+    adopt re-attaches a live unattended agent to a mission that is already closed, and
+    the `dispatching -> running` CAS then fails while the caller reports `running` anyway.
+
+    So the state predicate governs BOTH halves. If the mission is no longer `dispatching`, nothing
+    is adopted and the caller is told what the mission actually is — which is its cue to tear the
+    session down, because a session nobody owns is the outcome this whole path exists to prevent.
+
+    **`keep_record` leaves the durable row in place** (#904 review 3, finding 1). Deleting it is
+    right when the dispatch is genuinely over — but a teardown that reported `leaked`, or raised,
+    has not proved the boundary empty: something in that session's process group survived
+    SIGKILL, and the record is the only durable trace of an unattended agent that may still be
+    running. Deleting it there turns a retryable obligation into an orphan nobody will look for
+    again. The mission still settles; the obligation outlives it.
+
+    **`expect_plan` says WHICH ATTEMPT is settling, and `dispatching` alone does not** (#904
+    review 15). The state predicate answers "is a dispatch in flight", never "is it MINE".
+    `dispatching -> planned` is a legal retreat, so attempt A can still be running while the
+    mission goes back, plan B is proposed and claimed, and the mission is `dispatching` again —
+    at which point A's settlement satisfies the predicate, adopts A's session under B's approval,
+    and deletes B's record. The operator's newer approval is consumed by an agent they did not
+    approve. `plan_id` is minted per plan and rides on the row, so it is the attempt's identity;
+    a mismatch means this settlement belongs to a superseded dispatch and it touches NOTHING —
+    not the state, not the roster, not the record — and says so with `stale`.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    if to not in _ALLOWED.get("dispatching", frozenset()):
+        raise MissionError(f"dispatching cannot become {to}", status=422)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            cur = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if cur is None:
+                con.execute("COMMIT")
+                return {"settled": False, "state": "gone", "adopted": False}
+            state = str(cur["state"] or "")
+            if expect_plan is not None:
+                # WHOSE DISPATCH IS THIS? Asked before anything is read as ours. A row that is
+                # absent or carries another plan means this attempt was superseded — and a
+                # superseded attempt has no claim on the record, so `keep_record` does not enter
+                # into it: the row it would keep is somebody else's.
+                d = con.execute(
+                    "SELECT plan_id FROM mission_dispatches WHERE mission_id=?", (mission_id,)
+                ).fetchone()
+                if d is None or str(d["plan_id"] or "") != expect_plan:
+                    con.execute("COMMIT")
+                    return {
+                        "settled": False,
+                        "state": state,
+                        "adopted": False,
+                        "stale": True,
+                    }
+            if state != "dispatching":
+                # NOT OURS ANY MORE. The record goes, because this dispatch is over however it
+                # ended; the mission's own state is left exactly as whoever moved it left it.
+                #
+                # …UNLESS THE TEARDOWN COULD NOT PROVE THE BOUNDARY EMPTY. `keep_record` means an
+                # unattended agent may still be running, and this row is its only durable trace —
+                # "the mission moved on" is not a reason to forget about a process nobody has
+                # stopped (#904 review 3, finding 1).
+                if not keep_record:
+                    con.execute("DELETE FROM mission_dispatches WHERE mission_id=?", (mission_id,))
+                con.execute("COMMIT")
+                return {"settled": False, "state": state, "adopted": False}
+            if to == "planned":
+                # THE PROPOSAL GOES BACK, verbatim and under its own id, so the card the operator
+                # is looking at still matches and DISPATCH works on the next tap. Restored from
+                # the dispatch record because the claim deleted the plan row — the record is the
+                # only copy while a dispatch is in flight, which is why it carries the whole
+                # proposal rather than only what the launch needed.
+                d = con.execute(
+                    "SELECT plan_id, project_id, cwd, engine, engine_reason, brief "
+                    "FROM mission_dispatches WHERE mission_id=?",
+                    (mission_id,),
+                ).fetchone()
+                if d is not None:
+                    con.execute(
+                        "INSERT INTO mission_plans "
+                        "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, "
+                        " created_at) VALUES (?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(mission_id) DO UPDATE SET plan_id=excluded.plan_id, "
+                        "project_id=excluded.project_id, cwd=excluded.cwd, "
+                        "engine=excluded.engine, engine_reason=excluded.engine_reason, "
+                        "brief=excluded.brief, created_at=excluded.created_at",
+                        (
+                            mission_id,
+                            str(d["plan_id"]),
+                            d["project_id"],
+                            d["cwd"],
+                            d["engine"],
+                            str(d["engine_reason"] or ""),
+                            str(d["brief"] or ""),
+                            ts,
+                        ),
+                    )
+            adopted = False
+            if session_key:
+                _adopt_tx(con, mission_id, session_key, "primary", "dispatch", ts, path)
+                adopted = True
+            con.execute(
+                "UPDATE missions SET state=?, updated_at=? WHERE id=? AND state='dispatching'",
+                (to, ts, mission_id),
+            )
+            if to in TERMINAL_STATES:
+                con.execute(
+                    "UPDATE missions SET closed_at=? WHERE id=? AND closed_at IS NULL",
+                    (ts, mission_id),
+                )
+            _append_event(
+                con,
+                mission_id,
+                "state",
+                at=ts,
+                text=f"dispatching -> {to}" + (f": {detail}" if detail else ""),
+                meta={
+                    "from": "dispatching",
+                    "to": to,
+                    "detail": detail,
+                    **({"session_key": session_key} if session_key else {}),
+                },
+            )
+            if keep_record:
+                # The dispatch is over and the TEARDOWN is not. Marked rather than deleted, so a
+                # later pass can find it and try again — and so the operator's timeline is not
+                # the only place a possibly-live agent is mentioned.
+                con.execute(
+                    "UPDATE mission_dispatches SET session_key=COALESCE(?, session_key) "
+                    "WHERE mission_id=?",
+                    (session_key, mission_id),
+                )
+            else:
+                con.execute("DELETE FROM mission_dispatches WHERE mission_id=?", (mission_id,))
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {"settled": True, "state": to, "adopted": adopted}
+
+
 def instantiate_objectives(
     mission_id: str,
     rows: list[dict],
@@ -5756,6 +6616,14 @@ def patch_objectives(
     * **Adding an unmet gating objective to a mission in ``review`` moves it back to ``running``**
       — in the same transaction as the insert, so the list and the state can never disagree.
     * ``agent_judged`` may not gate, rejected at write time.
+
+    **…and a mission being DISPATCHED is closed to edits entirely** (#904 review 5, finding 2).
+    `claim_plan` compares the approved checklist inside its own transaction, and that transaction
+    ends before the spawn — so an edit landing in the window between them started an unattended
+    agent against a checklist other than the one the operator approved, with the comparison having
+    passed. A digest cannot fence a window it has already left; the state can. `dispatching` is
+    short, bounded by the launch, and settled by recovery if the process dies, so refusing here
+    costs the operator a retry seconds later and closes the window completely.
     """
     validate_id(mission_id)
     source = _require_str(source, "source")
@@ -5774,6 +6642,13 @@ def patch_objectives(
             ).fetchone()
             if state_row is None:
                 raise MissionNotFound(mission_id)
+            if str(state_row["state"] or "") == "dispatching":
+                con.execute("ROLLBACK")
+                raise MissionError(
+                    "this mission is being dispatched; what done means is fixed until the agent "
+                    "has started",
+                    status=409,
+                )
             added_unmet_gate = False
             applied: list[dict] = []
             for op in ops:
@@ -5854,6 +6729,12 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     title = _cap(op.get("title"), OBJECTIVE_TITLE_MAX)
     if not title:
         raise MissionError("objective title is required", status=422)
+    # NO CONTROL CHARACTERS (#904 review 10, finding 3). The digest that carries "the checklist
+    # you approved" is length-prefixed and no longer relies on these being absent — this is the
+    # belt-and-braces half. An objective title is one line the operator reads on a card; a C0
+    # control in it renders as nothing and exists only to be confusing.
+    if any(ch < " " or ch == "\x7f" for ch in title):
+        raise MissionError("objective title may not contain control characters", status=422)
     gate = strict_bool(op.get("gate"), "gate", default=False)
     # AUTHORITY BY SOURCE (#883). A `model` row is a NOTE: it may name an objective and nothing
     # else. `probe` and `probe_args` are operator-authored — from a playbook the operator wrote,
@@ -8091,8 +8972,20 @@ class _NoVictims(Exception):
     """Nothing old enough to prune — but an outstanding scrub may still be owed."""
 
 
+# …AND NOTHING IS STILL OWED FOR IT (#904 review 17, finding 1). `mission_dispatches` is
+# `ON DELETE CASCADE`, and a row sitting beside an ALREADY-TERMINAL mission means exactly one
+# thing: a teardown could not prove the process boundary empty, so that row is the only durable
+# trace of an agent that may still be running. Retention deleting the mission took the obligation
+# with it, and recovery can only retry what it can still find — so the leak became permanent and
+# invisible at the moment the record was needed most.
+#
+# Expressed IN the eligibility predicate rather than beside it, because this constant is repeated
+# on the DELETE precisely so selection and deletion cannot disagree; a guard applied only at
+# selection would be the check-then-act that comment is about.
 _RETENTION_ELIGIBLE = (
-    "closed_at IS NOT NULL AND closed_at < ? " "AND archiving_at IS NULL AND unarchiving_at IS NULL"
+    "closed_at IS NOT NULL AND closed_at < ? "
+    "AND archiving_at IS NULL AND unarchiving_at IS NULL "
+    "AND NOT EXISTS (SELECT 1 FROM mission_dispatches d WHERE d.mission_id = missions.id)"
 )
 
 

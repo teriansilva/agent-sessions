@@ -1284,7 +1284,10 @@ export interface Mission {
    *  has been asked, so a mission legitimately has an empty checklist for a moment. Rendering
    *  that as "no objectives" states a fact the server has not established. `null` is a mission
    *  from before the producer existed; `skipped` and `failed` each carry their own reason into
-   *  the timeline. */
+   *  the timeline.
+   *
+   *  The PLAN CARD reads it for the same reason (#904 review 2, finding 8): "nothing required"
+   *  and "not worked out yet" are different things to approve a launch against. */
   objectives_state?: "pending" | "done" | "failed" | "skipped" | null;
   objectives_at?: number | null;
   sessions: MissionSession[];
@@ -1307,6 +1310,10 @@ export interface Mission {
    *  from the console while `needs_you` still said the mission wanted an answer. */
   question?: MissionQuestion | null;
   turn?: MissionOpenTurn | null;
+  /** The dispatch PROPOSAL, when there is one (#893). Absent/null when the mission has not been
+   *  planned. It survives a reload because it is a row, not component state — the operator reads
+   *  it, edits it, and decides. */
+  plan?: MissionPlan | null;
 }
 
 /** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —
@@ -1318,6 +1325,29 @@ export interface MissionOpenTurn {
   text: string;
   delivery_error: string;
   created_at: number;
+}
+
+/** A proposal: which project, which agent, what the agent will be told — and why that agent.
+ *
+ *  `plan_id` is the identity DISPATCH compares against. Every edit mints a new one, so a dispatch
+ *  approved against the version on screen a minute ago cannot run the version typed since. */
+export interface MissionPlan {
+  plan_id: string;
+  mission_id: string;
+  project_id: string | null;
+  /** Resolved SERVER-SIDE from the project entity. The client never sends a path. */
+  cwd: string | null;
+  engine: string | null;
+  /** Why this agent, in the model's words — empty when the operator chose it themselves. */
+  engine_reason: string;
+  brief: string;
+  created_at: number;
+  /** What an override may choose from. Current as of the read, not as of the plan. */
+  project_options?: { id: string; name: string; cwd: string }[];
+  engine_options?: { id: string; label: string }[];
+  /** Fields the model's reply could not supply, so the card can say why one is empty rather
+   *  than looking merely unfilled. */
+  dropped?: string[];
 }
 
 /** A bounded choice the supervisor is waiting on (#892).

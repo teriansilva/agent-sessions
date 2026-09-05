@@ -40,6 +40,7 @@ import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionDrawer } from "./MissionDrawer";
+import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionLifecycle } from "./MissionLifecycle";
 import { type ObjectiveOp } from "./MissionObjectives";
 import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
@@ -241,13 +242,30 @@ function MissionBody({
    *  at the boundary where the mission is known, rather than one per caller.
    *
    *  Liveness is read at RESOLUTION time, never captured: a boolean captured when the request
-   *  started answers the question as it was at the moment that does not matter. */
+   *  started answers the question as it was at the moment that does not matter.
+   *
+   *  **AND THE MISSION IS PART OF LIVENESS** (#904 review 17, finding 2). Mount alone was not
+   *  the fence this comment claims: switching missions does NOT unmount the console, so a late
+   *  outcome for mission A passed a `mounted` check and was announced over mission B. Most
+   *  consumers were saved by their own keyed remount and the dead-instance rule above; the plan
+   *  card was not, because its await is a DISPATCH — the longest one on this screen, and the one
+   *  the operator is most likely to walk away from.
+   *
+   *  The two halves are captured differently, and that is the whole point: the note's OWN mission
+   *  is bound when the callback is made (it is what the note is about), and the CURRENT selection
+   *  is read from a ref at resolution time (it is what may have changed). */
+  const noteMission = d.mission?.id ?? null;
+  const selectedRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRef.current = noteMission;
+  }, [noteMission]);
   const noteIfCurrent = useCallback(
     (msg: string) => {
       if (!mounted.current) return;
+      if (noteMission !== null && selectedRef.current !== noteMission) return;
       onNote(msg);
     },
-    [onNote],
+    [onNote, noteMission],
   );
 
   /** …and the same fence on the CONSEQUENCES a mutation asks the console to apply (#896 review 5,
@@ -446,9 +464,11 @@ function MissionBody({
                 </div>
               </div>
             ) : null}
-            {/* THE QUESTION, above the thread and above the composer — it is the thing the
-                mission is waiting on, and burying it under the history would make `needs_you`
-                point at something the operator has to scroll to find (#892). */}
+            {/* THE QUESTION FIRST, above the thread and above the composer — it is the thing
+                the mission is waiting on, and burying it under the history would make
+                `needs_you` point at something the operator has to scroll to find (#892). It
+                outranks the proposal for the same reason: a question is already open, while a
+                plan is something to start. */}
             {d.mission?.question ? (
               /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
                  question is superseded in place: the answer 409s, the reload lands question B in
@@ -466,6 +486,32 @@ function MissionBody({
                 // `applied_ok: false` — and the raw callback let mission A's refusal paint
                 // over mission B after the operator had navigated. This is what makes the
                 // claim above ("every consumer gets the one fence") true rather than nearly.
+                onNote={noteIfCurrent}
+              />
+            ) : null}
+            {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
+                for a decision that starts an agent — and it renders nothing at all once the
+                mission has left the planning states. */}
+            {d.mission ? (
+              <MissionPlanCard
+                key={d.mission.plan?.plan_id ?? "no-plan"}
+                mission={d.mission}
+                // BOTH HALVES, like every other mutation on this screen (#904 review 18, finding
+                // 2). `d.reload` re-reads the mission DETAIL and nothing else, so planning left
+                // the rail row saying `draft` next to a pane showing the plan, and a dispatch
+                // left the session it had just attached sitting in UNTRACKED until the next
+                // supervisor poll. The rule is stated forty lines up and this was the one
+                // surface that did not follow it.
+                onChanged={(opts) => {
+                  d.reload();
+                  changedIfCurrent(opts);
+                }}
+                // THROUGH THE MOUNT FENCE, like every other async consumer (#904 review 17,
+                // finding 2). A dispatch is the LONGEST await on this screen — it launches a
+                // process — and the operator is free to move to another mission while it runs.
+                // The raw callback here made the claim four lines above ("every consumer gets
+                // the one fence") false by exactly one component: mission A's failure was
+                // rendered on mission B's pane.
                 onNote={noteIfCurrent}
               />
             ) : null}

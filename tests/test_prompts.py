@@ -54,7 +54,7 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 14
+    assert len(prompts.REGISTRY) == 15
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -67,6 +67,11 @@ def test_registry_covers_every_system_prompt():
         "orchestrator_pass",
         "chat_instruct",
         "mission_objectives",
+        # `mission_plan` writes the BRIEF that is pasted verbatim into a fresh agent running
+        # UNATTENDED — the shortest path from prompt text to autonomous action anywhere in the
+        # app, so it is guarded for a more direct reason than the two above (#893). Not
+        # permission-bypassed: `mission_dispatch.run` passes `bypass=False` (#904 review 3).
+        "mission_plan",
         "mission_question",
         "mission_supervisor",
     ]
@@ -94,6 +99,7 @@ EXPECTED_DEFAULT_SHA = {
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",
     "mission_supervisor": "793ba359d06a97ae",
+    "mission_plan": "a4d0cb1003a79e45",
 }
 
 

@@ -1075,6 +1075,144 @@
 .tlRelay[data-relay-kind="bad"] {
   color: var(--danger-text);
 }
+
+/* --- the dispatch proposal (#893 Phase 4) --------------------------------------- */
+
+/* A CARD, not a form in the flow: what it holds is a decision the operator has to read before
+ * they take it. Bordered on the accent so it reads as the thing asking for a choice, in a thread
+ * whose other rows are history. */
+.planCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--glass);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.planLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 0.9rem;
+}
+.planLabel {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+/* 44px, like every other control the operator taps — the picker is not a lesser control for
+ * being a `<select>`, and it is the one a dispatch cannot happen without. */
+.planField {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 8px;
+}
+.planField:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.planBrief {
+  min-height: 44px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 8px;
+}
+.planBrief:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.planWhy {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 0.76rem;
+}
+/* The consequence, in the operator's own terms, on the tap BEFORE the one that does it. */
+.planConfirm {
+  overflow-wrap: anywhere;
+  border-left: 3px solid var(--status-degraded);
+  padding-left: 8px;
+  color: var(--text-1);
+  font-size: 0.78rem;
+}
+.planError {
+  overflow-wrap: anywhere;
+  border-left: 3px solid var(--status-down);
+  padding-left: 8px;
+  color: var(--text-1);
+  font-size: 0.78rem;
+}
+.planBtn {
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.planBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.planBtn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The empty-checklist recovery, on the card itself (#904 review 7, finding 3). One row, because
+   it is one field and one button — and 44px on both, because a control that only appears when
+   the operator is already blocked is the last one to be reachable by accident. */
+.planAddObjective {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: 6px 0 2px;
+}
+.planAddObjective .planField {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.planAddObjective .planBtn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+/* What done means, on the plan card (#893 Phase 4). A list rather than prose: the operator is
+   checking a set, and a sentence would make them parse one. */
+.planObjectives {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.78rem;
+  color: var(--text-1);
+}
+.planObjGate {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
 /* The mission's open question (#892). Framed in the attention accent because it is the one thing
    on the page that is waiting on the operator — and above the thread, so `needs_you` points at
    something on screen rather than at something to scroll for. A section, not a modal: the page's

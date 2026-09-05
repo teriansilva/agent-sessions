@@ -2994,6 +2994,198 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   await expect.poll(railNeedsYou, { timeout: 10_000 }).toBe(0);
 });
 
+test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
+  page,
+}) => {
+  // #904 review 18, finding 2. The plan card was the ONE mutation surface handed `d.reload`
+  // alone, which re-reads the mission DETAIL and nothing else. So planning left the pane showing
+  // a proposal beside a rail row still saying `draft`, and a dispatch left the session it had
+  // just attached sitting in UNTRACKED until the supervisor's next sweep. The rule is stated
+  // forty lines above the call site and every other surface follows it.
+  //
+  // Asserted on WHAT THE RAIL SAYS, not on a second request being issued: a count passes against
+  // a generation fence that receives the fresh row and drops it, which leaves the stale row
+  // painted — the exact defect. Same reasoning as the waive regression above.
+  //
+  // Red against `onChanged={d.reload}`: the rail row still reads `draft`.
+  await stub(page);
+  let planned = false;
+  const PLAN = {
+    plan_id: "pln_a",
+    mission_id: "msn_a",
+    project_id: "p1",
+    cwd: "/repo/the-app",
+    engine: "claude",
+    engine_reason: "it is a python repo",
+    brief: "open a PR that does the thing",
+    created_at: 1,
+    project_options: [{ id: "p1", name: "the-app", cwd: "/repo/the-app" }],
+    engine_options: [{ id: "claude", label: "claude" }],
+  };
+  await page.route("**/api/missions**", async (r) => {
+    const u = new URL(r.request().url());
+    if (r.request().method() !== "GET") return r.fallback();
+    if (u.pathname === "/api/missions")
+      return r.fulfill({
+        json: missionList([
+          missionRow({
+            id: "msn_a",
+            title: "Alpha",
+            state: planned ? "planned" : "draft",
+          }),
+        ]),
+      });
+    if (u.pathname.endsWith("/objectives"))
+      return r.fulfill({ json: { objectives: [] } });
+    return r.fulfill({
+      json: {
+        ...MISSION,
+        id: "msn_a",
+        title: "Alpha",
+        state: planned ? "planned" : "draft",
+        plan: planned ? PLAN : null,
+        events: [],
+        events_next_seq: null,
+      },
+    });
+  });
+  await page.route("**/api/missions/*/plan", async (r) => {
+    if (r.request().method() !== "POST") return r.fallback();
+    planned = true; // the SERVER moved draft -> planned, as the real route does
+    return r.fulfill({ json: PLAN });
+  });
+
+  // The rail is a column on desktop and a drawer on the phone: open, read, close. Read from the
+  // status dot's ACCESSIBLE NAME, which is the mission's state verbatim — the meta line that also
+  // carries it is inside a `min-width: 1100px` block, so its text is not the same on both
+  // projects and an assertion on it would pass on one viewport and be meaningless on the other.
+  const railState = async () => {
+    const opener = page.getByTestId("rail-drawer-open");
+    if (await opener.isVisible().catch(() => false)) await opener.click();
+    const label = await railRows(page)
+      .first()
+      .getByRole("img")
+      .getAttribute("aria-label");
+    await closeRail(page);
+    return label ?? "";
+  };
+
+  await page.goto("/pulse");
+  await ready(page);
+  await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
+
+  await expect(page.getByTestId("mission-plan-propose")).toBeVisible();
+  await page.getByTestId("mission-plan-propose").click();
+
+  // The PANE gets the proposal…
+  await expect(page.getByTestId("mission-plan-brief")).toBeVisible();
+  // …AND SO DOES THE RAIL, without waiting for a poll or a trip through another mission.
+  await expect.poll(railState, { timeout: 10_000 }).toContain("planned");
+});
+
+test("a late DISPATCH failure cannot paint over the mission you moved to", async ({
+  page,
+}) => {
+  // #904 review 17, finding 2 — the same defect as the question card below, in the component
+  // with the LONGEST await on this screen. A dispatch launches a process, so the operator has
+  // every reason to go and look at something else while it runs; the plan card was handed the
+  // console-global callback instead of the per-mission one, so mission A's failure was rendered
+  // on mission B's pane. The comment beside the fence claims every consumer takes it, which was
+  // true of all of them but this one.
+  //
+  // Red against `onNote` passed raw: A's reason appears while Bravo is on screen.
+  await stub(page);
+  const A = missionRow({ id: "msn_a", title: "Alpha", state: "planned" });
+  const B = missionRow({ id: "msn_b", title: "Bravo", state: "planned" });
+  await mockMissions(page, { missions: missionList([A, B]) });
+  await page.route("**/api/missions/*", (r) => {
+    if (r.request().method() !== "GET") return r.fallback();
+    const id = new URL(r.request().url()).pathname.split("/").pop();
+    return r.fulfill({
+      json: {
+        ...MISSION,
+        id,
+        title: id === "msn_a" ? "Alpha" : "Bravo",
+        state: "planned",
+        events: [],
+        events_next_seq: null,
+        // DISPATCH is gated on a settled, non-empty checklist — an unattended agent with nothing
+        // to check itself against is the thing #893 refuses to start — so the fixture has to
+        // satisfy that before the button is even enabled.
+        objectives_state: "done",
+        objectives: [
+          {
+            mission_id: id,
+            key: "pr_open",
+            ord: 0,
+            title: "A PR is open",
+            probe: null,
+            probe_args: null,
+            gate: true,
+            state: "pending",
+            met_at: null,
+            observed: null,
+            source: "playbook",
+          },
+        ],
+        // Only ALPHA carries a proposal, so the card under test belongs to the mission we leave.
+        plan:
+          id === "msn_a"
+            ? {
+                plan_id: "pln_a",
+                mission_id: "msn_a",
+                project_id: "p1",
+                cwd: "/repo/the-app",
+                engine: "claude",
+                engine_reason: "it is a python repo",
+                brief: "open a PR that does the thing",
+                created_at: 1,
+                project_options: [
+                  { id: "p1", name: "the-app", cwd: "/repo/the-app" },
+                ],
+                engine_options: [{ id: "claude", label: "claude" }],
+              }
+            : null,
+      },
+    });
+  });
+
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/api/missions/*/dispatch", async (r) => {
+    await held;
+    // A REAL FAILURE VERDICT, not an exception: `state !== "running"` is the branch that notes.
+    return r.fulfill({
+      json: {
+        state: "failed",
+        reason: "ALPHA-DISPATCH-FAILED",
+        session_key: null,
+      },
+    });
+  });
+
+  await page.goto("/pulse");
+  await selectMission(page, "Alpha");
+  await expect(page.getByTestId("mission-plan-card")).toBeVisible();
+
+  // Two taps: the first arms the confirmation, the second starts it — and it is held open.
+  await page.getByTestId("mission-dispatch").click();
+  await expect(page.getByTestId("mission-dispatch-confirm")).toBeVisible();
+  await page.getByTestId("mission-dispatch").click();
+
+  // Away, while the dispatch is still in flight.
+  await selectMission(page, "Bravo");
+  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+
+  release?.();
+  // A beat, so a note that WOULD land has landed.
+  await page.waitForTimeout(750);
+  await expect(page.getByTestId("console-note")).toHaveCount(0);
+  await expect(page.getByTestId("mission-console")).not.toContainText(
+    "ALPHA-DISPATCH-FAILED",
+  );
+});
+
 test("a late QUESTION refusal cannot paint over the mission you moved to", async ({
   page,
 }) => {
@@ -3187,9 +3379,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
   // the answer was applied, which "the count did not change" cannot.
   let renamed = false;
   const rowsNow = () =>
-    renamed
-      ? [{ ...ALL[0], title: "RENAMED" }, ...ALL.slice(1)]
-      : ALL;
+    renamed ? [{ ...ALL[0], title: "RENAMED" }, ...ALL.slice(1)] : ALL;
   let releaseRefresh: (() => void) | null = null;
   const heldRefresh = new Promise<void>((r) => (releaseRefresh = r));
   // TWO objectives, so the second mutation is an honest one rather than a re-waive of something

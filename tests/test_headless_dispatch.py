@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import pathlib
+import time
 
 import pytest
 
@@ -59,23 +61,30 @@ def env(tmp_path, monkeypatch):
 
 
 def _stub_spawn(monkeypatch, *, returncode=0, make_socket=True):
-    """Stand in for the dtach spawn. The REAL spawn is proved in `test_headless_launch.py`."""
+    """Stand in for the dtach spawn. The REAL spawn is proved in `test_headless_launch.py`.
+
+    `headless_dispatch._popen`, not `asyncio.create_subprocess_exec` (#904 rev 7, finding 2): the
+    launch fence has to be held ACROSS the spawn, and holding a `threading.Lock` across an
+    `await` on the event loop is the #888 deadlock — the viewer attach path calls `bump_epoch()`
+    synchronously on that same loop. So the lock and the spawn run together on a worker thread,
+    and the door this stubs is the one production now uses.
+    """
 
     class P:
         def __init__(self):
             self.returncode = returncode
 
-        async def wait(self):
+        def wait(self):
             return returncode
 
-    async def fake(*argv, **kw):
+    def fake(argv, **kw):
         if make_socket:
             # dtach creates the socket; the dispatcher waits for it.
-            i = argv.index("-n") + 1
+            i = list(argv).index("-n") + 1
             open(argv[i], "w").close()
         return P()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
 
 
 class FakeRegistry:
@@ -247,7 +256,7 @@ async def test_an_engine_that_cannot_be_seeded_is_refused_before_anything_spawns
 
     spawned = []
     monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: NoSeed())
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: spawned.append(a))
+    monkeypatch.setattr(headless_dispatch.subprocess, "Popen", lambda a, **k: spawned.append(a))
     with pytest.raises(headless_dispatch.DispatchError):
         await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="x")
     # Refused BEFORE the spawn: a session nobody can brief is a session nobody asked for.
@@ -425,7 +434,7 @@ async def test_a_MINT_OWN_ID_engine_is_REFUSED_before_the_spawn(env, reg, monkey
 
     spawned: list = []
     monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: Minter())
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *a, **k: spawned.append(a))
+    monkeypatch.setattr(headless_dispatch.subprocess, "Popen", lambda a, **k: spawned.append(a))
     with pytest.raises(headless_dispatch.DispatchError) as e:
         await headless_dispatch.dispatch(registry=reg, engine="opencode", cwd=str(env), brief="x")
     assert "does not reveal its session id" in str(e.value)
@@ -545,17 +554,17 @@ async def test_CANCELLATION_after_the_spawn_tears_down_before_it_unlocks(
     class SlowProc:
         returncode = 0
 
-        async def wait(self):
+        def wait(self):
             order.append("waiting")
-            await asyncio.sleep(30)  # cancelled here
+            time.sleep(30)  # cancelled here
             return 0
 
-    async def fake(*argv, **kw):
-        i = argv.index("-n") + 1
+    def fake(argv, **kw):
+        i = list(argv).index("-n") + 1
         open(argv[i], "w").close()
         return SlowProc()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
 
     async def cleanup(engine, native, **kwargs):
         order.append("abandon")
@@ -608,15 +617,15 @@ async def test_the_launch_is_wrapped_in_a_TRANSIENT_SCOPE(env, prov, reg, monkey
     class P:
         returncode = 0
 
-        async def wait(self):
+        def wait(self):
             return 0
 
-    async def fake(*argv, **kw):
-        spawned.append(argv)
-        open(argv[argv.index("-n") + 1], "w").close()
+    def fake(argv, **kw):
+        spawned.append(tuple(argv))
+        open(argv[list(argv).index("-n") + 1], "w").close()
         return P()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake)
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
     out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="x")
     assert out.state != "failed", out.reason
     assert len(seen) == 1, "the dispatch launch was not offered to the scope wrapper"
@@ -637,3 +646,282 @@ async def test_a_host_with_NO_SCOPES_still_dispatches(env, prov, reg, monkeypatc
     _stub_spawn(monkeypatch)
     out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="x")
     assert out.state != "failed", out.reason
+
+
+@pytest.mark.anyio
+async def test_the_LAUNCH_lands_in_the_directory_that_was_APPROVED_not_the_name(
+    env, prov, reg, monkeypatch, tmp_path
+):
+    """#904 review 3, finding 4. Every check on the path is a check on a NAME.
+
+    The route compares the resolved cwd, `authorize` compares it again inside the launch fence,
+    and then the kernel resolves `cwd=` after all of that — so a project repointed in the last
+    window still launches somewhere nobody approved. There is no earlier place to move the check
+    to; the gap is between the last possible check and the syscall.
+
+    An open descriptor is not a name. It refers to the inode that was there when the approved
+    path was resolved, and no later rename or symlink swap moves it.
+
+    Red against a spawn that passes the path through.
+    """
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    (approved / "marker").write_text("this is the one the operator saw")
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "marker").write_text("somewhere else entirely")
+
+    seen: dict[str, str] = {}
+
+    class P:
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    def fake(argv, **kw):
+        # THE RENAME HAPPENS HERE — after every check, at the moment of the spawn, which is the
+        # only window this finding is about.
+        approved.rename(tmp_path / "moved-away")
+        decoy.rename(approved)
+        seen["cwd"] = str(kw.get("cwd"))
+        # READ IT HERE, while the descriptor is open — which is exactly when the CHILD resolves
+        # it. Reading after the spawn returns would be reading a closed fd, and would fail for a
+        # reason that has nothing to do with the property under test.
+        seen["marker"] = (pathlib.Path(seen["cwd"]) / "marker").read_text()
+        i = list(argv).index("-n") + 1
+        open(argv[i], "w").close()
+        return P()
+
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
+    await headless_dispatch.dispatch(engine="claude", cwd=str(approved), brief="go", registry=reg)
+
+    # The cwd handed to the spawn still resolves to the directory the operator approved, even
+    # though its NAME now belongs to something else.
+    assert seen["marker"] == "this is the one the operator saw"
+
+
+@pytest.mark.anyio
+async def test_the_LAUNCH_FENCE_does_not_block_the_EVENT_LOOP(env, prov, reg, monkeypatch):
+    """#904 review 7, finding 2. The fence must be held across the spawn — a check released before
+    it is a check again — but the first version held `session_input._lock`, a `threading.Lock`,
+    across an `await` ON THE LOOP.
+
+    The viewer attach path calls `bump_epoch()` synchronously on that same loop, so an attach
+    arriving while the spawn was suspended blocked the loop: the spawn could never complete, the
+    lock was never released, and neither side could make progress — #888's deadlock in a new
+    place.
+
+    So the ordering is driven for real: the launch enters the fence, and the attach happens while
+    it is inside. What must not hang is the attach.
+
+    Red against a fence held across an event-loop await.
+    """
+    import uuid as _uuid
+
+    from agent_sessions import session_input
+
+    key = f"claude:{_uuid.uuid4()}"
+    inside = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_spawn(argv, **kw):
+        # Inside the fence, on a worker thread. The loop must still be live: this sleep is what a
+        # real `create_subprocess_exec` suspension looked like, and it is exactly the window an
+        # attach used to arrive in.
+        loop.call_soon_threadsafe(inside.set)
+        time.sleep(0.4)
+        i = list(argv).index("-n") + 1
+        open(argv[i], "w").close()
+
+        class P:
+            returncode = 0
+
+            def wait(self):
+                return 0
+
+        return P()
+
+    monkeypatch.setattr(headless_dispatch, "_popen", slow_spawn)
+    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+
+    async def delivered(k, seed_key, **kw):
+        return True, ""
+
+    monkeypatch.setattr(headless_seed, "deliver", delivered)
+
+    launch = asyncio.ensure_future(
+        headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    )
+    await asyncio.wait_for(inside.wait(), timeout=10)
+
+    # THE QUESTION, ASKED FROM THE LOOP: while a launch is inside its fence, can this thread
+    # still take `session_input._lock`? That is precisely what `session_stream`'s attach path
+    # needs — it calls `bump_epoch()` synchronously, from here.
+    #
+    # Asked with a TIMEOUT rather than by calling `bump_epoch` outright, because the failure
+    # being guarded against is a hang: a test that reproduces it by hanging is a test that hangs.
+    # `acquire(timeout=...)` gives the same answer and always returns.
+    #
+    # Under a fence held across an event-loop await the holder IS this thread, so the lock can
+    # never be acquired and the launch can never progress to release it — deadlock. Under the
+    # fence held on a worker, the worker finishes its spawn and releases, and this succeeds.
+    got = session_input._lock.acquire(timeout=5)
+    if got:
+        session_input._lock.release()
+    assert got, "the launch fence was held across an event-loop await"
+
+    out = await asyncio.wait_for(launch, timeout=20)
+    # …and the launch still happened, so this does not pass by refusing to launch.
+    assert out.launched, out.reason
+    # …nor by never entering the fence: `bump_epoch` is the real call the attach path makes.
+    session_input.bump_epoch(key)
+
+
+def _late_spawn(monkeypatch, order, *, delay=0.4, entered=None):
+    """A `_popen` that takes its time — the window a deadline or a cancellation lands in.
+
+    Records `popen` when it actually spawns, which is the event the caller must not be able to
+    outrun: whatever `dispatch()` said, if this line runs afterwards there is an unattended,
+    permission-bypassed agent nobody was ever told about.
+    """
+
+    class P:
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    def slow(argv, **kw):
+        if entered is not None:
+            entered.set()
+        time.sleep(delay)
+        i = list(argv).index("-n") + 1
+        open(argv[i], "w").close()
+        order.append("popen")
+        return P()
+
+    monkeypatch.setattr(headless_dispatch, "_popen", slow)
+
+
+@pytest.mark.anyio
+async def test_a_SPAWN_TIMEOUT_does_not_leave_a_worker_that_can_still_LAUNCH(
+    env, prov, reg, monkeypatch
+):
+    """#904 review 8, finding 2. Cancelling an await cancels nothing on a thread.
+
+    `wait_for(to_thread(_fenced_spawn), timeout=…)` reads like a bounded spawn and is not one. When
+    the deadline fired, `dispatch()` returned "the launch could not be spawned", the cleanup tore
+    down a session that did not exist yet and released the single-writer lock and the directory
+    handle — and the worker, still inside the fence, then went on to `_popen()`. The result is the
+    exact outcome this whole module exists to prevent: an unattended agent nobody wrote down,
+    outside the teardown that would have stopped it, with the lock free for a retry to start a
+    second one beside it.
+
+    The property is an ORDER: the spawn cannot happen after the answer. Red against a deadline
+    that abandons the worker — the launch lands after `dispatch()` has already reported that
+    nothing was launched.
+    """
+    order: list[str] = []
+    _late_spawn(monkeypatch, order, delay=0.4)
+    monkeypatch.setattr(headless_dispatch, "SPAWN_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+
+    out = await asyncio.wait_for(
+        headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go"),
+        timeout=20,
+    )
+    order.append("returned")
+    # EVERY CHANCE TO SPAWN BEHIND OUR BACK. "It has not launched yet" is the failure state, not
+    # the passing one — an abandoned worker is still out there, and asserting only on what has
+    # happened by the time the answer lands would call that clean.
+    await asyncio.sleep(0.8)
+
+    assert not out.launched, "the timeout branch is not the one under test"
+    # EITHER it never spawned — the worker saw the caller had given up — OR it spawned while the
+    # caller was still holding it. What must never happen is a spawn after the answer.
+    assert "popen" not in order or order.index("popen") < order.index("returned"), order
+
+
+@pytest.mark.anyio
+async def test_a_CANCELLED_REQUEST_does_not_leave_a_worker_that_can_still_LAUNCH(
+    env, prov, reg, monkeypatch
+):
+    """#904 review 8, finding 2, the other trigger: the request goes away mid-spawn.
+
+    `mission_dispatch.run` handles `CancelledError` explicitly — it settles the mission `failed`
+    and KEEPS the durable record precisely because a cancellation can land after the spawn. That
+    honesty is worth nothing if the spawn happens after the frame that could tear it down has
+    already unwound: recovery then looks for a session the engine's store does not know yet, and
+    the agent that appears a moment later belongs to nobody.
+
+    Red against a cancellation that abandons the worker.
+    """
+    import threading
+
+    order: list[str] = []
+    entered = threading.Event()
+    _late_spawn(monkeypatch, order, delay=0.4, entered=entered)
+    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+
+    task = asyncio.ensure_future(
+        headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    )
+    await asyncio.get_running_loop().run_in_executor(None, entered.wait, 10)
+    assert entered.is_set(), "the spawn never started, so nothing was cancelled mid-spawn"
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=20)
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+    order.append("cancelled")
+    await asyncio.sleep(0.8)
+
+    # The spawn is INSIDE the cancelled frame, not after it — so the teardown in `finally` is a
+    # teardown of something that exists, rather than of nothing while the agent starts behind it.
+    assert "popen" in order, "the worker had not spawned yet, so it was still out there"
+    assert order.index("popen") < order.index("cancelled"), order
+
+
+@pytest.mark.anyio
+async def test_a_REFUSAL_BEFORE_THE_DIRECTORY_HANDLE_still_frees_the_session(
+    env, prov, reg, monkeypatch
+):
+    """#904 review 8, found by CI. The cleanup could itself fail, and then nothing was cleaned.
+
+    `dirfd` was declared partway down the try block and read by the `finally`, so anything that
+    raised above that line — here an engine whose launch binary is not an absolute path, which is
+    a refusal `ptybridge` is right to make — reached the teardown with the name unbound. The
+    `UnboundLocalError` replaced the launcher's real reason with a crash AND aborted the rest of
+    the `finally`, so `lock.release()` never ran: the session was BUSY for the life of the
+    process, and every retry was refused by a lock whose holder had already gone.
+
+    Two assertions, because either alone would pass against half a fix: the operator gets the
+    reason, and the next attempt is a LAUNCH rather than a BUSY.
+
+    Red against a `dirfd` bound inside the block the `finally` guards.
+    """
+    seen: list[str] = []
+
+    def _not_absolute(native, **kw):
+        seen.append(native)
+        return ["claude"]  # not an absolute path — `ptybridge.launch_argv` refuses it
+
+    monkeypatch.setattr(prov, "new_launch_argv", _not_absolute)
+
+    # THE LAUNCHER'S OWN REFUSAL, reaching the caller as the kind of error it is: nothing was
+    # spawned, so this is a dispatch that did not happen and the operator can fix it and retry.
+    with pytest.raises(headless_dispatch.DispatchError) as e:
+        await asyncio.wait_for(
+            headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go"),
+            timeout=20,
+        )
+    assert "absolute path" in str(e.value), str(e.value)
+
+    # …AND THE LOCK IS BACK. Nothing was ever spawned, so a session left BUSY here is one nothing
+    # can ever reach again — and the lock is keyed on the id the refused launch minted.
+    assert seen, "the provider was never asked, so this proves nothing about the refusal"
+    lock = sessionlock.acquire(f"claude:{seen[0]}")
+    assert lock is not None, "the refused launch left the session locked with nothing running"
+    lock.release()

@@ -33,6 +33,7 @@ from . import (
     engines,
     metadata,
     mission_archive,
+    mission_dispatch_recover,
     mission_objectives,
     mission_supervisor_loop,
     missions,
@@ -287,6 +288,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # A task, not an await, so a slow store never delays the app from serving.
         async def _mission_maintenance():
             await mission_archive.recover_with_retry()
+            # A DISPATCH THAT OUTLIVED ITS PROCESS (#904 review 2). `dispatching` is a promise a
+            # running process makes; killed mid-launch it leaves a mission stuck there, possibly
+            # beside a live unattended agent nobody owns. FIRST among the mission passes,
+            # because it is the one that can still ADOPT a session — retention and the scrub below
+            # both act on closed missions, and this pass is what closes them.
+            with contextlib.suppress(Exception):
+                await mission_dispatch_recover.recover_once()
             # Objective production is a durable intent (#883): a crash between a mission's commit
             # and its model call leaves a checklist nobody will ever fill. Boot is the caller
             # that discharges it, exactly as it is for a half-finished archive above.

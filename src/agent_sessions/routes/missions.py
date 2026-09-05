@@ -23,11 +23,25 @@ this route had to be added to that boundary explicitly or it would have served a
 which carries absolute paths — as a cacheable response, on the 401 as well as on success.
 
 ``/message`` LANDS HERE (#871, split out of #852 after its lifecycle proved to need its own
-design pass), and so does ``/answer`` (#892, Phase 3b) — the operator's reply to a bounded
-question the supervisor is waiting on. Still absent, on purpose: ``/plan`` and ``/dispatch`` are
-Phase 4, and the playbook templates are edited through ``PATCH /api/prompts`` and ``POST
-/api/prefs`` rather than through a mission route, because they are operator config rather than
-mission state. And there is **no new decision endpoint** — approve/reject stay
+design pass), and so do ``/answer`` (#892, Phase 3b) — the operator's reply to a bounded
+question the supervisor is waiting on — and ``/plan`` and ``/dispatch`` (#893 Phase 4).
+
+Plan and dispatch are deliberately TWO routes: one spends a model call and writes a proposal, the
+other starts an UNATTENDED agent, and a single endpoint that did both would be a button whose
+consequences the operator learns about afterwards.
+
+**Unattended, and NOT permission-bypassed** (#904 review 3, finding 6). Every interactive launch
+in this app bypasses tool prompts; this one deliberately does not, because unattended bypass is a
+different grant — an agent with prompts suppressed and nobody watching what it does — and #898
+defaults it off precisely so the decision belongs to a layer that knows whether an operator
+authorised it. Nobody has. The cost is real and is stated rather than hidden: a dispatched agent
+can stop on a tool or trust prompt with no one present, which reads as a stalled session and is
+what the supervisor's follow-through is for. Turning it on is its own change with its own
+recorded approval, not a default this route picks.
+
+Still absent, on purpose: the playbook templates are edited through ``PATCH /api/prompts`` and
+``POST /api/prefs`` rather than through a mission route, because they are operator config rather
+than mission state. And there is **no new decision endpoint** — approve/reject stay
 ``/api/pulse/actions/{id}/approve|reject`` (#840 §14).
 """
 
@@ -53,8 +67,10 @@ from .. import (
     headless_dispatch,
     metadata,
     mission_archive,
+    mission_dispatch,
     mission_fence,
     mission_objectives,
+    mission_plan,
     mission_questions,
     mission_relay_reconcile,
     mission_supervisor,
@@ -63,8 +79,10 @@ from .. import (
     orchestrator,
     orchestrator_chat,
     orchestrator_ledger,
+    prefs,
     projects,
     review,
+    scopedspawn,
     session_input,
 )
 from . import files as files_routes
@@ -123,6 +141,11 @@ def _resolve_cwd(project_id: object) -> tuple[str | None, str | None]:
         raise missions.MissionError("could not resolve the project", status=503) from None
     if entity is None:
         raise missions.MissionError("unknown project", status=404)
+    # ARCHIVED IS NOT DISPATCHABLE. An archived project is one the operator has put away; the
+    # planner already excludes them from the list it offers, and re-resolving here without the
+    # same rule would let a plan made before the archive still launch into it (#904 review 5).
+    if getattr(entity, "archived", False):
+        raise missions.MissionError("that project is archived", status=409)
     cwd = entity.default_folder or (entity.folders[0] if entity.folders else "")
     if not cwd:
         raise missions.MissionError("that project has no folder to work in", status=422)
@@ -407,13 +430,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # answer in both directions — a claim between them returned a turn with no operator
         # event, a settlement between them returned `turn: null` beside a timeline that did not
         # yet carry the answer — and, worse, its failure was SUPPRESSED, so a store error and a
-        # settled turn arrived at the client as the same thing: no field.
-
+        # settled turn arrived at the client as the same thing: no field. The client cleared a
+        # live "still working" row on it. One snapshot, one field, and a read failure now fails
+        # the read rather than quietly meaning "settled".
+        #
         # THE ATTENTION FLAG, THE QUESTION AND THE TIMELINE ALL CAME FROM `_read` — one
         # transaction, one answer (#900 review 8, finding 1). There is deliberately no second
         # read here: every version of one produced a page that contradicted itself, and the last
         # one was subtle enough to pass its own regression — the flag and the question agreed
         # with each other while disagreeing with the events array beside them.
+        #
+        # THE DISPATCH PROPOSAL (#893) is the one thing read separately, and it is a different
+        # kind of fact: it is not derived from the mission's own rows, it carries the CURRENT
+        # project and engine lists an override needs, and nothing on the page is cross-checked
+        # against it. A stale plan is a stale proposal, never a page that contradicts itself.
+        with contextlib.suppress(Exception):
+            plan = await missions.run_admitted(lambda: missions.get_plan(mission_id))
+            if plan is not None:
+                plan["project_options"] = mission_plan.project_options()
+                plan["engine_options"] = mission_plan.engine_options()
+            row["plan"] = plan
         return JSONResponse(row)
 
     @app.post("/api/missions/{mission_id}/adopt")
@@ -494,9 +530,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # caught only `MissionError` and turned the same condition into a 500, which tells
             # the operator the app failed when the honest answer is "in a moment".
             #
-            # Kept here as well as in `mission_fence` (review 8, finding 2) because this route
-            # takes the lock ITSELF rather than through the shared helper — the adopting session
-            # is by definition not in the roster the helper enumerates.
+            # Kept here as well as in `mission_fence` because this route takes the roster's
+            # pseudo-key together with the adopting session's own physical key, rather than the
+            # shared helper's set — the adopting session is by definition not in the roster that
+            # helper enumerates.
             return JSONResponse(
                 {"detail": "the authorization fence is busy; retry"}, status_code=503
             )
@@ -524,6 +561,336 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse(out)
         except missions.MissionError as e:
             return _fail(e)
+
+    @app.post("/api/missions/{mission_id}/plan")
+    async def plan_route(
+        mission_id: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Produce a dispatch PROPOSAL. Launches nothing (#893, Phase 4 of #840).
+
+        The separation is the feature: an instruction becomes a project, an agent, a brief and a
+        stated reason, on screen, editable, before anything runs unattended. A route
+        that planned and dispatched in one call would be a button whose consequences the operator
+        first learns about afterwards.
+
+        A re-plan supersedes rather than stacks, and `POST` rather than `GET` because it spends
+        the operator's money on a model call and writes a durable row.
+        """
+        try:
+            missions.validate_id(mission_id)
+            plan = await mission_plan.propose(mission_id)
+        except missions.MissionError as e:
+            return _fail(e)
+        except mission_plan.PlanError as e:
+            return JSONResponse({"detail": str(e)}, status_code=e.status)
+        return JSONResponse(plan)
+
+    @app.patch("/api/missions/{mission_id}/plan")
+    async def edit_plan_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The operator's edit of the proposal. **A new `plan_id` every time.**
+
+        Editing is not a lesser act than planning: it produces a different proposal, and DISPATCH
+        compares the id it was given against the one stored. If an edit reused the id, a dispatch
+        approved against the version on screen a minute ago would run the version typed since —
+        which is the whole failure the id exists to prevent, arriving through the other door.
+
+        `project_id` is resolved to a cwd SERVER-SIDE, exactly as `POST /api/missions` does. The
+        client sends an id; it never sends a path.
+        """
+        try:
+            body = await _body(request)
+            missions.validate_id(mission_id)
+            # THE PROPOSAL BEING EDITED, named by the client (#904 review 6). This route reads a
+            # plan, changes one field and writes the whole row back — so two tabs editing
+            # different fields of the same proposal both succeed, and the later write restores
+            # its own stale copy of the field the first one changed. Both operators are told the
+            # save worked and one of the edits is gone. The id makes the write a compare-and-set
+            # instead, and the comparison happens inside `put_plan`'s transaction, not here.
+            expect = body.get("plan_id")
+            if not isinstance(expect, str) or not expect.strip():
+                return _fail(
+                    missions.MissionError(
+                        "plan_id is required and names the plan you are editing", status=422
+                    )
+                )
+            current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
+            if current is None:
+                return _fail(missions.MissionError("this mission has no plan", status=404))
+            if current["plan_id"] != expect:
+                return _fail(
+                    missions.MissionError(
+                        "the plan changed while you were editing it; read it again", status=409
+                    )
+                )
+
+            if "project_id" in body:
+                project_id, cwd = _resolve_cwd(body.get("project_id"))
+            else:
+                project_id, cwd = current["project_id"], current["cwd"]
+
+            engine = current["engine"]
+            if "engine" in body:
+                raw = body.get("engine")
+                if raw is not None and not isinstance(raw, str):
+                    return _fail(missions.MissionError("engine must be a string", status=422))
+                engine = (raw or "").strip() or None
+                if engine is not None:
+                    # THE SAME GATE THE LIST WAS BUILT WITH. An operator may choose any agent that
+                    # could have been offered — and may not choose one that could not, because
+                    # `shell` is a login shell and a brief pasted into it EXECUTES.
+                    if engine not in {e["id"] for e in mission_plan.engine_options()}:
+                        return _fail(
+                            missions.MissionError(
+                                f"{engine!r} cannot be dispatched into", status=422
+                            )
+                        )
+
+            brief = current["brief"]
+            if "brief" in body:
+                raw_brief = body.get("brief")
+                if not isinstance(raw_brief, str):
+                    return _fail(missions.MissionError("brief must be a string", status=422))
+                brief = raw_brief.strip()
+                if not brief:
+                    return _fail(missions.MissionError("a plan needs a brief", status=422))
+
+            # The operator's own edit carries no model reason — saying "the model chose this" over
+            # a value the operator typed would be a false attribution, and an empty reason reads
+            # correctly on the card as "you chose this".
+            reason = current["engine_reason"] if engine == current["engine"] else ""
+            plan = await missions.run_admitted(
+                lambda: missions.put_plan(
+                    mission_id,
+                    project_id=project_id,
+                    cwd=cwd,
+                    engine=engine,
+                    engine_reason=reason,
+                    brief=brief,
+                    expect_plan_id=expect,
+                )
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        plan["project_options"] = mission_plan.project_options()
+        plan["engine_options"] = mission_plan.engine_options()
+        return JSONResponse(plan)
+
+    @app.post("/api/missions/{mission_id}/dispatch")
+    async def dispatch_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Run the plan the operator SAW. The highest-privilege call in the app (#893).
+
+        What it starts is an UNATTENDED agent — see the module note on why it is not also
+        permission-bypassed — so every fence this route has is load-bearing:
+
+        * **The plan id is compare-and-set.** The operator dispatches the proposal on their
+          screen, not "whatever the mission's current plan is" — a re-plan or an edit mints a new
+          id, and a stale one is a 409 that tells them to read it again.
+        * **`claim_plan` is the arbiter**, not a check before this call. It moves
+          `planned -> dispatching` under its own state predicate in the same transaction that
+          consumes the plan, so two taps cannot become two unattended agents.
+        * **The cwd is the one the server resolved** from the project entity at plan time and
+          re-stamped on the mission by the claim. No client value reaches the launch.
+        * **The tier and the master switch are re-read HERE**, immediately before the spawn — not
+          at plan time, which is minutes and a model call earlier (`stale policy across the
+          await`, #887's family).
+
+        Every outcome resolves the mission forward: `running` on start evidence, `failed` with a
+        reason otherwise. A crash between them is recovered by the startup pass, never left as a
+        stuck `dispatching`.
+        """
+        try:
+            body = await _body(request)
+            missions.validate_id(mission_id)
+            plan_id = body.get("plan_id")
+            if not isinstance(plan_id, str) or not plan_id.strip():
+                return _fail(
+                    missions.MissionError(
+                        "plan_id is required and names the plan you are dispatching", status=422
+                    )
+                )
+
+            # THE POLICY, READ AT THE WRITE BOUNDARY. A plan can sit on screen for as long as the
+            # operator likes, and orchestration can be switched off in that time. Reading it at
+            # plan time and trusting it here is exactly the shape #887 was about.
+            #
+            # …AND THE EPOCH IS CAPTURED FIRST (#904 review 4). A read is not a fence: the switch
+            # can be flipped after this line and before the spawn, and the agent would start under
+            # authority the operator has withdrawn. The epoch captured BEFORE the read is what the
+            # launch fence compares immediately before `create_subprocess_exec` — before, because
+            # a change landing between the capture and the read would otherwise carry the new
+            # epoch and the old reading.
+            policy_epoch = session_input.policy_fingerprint()
+            cfg = prefs.get_orchestrator()
+            if not cfg.get("enabled"):
+                return _fail(
+                    missions.MissionError(
+                        "orchestration is switched off, so nothing may be launched", status=409
+                    )
+                )
+            # …AND THE TIER, which is a different switch and says a stronger thing (#904 review 2,
+            # finding 1). `enabled` is "the orchestrator runs at all"; `autonomy` is what it may
+            # DO, and the settings page states the `off` contract in the operator's own words:
+            # "watch and propose, never send anything". Starting an unattended, permission-shaped
+            # agent is the largest thing this app can send, so a route that read only `enabled`
+            # was doing the one thing that tier promises it will not.
+            if str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]:
+                return _fail(
+                    missions.MissionError(
+                        "autonomy is off — this instance watches and proposes, and may not "
+                        "start an agent",
+                        status=409,
+                    )
+                )
+
+            # …and the containment boundary must EXIST before an unattended agent does (#898
+            # review 7, the non-blocking note, made blocking here because this is the caller that
+            # makes it matter). Without a transient scope the teardown boundary is a pid snapshot,
+            # and a target that forks a survivor during SIGTERM walks out of it and is reported as
+            # a clean stop. A launch we could not clean up is not one to start unattended.
+            if not (scopedspawn.enabled() and scopedspawn.available()):
+                return _fail(
+                    missions.MissionError(
+                        "this host cannot put a session in its own scope, so an unattended agent "
+                        "could not be reliably stopped again; dispatch is refused",
+                        status=409,
+                    )
+                )
+
+            # THE PROJECT PATH, RE-RESOLVED NOW (#904 review 5). The plan carries the cwd the
+            # entity meant when it was written, and a project can be archived or repointed in the
+            # minutes a proposal sits on screen. Launching an unattended agent into the
+            # directory a project USED to mean is the `stale policy across the await` family with
+            # a filesystem path on the end of it, so the entity is read again here and the answer
+            # is what `claim_plan` stamps on the mission.
+            current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
+            if current is None:
+                return _fail(
+                    missions.MissionError("this mission has no plan to dispatch", status=409)
+                )
+            fresh_project, fresh_cwd = _resolve_cwd(current.get("project_id"))
+            if not fresh_cwd:
+                return _fail(
+                    missions.MissionError(
+                        "a plan without a project cannot be dispatched", status=422
+                    )
+                )
+            # THE PATH SHOWN IS THE PATH LAUNCHED (#904 review 2, finding 6).
+            #
+            # Re-resolving is required — a project can be repointed while a proposal sits on
+            # screen, and launching where it USED to point is the stale-policy family with a
+            # filesystem path on the end. But re-resolving alone means the operator confirms
+            # `/old` and the agent starts in `/new`, which is the same defect wearing the fix's
+            # clothes. So the client asserts which resolution it showed, and a mismatch refuses.
+            #
+            # It is a COMPARAND, never a launch argument: `expect_cwd` is compared and discarded,
+            # and the path that reaches the spawn is the one this server resolved.
+            expect_cwd = body.get("expect_cwd")
+            if not isinstance(expect_cwd, str) or not expect_cwd.strip():
+                return _fail(
+                    missions.MissionError(
+                        "expect_cwd is required and names the directory you approved", status=422
+                    )
+                )
+            # WHAT DONE MEANS MUST BE SETTLED, AND MUST BE WHAT WAS SHOWN (#904 review 3,
+            # finding 5). A new mission starts with `objectives_state='pending'` — the producer
+            # is a background task — so a fast operator could launch before the mission knew what
+            # finishing means, and the supervisor would then follow through against a checklist
+            # that arrived afterwards. The card shows the set; `expect_objectives` is the digest
+            # of what it showed, so "final" and "the same one you read" are one check.
+            row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+            if row is None:
+                return _fail(missions.MissionError(f"unknown mission {mission_id}", status=404))
+            # FINALIZED **AND NOT EMPTY** (#904 review 4, finding 3). `pending` was the only
+            # refusal, so a settled-but-empty checklist dispatched — and #893's acceptance
+            # invariant is that the mission knows what finishing means BEFORE it starts. An agent
+            # running against nothing is one the supervisor cannot follow through on, which is
+            # the entire reason the objectives exist.
+            #
+            # The gate is deliberately NOT `objectives_state == "done"`. Production settles
+            # `skipped` on an install with no AI endpoint configured and `failed` when the model
+            # call breaks — and in both cases the operator writing the checklist by hand is the
+            # intended flow, not a bypass. Keying on the producer's verdict would make DISPATCH
+            # permanently unreachable on those installs while proving nothing: what matters is
+            # that nobody is still writing the list (`pending`) and that a list exists.
+            obj_state = str(row.get("objectives_state") or "")
+            if obj_state == "pending":
+                return _fail(
+                    missions.MissionError(
+                        "what done means is still being worked out; try again in a moment",
+                        status=409,
+                    )
+                )
+            if not (row.get("objectives") or []):
+                return _fail(
+                    missions.MissionError(
+                        "this mission has no objectives, so it does not know what finishing "
+                        "means; add at least one before dispatching",
+                        status=409,
+                    )
+                )
+            expect_obj = body.get("expect_objectives")
+            if not isinstance(expect_obj, str):
+                return _fail(
+                    missions.MissionError(
+                        "expect_objectives is required and names the checklist you approved",
+                        status=422,
+                    )
+                )
+            if expect_obj != missions.objectives_digest(row.get("objectives") or []):
+                return _fail(
+                    missions.MissionError(
+                        "the objectives changed since you read them; read the plan again",
+                        status=409,
+                    )
+                )
+            if expect_cwd.strip() != fresh_cwd:
+                return _fail(
+                    missions.MissionError(
+                        "that project now resolves somewhere else; read the plan again",
+                        status=409,
+                    )
+                )
+            plan = await missions.run_admitted(
+                lambda: missions.claim_plan(
+                    mission_id,
+                    plan_id,
+                    cwd=fresh_cwd,
+                    project_id=fresh_project,
+                    # RE-COMPARED INSIDE THE CLAIM (#904 review 4, finding 2). The checks above
+                    # are a separate transaction and `patch_objectives` is legal in the gap, so
+                    # they answer "was this the checklist a moment ago" — the claim answers "is
+                    # it the checklist now", which is the one the launch runs against.
+                    expect_objectives=expect_obj,
+                    require_objectives=True,
+                )
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+
+        out = await mission_dispatch.run(
+            mission_id,
+            plan,
+            registry=registry,
+            policy_epoch=policy_epoch,
+            # …AND AGAIN, INSIDE THE LAUNCH FENCE. The window between this route's resolution and
+            # `create_subprocess_exec` is the second half of the same finding: a project moved in
+            # it would still be launched. `run` calls this immediately before the spawn, while
+            # holding the fence, and refuses on a mismatch.
+            verify_cwd=lambda: _resolve_cwd(plan.get("project_id"))[1],
+        )
+        return JSONResponse(out)
 
     @app.post("/api/missions/{mission_id}/state")
     async def state_route(

@@ -84,8 +84,12 @@ export interface MissionDetailState {
    *
    *  Implemented as a bump of the effect's identity rather than as a second fetch path, so it
    *  inherits the SAME `live` fence the mount load already has. A superseded response resolves
-   *  into a cleaned-up effect and updates nothing; a second, hand-rolled guard here would be a
-   *  second thing to keep correct. */
+   *  into a cleaned-up effect and updates nothing; a second, hand-rolled guard would be a second
+   *  thing to keep correct.
+   *
+   *  The DISPATCH PROPOSAL rides on the same row (#893), and planning, editing and dispatching
+   *  all change it — so the plan card calls this too rather than waiting out the supervisor
+   *  poll, which would leave it showing the proposal the operator has just replaced. */
   reload: () => void;
 }
 

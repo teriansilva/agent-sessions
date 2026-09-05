@@ -62,6 +62,36 @@ def api(auth_cfg, tmp_home, tmp_path, fake_jsonl):
     return c, hdr, proj
 
 
+def _set_objectives_state(mission_id, state):
+    """Put the producer flag back into a NON-terminal state, which `settle_objectives_state`
+    deliberately refuses to do — it is a settler, not a setter."""
+    import sqlite3
+
+    con = sqlite3.connect(missions._db_path())
+    try:
+        con.execute("UPDATE missions SET objectives_state=? WHERE id=?", (state, mission_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _ready_objectives(mission_id, *, title="A PR is open"):
+    """Give a mission a finalized, non-empty checklist — the state DISPATCH requires (#904 rev 4,
+    finding 3). A fresh mission has `objectives_state='pending'` and no rows, which is not
+    dispatchable, so every route test that expects a launch has to establish what done means
+    first. That is the invariant, not test scaffolding."""
+    missions.patch_objectives(
+        mission_id, [{"op": "add", "key": "pr", "title": title, "gate": True}]
+    )
+    missions.settle_objectives_state(mission_id, "done")
+
+
+def _obj_digest(mission_id):
+    """The checklist digest a DISPATCH has to name (#904 review 3, finding 5) — computed the way
+    the card does, from the mission's own rows."""
+    return missions.objectives_digest(missions.get_mission(mission_id)["objectives"])
+
+
 def _create(c, hdr, instruction="do the thing", **kw):
     r = c.post("/api/missions", json={"instruction": instruction, **kw}, headers=hdr)
     assert r.status_code == 201, r.text
@@ -2224,6 +2254,663 @@ async def test_the_ORCHESTRATOR_PASS_discharges_an_owed_terminalization(api, mon
     # finishing what a delivery started.
     await orchestrator_loop.sweep()
     assert orchestrator_ledger.get("act_owed")["state"] == "indeterminate"
+
+
+# ---- the dispatch proposal (#893) -------------------------------------------------------
+
+
+def _plan_reply(monkeypatch, **over):
+    """Stand in for the model. The route's own resolution is what these tests are about."""
+    from agent_sessions import review
+
+    async def reply(messages, **kw):
+        return {"project_index": 0, "engine_index": 0, "brief": "go", **over}
+
+    monkeypatch.setattr(review, "complete_json", reply)
+
+
+def test_PLAN_launches_nothing_and_resolves_the_cwd_SERVER_SIDE(api, monkeypatch):
+    """The separation is the feature: a proposal on screen, editable, before anything runs with
+    nobody watching it. And the cwd comes from the project entity — the client sends an id."""
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+
+    r = c.post(f"/api/missions/{m['id']}/plan", headers=hdr)
+    assert r.status_code == 200, r.text
+    plan = r.json()
+    assert plan["project_id"] == proj.id
+    assert plan["cwd"] == proj.default_folder
+    assert plan["engine"] == "claude"
+    # NOTHING STARTED — but the mission is now DISPATCHABLE, which is what a plan means.
+    # Leaving it in `draft` made the proposal un-dispatchable, because `claim_plan` only claims
+    # from `planned`, so the one path an operator actually takes 409'd (#904 review 1).
+    assert c.get(f"/api/missions/{m['id']}", headers=hdr).json()["state"] == "planned"
+
+
+def test_EDITING_a_plan_mints_a_NEW_id(api, monkeypatch):
+    """Editing is not a lesser act than planning: it produces a different proposal.
+
+    If an edit reused the id, a dispatch approved against the version on screen a minute ago
+    would run the version typed since — the failure the id exists to prevent, through the other
+    door.
+    """
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    first = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+
+    r = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": first["plan_id"], "brief": "do it differently"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["plan_id"] != first["plan_id"]
+    assert r.json()["brief"] == "do it differently"
+
+
+def test_an_EDIT_may_not_name_an_engine_that_could_not_have_been_OFFERED(api, monkeypatch):
+    """`shell` is a login shell and a brief pasted into it EXECUTES. The operator may choose any
+    agent that could have been offered, and may not choose one that could not."""
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    have = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+
+    r = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": have["plan_id"], "engine": "shell"},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+    assert "shell" in r.json()["detail"]
+    # …and the stored plan is untouched.
+    assert missions.get_plan(m["id"])["engine"] == "claude"
+
+
+def test_an_EDIT_sends_a_PROJECT_ID_and_never_a_PATH(api, monkeypatch):
+    """The same rule `POST /api/missions` follows, and the reason the client has no way to choose
+    a working directory at all: an unknown id is a 404, and a path is simply not a field."""
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    have = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    pid = have["plan_id"]
+
+    bad = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": pid, "project_id": "prj_nope"},
+        headers=hdr,
+    )
+    assert bad.status_code == 404, bad.text
+    # A path in the project_id slot is an unknown project, not a directory.
+    worse = c.patch(
+        f"/api/missions/{m['id']}/plan", json={"plan_id": pid, "project_id": "/etc"}, headers=hdr
+    )
+    assert worse.status_code == 404, worse.text
+    assert missions.get_plan(m["id"])["cwd"] == proj.default_folder
+
+
+def test_PLANNING_requires_login_and_csrf(api, auth_cfg):
+    c, hdr, proj = api
+    m = _create(c, hdr)
+    assert c.post(f"/api/missions/{m['id']}/plan").status_code == 403
+    assert c.patch(f"/api/missions/{m['id']}/plan", json={}).status_code == 403
+    fresh = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    assert fresh.post(f"/api/missions/{m['id']}/plan").status_code in (401, 403)
+
+
+def test_DISPATCH_refuses_a_STALE_plan_id(api, monkeypatch):
+    """The operator dispatches the proposal on their screen, not "whatever is stored now".
+
+    A model call and an edit both sit between reading the plan and pressing the button, so "the
+    mission's current plan" is a slot. Red against a route that reads the stored plan and runs it.
+    """
+    from agent_sessions import mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    # The master switch is checked BEFORE the plan is consumed, so it has to be on for this test
+    # to reach the fence it is about. That ordering is deliberate: the cheapest refusal first, and
+    # a refused dispatch must not eat the proposal.
+    prefs.set_orchestrator({"enabled": True})
+    # …and so is CONTAINMENT, which is a property of the HOST (#904 review 6, finding 2). Without
+    # stubbing it this test asserted the plan-id fence on a host that has transient scopes and
+    # asserted nothing at all on one that does not — it got the containment 409 first and passed
+    # for the wrong reason on neither. The dedicated containment test owns that refusal.
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    m = _create(c, hdr)
+    _ready_objectives(m["id"])
+    stale = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": stale["plan_id"], "brief": "changed my mind"},
+        headers=hdr,
+    )
+
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": stale["plan_id"],
+            "expect_cwd": stale["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert "replaced" in r.json()["detail"]
+    # Nothing started, and the plan is still there to read again.
+    assert missions.get_mission(m["id"])["state"] == "planned"
+    assert missions.get_plan(m["id"]) is not None
+
+
+def test_DISPATCH_re_reads_the_MASTER_SWITCH_at_the_write_boundary(api, monkeypatch):
+    """A plan can sit on screen for as long as the operator likes, and orchestration can be
+    switched off in that time. Reading policy at plan time and trusting it here is #887's shape.
+
+    Red against a route that checks the switch only when the plan is made.
+    """
+    from agent_sessions import mission_plan, prefs
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+
+    prefs.set_orchestrator({"enabled": False})
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert "switched off" in r.json()["detail"]
+    assert missions.get_mission(m["id"])["state"] == "planned"
+
+
+def test_DISPATCH_refuses_a_host_that_cannot_CONTAIN_the_agent(api, monkeypatch):
+    """A launch we could not clean up is not one to start unattended (#898 review 7's note).
+
+    Without a transient scope the teardown boundary is a pid snapshot, and a target that forks a
+    survivor during SIGTERM walks out of it and is reported as a clean stop. This is the caller
+    that makes that matter, so the refusal lives here.
+    """
+    from agent_sessions import mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    m = _create(c, hdr)
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+
+    monkeypatch.setattr(scopedspawn, "available", lambda: False)
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert "could not be reliably stopped" in r.json()["detail"]
+    assert missions.get_mission(m["id"])["state"] == "planned"
+
+
+def test_DISPATCH_requires_login_and_csrf(api, auth_cfg):
+    c, hdr, proj = api
+    m = _create(c, hdr)
+    assert c.post(f"/api/missions/{m['id']}/dispatch", json={"plan_id": "x"}).status_code == 403
+    fresh = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    assert fresh.post(f"/api/missions/{m['id']}/dispatch", json={"plan_id": "x"}).status_code in (
+        401,
+        403,
+    )
+
+
+def test_CREATE_then_PLAN_then_DISPATCH_works_with_no_hand_moved_state(api, monkeypatch):
+    """#904 review 1, end to end and through the routes only.
+
+    The three calls an operator actually makes, in order, with nothing moving the mission's state
+    between them. Every dispatch test in this file used to perform the missing `draft -> planned`
+    transition itself, which is exactly why a `/plan` that left the mission in `draft` — and a
+    DISPATCH that therefore always answered `409: mission is draft, not planned` — passed review
+    and passed CI.
+
+    The launch itself is stubbed at `mission_dispatch.run`: what is under test is the LIFECYCLE
+    between the routes, not the spawn (#898 owns that, against a real pty).
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+
+    launched: list[dict] = []
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        launched.append(plan)
+        missions.settle_dispatch(
+            mission_id, to="running", detail="dispatched", session_key="claude:" + "a" * 8
+        )
+        return {"state": "running", "reason": "", "session_key": None}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    m = _create(c, hdr)
+    assert missions.get_mission(m["id"])["state"] == "draft"
+
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    assert missions.get_mission(m["id"])["state"] == "planned"
+    # …and the operator establishes what finishing means, which #904 review 4 finding 3 makes a
+    # precondition of the launch rather than a warning beside it.
+    _ready_objectives(m["id"])
+
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "running"
+    # The launch received the SERVER-resolved cwd, re-read from the entity at this moment.
+    assert launched and launched[0]["cwd"] == proj.default_folder
+    assert missions.get_mission(m["id"])["state"] == "running"
+
+
+def test_DISPATCH_REFUSES_when_the_project_moved_under_the_plan(api, monkeypatch):
+    """#904 review 5, tightened by review 2's finding 6.
+
+    Re-resolving the project at the write boundary is required — the plan carries the cwd the
+    entity meant when it was written, and launching an unattended agent into the
+    directory a project USED to mean is `stale policy across the await` with a filesystem path on
+    the end of it. But re-resolving ALONE is the same defect wearing the fix's clothes: the
+    operator confirms `/old` on the card and the agent starts in `/new`.
+
+    So the client asserts which resolution it showed, and a mismatch refuses rather than
+    launching. Red against a route that re-resolves and proceeds.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, projects, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+
+    m = _create(c, hdr)
+    _ready_objectives(m["id"])
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    assert plan["cwd"] == proj.default_folder
+
+    # THE PROJECT MOVES, after the proposal was written and before the button is pressed.
+    moved = "/repo/moved-since"
+    loaded = projects.load()
+    entity = loaded[proj.id]
+    monkeypatch.setattr(
+        projects,
+        "load",
+        lambda: {
+            **loaded,
+            proj.id: entity.__class__(
+                **{
+                    **{f: getattr(entity, f) for f in entity.__dataclass_fields__},
+                    "default_folder": moved,
+                    "folders": (moved,),
+                }
+            ),
+        },
+    )
+
+    seen: list[str] = []
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        seen.append(plan["cwd"])
+        missions.settle_dispatch(mission_id, to="failed", detail="stubbed")
+        return {"state": "failed", "reason": "stubbed", "session_key": None}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+    # The operator approves the path the CARD showed, which is no longer where the project points.
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert "resolves somewhere else" in r.json()["detail"]
+    assert seen == [], "an agent started in a directory the operator never approved"
+    # …and the plan is untouched, so re-reading it shows the new path and the next tap approves
+    # THAT one — which then launches where the project actually points now.
+    assert missions.get_mission(m["id"])["state"] == "planned"
+    again = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": moved,
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert again.status_code == 200, again.text
+    assert seen == [moved]
+
+
+def test_TWO_TABS_editing_one_plan_do_not_lose_an_acknowledged_edit(api, monkeypatch):
+    """#904 review 6, through the route. The edit reads the plan, changes one field and writes the
+    whole row back, so two tabs holding the same proposal both get a 200 and a new id — and the
+    later write restores its own stale copy of the field the first one changed.
+
+    Red against a route that does not require, or does not compare, the id it was handed.
+    """
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    a = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+
+    first = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": a["plan_id"], "brief": "one, but better"},
+        headers=hdr,
+    )
+    assert first.status_code == 200, first.text
+
+    # The second tab is still holding A, and its body carries A's stale brief.
+    second = c.patch(
+        f"/api/missions/{m['id']}/plan",
+        json={"plan_id": a["plan_id"], "engine": "claude"},
+        headers=hdr,
+    )
+    assert second.status_code == 409, second.text
+    assert "changed while you were editing" in second.json()["detail"]
+    assert missions.get_plan(m["id"])["brief"] == "one, but better"
+
+
+def test_an_EDIT_without_the_plan_it_edited_is_REFUSED(api, monkeypatch):
+    """The id is required rather than optional, for the reason `from` is required on a state
+    change: an omitted comparand is a write with no comparand, and the failure it permits is
+    silent."""
+    from agent_sessions import mission_plan
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    m = _create(c, hdr)
+    c.post(f"/api/missions/{m['id']}/plan", headers=hdr)
+    r = c.patch(f"/api/missions/{m['id']}/plan", json={"brief": "no id"}, headers=hdr)
+    assert r.status_code == 422, r.text
+    assert "plan_id is required" in r.json()["detail"]
+
+
+def test_the_OFF_autonomy_tier_may_not_start_an_agent(api, monkeypatch):
+    """#904 review 2, finding 1. `enabled` and `autonomy` are two switches and they say different
+    things: the first is "the orchestrator runs at all", the second is what it may DO.
+
+    The settings page states the `off` contract in the operator's own words — "watch and propose,
+    never send anything" — and starting an unattended, permission-shaped agent is the largest
+    thing this app can send. A route that read only `enabled` was doing the one thing that tier
+    promises it will not.
+
+    Red against a check that stops at `enabled`.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    # ENABLED, and OFF. The combination the check has to tell apart.
+    prefs.set_orchestrator({"enabled": True, "autonomy": "off"})
+
+    ran: list[str] = []
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        ran.append(mission_id)
+        return {"state": "running", "reason": "", "session_key": None}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    m = _create(c, hdr)
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    r = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+
+    assert r.status_code == 409, r.text
+    assert "autonomy is off" in r.json()["detail"]
+    assert ran == [], "an agent was launched under the tier that promises it will not"
+    # …and the refusal is cheap: nothing was consumed, so the operator can raise the tier and
+    # press the same button again.
+    assert missions.get_mission(m["id"])["state"] == "planned"
+    assert missions.get_plan(m["id"])["plan_id"] == plan["plan_id"]
+
+
+def test_DISPATCH_refuses_a_mission_with_NO_OBJECTIVES(api, monkeypatch):
+    """#904 review 4, finding 3, at the route — where the operator meets it.
+
+    The only server gate rejected `objectives_state == "pending"`, so a settled-but-EMPTY
+    checklist launched an unattended agent with nothing for the supervisor to follow through on.
+    #893's acceptance invariant is that the mission knows what finishing means BEFORE it starts.
+
+    The gate is deliberately not `objectives_state == "done"`: production settles `skipped` on an
+    install with no AI endpoint and `failed` when the call breaks, and the operator writing the
+    checklist by hand is the intended flow in both cases. So the second half of this test is as
+    load-bearing as the first — keying on the producer's verdict would make DISPATCH permanently
+    unreachable on those installs while proving nothing.
+
+    Red against a route that refuses only `pending`.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    ran: list[str] = []
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        ran.append(mission_id)
+        missions.settle_dispatch(mission_id, to="running", detail="dispatched")
+        return {"state": "running", "reason": "", "session_key": None}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    m = _create(c, hdr)
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    # PRODUCTION FINISHED AND PRODUCED NOTHING — the case that used to dispatch.
+    missions.settle_objectives_state(m["id"], "skipped")
+    assert missions.get_mission(m["id"])["objectives"] == []
+    empty = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert empty.status_code == 409, empty.text
+    # THE ROUTE'S OWN REFUSAL, not the store's. `claim_plan(require_objectives=True)` refuses this
+    # too — that is the fence that cannot be raced — but it answers "this mission has no
+    # objectives" without saying what to do about it. The route exists here to name the remedy,
+    # so the remedy is what this asserts; a route that dropped its check would fall through to
+    # the store's wording and this line is what notices.
+    assert "add at least one before dispatching" in empty.json()["detail"]
+    assert ran == [], "an unattended agent started with nothing to check it against"
+    # …and the plan survives the refusal, so the operator can add the checklist and press again.
+    assert missions.get_mission(m["id"])["state"] == "planned"
+
+    # THE HAND-WRITTEN CHECKLIST DISPATCHES, on a mission whose production was `skipped`.
+    missions.patch_objectives(
+        m["id"], [{"op": "add", "key": "pr", "title": "A PR is open", "gate": True}]
+    )
+    ok = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ran == [m["id"]]
+
+
+def test_DISPATCH_refuses_a_checklist_that_is_not_the_one_you_read(api, monkeypatch):
+    """#904 review 3, finding 5. #893 wants the objectives on the plan boundary, and the reason
+    is a mobile one: on a phone they are a separate stop, so an operator could start an unattended
+    agent without seeing — or noticing the absence of — what the supervisor will chase.
+
+    Two ways that goes wrong, and both are refused here: the producer has not finished (the
+    mission starts `pending`), and the set changed since the card rendered it.
+
+    Red against a route that dispatches on plan/engine/brief alone.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    ran: list[str] = []
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        ran.append(mission_id)
+        missions.settle_dispatch(mission_id, to="failed", detail="stubbed")
+        return {"state": "failed", "reason": "stubbed", "session_key": None}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    m = _create(c, hdr)
+    plan = c.post(f"/api/missions/{m['id']}/plan", headers=hdr).json()
+    missions.patch_objectives(
+        m["id"], [{"op": "add", "key": "pr", "title": "A PR is open", "gate": True}]
+    )
+    shown = _obj_digest(m["id"])
+
+    # 1. STILL BEING WORKED OUT — the producer has not settled the list. `pending` is the state
+    #    a fresh mission is CREATED in, so it is set the way the store gets there rather than
+    #    through the settle-only writer, which by design only accepts terminal values.
+    _set_objectives_state(m["id"], "pending")
+    pending = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": shown,
+        },
+        headers=hdr,
+    )
+    assert pending.status_code == 409, pending.text
+    assert "still being worked out" in pending.json()["detail"]
+    assert ran == []
+
+    # 2. SETTLED, but the set moved since the card rendered it.
+    missions.settle_objectives_state(m["id"], "done")
+    missions.patch_objectives(
+        m["id"], [{"op": "add", "key": "green", "title": "Checks are green", "gate": True}]
+    )
+    stale = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": shown,
+        },
+        headers=hdr,
+    )
+    assert stale.status_code == 409, stale.text
+    assert "objectives changed" in stale.json()["detail"]
+    assert ran == []
+
+    # 3. …and the set the operator has now read dispatches.
+    ok = c.post(
+        f"/api/missions/{m['id']}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(m["id"]),
+        },
+        headers=hdr,
+    )
+    assert ok.status_code == 200, ok.text
+    assert ran == [m["id"]]
 
 
 def test_a_FABRICATED_session_cannot_be_adopted_or_carry_a_mission_to_running(api):
