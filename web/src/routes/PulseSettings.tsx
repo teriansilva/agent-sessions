@@ -138,14 +138,15 @@ export function PulseSettings() {
 
   return (
     <section className={styles.section} aria-labelledby="pulse-h">
-      <h2 id="pulse-h">Pulse overview</h2>
+      <h2 id="pulse-h">Mission control overview</h2>
       <p className={styles.hint}>
-        Pulse curates your recent sessions into a ranked, jump-back-in overview
-        (open it from the <strong>Pulse</strong> chip in the top bar). It scans
-        on demand or on a background loop; results are cached so the page loads
-        instantly. <strong>Fast</strong> depth is local and free;{" "}
-        <strong>Medium</strong>/<strong>Slow</strong> add AI synthesis using the
-        review endpoint above. Changes save automatically.
+        These settings shape the curated read that sits beside your missions on{" "}
+        <strong>mission control</strong> (the chip in the top bar): what needs
+        you, what is in flight and what has gone idle. It scans on demand or on
+        a background loop; results are cached so the page loads instantly.{" "}
+        <strong>Fast</strong> depth is local and free; <strong>Medium</strong>/
+        <strong>Slow</strong> add AI synthesis using the review endpoint above.
+        Changes save automatically.
       </p>
       {error && <p className={styles.err}>{error}</p>}
       {saved && (

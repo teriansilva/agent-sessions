@@ -155,8 +155,12 @@ test("a session appears ONCE, with its decision controls on the card", async ({
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
-  await expect(page.getByRole("heading", { name: /pulse/i })).toBeVisible();
+  await page.goto("/pulse");
+  // The page's own name, not the route's. #895 renamed the header to MISSION CONTROL and left
+  // `/pulse` alone deliberately — the URL is in every bookmark and every issue in the history.
+  await expect(
+    page.getByRole("heading", { name: /mission control/i }),
+  ).toBeVisible();
 
   // The action's own title appears exactly once on the page — the queue used to render it a
   // second time in its own list.
@@ -176,7 +180,7 @@ test("a session appears ONCE, with its decision controls on the card", async ({
 
 test("a card with a live action sorts above one without", async ({ page }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
   const titles = await page.locator("li").allInnerTexts();
   const withAction = titles.findIndex((t) =>
@@ -191,7 +195,7 @@ test("project and agent filters narrow the whole list and compose", async ({
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // Counts come from the unfiltered set, so a chip states what selecting it would yield.
@@ -246,7 +250,7 @@ test("a manual pass puts its new actions onto the cards, not just in the panel",
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
 
   await page.getByRole("button", { name: /run now/i }).click();
@@ -304,7 +308,7 @@ test("resolving from a card also updates the panel's count and feed", async ({
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByText(/1 action needs you/i)).toBeVisible();
   const before = orchFetches;
 
@@ -355,7 +359,7 @@ test("a settled action loses its controls even when the background refresh fails
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
   await approve.click();
@@ -430,7 +434,7 @@ test("a card that existed only for its action goes away with it", async ({
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByText("Phantom candidate")).toBeVisible();
 
   await page.getByRole("button", { name: /^approve$/i }).click();

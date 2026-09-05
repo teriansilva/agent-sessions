@@ -141,7 +141,7 @@ export default defineConfig({
           { text: "Terminal", link: "/guide/terminal" },
           { text: "Projects", link: "/guide/projects" },
           { text: "Files & git", link: "/guide/files-and-git" },
-          { text: "Pulse", link: "/guide/pulse" },
+          { text: "Mission control", link: "/guide/pulse" },
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },

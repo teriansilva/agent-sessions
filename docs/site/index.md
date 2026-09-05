@@ -18,8 +18,8 @@ features:
   - title: Sessions
     details: Persistent dtach terminals that survive a closed tab, a redeploy and a reboot, arbitrated by a single-writer lock.
     link: /guide/sessions
-  - title: Pulse
-    details: An AI-curated overview of recent work, ranked by what needs you, what is in flight and what is idle.
+  - title: Mission control
+    details: Give a mission an instruction and a project; it works out what done means, follows through, and asks when it is unsure.
     link: /guide/pulse
   - title: Files & git
     details: A read-only file browser and a git view docked in the session that owns them.

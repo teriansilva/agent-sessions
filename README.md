@@ -25,12 +25,16 @@ whole fleet from a laptop or your phone.
   grouped conflicts/staged/changes/untracked (capped at `GIT_MAX_ENTRIES`, and flagged as
   truncated past it), and a unified diff one click away. Review what changed without leaving
   the app — no stage, no commit, no discard.
-- **Pulse + Ask.** An AI-curated "state of your work" across every agent, plus a plain-language
-  finder for past sessions ("which session fixed the ws reconnect bug?") — one tap back in. Reuses
-  your own OpenAI-compatible endpoint; session content goes nowhere else.
+- **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
+  mission, and an objective list that says what "done" means before the work starts. It adopts
+  sessions you started yourself, checks the objectives it can check, and follows through — nudging
+  a stalled agent, and proposing completion rather than declaring it. Includes the plain-language
+  finder for past sessions ("which session fixed the ws reconnect bug?"). Reuses your own
+  OpenAI-compatible endpoint; session content goes nowhere else, and the console still works with
+  no endpoint at all.
 - **AI review + auto-sort.** A one-line AI summary on each session flags what needs you, and new
   sessions file themselves into the right project.
-- **Every prompt is yours.** All eleven system prompts — the recap, the handoff brief, Pulse, the
+- **Every prompt is yours.** Every system prompt — the recap, the handoff brief, the console, the
   orchestrator — are editable in Settings, with the JSON shape each one must return and a
   one-tap reset. The two that can act on a session keep a server-appended clause that says
   session output is untrusted; that part isn't editable, by design.

@@ -271,7 +271,7 @@ function Layout() {
             <Link
               to="/pulse"
               className="gear"
-              aria-label="Open Pulse — recent-work overview"
+              aria-label="Open mission control"
               onClick={closeMobileDrawer}
             >
               <Activity size={18} />
@@ -358,7 +358,7 @@ function Layout() {
             <Link
               to="/pulse"
               className="gear"
-              aria-label="Open Pulse — recent-work overview"
+              aria-label="Open mission control"
               onClick={closeMobileDrawer}
             >
               <Activity size={18} />

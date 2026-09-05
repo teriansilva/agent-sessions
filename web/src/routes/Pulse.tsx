@@ -317,7 +317,10 @@ export default function Pulse() {
     <div className={styles.pulse}>
       <header className={styles.head}>
         <div className={styles.headLeft}>
-          <h1 className={styles.h1}>Pulse</h1>
+          {/* The feature's own name (#895). The ROUTE stays `/pulse` — #840 named the page
+              deliberately without renaming the URL, and changing it would break every bookmark
+              and every link in the issue history for no benefit. */}
+          <h1 className={styles.h1}>MISSION CONTROL</h1>
           <span className={styles.sl} aria-hidden="true">
             //
           </span>

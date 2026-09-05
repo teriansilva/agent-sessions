@@ -43,8 +43,8 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   },
   {
     img: publicAsset("onboarding/pulse.svg"),
-    title: "Pulse — work at a glance",
-    body: "An AI-curated read on what needs you (⚠), what's in flight, and what's gone idle — each one click from jumping back in. Cached so it loads instantly; pick the depth, from free local curation to an AI synthesis banner.",
+    title: "Mission control",
+    body: "Give a mission an instruction and a project, and it works out what done means, follows the work through, and asks when it is unsure. The same page still shows what needs you (⚠), what's in flight and what's gone idle — each one click from jumping back in.",
   },
   {
     img: publicAsset("onboarding/aireview.svg"),
