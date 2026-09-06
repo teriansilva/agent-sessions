@@ -9,7 +9,8 @@
  */
 import type { SupervisorObjective } from "../../types/api";
 
-export type Board = "held" | "spent" | "waiting" | "unknown" | "ready" | "met";
+export type Board =
+  "held" | "asked" | "spent" | "waiting" | "unknown" | "ready" | "met";
 
 /** ORDER IS THE CONTRACT, not an implementation detail:
  *
@@ -24,11 +25,21 @@ export type Board = "held" | "spent" | "waiting" | "unknown" | "ready" | "met";
  *    inferring SPENT from the number alone put the board in direct contradiction with the sentence
  *    printed beside it ("the action ledger could not be read, so the budget is unknown"). The
  *    server carries the discriminator structurally for exactly this reason; read it, don't guess.
+ *  - `asked` before EVERYTHING that is merely an absence — and this one inverts who is blocked.
+ *    The supervisor stands an objective down while a question is open, so `may_nudge` is false and
+ *    the rule fell through to `waiting`. On this board `waiting` means the agent is being given
+ *    room; an objective that is waiting on the OPERATOR'S ANSWER then read as the exact opposite
+ *    of the truth, on the one page whose entire job is "what needs me right now". The server has
+ *    always carried the discriminator and says why in its own comment: the pass skips for either
+ *    reason, but "the operator asked for quiet" and "the operator owes an answer" are not the same
+ *    thing to a reader. `held` still outranks it, because a stand-down is the operator's own
+ *    instruction and a question inside it is not something they are being asked to act on.
  */
 export function boardFor(o: SupervisorObjective): Board {
   if (o.met) return "met";
   if (o.stood_down) return "held";
   if (o.may_nudge) return "ready";
+  if (o.awaiting_answer) return "asked";
   if (o.unreadable) return "unknown";
   if (o.remaining <= 0) return "spent";
   return "waiting";
@@ -38,6 +49,7 @@ export const BOARD_LABEL: Record<Board, string> = {
   met: "MET",
   held: "HELD",
   spent: "SPENT",
+  asked: "NEEDS YOU",
   waiting: "WAITING",
   unknown: "UNKNOWN",
   ready: "READY",

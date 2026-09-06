@@ -1220,6 +1220,10 @@ export interface SupervisorObjective {
   episode: number;
   /** The operator asked not to be told about this objective again. */
   stood_down: boolean;
+  /** A question is open against this objective, so the supervisor has stood it down UNTIL IT IS
+   *  ANSWERED. Distinct from `stood_down`, and the server keeps them apart for the reader's sake:
+   *  one says the operator asked for quiet, this one says the operator owes an answer. */
+  awaiting_answer: boolean;
   spent: number;
   remaining: number;
   may_nudge: boolean;

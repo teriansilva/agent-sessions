@@ -31,6 +31,7 @@ function obj(over: Partial<SupervisorObjective> = {}): SupervisorObjective {
     met: false,
     episode: 1,
     stood_down: false,
+    awaiting_answer: false,
     spent: 0,
     remaining: 3,
     may_nudge: true,
@@ -103,6 +104,33 @@ test("a stand-down outranks a spent budget, and MET outranks everything", () => 
   expect(boardFor(obj({ remaining: 0, may_nudge: false }))).toBe("spent");
   expect(boardFor(obj({ remaining: 2, may_nudge: false }))).toBe("waiting");
   expect(boardFor(obj({ remaining: 2, may_nudge: true }))).toBe("ready");
+
+  // AN OPEN QUESTION IS THE OPERATOR'S TURN, and the board said the opposite. The supervisor
+  // stands an objective down while a question is open, so `may_nudge` is false and this fell
+  // through to `waiting` — which on this board means the AGENT is being given room. On the one
+  // page whose job is "what needs me right now", an objective waiting on the operator's own
+  // answer read as one they had nothing to do about.
+  expect(
+    boardFor(obj({ awaiting_answer: true, may_nudge: false, remaining: 2 })),
+  ).toBe("asked");
+  // …and it outranks the ABSENCES, not the operator's own instruction. An unreadable ledger or a
+  // spent budget does not change who owes the next move; a stand-down is the operator saying they
+  // do not want to be asked, so a question inside one is not something to act on.
+  expect(
+    boardFor(
+      obj({
+        awaiting_answer: true,
+        may_nudge: false,
+        unreadable: true,
+        remaining: 0,
+      }),
+    ),
+  ).toBe("asked");
+  expect(
+    boardFor(
+      obj({ awaiting_answer: true, stood_down: true, may_nudge: false }),
+    ),
+  ).toBe("held");
 });
 
 test("each board renders its own badge and marks the row", () => {

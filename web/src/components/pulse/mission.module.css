@@ -672,6 +672,16 @@
 .supSpent {
   color: var(--warn-text);
 }
+/* NEEDS YOU — the rail's own `needs you` hue, in its TEXT-SAFE form. `.dotNeedsYou` paints
+   `--status-degraded` as a background on a 6px dot, which has no contrast requirement; the same
+   raw hue as small text fails AA on the light ground, and `contrast.test.ts` refuses it. So this
+   is `--warn-text`, which IS that hue mixed toward `--text-1` — one vocabulary across the two
+   surfaces reporting one fact, without borrowing a signal colour for prose. The label carries the
+   distinction from SPENT and UNKNOWN; the colour carries the family. */
+.supAsked {
+  color: var(--warn-text);
+}
+
 .supWaiting {
   color: var(--git-unknown-fg);
 }

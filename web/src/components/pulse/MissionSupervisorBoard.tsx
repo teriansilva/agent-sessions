@@ -30,6 +30,7 @@ import { BOARD_LABEL, boardFor, type Board } from "./supervisorBoard";
 const CLASS: Record<Board, string> = {
   met: styles.supMet,
   held: styles.supHeld,
+  asked: styles.supAsked,
   spent: styles.supSpent,
   waiting: styles.supWaiting,
   unknown: styles.supUnknown,
