@@ -73,6 +73,7 @@ def fenced_settle(
     session_key: str | None = None,
     keep_record: bool = False,
     expect_plan: str | None = None,
+    discharge_resource: bool = True,
     path=None,
 ) -> dict:
     """Settle a dispatch UNDER THE ADOPTION FENCE when it adopts. Raises what the store raises.
@@ -95,6 +96,10 @@ def fenced_settle(
             session_key=session_key,
             keep_record=keep_record,
             expect_plan=expect_plan,
+            # PASSED THROUGH, not defaulted here. Recovery is the caller that needs it: a
+            # `spared` child's record is legitimately discharged while its process keeps running
+            # under another mission, and only the caller knows which of those happened.
+            discharge_resource=discharge_resource,
             path=path,
         )
 
@@ -323,7 +328,15 @@ async def _orphaned_after_launch(
     discharged = outcome != "leaked"
     if discharged and terminal:
         with contextlib.suppress(Exception):
-            missions.clear_dispatch(mission_id, expect_plan=expect_plan)
+            # `stopped` ONLY on `stopped` — `spared` also discharges the dispatch record, because
+            # somebody answers for that agent, but the agent is still on this host and its
+            # sub-agent slot must not come back to this mission (#894 review 2, finding 3).
+            missions.clear_dispatch(
+                mission_id, expect_plan=expect_plan, stopped=(outcome == "stopped")
+            )
+            # The resource transition rides INSIDE `clear_dispatch`'s transaction now (review 5):
+            # a spared child keeps its charge and becomes reapable in the same commit that deletes
+            # the record, so a crash between two writes cannot strand it unreachable.
     elif not terminal:
         log.error(
             "mission %s could not be moved out of dispatching; keeping the dispatch record so "
@@ -448,6 +461,20 @@ async def run(
         nonlocal minted
         if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id):
             raise missions.MissionError("this dispatch is no longer current", status=409)
+        # THE RESOURCE IDENTITY IS PERSISTED HERE, at the real pre-launch callback (#894 review 2,
+        # finding 1). `note_spawn_session` previously had no production caller at all, so a child
+        # that launched and then failed short of adoption left a KEYLESS reservation — a row with
+        # a process behind it and nothing naming that process. The reaper skips keyless rows (it
+        # has nothing to probe), and a later refusal used to close them wholesale, so an older
+        # still-running child's obligation was discharged by an unrelated attempt.
+        #
+        # Stamped on the same ordering rule as the dispatch record above: the row may be ahead of
+        # reality — a key whose master never came up — and must never be behind it. Best-effort,
+        # because failing the launch over a bookkeeping write would trade a bounded accounting
+        # error for an unbounded one.
+        # The ledger now moves inside `note_dispatch_session`'s own transaction, so there is no
+        # second write to fail on its own (#894 review 4, carry-forward). The best-effort call that
+        # used to live here could leave a dispatch naming a session and a reservation that did not.
         minted = key
 
     try:
@@ -471,7 +498,12 @@ async def run(
         # and the operator must be able to fix the proposal and press again (#904 review 2,
         # finding 7).
         await _settle(mission_id, to="planned", detail=str(e), expect_plan=plan_id)
-        return {"state": "planned", "reason": str(e), "session_key": None}
+        return {
+            "state": "planned",
+            "outcome": "refused",
+            "reason": str(e),
+            "session_key": None,
+        }
     except asyncio.CancelledError:
         # THE REQUEST WENT AWAY, and the mission must not go with it (#904 review 3, finding 2).
         #
@@ -517,6 +549,7 @@ async def run(
         )
         return {
             "state": "failed",
+            "outcome": "failed",
             "reason": f"the launch failed ({type(e).__name__})",
             "session_key": minted,
         }
@@ -527,7 +560,12 @@ async def run(
         # this: with no master there is nothing to clean up and nothing to report as a failure.
         reason = out.reason or "the launch was refused"
         await _settle(mission_id, to="planned", detail=reason, expect_plan=plan_id)
-        return {"state": "planned", "reason": reason, "session_key": None}
+        return {
+            "state": "planned",
+            "outcome": "refused",
+            "reason": reason,
+            "session_key": None,
+        }
 
     if not out.ok:
         # ATTEMPTED AND FAILED, which includes the case this feature exists to catch: a live
@@ -548,7 +586,24 @@ async def run(
         landed = await _orphaned_after_launch(
             mission_id, out, reason, cancelled=False, expect_plan=plan_id
         )
-        return {"state": landed.state, "reason": reason, "session_key": out.key}
+        # THE ATTEMPT FAILED. SAY SO — even when the MISSION is fine (#894 review 3, finding 2).
+        #
+        # `landed.state` is the mission's state, and for a spawn that is now deliberately
+        # `running`: the parent never stopped and a child's failure must not end it. Returning it
+        # as the attempt's result made a failed start indistinguishable from a successful one at
+        # the only place that reads this — the console took `state: "running"` as success, closed
+        # the card, cleared the operator's brief, and never showed the reason. A start-evidence
+        # timeout was reported as a spawned agent.
+        #
+        # `outcome` is the attempt's own verdict and rides beside the mission's, because both are
+        # true and they answer different questions. `state` keeps naming the mission so nothing
+        # else that reads it has to change.
+        return {
+            "state": landed.state,
+            "outcome": "failed",
+            "reason": reason,
+            "session_key": out.key,
+        }
 
     # STARTED AND BRIEFED. The adoption and the transition are one act: a `running` mission with
     # no session is a board that promises follow-through it cannot perform (#896), and a session
@@ -622,7 +677,17 @@ async def run(
         # THE MISSION'S REAL STATE, not the one this path tried for (#904 review 12, finding 1).
         # Reporting `failed` over a mission the store never moved is the false report — and the
         # operator's next decision would be made on it.
-        return {"state": landed.state, "reason": str(e), "session_key": out.key}
+        # THE ATTEMPT FAILED, and this branch is the one review 4 caught still saying nothing
+        # (#894 review 4, finding 1). Adoption raising means the agent is running and this mission
+        # does NOT own it — never a success — but the return carried only the mission's state,
+        # which is deliberately `running` for a spawn. The UI's fallback then read it as a started
+        # child, closed the card and cleared the operator's brief.
+        return {
+            "state": landed.state,
+            "outcome": "failed",
+            "reason": str(e),
+            "session_key": out.key,
+        }
     if not verdict.get("settled"):
         # THE MISSION MOVED UNDER US. Reporting `running` here is the false report — the store
         # says otherwise and the operator's next decision would be made on it. The agent we just
@@ -662,6 +727,9 @@ async def run(
             )
         return {
             "state": landed.state,
+            # The mission moved under the launch: whatever happened, this attempt did not deliver
+            # an adopted child, so it is not a success (#894 review 4, finding 1).
+            "outcome": "failed",
             "reason": reason,
             # NAMED WHENEVER IT IS STILL RUNNING. `None` is right only when the boundary was
             # proved empty; a leaked agent — or one another mission now holds — is something the
@@ -671,5 +739,12 @@ async def run(
     # SETTLED AND OWNED. Nothing is owed — the mission holds the session and its state says so —
     # so the in-flight record is discharged here rather than by the settlement, which had to keep
     # it in case the settlement was the thing that refused.
-    missions.clear_dispatch(mission_id, expect_plan=plan_id)
-    return {"state": "running", "reason": "", "session_key": out.key}
+    # `stopped=False`, and deliberately: this is the SUCCESS path. The agent is running and the
+    # mission holds it, so its reservation stays open — that is what the budget is counting.
+    missions.clear_dispatch(mission_id, expect_plan=plan_id, stopped=False)
+    return {
+        "state": "running",
+        "outcome": "started",
+        "reason": "",
+        "session_key": out.key,
+    }

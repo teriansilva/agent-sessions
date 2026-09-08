@@ -11,6 +11,8 @@ import type { MissionContext as MissionContextData } from "../../types/api";
 
 import { MissionScreen } from "./MissionScreen";
 
+import { MissionSpawn } from "./MissionSpawn";
+
 import styles from "./mission.module.css";
 
 /** `engine:uuid` → `/s/:engine/:uuid`, both halves encoded. A bare `replace(":", "/")` is wrong
@@ -45,6 +47,7 @@ export function MissionContextPanel({
   loading,
   onDetach,
   busy,
+  spawn,
 }: {
   context: MissionContextData | null;
   /** The server told a control that this mission no longer holds its session. The roster the
@@ -61,6 +64,18 @@ export function MissionContextPanel({
    *  rather than a confirm. */
   onDetach?: (sessionKey: string) => void;
   busy?: boolean;
+  /** Start a bounded sub-agent alongside one session (#894). Absent ⇒ the mission cannot spawn:
+   *  a closed record, or one not `running`. The control is withheld rather than shown-and-refused
+   *  for the same reason RELEASE is. */
+  spawn?: {
+    engine: string;
+    /** Where the sub-agent will run — shown to the operator and asserted back on START. */
+    cwd: string;
+    cap: number;
+    live: number | null;
+    onChanged: (opts?: { membershipChanged?: boolean }) => void;
+    onNote: (msg: string) => void;
+  };
 }) {
   if (loading && !context) {
     return (
@@ -129,6 +144,19 @@ export function MissionContextPanel({
                 role={s.role ?? null}
                 onGone={onMembershipChanged}
               />
+              {spawn ? (
+                <MissionSpawn
+                  missionId={context.id}
+                  parentKey={s.session_key}
+                  engine={spawn.engine}
+                  cwd={spawn.cwd}
+                  live={spawn.live}
+                  cap={spawn.cap}
+                  busy={Boolean(busy)}
+                  onChanged={spawn.onChanged}
+                  onNote={spawn.onNote}
+                />
+              ) : null}
               {onDetach ? (
                 <button
                   type="button"

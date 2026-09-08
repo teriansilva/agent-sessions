@@ -423,6 +423,57 @@ function MissionBody({
       onStandDown={editable ? onStandDown : undefined}
       onDetach={editable ? onDetach : undefined}
       busy={mutating}
+      // SPAWN IS OFFERED ONLY WHERE IT COULD LAND (#894): a mission actually `running`, with an
+      // engine to reuse and a directory to run in. Everything else — planning, a launch already
+      // in flight, a closed record — would 409, and a control that can only fail is worse than no
+      // control. The server is still the arbiter; this decides what to SHOW, never what is
+      // allowed.
+      //
+      // GATED ON THE SERVER'S DERIVED FIELDS, not on `mission.engine` (review 1, finding 3). That
+      // field is empty after an ordinary create -> plan -> dispatch — the create route stores no
+      // engine, the claim moves it to the dispatch row and deletes the plan, and settlement
+      // deletes the dispatch row — so the control was absent in the one flow it exists for, and
+      // only the browser fixtures' injected `engine` hid it. `spawn_engine` is derived from the
+      // session the mission is actually holding and re-checked against the capability allowlist;
+      // `spawn_cwd` is the directory the panel must show and assert back.
+      spawn={
+        editable &&
+        // `dispatching` KEEPS THE CONTROL MOUNTED (review 2, finding 5). A real claim moves the
+        // mission through `dispatching` for the length of the launch, and the periodic detail
+        // poll sees it. Gating on `running` alone therefore UNMOUNTED the panel mid-spawn and
+        // took the operator's typed brief with it — then a refusal restored `running` and
+        // remounted an empty editor. The refusal browser test missed it because its GET fixture
+        // stayed `running` throughout, so the transition never happened.
+        //
+        // The mission cannot be in `dispatching` without something in flight, so this widens what
+        // stays on screen, never what may be started: the server is still the only thing that
+        // admits a spawn, and `busy` disables the button while a launch is running.
+        (d.mission?.state === "running" || d.mission?.state === "dispatching") &&
+        d.mission?.spawn_engine &&
+        d.mission?.spawn_cwd
+          ? {
+              engine: String(d.mission.spawn_engine),
+              cwd: String(d.mission.spawn_cwd),
+              cap: d.mission.spawn_cap ?? 0,
+              // THE SERVER'S OWN COUNT, on the server's own definition (review 1, finding 5).
+              // Counting `role === "sub"` here while the claim counted every non-null
+              // `spawned_by` — which includes the primary's literal `"dispatch"` — made the two
+              // disagree by exactly one: the UI said "1 of 2 used" while the claim refused the
+              // second child, and at cap 1 a normally dispatched mission could never spawn at
+              // all. One definition, published by the thing that enforces it.
+              // `?? 0` WAS A CLAIM THE SERVER NEVER MADE (review 5, carry-forward). The field is
+              // omitted when the count could not be determined, and defaulting it to zero told
+              // the operator every slot was free. It travels as `null` and the control renders
+              // the difference.
+              live: d.mission.spawn_live ?? null,
+              onChanged: (opts) => {
+                d.reload();
+                changedIfCurrent(opts);
+              },
+              onNote: noteIfCurrent,
+            }
+          : undefined
+      }
     />
   );
   const timeline = (

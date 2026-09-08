@@ -2563,6 +2563,194 @@ def test_CREATE_then_PLAN_then_DISPATCH_works_with_no_hand_moved_state(api, monk
     assert missions.get_mission(m["id"])["state"] == "running"
 
 
+def test_a_mission_whose_PROJECT_VANISHED_can_still_be_READ(api, monkeypatch):
+    """An offer that cannot be made must not take the mission's history with it (finding 5).
+
+    `_resolve_cwd` raises for an unknown, archived or folderless project — correctly, in the launch
+    path. Calling it unconditionally while projecting the optional spawn fields put that refusal in
+    front of an ordinary detail read, so a mission whose project had since been archived answered
+    HTTP 500 and its timeline, roster and objectives became unreachable. The control was never going
+    to be offered for that mission anyway; the cost of computing its absence was the whole record.
+    """
+    from agent_sessions import projects
+
+    c, hdr, proj = api
+    # THE MISSION MUST ACTUALLY REFERENCE THE PROJECT. An earlier draft of this test created a
+    # project-less mission, where `_resolve_cwd` returns `(None, None)` without raising — so it
+    # never reached the defect and would have passed against the unguarded code. Verified by
+    # mutation: the unguarded version answered 200, not the 500 this test exists for.
+    m = _create(c, hdr, project_id=proj.id)
+    mid = m["id"]
+    assert m["project_id"] == proj.id
+
+    # The project goes away underneath a mission that still references it. `delete` is the
+    # harshest form and the one an operator can actually reach; archived and folderless take the
+    # same branch, since `_resolve_cwd` raises for all three.
+    projects.delete(proj.id)
+
+    r = c.get(f"/api/missions/{mid}", headers=hdr)
+    assert r.status_code == 200, f"an archived project broke the mission read: {r.text[:200]}"
+    body = r.json()
+    assert body["id"] == mid
+    assert body["spawn_cwd"] is None
+    assert body["spawn_unavailable"], "the reason the offer is withheld is not reported"
+
+
+def test_AT_CAP_the_detail_route_itself_reclaims_finished_children(api, monkeypatch):
+    """The read path an operator actually triggers must break the at-cap deadlock (finding 4).
+
+    Driving `_reap_dead_spawns` directly proves the mechanism and nothing about the wiring — it
+    passes against the exact defect, because the defect is that the ROUTE never reaches that call
+    once the count hits the cap and the console disables the only control that would. So this
+    fills the cap, stops the children, and issues the plain `GET` the polling console issues.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, ptybridge, scopedspawn
+
+    c, hdr, _proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    _plan_reply(monkeypatch)
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    parent = "claude:" + "a" * 8
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        missions.settle_dispatch(mission_id, to="running", detail="dispatched", session_key=parent)
+        return {"state": "running", "reason": "", "session_key": parent}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    # Reach `running` the way an operator does, so the mission has a real resolved cwd.
+    m = _create(c, hdr)
+    mid = m["id"]
+    plan = c.post(f"/api/missions/{mid}/plan", headers=hdr).json()
+    _ready_objectives(mid)
+    r = c.post(
+        f"/api/missions/{mid}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(mid),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+
+    for i in range(missions.SPAWN_CAP):
+        missions.claim_spawn(
+            mid, parent_key=parent, engine="claude", cwd="/repo", brief=f"child {i}"
+        )
+        missions.settle_dispatch(
+            mid,
+            to="running",
+            detail="up",
+            session_key=f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-6666-6666-6666-666666666666",
+        )
+
+    # ALIVE first: these keys have no real socket, and a missing socket probes DEAD, so without
+    # this the route would reclaim them on the very first read and the test would assert nothing.
+    monkeypatch.setattr(ptybridge, "probe_master", lambda _p: ptybridge.ALIVE)
+    at_cap = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert at_cap["spawn_live"] == missions.SPAWN_CAP, at_cap.get("spawn_live")
+
+    # An UNKNOWN probe must NOT hand the capacity back — a starved host is not a stopped agent.
+    monkeypatch.setattr(ptybridge, "probe_master", lambda _p: ptybridge.UNKNOWN)
+    still = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert still["spawn_live"] == missions.SPAWN_CAP, "UNKNOWN freed a live agent's slot"
+
+    # The children finish. Nobody presses anything — at the cap there is nothing left to press.
+    monkeypatch.setattr(ptybridge, "probe_master", lambda _p: ptybridge.DEAD)
+
+    after = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert after["spawn_live"] == 0, (
+        "a refresh at the cap did not reclaim children that had stopped, so the operator is "
+        "locked out of the only control that would have discovered it"
+    )
+
+
+def test_SPAWN_REFUSES_when_the_project_moved_under_the_panel(api, monkeypatch):
+    """The spawn approval binds to a DIRECTORY, not to whatever resolves at the tap (review 1,
+    finding 1).
+
+    The route resolved the project server-side — which stops a client naming a path — and then
+    never compared that value with anything the operator had seen. So the panel could promise a
+    child alongside a parent in A, the project mapping could move to B, and START would launch in
+    B while the screen still said A. Re-resolving under the fence does not close this: it pins the
+    value from the tap onward, and the approval is older than the tap.
+
+    `expect_cwd` is a COMPARAND — compared and discarded. The path that reaches the launcher is
+    still the one the server resolved.
+    """
+    from agent_sessions import mission_dispatch, mission_plan, prefs, projects, scopedspawn
+
+    c, hdr, proj = api
+    monkeypatch.setattr(
+        mission_plan, "engine_options", lambda: [{"id": "claude", "label": "claude"}]
+    )
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+
+    _plan_reply(monkeypatch)
+    launched: list[dict] = []
+    parent = "claude:" + "a" * 8
+
+    async def fake_run(mission_id, plan, *, registry, policy_epoch=None, verify_cwd=None):
+        launched.append(plan)
+        if plan.get("spawn_parent"):
+            return {"state": "running", "reason": "", "session_key": None}
+        missions.settle_dispatch(mission_id, to="running", detail="dispatched", session_key=parent)
+        return {"state": "running", "reason": "", "session_key": parent}
+
+    monkeypatch.setattr(mission_dispatch, "run", fake_run)
+
+    # Reach `running` the way an operator does, so the mission has a real resolved cwd.
+    m = _create(c, hdr)
+    mid = m["id"]
+    plan = c.post(f"/api/missions/{mid}/plan", headers=hdr).json()
+    _ready_objectives(mid)
+    r = c.post(
+        f"/api/missions/{mid}/dispatch",
+        json={
+            "plan_id": plan["plan_id"],
+            "expect_cwd": plan["cwd"],
+            "expect_objectives": _obj_digest(mid),
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert missions.get_mission(mid)["state"] == "running"
+    launched.clear()
+
+    # 1. NO ASSERTION AT ALL is refused, rather than silently resolved for you.
+    r = c.post(
+        f"/api/missions/{mid}/spawn",
+        json={"parent_key": parent, "engine": "claude", "brief": "review it"},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+    assert "expect_cwd" in r.text
+
+    # 2. THE PROJECT MOVES between the panel rendering and the tap.
+    moved = projects.update(proj.id, folders=["/somewhere/else"], default_folder="/somewhere/else")
+    assert moved.default_folder == "/somewhere/else"
+
+    r = c.post(
+        f"/api/missions/{mid}/spawn",
+        json={
+            "parent_key": parent,
+            "engine": "claude",
+            "brief": "review it",
+            "expect_cwd": "/the/directory/the/panel/showed",
+        },
+        headers=hdr,
+    )
+    assert r.status_code == 409, r.text
+    assert not launched, "a spawn launched into a directory the operator never approved"
+
+
 def test_DISPATCH_REFUSES_when_the_project_moved_under_the_plan(api, monkeypatch):
     """#904 review 5, tightened by review 2's finding 6.
 

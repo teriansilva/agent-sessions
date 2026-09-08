@@ -65,7 +65,17 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 24
+
+#: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
+#:
+#: **A RESOURCE GUARD, NEVER A SECURITY CONTROL**, and the distinction is load-bearing rather than
+#: pedantic: nothing here decides what a sub-agent may DO — that is the autonomy tier, the write
+#: fence, `bypass=False` and the containment scope, none of which this number touches. What it
+#: bounds is fan-out: a mission that can spawn without limit is a mission that can fill the host
+#: with unattended agents by being approved repeatedly. Treating it as a safety boundary would be
+#: the mistake, because an operator can raise it and it is enforced only where missions launch.
+SPAWN_CAP = max(0, int(os.environ.get("AGENT_SESSIONS_MISSION_SPAWN_CAP", "2") or 2))
 #: What an objective's state reads as once it no longer exists. A distinct value rather than
 #: `None`, so a dropped objective and an objective whose state is unset can never look alike.
 OBJECTIVE_GONE = "<dropped>"
@@ -161,7 +171,11 @@ _ALLOWED: dict[str, frozenset[str]] = {
     # state only `running` leads out of, so the operator could neither re-plan nor retry: the
     # mission was stuck by a refusal whose whole point was that nothing had changed.
     "dispatching": frozenset({"running", "planned", "failed", "abandoned"}),
-    "running": frozenset({"review", "done", "failed", "abandoned"}),
+    # `running -> dispatching` is the SPAWN (#894), and it is the honest state: a launch really is
+    # in flight for this mission. Making a spawn a dispatch is what lets it reuse the launch
+    # fence, the attempt-generation CAS, the alive-is-not-started gate and the whole teardown
+    # reconciliation, instead of growing a second launcher that would have to re-earn all of it.
+    "running": frozenset({"review", "done", "failed", "abandoned", "dispatching"}),
     "review": frozenset({"running", "done", "failed", "abandoned"}),
     "done": frozenset({"running"}),
     "failed": frozenset({"running"}),
@@ -920,7 +934,20 @@ CREATE TABLE IF NOT EXISTS mission_dispatches (
   -- launching — in this instance or a sibling over the same store — was snapshotted as crashed
   -- and torn down. `pid:starttime`, both read from `/proc`, so the comparison is between two
   -- readings of the same kernel fact rather than between a fact and a memory of one.
-  owner         TEXT
+  owner         TEXT,
+  -- WHOSE SUB-AGENT THIS IS, or NULL for the mission's own launch (#894).
+  --
+  -- A spawn IS a dispatch — same claim, same launch fence, same settlement — so it gets no second
+  -- launcher and no second table. That is not tidiness: this table is keyed by `mission_id`, so
+  -- one in-flight launch per mission falls out of the PRIMARY KEY, and the sub-agent CAP can then
+  -- be enforced inside the very transaction that reserves the slot. Two concurrent approvals
+  -- produce exactly one agent rather than two that each read a cap that was true when they read
+  -- it.
+  --
+  -- It carries the PARENT'S session key because the settlement is what adopts, and a sub-agent
+  -- that lands in the roster without saying whose it is cannot afterwards be told from the
+  -- mission's own session.
+  spawn_parent  TEXT
 );
 CREATE TABLE IF NOT EXISTS mission_settlements (
   action_id TEXT PRIMARY KEY,
@@ -948,6 +975,59 @@ CREATE INDEX IF NOT EXISTS missions_by_archived
 CREATE INDEX IF NOT EXISTS mission_events_by_action
   ON mission_events(action_id) WHERE action_id IS NOT NULL;
 """
+
+
+MISSION_SPAWNS_DDL = """
+-- WHAT THIS MISSION STARTED THAT NOBODY HAS PROVEN STOPPED (#894 review 1, finding 4).
+--
+-- The resource ledger, kept deliberately apart from `mission_sessions`. Membership answers "does
+-- this mission claim this session"; that is an ownership question, it is mutable on purpose, and
+-- it is NOT the same question as "is there a process on this host because of this mission". The
+-- cap counted membership and was therefore evadable by RELEASING a child (which stops nothing)
+-- or by RE-ADOPTING it (which rewrites `spawned_by`). Neither touches this table.
+--
+-- `ended_at` is stamped by EVIDENCE ONLY: a launch that provably started nothing, or a process
+-- observed dead. "We could not look" leaves the row open and the slot held — the conservative
+-- direction, because the cost of holding a slot too long is a refused spawn and the cost of
+-- freeing one too early is an unbounded fan-out of live agents.
+--
+-- Keyed on `plan_id`: the slot is reserved inside `claim_spawn`, before any session key exists.
+CREATE TABLE IF NOT EXISTS mission_spawns (
+  plan_id     TEXT PRIMARY KEY,
+  mission_id  TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  parent_key  TEXT NOT NULL,
+  session_key TEXT,
+  started_at  REAL NOT NULL,
+  ended_at    REAL,
+  end_reason  TEXT,
+  -- WHERE THIS ATTEMPT IS IN ITS OWN LIFE (#894 review 3). The first two rounds discharged a
+  -- reservation from whichever caller happened to notice it, and every caller had to GUESS
+  -- whether a process existed: the identity callback runs before the socket does, recovery
+  -- cannot tell `spared` from `stopped`, and a cancellation before the key leaves a row nobody
+  -- can probe. Three rounds of patching one caller at a time produced a new gap in an adjacent
+  -- one each time, because the missing thing was never a branch — it was this column.
+  --
+  --   reserved  — claimed; no key, no process. NOT probeable: there is nothing to probe, and
+  --               absence of a socket is not evidence of a death that never happened.
+  --   launching — a key is minted and the spawn is in flight. STILL not probeable, and this is
+  --               review 3 finding 1 exactly: the socket does not exist yet, so a concurrent
+  --               reaper read `DEAD` and freed a slot whose agent then started successfully.
+  --   live      — adopted. The only state in which liveness is a question worth asking.
+  --   ended     — discharged, with `ended_at` and a reason.
+  state       TEXT NOT NULL DEFAULT 'reserved'
+);
+CREATE INDEX IF NOT EXISTS idx_mission_spawns_open
+  ON mission_spawns(mission_id, ended_at);
+"""
+
+# FRESH INSTALLS DO NOT RUN THE MIGRATION LADDER — `_migrate` stamps `user_version` straight to
+# `SCHEMA_VERSION` when the store is new, so a table that exists only inside a migration step is
+# created on UPGRADED stores and missing on new ones. That asymmetry is silent: every test on a
+# fresh temp store passes and the defect only appears on somebody's real install, or the reverse.
+# Verified by creating a fresh store and asserting the table is there (`test_a_FRESH_store_has_the
+# _spawn_ledger`). One DDL string, appended to the canonical schema AND executed by the upgrade
+# step, so the two paths cannot drift.
+_SCHEMA += MISSION_SPAWNS_DDL
 
 
 def _migrate(con) -> int:
@@ -1011,6 +1091,12 @@ def _migrate(con) -> int:
             _migrate_19_to_20(con)
         if version < 21:
             _migrate_20_to_21(con)
+        if version < 22:
+            _migrate_21_to_22(con)
+        if version < 23:
+            _migrate_22_to_23(con)
+        if version < 24:
+            _migrate_23_to_24(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1220,6 +1306,99 @@ def _migrate_17_to_18(con) -> None:
         )
 
 
+def _migrate_21_to_22(con) -> None:
+    """v22 adds `mission_dispatches.spawn_parent` — whose sub-agent a launch is (#894).
+
+    NULL for the mission's own dispatch, which is every row that already exists, so the upgrade
+    needs no backfill: an absent parent is exactly the truth about a launch that was not a spawn.
+
+    Skipped where the table is not there to alter, for the reason `_has_table` gives everywhere
+    else in this ladder: a step runs against what the PREVIOUS version left behind, not against
+    that version's full schema, and one that raises strands the upgrade.
+    """
+    if not _has_table(con, "mission_dispatches"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_dispatches)").fetchall()}
+    if "spawn_parent" not in have:
+        con.execute("ALTER TABLE mission_dispatches ADD COLUMN spawn_parent TEXT")
+
+
+def _migrate_23_to_24(con) -> None:
+    """v24 gives a spawn reservation its own lifecycle state (#894 review 3).
+
+    v23 recorded WHAT was reserved and left WHERE IT HAD GOT TO implicit, inferred by each caller
+    from whatever it could see. That inference was wrong in three different places and each fix
+    exposed the next: the identity callback runs before the socket exists, so a concurrent reaper
+    read a not-yet-created socket as `DEAD` and freed a slot whose agent then started; startup
+    recovery could not tell a `spared` child (still running, another mission owns it) from a
+    stopped one; and a cancellation before the key was minted left a row with nothing to probe.
+
+    A state column ends the guessing: only `live` rows are probeable, and every other transition
+    is an explicit statement by the code that knows what happened rather than a deduction from an
+    absent socket.
+
+    Existing rows are back-filled by what they already carry — a key means the launch got at least
+    as far as minting one, so `live`; no key means it never did, so `reserved`. Neither is a claim
+    about a process; both are the conservative reading, and `reserved`/`launching` are the states
+    the reaper refuses to touch.
+    """
+    if not _has_table(con, "mission_spawns"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_spawns)").fetchall()}
+    if "state" not in have:
+        con.execute("ALTER TABLE mission_spawns ADD COLUMN state TEXT NOT NULL DEFAULT 'reserved'")
+    con.execute("UPDATE mission_spawns SET state='ended' WHERE ended_at IS NOT NULL")
+    con.execute(
+        "UPDATE mission_spawns SET state='live' "
+        "WHERE ended_at IS NULL AND session_key IS NOT NULL"
+    )
+
+
+def _migrate_22_to_23(con) -> None:
+    """v23 adds `mission_spawns` — the durable resource ledger behind the sub-agent cap (#894).
+
+    **The cap counted the roster, and the roster is not a resource fact.** `mission_sessions` is
+    membership: `removed_at` says this mission no longer claims a session, and `spawned_by` says
+    how it arrived. Both are mutable by design and neither is about the process. Counting them
+    made the bound evadable two different ways, both found in review (review 1, finding 4):
+
+    * **RELEASE frees the slot while the agent runs.** `detach` stamps `removed_at` and stops
+      nothing — deliberately, because release is an ownership operation and turning it into a kill
+      would be a worse bug. But the count filtered on `removed_at IS NULL`, so spawn -> release ->
+      spawn repeated without bound while every one of those agents was still on the host.
+    * **RE-ADOPT erases parentage.** `_adopt_tx` refreshes `role` and `spawned_by` on a session
+      the mission already holds, so adopting a child through the ordinary adopt route overwrote
+      `spawned_by` with NULL and dropped it out of the count without releasing anything.
+
+    So the ledger is separate from the roster and answers a different question: **what did this
+    mission start that has not been proven to have stopped.** A row is written when the slot is
+    reserved and closed only by evidence — a launch that provably started nothing, or a process
+    observed dead. Membership changes do not touch it, which is the whole point.
+
+    Keyed on `plan_id` rather than `session_key`: the slot is reserved inside `claim_spawn`,
+    before any key has been minted, and a reservation that cannot be recorded until the launch
+    succeeds is not a reservation at all.
+
+    A new table only, so the in-place upgrade is the same statement a fresh install runs. Existing
+    sub-agents are NOT back-filled: their processes cannot be re-observed retroactively, and
+    inventing ledger rows for them would assert a resource obligation nobody measured. They age
+    out of the roster normally and the ledger starts from the first spawn after the upgrade.
+    """
+    # One statement per `execute` — `executescript` would COMMIT the migration transaction out
+    # from under the ladder, and the DDL constant carries both a table and its index.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS mission_spawns ("
+        "  plan_id TEXT PRIMARY KEY,"
+        "  mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,"
+        "  parent_key TEXT NOT NULL, session_key TEXT, started_at REAL NOT NULL,"
+        "  ended_at REAL, end_reason TEXT)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mission_spawns_open "
+        "ON mission_spawns(mission_id, ended_at)"
+    )
+
+
 def _migrate_20_to_21(con) -> None:
     """v21 adds `mission_plans` and `mission_dispatches` — the proposal and the launch (#893).
 
@@ -1242,7 +1421,8 @@ def _migrate_20_to_21(con) -> None:
         "  mission_id TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,"
         "  plan_id TEXT NOT NULL, engine TEXT NOT NULL, cwd TEXT NOT NULL,"
         "  session_key TEXT, started_at REAL NOT NULL,"
-        "  project_id TEXT, engine_reason TEXT, brief TEXT, owner TEXT)"
+        "  project_id TEXT, engine_reason TEXT, brief TEXT, owner TEXT,"
+        "  spawn_parent TEXT)"
     )
 
 
@@ -5882,8 +6062,52 @@ def objectives_digest(rows) -> str:
     return hashlib.sha256("".join(parts).encode("utf-8", "replace")).hexdigest()[:32]
 
 
+def _reconcile_reservation_tx(con, plan_id: str, *, stopped: bool, now: float) -> None:
+    """Reconcile ONE attempt's resource obligation. **Caller must already hold the transaction.**
+
+    Every exit that removes a dispatch record has to do this, in the SAME commit, and doing it one
+    exit at a time is what made it a defect three review rounds running: `clear_dispatch`, then the
+    settlement's main path, then the mission-moved early return, then the pre-key discharge. Each
+    fix was correct and the next exit still leaked, because the rule lived at the call sites
+    instead of with the delete.
+
+    So the rule is written once, here, and covers all three shapes a reservation can be in:
+
+    * `reserved`, no key — nothing was ever launched, so the slot comes back unconditionally. This
+      is the cancelled-before-`on_key` case, and it is safe *because* there is no key: no process
+      can exist behind a row that never named one.
+    * `launching`/`live` with a key — a process may exist. `stopped` (the boundary was proved
+      empty) ends it; anything else KEEPS the charge and makes the row `live` so the reaper can
+      return the slot when that process actually dies. `spared` lands here: still running, under
+      another owner, still costing this host.
+    * anything already `ended` — untouched. A late caller does not reopen a settled obligation.
+    """
+    con.execute(
+        "UPDATE mission_spawns SET ended_at=?, end_reason=?, state='ended' "
+        "WHERE plan_id=? AND ended_at IS NULL AND state='reserved' AND session_key IS NULL",
+        (now, "the dispatch record went away before a session key was ever minted", plan_id),
+    )
+    if stopped:
+        con.execute(
+            "UPDATE mission_spawns SET ended_at=?, end_reason=?, state='ended' "
+            "WHERE plan_id=? AND ended_at IS NULL AND session_key IS NOT NULL",
+            (now, "the launch was cleaned up and proved stopped", plan_id),
+        )
+    else:
+        con.execute(
+            "UPDATE mission_spawns SET state='live' "
+            "WHERE plan_id=? AND ended_at IS NULL AND state='launching' "
+            "AND session_key IS NOT NULL",
+            (plan_id,),
+        )
+
+
 def clear_dispatch(
-    mission_id: str, *, expect_plan: str | None = None, path: Path | None = None
+    mission_id: str,
+    *,
+    expect_plan: str | None = None,
+    stopped: bool = False,
+    path: Path | None = None,
 ) -> bool:
     """Drop the in-flight dispatch record. True if a row went.
 
@@ -5908,6 +6132,36 @@ def clear_dispatch(
                     "DELETE FROM mission_dispatches WHERE mission_id=? AND plan_id=?",
                     (mission_id, expect_plan),
                 ).rowcount
+            # THE RESERVATION GOES WITH IT **ONLY WHEN THE PROCESS IS PROVED STOPPED** (#894
+            # review 2, finding 3). A launch that failed and was then cleaned up left a KEYLESS
+            # ledger row behind: the reaper skips those (there is nothing to probe), so repeated
+            # cleaned-up failures exhausted the cap with no live children anywhere.
+            #
+            # `stopped` and `spared` stay distinct, which is the whole reason this is a parameter
+            # rather than something inferred from the delete. `spared` means another mission now
+            # holds that agent — the process is still on this host and somebody still answers for
+            # it — so its slot must NOT come back here; that is a transfer, not a discharge. Only
+            # a teardown that proved the boundary empty returns capacity.
+            # THE RESOURCE TRANSITION HAPPENS HERE, IN THIS TRANSACTION (#894 review 5).
+            #
+            # It was a second write after this one committed — `clear_dispatch(...)` and then a
+            # separate `hand_back_spawn_to_the_reaper(...)`, exceptions suppressed. A crash or a
+            # SQLite error between the two left the reservation stranded in `launching`, which the
+            # reaper never returns, AND no dispatch record for a later recovery pass to find. The
+            # obligation became unreachable by construction, which is worse than the leak it was
+            # meant to fix.
+            #
+            # Folding it in also fixes the other half of the same finding: every exit that clears a
+            # dispatch now transitions its reservation correctly without having to remember a
+            # second call, including the recovery branches that did not.
+            #
+            #   stopped  -> the boundary was proved empty; the slot comes back now.
+            #   otherwise -> `spared` or an unproved stop. The charge is KEPT, because that process
+            #                is still on this host — but the row becomes `live` so the reaper can
+            #                return the slot when it really dies. Scoped to `launching` with a key,
+            #                so a genuinely pre-launch `reserved` row stays unprobeable.
+            if expect_plan:
+                _reconcile_reservation_tx(con, expect_plan, stopped=stopped, now=time.time())
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -5963,6 +6217,167 @@ def owner_is_live(token: object) -> bool | None:
     if started == "unknown":
         return None
     return now == started
+
+
+def claim_spawn(
+    mission_id: str,
+    *,
+    parent_key: str,
+    engine: str,
+    cwd: str,
+    brief: str,
+    project_id: str | None = None,
+    engine_reason: str = "",
+    cap: int | None = None,
+    owner: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Reserve a SUB-AGENT slot and move the mission to `dispatching`. One winner, one transaction.
+
+    **The cap and the reservation are one act, and splitting them is the whole bug.** "Count the
+    sub-agents, then start one" is check-then-act: two approvals both read a count under the cap,
+    both start, and the mission ends with one more agent than the operator ever allowed — with
+    each individual check having been true when it was made. So the count and the INSERT happen
+    inside one `BEGIN IMMEDIATE`, and `mission_dispatches` is keyed by `mission_id`, so the second
+    writer cannot even create a row. Exactly one caller leaves this function having reserved a
+    slot; every other is told, and nothing was launched for it.
+
+    **A spawn IS a dispatch**, deliberately. It writes the same durable row, transits the mission
+    the same way, and is settled by `settle_dispatch` — so it inherits the launch fence, the
+    attempt-generation CAS, the alive-is-not-started gate and the teardown reconciliation, none of
+    which a second launcher would have for free. The only thing that differs is `spawn_parent`,
+    which is what the settlement adopts by.
+
+    **The cap counts LIVE sub-agents, not spawns ever made** — and "live" means the PROCESS, not
+    the roster entry. Releasing a sub-agent hands over ownership and stops nothing, so it does not
+    return capacity: only a proved stop, or the reaper observing the process dead, does. This
+    docstring previously said a released child "has stopped consuming the host", which was the
+    original defect rather than the contract (review 1, findings 4 and 5) — counting the roster
+    made the bound evadable by spawn -> release -> spawn while every one of those agents ran on.
+
+    Raises `MissionError` — 409 at the cap or against a mission that cannot hold work, 404 if it
+    is gone. Never partially applied: the transaction is the boundary.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    limit = SPAWN_CAP if cap is None else max(0, int(cap))
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            cur = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
+            if cur is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            state = str(cur["state"] or "")
+            if state != "running":
+                # A spawn adds a reviewer to work that is UNDER WAY. Anything else — planning,
+                # a launch already in flight, a closed record — has nothing to review, and
+                # `dispatching` in particular would be a second concurrent launch.
+                raise MissionError(
+                    f"a mission that is {state} cannot spawn a sub-agent", status=409
+                )
+            # THE PARENT MUST BE ONE OF THIS MISSION'S OWN LIVE SESSIONS. A spawn is parented to
+            # the work it is reviewing; a key from somewhere else would put an unrelated session's
+            # id into the roster's provenance and make the tree a fiction.
+            held = con.execute(
+                "SELECT 1 FROM mission_sessions "
+                "WHERE mission_id=? AND session_key=? AND removed_at IS NULL",
+                (mission_id, parent_key),
+            ).fetchone()
+            if held is None:
+                raise MissionError(
+                    "that session is not held by this mission, so it cannot parent a spawn",
+                    status=409,
+                )
+            # COUNTED FROM THE RESOURCE LEDGER, NOT THE ROSTER (review 1, findings 4 and 5).
+            #
+            # The roster answers "does this mission claim this session", which is ownership and is
+            # mutable on purpose. It was the wrong question twice over: `removed_at IS NULL` let a
+            # RELEASE free the slot while the agent was still running (detach stops nothing), and
+            # `spawned_by IS NOT NULL` both counted the primary — whose `spawned_by` is the
+            # literal `"dispatch"`, so a cap of 1 could never spawn at all — and dropped a child
+            # the moment an ordinary re-adopt rewrote that column to NULL.
+            #
+            # `mission_spawns` answers the question the cap is actually about: what did this
+            # mission start that nobody has proven stopped. Membership cannot move it.
+            live = con.execute(
+                "SELECT COUNT(*) AS n FROM mission_spawns "
+                "WHERE mission_id=? AND ended_at IS NULL",
+                (mission_id,),
+            ).fetchone()["n"]
+            if live >= limit:
+                raise MissionError(
+                    f"this mission already holds {live} sub-agent(s), which is its limit of "
+                    f"{limit}. A slot comes back when one of them STOPS — releasing a session "
+                    f"hands over ownership without stopping the agent, so it does not return "
+                    f"capacity",
+                    status=409,
+                )
+            plan_id = f"pln_{uuid.uuid4().hex}"
+            # THE SLOT IS RESERVED HERE, in the same transaction that counted it, so two
+            # concurrent approvals cannot both see room. Closed later by evidence only.
+            con.execute(
+                "INSERT INTO mission_spawns "
+                "(plan_id, mission_id, parent_key, session_key, started_at, state) "
+                "VALUES (?,?,?,NULL,?,'reserved')",
+                (plan_id, mission_id, parent_key, ts),
+            )
+            try:
+                con.execute(
+                    "INSERT INTO mission_dispatches "
+                    "(mission_id, plan_id, engine, cwd, session_key, started_at, project_id, "
+                    " engine_reason, brief, owner, spawn_parent) "
+                    "VALUES (?,?,?,?,NULL,?,?,?,?,?,?)",
+                    (
+                        mission_id,
+                        plan_id,
+                        engine,
+                        cwd,
+                        ts,
+                        project_id,
+                        engine_reason,
+                        brief,
+                        owner or process_owner(),
+                        parent_key,
+                    ),
+                )
+            except sqlite3.IntegrityError as e:
+                # The PRIMARY KEY refused it: a launch for this mission is already in flight.
+                raise MissionError(
+                    "a launch is already in flight for this mission", status=409
+                ) from e
+            con.execute(
+                "UPDATE missions SET state='dispatching', updated_at=? "
+                "WHERE id=? AND state='running'",
+                (ts, mission_id),
+            )
+            _append_event(
+                con,
+                mission_id,
+                "session",
+                at=ts,
+                session_key=parent_key,
+                text=f"a sub-agent is being started to work alongside {parent_key}",
+                meta={"spawn": True, "parent": parent_key, "cap": limit, "live": live},
+            )
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return {
+        "plan_id": plan_id,
+        "project_id": project_id,
+        "cwd": cwd,
+        "engine": engine,
+        "engine_reason": engine_reason,
+        "brief": brief,
+        "spawn_parent": parent_key,
+    }
 
 
 def claim_plan(
@@ -6079,6 +6494,44 @@ def claim_plan(
                 meta={"from": "planned", "to": "dispatching", "plan_id": plan_id},
             )
             con.execute("DELETE FROM mission_plans WHERE mission_id=?", (mission_id,))
+            # A PRIMARY CLAIM MAY NOT SILENTLY REPLACE AN UNRESOLVED ATTEMPT (#894 review 10).
+            #
+            # The upsert below rewrites every column it names — and `spawn_parent` was not one of
+            # them, so a primary dispatch landing on top of an outstanding SPAWN row inherited the
+            # child's parentage and was then settled down the child branch: a pre-launch refusal
+            # returned the mission to `running` and never restored the approved primary plan.
+            #
+            # Resetting `spawn_parent` alone does not fix it. The row being overwritten is also
+            # the only thing that references the superseded attempt's resource obligation, and
+            # `open_spawns` selects `live` while the reaper skips `reserved` — so the replaced
+            # attempt's charge became unreachable, and a KEYED one lost its cleanup record too.
+            # That is round 9's rule again, one caller further out: an obligation dropped because
+            # something else wrote over it is an obligation nobody ever discharges.
+            #
+            # So the outgoing attempt is resolved, never trampled, and which resolution is
+            # possible depends on the one fact that distinguishes the two crash outcomes
+            # everywhere else in this module — whether a key was ever minted.
+            prior = con.execute(
+                "SELECT plan_id, session_key FROM mission_dispatches WHERE mission_id=?",
+                (mission_id,),
+            ).fetchone()
+            if prior is not None:
+                if prior["session_key"]:
+                    # A KEY WAS MINTED, so an agent may be running and this row is its only
+                    # durable trace. There is nowhere to preserve that obligation across the
+                    # replacement, so the replacement is refused instead — the same direction
+                    # every other uncertain case in this module takes. Settlement, request-time
+                    # teardown or a recovery pass resolves it, and then this claim succeeds.
+                    raise MissionError(
+                        "an earlier attempt on this mission started a session that has not been "
+                        "accounted for yet; it has to be settled before a new dispatch can "
+                        "replace it",
+                        status=409,
+                    )
+                # KEYLESS: nothing was ever spawned under it, so the obligation is dischargeable
+                # by construction rather than by observation — and it is discharged HERE, in the
+                # transaction that overwrites the row it belongs to, so the two cannot come apart.
+                _reconcile_reservation_tx(con, str(prior["plan_id"]), stopped=True, now=ts)
             # THE INTENT, DURABLE BEFORE THE LAUNCH. `session_key` is NULL until the key is
             # minted; recovery reads that difference as "nothing was spawned" versus "something
             # may have been", which are the two crash outcomes that need different answers.
@@ -6091,7 +6544,10 @@ def claim_plan(
                 "engine=excluded.engine, cwd=excluded.cwd, session_key=NULL, "
                 "started_at=excluded.started_at, project_id=excluded.project_id, "
                 "engine_reason=excluded.engine_reason, brief=excluded.brief, "
-                "owner=excluded.owner",
+                # EVERY primary-specific field, named. An upsert that lists only what it means to
+                # change inherits the rest from whatever it landed on, which is how a primary
+                # dispatch came to be parented to a child.
+                "owner=excluded.owner, spawn_parent=NULL",
                 (
                     mission_id,
                     plan_id,
@@ -6163,6 +6619,22 @@ def note_dispatch_session(
                     "WHERE mission_id=? AND plan_id=?",
                     (session_key, mission_id, expect_plan),
                 ).rowcount
+            # THE LEDGER MOVES IN THE SAME TRANSACTION (#894 review 4, carry-forward).
+            #
+            # These were two writes: this one, and a best-effort `note_spawn_session` beside it in
+            # the launcher. A crash between them left a dispatch naming a session and a reservation
+            # that did not — the divergence the record exists to make impossible, in the one window
+            # where a process may already be starting. One `BEGIN IMMEDIATE` now covers both, so
+            # either the launch is recorded everywhere or nowhere.
+            #
+            # Scoped to `launching`/`reserved` and never to `ended`: a reservation somebody has
+            # already discharged is not reopened by a late key.
+            if n:
+                con.execute(
+                    "UPDATE mission_spawns SET session_key=?, state='launching' "
+                    "WHERE plan_id=? AND ended_at IS NULL AND state='reserved'",
+                    (session_key, expect_plan or ""),
+                )
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -6173,6 +6645,116 @@ def note_dispatch_session(
     return bool(n)
 
 
+def open_spawn_count(mission_id: str, *, path: Path | None = None) -> int:
+    """How many sub-agents this mission started that nobody has proven stopped (#894).
+
+    The number the cap is enforced on, published so the console can display the SAME definition
+    the claim transaction uses. The two disagreeing by one — the UI counting roster roles, the
+    claim counting `spawned_by` — is exactly review 1, finding 5, and the fix is one source.
+
+    Fails CLOSED for display purposes by raising: a count that silently reads 0 would render an
+    empty budget over a mission that is holding agents, and "we could not look" is not "none".
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        return int(
+            con.execute(
+                "SELECT COUNT(*) AS n FROM mission_spawns "
+                "WHERE mission_id=? AND ended_at IS NULL",
+                (mission_id,),
+            ).fetchone()["n"]
+        )
+    finally:
+        con.close()
+
+
+def open_spawns(mission_id: str, *, path: Path | None = None) -> list[dict]:
+    """The open ledger rows, so a caller can probe their processes and close what is dead."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        # ONLY `live` ROWS ARE PROBEABLE (#894 review 3, finding 1). A `reserved` row has no
+        # process and a `launching` one has no socket YET — the identity is recorded before the
+        # spawn so the record can never be behind reality, which means a reaper that probed it
+        # would read "no socket" as "dead" and free a slot whose agent was about to start
+        # successfully. Adoption never repairs that, because it only updates rows still open.
+        #
+        # The filter lives here rather than in the reaper so every caller inherits it.
+        rows = con.execute(
+            "SELECT plan_id, parent_key, session_key, started_at FROM mission_spawns "
+            "WHERE mission_id=? AND ended_at IS NULL AND state='live' ORDER BY started_at",
+            (mission_id,),
+        ).fetchall()
+        return [
+            {
+                "plan_id": str(r["plan_id"]),
+                "parent_key": str(r["parent_key"]),
+                "session_key": r["session_key"],
+                "started_at": float(r["started_at"] or 0),
+            }
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+def note_spawn_session(plan_id: str, session_key: str, *, path: Path | None = None) -> None:
+    """Stamp the key onto the reservation the moment it is minted.
+
+    Before this the row is a reservation with no process to point at; after it, the row is the
+    only durable link between a slot and the agent occupying it. Written on the same ordering
+    rule as `note_dispatch_session`: the record may be ahead of reality, never behind it.
+    """
+    con = _ready(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            "UPDATE mission_spawns SET session_key=?, state='launching' "
+            "WHERE plan_id=? AND ended_at IS NULL",
+            (session_key, plan_id),
+        )
+        con.execute("COMMIT")
+    except Exception:
+        with contextlib.suppress(Exception):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+
+def close_spawn(
+    plan_id: str, *, reason: str, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Free a reserved slot. **Callers must have EVIDENCE, not an absence of contrary news.**
+
+    Two things legitimately close a row: a launch that provably started nothing, and a process
+    observed dead. A release, a detach, an archive and an unreadable probe are none of those — a
+    slot is a statement about this host, and the mission letting go of a session does not stop it.
+
+    Returns whether a row moved, so a caller can tell "closed it" from "it was already closed"
+    rather than inferring either.
+    """
+    ts = float(now if now is not None else time.time())
+    con = _ready(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        cur = con.execute(
+            "UPDATE mission_spawns SET ended_at=?, end_reason=?, state='ended' "
+            "WHERE plan_id=? AND ended_at IS NULL",
+            (ts, str(reason or "")[:200], plan_id),
+        )
+        moved = cur.rowcount > 0
+        con.execute("COMMIT")
+        return moved
+    except Exception:
+        with contextlib.suppress(Exception):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+
+
 def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
     """The in-flight dispatch record, or None."""
     validate_id(mission_id)
@@ -6180,7 +6762,7 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
     try:
         row = con.execute(
             "SELECT plan_id, engine, cwd, session_key, started_at, project_id, engine_reason, "
-            "brief, owner FROM mission_dispatches WHERE mission_id=?",
+            "brief, owner, spawn_parent FROM mission_dispatches WHERE mission_id=?",
             (mission_id,),
         ).fetchone()
         if row is None:
@@ -6196,6 +6778,8 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
             "engine_reason": str(row["engine_reason"] or ""),
             "brief": str(row["brief"] or ""),
             "owner": row["owner"],
+            # NULL for the mission's own launch; the parent's session key for a spawn (#894).
+            "spawn_parent": row["spawn_parent"],
         }
     finally:
         con.close()
@@ -6275,6 +6859,7 @@ def settle_dispatch(
     session_key: str | None = None,
     keep_record: bool = False,
     expect_plan: str | None = None,
+    discharge_resource: bool = True,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
@@ -6345,11 +6930,94 @@ def settle_dispatch(
                 # unattended agent may still be running, and this row is its only durable trace —
                 # "the mission moved on" is not a reason to forget about a process nobody has
                 # stopped (#904 review 3, finding 1).
-                if not keep_record:
+                # …OR WHEN IT REFUSED AN ADOPTION IT WAS ASKED TO MAKE (#894 review 9).
+                #
+                # `session_key` on this call names a child the caller has just started and cannot
+                # own, because the mission moved and the adoption below will never run. Deleting
+                # the record here throws away the only durable trace of a running agent nobody
+                # has stopped — and the caller has not even ATTEMPTED its teardown yet, so
+                # `keep_record` was decided against a different question and cannot speak for
+                # this one. A reapable charge is not a cleanup queue: the reaper observes death,
+                # it never stops an orphan.
+                #
+                # So the record outlives this exit and the caller clears it once — and only once
+                # — somebody answers for the child: a proved stop, or another mission's ownership.
+                # On anything else it stays, and the next recovery pass looks again.
+                orphaned = session_key is not None
+                if not keep_record and not orphaned:
+                    # THE OBLIGATION GOES WITH THE RECORD, HERE TOO (#894 review 6, finding 1).
+                    # This exit deleted the dispatch and returned before the reconciliation below
+                    # ever ran, so a mission moved out of `dispatching` while recovery awaited
+                    # teardown — with the child spared to another mission — lost its only recovery
+                    # record and kept an unreachable charge. Nothing could reclaim that slot
+                    # afterwards, and reopening the mission did not repair its budget.
+                    d0 = con.execute(
+                        "SELECT plan_id FROM mission_dispatches WHERE mission_id=?",
+                        (mission_id,),
+                    ).fetchone()
+                    if d0 is not None:
+                        _reconcile_reservation_tx(
+                            con,
+                            str(d0["plan_id"]),
+                            # `keep_record=False` on this path means the teardown discharged the
+                            # obligation — but `spared` discharges it too, WITHOUT the process
+                            # stopping. Only an explicit `discharge_resource` says it stopped.
+                            stopped=discharge_resource,
+                            now=ts,
+                        )
                     con.execute("DELETE FROM mission_dispatches WHERE mission_id=?", (mission_id,))
                 con.execute("COMMIT")
-                return {"settled": False, "state": state, "adopted": False}
-            if to == "planned":
+                return {
+                    "settled": False,
+                    "state": state,
+                    "adopted": False,
+                    # WHETHER THE CALLER STILL OWES SOMETHING. It decides its teardown from this
+                    # rather than from `settled`, which is false on both shapes of this exit.
+                    "retained": bool(keep_record or orphaned),
+                }
+            # WHOSE ATTEMPT THIS WAS, read before anything is decided from `to` (#894 review 1,
+            # finding 2). `settle_dispatch` was written for the mission's own launch and every
+            # branch below assumed it: a child's ordinary refusal — an over-limit brief, a
+            # pre-launch policy withdrawal — therefore settled the WHOLE MISSION to `planned`,
+            # rewound a parent that was legitimately `running` with a live roster, and republished
+            # the CHILD's brief as the mission's own proposal. The next DISPATCH would then have
+            # launched the sub-agent's brief as a primary, with `spawn_parent` gone.
+            #
+            # A spawn is a dispatch, which is the whole design — but it is not the mission's
+            # dispatch, and only the settlement can tell the difference.
+            spawn_row = con.execute(
+                "SELECT spawn_parent, plan_id FROM mission_dispatches WHERE mission_id=?",
+                (mission_id,),
+            ).fetchone()
+            is_spawn = bool(spawn_row and spawn_row["spawn_parent"])
+            # THE ATTEMPT'S OWN IDENTITY. Every discharge below names this and nothing else.
+            this_plan = str(spawn_row["plan_id"]) if spawn_row else ""
+            # A CHILD'S OUTCOME IS NOT THE MISSION'S STATE (review 2, finding 2). The first pass
+            # covered only `planned`, which was the refusal path — but a start-evidence timeout, a
+            # post-launch exception and a cancellation all settle `failed`, and those took an
+            # otherwise-healthy `running` parent terminal with them. Adding an optional reviewer
+            # to a mission could therefore END that mission, remove every running-only control,
+            # and leave its original session held by a record that says the work stopped.
+            #
+            # Both non-terminal outcomes now come back to `running`. What is NOT changed is the
+            # teardown obligation: `keep_record` and the event text below still carry the child's
+            # real outcome, so a possibly-live agent is still tracked and the timeline still says
+            # the attempt failed. The mission's lifecycle and the attempt's outcome are two facts,
+            # and only one of them belonged to `state`.
+            if is_spawn and to in ("planned", "failed"):
+                # THE PARENT WAS RUNNING AND STILL IS. For the mission's own launch these are
+                # the honest answers — "nothing started, offer the plan again" and "this failed".
+                # For a child they would un-run a mission whose sessions never stopped. The
+                # attempt ends; the mission does not move.
+                #
+                # Re-targeting AFTER the `_ALLOWED` guard at the top is safe only because
+                # `running` is itself a legal exit from `dispatching` — see `_ALLOWED`, which
+                # lists `abandoned`, `failed`, `planned` and `running` for that state. Left as a
+                # note rather than an `assert`, because asserts vanish under `python -O` and a
+                # guard that matters must not be one. The transition is exercised end to end by
+                # `test_a_CHILD_refusal_does_not_rewind_the_running_parent`.
+                to = "running"
+            if to == "planned" and not is_spawn:
                 # THE PROPOSAL GOES BACK, verbatim and under its own id, so the card the operator
                 # is looking at still matches and DISPATCH works on the next tap. Restored from
                 # the dispatch record because the claim deleted the plan row — the record is the
@@ -6382,7 +7050,29 @@ def settle_dispatch(
                     )
             adopted = False
             if session_key:
-                _adopt_tx(con, mission_id, session_key, "primary", "dispatch", ts, path)
+                # WHOSE SESSION THIS IS, read from the row rather than assumed (#894). A spawn is
+                # settled by this very function — that is the point of making it a dispatch — so
+                # the one thing that must differ is the adoption: `subagent`, parented to the
+                # session it was started to work alongside. Adopting it as another `primary` with
+                # `spawned_by='dispatch'` would erase the tree the moment it was created, and the
+                # roster is where "which of these did the mission start for itself" is answered.
+                d = con.execute(
+                    "SELECT spawn_parent, plan_id FROM mission_dispatches WHERE mission_id=?",
+                    (mission_id,),
+                ).fetchone()
+                parent = str(d["spawn_parent"]) if d and d["spawn_parent"] else ""
+                if parent:
+                    _adopt_tx(con, mission_id, session_key, "sub", parent, ts, path)
+                    # THE SLOT NOW POINTS AT A PROCESS. Written in the settlement transaction so
+                    # the ledger row and the roster entry become true together — a key on one and
+                    # not the other is the torn state the whole record exists to avoid.
+                    con.execute(
+                        "UPDATE mission_spawns SET session_key=?, state='live' "
+                        "WHERE plan_id=? AND ended_at IS NULL",
+                        (session_key, str(d["plan_id"])),
+                    )
+                else:
+                    _adopt_tx(con, mission_id, session_key, "primary", "dispatch", ts, path)
                 adopted = True
             con.execute(
                 "UPDATE missions SET state=?, updated_at=? WHERE id=? AND state='dispatching'",
@@ -6416,6 +7106,31 @@ def settle_dispatch(
                     (session_key, mission_id),
                 )
             else:
+                # THE ATTEMPT IS OVER AND THE BOUNDARY WAS PROVED EMPTY — that is what
+                # `keep_record=False` means, and it is the ONLY thing that frees a reserved
+                # sub-agent slot here (#894 review 1, finding 4).
+                #
+                # `discharge_resource=False` is how a caller says "the record is over but the
+                # PROCESS is not" (#894 review 3, finding 3). Startup recovery needs it: a
+                # `spared` child was adopted by another mission between this pass's probe and its
+                # fence, so it is still running under a new owner. `keep_record` cannot express
+                # that — somebody does answer for the agent, so the record is legitimately
+                # discharged — and conflating the two freed the originating mission's slot for a
+                # process still on this host.
+                #
+                # Deliberately conditioned on `adopted`: a spawn that reached a live, adopted
+                # child is occupying its slot exactly as intended and must keep it. The row is
+                # closed only where nothing survived the attempt. The mirror case —
+                # `keep_record=True`, an agent that may still be out there — falls to the branch
+                # above and keeps BOTH records, because a slot is a statement about this host and
+                # "we could not prove it stopped" is not "it stopped".
+                if not adopted and this_plan:
+                    # THE SAME ONE RULE as every other exit (#894 review 6). `discharge_resource`
+                    # is the caller's statement that the process stopped; `spared` says the record
+                    # is over but the agent is not, and the helper keeps that charge while making
+                    # the row reapable. A `reserved` row with no key is discharged either way,
+                    # because nothing can be running behind a row that never named a session.
+                    _reconcile_reservation_tx(con, this_plan, stopped=discharge_resource, now=ts)
                 con.execute("DELETE FROM mission_dispatches WHERE mission_id=?", (mission_id,))
             con.execute("COMMIT")
         except BaseException:

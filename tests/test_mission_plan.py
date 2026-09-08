@@ -893,6 +893,197 @@ def test_recovery_ADOPTS_a_session_the_engine_store_knows_and_still_does_not_say
     assert "no record that it received its brief" in _last_state_event(mid)
 
 
+def test_a_REFUSED_recovery_adoption_still_reconciles_the_unowned_child(store, monkeypatch):
+    """A child nobody adopted must not be left running with its recovery record gone (review 8).
+
+    The mission moves out of `dispatching` between the store lookup and the settlement, so the
+    settlement refuses the adoption and drops the dispatch. The ACCOUNTING for that child was
+    already right — its reservation stays charged and reapable — but a charge is not a cleanup
+    obligation: the reaper only ever observes death, it never stops an orphan. So the child kept
+    running and the next pass found nothing to repair.
+
+    Driven through the production `recover_once` with the concurrent move, because the previous
+    version of this test called `settle_dispatch` directly with a hard-coded flag and therefore
+    exercised neither the changed default nor the missing follow-through.
+    """
+    from agent_sessions import headless_dispatch, mission_dispatch_recover, runtime_cleanup
+
+    key = f"claude:{UUID}"
+    mid = _crashed(store, key=key)
+
+    # The session IS present — and looking moves the mission out of `dispatching`, which is the
+    # race: settlement will then take its early return and refuse the adoption.
+    def present(*_a, **_kw):
+        if missions.get_mission(mid)["state"] == "dispatching":
+            missions.set_state(mid, "dispatching", "failed")
+        return "found"
+
+    monkeypatch.setattr(headless_dispatch, "store_record_state", present)
+
+    stopped: list[str] = []
+
+    async def stop(engine, native, **kw):
+        stopped.append(f"{engine}:{native}")
+        return "stopped"
+
+    monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stop)
+
+    asyncio.run(mission_dispatch_recover.recover_once())
+
+    assert missions.active_session_keys(mid) == [], "the child was never adopted"
+    assert stopped == [key], (
+        "an unadopted, possibly-live child was abandoned: no owner, no teardown, and its "
+        "recovery record deleted"
+    )
+
+
+def _refusing_recovery(monkeypatch, mid, answers):
+    """A recovery whose adoption is refused mid-pass, with `_stop` answering from `answers`.
+
+    The concurrent move is what makes the settlement refuse: the store lookup itself takes the
+    mission out of `dispatching`, which is the real race and the only way to reach the exit under
+    test. Returns the list teardown calls are recorded into.
+    """
+    from agent_sessions import headless_dispatch, runtime_cleanup
+
+    def present(*_a, **_kw):
+        if missions.get_mission(mid)["state"] == "dispatching":
+            missions.set_state(mid, "dispatching", "failed")
+        return "found"
+
+    monkeypatch.setattr(headless_dispatch, "store_record_state", present)
+    calls: list[str] = []
+
+    async def stop(engine, native, **kw):
+        calls.append(f"{engine}:{native}")
+        answer = answers[min(len(calls) - 1, len(answers) - 1)]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", stop)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("first", "why"),
+    [
+        ("leaked", "a teardown that proved nothing"),
+        (RuntimeError("the fence blew up"), "a teardown that raised"),
+    ],
+    ids=["leaked", "exception"],
+)
+def test_a_FAILED_teardown_KEEPS_the_recovery_record_for_the_next_pass(
+    store, monkeypatch, first, why
+):
+    """An obligation dropped on a failed attempt is one nobody ever discharges (review 9).
+
+    The settlement's mission-moved exit deleted the dispatch, so the teardown that follows it ran
+    with its own retry record already gone. `leaked` then logged "leaving the obligation for the
+    next pass" and left nothing behind for the next pass to find — and a reapable resource charge
+    is not a cleanup queue, because the reaper only ever observes death; it never stops an orphan.
+
+    So the record now survives a refused adoption, and only a PROVED answer takes it away. Both
+    failure shapes are covered: `leaked`, and a teardown that raises — the second reaches a
+    different `except` and was the one with no coverage at all.
+
+    Driven through the production `recover_once` twice, which is the assertion that matters: the
+    first pass must retain, and the second must find the record and discharge it. A test that
+    only asserts "teardown was called once" passes against the version that forgets.
+    """
+    from agent_sessions import mission_dispatch_recover
+
+    key = f"claude:{UUID}"
+    mid = _crashed(store, key=key)
+    calls = _refusing_recovery(monkeypatch, mid, [first, "stopped"])
+
+    # PASS ONE: the adoption is refused, the teardown fails, and the record must SURVIVE.
+    asyncio.run(mission_dispatch_recover.recover_once())
+    assert calls == [key], "the unowned child was not torn down at all"
+    assert missions.get_dispatch(mid) is not None, (
+        f"{why} deleted the only durable trace of a child nobody adopted and nobody stopped — "
+        "the next pass has nothing left to retry"
+    )
+    assert missions.active_session_keys(mid) == [], "the child was never adopted"
+
+    # PASS TWO: the retained record is found again and the teardown now succeeds.
+    assert asyncio.run(mission_dispatch_recover.recover_once()) == 1
+    assert calls == [key, key], "the retained obligation was never retried"
+    assert missions.get_dispatch(mid) is None, "a proved stop did not discharge the record"
+
+
+def _crashed_spawn(store, key):
+    """A crashed SPAWN attempt: a real `claim_spawn` reservation, keyed, owned by a dead process.
+
+    The sibling tests use `_crashed`, which is a PRIMARY dispatch and therefore has no ledger row
+    at all — so they can assert what happens to the dispatch record but nothing about the resource
+    charge, which is the half these findings keep being about (review 10, non-blocking note).
+    """
+    m = missions.create_mission("do the thing", cwd="/repo")
+    mid = m["id"]
+    missions.set_state(mid, "draft", "planned")
+    missions.set_state(mid, "planned", "dispatching")
+    missions.set_state(mid, "dispatching", "running")
+    parent = "claude:11111111-1111-4111-8111-111111111111"
+    missions.adopt(mid, parent)
+    claim = missions.claim_spawn(
+        mid,
+        parent_key=parent,
+        engine="claude",
+        cwd="/repo",
+        brief="review it",
+        owner=DEAD_OWNER,
+    )
+    missions.note_dispatch_session(mid, key, expect_plan=claim["plan_id"])
+    return mid, claim
+
+
+def test_a_SPARED_child_KEEPS_ITS_CHARGE_while_another_mission_runs_it(store, monkeypatch):
+    """The canonical spawn-shaped version of the test below (review 10, non-blocking note).
+
+    `spared` discharges the dispatch RECORD — somebody answers for the agent — but must not return
+    the SLOT, because nothing stopped: the process is still on this host under a new owner. A
+    mission that got its capacity back here could spawn again beside a child it no longer knows
+    about, which is the bound being evadable rather than enforced.
+    """
+    from agent_sessions import mission_dispatch_recover
+
+    key = "claude:77777777-7777-4777-8777-777777777777"
+    mid, _claim = _crashed_spawn(store, key)
+    assert missions.open_spawn_count(mid) == 1
+    _refusing_recovery(monkeypatch, mid, ["spared"])
+
+    asyncio.run(mission_dispatch_recover.recover_once())
+
+    assert missions.get_dispatch(mid) is None, "a verified owner did not discharge the record"
+    assert missions.open_spawn_count(mid) == 1, (
+        "a spared child's slot came back while its process is still running under another "
+        "mission — the cap is evadable by spawn -> lose it -> spawn"
+    )
+
+
+def test_a_SPARED_child_discharges_the_record_but_keeps_its_slot_charged(store, monkeypatch):
+    """`spared` is the second answer that ends the obligation — and it is not `stopped`.
+
+    Another mission adopted the child, so somebody answers for it and the record goes; but the
+    process is still on this host, so the slot stays charged and becomes reapable rather than
+    being handed straight back to a mission that could then spawn beside a child it no longer
+    knows about.
+    """
+    from agent_sessions import mission_dispatch_recover
+
+    key = f"claude:{UUID}"
+    mid = _crashed(store, key=key)
+    calls = _refusing_recovery(monkeypatch, mid, ["spared"])
+
+    asyncio.run(mission_dispatch_recover.recover_once())
+    assert calls == [key]
+    assert missions.get_dispatch(mid) is None, "a verified owner did not discharge the record"
+    # …and the timeline says what actually happened. `spared` discharging the record does NOT
+    # mean the agent stopped, and writing that it did was its own defect (#904 review 13).
+    assert missions.active_session_keys(mid) == [], "the child was adopted by this mission"
+
+
 def test_recovery_STOPS_a_launch_the_engine_store_never_saw(store, monkeypatch):
     """POST-KEY, PRE-START. An id and no agent behind it: whatever runtime footprint exists is
     torn down rather than left as a process nobody owns."""

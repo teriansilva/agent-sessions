@@ -81,6 +81,7 @@ from .. import (
     orchestrator_ledger,
     prefs,
     projects,
+    ptybridge,
     review,
     scopedspawn,
     session_input,
@@ -291,6 +292,48 @@ async def _session_exists(key: str) -> bool:
     return await asyncio.to_thread(_adoptable)
 
 
+def _reap_dead_spawns(mission_id: str) -> int:
+    """Close the ledger rows of sub-agents whose master is PROVABLY gone. Returns how many.
+
+    The other half of the sub-agent budget (#894 review 1, finding 4). `claim_spawn` reserves a
+    slot and only evidence returns it — so without this, a child that finished normally would hold
+    its slot for the life of the mission and the resource guard would harden into a permanent
+    quota. Release cannot do this job: `detach` is an ownership operation that stops nothing, and
+    treating it as a kill would be a worse bug than the one being fixed.
+
+    **Only `DEAD` frees a slot.** `probe_master` is tri-state on purpose: `UNKNOWN` means every
+    attempt timed out, which on a starved host is exactly what a live master looks like. Reading
+    it as dead would hand back capacity to a process that is still running — the same
+    "absence of an answer is not an answer" mistake the store reads elsewhere are careful about.
+    Best-effort throughout: a probe that raises leaves its row alone.
+    """
+    freed = 0
+    try:
+        rows = missions.open_spawns(mission_id)
+    except Exception:  # noqa: BLE001 — an unreadable ledger is not permission to free anything
+        log.debug("mission %s: spawn ledger unreadable; freeing nothing", mission_id)
+        return 0
+    for r in rows:
+        key = str(r.get("session_key") or "")
+        if not key:
+            # Reserved but never launched: the settlement path owns that row, not this one.
+            continue
+        try:
+            engine, native = engines.parse_key(key)
+            verdict = ptybridge.probe_master(ptybridge.socket_path(engine.engine_id, native))
+        except Exception:  # noqa: BLE001
+            log.debug("mission %s: could not probe %s", mission_id, key)
+            continue
+        if verdict is not ptybridge.DEAD:
+            continue
+        try:
+            if missions.close_spawn(r["plan_id"], reason=f"{key} is no longer running"):
+                freed += 1
+        except Exception:  # noqa: BLE001
+            log.debug("mission %s: could not close spawn %s", mission_id, r["plan_id"])
+    return freed
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     @app.get("/api/missions")
     async def list_missions_route(
@@ -425,6 +468,94 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row["supervisor"] = await missions.run_admitted(
                 lambda: mission_supervisor.assess(mission_id)
             )
+        # THE SUB-AGENT CAP, so the console can refuse a tap that cannot land (#894). It is a
+        # SERVER constant — the client may not choose it and does not enforce it; the claim
+        # transaction is the only thing that does. Sent because "0 of 2 used" and a disabled
+        # button are a better answer than a 409 the operator only discovers by pressing, which is
+        # the same reason the plan card computes `ready` instead of letting DISPATCH fail.
+        row["spawn_cap"] = missions.SPAWN_CAP
+        # THE SAME COUNT THE CLAIM ENFORCES (#894 review 1, finding 5). The console used to
+        # derive its own from roster roles while `claim_spawn` counted something else, so
+        # the two disagreed by exactly one — "1 of 2 used" over a mission the server would
+        # refuse. Published from the ledger so there is one definition, not two that agree
+        # by coincidence. A read failure leaves the field absent rather than 0: an unknown
+        # budget must not render as an empty one.
+        with contextlib.suppress(Exception):
+            live = await missions.run_admitted(lambda: missions.open_spawn_count(mission_id))
+            # AT THE CAP, RECONCILE BEFORE REPORTING (#894 review 2, finding 4).
+            #
+            # The only production caller of the reaper was POST `/spawn` — and the console
+            # disables the control that issues it once the count reaches the cap. So a mission
+            # whose children had all finished normally stayed at the cap for ever: the count never
+            # refreshed because the only thing that refreshed it was the thing the count disabled.
+            # A deadlock built out of two correct-looking halves.
+            #
+            # Run ONLY at the cap, so the common path costs nothing and the probes are bounded by
+            # SPAWN_CAP rather than by the roster. UNKNOWN still holds its slot — reconciling more
+            # often does not make a starved host's silence into evidence.
+            if live >= missions.SPAWN_CAP:
+                with contextlib.suppress(Exception):
+                    if await asyncio.to_thread(_reap_dead_spawns, mission_id):
+                        live = await missions.run_admitted(
+                            lambda: missions.open_spawn_count(mission_id)
+                        )
+            row["spawn_live"] = live
+        # WHERE A SUB-AGENT WOULD RUN, resolved the same way the spawn route resolves it
+        # (#894 review 1, finding 1). The panel has to SHOW the directory it is asking the
+        # operator to approve, and the tap has to assert that same value back, or the
+        # approval binds to nothing. `null` when the project no longer resolves — the
+        # control then has nothing to promise and withholds itself, rather than offering a
+        # START that the route would refuse anyway.
+        # ELIGIBILITY IS OPTIONAL; THE MISSION READ IS NOT (#894 review 3, finding 5).
+        #
+        # `_resolve_cwd` RAISES for an unknown, archived or folderless project — deliberately, in
+        # the launch path, where refusing is the whole point. Calling it unconditionally here put
+        # that refusal in front of an ordinary detail read: a mission whose project was since
+        # archived or deleted answered **HTTP 500**, so its history, timeline and roster became
+        # unreachable because a control it was never going to be offered could not be computed.
+        #
+        # The mission is the thing being read. A spawn offer that cannot be made is `null` plus a
+        # reason, not an error — and the launch path keeps refusing exactly as strictly as before,
+        # because it calls the same resolver on its own.
+        row["spawn_cwd"] = None
+        row["spawn_unavailable"] = None
+        try:
+            row["spawn_cwd"] = _resolve_cwd(row.get("project_id"))[1] or None
+            if row["spawn_cwd"] is None:
+                row["spawn_unavailable"] = "this mission's project has no folder to work in"
+        except missions.MissionError as e:
+            row["spawn_unavailable"] = str(e)
+        except Exception:  # noqa: BLE001 — never let an offer's absence break the read
+            row["spawn_unavailable"] = "the project could not be resolved"
+        # WHICH AGENT A SUB-AGENT WOULD BE, derived from the session this mission is
+        # actually holding (#894 review 1, finding 3).
+        #
+        # The console used to gate on `mission.engine || mission.plan.engine`, and after a
+        # NORMAL create -> plan -> dispatch both are empty: the create route stores no
+        # engine, `claim_plan` puts it on the dispatch row and deletes the plan, and a
+        # successful settlement deletes the dispatch row. So the control was absent in the
+        # one flow it exists for, and only the browser tests' injected `engine: "claude"`
+        # hid it. Deriving it from the held session asks the thing that is still true.
+        #
+        # Re-checked against the capability allowlist rather than trusted from the key: a
+        # session adopted from the sidebar can be any engine, including `shell` and the
+        # mint-own-id ones the spawn route refuses. Offering one would be a button that
+        # can only 409.
+        row["spawn_engine"] = None
+        try:
+            allowed = {str(o.get("id")) for o in mission_plan.engine_options()}
+            for sess in row.get("sessions") or []:
+                if sess.get("removed_at") is not None:
+                    continue
+                eng = str(sess.get("engine") or "")
+                if not eng:
+                    key = str(sess.get("session_key") or "")
+                    eng = key.split(":", 1)[0] if ":" in key else ""
+                if eng in allowed:
+                    row["spawn_engine"] = eng
+                    break
+        except Exception:  # noqa: BLE001 — an unreadable option list is "no offer", not a 500
+            log.debug("mission %s: spawn engine could not be derived", mission_id)
         # THE OPEN TURN comes back inside `get_mission`'s own transaction (#902 review 2,
         # finding 3), so it is never read here. A second read on a second connection was a torn
         # answer in both directions — a claim between them returned a turn with no operator
@@ -889,6 +1020,184 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # it would still be launched. `run` calls this immediately before the spawn, while
             # holding the fence, and refuses on a mismatch.
             verify_cwd=lambda: _resolve_cwd(plan.get("project_id"))[1],
+        )
+        return JSONResponse(out)
+
+    @app.post("/api/missions/{mission_id}/spawn")
+    async def spawn_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Add a bounded, approval-gated SUB-AGENT to a mission already under way (#894, #840 §9).
+
+        **This route is the approval.** There is no queue of pending spawns for something else to
+        drain: an operator pressed a button, authenticated and CSRF-gated, and that is the grant.
+        Nothing in `AUTO_VERBS_V1` can reach it, and no model can select it by classifying a
+        sentence — the same reason `relay` is a route rather than a chat intent.
+
+        **It starts an unattended agent, so it carries every fence `dispatch` carries** — the
+        master switch, the autonomy tier re-read HERE rather than at plan time, the containment
+        scope, a cwd the SERVER resolved from the project entity, and an engine checked against
+        the capability allowlist. A spawn that were cheaper to authorise than a dispatch would be
+        a way around the dispatch gate rather than a feature.
+
+        **`bypass=False`, like every mission launch.** #894's text says a spawn "inherits Phase 4's
+        posture — permission bypass"; Phase 4 as SHIPPED passes `bypass=False`, and
+        `headless_dispatch` says why: unattended bypass is a separate grant that stays
+        approval-required until it has been exercised in anger. Inheriting the posture therefore
+        means inheriting `False`. Widening it would be introducing a broad-permission grant and
+        needs the operator's own recorded sign-off, which is not something this code may assume.
+
+        **The cap is a RESOURCE GUARD, never a security control.** It bounds fan-out — a mission
+        that could spawn without limit could fill the host by being approved repeatedly — and
+        decides nothing about what a sub-agent may do. That is the tier, the write fence,
+        `bypass=False` and the scope, none of which this number touches.
+
+        **Cap and reservation are ONE transaction** (`claim_spawn`), because "count, then start" is
+        check-then-act: two approvals both read a count under the cap, both start, and the mission
+        ends with one more agent than was ever allowed while each check was true when made.
+        """
+        try:
+            body = await _body(request)
+            missions.validate_id(mission_id)
+
+            parent_key = body.get("parent_key")
+            if not isinstance(parent_key, str) or not parent_key.strip():
+                return _fail(
+                    missions.MissionError(
+                        "parent_key is required and names the session this sub-agent works "
+                        "alongside",
+                        status=422,
+                    )
+                )
+            brief = body.get("brief")
+            if not isinstance(brief, str) or not brief.strip():
+                return _fail(
+                    missions.MissionError(
+                        "brief is required and is what the sub-agent is being asked to do",
+                        status=422,
+                    )
+                )
+
+            policy_epoch = session_input.policy_fingerprint()
+            cfg = prefs.get_orchestrator()
+            if not cfg.get("enabled"):
+                return _fail(
+                    missions.MissionError(
+                        "orchestration is switched off, so nothing may be launched", status=409
+                    )
+                )
+            if str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]:
+                return _fail(
+                    missions.MissionError(
+                        "autonomy is off — this instance watches and proposes, and may not "
+                        "start an agent",
+                        status=409,
+                    )
+                )
+            if not (scopedspawn.enabled() and scopedspawn.available()):
+                return _fail(
+                    missions.MissionError(
+                        "this host cannot put a session in its own scope, so an unattended agent "
+                        "could not be reliably stopped again; spawning is refused",
+                        status=409,
+                    )
+                )
+
+            # WHICH DIRECTORY THE OPERATOR APPROVED (#894 review 1, finding 1). Server
+            # resolution and operator approval are COMPLEMENTARY, not alternatives, and this
+            # route shipped with only the first half.
+            #
+            # Resolving server-side stops the model or the client naming a path. It does not stop
+            # the path moving underneath a control the operator is already looking at: the spawn
+            # panel says the child will work alongside a parent in A, the project mapping is
+            # edited to B, and START launches in B while the screen still promises A. Re-resolving
+            # under the fence does not help — it only pins the value from the moment of the tap
+            # onward, and the operator approved something older than that.
+            #
+            # So the client asserts which resolution it SHOWED and a mismatch refuses, exactly as
+            # `dispatch` does. It is a COMPARAND, never a launch argument: compared and discarded,
+            # and the path that reaches the spawn is the one this server resolved.
+            expect_cwd = body.get("expect_cwd")
+            if not isinstance(expect_cwd, str) or not expect_cwd.strip():
+                return _fail(
+                    missions.MissionError(
+                        "expect_cwd is required and names the directory you approved", status=422
+                    )
+                )
+
+            row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+            if row is None:
+                return _fail(missions.MissionError(f"unknown mission {mission_id}", status=404))
+            # THE SERVER'S OWN CWD, from the project entity — never a client value, and re-read
+            # here rather than taken from whatever the mission was dispatched with.
+            fresh_project, fresh_cwd = _resolve_cwd(row.get("project_id"))
+            if not fresh_cwd:
+                return _fail(
+                    missions.MissionError(
+                        "this mission has no resolvable project directory, so a sub-agent has "
+                        "nowhere to run",
+                        status=409,
+                    )
+                )
+            if expect_cwd.strip() != fresh_cwd:
+                return _fail(
+                    missions.MissionError(
+                        "that project now resolves somewhere else; read the panel again",
+                        status=409,
+                    )
+                )
+
+            # THE ENGINE IS CHECKED AGAINST THE CAPABILITY ALLOWLIST, which is what keeps `shell`
+            # and every mint-own-id engine out — the same list the plan picker is built from, so
+            # there is no second opinion about what may be launched unattended (#899).
+            options = {str(o.get("id")) for o in mission_plan.engine_options()}
+            want = body.get("engine")
+            engine = str(want).strip() if isinstance(want, str) and want.strip() else ""
+            if not engine:
+                return _fail(
+                    missions.MissionError(
+                        "engine is required and names which agent to start", status=422
+                    )
+                )
+            if engine not in options:
+                return _fail(
+                    missions.MissionError(
+                        f"{engine} cannot be started unattended; choose one that can", status=422
+                    )
+                )
+
+            # RETURN THE SLOTS OF CHILDREN THAT HAVE PROVABLY STOPPED, before counting
+            # (#894 review 1, finding 4). Capacity is released on EVIDENCE, and this is where the
+            # evidence is gathered: `probe_master` is tri-state and only `DEAD` is decisive.
+            # `UNKNOWN` — a starved host too slow to accept within budget — deliberately leaves
+            # the row open and the slot held, because the cost of holding one too long is a
+            # refused spawn and the cost of freeing one too early is an unbounded fan-out of live
+            # agents. It runs OUTSIDE the claim: it only ever frees, so a concurrent claim racing
+            # it sees either the old count or the smaller one, and both are safe.
+            await asyncio.to_thread(_reap_dead_spawns, mission_id)
+
+            claimed = await missions.run_admitted(
+                lambda: missions.claim_spawn(
+                    mission_id,
+                    parent_key=parent_key.strip(),
+                    engine=engine,
+                    cwd=fresh_cwd,
+                    brief=brief,
+                    project_id=fresh_project,
+                )
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+
+        out = await mission_dispatch.run(
+            mission_id,
+            claimed,
+            registry=registry,
+            policy_epoch=policy_epoch,
+            verify_cwd=lambda: _resolve_cwd(row.get("project_id"))[1],
         )
         return JSONResponse(out)
 

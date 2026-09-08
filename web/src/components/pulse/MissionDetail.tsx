@@ -24,6 +24,7 @@ export function ObjectivesPane({
   onDetach,
   onMembershipChanged,
   busy,
+  spawn,
 }: {
   objectives: MissionObjective[];
   /** From the mission row: `pending` while the producer is still running (#883). The empty state
@@ -42,6 +43,16 @@ export function ObjectivesPane({
   onStandDown?: (key: string, episode: number) => void;
   onDetach?: (sessionKey: string) => void;
   busy?: boolean;
+  /** Passed straight through to the roster (#894). Absent ⇒ this mission cannot spawn. */
+  spawn?: {
+    engine: string;
+    /** Where the sub-agent will run — shown to the operator and asserted back on START. */
+    cwd: string;
+    cap: number;
+    live: number | null;
+    onChanged: (opts?: { membershipChanged?: boolean }) => void;
+    onNote: (msg: string) => void;
+  };
 }) {
   return (
     <>
@@ -64,6 +75,7 @@ export function ObjectivesPane({
         onDetach={onDetach}
         onMembershipChanged={onMembershipChanged}
         busy={busy}
+        spawn={spawn}
       />
     </>
   );

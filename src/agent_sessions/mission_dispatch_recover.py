@@ -182,8 +182,23 @@ async def recover_once(*, path=None) -> int:
             if not key:
                 # Nothing to stop, so nothing is owed. Drop it rather than carrying a row that
                 # names no session for ever.
+                #
+                # AND ITS RESERVATION GOES IN THE SAME COMMIT (#894 review 6, finding 2).
+                #
+                # This was two calls: `discharge_unlaunched_spawn`, its exceptions suppressed, and
+                # then `clear_dispatch`. A transient failure of the first with the second
+                # succeeding — SQLite lock contention is enough — deleted the record while leaving
+                # a `reserved` row nothing can reach: the reaper skips keyless rows by design, and
+                # there was no dispatch left for a later pass to repair. Repeating it exhausted the
+                # cap with nothing ever having launched.
+                #
+                # `clear_dispatch` now owns that reconciliation for every shape, so one call does
+                # both or neither. `stopped=True` is correct and safe here precisely BECAUSE no key
+                # was minted: a row that never named a session cannot have a process behind it.
                 with contextlib.suppress(Exception):
-                    missions.clear_dispatch(mission_id, expect_plan=row_plan, path=path)
+                    missions.clear_dispatch(
+                        mission_id, expect_plan=row_plan, stopped=True, path=path
+                    )
                 continue
             outcome = await _stop(str(key))
             if outcome == "leaked":
@@ -192,7 +207,18 @@ async def recover_once(*, path=None) -> int:
                 log.warning("the retained dispatch session %s still cannot be stopped", key)
                 continue
             with contextlib.suppress(Exception):
-                missions.clear_dispatch(mission_id, expect_plan=row_plan, path=path)
+                # PROVED STOPPED DISCHARGES THE SLOT (#894 review 4, finding 2). This branch is
+                # the retained-cleanup path — a failed child whose parent went back to running —
+                # and it cleared the dispatch without ever saying so, deleting the only recovery
+                # record while the reservation stayed `launching` and unreachable.
+                missions.clear_dispatch(
+                    mission_id,
+                    expect_plan=row_plan,
+                    stopped=(outcome == "stopped"),
+                    path=path,
+                )
+                # …and a SPARED one keeps its charge but becomes reapable — in the SAME commit,
+                # since `clear_dispatch` now owns that transition (review 5).
                 moved += 1
                 # THE WORD FOR WHAT ACTUALLY HAPPENED (#904 review 13). `spared` discharges this
                 # obligation because another mission now answers for the session — not because
@@ -215,11 +241,25 @@ async def recover_once(*, path=None) -> int:
             continue
         key = row["session_key"]
         clean = True
+        # DEFAULT: NOT PROVED STOPPED (#894 review 7).
+        #
+        # This defaulted to True, which was harmless only while the moved-state early return did
+        # not reconcile anything. Round six made that return reconcile — correctly — and the
+        # default then became a claim: the `present` branch below schedules an ADOPTION and stops
+        # nothing, so a mission moving out of `dispatching` mid-lookup took the early return,
+        # refused the adoption, and discharged a live child's slot on the strength of a default
+        # nobody had set. The child had no owner, no recovery record and no teardown.
+        #
+        # **Session presence is not proof of termination.** Only a branch that establishes a stop
+        # may say so, and each one below now does it explicitly.
+        resource_stopped = False
         if not key:
             # PRE-SPAWN. The record exists because the claim committed; the key does not, because
-            # nothing was ever minted. Nothing ran.
+            # nothing was ever minted. Nothing ran — and this is the one branch where "stopped" is
+            # true by construction rather than by observation: there is no process to stop.
             detail = "the app stopped before the agent was started"
             adopt = None
+            resource_stopped = True
         else:
             present = await _has_session(str(key), str(row["cwd"]))
             if present is None:
@@ -251,6 +291,13 @@ async def recover_once(*, path=None) -> int:
                 else:
                     detail = f"the app stopped during the launch of {key}, which never started"
                 clean = outcome != "leaked"
+                # THE DISPATCH RECORD AND THE RESOURCE SLOT ARE DIFFERENT OBLIGATIONS (#894
+                # review 3, finding 3). `clean` says somebody answers for the agent, which
+                # `spared` satisfies — another mission adopted it. It does NOT say the process
+                # stopped, and `spared` means precisely that it did not: it is still on this host,
+                # under a new owner. Discharging the record while freeing the slot let the
+                # originating mission spawn again beside a child it no longer knew about.
+                resource_stopped = outcome == "stopped"
                 adopt = None
         try:
             # THROUGH THE ADOPTION FENCE, like every other settlement that adopts (#904 review 8,
@@ -271,6 +318,9 @@ async def recover_once(*, path=None) -> int:
                     # boundary empty leaves the record in place, so the next pass looks again
                     # rather than the only trace of a possibly-live agent being deleted with it.
                     keep_record=not clean,
+                    # SPARED DISCHARGES THE RECORD BUT NOT THE SLOT — the process is still
+                    # running, under another mission (review 3, finding 3).
+                    discharge_resource=resource_stopped,
                     # …AND IT SETTLES THE ATTEMPT IT READ, not whatever is dispatching now.
                     expect_plan=row_plan,
                     path=path,
@@ -282,4 +332,71 @@ async def recover_once(*, path=None) -> int:
         if verdict.get("settled"):
             moved += 1
             log.info("recovered mission %s from dispatching: %s", mission_id, detail)
+            continue
+
+        # THE SETTLEMENT REFUSED, AND A CHILD MAY BE RUNNING WITH NOBODY TO OWN IT
+        # (#894 review 8).
+        #
+        # The mission moved out of `dispatching` between this pass's store lookup and its
+        # settlement, so the early return refused the adoption and dropped the dispatch. The
+        # ACCOUNTING for that child is correct — its reservation stays charged and reapable — but
+        # a charge is not a cleanup obligation: the reaper only ever observes death, it never
+        # stops an orphan. So a child nobody adopted kept running with its only recovery record
+        # gone, and the next pass found nothing to repair.
+        #
+        # Only three things may end that obligation: a successful adoption (handled above),
+        # another verified owner, or a PROVED stop. `spared` and `stopped` both discharge it —
+        # somebody answers for the agent either way — and anything else leaves it for the next
+        # pass rather than being forgotten here.
+        if not adopt:
+            continue
+        # THE RECORD IS STILL THERE, AND THAT IS THE FIX (#894 review 9). The settlement used to
+        # delete it on this exit, so the teardown below ran with its own retry record already
+        # gone: a `leaked` result logged "leaving the obligation for the next pass" and left
+        # nothing behind for the next pass to find. It now survives the refused adoption, and
+        # only the three answers that discharge it may take it away.
+        try:
+            after = await _stop(str(adopt))
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "mission %s: recovery could not reconcile the unowned session %s; the dispatch "
+                "record is kept so the next pass retries",
+                mission_id,
+                adopt,
+                exc_info=True,
+            )
+            continue
+        if after == "leaked":
+            log.warning(
+                "mission %s: %s was not adopted and could not be proved stopped; keeping the "
+                "dispatch record so the next pass retries the teardown",
+                mission_id,
+                adopt,
+            )
+            continue
+        # PROVED, so the obligation ends — and `stopped` and `spared` end DIFFERENT parts of it.
+        # `spared` means another mission holds that agent: the record goes because somebody
+        # answers for it, but the process is still on this host, so the slot stays charged and
+        # becomes reapable instead of being handed straight back. One transaction, so a crash
+        # cannot separate the deletion from the resource transition.
+        #
+        # `expect_plan` keeps a slow pass from clearing a NEWER attempt's record: by the time we
+        # get here the mission has already moved once, and it may have moved into a new dispatch.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(
+                functools.partial(
+                    missions.clear_dispatch,
+                    mission_id,
+                    expect_plan=row_plan,
+                    stopped=(after == "stopped"),
+                    path=path,
+                )
+            )
+        log.info(
+            "mission %s: %s was not adopted after recovery and is now %s",
+            mission_id,
+            adopt,
+            after,
+        )
+        moved += 1
     return moved

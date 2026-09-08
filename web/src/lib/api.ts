@@ -1124,6 +1124,35 @@ export const api = {
   /** RUN the proposal. The highest-privilege call the client can make: it starts an agent with
    *  nobody watching it, so it names the plan it is dispatching and the server refuses any other
    *  (`claim_plan`'s compare-and-set). A stale id is a 409 that says to read the plan again. */
+  /** Start a bounded, approval-gated SUB-AGENT alongside one of this mission's sessions (#894).
+   *
+   *  `engine` is a REQUEST, not a choice: the server checks it against the same capability
+   *  allowlist the plan picker is built from, so `shell` and the mint-own-id engines are refused
+   *  there rather than trusted here. There is no `cwd` argument at all — the server resolves it
+   *  from the project entity, which is why a client cannot say where an agent runs. */
+  /** `expectCwd` is the directory the panel SHOWED, asserted back so the approval binds to it.
+   *  It is a comparand the server compares and discards — never a launch argument, and never a
+   *  path this client gets to choose. A mismatch is a 409, not a silent relocation. */
+  spawnSubAgent: (
+    id: string,
+    parentKey: string,
+    brief: string,
+    engine: string,
+    expectCwd: string,
+  ) =>
+    mutateJson<{
+      state: string;
+      /** The ATTEMPT's verdict — `started` / `failed` / `refused`. The mission's `state` answers a
+       *  different question and is deliberately `running` even when the child failed. */
+      outcome?: "started" | "failed" | "refused";
+      reason: string;
+      session_key: string | null;
+    }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/spawn`,
+      { parent_key: parentKey, brief, engine, expect_cwd: expectCwd },
+    ),
+
   dispatchMission: (
     id: string,
     planId: string,
@@ -1180,7 +1209,12 @@ export const api = {
   setMissionState: (
     id: string,
     body: { from: string; to: string; outcome?: string; detail?: string },
-  ) => mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/state`, body),
+  ) =>
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/state`,
+      body,
+    ),
 
   /** Archive the mission AND tear down its sessions' runtime. #889.
    *
@@ -1207,9 +1241,13 @@ export const api = {
   /** Release one session from a mission. Fenced server-side: an in-flight nudge either lands
    *  first or sees the new epoch, so a detached session can never still be typed into. */
   detachMissionSession: (id: string, sessionKey: string) =>
-    mutateJson<Mission>("POST", `/api/missions/${encodeURIComponent(id)}/detach`, {
-      session_key: sessionKey,
-    }),
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/detach`,
+      {
+        session_key: sessionKey,
+      },
+    ),
 
   /** "Stop telling me about this one", for the EPISODE the operator was looking at (#885).
    *

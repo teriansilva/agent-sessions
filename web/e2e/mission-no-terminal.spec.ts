@@ -41,7 +41,13 @@ const OVERVIEW = {
   cards: [],
 };
 
-async function stub(page: Page) {
+async function stub(
+  page: Page,
+  over: {
+    mission?: Record<string, unknown>;
+    sessions?: { session_key: string; role?: string; removed_at: null }[];
+  } = {},
+) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
@@ -80,12 +86,13 @@ async function stub(page: Page) {
       sessions: [{ session_key: KEY, removed_at: null }],
       events: [],
       events_next_seq: null,
+      ...over.mission,
     },
     context: {
       id: "msn_1",
       project_id: "",
       cwd: "/repo",
-      sessions: [{ session_key: KEY, removed_at: null }],
+      sessions: over.sessions ?? [{ session_key: KEY, removed_at: null }],
       git: null,
       git_error: null,
     },
@@ -515,4 +522,259 @@ test("an AMBIGUOUS delivery is not reported as 'Not sent'", async ({
   await expect(
     page.locator('[data-testid="relay-input"]:visible').first(),
   ).toHaveValue("restart the build");
+});
+
+// ---- the bounded, approval-gated sub-agent spawn (#894) -----------------------------
+//
+// The server is the only thing that ENFORCES the cap — `claim_spawn` counts and reserves in one
+// transaction — so these are about what the console OFFERS and what it says. That is not the
+// lesser half: a control that can only produce a 409 teaches the operator to distrust the ones
+// that work, and a refusal that eats their draft teaches them not to type.
+
+const SUB_A = "claude:9b02bbbb-2222-2222-2222-222222222222";
+const SUB_B = "claude:cccccccc-3333-3333-3333-333333333333";
+
+/** A running mission with an engine and a cap, plus whatever roster the test needs. */
+// THE PRODUCER'S SHAPE AFTER A REAL DISPATCH, not a convenient one (review 1, finding 3).
+//
+// This fixture used to carry `engine: "claude"`, and the console gated the spawn control on
+// `mission.engine || mission.plan.engine`. Both are EMPTY after an ordinary create -> plan ->
+// dispatch: the create route stores no engine, `claim_plan` moves it to the dispatch row and
+// deletes the plan, and a successful settlement deletes the dispatch row. So every one of these
+// tests passed against a DTO the server never sends, and the control was absent in the one flow
+// it exists for. The injected engine was the whole reason that went unnoticed.
+//
+// `engine` and `plan` are pinned to null here deliberately, so a regression to the old gate fails
+// this file rather than passing it.
+const RUNNING = {
+  state: "running",
+  engine: null,
+  plan: null,
+  spawn_cap: 2,
+  spawn_live: 0,
+  spawn_engine: "claude",
+  spawn_cwd: "/repo/acme",
+};
+
+test("SUB-AGENT is offered beside the session it would work alongside", async ({
+  page,
+}) => {
+  // The control names its target. A spawn parented to "the mission" rather than to a session
+  // leaves a tree that cannot be read afterwards — `spawned_by` is where "whose sub-agent is
+  // this" is answered — so the button lives in the roster block, next to the key it will name.
+  await stub(page, { mission: RUNNING });
+  await page.goto("/pulse");
+  await openContext(page);
+  const row = page.getByTestId("roster-session").first();
+  await expect(row.getByTestId("spawn-open")).toBeEnabled();
+});
+
+test("AT CAP the control is withheld, and says the limit is not a permission", async ({
+  page,
+}) => {
+  // Two claims, and the second is the one a review would catch. The button is disabled, because a
+  // tap that could only 409 should not be offered. And the reason distinguishes a RESOURCE GUARD
+  // from a permission — reading a fan-out bound as a safety boundary is the mistake the operator
+  // is most likely to make, and the copy is where that gets settled.
+  // THE COUNT COMES FROM THE SERVER, on the server's own definition (review 1, finding 5). This
+  // used to be expressed by putting two `role: "sub"` rows in the roster and letting the console
+  // count them, which is exactly the second definition that disagreed with the claim by one. The
+  // roster rows stay — the panel still names its parent — but the budget is `spawn_live`.
+  await stub(page, {
+    mission: { ...RUNNING, spawn_live: 2 },
+    sessions: [
+      { session_key: KEY, role: "primary", removed_at: null },
+      { session_key: SUB_A, role: "sub", removed_at: null },
+      { session_key: SUB_B, role: "sub", removed_at: null },
+    ],
+  });
+  await page.goto("/pulse");
+  await openContext(page);
+  const open = page.getByTestId("spawn-open").first();
+  await expect(open).toBeDisabled();
+  await expect(open).toHaveText(/2\/2/);
+  await expect(open).toHaveAttribute("title", /not a permission/);
+});
+
+test("the panel SHOWS the directory and asserts it back on START", async ({
+  page,
+}) => {
+  // An approval the operator could not read is not an approval (review 1, finding 1). The server
+  // resolving the path stops a client naming one; it does not stop the path moving under a panel
+  // somebody is already reading. So the consequence line names the directory, and the same value
+  // rides back as `expect_cwd` for the server to compare and discard.
+  const sent: Array<Record<string, unknown>> = [];
+  await stub(page, { mission: RUNNING });
+  await page.route("**/api/missions/*/spawn", (r) => {
+    sent.push(r.request().postDataJSON());
+    return r.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ state: "running", reason: "", session_key: null }),
+    });
+  });
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  // It is on screen, not merely in the payload.
+  await expect(page.getByTestId("spawn-cwd")).toHaveText("/repo/acme");
+  await page.getByTestId("spawn-brief").fill("read the diff");
+  await page.getByTestId("spawn-start").click();
+  await expect.poll(() => sent.length).toBeGreaterThan(0);
+  expect(sent[0].expect_cwd).toBe("/repo/acme");
+});
+
+test("a POLL that lands mid-spawn does not eat the draft", async ({ page }) => {
+  // The refusal test below keeps its GET fixture `running` throughout, so the transition never
+  // happens and the bug hides behind it. A real claim moves the mission through `dispatching` for
+  // the length of the launch; when the periodic detail poll observed that, a `running`-only gate
+  // unmounted the whole panel and took the typed brief with it. The refusal then restored
+  // `running` and remounted an empty editor — the operator's words gone, with an error beside it.
+  let dispatching = false;
+  await stub(page, { mission: RUNNING });
+  // Registered AFTER stub, so it wins: Playwright matches most-recent-first.
+  await page.route("**/api/missions/*", (r) => {
+    if (r.request().method() !== "GET") return r.fallback();
+    return r.fulfill({
+      json: {
+        ...MISSION,
+        id: "msn_1",
+        title: "Ship it",
+        sessions: [{ session_key: KEY, removed_at: null }],
+        events: [],
+        events_next_seq: null,
+        ...RUNNING,
+        state: dispatching ? "dispatching" : "running",
+      },
+    });
+  });
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((res) => (release = res));
+  await page.route("**/api/missions/*/spawn", async (r) => {
+    dispatching = true; // the claim landed; the mission is now in transit
+    await held;
+    return r.fulfill({
+      status: 409,
+      json: { detail: "autonomy is off — this instance watches and proposes" },
+    });
+  });
+
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  await page.getByTestId("spawn-brief").fill("Review the open PR");
+  await page.getByTestId("spawn-start").click();
+
+  // While the launch is in flight the panel must still be there, brief intact.
+  await expect(page.getByTestId("spawn-card")).toBeVisible();
+  await expect(page.getByTestId("spawn-brief")).toHaveValue("Review the open PR");
+
+  release?.();
+  await expect(page.getByTestId("spawn-error")).toContainText(/autonomy is off/);
+  await expect(page.getByTestId("spawn-brief")).toHaveValue(
+    "Review the open PR",
+    { timeout: 5000 },
+  );
+});
+
+test("a FAILED start is reported, even though the mission stays running", async ({
+  page,
+}) => {
+  // Review 3, finding 2. A child's failure deliberately no longer fails its parent, so the spawn
+  // response now carries `state: "running"` for a launch that did not start. The console read
+  // exactly that as success — card closed, brief cleared, reason never shown — and told the
+  // operator an agent was working when none had started. `outcome` is the attempt's own verdict.
+  await stub(page, { mission: RUNNING });
+  await page.route("**/api/missions/*/spawn", (r) =>
+    r.fulfill({
+      status: 200,
+      json: {
+        state: "running", // the MISSION is fine…
+        outcome: "failed", // …the ATTEMPT is not
+        reason: "the session never registered within 90s",
+        session_key: "claude:aaaa",
+      },
+    }),
+  );
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  await page.getByTestId("spawn-brief").fill("Review the open PR");
+  await page.getByTestId("spawn-start").click();
+
+  // The reason reaches the operator…
+  await expect(page.getByTestId("console-note")).toContainText(/never registered/);
+  // …and the work they typed is still there, because nothing started.
+  await expect(page.getByTestId("spawn-brief")).toHaveValue("Review the open PR");
+});
+
+test("a REFUSED spawn keeps the brief that was typed", async ({ page }) => {
+  // The refusals here are ordinary — autonomy switched off, a host that cannot contain an agent —
+  // and they arrive after the operator has written the work down. Clearing the box on failure
+  // makes them retype it, which is how a control teaches people not to use it.
+  await stub(page, { mission: RUNNING });
+  await page.route("**/api/missions/*/spawn", (r) =>
+    r.fulfill({
+      status: 409,
+      json: { detail: "autonomy is off — this instance watches and proposes" },
+    }),
+  );
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  await page.getByTestId("spawn-brief").fill("Review the open PR");
+  await page.getByTestId("spawn-start").click();
+  await expect(page.getByTestId("spawn-error")).toContainText(
+    /autonomy is off/,
+  );
+  await expect(page.getByTestId("spawn-brief")).toHaveValue(
+    "Review the open PR",
+  );
+});
+
+test("a spawn that STARTED BUT WAS NOT CONFIRMED is reported, not silently dropped", async ({
+  page,
+}) => {
+  // `alive is not started` reaching the operator. The launcher produced a process, the engine's
+  // store had no record of it, so the mission did not adopt it and it was torn down. The route
+  // answers 200 with a non-running state and a reason — and the reason is the useful half.
+  // Swallowing it would leave the operator believing a sub-agent is working.
+  await stub(page, { mission: RUNNING });
+  await page.route("**/api/missions/*/spawn", (r) =>
+    r.fulfill({
+      json: {
+        state: "failed",
+        reason: "the engine's store has no such session",
+        session_key: null,
+      },
+    }),
+  );
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  await page.getByTestId("spawn-brief").fill("Review the open PR");
+  await page.getByTestId("spawn-start").click();
+  await expect(page.getByTestId("console-note")).toContainText(
+    /store has no such session/,
+  );
+});
+
+test("the consequence is ANNOUNCED and tied to the button that acts on it", async ({
+  page,
+}) => {
+  // The sentence says an unattended agent starts. A screen reader reaching a button labelled only
+  // "START SUB-AGENT" would never hear it, so it is a live region AND the button's description —
+  // the same gap the plan card's dispatch confirmation had.
+  await stub(page, { mission: RUNNING });
+  await page.goto("/pulse");
+  await openContext(page);
+  await page.getByTestId("spawn-open").first().click();
+  const consequence = page.getByTestId("spawn-consequence");
+  await expect(consequence).toContainText(/unattended/);
+  await expect(consequence).toHaveAttribute("role", "status");
+  const id = await consequence.getAttribute("id");
+  await expect(page.getByTestId("spawn-start")).toHaveAttribute(
+    "aria-describedby",
+    String(id),
+  );
 });

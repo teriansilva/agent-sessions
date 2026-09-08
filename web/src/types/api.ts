@@ -1296,6 +1296,17 @@ export interface Mission {
   objectives_at?: number | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
+  /** How many LIVE sub-agents this mission may hold (#894). A server constant, echoed so the
+   *  console can show "n of N used" and withhold a control that could only 409. The client never
+   *  enforces it — `claim_spawn` does, inside the transaction that reserves the slot. */
+  spawn_cap?: number;
+  /** Where a sub-agent would run, server-resolved. `null` when the project no longer resolves. */
+  spawn_cwd?: string | null;
+  /** Which agent a sub-agent would be, derived from the session this mission holds. */
+  spawn_engine?: string | null;
+  /** Sub-agents started and not proven stopped — the SAME count the claim enforces.
+   *  Absent (not 0) when the server could not read it: an unknown budget is not an empty one. */
+  spawn_live?: number;
   /** The supervisor's mechanical reading, attached at read time (#885). ABSENT when the
    *  assessment could not be produced — never an empty reading, which would render as
    *  "nothing to follow up" and is a different claim from "we could not look". */
