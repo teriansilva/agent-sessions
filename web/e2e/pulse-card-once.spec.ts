@@ -225,8 +225,17 @@ test("the action is not a second box inside the card, and the card speaks once",
   await recap.click();
   const body = page.getByText("the recap body");
   await expect(body).toBeVisible();
-  const bb = await body.boundingBox();
-  expect(bb!.y).toBeGreaterThan(midR);
+  // Scroll it in before measuring, and re-read the BUTTON in the same frame. #929's first-run
+  // block pushes this card to the bottom edge, so the opened body sits below the fold and a
+  // clipped box reported a `y` above the button's centre — a scroll artifact, not an inverted
+  // layout. Comparing two boxes taken after the same scroll is what makes the assertion mean
+  // "below the row" rather than "happens to be on screen".
+  await body.scrollIntoViewIfNeeded();
+  // The disclosure renames itself on open, so re-locate it across both states rather than
+  // reusing the /show recap/ locator, which stops matching the moment it is clicked.
+  const recapOpen = page.getByRole("button", { name: /(show|hide) recap/i });
+  const [rb2, bb] = [await recapOpen.boundingBox(), await body.boundingBox()];
+  expect(bb!.y).toBeGreaterThan(rb2!.y + rb2!.height / 2);
 });
 
 test("a blank rationale keeps the review's reason — the card never says nothing", async ({

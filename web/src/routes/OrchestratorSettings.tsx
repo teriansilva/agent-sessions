@@ -163,6 +163,30 @@ export function OrchestratorSettings() {
     if (e.key === "Enter") e.currentTarget.blur();
   };
 
+  // The manual pass (#929). It used to live on the Pulse route inside the orchestrator panel,
+  // which that issue removes — but it is the one control the degraded badge tells the operator
+  // to reach for, so it moves here beside the configuration rather than going away with the
+  // chrome. Without this the badge would name a recovery with nothing to press.
+  const [running, setRunning] = useState(false);
+  const [passNote, setPassNote] = useState<string | null>(null);
+  const runNow = async () => {
+    if (running) return;
+    setRunning(true);
+    setPassNote(null);
+    try {
+      const s = await api.orchestrate();
+      // The assessment is the pass's own words; falling back to a fixed string would claim a
+      // result the server never reported.
+      setPassNote(s.assessment || "Pass complete.");
+    } catch (e) {
+      setPassNote(
+        e instanceof ApiError ? e.message : "The pass failed — please try again.",
+      );
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const ceiling = block.auto_verbs_ceiling.join(", ");
 
   return (
@@ -196,6 +220,29 @@ export function OrchestratorSettings() {
         />
         <span>Let Pulse watch my sessions on a schedule</span>
       </label>
+
+      <div className={styles.aiField} data-testid="orchestrator-run">
+        <div className={styles.aiActions}>
+          <button
+            type="button"
+            className={`${styles.secBtn} shine`}
+            onClick={() => void runNow()}
+            disabled={running || !block.configured}
+          >
+            {running ? "Thinking…" : "Run now"}
+          </button>
+        </div>
+        <p className={styles.hint}>
+          Runs one pass immediately instead of waiting for the schedule. This is
+          also how you retry after a failed pass — the badge on Pulse points
+          here. Anything it proposes appears on the mission that raised it.
+        </p>
+        {passNote && (
+          <p className={styles.hint} role="status">
+            {passNote}
+          </p>
+        )}
+      </div>
 
       <div className={styles.aiField}>
         <label className={styles.aiFieldLabel} htmlFor="orch-tier">

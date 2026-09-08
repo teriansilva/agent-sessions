@@ -910,6 +910,15 @@
   [data-testid="mission-playbooks"] label {
     min-height: 44px;
   }
+
+  /* THE MANUAL PASS CAME FROM A SURFACE THAT ALREADY MET THIS FLOOR (#929).
+     "Run now" used to live in the Pulse orchestrator panel, where a browser test pinned it at
+     >=44px on a phone; moving it here must not quietly shrink it to the 35px a padding-sized
+     `.secBtn` lands on. Scoped to this control, like the playbook editor above, rather than
+     widening `.secBtn` for every secondary button in Settings. */
+  [data-testid="orchestrator-run"] button {
+    min-height: 44px;
+  }
 }
 .aiIntervalRow {
   display: flex;

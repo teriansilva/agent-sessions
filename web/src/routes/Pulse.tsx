@@ -1,29 +1,24 @@
-import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useConfig, useConfigRefresh } from "../app/config";
+import { useConfig } from "../app/config";
 import { MissionConsole } from "../components/pulse/MissionConsole";
-import { Orchestrator } from "../components/pulse/Orchestrator";
-import { api, ApiError } from "../lib/api";
+import { OrchestratorHealth } from "../components/pulse/OrchestratorHealth";
+import { api } from "../lib/api";
 // `shortCwd` is for the CARD BODY only — it rewrites a `/home/<user>/` prefix and nothing else,
 // so it does not shorten a `/tmp/…` path at all. It is not the fix for a raw-path filter chip
 // (#803); the chips group under `Default` instead. Don't reach for it in the label path.
-import { engineBadge, engineName, relTime } from "../lib/format";
+import { engineBadge, engineName } from "../lib/format";
 import { DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME } from "../lib/overviewGraph";
 import { OPERATOR_PENDING } from "../lib/orchestratorAction";
 import type {
   OrchestratorAction,
   PulseCard,
-  PulseDepth,
   PulseOverview,
   PulseState,
 } from "../types/api";
 import styles from "./Pulse.module.css";
 
-const DEPTHS: { id: PulseDepth; label: string }[] = [
-  { id: "fast", label: "FAST" },
-  { id: "medium", label: "MED" },
-  { id: "slow", label: "SLOW" },
-];
+// DEPTHS lived here for the route's FAST/MED/SLOW selector, removed with the scan chrome
+// (#929). Scan depth is configured in Settings → Pulse, which still owns it.
 
 // Display order + label for each state bucket. needs-you first, then live, then recent, idle.
 const GROUPS: { state: PulseState; label: string }[] = [
@@ -71,20 +66,9 @@ function disambiguate(label: string, cwd: string): string {
 
 export default function Pulse() {
   const cfg = useConfig()?.pulse;
-  const refreshConfig = useConfigRefresh();
   const [overview, setOverview] = useState<PulseOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [depth, setDepth] = useState<PulseDepth>(cfg?.scan_depth ?? "fast");
-  const [scanning, setScanning] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-
-  // Adopt the configured depth once the config lands (it can arrive after mount).
-  const [syncedDepth, setSyncedDepth] = useState(cfg?.scan_depth);
-  if (cfg?.scan_depth !== syncedDepth) {
-    setSyncedDepth(cfg?.scan_depth);
-    if (cfg?.scan_depth) setDepth(cfg.scan_depth);
-  }
 
   // Bumped when an action is resolved from a card, so the orchestrator panel (which owns its
   // own pending/feed) re-reads rather than showing a count for something already decided.
@@ -163,37 +147,9 @@ export default function Pulse() {
     };
   }, [applyOverview]);
 
-  const changeDepth = useCallback((d: PulseDepth) => {
-    setDepth(d);
-    // Persist so the background loop + future scans use it; a failure is non-fatal (the next
-    // Scan now still uses the selected depth via the request override).
-    void api.setPrefs({ pulse: { scan_depth: d } }).catch(() => {});
-  }, []);
-
-  const scanNow = useCallback(async () => {
-    if (scanning) return;
-    setScanning(true);
-    setNote(null);
-    setError(null);
-    try {
-      const gen = ++overviewGen.current;
-      const fresh = await api.pulseScan({ depth });
-      applyOverview(gen, fresh);
-      if (fresh.synthesis_skipped) {
-        setNote(
-          "Synthesis needs the AI endpoint — configure it in Settings → AI Review.",
-        );
-      }
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        setNote("A scan is already running — showing the last result.");
-      } else {
-        setError("Scan failed — please try again.");
-      }
-    } finally {
-      setScanning(false);
-    }
-  }, [depth, scanning, applyOverview]);
+  // `changeDepth` and `scanNow` were the route's scan controls and went with the header
+  // (#929). `routes/PulseSettings.tsx` retains both the depth/window configuration and the
+  // manual scan path, so nothing here is orphaned — only unreachable from this page.
 
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [engineFilter, setEngineFilter] = useState<string | null>(null);
@@ -282,7 +238,6 @@ export default function Pulse() {
       ? engineFilter
       : null;
 
-  const windowDays = overview?.window_days ?? cfg?.window_days ?? 3;
   // ONE list, not four sections (#754). The page used to render `Needs you` / `In flight` /
   // `Recently active` / `Idle` as separate blocks, each with its own heading and its own grid —
   // so every band broke the flow and left a partial row, which at 1900px is most of the wasted
@@ -315,6 +270,16 @@ export default function Pulse() {
 
   return (
     <div className={styles.pulse}>
+      {/* ONE HEADER, AND NO SCAN VOCABULARY (#929).
+          The window selector, the FAST/MED/SLOW depth and "Scan now" were Pulse's
+          operator-triggered scan model, left behind when the dashboard was replaced. They are
+          removed from the ROUTE only: `routes/PulseSettings.tsx` still owns `window_days`,
+          `scan_depth` and the manual scan path, so the capability is untouched and this is a
+          chrome removal rather than a feature retirement.
+
+          The live-session count replaces the scan window as orientation. The MISSION count is
+          deliberately not here: the console owns the mission list, and reaching into it from the
+          route would mean a second fetch of the same thing purely to render a number. */}
       <header className={styles.head}>
         <div className={styles.headLeft}>
           {/* The feature's own name (#895). The ROUTE stays `/pulse` — #840 named the page
@@ -324,52 +289,12 @@ export default function Pulse() {
           <span className={styles.sl} aria-hidden="true">
             //
           </span>
-          <span
-            className={styles.window}
-            title={`Recent window: ${windowDays} days`}
-          >
-            {windowDays}d
+          <span className={styles.asOf} data-testid="console-counts">
+            {cards.length} live session{cards.length === 1 ? "" : "s"}
           </span>
-          <span className={styles.sl} aria-hidden="true">
-            //
-          </span>
-          <span className={styles.asOf}>
-            {overview?.generated_at
-              ? `as of ${relTime(overview.generated_at)}`
-              : "not scanned yet"}
-          </span>
-        </div>
-        <div className={styles.headRight}>
-          <div className={styles.depth} role="group" aria-label="Scan depth">
-            {DEPTHS.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className={`${styles.depthBtn} ${depth === d.id ? styles.depthOn : ""}`}
-                aria-pressed={depth === d.id}
-                onClick={() => changeDepth(d.id)}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className={`${styles.scanBtn} shine`}
-            disabled={scanning}
-            onClick={() => void scanNow()}
-          >
-            <RefreshCw
-              size={14}
-              className={scanning ? styles.spin : ""}
-              aria-hidden="true"
-            />
-            {scanning ? "Scanning…" : "Scan now"}
-          </button>
         </div>
       </header>
 
-      {note && <p className={styles.note}>{note}</p>}
       {error && <p className={styles.err}>{error}</p>}
 
       {/* Narrow the whole list, not just the queue (#754) — the filters reach all sessions,
@@ -456,17 +381,17 @@ export default function Pulse() {
           </div>
         )}
 
-      {/* The AUTONOMY strip, below the console (#878).
-          The rule this ordering came from is unchanged — what you arrive to USE goes above what
-          you arrive to READ — but the surface it applied to has moved: Ask is no longer a
-          standalone panel here, it is the console's own composer, which the console renders
-          above its rail and thread. So the chat still leads the page; this strip is the
-          configuration you occasionally come down to change, not the thing you came for. */}
-      <Orchestrator
-        onTierChange={refreshConfig}
-        onActionsChanged={reloadOverview}
-        refreshKey={orchEpoch}
-      />
+      {/* THE AUTONOMY STRIP IS GONE (#929), and its own comment is why.
+          It read: "The AUTONOMY strip, below the console (#878) … what you arrive to USE goes
+          above what you arrive to READ" — while rendering ABOVE the console, doing the thing it
+          forbade. It was also a second control surface for settings Settings already owned, and
+          its empty state literally told the operator to go there.
+
+          What did NOT move is the evidence. `OrchestratorHealth` is read-only and renders only
+          when the orchestrator is failing: #772's distinction between "nothing needed you" and
+          "nothing was CHECKED" is invisible on a quiet page, so an outage has to be legible on
+          the page the operator is actually on, not only on the one that can fix it. */}
+      <OrchestratorHealth refreshKey={orchEpoch} />
 
       {/* MISSION CONTROL (#878). This replaces the card grid, the state-of-your-work banner and
           the standalone Ask box — a card is now a mission row in the rail, the banner is the

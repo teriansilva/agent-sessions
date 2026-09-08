@@ -197,9 +197,11 @@ test("approve delivers, and only a delivering verb offers the button", async ({
 
   await mockMissions(page);
     await page.goto("/pulse");
-  // The queue's own heading is gone (#754) — the controls ride on the session cards, and the
-  // panel just points at them.
-  await expect(page.getByText(/actions? needs? you/i)).toBeVisible();
+  // The queue's own heading went in #754 and the panel that carried the "N actions need you"
+  // summary went in #929 — the controls ride on the mission's own rows, so wait on the control
+  // this test is about rather than on a headline no longer rendered anywhere.
+  const approveReady = page.getByRole("button", { name: /^approve$/i });
+  await expect(approveReady).toBeVisible();
 
   // The escalation must NOT offer an approve button — it never reaches a session, and a
   // button implying otherwise would be a lie about what the system does.
@@ -258,17 +260,24 @@ test("evidence is pulled from the server on expand, not shipped with the proposa
   expect(evidenceCalls).toBe(1);
 });
 
-test("the autonomy strip shows the ceiling, not just the tier", async ({
+test("the autonomy copy names the ceiling, not just the tier — in Settings (#929)", async ({
   page,
 }) => {
   await mockOrchestrator(page, []);
   await mockMissions(page);
-    await page.goto("/pulse");
-  // "YOLO" alone reads as "does everything"; the copy has to say what it can actually send.
-  await expect(page.getByText(/acts on its own:/i)).toContainText("continue");
-  await expect(
-    page.getByText(/everything else always waits for you/i),
-  ).toBeVisible();
+  // #929 moved every autonomy control off the route and into Settings, so this is asserted
+  // where the operator now sets it. The property under test is unchanged and is the reason the
+  // copy exists: "YOLO" alone reads as "does everything", so it has to say what it can send.
+  await page.goto("/settings/ai-review");
+  const ceiling = page.getByText(/only ever sends/i);
+  await expect(ceiling).toBeVisible();
+  await expect(ceiling).toContainText("continue");
+  await expect(ceiling).toContainText(/always waits for your approval/i);
+
+  // And it is genuinely gone from the route — a second copy drifting out of sync with the
+  // control is what #929 is about.
+  await page.goto("/pulse");
+  await expect(page.getByText(/acts on its own:/i)).toHaveCount(0);
 });
 
 test.describe("mobile", () => {

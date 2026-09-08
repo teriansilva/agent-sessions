@@ -238,8 +238,13 @@
   border-bottom: 1px solid var(--line);
 }
 @media (min-width: 1400px) {
-  /* The detail column is persistent, so there is nothing to switch between. */
-  .stops {
+  /* Hidden only where a detail column ACTUALLY replaces it (#929). This used to hide `.stops`
+     on width alone, justified by "the detail column is persistent" — it is not: it belongs to
+     `MissionBody`, so the untracked view had no column and no tabs, and OBJECTIVES/TIMELINE
+     were reachable on a phone and unreachable on a desktop. The component sets
+     `.stopsReplaced` when the column is rendered, so the rule now keys off the fact rather
+     than inferring it from the viewport. */
+  .stopsReplaced {
     display: none;
   }
 }
@@ -1336,4 +1341,18 @@
   color: var(--on-accent);
   border-color: var(--accent);
   flex: none;
+}
+
+/* ONE COMPOSER, TWO POSITIONS (#930 review 1, finding 1).
+ * The untracked pane shows the composer above the session list on a fresh install and below it
+ * otherwise. Expressing that as two conditional mounts made it a REMOUNT rather than a move, and
+ * a remount discards the operator's draft — which lands exactly when the mission list resolves
+ * empty, i.e. while they are most likely to be typing. The mount is therefore fixed in the DOM
+ * and only its ORDER changes, which needs the pane to be a flex column. */
+.untrackedPane {
+  display: flex;
+  flex-direction: column;
+}
+.composerBelow {
+  order: 1;
 }

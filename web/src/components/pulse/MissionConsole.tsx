@@ -448,7 +448,8 @@ function MissionBody({
         // The mission cannot be in `dispatching` without something in flight, so this widens what
         // stays on screen, never what may be started: the server is still the only thing that
         // admits a spawn, and `busy` disables the button while a launch is running.
-        (d.mission?.state === "running" || d.mission?.state === "dispatching") &&
+        (d.mission?.state === "running" ||
+          d.mission?.state === "dispatching") &&
         d.mission?.spawn_engine &&
         d.mission?.spawn_cwd
           ? {
@@ -607,7 +608,11 @@ function MissionBody({
       {/* The persistent detail column at ≥1400px. It STACKS objectives, context and the timeline
           — which is why mobile splits at that one seam into three stops rather than four: the
           column is not three separate things. */}
-      <aside className={styles.detail} aria-label="Mission detail">
+      <aside
+        className={styles.detail}
+        aria-label="Mission detail"
+        data-testid="detail-column"
+      >
         {objectives}
         <div className={styles.section}>Timeline</div>
         {timeline}
@@ -681,8 +686,17 @@ export function MissionConsole({
   }>({ rows: [], total: 0, consumed: 0 });
   const missions = list.rows;
   const [storeError, setStoreError] = useState<string | null>(null);
+  /** Has a mission-list read SUCCEEDED for the scope on screen? (#929)
+   *
+   *  `list.rows` is `[]` both before the first read and after a read that found nothing, so the
+   *  array alone cannot tell "no missions" from "no answer yet". The first-run treatment below
+   *  is gated on this, deliberately: showing "start your first mission" because the store could
+   *  not be read would be the same absence-read-as-evidence mistake the mission work has already
+   *  paid for twice. Set only in `applyList`, which runs on a fenced success. */
+  const [listLoaded, setListLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [stop, setStop] = useState<Stop>("THREAD");
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [adopting, setAdopting] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -853,6 +867,7 @@ export function MissionConsole({
       // happened to succeed. The failure path already fences on `listGen` for exactly this
       // reason; the success path was the half that did not.
       if (gen < listGen.current || scope !== archivedRef.current) return;
+      setListLoaded(true); // a fenced, in-scope answer arrived — see `listLoaded`
       appliedGen.current = gen;
       // …AND THE WINDOW IS WHAT THIS ANSWER OPENED. An authoritative read replaces the rail, so
       // it also decides how wide the rail now is — including narrower, when the scope changed or
@@ -1226,6 +1241,43 @@ export function MissionConsole({
     return untracked.length ? UNTRACKED_VIEW : null;
   }, [missions, untracked]);
   const shown = selected ?? autoSelected;
+  /** Is a persistent detail column rendered beside the pane? Only `MissionBody` draws one, so
+   *  this is exactly "a real mission is selected" (#929). The stop strip keys off THIS rather
+   *  than off the viewport: the old rule hid the tabs at ≥1400px on the theory that a column
+   *  always replaced them, which is false in the untracked view — leaving OBJECTIVES and
+   *  TIMELINE unreachable on desktop and reachable on a phone. */
+  const hasDetailColumn = !!shown && shown !== UNTRACKED_VIEW;
+  /** A genuinely fresh install: the ACTIVE rail has been read and holds nothing (#929).
+   *
+   *  Every clause earns its place. `listLoaded` separates "none" from "not yet"; `!storeError`
+   *  keeps the invitation away from a console that could not read the store; `!archived` keeps
+   *  it out of the archived scope, where an empty rail is ordinary rather than first-run. With
+   *  none of them, a first-run panel would appear on a degraded or still-loading page and tell
+   *  the operator their work does not exist. */
+  const firstRun =
+    listLoaded && !storeError && !archived && missions.length === 0;
+
+  /** The honest answer to "show me the objectives" when there is no mission to show them for
+   *  (#929) — a DELIBERATE explanatory empty state, never invented mission data.
+   *
+   *  Hoisted to a value because BOTH no-mission shapes need it and neither may be replaced by
+   *  it: `shown` is the UNTRACKED sentinel when sessions exist and `null` when nothing does,
+   *  and each of those branches owns a composer whose draft must survive a tab press
+   *  (#930 review 2, finding 1). Rendering this as a sibling branch unmounted them. */
+  const noMissionStop =
+    stop === "THREAD" ? null : (
+      <div
+        className={styles.empty}
+        data-testid={`no-mission-${stop.toLowerCase()}`}
+      >
+        <div className={styles.emptyLead}>No mission selected.</div>
+        <div>
+          {stop === "OBJECTIVES"
+            ? "Objectives belong to a mission — they appear once you choose one from the rail or start a new one."
+            : "A timeline belongs to a mission — it appears once you choose one from the rail or start a new one."}
+        </div>
+      </div>
+    );
   // Published in an effect, not during render: a ref write in the render phase is a lint error
   // and, more to the point, a render that is thrown away would still have published.
   useEffect(() => {
@@ -1235,6 +1287,26 @@ export function MissionConsole({
     visitRef.current += 1;
     setVisitTk(visitRef.current);
   }, [shown, archived]);
+
+  /** A CHANGE OF WHAT IS SHOWN STARTS AT THE THREAD (#930 review 2, finding 2).
+   *
+   *  `select()` already does this, but `shown` is `selected ?? autoSelected` — so a mission can
+   *  be ENTERED without anyone selecting it, when a list arrives and `autoSelected` picks the
+   *  first row. The stop then survives that entry, and at >=1400px the consequence is not
+   *  cosmetic: `hasDetailColumn` becomes true, the tab strip is hidden because the detail column
+   *  is meant to have replaced it, and `MissionBody` goes on rendering OBJECTIVES in the main
+   *  pane. The thread and its composer are then unreachable with no control on screen to get
+   *  back — clicking the same mission in the rail is the only way out, which is precisely the
+   *  tell that this is stale state rather than missing data.
+   *
+   *  Keyed on `shown` rather than on the auto/explicit distinction: a tab press does not change
+   *  `shown`, so switching stops on a mission still works exactly as before. */
+  const enteredRef = useRef(shown);
+  useEffect(() => {
+    if (enteredRef.current === shown) return;
+    enteredRef.current = shown;
+    setStop("THREAD");
+  }, [shown]);
 
   /** Adoption needs a real, LIVE mission. In the UNTRACKED view `shown` is the sentinel, so the
    *  target is the first mission that can actually hold work — and when there is none the
@@ -1272,6 +1344,14 @@ export function MissionConsole({
     setSelected(null);
     setRail({ rows: [], total: 0, consumed: 0 });
     setStoreError(null);
+    // …AND THE EVIDENCE THAT A LIST WAS READ, which belongs to the scope that produced it
+    // (#930 review 1, finding 4). `listLoaded` is what separates "no missions" from "not asked
+    // yet", so carrying the previous scope's successful read across a scope change makes
+    // `firstRun` true the instant Archived → Active is clicked — inviting the operator to start
+    // their first mission while their actual active list is still in flight. Cleared here, in
+    // the same synchronous step as the rows, so no render ever sees rows from neither scope
+    // alongside a loaded flag from the old one.
+    setListLoaded(false);
   }, []);
 
   /** A mission was created from a composer (#889).
@@ -1552,13 +1632,28 @@ export function MissionConsole({
           >
             ☰
           </button>
+          {/* NOT a second "MISSION CONTROL" (#929). The route's own <h1> says that a few
+              pixels above, so this fell back to printing the page's name twice — one of the
+              things that made the page read as two designs stacked. This says which MISSION
+              you are looking at, or what to do if you are not looking at one. */}
           <span className={styles.missionTitle} data-testid="console-title">
             {title ??
-              (missions.length ? "Select a mission" : "MISSION CONTROL")}
+              (missions.length ? "Select a mission" : "No missions yet")}
           </span>
         </div>
 
-        <div className={styles.stops} role="tablist" aria-label="Mission view">
+        {/* HIDDEN ONLY WHEN SOMETHING REPLACES IT (#929).
+            The rule used to be width alone: `@media (min-width: 1400px) { .stops { display:none } }`,
+            justified by "the detail column is persistent, so there is nothing to switch between".
+            The column is not persistent — it belongs to `MissionBody`, so with no mission selected
+            there was no column AND no tabs, and OBJECTIVES/TIMELINE were unreachable on desktop
+            while remaining reachable on a phone. The class says whether the replacement is
+            actually there, and the media query keys off that instead of guessing from width. */}
+        <div
+          className={`${styles.stops} ${hasDetailColumn ? styles.stopsReplaced : ""}`}
+          role="tablist"
+          aria-label="Mission view"
+        >
           {STOPS.map((s) => (
             <button
               key={s}
@@ -1601,7 +1696,64 @@ export function MissionConsole({
         ) : null}
 
         {shown === UNTRACKED_VIEW ? (
-          <div className={styles.pane} data-testid="pane">
+          <div
+            className={`${styles.pane} ${styles.untrackedPane}`}
+            data-testid="pane"
+          >
+            {/* THE EXPLANATORY STOP RENDERS *INSIDE* THIS BRANCH, NOT INSTEAD OF IT
+                (#930 review 2, finding 1). As a sibling branch it replaced the whole pane —
+                composer included — so OBJECTIVES → THREAD was an unmount round trip and the
+                operator's draft did not survive a tab they pressed to look at something. The
+                stop now swaps the CONTENT around a composer that stays mounted throughout,
+                which is the same reasoning as the first-run ordering fix one review earlier:
+                the composer's position may move, its identity may not. */}
+            {noMissionStop}
+            {/* THE FIRST-RUN INVITATION, ABOVE THE LIST (#929).
+                With no mission, `adoptTarget` is null and EVERY card's ADOPT is disabled — so
+                the page led with a list of dead buttons and hid the one live action beneath
+                them. This puts the way out first. It is shown only for a rail that was
+                successfully READ and found empty; see `firstRun`. */}
+            {firstRun && stop === "THREAD" ? (
+              <div className={styles.empty} data-testid="first-run">
+                <div className={styles.emptyLead}>
+                  Start your first mission.
+                </div>
+                <div>
+                  A mission plans the work, dispatches an agent and drives it to
+                  a pull request. Describe what you want done — or ADOPT a
+                  running session into a mission once you have one.
+                </div>
+              </div>
+            ) : null}
+            {/* Ask lives here too. Until #871 the composer is not mission-qualified — it asks
+                about your past work — and gating it behind "create a mission first" would make
+                it unreachable on a fresh install, which the Ask box never was. Keyed on the
+                sentinel so its turns are filed under this view rather than a mission.
+
+                It sits ABOVE the list on a fresh install and below it otherwise (#929): with no
+                mission every ADOPT is disabled, so shipping the only live action beneath a page
+                of dead buttons made the way out the last thing an operator found.
+
+                THE ONLY COMPOSER ON THIS BRANCH, AND IT NEVER MOVES PARENTS (#930 review 1,
+                finding 1). It renders above the session list on a fresh install and below it
+                otherwise — but as TWO conditional mounts that was a remount, not a move: an
+                operator typing while the mission list was still in flight lost the draft the
+                instant an empty list arrived and flipped `firstRun`. The mount is fixed here
+                and only its visual order changes, so the draft, the mode and any pending send
+                survive the answer landing. */}
+            <div className={firstRun ? undefined : styles.composerBelow}>
+              <Composer
+                missionId={UNTRACKED_VIEW}
+                configured={configured}
+                turns={turns[UNTRACKED_VIEW] ?? []}
+                onTurns={onTurns}
+                visit={visit}
+                isVisitCurrent={isVisitCurrent}
+                onCreated={onCreated}
+              />
+            </div>
+            {stop !== "THREAD" ? null : (
+              <>
             <div className={styles.empty}>
               <div className={styles.emptyLead}>
                 {untracked.length} live{" "}
@@ -1609,8 +1761,9 @@ export function MissionConsole({
                 mission.
               </div>
               <div>
-                ADOPT one into a mission from the rail, or act on what it is
-                waiting for here.
+                {firstRun
+                  ? "ADOPT becomes available as soon as a mission exists — until then, act on what a session is waiting for here."
+                  : "ADOPT one into a mission from the rail, or act on what it is waiting for here."}
               </div>
             </div>
             {/* The sessions themselves, not only their decisions.
@@ -1759,19 +1912,8 @@ export function MissionConsole({
                 </li>
               ))}
             </ul>
-            {/* Ask lives here too. Until #871 the composer is not mission-qualified — it asks
-                about your past work — and gating it behind "create a mission first" would make
-                it unreachable on a fresh install, which the Ask box never was. Keyed on the
-                sentinel so its turns are filed under this view rather than a mission. */}
-            <Composer
-              missionId={UNTRACKED_VIEW}
-              configured={configured}
-              turns={turns[UNTRACKED_VIEW] ?? []}
-              onTurns={onTurns}
-              visit={visit}
-              isVisitCurrent={isVisitCurrent}
-              onCreated={onCreated}
-            />
+              </>
+            )}
           </div>
         ) : shown ? (
           <MissionBody
@@ -1789,7 +1931,10 @@ export function MissionConsole({
           />
         ) : (
           <div className={styles.pane} data-testid="pane">
-            {filtered ? (
+            {/* Same shape as the untracked branch above, for the same reason: the stop swaps
+                the CONTENT and never the composer (#930 review 2, finding 1). */}
+            {noMissionStop}
+            {stop !== "THREAD" ? null : filtered ? (
               <div
                 className={styles.empty}
                 data-testid="console-filtered-empty"

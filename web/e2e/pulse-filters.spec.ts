@@ -247,6 +247,28 @@ test("a scan that invalidates the selection does not leave a blank page", async 
   // The worse half of the same defect: after a scan the selected project may not exist, and if
   // the new overview has too few facets to draw the filter row there is no chip left to undo it.
   let scanned = false;
+  const ACTION = {
+    id: "act-1",
+    state: "proposed",
+    ts: NOW,
+    expires_at: NOW + 1800,
+    tier: "suggest",
+    session_id: "codex:bbb",
+    engine: "codex",
+    title: "Relay cap",
+    project: "battlelab",
+    project_id: "p4",
+    verb: "continue",
+    confidence: 0.86,
+    rationale: "finished the edit and stopped without confirming",
+    evidence: "none",
+  };
+  // The selected card carries the action, so approving it is what triggers the refetch.
+  const CARDS_WITH_ACTION = CARDS.map((c) =>
+    (c as { id: string }).id === "codex:bbb"
+      ? { ...c, pending_action: ACTION }
+      : c,
+  );
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({
@@ -259,21 +281,17 @@ test("a scan that invalidates the selection does not leave a blank page", async 
                 project: proj("p9", "solo"),
               }),
             ]
-          : CARDS,
+          : CARDS_WITH_ACTION,
       ),
     }),
   );
-  await page.route(/\/api\/pulse\/scan$/, async (r) => {
+  // #929 removed "Scan now" from the route, so the refetch is driven through the path that
+  // survived it: deciding an action calls `reloadOverview`, which re-reads /api/pulse. The
+  // property under test is unchanged — an overview arriving with fewer facets than the live
+  // selection must reconcile rather than leave a page filtered down to nothing.
+  await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
     scanned = true;
-    await r.fulfill({
-      json: overview([
-        card({
-          id: "claude:zzz",
-          title: "Only one left",
-          project: proj("p9", "solo"),
-        }),
-      ]),
-    });
+    await r.fulfill({ json: { ...ACTION, state: "delivered" } });
   });
 
   await mockMissions(page);
@@ -281,7 +299,7 @@ test("a scan that invalidates the selection does not leave a blank page", async 
   await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
   await expect(page.getByText("Relay cap")).toBeVisible();
 
-  await page.getByRole("button", { name: /scan now/i }).click();
+  await page.getByRole("button", { name: /^approve$/i }).click();
 
   // The stale `battlelab` selection is reconciled away, so the surviving session is visible.
   await expect(page.getByText("Only one left")).toBeVisible();

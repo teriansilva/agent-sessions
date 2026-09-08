@@ -101,6 +101,21 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 
 ---
 
+## MISSION CONTROL — where the controls live
+
+The `/pulse` route is **MISSION CONTROL**: a rail of missions, the selected mission's thread,
+and the live sessions that belong to no mission yet. It carries no configuration of its own.
+Everything that *tunes* the orchestrator lives in Settings, and the route shows only evidence
+and the actions that operate on what is on screen (#929).
+
+| Control | Where it is | Notes |
+|---|---|---|
+| Autonomy tier, confidence threshold, interval, nudge text | **Settings → AI Review → Pulse orchestrator** | The tier's copy also names the verb ceiling, so "YOLO" never implies more than it grants. |
+| **Run now** — one orchestrator pass immediately | **Settings → AI Review → Pulse orchestrator** | Also the retry after a failed pass. The degraded badge on the route links here. |
+| Scan depth, recent window, manual scan | **Settings → Pulse** | A scan refreshes the overview; it is not an orchestrator pass. |
+| Degraded-endpoint warning | On the route, read-only | Shown once the server reports **two consecutive failures**; a single failure stays silent, because a badge that shouts at every blip is one people learn to ignore. It renders nothing when healthy — a calm page and an unwatched page look identical otherwise, which is the point. |
+| Project / agent filter chips | On the route | These narrow the session list, so they stay with the list. |
+
 ## AI prompts
 
 Every system prompt the app sends goes through one registry (`src/agent_sessions/prompts.py`)
@@ -113,8 +128,8 @@ for; it never changes *where* the request goes (that is the AI endpoint block ab
 | Session recap | The chronological brief in the session-brief modal. |
 | Handoff brief | The state / open items / next steps document seeded into a handoff target. |
 | Project classifier | Auto-sort's session → project assignment. |
-| Overview banner | The recap paragraph at the top of Pulse. |
-| Session line | The one-liner on each Pulse card (scan depth ≥ medium). |
+| Overview banner | The recap paragraph over the MISSION CONTROL session list. |
+| Session line | The one-liner on each live session (scan depth ≥ medium). |
 | Ask — catalog · Ask — verify | Pulse Ask's two retrieval stages. |
 | Scheduled pass | The orchestrator's continue / choose / answer / escalate decision. |
 | Chat router · Chat instruct | Pulse chat: which pipeline a message takes, and turning an instruction into actions. |

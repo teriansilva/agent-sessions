@@ -383,39 +383,29 @@ test("the bell can actually be emptied — per-row and all at once (#752)", asyn
   await expect(panel.getByText(/nothing needs you right now/i)).toBeVisible();
 });
 
-test("'Run now' takes its own full-width row instead of sitting inline with the threshold text", async ({
+test("'Run now' is still a 44px target where it now lives, and does not overflow (#929)", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile layout");
+  // This guarded an 86px button wedged beside "conf >= 0.75 - below -> escalate" on a wrapped
+  // second line of the orchestrator panel's meter row. #929 removed that panel from the route
+  // and moved the control into Settings, so the specific collision cannot recur — the row is
+  // gone. What must NOT be lost with it is the reason the fix mattered: on a phone this is a
+  // tap target, and it has to be reachable without sideways scrolling.
   await mockMissions(page);
-    await page.goto("/pulse");
-  // The queue's heading is gone (#754) — wait on the panel this test is actually about.
+  await page.goto("/settings/ai-review");
   const run = page.getByRole("button", { name: /run now/i });
   await expect(run).toBeVisible();
-  const rb = (await run.boundingBox())!;
-  const rowBox = await page.evaluate(() => {
-    const el = document.querySelector('[class*="meterRow"]')!;
-    const r = el.getBoundingClientRect();
-    return { x: r.x, width: r.width, bottom: r.bottom };
-  });
 
-  // Before the fix: 86px wide at x=208, wedged beside "conf ≥ 0.75 · below → escalate" on the
-  // wrapped second line. Now it spans the row and owns its own line.
-  expect(rb.width).toBeGreaterThan(rowBox.width * 0.9);
+  const rb = (await run.boundingBox())!;
   expect(rb.height).toBeGreaterThanOrEqual(44);
 
-  // Nothing else shares its line — the collision is what made the block unreadable.
-  const overlaps = await page.evaluate(() => {
-    const btn = Array.from(document.querySelectorAll("button")).find((b) =>
-      /run now/i.test(b.textContent || ""),
-    )!;
-    const br = btn.getBoundingClientRect();
-    return Array.from(document.querySelectorAll('[class*="meterRow"] > *'))
-      .filter((el) => el !== btn)
-      .filter((el) => {
-        const r = el.getBoundingClientRect();
-        return r.width > 0 && r.bottom > br.top + 1 && r.top < br.bottom - 1;
-      }).length;
-  });
-  expect(overlaps).toBe(0);
+  // Inside the viewport on both edges — the overflow half of the original complaint.
+  const width = page.viewportSize()!.width;
+  expect(rb.x).toBeGreaterThanOrEqual(0);
+  expect(rb.x + rb.width).toBeLessThanOrEqual(width + 1);
+  const scrollsSideways = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth + 1,
+  );
+  expect(scrollsSideways).toBe(false);
 });

@@ -19,7 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
-import { api, ApiError } from "../lib/api";
+import { api } from "../lib/api";
 import type {
   AppConfig,
   Mission,
@@ -193,61 +193,23 @@ beforeEach(() => {
   vi.mocked(api.mission)
     .mockReset()
     .mockResolvedValue(mission({ events: [], events_next_seq: null }));
-  vi.mocked(api.missionObjectives).mockReset().mockResolvedValue({ objectives: [] });
-  vi.mocked(api.missionContext)
+  vi.mocked(api.missionObjectives)
     .mockReset()
-    .mockResolvedValue({
-      id: "msn_1",
-      project_id: "agent-sessions",
-      cwd: "/repo",
-      sessions: [],
-      git: null,
-      git_error: null,
-    });
+    .mockResolvedValue({ objectives: [] });
+  vi.mocked(api.missionContext).mockReset().mockResolvedValue({
+    id: "msn_1",
+    project_id: "agent-sessions",
+    cwd: "/repo",
+    sessions: [],
+    git: null,
+    git_error: null,
+  });
 });
 
 // =============================================================================================
 // The header — unchanged by this phase. These three are kept VERBATIM; the scan controls and
 // the degraded-scan notice were never part of the grid.
 // =============================================================================================
-
-test("Scan now renders the 409 'already running' against the cached overview (#441 P5)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({ cards: [card({ id: "claude:c1", title: "Cached row", state: "idle" })] }),
-  );
-  vi.mocked(api.pulseScan).mockRejectedValue(
-    new ApiError(409, "a Pulse scan is already running"),
-  );
-  renderPulse();
-  await screen.findByText("Cached row");
-  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
-  expect(await screen.findByText(/a scan is already running/i)).toBeInTheDocument();
-  // The cached overview is still shown, not replaced by an error screen. The original asserted
-  // this on a card's LED; the row it now asserts on is the same session, in its new home.
-  expect(within(pane()).getByText("Cached row")).toBeInTheDocument();
-});
-
-test("changing the depth persists the pref and scans at that depth (#441 P5)", async () => {
-  vi.mocked(api.pulseScan).mockResolvedValue(overview({ scan_depth: "slow" }));
-  renderPulse();
-  await screen.findByRole("button", { name: /^slow$/i });
-  await userEvent.click(screen.getByRole("button", { name: /^slow$/i }));
-  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { scan_depth: "slow" } });
-  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
-  expect(api.pulseScan).toHaveBeenCalledWith(
-    expect.objectContaining({ depth: "slow" }),
-  );
-});
-
-test("a degraded scan (synthesis skipped) tells the user to configure the endpoint (#441 P5)", async () => {
-  vi.mocked(api.pulseScan).mockResolvedValue(
-    overview({ synthesis_skipped: true }),
-  );
-  renderPulse();
-  await screen.findByRole("button", { name: /scan now/i });
-  await userEvent.click(screen.getAllByRole("button", { name: /scan now/i })[0]);
-  expect(await screen.findByText(/ai endpoint/i)).toBeInTheDocument();
-});
 
 // =============================================================================================
 // UNTRACKED — where a session that used to be a card now lives.
@@ -262,8 +224,17 @@ test("a live session with no mission lists under UNTRACKED, with its line (#441 
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
-        card({ id: "codex:c-need", engine: "codex", title: "Deploy step", state: "needs_you" }),
-        card({ id: "claude:c-live", title: "Failing build", state: "in_flight" }),
+        card({
+          id: "codex:c-need",
+          engine: "codex",
+          title: "Deploy step",
+          state: "needs_you",
+        }),
+        card({
+          id: "claude:c-live",
+          title: "Failing build",
+          state: "in_flight",
+        }),
       ],
     }),
   );
@@ -302,7 +273,11 @@ test("shows the per-session synthesis line instead of the summary when present (
 
 test("with no synthesis, the review's summary is still the session's line (#781)", async () => {
   vi.mocked(api.pulse).mockResolvedValue(
-    overview({ cards: [card({ id: "claude:c1", state: "idle", ai_summary: "reviewed it" })] }),
+    overview({
+      cards: [
+        card({ id: "claude:c1", state: "idle", ai_summary: "reviewed it" }),
+      ],
+    }),
   );
   renderPulse();
   expect(await screen.findByText("reviewed it")).toBeInTheDocument();
@@ -359,7 +334,11 @@ test("a live action replaces the history line, and renders its controls (#777)",
           id: "claude:c1",
           state: "needs_you",
           pending_action: pact({ state: "proposed", verb: "continue" }),
-          last_action: pact({ id: "old", state: "delivered", verb: "continue" }),
+          last_action: pact({
+            id: "old",
+            state: "delivered",
+            verb: "continue",
+          }),
         }),
       ],
     }),
@@ -386,7 +365,9 @@ test("a decision on an untracked session is never dropped (#840)", async () => {
         card({
           id: "claude:c1",
           state: "needs_you",
-          pending_action: pact({ rationale: "Blocked on a choice only you can make." }),
+          pending_action: pact({
+            rationale: "Blocked on a choice only you can make.",
+          }),
         }),
       ],
     }),
@@ -430,7 +411,9 @@ test("unadopted cwds collapse into one Default chip, never a raw path (#803)", a
     }),
   );
   renderPulse();
-  expect(await screen.findByRole("button", { name: /default/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: /default/i }),
+  ).toBeInTheDocument();
   expect(screen.queryByText(/tmp\/scratch-one/)).not.toBeInTheDocument();
   expect(screen.queryByText(/tmp\/scratch-two/)).not.toBeInTheDocument();
 });
@@ -456,7 +439,9 @@ test("selecting Default narrows UNTRACKED to exactly the unadopted sessions (#80
     }),
   );
   renderPulse();
-  await userEvent.click(await screen.findByRole("button", { name: /default/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /default/i }),
+  );
   expect(within(pane()).getByText("Scratch one")).toBeInTheDocument();
   expect(within(pane()).queryByText("Real project")).not.toBeInTheDocument();
 });
@@ -505,7 +490,9 @@ test("a folder ref with no usable id still routes to Default (#803)", async () =
     }),
   );
   renderPulse();
-  expect(await screen.findByRole("button", { name: /default/i })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("button", { name: /default/i }),
+  ).toBeInTheDocument();
 });
 
 // =============================================================================================
@@ -540,7 +527,9 @@ test("a store that will not answer says so, and is not 'you have no missions' (#
 });
 
 test("a mission's own decision renders in its thread (#840 §15)", async () => {
-  const held = mission({ sessions: [{ session_key: "claude:c1", removed_at: null }] });
+  const held = mission({
+    sessions: [{ session_key: "claude:c1", removed_at: null }],
+  });
   vi.mocked(api.missions).mockResolvedValue({
     missions: [listRow({ session_keys: ["claude:c1"] })],
     total: 1,
@@ -549,7 +538,11 @@ test("a mission's own decision renders in its thread (#840 §15)", async () => {
     facets: { projects: [], states: [] },
     store_error: null,
   });
-  vi.mocked(api.mission).mockResolvedValue({ ...held, events: [], events_next_seq: null });
+  vi.mocked(api.mission).mockResolvedValue({
+    ...held,
+    events: [],
+    events_next_seq: null,
+  });
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
@@ -591,7 +584,6 @@ test("with no AI endpoint the composer is disabled and the notice says what is o
   expect(api.pulseAsk).not.toHaveBeenCalled();
 });
 
-
 test("switching missions starts a clean composer — the console KEYS the mission body (#878)", async () => {
   // The console's half of the composer's ownership guarantee, and the half its own test file
   // cannot see: `Composer.test.tsx` supplies the key itself, so it stays green even if the
@@ -619,13 +611,19 @@ test("switching missions starts a clean composer — the console KEYS the missio
   renderPulse({ configured: true } as PulseConfig);
 
   await screen.findByText("Mission A");
-  await userEvent.type(screen.getByTestId("composer-input"), "half-written thought");
-  expect(screen.getByTestId("composer-input")).toHaveValue("half-written thought");
+  await userEvent.type(
+    screen.getByTestId("composer-input"),
+    "half-written thought",
+  );
+  expect(screen.getByTestId("composer-input")).toHaveValue(
+    "half-written thought",
+  );
 
   await userEvent.click(screen.getByText("Mission B"));
-  await waitFor(() => expect(screen.getByTestId("composer-input")).toHaveValue(""));
+  await waitFor(() =>
+    expect(screen.getByTestId("composer-input")).toHaveValue(""),
+  );
 });
-
 
 test("a filter that excludes a held session does NOT withdraw its mission's decision (#879)", async () => {
   // The chips narrow the session LIST. They were never meant to withdraw a decision — but the
@@ -641,7 +639,12 @@ test("a filter that excludes a held session does NOT withdraw its mission's deci
   });
   vi.mocked(api.missions).mockResolvedValue({
     missions: [
-      listRow({ id: "msn_a", title: "Mission A", project_id: "alpha", session_keys: ["claude:c1"] }),
+      listRow({
+        id: "msn_a",
+        title: "Mission A",
+        project_id: "alpha",
+        session_keys: ["claude:c1"],
+      }),
     ],
     total: 1,
     limit: 50,
@@ -681,12 +684,13 @@ test("a filter that excludes a held session does NOT withdraw its mission's deci
   expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
 
   // Filter to the OTHER project, which excludes the held session entirely.
-  await userEvent.click(await screen.findByRole("button", { name: /^beta\s+1$/i }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: /^beta\s+1$/i }),
+  );
 
   // The mission is still selected, so its decision is still there to be made.
   expect(screen.getByText("Tests were not run.")).toBeInTheDocument();
 });
-
 
 test("mission 101 is reachable — the rail follows `total`, it does not cap (#879)", async () => {
   // The rail's contract is "every mission". The first version asked for 100 and ignored
@@ -697,8 +701,22 @@ test("mission 101 is reachable — the rail follows `total`, it does not cap (#8
   const page2 = [listRow({ id: "msn_100", title: "Mission 100" })];
   vi.mocked(api.missions).mockImplementation(async (opts) =>
     (opts?.offset ?? 0) === 0
-      ? { missions: page1, total: 101, limit: 100, offset: 0, facets: { projects: [], states: [] }, store_error: null }
-      : { missions: page2, total: 101, limit: 100, offset: 100, facets: { projects: [], states: [] }, store_error: null },
+      ? {
+          missions: page1,
+          total: 101,
+          limit: 100,
+          offset: 0,
+          facets: { projects: [], states: [] },
+          store_error: null,
+        }
+      : {
+          missions: page2,
+          total: 101,
+          limit: 100,
+          offset: 100,
+          facets: { projects: [], states: [] },
+          store_error: null,
+        },
   );
   vi.mocked(api.mission).mockResolvedValue(
     mission({ id: "msn_0", events: [], events_next_seq: null }),
@@ -766,4 +784,33 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
   await waitFor(() =>
     expect(within(pane).queryByTestId("timeline-more")).not.toBeInTheDocument(),
   );
+});
+
+/** The route's scan chrome moved out (#929).
+ *
+ * Three tests lived here for the header's `Scan now` button and its FAST/MED/SLOW depth
+ * selector: the 409 "already running" path, depth persistence, and the synthesis-skipped
+ * notice. #929 removed that chrome from the ROUTE — it was Pulse's operator-triggered scan
+ * model, left behind when MISSION CONTROL replaced the dashboard.
+ *
+ * They are NOT replaced by weaker assertions here, because the behaviour they covered did not
+ * move to this page: `routes/PulseSettings.tsx` owns `scan_depth`, `window_days` and the manual
+ * scan path, and `PulseSettings.test.tsx` is where that surface is pinned. Deleting a test whose
+ * subject moved is right; quietly re-asserting a shadow of it here would be worse than nothing.
+ *
+ * What this file DOES still pin about the removal is below: the chrome is gone from the route.
+ */
+
+test("the route carries no scan chrome — that lives in Settings now (#929)", async () => {
+  renderPulse();
+  await screen.findByText(/MISSION CONTROL/i);
+  expect(screen.queryByRole("button", { name: /scan now/i })).toBeNull();
+  for (const d of ["FAST", "MED", "SLOW"]) {
+    expect(screen.queryByRole("button", { name: d })).toBeNull();
+  }
+  // …and the header now orients on live sessions rather than on when a scan last ran.
+  // (The project/agent chips are a MISSION CONTROL surface and stay, but they render only
+  // when the overview has facets, so they are pinned in the filter tests rather than here.)
+  expect(screen.queryByText(/not scanned yet/i)).toBeNull();
+  expect(screen.getByTestId("console-counts")).toBeInTheDocument();
 });

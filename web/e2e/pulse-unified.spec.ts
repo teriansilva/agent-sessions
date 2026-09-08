@@ -212,12 +212,14 @@ test("project and agent filters narrow the whole list and compose", async ({
   await expect(page.getByText("Switch the default model")).toBeVisible();
 });
 
-test("a manual pass puts its new actions onto the cards, not just in the panel", async ({
+test("the manual pass lives in Settings and reports what the pass actually said (#929)", async ({
   page,
 }) => {
-  // The panel says "N actions need you — shown on the session cards below". Without telling the
-  // page to reload, that claim was false until a manual refresh: the pass created the action
-  // but no card carried it (#754 review).
+  // #754's defect was a panel on /pulse claiming "N actions need you" while no card carried
+  // one. #929 removes that panel, so the claim cannot desync — but "Run now" was the operator's
+  // only way to force a pass, and the degraded badge still points at it, so it moved to
+  // Settings rather than going away. This asserts the control exists there and surfaces the
+  // pass's own words; a fixed "done" string would report a result the server never gave.
   let scanned = false;
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, (r) =>
@@ -250,20 +252,28 @@ test("a manual pass puts its new actions onto the cards, not just in the panel",
   });
 
   await mockMissions(page);
+  await page.goto("/settings/ai-review");
+  const run = page.getByRole("button", { name: /run now/i });
+  await expect(run).toBeVisible();
+  await run.click();
+
+  // The pass's own assessment, not a canned string.
+  await expect(page.getByText("one action")).toBeVisible();
+  expect(scanned).toBe(true);
+
+  // And the route no longer carries a second copy of the control (#929).
   await page.goto("/pulse");
-  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
-
-  await page.getByRole("button", { name: /run now/i }).click();
-
-  // The card gains the control without a reload.
-  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /run now/i })).toHaveCount(0);
 });
 
-test("resolving from a card also updates the panel's count and feed", async ({
+test("resolving from a card still re-reads the orchestrator's own state", async ({
   page,
 }) => {
   // The panel owns its own pending/feed. Without telling it, approving on a card left
-  // "1 action needs you" sitting above a card that no longer had one (#754 review).
+  // "1 action needs you" sitting above a card that no longer had one (#754 review). #929
+  // removed that headline, but not the wiring underneath it — the health badge reads the same
+  // endpoint, so a settled action must still refresh it. The fetch count is deliberately what
+  // is asserted (see below); with the headline gone it is now the ONLY honest witness.
   let settled = false;
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, (r) =>
@@ -309,15 +319,16 @@ test("resolving from a card also updates the panel's count and feed", async ({
 
   await mockMissions(page);
   await page.goto("/pulse");
-  await expect(page.getByText(/1 action needs you/i)).toBeVisible();
+  const approve = page.getByRole("button", { name: /^approve$/i });
+  await expect(approve).toBeVisible();
   const before = orchFetches;
 
-  await page.getByRole("button", { name: /^approve$/i }).click();
-  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
+  await approve.click();
+  await expect(approve).toHaveCount(0);
 
-  // The panel re-reads its own state, so its count and feed cannot disagree with the cards.
+  // The orchestrator's own state is re-read, so nothing downstream of it can disagree with
+  // the cards.
   await expect.poll(() => orchFetches).toBeGreaterThan(before);
-  await expect(page.getByText(/action needs? you/i)).toHaveCount(0);
 });
 
 test("a settled action loses its controls even when the background refresh fails", async ({
