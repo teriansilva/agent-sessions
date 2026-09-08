@@ -423,29 +423,64 @@ def _running_sha(version: str) -> str | None:
     return token if token and all(c in "0123456789abcdef" for c in token) else None
 
 
-def _main_update_available(cur: str, latest: str | None) -> bool:
-    """`main`-channel availability (#583). Compare the running build's commit SHA to the
-    remote HEAD SHA — **never** the SHA to the whole version string, which reported "update
-    available" forever whenever main HEAD sat on a release tag (a clean ``0.9.0`` never
-    *contains* the SHA, so the old ``latest not in cur`` heuristic was always true → a
-    reinstall loop). A clean release version has no SHA to compare; treat it as current
-    rather than perpetually behind — a false negative only restores "don't update", which
-    is safe, and prod's intended posture on a tag is ``stable`` anyway."""
+MAIN_AVAILABLE = "available"
+MAIN_CURRENT = "up-to-date"
+MAIN_UNDETERMINED = "undetermined"
+
+
+def _tag_commit(cur: str, repo_url: str) -> str | None:
+    """The commit the running build's own release tag points at, or None if unresolvable.
+
+    This is the comparand a clean release version cannot supply itself: ``0.19.2`` carries no
+    ``+g<sha>``, so the only way to place it on main's history is to ask the remote what
+    ``v0.19.2`` points at. Goes through :func:`remote_tag_shas` rather than a second resolver
+    because that one already peels an **annotated** tag (``refs/tags/<t>^{}``) *and* falls
+    back to ``object`` for a **lightweight** one — a bare ``^{}`` query would silently miss
+    every lightweight tag, which is the shape the public mirror uses (#832)."""
+    base = cur.partition("+")[0]  # drop any local segment; the tag names the public version
+    if not base:
+        return None
+    return remote_tag_shas(f"v{base}", repo_url).get("commit")
+
+
+def _main_update_verdict(cur: str, latest: str | None, repo_url: str) -> str:
+    """`main`-channel verdict (#583, #931) — one of the three ``MAIN_*`` constants.
+
+    Compare the running build's commit SHA to the remote HEAD SHA — **never** the SHA to the
+    whole version string, which reported "update available" forever whenever main HEAD sat on
+    a release tag (a clean ``0.9.0`` never *contains* the SHA, so the old ``latest not in cur``
+    heuristic was always true → a reinstall loop).
+
+    A clean release version has no SHA in it, and #583 answered that by calling it current.
+    That is wrong on this channel and #931 is what it cost: an install on ``main`` that lands
+    on a tag reads as up-to-date against *every* future commit, forever, with the UI's only
+    escape hatch hidden behind the same verdict. So resolve the tag to its commit and compare
+    SHA to SHA as intended.
+
+    **Undetermined is its own answer, and it is not "up-to-date".** Either side can fail on
+    its own — the HEAD lookup and the tag lookup are separate network calls — and a comparison
+    that never happened must not render as reassurance. It still never triggers an update:
+    callers map it to ``update_available: false``, so failing to tell restores today's
+    behaviour rather than reinstating #583's reinstall loop."""
     if not latest:
-        return False
-    cur_sha = _running_sha(cur)
-    if cur_sha is None:
-        return False  # clean release sitting on main HEAD → converged, don't churn
+        return MAIN_UNDETERMINED  # no remote HEAD: nothing was compared
+    cur_sha = _running_sha(cur) or _tag_commit(cur, repo_url)
+    if not cur_sha:
+        return MAIN_UNDETERMINED  # fail closed — never reinstall on a guess
     n = min(len(cur_sha), len(latest))
-    return cur_sha[:n] != latest.lower()[:n]  # SHA↔SHA, tolerant of differing short lengths
+    if cur_sha.lower()[:n] == latest.lower()[:n]:  # tolerant of differing short lengths
+        return MAIN_CURRENT
+    return MAIN_AVAILABLE
 
 
 def check() -> dict[str, object]:
     cur = get_version()
     channel = _channel()
     latest = latest_ref(channel, _repo_url())
+    verdict = ""
     if channel == "main":
-        available = _main_update_available(cur, latest)
+        verdict = _main_update_verdict(cur, latest, _repo_url())
+        available = verdict == MAIN_AVAILABLE
     else:
         norm = latest.lstrip("v") if latest else latest
         available = bool(latest) and norm != cur
@@ -455,6 +490,10 @@ def check() -> dict[str, object]:
         "latest": latest,
         "update_available": available,
     }
+    if verdict == MAIN_UNDETERMINED:
+        # Carried to the UI so "we could not tell" cannot render as "you're on the latest"
+        # (#931). Optional, like ``blocked`` below — absent means the comparison happened.
+        info["undetermined"] = True
     if _LAST_BLOCK:
         info["blocked"] = _LAST_BLOCK
     return info

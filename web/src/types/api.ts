@@ -848,6 +848,12 @@ export interface UpdateInfo {
    *  or null when git/network is unavailable or no release tag exists yet. */
   latest: string | null;
   update_available: boolean;
+  /** #931: the comparison could not be made — the remote HEAD or the running build's own
+   *  release tag would not resolve. NOT the same as "up to date", and deliberately its own
+   *  field rather than a third value of `update_available`: that flag keeps its type and its
+   *  meaning (nothing auto-updates on a guess), while the panel gains a verdict it can render
+   *  honestly instead of "You're on the latest". Absent means the comparison happened. */
+  undetermined?: boolean;
   /** #538 additive fields (present on current servers; optional for back-compat). */
   auto_update?: boolean;
   last_auto?: UpdateLastAuto | null;

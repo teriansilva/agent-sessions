@@ -873,8 +873,19 @@ function UpdatesCard() {
         downgrades on its own).
       </p>
       {saveErr && <p className={styles.err}>{saveErr}</p>}
+      {/* THREE VERDICTS, NOT TWO (#931). "We could not tell" used to render as "You’re on the
+          latest", which is the sentence a frozen install showed for 26 days while it sat on a
+          release tag and `main` moved on without it. `undetermined` is reported separately so
+          the panel can say so; `update_available` stays false either way, because uncertainty
+          must never start an install on its own. */}
       {info &&
-        (info.update_available ? (
+        (info.undetermined ? (
+          <p className={styles.hint} data-testid="update-undetermined">
+            Couldn’t determine whether an update is available
+            {info.latest ? ` (${info.channel} is at ${info.latest})` : ""}. Not
+            updating.
+          </p>
+        ) : info.update_available ? (
           <p className={styles.hint}>Update available: {info.latest}</p>
         ) : (
           <p className={styles.hint}>
@@ -894,18 +905,42 @@ function UpdatesCard() {
           <RefreshCw size={15} />{" "}
           {state === "checking" ? "Checking…" : "Check for updates"}
         </button>
-        {info?.update_available && (
+        {/* ALWAYS REACHABLE, AND HONESTLY NAMED (#931).
+            Gating this on `update_available` meant a wrong verdict was terminal: the only
+            control that could move the install was hidden by the same predicate that had just
+            failed, so an operator with a frozen install had nothing to press and no way to
+            discover why. It is offered whenever the app is running.
+
+            It is NOT called "Update now" when no update is offered, because `apply()` is not a
+            no-op: the installer rebuilds the release, flips `current` and restarts the service
+            (open terminals reconnect). Naming it for what it does is the honest half of making
+            it reachable — #932 is what would let it become a true no-op. */}
+        {info && (
           <button
             type="button"
             className={`${styles.updateApply} shine`}
             onClick={apply}
             disabled={state === "applying" || state === "applied" || saving}
+            data-testid="update-apply"
           >
             <Download size={15} />{" "}
-            {state === "applying" ? "Updating…" : "Update now"}
+            {state === "applying"
+              ? "Updating…"
+              : info.update_available
+                ? "Update now"
+                : "Reinstall latest"}
           </button>
         )}
       </div>
+      {/* Stated where the control is, not in a tooltip: a reinstall is a real interruption and
+          the operator should know before pressing, not after (#931). Only when no update is
+          offered — when one is, the restart is the thing they came for. */}
+      {info && !info.update_available && (
+        <p className={styles.hint} data-testid="update-restart-cost">
+          Reinstalls the current release and restarts the service — open
+          terminals reconnect.
+        </p>
+      )}
     </section>
   );
 }

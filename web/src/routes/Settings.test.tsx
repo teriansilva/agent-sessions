@@ -1056,6 +1056,84 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
 });
 
+// ---- Updates: the frozen-install escape hatch (#931) ----
+
+test("Updates: the apply action exists even when no update is available (#931)", async () => {
+  // THE FREEZE. `update_available: false` used to hide the only control that could move the
+  // install, so a wrong verdict was terminal: nothing to press, and nothing saying why. The
+  // action is offered regardless — and named for what it actually does, because the installer
+  // rebuilds and restarts rather than no-opping (#932).
+  vi.mocked(api.updateCheck).mockResolvedValue({
+    current: "0.19.2",
+    channel: "main",
+    latest: "12b14b6",
+    update_available: false,
+  });
+  vi.mocked(api.updateApply).mockResolvedValue({ status: "updating" });
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  await screen.findByText(/you.re on the latest \(12b14b6\)/i);
+
+  // Present, honestly labelled, and it REACHES apply — a rendered-but-inert button would
+  // satisfy a visibility assertion and leave the install exactly as stuck.
+  const apply = await screen.findByTestId("update-apply");
+  expect(apply).toHaveTextContent(/reinstall latest/i);
+  expect(screen.getByTestId("update-restart-cost")).toHaveTextContent(
+    /restarts the service/i,
+  );
+  await userEvent.click(apply);
+  expect(api.updateApply).toHaveBeenCalled();
+});
+
+test("Updates: an undetermined verdict never reads as up to date (#931)", async () => {
+  // The partial failure: main HEAD resolved, the running build's own tag did not. Reporting
+  // that as "You're on the latest" is the reassurance that let an install sit 26 days behind.
+  vi.mocked(api.updateCheck).mockResolvedValue({
+    current: "0.19.2",
+    channel: "main",
+    latest: "12b14b6",
+    update_available: false,
+    undetermined: true,
+  });
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  expect(
+    await screen.findByTestId("update-undetermined"),
+  ).toHaveTextContent(/couldn.t determine whether an update is available/i);
+  expect(screen.queryByText(/you.re on the latest/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/you.re up to date/i)).not.toBeInTheDocument();
+  // Still reachable: an uncertain verdict is exactly when the operator needs the way out.
+  expect(await screen.findByTestId("update-apply")).toBeInTheDocument();
+});
+
+test("Updates: the apply action is disabled while a reinstall is running (#931)", async () => {
+  vi.mocked(api.updateCheck).mockResolvedValue({
+    current: "0.19.2",
+    channel: "main",
+    latest: "12b14b6",
+    update_available: false,
+  });
+  let release!: (v: { status: string }) => void;
+  vi.mocked(api.updateApply).mockReturnValue(
+    new Promise((res) => {
+      release = res;
+    }),
+  );
+  renderSettings("dark", "#ffb000", "/settings/system");
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  const apply = await screen.findByTestId("update-apply");
+  await userEvent.click(apply);
+  await waitFor(() => expect(apply).toBeDisabled());
+  expect(apply).toHaveTextContent(/updating/i);
+  release({ status: "updating" });
+});
+
 // ---- Updates: in-app auto-update settings (#538) ----
 
 test("Updates: automatic-updates toggle loads from settings and persists", async () => {

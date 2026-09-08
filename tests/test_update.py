@@ -94,6 +94,154 @@ def test_check_main_head_at_head_tolerates_short_sha_lengths(monkeypatch, tmp_pa
     assert update.check()["update_available"] is False
 
 
+# ---- #931: a clean release on `main` resolves its own tag, and "unknown" is its own answer
+
+
+def test_THE_FREEZE_a_clean_release_behind_main_is_an_update(monkeypatch, tmp_path):
+    """#931's whole point, and red against the code it replaces: a `main` install whose build
+    is a clean release version reported "up to date" against every future commit, forever."""
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")  # main moved on
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")  # clean tag, no +g<sha>
+    monkeypatch.setattr(update, "remote_tag_shas", lambda _t, _u: {"commit": "4a1c0de" + "f" * 33})
+    info = update.check()
+    assert info["update_available"] is True
+    assert "undetermined" not in info  # the comparison happened; it just came out "behind"
+
+
+def test_a_clean_release_AT_main_head_is_current_583_stays_fixed(monkeypatch, tmp_path):
+    """#583's reinstall loop must not come back through the new door: when the tag really does
+    point at main HEAD there is no update, and nothing churns on the daily pass."""
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.20.0")
+    monkeypatch.setattr(update, "remote_tag_shas", lambda _t, _u: {"commit": "12b14b6" + "0" * 33})
+    info = update.check()
+    assert info["update_available"] is False
+    assert "undetermined" not in info
+
+
+def test_the_tag_lookup_asks_for_the_running_versions_own_tag(monkeypatch, tmp_path):
+    """A wrong tag name would resolve to nothing and read as `undetermined` — a silent
+    downgrade to the old behaviour — so pin the name that goes over the wire."""
+    _main_channel(monkeypatch, tmp_path)
+    seen: list[str] = []
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    monkeypatch.setattr(
+        update, "remote_tag_shas", lambda t, _u: (seen.append(t), {"commit": "a" * 40})[1]
+    )
+    update.check()
+    assert seen == ["v0.19.2"]
+
+
+def test_an_ANNOTATED_tag_resolves_through_the_peeled_line(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    _fake_ls_remote(
+        monkeypatch,
+        "9" * 40
+        + "\trefs/tags/v0.19.2\n"  # the tag OBJECT
+        + "4a1c0def"
+        + "f" * 32
+        + "\trefs/tags/v0.19.2^{}\n",  # the commit it peels to
+    )
+    assert update.check()["update_available"] is True  # peeled commit != main HEAD
+
+
+def test_a_LIGHTWEIGHT_tag_resolves_without_a_peeled_line(monkeypatch, tmp_path):
+    """A lightweight tag has no ``^{}`` line — the shape a bare ``refs/tags/v*^{}`` query
+    would miss entirely, turning every such install back into an undetermined one."""
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    _fake_ls_remote(monkeypatch, "4a1c0def" + "f" * 32 + "\trefs/tags/v0.19.2\n")
+    assert update.check()["update_available"] is True
+
+
+def test_a_lightweight_tag_AT_head_is_still_current(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.20.0")
+    _fake_ls_remote(monkeypatch, "12b14b6" + "0" * 33 + "\trefs/tags/v0.20.0\n")
+    info = update.check()
+    assert info["update_available"] is False
+    assert "undetermined" not in info
+
+
+def test_UNEQUAL_sha_lengths_compare_on_the_shorter_prefix(monkeypatch, tmp_path):
+    """``latest_ref`` truncates to 7; the tag lookup returns 40. Comparing the raw strings
+    would call every converged install "behind" and reinstall it daily."""
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.20.0")
+    monkeypatch.setattr(update, "remote_tag_shas", lambda _t, _u: {"commit": "12B14B6" + "e" * 33})
+    assert update.check()["update_available"] is False  # and case-insensitively
+
+
+def test_PARTIAL_FAILURE_head_known_tag_unresolved_is_undetermined(monkeypatch, tmp_path):
+    """The two lookups fail independently. With main HEAD known and the tag unresolvable,
+    nothing was compared — and the panel must not say "you're on the latest" (#931)."""
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    monkeypatch.setattr(update, "remote_tag_shas", lambda _t, _u: {})  # deleted / offline
+    info = update.check()
+    assert info["undetermined"] is True
+    assert info["update_available"] is False  # fail closed: uncertainty never reinstalls
+    assert info["latest"] == "12b14b6"  # the half that DID resolve is still reported
+
+
+def test_COMPLETE_remote_failure_is_the_same_third_state(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: None)
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    info = update.check()
+    assert info["undetermined"] is True
+    assert info["update_available"] is False
+
+
+def test_no_git_binary_is_undetermined_not_up_to_date(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    monkeypatch.setattr(update.shutil, "which", lambda _n: None)
+    assert update.check()["undetermined"] is True
+
+
+def test_a_failing_ls_remote_is_undetermined(monkeypatch, tmp_path):
+    _main_channel(monkeypatch, tmp_path)
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "12b14b6")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    _fake_ls_remote(monkeypatch, "", returncode=128)
+    assert update.check()["undetermined"] is True
+
+
+def test_a_DEV_build_never_pays_for_the_tag_lookup(monkeypatch, tmp_path):
+    """A version that carries its own SHA has nothing to ask the remote — the extra call is
+    only for the clean-release case, on `main`, and must not creep onto the common path."""
+    _main_channel(monkeypatch, tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "abcdef1")
+    monkeypatch.setattr(update, "get_version", lambda: "0.9.1.dev3+g64eefb3")
+    monkeypatch.setattr(
+        update, "remote_tag_shas", lambda t, _u: (calls.append(t), {"commit": "z"})[1]
+    )
+    assert update.check()["update_available"] is True
+    assert calls == []
+
+
+def test_the_STABLE_channel_is_untouched_by_all_of_this(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL", "stable")
+    monkeypatch.setenv("AGENT_SESSIONS_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.setattr(update, "latest_ref", lambda _c, _u: "v0.19.2")
+    monkeypatch.setattr(update, "get_version", lambda: "0.19.2")
+    info = update.check()
+    assert info["update_available"] is False
+    assert "undetermined" not in info  # the marker is a main-channel verdict only
+
+
 def test_apply_returns_false_without_an_installer(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_SESSIONS_HOME", str(tmp_path))  # no current/src/install.sh
     assert update.apply() is False
