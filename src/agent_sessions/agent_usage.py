@@ -42,13 +42,13 @@ import logging
 import os
 import re
 import select
-import signal
 import sqlite3
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import procgroup
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 
 log = logging.getLogger("agent_sessions.agent_usage")
@@ -255,8 +255,14 @@ def _reap_group(proc: subprocess.Popen) -> None:
     contain then is not its grandchildren. What this rules out is the realistic failure — a CLI
     that hangs, or forks a helper and exits — and that it does hold.
     """
-    with contextlib.suppress(Exception):
-        os.killpg(proc.pid, signal.SIGKILL)
+    # THROUGH THE GUARD (#924). `proc.pid` is whatever the caller's object carries, and a fake
+    # carrying `1` turns this line into `kill(-1)` — every process this user owns. Refusing ids
+    # below 2 costs nothing here: the probe is spawned with `start_new_session=True`, so its group
+    # id IS its pid.
+    # `getattr`, because the previous `contextlib.suppress(Exception)` here also swallowed a
+    # missing `.pid` and callers rely on that tolerance. An absent id is not a licence to signal
+    # something — the guard reads `None` as "refuse", which is the same answer by a better route.
+    procgroup.killpg(getattr(proc, "pid", None))
 
 
 def _kill(proc: subprocess.Popen, code: int, message: str) -> tuple[int, str]:

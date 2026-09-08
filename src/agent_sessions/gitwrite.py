@@ -82,7 +82,6 @@ import os
 import re
 import select
 import shutil
-import signal
 import socket
 import stat as _stat
 import subprocess
@@ -92,6 +91,7 @@ import time
 from typing import NamedTuple
 from urllib.parse import unquote
 
+from . import procgroup
 from .files import FsError, contained_path
 from .fsbrowse import home_root
 from .gitpanel import (
@@ -505,10 +505,11 @@ def _run_argv(
 
 def _reap(proc: subprocess.Popen) -> None:
     """Kill git **and everything it spawned**, then wait so nothing is left a zombie."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        proc.kill()  # the group is gone, or we never got one — fall back to the child itself
+    # THROUGH THE GUARD (#924), which also carries the fallback this branch already wanted: a
+    # refused or absent group means we kill the child alone rather than widening the signal. An
+    # id below 2 is refused outright — `killpg(1)` is `kill(-1)`, every process this user owns.
+    if not procgroup.killpg(proc.pid):
+        proc.kill()  # the group is gone, we never got one, or the id was not one we may signal
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:  # pragma: no cover - a SIGKILLed group does not linger

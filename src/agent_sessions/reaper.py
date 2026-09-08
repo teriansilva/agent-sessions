@@ -36,7 +36,7 @@ import signal
 import time
 from typing import TYPE_CHECKING
 
-from . import engines, ptybridge
+from . import engines, procgroup, ptybridge
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -363,8 +363,11 @@ def _signal_boundary(
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 os.kill(p, sig)
     for pg in pgids:
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(pg, sig)
+        # THROUGH THE GUARD (#924). These ids come from `_containment`, which validates ownership
+        # and deliberately does not recompute — so a 0 or 1 here would mean `/proc` itself said
+        # so, which is far-fetched. It gets the bound anyway: one comparison against a failure
+        # mode that takes down every process this user owns and cannot be undone.
+        procgroup.killpg(pg, sig)
     for p in pids:
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(p, sig)

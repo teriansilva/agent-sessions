@@ -43,9 +43,10 @@ import contextlib
 import logging
 import os
 import re
-import signal
 import subprocess
 import threading
+
+from . import procgroup
 
 log = logging.getLogger("agent_sessions.engine_auth")
 
@@ -234,14 +235,11 @@ def _kill_group(proc, pgid: int | None = None) -> None:
     if pgid is None:
         with contextlib.suppress(Exception):
             pgid = os.getpgid(proc.pid)
-    # NEVER a group id below 2. `killpg(1)` is `kill(-1)`: every process this user owns — the
-    # supervisor, every dtach'd agent, the user's systemd, its sshd sessions. A fake `Popen` in a
-    # test, carrying `pid = 1` because nothing had made it carry anything else, did exactly that
-    # to a development host seven times in one day. A probe we spawned is never in group 0 or 1,
-    # so refusing those ids costs nothing on the real path and removes the whole blast radius.
-    if pgid is not None and pgid > 1:
-        with contextlib.suppress(Exception):
-            os.killpg(pgid, signal.SIGKILL)
+    # THROUGH THE SHARED GUARD (#924). This module invented the bound after a fake `Popen`
+    # carrying `pid = 1` turned this line into `kill(-1)` — every process this user owns — seven
+    # times in one day. It kept a private copy of the rule; `procgroup` is now the one place it
+    # lives, so the four call sites cannot drift apart. The rationale is there in full.
+    procgroup.killpg(pgid)
     with contextlib.suppress(Exception):
         proc.kill()
     with contextlib.suppress(Exception):
