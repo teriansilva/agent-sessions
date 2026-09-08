@@ -21,7 +21,14 @@ import time
 
 import pytest
 
-from agent_sessions import handoff, headless_dispatch, headless_seed, ptybridge, sessionlock
+from agent_sessions import (
+    handoff,
+    headless_dispatch,
+    headless_seed,
+    ptybridge,
+    sessionlock,
+    start_evidence,
+)
 
 
 class FakeProv:
@@ -58,6 +65,136 @@ def env(tmp_path, monkeypatch):
     import shutil
 
     shutil.rmtree(sockdir, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_an_INELIGIBLE_engine_is_refused_WITHOUT_being_probed(env, prov, reg, monkeypatch):
+    """The preflight LAUNCHES A PROCESS, so it belongs behind the eligibility fences (review 1,
+    finding 1).
+
+    I first placed it at the top of `dispatch()` and reasoned about it as a cheap credential read.
+    It is not: it runs `claude -p` in the project directory, possibly metered. Sitting there it
+    probed engines that were about to be refused as ineligible anyway, and — worse — ran before
+    `on_key` and `authorize`, so a superseded dispatch or a withdrawn policy could still start
+    agent work that the later fence then rejected.
+
+    A mint-own-id engine is the cheapest way to assert the ordering: it is refused unconditionally,
+    so if the probe still runs, the probe is in front of the fence.
+    """
+    probed = []
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth,
+        "check",
+        lambda *a, **k: (probed.append(a), (headless_dispatch.engine_auth.AUTHENTICATED, ""))[1],
+    )
+    prov.new_session_reconciles = True  # a mint-own-id engine
+    with pytest.raises(headless_dispatch.DispatchError) as e:
+        await headless_dispatch.dispatch(
+            registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+        )
+    assert "first turn" in str(e.value)
+    assert probed == [], "an ineligible engine was probed before it was refused"
+
+
+@pytest.mark.anyio
+async def test_an_UNAUTHENTICATED_host_never_spawns(env, prov, reg, monkeypatch):
+    """A host whose agent cannot log in must not be handed an operator's brief (#916).
+
+    Start evidence cannot catch this: a session with absent credentials registers in 0.80s and one
+    with expired credentials in 1.35s, showing no authentication signal at all. Both would pass the
+    readiness gate, take the brief at a prompt that cannot act on it, and report `running`. So the
+    refusal has to happen before the spawn, and nothing may be spawned when it fires.
+    """
+    spawned = _stub_spawn(monkeypatch)
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth,
+        "check",
+        lambda *a, **k: (headless_dispatch.engine_auth.UNAUTHENTICATED, "not logged in"),
+    )
+    # NOT a `DispatchError` any more, and that is the reordering working (review 2, finding 1):
+    # the probe now runs after `on_key`, inside the single-writer lock and behind `authorize`. Past
+    # that point a key has been minted, so a refusal is a settled OUTCOME the caller reconciles,
+    # not an exception thrown before anything was recorded.
+    #
+    # `start_timeout` stays short so a REGRESSION fails fast rather than waiting out the readiness
+    # budget — a red-proof that takes 90s to fail is one nobody runs.
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert out.ok is False
+    assert "cannot authenticate" in (out.reason or "")
+    assert not spawned, "an agent was spawned on a host that cannot authenticate"
+
+
+@pytest.mark.anyio
+async def test_an_UNKNOWN_auth_answer_never_spawns(env, prov, reg, monkeypatch):
+    """ "We could not tell" refuses too, and does NOT claim the login is broken.
+
+    A `!= UNAUTHENTICATED` comparison would have let this through, which is the whole reason the
+    check is tri-state and the gate is `may_dispatch`. The message matters as much as the refusal:
+    telling an operator they are logged out because a probe timed out sends them to fix something
+    that was never wrong.
+    """
+    spawned = _stub_spawn(monkeypatch)
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth,
+        "check",
+        lambda *a, **k: (headless_dispatch.engine_auth.UNKNOWN, "the probe timed out"),
+    )
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert out.ok is False
+    msg = out.reason or ""
+    assert "could not confirm" in msg
+    assert "not logged in" not in msg.lower(), "an unknown was reported as a confirmed logout"
+    assert not spawned
+
+
+@pytest.fixture(autouse=True)
+def _auth_ok(monkeypatch):
+    """Every dispatch now runs an authentication preflight (#916) before it spawns.
+
+    Left unstubbed these tests would shell out to the real `claude` on every case — slow, and
+    dependent on whoever is logged in on the machine running them. Stubbed to AUTHENTICATED so the
+    suite keeps testing what it is about.
+
+    **That makes this fixture a blind spot on purpose**, so the gate itself is covered explicitly
+    by `test_an_UNAUTHENTICATED_host_never_spawns` and `test_an_UNKNOWN_auth_answer_never_spawns`
+    below, which opt out. A test that stubs a gate can never prove the gate is there.
+    """
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth,
+        "check",
+        lambda *a, **k: (headless_dispatch.engine_auth.AUTHENTICATED, "stubbed"),
+    )
+
+
+def _stub_started(monkeypatch, started=True, *, on_read=None):
+    """Say whether the ENGINE reports the session as started, at the seam actually consulted.
+
+    #916 moved that seam for `claude`. The transcript store cannot answer "did it start" — the
+    JSONL is written on the first turn, which is the brief the gate withholds — so claude is read
+    through a start-evidence adapter instead, and `_has_store_record` is no longer on its path.
+    Tests that stubbed only the old function were patching a door production no longer opens: the
+    stub returned True and the dispatch still never reached `briefed`.
+
+    Both are stubbed here, so a test states the FACT ("the engine says it started") rather than the
+    mechanism, and neither seam moving again silently disarms it.
+    """
+
+    def _store(*_a, **_kw):
+        if on_read is not None:
+            on_read()
+        return started
+
+    def _adapter(_native, _cwd, **_kw):
+        if on_read is not None:
+            on_read()
+        return (start_evidence.FOUND, "") if started else (start_evidence.ABSENT, "no entry")
+
+    monkeypatch.setattr(headless_dispatch, "_has_store_record", _store)
+    monkeypatch.setitem(headless_dispatch._START_EVIDENCE, "claude", _adapter)
 
 
 def _stub_spawn(monkeypatch, *, returncode=0, make_socket=True):
@@ -177,8 +314,14 @@ async def test_ALIVE_IS_NOT_STARTED_a_live_process_with_no_store_record_fails(
     assert sent == [], "the brief was delivered to a session the engine has no record of"
     assert out.state == "launched"
     assert out.ok is False
-    # The reason has to be actionable: "failed" alone sends the operator to the logs.
-    assert "own store" in out.reason and "trust" in out.reason
+    # The reason has to be ACTIONABLE, and it must not assert a cause it did not check (#916).
+    # This used to require the literal word `trust`, which pinned a guess: the shipped message
+    # named a first-run prompt as "the usual cause", and the dispatch that actually mattered —
+    # into an already-trusted folder — failed identically and was told the same story. The
+    # message now reports what was observed and offers the screens as a likelihood, so the
+    # assertion pins the observation and the honest hedge rather than the guess.
+    assert "did not register a live session" in out.reason
+    assert "most likely" in out.reason, "a guess is being stated as a fact again"
 
 
 @pytest.mark.anyio
@@ -193,7 +336,7 @@ async def test_STARTED_IS_NOT_BRIEFED_a_session_that_never_takes_the_brief_fails
         return False, "the session never became ready (bracketed-paste never true)"
 
     monkeypatch.setattr(headless_seed, "deliver", never_ready)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda prov, native, cwd: True)
+    _stub_started(monkeypatch)
     out = await headless_dispatch.dispatch(
         registry=reg, engine="claude", cwd=str(env), brief="do the thing", start_timeout=0.4
     )
@@ -212,7 +355,7 @@ async def test_STARTED_IS_NOT_BRIEFED_a_session_that_never_takes_the_brief_fails
 @pytest.mark.anyio
 async def test_the_happy_path_reports_BRIEFED_and_only_then_is_ok(env, prov, reg, monkeypatch):
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     seen = {}
 
@@ -299,7 +442,7 @@ async def test_the_brief_is_SANITISED_before_it_is_stored(env, prov, reg, monkey
     """An `ESC` in a brief could terminate the bracketed paste early and smuggle raw key input
     into the new session. `sanitize_seed` is the one gate, and it runs before the store."""
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
     captured = {}
 
     async def deliver(key, seed_key, **kw):
@@ -340,11 +483,7 @@ async def test_the_READER_is_started_before_anything_waits_on_output(env, prov, 
         order.append(f"reader:{sid}")
 
     monkeypatch.setattr(reg, "ensure_headless", ensure)
-    monkeypatch.setattr(
-        headless_dispatch,
-        "_has_store_record",
-        lambda p, n, c: order.append("evidence") or True,
-    )
+    _stub_started(monkeypatch, on_read=lambda: order.append("evidence"))
 
     async def deliver(key, seed_key, **kw):
         order.append("deliver")
@@ -380,7 +519,7 @@ async def test_a_BRIEFED_dispatch_is_never_torn_down(
     env, prov, reg, monkeypatch, _no_real_teardown
 ):
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     async def deliver(key, seed_key, **kw):
         return True, ""
@@ -407,7 +546,12 @@ async def test_a_failed_TEARDOWN_is_reported_beside_the_real_reason(env, prov, r
     out = await headless_dispatch.dispatch(
         registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
     )
-    assert "own store" in out.reason, "the original reason survives"
+    # THE COMPOSITION IS THE GUARANTEE, not the wording. This asserted `"own store"`, which was
+    # the transcript-store era's phrasing; #916 reads a different artifact for claude and says so.
+    # What must not change is that BOTH facts reach the operator: why the dispatch failed, and
+    # that the agent it may have left behind could not be stopped. Losing either to the other is
+    # the failure this test exists for.
+    assert "did not register a live session" in out.reason, "the original reason survives"
     assert "could not be stopped" in out.reason
     assert any(e.startswith("abandon-failed") for e in out.events)
 
@@ -452,7 +596,7 @@ async def test_PERMISSION_BYPASS_IS_NOT_THE_DEFAULT(env, prov, reg, monkeypatch)
     anger — so the module that implements the mechanism must not be the thing that decides it.
     """
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     async def deliver(key, seed_key, **kw):
         return True, ""
@@ -482,7 +626,7 @@ async def test_a_LEAKED_process_group_is_NOT_reported_as_abandoned(env, prov, re
     from agent_sessions import runtime_cleanup
 
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     async def never_ready(key, seed_key, **kw):
         return False, "the session never became ready"
@@ -512,7 +656,7 @@ async def test_a_CLEAN_teardown_still_reports_abandoned(env, prov, reg, monkeypa
     from agent_sessions import runtime_cleanup
 
     _stub_spawn(monkeypatch)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     async def never_ready(key, seed_key, **kw):
         return False, "the session never became ready"
@@ -743,7 +887,7 @@ async def test_the_LAUNCH_FENCE_does_not_block_the_EVENT_LOOP(env, prov, reg, mo
         return P()
 
     monkeypatch.setattr(headless_dispatch, "_popen", slow_spawn)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     async def delivered(k, seed_key, **kw):
         return True, ""
@@ -825,7 +969,7 @@ async def test_a_SPAWN_TIMEOUT_does_not_leave_a_worker_that_can_still_LAUNCH(
     order: list[str] = []
     _late_spawn(monkeypatch, order, delay=0.4)
     monkeypatch.setattr(headless_dispatch, "SPAWN_TIMEOUT_S", 0.1)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     out = await asyncio.wait_for(
         headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go"),
@@ -862,7 +1006,7 @@ async def test_a_CANCELLED_REQUEST_does_not_leave_a_worker_that_can_still_LAUNCH
     order: list[str] = []
     entered = threading.Event()
     _late_spawn(monkeypatch, order, delay=0.4, entered=entered)
-    monkeypatch.setattr(headless_dispatch, "_has_store_record", lambda *a: True)
+    _stub_started(monkeypatch)
 
     task = asyncio.ensure_future(
         headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
@@ -925,3 +1069,199 @@ async def test_a_REFUSAL_BEFORE_THE_DIRECTORY_HANDLE_still_frees_the_session(
     lock = sessionlock.acquire(f"claude:{seen[0]}")
     assert lock is not None, "the refused launch left the session locked with nothing running"
     lock.release()
+
+
+@pytest.mark.anyio
+async def test_the_AUTH_PREFLIGHT_takes_its_FENCE_OFF_the_event_loop(env, prov, reg, monkeypatch):
+    """#916 review 3, findings 1 and 4 — one test, because they are one mistake.
+
+    The previous version took `session_input.launch_fence` **in the coroutine**, read `authorize`,
+    released it, and only then scheduled the probes on a worker. Both halves were wrong:
+
+    * the fence is a `threading.Lock`, so acquiring it on the loop stalls every other task —
+      measured at a 50 ms heartbeat arriving 401 ms late — which is the #888 deadlock shape the
+      main spawn already had to be moved off the loop to avoid;
+    * and the probe processes were then created *outside* the transaction that decision belonged
+      to, so a policy withdrawn in the gap still got a real `claude -p` started.
+
+    Both go away by handing the fence to the worker as a context manager entered around the spawn.
+    This asserts the property directly rather than by timing: **no fence acquisition during a
+    dispatch happens on the loop thread**, and the preflight is the one that proves it, since it
+    is handed a gate it must enter.
+
+    Red against a fence taken in the coroutine (the loop's ident appears in `threads`), and red
+    against a preflight given no gate at all (`gate is None`).
+    """
+    import threading
+
+    from agent_sessions import session_input
+
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    real_fence = session_input.launch_fence
+
+    @contextlib.contextmanager
+    def spy_fence(*a, **kw):
+        threads.append(threading.get_ident())
+        with real_fence(*a, **kw) as epoch:
+            yield epoch
+
+    monkeypatch.setattr(session_input, "launch_fence", spy_fence)
+
+    def fake_check(binary, *, cwd=None, env=None, probe=None, gate=None):
+        # Stands in for `engine_auth.check` WITHOUT spawning a real agent, but enters the gate
+        # exactly where `_run` does — around the spawn — so the seam under test is the real one.
+        assert gate is not None, "the preflight was handed no policy gate to spawn inside"
+        assert threading.get_ident() != loop_thread, "the preflight itself ran on the loop"
+        with gate() as why_not:
+            assert not why_not
+        return headless_dispatch.engine_auth.AUTHENTICATED, "gated"
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", fake_check)
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+
+    async def delivered(key, seed_key, **kw):
+        return True, ""
+
+    monkeypatch.setattr(headless_seed, "deliver", delivered)
+
+    # `authorize` MUST BE PASSED, or this test is vacuous against the code it names: the reviewed
+    # version's coroutine-side fence sat behind `if authorize is not None`, so with the default
+    # `None` the branch never runs and "no fence on the loop" is true for the wrong reason.
+    authorized_on: list[int] = []
+
+    def authorize(epoch):
+        authorized_on.append(threading.get_ident())
+        return ""
+
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", authorize=authorize
+    )
+    assert out.ok is True, out.reason
+    # Two acquisitions: the probe's and the spawn's. Both belong on a worker.
+    assert len(threads) >= 2, f"the fence was entered {len(threads)} time(s), expected the probe's"
+    assert (
+        authorized_on and loop_thread not in authorized_on
+    ), "the policy decision was made on the event loop, so the lock it is made under was too"
+    assert loop_thread not in threads, (
+        "a launch fence was acquired on the event loop — a blocking lock there stalls every other "
+        "task, including the attach path that must be able to take it"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_POLICY_WITHDRAWN_at_the_probe_refuses_WITHOUT_a_login_verdict(
+    env, prov, reg, monkeypatch
+):
+    """A refusing gate aborts the dispatch; it does not become a claim about the agent (#916 r3).
+
+    `Refused` is deliberately not `UNAUTHENTICATED` or `UNKNOWN`. Reporting "this host cannot
+    authenticate" because orchestration was switched off mid-probe would send an operator to
+    re-authenticate a login that was never broken — the same category error the tri-state exists
+    to prevent, one layer out.
+    """
+    spawned = _stub_spawn(monkeypatch)
+
+    def refusing_check(binary, *, cwd=None, env=None, probe=None, gate=None):
+        raise headless_dispatch.engine_auth.Refused("orchestration was switched off")
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", refusing_check)
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert out.ok is False
+    assert "switched off" in (out.reason or "")
+    assert "authenticate" not in (out.reason or ""), "a policy refusal was reported as a logout"
+    assert not spawned
+
+
+@pytest.mark.anyio
+async def test_an_AUTHORIZE_that_RAISES_is_a_refusal_not_an_escaping_exception(
+    env, prov, reg, monkeypatch
+):
+    """`dispatch()` must always return an outcome carrying a reason (#916 review 3, follow-up).
+
+    Moving the policy check into the probe's gate dropped the `except` that used to wrap it, and
+    the enclosing `try` has only a `finally` — so an `authorize` that raised escaped `dispatch()`
+    entirely and left the settlement with no `DispatchOut` to write about the attempt. `authorize`
+    is operator-supplied and reads a project store off disk, so "it threw" is a reachable state,
+    not a hypothetical.
+    """
+    spawned = _stub_spawn(monkeypatch)
+
+    def exploding_check(binary, *, cwd=None, env=None, probe=None, gate=None):
+        with gate():
+            pass  # the gate calls `authorize`, which raises
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", exploding_check)
+
+    def authorize(epoch):
+        raise RuntimeError("the project store is unreadable")
+
+    out = await headless_dispatch.dispatch(
+        registry=reg,
+        engine="claude",
+        cwd=str(env),
+        brief="go",
+        authorize=authorize,
+        start_timeout=0.3,
+    )
+    assert out.ok is False
+    assert "could not be authorized" in (out.reason or "")
+    assert "RuntimeError" in (out.reason or ""), "the reason names nothing the operator can act on"
+    assert not spawned, "an agent was spawned after the authorization crashed"
+
+
+@pytest.mark.anyio
+async def test_CANCELLATION_abandons_the_probe_OFF_the_event_loop(env, prov, reg, monkeypatch):
+    """#916 review 4, finding 2. Moving the launch fence off the loop did not cover teardown.
+
+    `Probe.abandon()` takes the ownership lock the worker holds across `Popen`, then signals a
+    process group and waits on it — all blocking. Called straight from the coroutine's `finally`
+    it stalled every other task for as long as a spawn took: measured at a 30 ms heartbeat
+    arriving 599 ms late against a 600 ms `Popen`.
+
+    The serialization is deliberate and is kept — it is what stops a cancellation missing a
+    process created a moment later — so what moves is the WAIT, not the lock. Asserted on thread
+    identity rather than on a duration, because a timing assertion on a loaded CI host is the
+    flake this repo has just spent a day removing (#918).
+    """
+    import threading
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    abandoned_on: list[int] = []
+    real_abandon = headless_dispatch.engine_auth.Probe.abandon
+
+    def spy(self):
+        abandoned_on.append(threading.get_ident())
+        return real_abandon(self)
+
+    monkeypatch.setattr(headless_dispatch.engine_auth.Probe, "abandon", spy)
+
+    started = asyncio.Event()
+
+    def slow_check(binary, *, cwd=None, env=None, probe=None, gate=None):
+        # Inside the preflight, on its worker — the window a cancellation lands in.
+        loop.call_soon_threadsafe(started.set)
+        time.sleep(1.5)
+        return headless_dispatch.engine_auth.AUTHENTICATED, "stubbed"
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", slow_check)
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+
+    task = asyncio.ensure_future(
+        headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    )
+    await asyncio.wait_for(started.wait(), timeout=15)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert abandoned_on, "the probe was never abandoned on the cancellation path"
+    assert loop_thread not in abandoned_on, (
+        "abandonment ran on the event loop, where its lock acquisition and its kill/wait block "
+        "every other task for the length of a spawn"
+    )

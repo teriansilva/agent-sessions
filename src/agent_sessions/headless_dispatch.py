@@ -71,7 +71,16 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import engines, handoff, ptybridge, scopedspawn, session_input, sessionlock
+from . import (
+    engine_auth,
+    engines,
+    handoff,
+    ptybridge,
+    scopedspawn,
+    session_input,
+    sessionlock,
+    start_evidence,
+)
 
 log = logging.getLogger(__name__)
 
@@ -190,21 +199,64 @@ def _has_store_record(prov, native: str, cwd: str) -> bool:
     return store_record_state(prov, native) == "found"
 
 
+#: Start-evidence adapters, by engine id (#916). An engine with no entry here falls back to the
+#: transcript store — which is correct for any engine whose store record predates the first turn,
+#: and is why this is a registry rather than a rewrite of `_has_store_record`.
+#:
+#: **`ClaudeProvider.scan()` is deliberately NOT widened into a registry reader.** `scan()` answers
+#: "what sessions exist" for the sidebar, the lookup route and every other consumer; redefining
+#: transcript existence to mean "a process started" would change that answer everywhere for the
+#: benefit of one caller. Two sources, two questions, one boundary.
+_START_EVIDENCE = {"claude": start_evidence.claude_start_state}
+
+
 async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) -> tuple[bool, str]:
     """Condition 5. Returns ``(started, why_not)``.
 
-    Polls the engine's store. Deliberately NOT `ptybridge.probe_master` or `session_input.is_live`:
-    both were true throughout the 2026-08-25 incident, for a session that had received nothing.
+    Polls for evidence the agent STARTED. Deliberately NOT `ptybridge.probe_master` or
+    `session_input.is_live`: both were true throughout the 2026-08-25 incident, for a session that
+    had received nothing.
+
+    **For `claude` the transcript store cannot answer this** (#916). It writes its JSONL on the
+    first turn, and the first turn is the brief this gate is withholding — so waiting on it
+    deadlocked and every dispatch timed out. The adapter reads the session registry instead, which
+    the engine writes at startup and which a trust screen does not produce. Engines with no adapter
+    keep the old behaviour unchanged.
+
+    **The timeout reason names what was OBSERVED.** It used to assert a first-run prompt as "the
+    usual cause", which was a guess the code had not checked — and was wrong in the case that
+    actually mattered, where a dispatch into an already-trusted folder failed identically and was
+    told the same story.
     """
+    adapter = _START_EVIDENCE.get(prov.engine_id)
     deadline = time.monotonic() + timeout
+    last_state, last_detail = "", ""
     while time.monotonic() < deadline:
-        if await asyncio.to_thread(_has_store_record, prov, native, cwd):
+        if adapter is not None:
+            state, detail = await asyncio.to_thread(adapter, native, cwd)
+            last_state, last_detail = state, detail
+            if state == start_evidence.FOUND:
+                return True, ""
+        elif await asyncio.to_thread(_has_store_record, prov, native, cwd):
             return True, ""
         await asyncio.sleep(START_POLL_S)
+    if adapter is None:
+        return False, (
+            f"the session never appeared in {prov.engine_id}'s own store within {int(timeout)}s — "
+            "the process is up but the agent has not started"
+        )
+    # UNREADABLE is not ABSENT, and the operator is told which one happened. "We could not look"
+    # sends somebody to check a permission or a path; "we looked and it was not there" sends them
+    # to the screen. Reporting both as the same sentence is what made this defect cost a day.
+    if last_state == start_evidence.UNREADABLE:
+        return False, (
+            f"could not tell whether the agent started within {int(timeout)}s — "
+            f"{last_detail}. This is not a report that it failed to start."
+        )
     return False, (
-        f"the session never appeared in {prov.engine_id}'s own store within {int(timeout)}s — "
-        "the process is up but the agent has not started (a first-run or trust prompt is the "
-        "usual cause in a folder the engine has not seen before)"
+        f"the agent did not register a live session within {int(timeout)}s: {last_detail}. "
+        "The process is up, so it is most likely holding a screen that takes input first — "
+        "a trust, onboarding or re-authentication prompt."
     )
 
 
@@ -348,6 +400,13 @@ async def dispatch(
             "can tell a live agent from a first-run or consent screen before the brief is "
             "typed. Unattended dispatch is refused for this engine; start it from a terminal."
         )
+    # The executable the launcher will actually exec, not whatever `PATH` resolves — a probe of a
+    # different binary answers a question about a different process.
+    try:
+        probe_bin = str(prov.new_launch_argv("preflight", cwd=cwd, bypass=False)[0])
+    except Exception:  # noqa: BLE001
+        probe_bin = engine
+
     native = str(uuid.uuid4())
     key = f"{engine}:{native}"
     out = Dispatch(key=key, engine=engine, native=native, cwd=cwd)
@@ -377,6 +436,12 @@ async def dispatch(
     # is to still be holding the thread that could launch it.
     spawn: asyncio.Future | None = None
     abandoned = threading.Event()
+    # The auth worker is owned by the `finally` for the SAME reason the spawn worker is (#916
+    # review 3, finding 2): it holds `spawn_cwd` — a `/proc/self/fd/N` path — and may have a live
+    # agent process of its own. A frame that returns while that thread runs is a frame that closes
+    # the descriptor under it and leaves the probe unreaped.
+    auth_task: asyncio.Future | None = None
+    auth_probe = engine_auth.Probe()
     # BOUND BEFORE THE TRY, because the `finally` reads it (#904 review 8). It used to be
     # declared partway down the block, so anything that raised before that line — an engine whose
     # launch binary is not an absolute path, a handle the seed store refuses — reached the
@@ -471,6 +536,81 @@ async def dispatch(
                 dirfd = None
         except OSError:
             out.reason = f"the working directory {cwd} could not be opened"
+            return out
+
+        # CAN IT AUTHENTICATE? **Under the same ownership and cwd as the launch it gates**
+        # (#916 review 2, finding 1).
+        #
+        # This probe LAUNCHES A REAL AGENT — `claude -p`, possibly metered. I twice placed it
+        # earlier in this function and reasoned about it as a cheap read; it is not, and each time
+        # it ran ahead of a fence that exists to stop launches. It now sits where a launch belongs:
+        #
+        #   * AFTER `on_key`, so a superseded dispatch has already refused and nothing is probed
+        #     for an attempt that is over;
+        #   * INSIDE the single-writer lock, so this session key is owned before any process runs
+        #     under it. Holding the lock across the probe costs nothing — the key is a uuid minted
+        #     moments ago and nobody else can want it;
+        #   * with the PINNED cwd, `/proc/self/fd/N`, the same descriptor the spawn will use, so
+        #     the probe cannot run somewhere the approved path no longer points;
+        #   * behind `authorize` under the launch fence, so a withdrawn policy stops it. The fence
+        #     is taken briefly for the decision and released — it is a global policy gate and must
+        #     not be held across a 45s subprocess — and the spawn below re-authorizes under it
+        #     again, so a policy withdrawn during the probe still cannot launch.
+        @contextlib.contextmanager
+        def _probe_gate():
+            """The policy transaction ONE probe spawn happens inside — held across the decision
+            and the process creation, released before the wait.
+
+            The previous version took the fence in the coroutine, read `authorize`, released it,
+            and only then scheduled the probes. Two things were wrong with that and the review
+            named both. The spawns landed OUTSIDE the transaction that was supposed to gate them,
+            so a policy withdrawn in the gap still got a real agent started; and the fence is a
+            `threading.Lock`, so acquiring it on the loop blocks every other task — measured at a
+            50 ms heartbeat running 401 ms late.
+
+            Both go away by handing the fence to the worker as a context manager. `to_thread`
+            takes the blocking acquisition off the loop, and `_run` enters this around
+            `Popen` alone, so the probe is created under the same authority that approved it and
+            the 45 s wait happens with the fence free.
+            """
+            with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as epoch:
+                yield authorize(epoch) if authorize is not None else ""
+
+        auth_task = asyncio.ensure_future(
+            asyncio.to_thread(
+                engine_auth.check, probe_bin, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+            )
+        )
+        try:
+            # SHIELDED, and joined in the `finally` — the idiom the spawn below uses, for the
+            # identical reason: a thread cannot be cancelled, so the only way this frame can
+            # promise "no probe is running in that directory" is to still be holding the thread.
+            auth_state, auth_why = await asyncio.shield(auth_task)
+        except engine_auth.Refused as e:
+            out.reason = str(e)
+            return out
+        except session_input.AuthorityFenceBusy:
+            out.reason = "the launch could not be ordered against a policy change; try again"
+            return out
+        except Exception as e:  # noqa: BLE001
+            # A PREFLIGHT THAT CRASHES IS A REFUSAL, NOT A RAISE. `dispatch()`'s contract is to
+            # return an outcome carrying a reason; the enclosing `try` has only a `finally`, so
+            # an exception escaping here leaves the caller with no `DispatchOut` at all — and the
+            # caller is a settlement that has to write SOMETHING about this attempt. `authorize`
+            # is operator-supplied and reads a project store, so "it threw" is reachable.
+            #
+            # `CancelledError` is a `BaseException` and is deliberately not caught: cancellation
+            # must keep propagating to the `finally` that joins the worker.
+            out.reason = f"the launch could not be authorized ({type(e).__name__})"
+            return out
+        if not engine_auth.may_dispatch(auth_state):
+            out.reason = (
+                f"{engine} cannot authenticate on this host, so an unattended agent would take "
+                f"the brief and be unable to act on it ({auth_why})"
+                if auth_state == engine_auth.UNAUTHENTICATED
+                else f"could not confirm that {engine} can authenticate ({auth_why}); refusing "
+                "to start an unattended agent on an unknown"
+            )
             return out
 
         may_have_inherited = True
@@ -645,6 +785,27 @@ async def dispatch(
             abandoned.set()
             with contextlib.suppress(Exception):
                 await asyncio.shield(asyncio.ensure_future(_reclaim()))
+        # THEN THE AUTH WORKER, on the same terms and before the same descriptor close. `abandon`
+        # first so a probe still queued for the fence refuses instead of spawning and a running
+        # one is killed by group; then the join, because `abandon` returns as soon as it has
+        # signalled — the thread is still inside `communicate()` reaping what it was handed.
+        if auth_task is not None:
+            # …AND ABANDONMENT IS BLOCKING WORK, SO IT LEAVES THE LOOP TOO (review 4, finding 2).
+            #
+            # `abandon()` takes the ownership lock that the worker holds across `Popen`, then
+            # signals a process group and waits on it. Called straight from this coroutine it
+            # stalled every other task for as long as a spawn took — measured at a 30 ms heartbeat
+            # arriving 599 ms late with a 600 ms `Popen`. Moving the launch fence off the loop did
+            # not cover this: it is a second blocking acquisition, on the teardown side.
+            #
+            # The serialization is the point and is kept — it is what stops a cancellation missing
+            # a process created a moment later — so the lock is not weakened; the WAIT for it just
+            # happens somewhere it does not hold the loop. Shielded and joined, because this runs
+            # on the cancellation path and a half-finished teardown is the thing being prevented.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(asyncio.ensure_future(asyncio.to_thread(auth_probe.abandon)))
+            with contextlib.suppress(Exception):
+                await asyncio.shield(auth_task)
         # The directory handle, on every path out. Ours is only needed until the child has been
         # spawned with it inherited; a return between the open and that point would otherwise
         # leak a descriptor per refused dispatch.
