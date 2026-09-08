@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
@@ -143,4 +143,80 @@ test("Scan now reports the curated count + a degraded scan (#441 P6)", async () 
   expect(
     await screen.findByText(/curated 1 session.*synthesis skipped/i),
   ).toBeInTheDocument();
+});
+
+test("the saved-toast timer does not outlive the panel (#922)", async () => {
+  // WHY THIS ASSERTS ON THE TIMER AND NOT ON THE SYMPTOM.
+  //
+  // The CI failure is `ReferenceError: window is not defined`, raised when the pending
+  // `setSaved(false)` runs after the jsdom ENVIRONMENT is torn down — which happens at the end
+  // of a test file, not at the end of a test. One case cannot reproduce that, and a test that
+  // waited on wall-clock would be green here for the same reason the bug is intermittent in CI:
+  // the teardown usually wins the race.
+  //
+  // So it asserts the property the fix actually establishes, in the domain the fix lives in:
+  // after unmount, this component has no pending timer. Fake timers make that exact and
+  // instantaneous rather than probabilistic.
+  vi.useFakeTimers();
+  try {
+    const { unmount } = renderPanel(block({ auto_enabled: false }));
+    // `fireEvent`, not `userEvent`: the latter schedules its own delays and `findByText` polls
+    // on REAL time, so both hang forever against a fake clock. This test needs one synchronous
+    // click and an explicit flush of the awaited `setPrefs`, which is exactly what these give.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("checkbox", { name: /scan automatically/i }));
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Saved.")).toBeInTheDocument();
+
+    // The 1500ms toast timer is now in flight — the precondition, asserted so this test fails
+    // loudly if it ever stops exercising the path it names.
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", async () => {
+  // The half the first fix missed. Cleanup cancels a timer that already EXISTS, and `save()`
+  // awaits `setPrefs` before creating one — so leaving the panel mid-request means the cleanup
+  // runs against an empty ref and the continuation then installs a fresh 1500 ms timeout on a
+  // component that is gone. The leak survived its own fix.
+  //
+  // The earlier regression cannot catch this: it resolves the save BEFORE unmounting, so it
+  // only ever covers an already-armed timer.
+  vi.useFakeTimers();
+  try {
+    let release!: (v: unknown) => void;
+    vi.mocked(api.setPrefs).mockReturnValue(
+      new Promise((r) => {
+        release = r;
+      }) as ReturnType<typeof api.setPrefs>,
+    );
+
+    const { unmount } = renderPanel(block({ auto_enabled: false }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("checkbox", { name: /scan automatically/i }));
+      await Promise.resolve();
+    });
+    // Precondition: the request is still in flight, so nothing is armed yet — which is exactly
+    // why unmount cleanup has nothing to cancel.
+    expect(vi.getTimerCount()).toBe(0);
+
+    unmount();
+    await act(async () => {
+      release({ pulse: block({ auto_enabled: true }) });
+      await Promise.resolve();
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    // …and nothing lands late either, which is the failure the operator actually sees.
+    vi.advanceTimersByTime(3000);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

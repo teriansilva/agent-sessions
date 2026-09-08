@@ -6,7 +6,7 @@
  * chosen value actually reaches the server, and that remounting shows the saved value rather
  * than the pre-save one (the #667 stale-ConfigCtx failure).
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
@@ -206,4 +206,63 @@ test("a genuine failure on the NEWEST save still reports itself", async () => {
   await waitFor(() =>
     expect(screen.getByText(/couldn’t save/i)).toBeInTheDocument(),
   );
+});
+
+test("the saved-toast timer does not outlive the panel (#922)", async () => {
+  // The sibling of `PulseSettings`' regression, and it exists because the grep that found this
+  // second copy is worth nothing if the second copy is not pinned. Same reasoning throughout:
+  // the CI symptom needs the jsdom ENVIRONMENT torn down, which one case cannot do, so this
+  // asserts the property the fix establishes — after unmount there is no pending timer.
+  vi.useFakeTimers();
+  try {
+    const { unmount } = renderPanel(block({ stale_hours: 24 }));
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/idle for/i), {
+        target: { value: "6" },
+      });
+      await Promise.resolve();
+    });
+    // The precondition, asserted so this cannot quietly stop exercising the path it names.
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", async () => {
+  // The sibling of PulseSettings' deferred-save regression. `saveGen` does not cover this:
+  // it orders responses against each OTHER, and an unmount never bumps a generation.
+  vi.useFakeTimers();
+  try {
+    let release!: (v: unknown) => void;
+    vi.mocked(api.setPrefs).mockReturnValue(
+      new Promise((r) => {
+        release = r;
+      }) as ReturnType<typeof api.setPrefs>,
+    );
+
+    const { unmount } = renderPanel(block({ stale_hours: 24 }));
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText(/idle for/i), {
+        target: { value: "6" },
+      });
+      await Promise.resolve();
+    });
+    expect(vi.getTimerCount()).toBe(0);
+
+    unmount();
+    await act(async () => {
+      release({ orchestrator: block({ stale_hours: 6 }) });
+      await Promise.resolve();
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(3000);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

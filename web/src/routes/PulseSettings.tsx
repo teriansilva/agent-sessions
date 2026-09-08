@@ -1,5 +1,5 @@
 import { Activity } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { PulseConfig, PulseDepth } from "../types/api";
@@ -56,18 +56,54 @@ export function PulseSettings() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
+  // THE TOAST TIMER MUST NOT OUTLIVE THE COMPONENT (#922).
+  //
+  // `save` already clears this ref before starting a new one, which covers a SECOND save
+  // restarting the window — and that is exactly why the gap was easy to miss: a ref plus a
+  // `clearTimeout` at the call site reads as complete timer hygiene. It only covers re-entry.
+  // Unmount is the other exit, the one a test harness takes on every single case and a human
+  // almost never does, and nothing here handled it.
+  //
+  // Left alone, the pending `setSaved(false)` fires against a torn-down environment. In `web-ci`
+  // that is an UNHANDLED error, so the job fails after every test has passed — 1468 passed,
+  // 1 error — and it is load-sensitive, so the identical tree passes on a quieter run. That
+  // makes it a tax on unrelated PRs rather than an honest red.
+  // …AND THE CONTINUATION AFTER THE AWAIT MUST KNOW IT LOST ITS COMPONENT (#922 review 1).
+  //
+  // Clearing on unmount only cancels a timer that ALREADY EXISTS, and `save()` awaits
+  // `setPrefs` *before* creating one. Leave the panel while that request is in flight and the
+  // cleanup runs against an empty ref; the response then resolves and installs a fresh 1500 ms
+  // timeout on a component that is gone. The leak survived its own fix.
+  //
+  // `alive` is re-armed in the effect BODY, not just released in the teardown, so StrictMode's
+  // deliberate mount → unmount → mount does not leave a live panel marked dead.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      clearTimeout(savedTimer.current);
+    };
+  }, []);
+
   const save = async (partial: Record<string, unknown>) => {
     setError(null);
     try {
       const r = (await api.setPrefs({ pulse: partial })) as {
         pulse?: PulseConfig;
       };
-      if (r.pulse) setBlock(r.pulse);
+      if (alive.current && r.pulse) setBlock(r.pulse);
+      // THE SHARED REFRESH STILL RUNS, deliberately. The save SUCCEEDED on the server, and
+      // `ConfigCtx` belongs to a provider ABOVE this panel that is still mounted — skipping it
+      // because this panel went away would reintroduce #667 (a remount showing the pre-save
+      // value) for exactly the operator who navigated off. Only component-local work is gated.
       refreshConfig();
+      if (!alive.current) return;
       clearTimeout(savedTimer.current);
       setSaved(true);
       savedTimer.current = setTimeout(() => setSaved(false), 1500);
     } catch (e) {
+      if (!alive.current) return;
       setError(
         e instanceof ApiError && e.status === 422
           ? "That value was rejected — check the interval / window."

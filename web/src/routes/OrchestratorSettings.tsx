@@ -1,5 +1,5 @@
 import { PushDevices } from "../components/pulse/PushDevices";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { OrchestratorConfig, OrchestratorTier } from "../types/api";
@@ -72,6 +72,30 @@ export function OrchestratorSettings() {
     undefined,
   );
 
+  // THE SAME LEAK AS `PulseSettings` (#922). Found by that issue's grep phase and fixed here
+  // rather than noted, because it is the identical defect with the identical one-line fix: the
+  // `clearTimeout` below covers a SECOND save restarting the window, and nothing covers the
+  // component going away with a save still in flight. Leaving it would have reproduced the same
+  // unhandled `ReferenceError` in `web-ci` from a sibling file.
+  // …AND THE CONTINUATION AFTER THE AWAIT MUST KNOW IT LOST ITS COMPONENT (#922 review 1).
+  //
+  // Clearing on unmount only cancels a timer that ALREADY EXISTS, and `save()` awaits
+  // `setPrefs` *before* creating one. Leave the panel mid-request and the cleanup runs against
+  // an empty ref, then the response installs a fresh 1500 ms timeout on a component that is
+  // gone. The `saveGen` fence below does NOT cover this: it orders responses against each
+  // other, and an unmount never bumps a generation.
+  //
+  // `alive` is re-armed in the effect BODY so StrictMode's mount → unmount → mount does not
+  // leave a live panel marked dead.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      clearTimeout(savedTimer.current);
+    };
+  }, []);
+
   // Monotonic generation per save. Responses do not arrive in send order, so applying whichever
   // lands LAST is not applying the last WRITE — measured live at 43 saves in one second from a
   // single slider drag, leaving the panel showing 0.70 while the server held 0.85 (#776). The
@@ -87,8 +111,12 @@ export function OrchestratorSettings() {
       };
       // A newer save is already in flight — its answer is the truth, not this one's.
       if (gen < saveGen.current) return;
-      if (r.orchestrator) setBlock(r.orchestrator);
+      if (alive.current && r.orchestrator) setBlock(r.orchestrator);
+      // Shared, and deliberately ungated: the save succeeded server-side and `ConfigCtx` is
+      // owned by a provider above this panel. Gating it would reintroduce the stale-config
+      // failure for the operator who navigated away. Only component-local work is gated.
       refreshConfig();
+      if (!alive.current) return;
       clearTimeout(savedTimer.current);
       setSaved(true);
       savedTimer.current = setTimeout(() => setSaved(false), 1500);
@@ -97,7 +125,7 @@ export function OrchestratorSettings() {
       // rejection able to paint "Couldn't save" over a newer save that had already succeeded —
       // the same false error this whole change exists to remove (#776 review). An older
       // response, of either kind, is not news about the current state.
-      if (gen < saveGen.current) return;
+      if (gen < saveGen.current || !alive.current) return;
       setError(
         e instanceof ApiError && e.status === 422
           ? e.message
