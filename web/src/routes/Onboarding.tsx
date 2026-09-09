@@ -717,7 +717,7 @@ export function Onboarding({
         {step === "ai" && (
           <Step
             title="Set up your AI"
-            desc="Powers AI Review, Auto-sort & Pulse. You provide it — an OpenAI-compatible endpoint."
+            desc="Powers AI Review, Auto-sort & mission control. You provide it — an OpenAI-compatible endpoint."
           >
             <label className={styles.field}>
               <span>Endpoint base URL</span>

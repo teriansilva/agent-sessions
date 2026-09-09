@@ -776,7 +776,7 @@ def fanout(notification: dict, base_url: str = "", path: Path | None = None) -> 
     url = f"{base_url}/s/{engine}/{uuid.split(':', 1)[-1]}" if uuid else f"{base_url}/pulse"
     # Title + project + link ONLY. This is the third-party boundary (#726).
     payload = webpush.build_payload(
-        title=notification.get("title", "Pulse"),
+        title=notification.get("title", "Mission control"),
         project=notification.get("project", ""),
         url=url,
     )

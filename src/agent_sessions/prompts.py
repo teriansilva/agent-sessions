@@ -342,9 +342,9 @@ REGISTRY: tuple[Prompt, ...] = (
     ),
     Prompt(
         id="pulse_banner",
-        group="Pulse",
+        group="Mission control",
         label="Overview banner",
-        description="The short chronological recap at the top of Pulse.",
+        description="The short chronological recap at the top of mission control.",
         contract='{"banner": str}',
         default=_PULSE_BANNER,
         max_chars=2000,
@@ -353,7 +353,7 @@ REGISTRY: tuple[Prompt, ...] = (
     ),
     Prompt(
         id="pulse_session_line",
-        group="Pulse",
+        group="Mission control",
         label="Session line",
         description="One line per card: current state plus the most useful next step.",
         contract='{"line": str}',
@@ -364,7 +364,7 @@ REGISTRY: tuple[Prompt, ...] = (
     ),
     Prompt(
         id="ask_catalog",
-        group="Pulse",
+        group="Mission control",
         label="Ask — catalog",
         description="Stage 1: picks candidate sessions out of the catalog.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',
@@ -375,7 +375,7 @@ REGISTRY: tuple[Prompt, ...] = (
     ),
     Prompt(
         id="ask_verify",
-        group="Pulse",
+        group="Mission control",
         label="Ask — verify",
         description="Stage 2: re-ranks those candidates against their real transcripts.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',

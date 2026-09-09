@@ -96,7 +96,7 @@ test("a stored value with no matching preset still round-trips", async () => {
 test("the copy says the session stays visible, because that is what makes this safe", () => {
   renderPanel();
   expect(
-    screen.getByText(/stays on your Pulse cards and in the sidebar/i),
+    screen.getByText(/stays on mission control and in the sidebar/i),
   ).toBeVisible();
 });
 

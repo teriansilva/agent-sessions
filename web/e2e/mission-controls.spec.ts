@@ -147,6 +147,28 @@ async function railCount(page: Page): Promise<number> {
   return n;
 }
 
+/** The mission named is the one the console is on (#935).
+ *
+ *  These sites used to read `expect(mission-console).toContainText("Bravo")`, which passed
+ *  because the RAIL was a descendant of the console and listed every mission's name — so the
+ *  assertion held whether or not the click had selected anything. #935 moves the rail into the
+ *  app shell's sidebar and the weakness became visible as four failures.
+ *
+ *  Asserting `aria-current` on the row says what the test means, and says it about the selection
+ *  rather than about a list that happens to mention the word. */
+async function expectMissionSelected(page: Page, name: string | RegExp) {
+  // NOT `railRows`, which filters on `:visible`. On a phone the rail lives in a drawer that
+  // `selectMission` closes behind itself, so the selected row is present and correct but not
+  // visible — and a visibility-filtered locator would report "element(s) not found" for a
+  // selection that is entirely fine.
+  await expect(
+    page
+      .locator('[data-testid="rail-mission"]')
+      .filter({ hasText: name })
+      .first(),
+  ).toHaveAttribute("aria-current", "true");
+}
+
 async function selectMission(page: Page, name: string | RegExp) {
   await ready(page);
   const opener = page.getByTestId("rail-drawer-open");
@@ -482,7 +504,7 @@ test("a refusal for the mission you LEFT is discarded, not shown over the one yo
 
   // Move on while it is still in flight.
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   release?.();
 
@@ -589,7 +611,7 @@ test("archiving the mission you SELECTED does not leave it on screen", async ({
 
   await page.goto("/pulse");
   await selectMission(page, "Going");
-  await expect(page.getByTestId("mission-console")).toContainText("Going");
+  await expectMissionSelected(page, "Going");
 
   await page.getByTestId("mission-archive").click();
   await page.getByTestId("mission-archive").click();
@@ -689,7 +711,7 @@ test("a refused APPROVAL for the mission you left is discarded too", async ({
   await approve.click();
 
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
   release?.();
 
   await page.waitForTimeout(750);
@@ -918,7 +940,7 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
   await page.getByTestId("new-mission-start").click();
   await page.getByTestId("new-mission-cancel").click();
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   await page.waitForTimeout(1500);
   // The rail WAS refreshed — the mission exists, and hiding it would be worse than showing it …
@@ -1076,7 +1098,7 @@ test("a LOAD MORE that lands first does not make the refresh that followed it lo
 
   await page.goto("/pulse");
   await selectMission(page, "Vanishing");
-  await expect(page.getByTestId("mission-console")).toContainText("Vanishing");
+  await expectMissionSelected(page, "Vanishing");
 
   // 1. Ask for the next page. It is held.
   const opener = page.getByTestId("rail-drawer-open");
@@ -1316,7 +1338,7 @@ test("a decision started in UNTRACKED does not paint its refusal over a mission"
 
   // …and the operator moves to a mission while it is in flight.
   await selectMission(page, "Alpha");
-  await expect(page.getByTestId("mission-console")).toContainText("Alpha");
+  await expectMissionSelected(page, "Alpha");
 
   release?.();
   await page.waitForTimeout(500);
@@ -1630,7 +1652,7 @@ test("a late ADOPT failure is not filed against the mission you moved to", async
 
   // …then move to mission B while it is still in flight.
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   releaseAdopt?.();
   await page.waitForTimeout(400);
@@ -1882,7 +1904,7 @@ test("a refusal from the visit you LEFT stays gone after you come back to that m
 
   // Away …
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
   // … AND BACK. This is the whole test: by now the id fence says "Alpha is current" again.
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toHaveText("running");
@@ -2264,7 +2286,7 @@ test("a settled-action refusal from a PREVIOUS untracked visit stays gone", asyn
 
   // Away …
   await selectMission(page, "Alpha");
-  await expect(page.getByTestId("mission-console")).toContainText("Alpha");
+  await expectMissionSelected(page, "Alpha");
   // … AND BACK. By now the id fence says "UNTRACKED is current" again.
   await selectUntracked(page);
   await closeRail(page);
@@ -2384,7 +2406,7 @@ test("a LATE archive still takes its row out of the Active rail after you have m
 
   // THE OPERATOR MOVES ON while the archive is still in flight — which unmounts Alpha's body.
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   release?.();
   await page.waitForTimeout(750);
@@ -2809,7 +2831,10 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
   if (await first.isVisible().catch(() => false)) await first.click();
   await railRows(page).first().click();
   await closeRail(page);
-  await expect(page.getByTestId("mission-console")).toContainText("M0");
+  // The first rail row IS M0, and clicking it selects it. Asserted on the row rather than on the
+  // console for the same reason as `expectMissionSelected`: the rail is no longer inside the
+  // console (#935), and "the console mentions the word M0" was never the property under test.
+  await expectMissionSelected(page, "M0");
   await expect(page.getByTestId("mission-state")).toContainText("done");
   await page.getByTestId("mission-archive").click();
   await page.getByTestId("mission-archive").click();
@@ -3175,7 +3200,7 @@ test("a late DISPATCH failure cannot paint over the mission you moved to", async
 
   // Away, while the dispatch is still in flight.
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   release?.();
   // A beat, so a note that WOULD land has landed.
@@ -3255,7 +3280,7 @@ test("a late QUESTION refusal cannot paint over the mission you moved to", async
 
   // Away, while the answer is still in flight.
   await selectMission(page, "Bravo");
-  await expect(page.getByTestId("mission-console")).toContainText("Bravo");
+  await expectMissionSelected(page, "Bravo");
 
   release?.();
   // A beat, so a note that WOULD land has landed.

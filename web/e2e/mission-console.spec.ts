@@ -147,9 +147,15 @@ const stops = (p: Page) =>
 const detail = (p: Page) =>
   p.getByRole("complementary", { name: /mission detail/i });
 
+/* #935 moved the rail into the app shell's sidebar wherever that sidebar is a persistent
+ * column — which the shell decides on its OWN breakpoint (<=800px is the off-canvas drawer),
+ * not the console's old 1100px one. So 1099 is now a column case: the rail is in the sidebar
+ * and the console's drawer trigger stands down. 412 keeps the console's own `MissionDrawer`,
+ * deliberately: the shell's off-canvas panel has a backdrop but no `aria-modal` and no focus
+ * trap, and trading those away for a layout fix would be a bad bargain. */
 for (const [width, railIsColumn, detailIsColumn] of [
   [412, false, false],
-  [1099, false, false],
+  [1099, true, false],
   [1100, true, false],
   [1399, true, false],
   [1400, true, true],

@@ -32,7 +32,7 @@ test("lists the known AI kinds, idle until they run (#441 P6)", async () => {
   vi.mocked(api.aiActivity).mockResolvedValue({ running: [], last: {} });
   render(<AiActivityPanel />);
   await flush();
-  expect(screen.getByText("Pulse scan")).toBeInTheDocument();
+  expect(screen.getByText("Mission control scan")).toBeInTheDocument();
   expect(screen.getByText("AI review")).toBeInTheDocument();
   expect(screen.getByText("Auto-sort")).toBeInTheDocument();
   expect(screen.getAllByText("idle").length).toBeGreaterThanOrEqual(3);

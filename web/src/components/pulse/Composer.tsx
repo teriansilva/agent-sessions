@@ -292,6 +292,8 @@ export function Composer({
   visit,
   isVisitCurrent,
   onCreated,
+  creating,
+  onCreatingChange,
 }: {
   /** The mission these turns belong to. Ownership is keyed on it. */
   missionId: string;
@@ -299,6 +301,18 @@ export function Composer({
    *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
    *  do not work without a model. */
   configured: boolean;
+  /** WHICH MODE, owned by the console (#935; reshaped in #937 review 1).
+   *
+   *  This began as a nonce — "start creating now" — so the mode could stay local. Two rounds
+   *  later that was wrong twice over: the request had to survive a MOUNT (the rail's button
+   *  switches branches, which remounts this composer), and consuming it meant `setState` inside
+   *  an effect, which is a cascading render the react-hooks rule rejects. Both problems are the
+   *  same problem — the mode outlives this component, so this component should not own it.
+   *
+   *  Only the MODE is lifted. The draft text, the pending send and the turn history stay here,
+   *  which is what #930's remount fixes were about. */
+  creating: boolean;
+  onCreatingChange: (creating: boolean) => void;
   turns: AskTurn[];
   onTurns: (missionId: string, fn: (prev: AskTurn[]) => AskTurn[]) => void;
   /** The visit a request is started in, and whether it is still on screen. Captured at SEND
@@ -320,9 +334,19 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  /** NEW MISSION mode. Local to this instance, so switching missions (which remounts the
-   *  composer) closes it — a half-typed instruction belongs to the screen it was typed on. */
-  const [creating, setCreating] = useState(false);
+  /** Focus the field the operator just asked for. Not `setState`, so no cascading render — and
+   *  the field does not exist until the create branch has rendered, hence the frame wait. */
+  useEffect(() => {
+    if (!creating) return;
+    const raf = requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(
+          '[data-testid="new-mission-instruction"]',
+        )
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [creating]);
   /** The mission currently owning an in-flight request, read inside the late callback. A ref,
    *  not state, because the callback must see the value at RESOLUTION time, not the one captured
    *  when the request started. */
@@ -448,7 +472,7 @@ export function Composer({
           type="button"
           className={`${styles.modeBtn} ${creating ? "" : styles.modeOn}`}
           aria-pressed={!creating}
-          onClick={() => setCreating(false)}
+          onClick={() => onCreatingChange(false)}
           data-testid="composer-mode-ask"
         >
           ASK
@@ -457,7 +481,7 @@ export function Composer({
           type="button"
           className={`${styles.modeBtn} ${creating ? styles.modeOn : ""}`}
           aria-pressed={creating}
-          onClick={() => setCreating(true)}
+          onClick={() => onCreatingChange(true)}
           data-testid="composer-mode-new"
         >
           NEW MISSION
@@ -469,10 +493,23 @@ export function Composer({
           visit={visit}
           isVisitCurrent={isVisitCurrent}
           onCreated={(m, opts) => {
-            setCreating(false);
+            // ONLY THE CREATION STILL ON SCREEN MAY CLOSE THE FORM (#937 review 2).
+            //
+            // Lifting the mode to the console widened this setter's lifetime, and that turned a
+            // harmless no-op into data loss. Before: a slow create A settled after its composer
+            // had unmounted, and `setCreating(false)` wrote to a dead component. After: the same
+            // late response reaches the console's SHARED mode and closes whatever form is open
+            // now — so an operator who started A, went to another mission, came back and typed
+            // draft B lost B the moment A's response landed.
+            //
+            // `focus` is the fence `NewMissionForm` already computes for exactly this question
+            // (`liveRef.current && isVisitCurrent(at)`), so the mode reuses that decision rather
+            // than inventing a second, differently-wrong one. A stale creation still refreshes
+            // the rail — the mission is real and must appear — it just does not touch the mode.
+            if (opts?.focus !== false) onCreatingChange(false);
             onCreated(m, opts);
           }}
-          onCancel={() => setCreating(false)}
+          onCancel={() => onCreatingChange(false)}
         />
       ) : (
         <form className={styles.composer} onSubmit={submit}>

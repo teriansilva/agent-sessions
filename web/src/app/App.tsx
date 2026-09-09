@@ -1,6 +1,6 @@
 import {
-  Activity,
   BookMarked,
+  Crosshair,
   HelpCircle,
   Menu,
   Network,
@@ -19,6 +19,7 @@ import {
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
 import { SessionList } from "../components/sidebar/SessionList";
+import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
 import { Settings } from "../routes/Settings";
@@ -59,7 +60,10 @@ const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
 // page code stays out of the main bundle until opened.
 const Pulse = lazyWithReload(() => import("../routes/Pulse"), "pulse");
 // TEMPLATES — the instruction-template gallery + editor (#905). Lazy like the others.
-const Templates = lazyWithReload(() => import("../routes/Templates"), "templates");
+const Templates = lazyWithReload(
+  () => import("../routes/Templates"),
+  "templates",
+);
 const TemplateEditor = lazyWithReload(
   () => import("../routes/TemplateEditor"),
   "template-editor",
@@ -192,6 +196,24 @@ function Layout() {
   // "Open" state of whichever surface the toggle controls (for the icon + aria-expanded).
   const surfaceOpen = isMobile ? navOpen : !collapsed;
 
+  /** On the mission route the sidebar lists MISSIONS, not sessions (#935).
+   *
+   *  The operator had two vertical lists side by side — this one and the console's own rail —
+   *  spending 620px of a desktop on lists about different things. The console still owns the
+   *  mission list and portals its existing rail into the slot below; the shell only supplies the
+   *  space and the surrounding chrome.
+   *
+   *  **Only where the sidebar is a persistent column.** On mobile it is an off-canvas drawer with
+   *  a backdrop but no `aria-modal` and no focus trap, while the console's own `MissionDrawer`
+   *  has both — so offering the slot there would trade a desktop layout fix for a mobile
+   *  accessibility regression. No slot means the console keeps exactly its current behaviour. */
+  const missionRoute = location.pathname.startsWith("/pulse");
+  const railInSidebar = missionRoute && !isMobile;
+  /** Published to the console through context. A ref callback, not an effect: it fires on
+   *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
+   *  portal needs and avoids setting state from inside an effect. */
+  const [railSlotEl, setRailSlotEl] = useState<HTMLElement | null>(null);
+
   // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
   // many are live (within the working window). Derived from the shared store the list fills.
   const { sessions } = useSessionsStore();
@@ -242,7 +264,13 @@ function Layout() {
             type="button"
             className="navToggle"
             aria-label={
-              surfaceOpen ? "Collapse session list" : "Open session list"
+              railInSidebar
+                ? surfaceOpen
+                  ? "Collapse mission list"
+                  : "Open mission list"
+                : surfaceOpen
+                  ? "Collapse session list"
+                  : "Open session list"
             }
             aria-expanded={surfaceOpen}
             onClick={toggle}
@@ -274,7 +302,7 @@ function Layout() {
               aria-label="Open mission control"
               onClick={closeMobileDrawer}
             >
-              <Activity size={18} />
+              <Crosshair size={18} />
             </Link>
             <NotificationBell />
             <Link
@@ -312,35 +340,50 @@ function Layout() {
           {/* Header row (#548): the decorative "Sessions / SEC // 01" label gave way to the
             sort-order toggle — same chrome, functional content. The heading stays for the
             <aside> landmark's accessible name, visually hidden. */}
-          <header className="sidebar-head">
-            <h2 className="hud-h sr-only">Sessions</h2>
-            <span className="hud-tag" id="list-order-label">
-              Order
-            </span>
-            <span
-              className="hud-seg"
-              role="radiogroup"
-              aria-labelledby="list-order-label"
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={listOrder === "recent_activity"}
-                onClick={() => chooseOrder("recent_activity")}
-                title="Newest update first"
-              >
-                Recent
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={listOrder === "created_at"}
-                onClick={() => chooseOrder("created_at")}
-                title="Newest-created first — order stays put as sessions update"
-              >
-                Created
-              </button>
-            </span>
+          <header
+            className={`sidebar-head${railInSidebar ? " isMissionSection" : ""}`}
+          >
+            <h2 className="hud-h sr-only">
+              {railInSidebar ? "Missions" : "Sessions"}
+            </h2>
+            {/* THE WHOLE CONTROL STANDS DOWN, NOT JUST ITS LABEL (#935, #937 review 1,
+                finding 3). Hiding only the "Order" tag left Recent / Created rendered above the
+                mission rail — and they were not merely inert: clicking Created wrote
+                `session_list_order` to /api/prefs, so navigating to missions could silently
+                re-sort the operator's SESSION list. An active control for the wrong collection
+                is worse than a stale label. Missions have their own ordering and their own scope
+                switch inside the rail; when they want an order control it will be theirs. */}
+            {railInSidebar ? null : (
+              <>
+                <span className="hud-tag" id="list-order-label">
+                  Order
+                </span>
+                <span
+                  className="hud-seg"
+                  role="radiogroup"
+                  aria-labelledby="list-order-label"
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={listOrder === "recent_activity"}
+                    onClick={() => chooseOrder("recent_activity")}
+                    title="Newest update first"
+                  >
+                    Recent
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={listOrder === "created_at"}
+                    onClick={() => chooseOrder("created_at")}
+                    title="Newest-created first — order stays put as sessions update"
+                  >
+                    Created
+                  </button>
+                </span>
+              </>
+            )}
           </header>
           {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
           <div className="sidebar-actions">
@@ -361,7 +404,7 @@ function Layout() {
               aria-label="Open mission control"
               onClick={closeMobileDrawer}
             >
-              <Activity size={18} />
+              <Crosshair size={18} />
             </Link>
             <Link
               to="/overview"
@@ -390,12 +433,27 @@ function Layout() {
             </Link>
           </div>
           <div className="sidebarBody">
-            <SessionList onNavigate={closeMobileDrawer} />
+            {railInSidebar ? (
+              /* The portal DESTINATION, part of the shell's own markup rather than created on
+                 demand. The ref callback publishes the element on commit, which is what lets the
+                 console read it from context instead of hunting for it by id in an effect. */
+              <div
+                id="mission-rail-slot"
+                className="missionRailSlot"
+                ref={setRailSlotEl}
+              />
+            ) : (
+              <SessionList onNavigate={closeMobileDrawer} />
+            )}
           </div>
           <footer className="sidebar-foot">
             <span className="hud-tag">
+              {/* Sessions, on every route — including this one, where the sidebar is listing
+                  missions. Saying so is the difference between a fact and a mislabel (#937
+                  review 1). */}
               <b className="num">{engaged}</b> ENGAGED ·{" "}
               <b className="num">{live}</b> LIVE
+              {railInSidebar ? " SESSIONS" : ""}
             </span>
           </footer>
         </aside>
@@ -407,7 +465,9 @@ function Layout() {
             className="sidebar-resize"
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize session list"
+            aria-label={
+              railInSidebar ? "Resize mission list" : "Resize session list"
+            }
             aria-valuenow={sidebarW}
             aria-valuemin={MIN_W}
             aria-valuemax={maxSidebarW()}
@@ -437,20 +497,23 @@ function Layout() {
             <Suspense
               fallback={<div className="tr-overview tr-ov-state">Loading…</div>}
             >
-              <Routes>
-                <Route path="/" element={<NewSessionLanding />} />
-                {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
+              {/* The console reads the slot from here (#935) — see `railSlot.tsx`. */}
+              <MissionRailSlotProvider value={railSlotEl}>
+                <Routes>
+                  <Route path="/" element={<NewSessionLanding />} />
+                  {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
                   same component, which replace-redirects to the first tab (state preserved). */}
-                <Route path="/settings" element={<Settings />} />
-                <Route path="/settings/:tab" element={<Settings />} />
-                <Route path="/overview" element={<Overview />} />
-                <Route path="/pulse" element={<Pulse />} />
-                <Route path="/templates" element={<Templates />} />
-                <Route path="/templates/new" element={<TemplateEditor />} />
-                <Route path="/templates/:id" element={<TemplateEditor />} />
-                <Route path="/s/:engine/:id" element={<SessionView />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="/settings/:tab" element={<Settings />} />
+                  <Route path="/overview" element={<Overview />} />
+                  <Route path="/pulse" element={<Pulse />} />
+                  <Route path="/templates" element={<Templates />} />
+                  <Route path="/templates/new" element={<TemplateEditor />} />
+                  <Route path="/templates/:id" element={<TemplateEditor />} />
+                  <Route path="/s/:engine/:id" element={<SessionView />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </MissionRailSlotProvider>
             </Suspense>
           </ChunkErrorBoundary>
         </main>

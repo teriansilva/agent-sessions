@@ -20,6 +20,9 @@
  * captured-id check inside every `.then`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { useMissionRailSlot } from "./railSlot";
 
 import { ApiError, api } from "../../lib/api";
 import { actionOutcome } from "../../lib/orchestratorAction";
@@ -698,6 +701,36 @@ export function MissionConsole({
   const [stop, setStop] = useState<Stop>("THREAD");
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  /** The composer's MODE, owned here rather than in the composer (#935, reshaped in #937
+   *  review 1) — see `Composer.creating`. The draft text, the pending send and the turn history
+   *  stay in the composer; only "which mode" needs to outlive a branch switch, because
+   *  "+ New mission" in the rail switches a composer that has not mounted yet.
+   *
+   *  Declared AFTER `drawerOpen` because `startNewMission` closes it: a `useCallback` reading a
+   *  `useState` setter declared below it is a TDZ error, which the react-hooks lint catches and
+   *  a browser would too. */
+  const [composerCreating, setComposerCreating] = useState(false);
+  const startNewMission = useCallback(() => {
+    // LEAVE THE CURRENT MISSION FIRST (#937 review 1, finding 2). With one selected the console
+    // renders `MissionBody`, whose composer sends MESSAGES to that mission — there is no create
+    // field on that branch at all, so the request had nowhere to land and the button did nothing
+    // in the most ordinary state there is. Starting a new mission means leaving the one you are
+    // on, so the selection moves to the sentinel view, which is where creation lives.
+    setSelected(UNTRACKED_VIEW);
+    setStop("THREAD");
+    setComposerCreating(true);
+    setDrawerOpen(false); // on a phone the rail IS the drawer; leaving it open hides the field
+  }, []);
+
+  /** The shell's sidebar slot (#935).
+   *
+   *  Read through the shell's own CONTEXT rather than by looking the element up in an effect.
+   *  The lookup version worked, but it set state synchronously inside an effect — a cascading
+   *  render the react-hooks rule rejects, and rightly: the shell already knows whether it is
+   *  offering the slot and can simply say so. `null` means "render in place", which is the
+   *  honest fallback rather than a blank column. */
+  const railSlot = useMissionRailSlot();
   const [adopting, setAdopting] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -1606,32 +1639,65 @@ export function MissionConsole({
       onLoadMore={loadMoreMissions}
       archived={archived}
       onScope={setScope}
+      onNewMission={startNewMission}
     />
   );
 
   return (
     <div className={styles.console} data-testid="mission-console">
-      <div className={styles.railInline}>{rail}</div>
-      <MissionDrawer
-        open={drawerOpen}
-        onClose={closeDrawer}
-        triggerRef={drawerBtnRef}
-      >
-        {rail}
-      </MissionDrawer>
+      {/* THE RAIL RENDERS INTO THE SHELL'S SIDEBAR ON THIS ROUTE (#935).
+          The operator had two vertical lists side by side — the shell's sessions and this one —
+          so the shell lists missions here instead and the console keeps only the thread.
+
+          A PORTAL, not a lift. `MissionConsole` still OWNS the list: `listGen` / `appliedGen` /
+          `archivedRef` fencing, pagination, the scope switch and the selection all stay here,
+          because moving them into the shell would move three review rounds of race handling with
+          them. Only the DOM position changes.
+
+          Falls back to rendering in place when the slot is absent — an older shell, or the first
+          paint of a route that has not mounted it yet. A rail in the wrong column beats no rail,
+          and this is also what keeps the component testable on its own. */}
+      {railSlot ? (
+        createPortal(rail, railSlot)
+      ) : (
+        <>
+          <div className={styles.railInline}>{rail}</div>
+          {/* MOBILE KEEPS ITS OWN DRAWER, AND THAT IS NOT AN OVERSIGHT (#935).
+              The shell only offers the slot where its sidebar is a persistent column. Where it is
+              an off-canvas drawer instead, it has a backdrop but no `aria-modal`, no
+              `role="dialog"` and no focus trap — `MissionDrawer` has all three by design. Routing
+              the rail through the shell at every width would have traded a layout fix for an
+              accessibility regression on the surface where a trap matters most. Giving the shell
+              drawer the modal contract is worth doing, but it changes every route and belongs in
+              its own issue. */}
+          <MissionDrawer
+            open={drawerOpen}
+            onClose={closeDrawer}
+            triggerRef={drawerBtnRef}
+          >
+            {rail}
+          </MissionDrawer>
+        </>
+      )}
 
       <div className={styles.centre}>
         <div className={styles.topbar}>
-          <button
-            type="button"
-            className={styles.drawerBtn}
-            onClick={() => setDrawerOpen(true)}
-            ref={drawerBtnRef}
-            aria-label="Missions"
-            data-testid="rail-drawer-open"
-          >
-            ☰
-          </button>
+          {/* The trigger belongs to the console's OWN drawer, so it stands down wherever the
+              shell is showing the rail as a column (#935). Leaving it visible would offer a
+              control that opens a drawer that is no longer rendered — inert chrome, which is the
+              class of thing this issue exists to remove. */}
+          {railSlot ? null : (
+            <button
+              type="button"
+              className={styles.drawerBtn}
+              onClick={() => setDrawerOpen(true)}
+              ref={drawerBtnRef}
+              aria-label="Missions"
+              data-testid="rail-drawer-open"
+            >
+              ☰
+            </button>
+          )}
           {/* NOT a second "MISSION CONTROL" (#929). The route's own <h1> says that a few
               pixels above, so this fell back to printing the page's name twice — one of the
               things that made the page read as two designs stacked. This says which MISSION
@@ -1695,37 +1761,41 @@ export function MissionConsole({
           </div>
         ) : null}
 
-        {shown === UNTRACKED_VIEW ? (
-          <div
-            className={`${styles.pane} ${styles.untrackedPane}`}
-            data-testid="pane"
-          >
-            {/* THE EXPLANATORY STOP RENDERS *INSIDE* THIS BRANCH, NOT INSTEAD OF IT
+        <div
+          className={`${styles.split} ${hasDetailColumn ? styles.splitWide : ""}`}
+          data-testid="split"
+        >
+          {shown === UNTRACKED_VIEW ? (
+            <div
+              className={`${styles.pane} ${styles.untrackedPane}`}
+              data-testid="pane"
+            >
+              {/* THE EXPLANATORY STOP RENDERS *INSIDE* THIS BRANCH, NOT INSTEAD OF IT
                 (#930 review 2, finding 1). As a sibling branch it replaced the whole pane —
                 composer included — so OBJECTIVES → THREAD was an unmount round trip and the
                 operator's draft did not survive a tab they pressed to look at something. The
                 stop now swaps the CONTENT around a composer that stays mounted throughout,
                 which is the same reasoning as the first-run ordering fix one review earlier:
                 the composer's position may move, its identity may not. */}
-            {noMissionStop}
-            {/* THE FIRST-RUN INVITATION, ABOVE THE LIST (#929).
+              {noMissionStop}
+              {/* THE FIRST-RUN INVITATION, ABOVE THE LIST (#929).
                 With no mission, `adoptTarget` is null and EVERY card's ADOPT is disabled — so
                 the page led with a list of dead buttons and hid the one live action beneath
                 them. This puts the way out first. It is shown only for a rail that was
                 successfully READ and found empty; see `firstRun`. */}
-            {firstRun && stop === "THREAD" ? (
-              <div className={styles.empty} data-testid="first-run">
-                <div className={styles.emptyLead}>
-                  Start your first mission.
+              {firstRun && stop === "THREAD" ? (
+                <div className={styles.empty} data-testid="first-run">
+                  <div className={styles.emptyLead}>
+                    Start your first mission.
+                  </div>
+                  <div>
+                    A mission plans the work, dispatches an agent and drives it
+                    to a pull request. Describe what you want done — or ADOPT a
+                    running session into a mission once you have one.
+                  </div>
                 </div>
-                <div>
-                  A mission plans the work, dispatches an agent and drives it to
-                  a pull request. Describe what you want done — or ADOPT a
-                  running session into a mission once you have one.
-                </div>
-              </div>
-            ) : null}
-            {/* Ask lives here too. Until #871 the composer is not mission-qualified — it asks
+              ) : null}
+              {/* Ask lives here too. Until #871 the composer is not mission-qualified — it asks
                 about your past work — and gating it behind "create a mission first" would make
                 it unreachable on a fresh install, which the Ask box never was. Keyed on the
                 sentinel so its turns are filed under this view rather than a mission.
@@ -1741,32 +1811,34 @@ export function MissionConsole({
                 instant an empty list arrived and flipped `firstRun`. The mount is fixed here
                 and only its visual order changes, so the draft, the mode and any pending send
                 survive the answer landing. */}
-            <div className={firstRun ? undefined : styles.composerBelow}>
-              <Composer
-                missionId={UNTRACKED_VIEW}
-                configured={configured}
-                turns={turns[UNTRACKED_VIEW] ?? []}
-                onTurns={onTurns}
-                visit={visit}
-                isVisitCurrent={isVisitCurrent}
-                onCreated={onCreated}
-              />
-            </div>
-            {stop !== "THREAD" ? null : (
-              <>
-            <div className={styles.empty}>
-              <div className={styles.emptyLead}>
-                {untracked.length} live{" "}
-                {untracked.length === 1 ? "session" : "sessions"} with no
-                mission.
+              <div className={firstRun ? undefined : styles.composerBelow}>
+                <Composer
+                  missionId={UNTRACKED_VIEW}
+                  configured={configured}
+                  turns={turns[UNTRACKED_VIEW] ?? []}
+                  onTurns={onTurns}
+                  visit={visit}
+                  isVisitCurrent={isVisitCurrent}
+                  onCreated={onCreated}
+                  creating={composerCreating}
+                  onCreatingChange={setComposerCreating}
+                />
               </div>
-              <div>
-                {firstRun
-                  ? "ADOPT becomes available as soon as a mission exists — until then, act on what a session is waiting for here."
-                  : "ADOPT one into a mission from the rail, or act on what it is waiting for here."}
-              </div>
-            </div>
-            {/* The sessions themselves, not only their decisions.
+              {stop !== "THREAD" ? null : (
+                <>
+                  <div className={styles.empty}>
+                    <div className={styles.emptyLead}>
+                      {untracked.length} live{" "}
+                      {untracked.length === 1 ? "session" : "sessions"} with no
+                      mission.
+                    </div>
+                    <div>
+                      {firstRun
+                        ? "ADOPT becomes available as soon as a mission exists — until then, act on what a session is waiting for here."
+                        : "ADOPT one into a mission from the rail, or act on what it is waiting for here."}
+                    </div>
+                  </div>
+                  {/* The sessions themselves, not only their decisions.
                 On a phone the rail IS a drawer, so anything that lives only on a rail row is
                 reachable only by opening it — including what the orchestrator last did here.
                 This view is the surface that is visible without the drawer, so it carries the
@@ -1776,215 +1848,229 @@ export function MissionConsole({
                 server's projection. Before this phase it rode a card; without somewhere to go it
                 would simply vanish, and a console that loses decisions for unorganised work is
                 worse than the grid it replaced. */}
-            <ul className={styles.sessionList} aria-label="Untracked sessions">
-              {untracked.map((c) => (
-                <li
-                  key={c.id}
-                  className={`${styles.event} ${styles.sessionBlock}`}
-                  data-testid="untracked-session"
-                >
-                  {/* The HUD corner brackets the grid's cards carried (#476). This block is what
+                  <ul
+                    className={styles.sessionList}
+                    aria-label="Untracked sessions"
+                  >
+                    {untracked.map((c) => (
+                      <li
+                        key={c.id}
+                        className={`${styles.event} ${styles.sessionBlock}`}
+                        data-testid="untracked-session"
+                      >
+                        {/* The HUD corner brackets the grid's cards carried (#476). This block is what
                     replaced those cards, so it keeps the treatment rather than quietly dropping
                     the repo's card vocabulary along with the grid. */}
-                  <HudFrame />
-                  <div className={styles.eventHead}>
-                    {/* Colour alone is not an accessible state: the band rides the LED's
+                        <HudFrame />
+                        <div className={styles.eventHead}>
+                          {/* Colour alone is not an accessible state: the band rides the LED's
                       accessible name, exactly as the grid moved it there when it dropped the
                       section headings (#750). */}
-                    <span
-                      className={`${styles.dot} ${
-                        c.state === "needs_you"
-                          ? styles.dotNeedsYou
-                          : c.live
-                            ? styles.dotRunning
-                            : ""
-                      }`}
-                      role="img"
-                      aria-label={BAND_LABEL[c.state] ?? c.state}
-                    />{" "}
-                    {c.engine} · {c.project?.name || "no project"}
-                  </div>
-                  <div className={styles.eventText}>{c.title || c.id}</div>
-                  {/* The review's two statements, both standing down when the action speaks. The
+                          <span
+                            className={`${styles.dot} ${
+                              c.state === "needs_you"
+                                ? styles.dotNeedsYou
+                                : c.live
+                                  ? styles.dotRunning
+                                  : ""
+                            }`}
+                            role="img"
+                            aria-label={BAND_LABEL[c.state] ?? c.state}
+                          />{" "}
+                          {c.engine} · {c.project?.name || "no project"}
+                        </div>
+                        <div className={styles.eventText}>
+                          {c.title || c.id}
+                        </div>
+                        {/* The review's two statements, both standing down when the action speaks. The
                     ⚠ carries the reason on its accessible name as well as in text — colour and
                     a glyph are not a reason. */}
-                  {!actionSpeaks(c) &&
-                  c.intervention_required &&
-                  c.intervention_reason ? (
-                    <div className={styles.objStale} data-testid="intervention">
-                      <span
-                        role="img"
-                        aria-label={`Intervention required: ${c.intervention_reason}`}
-                      >
-                        ⚠
-                      </span>{" "}
-                      {c.intervention_reason}
-                    </div>
-                  ) : null}
-                  {!actionSpeaks(c) && (c.synthesis || c.ai_summary) ? (
-                    <div className={styles.objReason}>
-                      {c.synthesis || c.ai_summary}
-                    </div>
-                  ) : null}
-                  {/* The card's own jump link. Without it the only route into an untracked session
+                        {!actionSpeaks(c) &&
+                        c.intervention_required &&
+                        c.intervention_reason ? (
+                          <div
+                            className={styles.objStale}
+                            data-testid="intervention"
+                          >
+                            <span
+                              role="img"
+                              aria-label={`Intervention required: ${c.intervention_reason}`}
+                            >
+                              ⚠
+                            </span>{" "}
+                            {c.intervention_reason}
+                          </div>
+                        ) : null}
+                        {!actionSpeaks(c) && (c.synthesis || c.ai_summary) ? (
+                          <div className={styles.objReason}>
+                            {c.synthesis || c.ai_summary}
+                          </div>
+                        ) : null}
+                        {/* The card's own jump link. Without it the only route into an untracked session
                     is the sidebar, which is exactly the "the decision is here, its session is
                     somewhere else" split this phase exists to close. */}
-                  {/* "Jump into …", never "Open session": the app shell's own nav already carries
+                        {/* "Jump into …", never "Open session": the app shell's own nav already carries
                     an "Open session overview" link, and a second control with that name is the
                     duplicate `pulse-card-once` guards against. */}
-                  <Link
-                    className={styles.openSession}
-                    to={sessionRoute(c.id)}
-                    aria-label={`Jump into ${c.title || c.id}`}
-                  >
-                    Jump in
-                  </Link>{" "}
-                  {/* ADOPT lives with the session, not on a rail row — the rail navigates. It is
+                        <Link
+                          className={styles.openSession}
+                          to={sessionRoute(c.id)}
+                          aria-label={`Jump into ${c.title || c.id}`}
+                        >
+                          Jump in
+                        </Link>{" "}
+                        {/* ADOPT lives with the session, not on a rail row — the rail navigates. It is
                     rendered DISABLED rather than hidden when no mission is selected, so the
                     operator can see that adoption exists and why it is unavailable. */}
-                  {/* `mission_id === undefined` means the server could not READ the membership
+                        {/* `mission_id === undefined` means the server could not READ the membership
                     store — not that nobody holds this session (that is `null`). The card still
                     shows, because hiding the operator's work is the worse failure, but ADOPT is
                     refused rather than offered: a mutation the backend cannot authorize must
                     not be advertised. */}
-                  <button
-                    type="button"
-                    className={styles.adoptInline}
-                    onClick={() => adopt(c.id)}
-                    disabled={
-                      !adoptTarget ||
-                      adopting === c.id ||
-                      c.mission_id === undefined
-                    }
-                    title={
-                      c.mission_id === undefined
-                        ? "Mission membership could not be read, so adoption is unavailable"
-                        : archived
-                          ? "Archived missions cannot take new sessions — unarchive it first"
-                          : adoptTarget
-                            ? "Take this session into the selected mission"
-                            : missions.length
-                              ? "Every mission here is closed — reopen one, or start a new mission, before adopting a session"
-                              : "Select a mission first"
-                    }
-                    data-testid="rail-adopt"
-                  >
-                    {adopting === c.id ? "…" : "ADOPT"}
-                  </button>
-                  {c.pending_action ? (
-                    /* `embedded` — this block already names the session and links to it, which is
+                        <button
+                          type="button"
+                          className={styles.adoptInline}
+                          onClick={() => adopt(c.id)}
+                          disabled={
+                            !adoptTarget ||
+                            adopting === c.id ||
+                            c.mission_id === undefined
+                          }
+                          title={
+                            c.mission_id === undefined
+                              ? "Mission membership could not be read, so adoption is unavailable"
+                              : archived
+                                ? "Archived missions cannot take new sessions — unarchive it first"
+                                : adoptTarget
+                                  ? "Take this session into the selected mission"
+                                  : missions.length
+                                    ? "Every mission here is closed — reopen one, or start a new mission, before adopting a session"
+                                    : "Select a mission first"
+                          }
+                          data-testid="rail-adopt"
+                        >
+                          {adopting === c.id ? "…" : "ADOPT"}
+                        </button>
+                        {c.pending_action ? (
+                          /* `embedded` — this block already names the session and links to it, which is
                      exactly what the prop means. Without it `ActionRow` renders its own session
                      link and the block carries two links to the same place (#781: one link).
                      The MISSION thread is the opposite case and is deliberately NOT embedded: a
                      mission can hold several sessions, so a decision there must name its own. */
-                    <ActionRow
-                      action={c.pending_action as OrchestratorAction}
-                      onResolved={onResolved}
-                      /* FENCED, like every other late outcome (#896 review 5, finding 4). This
+                          <ActionRow
+                            action={c.pending_action as OrchestratorAction}
+                            onResolved={onResolved}
+                            /* FENCED, like every other late outcome (#896 review 5, finding 4). This
                          path is not inside the keyed mission body, so nothing unmounts it when
                          the operator selects a mission — and `ActionRow`'s settled-record 409
                          calls the parent note, so an approval started here would paint its
                          refusal over whatever the operator moved to. `UNTRACKED_VIEW` is the id
                          this view holds, which is exactly what `isCurrent` compares against. */
-                      onNote={noteIfUntracked}
-                      embedded
-                    />
-                  ) : c.last_action ? (
-                    <div
-                      className={styles.objReason}
-                      data-testid="untracked-view-last-action"
-                    >
-                      {c.last_action.verb.toUpperCase()}{" "}
-                      {actionOutcome(c.last_action.state)}
-                      {c.last_action.repeats && c.last_action.repeats > 1
-                        ? ` ×${c.last_action.repeats}`
-                        : ""}
-                    </div>
-                  ) : null}
-                  {/* The action's state, folded into the block's own footer and appearing exactly
+                            onNote={noteIfUntracked}
+                            embedded
+                          />
+                        ) : c.last_action ? (
+                          <div
+                            className={styles.objReason}
+                            data-testid="untracked-view-last-action"
+                          >
+                            {c.last_action.verb.toUpperCase()}{" "}
+                            {actionOutcome(c.last_action.state)}
+                            {c.last_action.repeats && c.last_action.repeats > 1
+                              ? ` ×${c.last_action.repeats}`
+                              : ""}
+                          </div>
+                        ) : null}
+                        {/* The action's state, folded into the block's own footer and appearing exactly
                     once (#781). The embedded row deliberately draws no frame and no state of its
                     own — one box, one footer — so the container is where this belongs. */}
-                  {c.pending_action ? (
-                    <div className={styles.objWhen} data-testid="session-state">
-                      {c.pending_action.state}
+                        {c.pending_action ? (
+                          <div
+                            className={styles.objWhen}
+                            data-testid="session-state"
+                          >
+                            {c.pending_action.state}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          ) : shown ? (
+            <MissionBody
+              key={shown}
+              missionId={shown}
+              stop={stop}
+              configured={configured}
+              onTitle={setTitle}
+              onSessions={setHeldExtra}
+              cards={allCards}
+              onResolved={onResolved}
+              onNote={setNote}
+              isCurrent={isCurrent}
+              onMissionChanged={onMissionChanged}
+            />
+          ) : (
+            <div className={styles.pane} data-testid="pane">
+              {/* Same shape as the untracked branch above, for the same reason: the stop swaps
+                the CONTENT and never the composer (#930 review 2, finding 1). */}
+              {noMissionStop}
+              {stop !== "THREAD" ? null : filtered ? (
+                <div
+                  className={styles.empty}
+                  data-testid="console-filtered-empty"
+                >
+                  <div className={styles.emptyLead}>
+                    No sessions match these filters
+                  </div>
+                  <div>
+                    There is work here, just not in this combination — the chips
+                    above are narrowing it.
+                  </div>
+                  <button
+                    type="button"
+                    className={styles.adoptInline}
+                    onClick={onClearFilters}
+                  >
+                    Show all sessions
+                  </button>
+                </div>
+              ) : (
+                <div className={styles.empty} data-testid="console-empty">
+                  <div className={styles.emptyLead}>Nothing tracked yet.</div>
+                  <div>
+                    A mission groups the sessions working one outcome, with the
+                    objectives that define done.
+                  </div>
+                  {loading ? (
+                    <div style={{ marginTop: 10 }}>
+                      Looking for live sessions…
+                    </div>
+                  ) : untracked.length ? (
+                    <div style={{ marginTop: 10 }}>
+                      {untracked.length} live{" "}
+                      {untracked.length === 1 ? "session is" : "sessions are"}{" "}
+                      still listed under UNTRACKED.
                     </div>
                   ) : null}
-                </li>
-              ))}
-            </ul>
-              </>
-            )}
-          </div>
-        ) : shown ? (
-          <MissionBody
-            key={shown}
-            missionId={shown}
-            stop={stop}
-            configured={configured}
-            onTitle={setTitle}
-            onSessions={setHeldExtra}
-            cards={allCards}
-            onResolved={onResolved}
-            onNote={setNote}
-            isCurrent={isCurrent}
-            onMissionChanged={onMissionChanged}
-          />
-        ) : (
-          <div className={styles.pane} data-testid="pane">
-            {/* Same shape as the untracked branch above, for the same reason: the stop swaps
-                the CONTENT and never the composer (#930 review 2, finding 1). */}
-            {noMissionStop}
-            {stop !== "THREAD" ? null : filtered ? (
-              <div
-                className={styles.empty}
-                data-testid="console-filtered-empty"
-              >
-                <div className={styles.emptyLead}>
-                  No sessions match these filters
                 </div>
-                <div>
-                  There is work here, just not in this combination — the chips
-                  above are narrowing it.
-                </div>
-                <button
-                  type="button"
-                  className={styles.adoptInline}
-                  onClick={onClearFilters}
-                >
-                  Show all sessions
-                </button>
-              </div>
-            ) : (
-              <div className={styles.empty} data-testid="console-empty">
-                <div className={styles.emptyLead}>Nothing tracked yet.</div>
-                <div>
-                  A mission groups the sessions working one outcome, with the
-                  objectives that define done.
-                </div>
-                {loading ? (
-                  <div style={{ marginTop: 10 }}>
-                    Looking for live sessions…
-                  </div>
-                ) : untracked.length ? (
-                  <div style={{ marginTop: 10 }}>
-                    {untracked.length} live{" "}
-                    {untracked.length === 1 ? "session is" : "sessions are"}{" "}
-                    still listed under UNTRACKED.
-                  </div>
-                ) : null}
-              </div>
-            )}
-            <Composer
-              missionId={UNTRACKED_VIEW}
-              configured={configured}
-              turns={turns[UNTRACKED_VIEW] ?? []}
-              onTurns={onTurns}
-              visit={visit}
-              isVisitCurrent={isVisitCurrent}
-              onCreated={onCreated}
-            />
-          </div>
-        )}
+              )}
+              <Composer
+                missionId={UNTRACKED_VIEW}
+                configured={configured}
+                turns={turns[UNTRACKED_VIEW] ?? []}
+                onTurns={onTurns}
+                visit={visit}
+                isVisitCurrent={isVisitCurrent}
+                onCreated={onCreated}
+                creating={composerCreating}
+                onCreatingChange={setComposerCreating}
+              />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

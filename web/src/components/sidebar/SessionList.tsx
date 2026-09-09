@@ -448,8 +448,8 @@ function Row({
     reviewItems.push({
       key: "orchestrate",
       label: s.orchestrator_excluded
-        ? "Let Pulse manage this"
-        : "Stop Pulse managing this",
+        ? "Let mission control manage this"
+        : "Stop mission control managing this",
       icon: s.orchestrator_excluded ? <Bot size={15} /> : <BotOff size={15} />,
       disabled: busy,
       onSelect: () => void toggleOrchestrated(),

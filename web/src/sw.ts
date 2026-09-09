@@ -61,10 +61,10 @@ self.addEventListener("push", (event: PushEvent) => {
     data = (event.data?.json() ?? {}) as PushPayload;
   } catch {
     // A malformed or unencrypted push must still surface something rather than throwing away
-    // the wake-up — the operator being told "Pulse needs you" with no detail beats silence.
+    // the wake-up — the operator being told "Mission control needs you" with no detail beats silence.
     data = {};
   }
-  const title = data.title || "Pulse";
+  const title = data.title || "Mission control";
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.body || "Needs your attention",

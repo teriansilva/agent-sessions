@@ -191,12 +191,13 @@ export function OrchestratorSettings() {
 
   return (
     <section className={styles.section} aria-labelledby="orch-h">
-      <h2 id="orch-h">Pulse orchestrator</h2>
+      <h2 id="orch-h">Mission control orchestrator</h2>
       <p className={styles.hint}>
-        Lets Pulse <strong>act</strong> on what it sees: nudging a session that
+        Lets mission control <strong>act</strong> on what it sees: nudging a session that
         stopped mid-task, or raising one that needs your decision. It reuses the
         AI review endpoint above. Every session is managed by default — use{" "}
-        <strong>Stop Pulse managing this</strong> in a session&rsquo;s row menu
+        <strong>Stop mission control managing this</strong> in a session&rsquo;s row
+        menu
         to withdraw one. Changes save automatically.
       </p>
       {!block.configured && (
@@ -218,7 +219,7 @@ export function OrchestratorSettings() {
           checked={block.enabled}
           onChange={(e) => void save({ enabled: e.currentTarget.checked })}
         />
-        <span>Let Pulse watch my sessions on a schedule</span>
+        <span>Let mission control watch my sessions on a schedule</span>
       </label>
 
       <div className={styles.aiField} data-testid="orchestrator-run">
@@ -234,7 +235,7 @@ export function OrchestratorSettings() {
         </div>
         <p className={styles.hint}>
           Runs one pass immediately instead of waiting for the schedule. This is
-          also how you retry after a failed pass — the badge on Pulse points
+          also how you retry after a failed pass — the badge on mission control points
           here. Anything it proposes appears on the mission that raised it.
         </p>
         {passNote && (
@@ -263,7 +264,7 @@ export function OrchestratorSettings() {
         {/* The tier alone doesn't tell the whole story, and implying it does would be the
             dangerous reading. Say plainly which verbs YOLO can actually deliver. */}
         <p className={styles.hint}>
-          Even on <strong>YOLO</strong>, Pulse only ever sends{" "}
+          Even on <strong>YOLO</strong>, mission control only ever sends{" "}
           <strong>{ceiling}</strong> on its own — the fixed nudge you write
           below, which the AI cannot alter. Picking an option, answering a
           question, or starting a new session always waits for your approval.
@@ -294,7 +295,7 @@ export function OrchestratorSettings() {
           <span>{confDraft.toFixed(2)}</span>
         </div>
         <p className={styles.hint}>
-          Below this, Pulse asks you instead of acting. Unsure means ask — never
+          Below this, mission control asks you instead of acting. Unsure means ask — never
           guess.
         </p>
       </div>
@@ -368,7 +369,7 @@ export function OrchestratorSettings() {
         <p className={styles.hint}>
           Past this the orchestrator stops considering the session, so it stops
           notifying you about it. The session doesn’t go anywhere — it stays on
-          your Pulse cards and in the sidebar, it just goes quiet.
+          mission control and in the sidebar, it just goes quiet.
         </p>
       </div>
 

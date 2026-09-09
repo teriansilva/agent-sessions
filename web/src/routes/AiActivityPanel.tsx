@@ -6,7 +6,9 @@ import styles from "./Settings.module.css";
 // The AI task kinds the platform registers (#441). Listed in a fixed order so the panel is
 // stable; an unknown kind that turns up running is appended so nothing is hidden.
 const KINDS: { kind: string; label: string }[] = [
-  { kind: "pulse-scan", label: "Pulse scan" },
+  // The KIND is the server-owned task id and stays `pulse-scan`; only the label an
+  // operator reads is renamed (#935).
+  { kind: "pulse-scan", label: "Mission control scan" },
   { kind: "ai-review", label: "AI review" },
   { kind: "auto-sort", label: "Auto-sort" },
 ];

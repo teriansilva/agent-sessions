@@ -13,27 +13,28 @@
  * `web/e2e/mission-console-breakpoints.spec.ts` tests both edges of both boundaries.
  */
 
+/* ONE TRACK, BECAUSE THE RAIL IS NOT IN HERE ANY MORE (#935).
+ *
+ * This used to be `300px 1fr` at 1100 and `300px 1fr 340px` at 1400, next to the app shell's own
+ * 320px session sidebar — two vertical lists about different things, 620px of a desktop. The rail
+ * now renders into the shell's sidebar on this route, so the console is the thread and nothing
+ * else.
+ *
+ * The third track was also never occupied. Measured at 1600 before the change:
+ *
+ *     .console  grid-template-columns: 300px 580px 340px   (computed)
+ *     .console  children: 2  →  .railInline | .centre
+ *
+ * `MissionDrawer` renders nothing inline, so auto-placement filled tracks 1 and 2 and left 340px
+ * dead in EVERY state — and the "persistent detail column" was a flex child of `.centre`, i.e.
+ * stacked BELOW the thread rather than beside it. The split now lives on `.split`, which is the
+ * actual parent of the two things being split. */
 .console {
   display: grid;
-  /* < 1100: one column; the rail is a drawer and the detail is a tab strip. */
   grid-template-columns: 1fr;
   height: 100%;
   min-height: 0;
   overflow: hidden;
-}
-
-/* Rail becomes a persistent column. */
-@media (min-width: 1100px) {
-  .console {
-    grid-template-columns: 300px 1fr;
-  }
-}
-
-/* …and the detail column joins it. */
-@media (min-width: 1400px) {
-  .console {
-    grid-template-columns: 300px 1fr 340px;
-  }
 }
 
 /* --- rail ---------------------------------------------------------------------- */
@@ -272,6 +273,33 @@
   border-bottom-color: var(--accent);
 }
 
+/* THE THREAD/DETAIL SPLIT, AT THEIR ACTUAL SHARED PARENT (#935).
+ *
+ * Deliberately a wrapper rather than turning `.centre` itself into a two-column grid: `.centre`
+ * also holds the topbar, the stop strip and the notices, so a grid there would need every one of
+ * them placed `1 / -1` and would drop any future sibling into a cell — a new auto-placement bug
+ * in place of the one being fixed. Wrapping exactly the two elements that are being split cannot
+ * have that failure mode.
+ *
+ * Column by default so a lone pane fills the height (`.pane` is `flex: 1 1 auto`); a real grid
+ * only where a detail pane exists AND there is room for it. */
+.split {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+@media (min-width: 1400px) {
+  .splitWide {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    /* The pane keeps `flex: 1 1 auto`, which a grid item ignores — the row must therefore do the
+     * stretching, or a short thread leaves the detail column floating at content height. */
+    grid-template-rows: 100%;
+  }
+}
+
 .pane {
   flex: 1 1 auto;
   min-height: 0;
@@ -291,6 +319,7 @@
   display: none;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   border-left: 1px solid var(--line);
   padding: 12px 14px;
@@ -796,6 +825,29 @@
   color: var(--text-1);
   border-color: var(--accent);
   background: var(--row-hover);
+}
+
+/* The rail's primary action (#935), sized and placed to match the sessions sidebar's
+ * "+ New session" — the two sections are siblings and should offer the same shape of verb.
+ * Accent fill, dark ink on it (amber is light), zero radius per docs/design.md. */
+.newMission {
+  display: block;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+  min-height: 44px; /* touch target (docs/design.md §8) — the rail is a drawer on a phone */
+}
+.newMission:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--bg-0));
 }
 
 .newMissionRow {

@@ -821,7 +821,7 @@ test("the configured menu lists all actions behind one trigger (#384/#424)", asy
     "Hand off…",
     "Review now",
     "Exclude from AI review",
-    "Stop Pulse managing this",
+    "Stop mission control managing this",
     "Favorite",
     "Rename",
     "Set tag…",

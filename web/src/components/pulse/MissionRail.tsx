@@ -63,6 +63,13 @@ export interface MissionRailProps {
    *  every finished mission the moment it is put away. */
   archived?: boolean;
   onScope?: (archived: boolean) => void;
+  /** Start a new mission from the rail (#935).
+   *
+   *  The sessions sidebar leads with "+ New session"; this is its counterpart, so the two
+   *  sections offer the same shape of action rather than one of them hiding its primary verb in
+   *  the thread. It does not create anything by itself — it puts the composer into NEW MISSION
+   *  mode and focuses it, which is where the name and the brief are written. */
+  onNewMission?: () => void;
 }
 
 export function MissionRail({
@@ -79,6 +86,7 @@ export function MissionRail({
   onLoadMore,
   archived = false,
   onScope,
+  onNewMission,
 }: MissionRailProps) {
   return (
     <nav className={styles.rail} aria-label="Missions">
@@ -98,6 +106,20 @@ export function MissionRail({
             unaffected.
           </div>
         </div>
+      ) : null}
+
+      {/* The primary action, first — the same place the sessions sidebar puts "+ New session".
+          Hidden in the archived scope, where the server refuses ordinary mutations anyway and
+          offering a create would advertise something the backend will not honour. */}
+      {onNewMission && !archived ? (
+        <button
+          type="button"
+          className={styles.newMission}
+          onClick={onNewMission}
+          data-testid="rail-new-mission"
+        >
+          + New mission
+        </button>
       ) : null}
 
       <div className={styles.railGroup}>

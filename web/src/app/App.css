@@ -130,6 +130,31 @@
   display: flex;
   flex-direction: column;
 }
+
+/* THE PORTAL SLOT MUST CARRY THE HEIGHT CHAIN, NOT JUST THE POSITION (#935, #937 review 1).
+ *
+ * `.sidebarBody` is bounded, but a plain child of it is `flex: 0 1 auto` — it sizes to its
+ * CONTENT. The mission rail owns `overflow-y: auto`, and an overflow owner inside an unbounded
+ * parent never scrolls: it just grows. Measured before this rule, with a normal 50-row first
+ * page at 1600x900: a 717px sidebar body containing a 2502px rail, `scrollHeight == clientHeight`,
+ * and the last row at y=2393 — off screen, with LOAD MORE unreachable by any amount of wheeling.
+ *
+ * The tests missed it because every fixture had 0 or 1 missions, where content height is under
+ * the bound and nothing needs to scroll. `min-height: 0` is the load-bearing half: without it a
+ * flex item refuses to shrink below its content and the bound is advisory. */
+.missionRailSlot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Whatever the console portals in becomes the scroll owner, and drops the divider it draws for
+   the console layout — inside the sidebar that is a line down the middle of a panel. */
+.missionRailSlot > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-right: 0;
+}
 /* Sidebar panel header (#211 redux → #548): the 38px HUD row now hosts the sort-order
  * toggle (ORDER  RECENT|CREATED); the "Sessions" heading is sr-only, "SEC // 01" retired. */
 .sidebar-head {
@@ -142,6 +167,17 @@
   box-sizing: border-box;
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
+}
+
+/* WITH THE SORT CONTROL GONE, THIS ROW HAS NOTHING VISIBLE IN IT (#937 review 1, finding 3).
+ * Its only remaining child is the `sr-only` landmark heading, so on the mission route it was a
+ * 38px empty strip with a rule under it — the "weird margins" the operator complained about in
+ * the first place. Collapse the box and keep the heading, which the <aside> still needs for its
+ * accessible name. */
+.sidebar-head.isMissionSection {
+  height: 0;
+  padding: 0;
+  border-bottom: 0;
 }
 .hud-h {
   margin: 0;

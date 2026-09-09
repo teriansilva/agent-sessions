@@ -1,3 +1,4 @@
+import * as React from "react";
 /** NEW MISSION — the composer mode that makes the console able to start anything (#889).
  *
  *  Two properties matter here and both are asserted on the REQUEST, not on the rendering:
@@ -20,6 +21,23 @@ import { ApiError, api } from "../../lib/api";
 
 import { Composer } from "./Composer";
 
+/** `Composer` no longer owns its own mode: the console does, so that "+ New mission" in the
+ *  sidebar can switch a composer that has not mounted yet (#937 review 1, finding 2). These
+ *  tests therefore supply the same controlled pair the console does, rather than asserting on
+ *  state the component stopped holding. Behaviour under test is unchanged — the mode buttons
+ *  still drive it, through the callback instead of through `useState`. */
+function ControlledComposer(
+  props: Omit<
+    React.ComponentProps<typeof Composer>,
+    "creating" | "onCreatingChange"
+  >,
+) {
+  const [creating, setCreating] = React.useState(false);
+  return (
+    <Composer {...props} creating={creating} onCreatingChange={setCreating} />
+  );
+}
+
 vi.mock("../../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
@@ -38,7 +56,7 @@ vi.mock("../../lib/api", async () => {
 
 function mount(onCreated = vi.fn()) {
   render(
-    <Composer
+    <ControlledComposer
       missionId="untracked"
       configured
       turns={[]}
@@ -66,7 +84,7 @@ beforeEach(() => {
 
 test("the mode is reachable with NO AI endpoint — creating never needed a model", async () => {
   render(
-    <Composer
+    <ControlledComposer
       missionId="untracked"
       configured={false}
       turns={[]}
@@ -235,7 +253,7 @@ test("a create begun in ACTIVE does not steal the selection into the ARCHIVED ra
         <button type="button" onClick={() => setScope("archived")}>
           show archived
         </button>
-        <Composer
+        <ControlledComposer
           missionId="untracked"
           configured
           turns={[]}

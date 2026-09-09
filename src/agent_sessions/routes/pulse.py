@@ -6,8 +6,8 @@
 * ``POST /api/pulse/scan`` — run one scan now and return the fresh artifact. Uses the configured
   ``pulse`` window/depth (#441 Phase 3), overridable per-request by an optional JSON body
   ``{"depth": …, "window_days": …}`` (the page's depth control). The single ``409`` case is
-  "a Pulse scan is already running" (single-flight, #441 Phase 1) — its body carries the live
-  AI-activity snapshot so the UI shows the running scan, not an error. An **unconfigured AI
+  "a mission control scan is already running" (single-flight, #441 Phase 1) — its body carries
+  the live AI-activity snapshot so the UI shows the running scan, not an error. An **unconfigured AI
   gateway never 409s here**: depth ≥ medium degrades to ``fast`` curation and returns **200**
   with ``synthesis_skipped: true`` (the page always works).
 * ``POST /api/pulse/ask`` (#522) — one natural-language question over past sessions
@@ -344,7 +344,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # The only 409: another Pulse scan holds the single-flight. Hand back the live
             # activity so the page renders "scan already running", not a broken state.
             return JSONResponse(
-                {"detail": "a Pulse scan is already running", **aitasks.snapshot()},
+                {"detail": "a mission control scan is already running", **aitasks.snapshot()},
                 status_code=409,
             )
         # The same live overlay `GET /api/pulse` applies. A scan writes the CACHE, which has no
