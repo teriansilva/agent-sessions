@@ -8,10 +8,46 @@
  *  the viewport's, and a tether computed in viewport coordinates is right only at the origin.
  */
 
-/** Hard ceiling on simultaneously open windows. Each one is a full xterm + WebSocket +
+/** DEFAULT ceiling on simultaneously open windows. Each one is a full xterm + WebSocket +
  *  scrollback buffer, so this is a resource guard for the operator's own box — NOT a security
- *  control (a client-side cap is trivially bypassable; nothing may rely on it as one). */
+ *  control (a client-side cap is trivially bypassable; nothing may rely on it as one).
+ *
+ *  The operator can move it (#936). It stays a *constant default* rather than becoming a plain
+ *  variable because the reason it is 8 has not changed — 8 is what a typical box carries without
+ *  the map getting sluggish — and a fresh install should still land there. */
 export const WINDOW_CAP = 8;
+
+/** The range the operator may choose from. The floor is 1 (a workspace of one is still a
+ *  workspace; 0 would silently disable a feature the map advertises), and the ceiling is 16 —
+ *  double the default, which is generous for the resource this guards without pretending a
+ *  browser will hold an arbitrary number of live ptys. */
+export const WINDOW_CAP_MIN = 1;
+export const WINDOW_CAP_MAX = 16;
+
+/** Coerce anything to a usable cap. Lenient by construction, exactly like the terminal font
+ *  size's read path (#859): the value comes back out of `localStorage`, which the operator can
+ *  edit, and a workspace that refuses to open ANY window because a stored value is `"lots"` is a
+ *  worse failure than one that quietly uses the default. Non-finite / non-numeric → the default;
+ *  anything else → floored to an integer and clamped into range.
+ *
+ *  Rounding is `floor(x + 0.5)`, never `Math.round`, for the same reason `termSize` spells it
+ *  that way: the two disagree on negative half values, and one spelling per repo is one fewer
+ *  thing to get wrong. */
+export function clampWindowCap(value: unknown): number {
+  // Only a number, or a string that is one. NOT a bare `Number(value)` coercion: `Number(null)`
+  // and `Number([])` are both `0`, which would clamp to the MINIMUM and quietly leave the
+  // operator a one-window workspace because a storage entry was missing or malformed. Those
+  // inputs mean "no value", and no value means the default.
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : NaN;
+  if (!Number.isFinite(n)) return WINDOW_CAP;
+  const i = Math.floor(n + 0.5);
+  return Math.min(Math.max(i, WINDOW_CAP_MIN), WINDOW_CAP_MAX);
+}
 
 /** Opening size. Roomy enough that the agent gets a usable grid at the default font size. */
 export const DEFAULT_SIZE: Size = { w: 720, h: 480 };
@@ -123,9 +159,18 @@ export function canHostWindow(bounds: Size): boolean {
   return bounds.w >= MIN_SIZE.w && bounds.h >= MIN_SIZE.h;
 }
 
-/** May another window open? The 9th open mounts nothing — it says so instead (#208). */
-export function canOpen(openCount: number): boolean {
-  return openCount < WINDOW_CAP;
+/** May another window open? The one past the cap mounts nothing — it says so instead (#208).
+ *
+ *  `cap` is passed in rather than read from a module constant (#936): the ceiling is now the
+ *  operator's, and a pure predicate that reads device state behind the caller's back is the kind
+ *  of thing that makes a reducer untestable. Defaulted so every existing call site keeps its
+ *  meaning.
+ *
+ *  Lowering the cap below the number of ALREADY-open windows is deliberately not this function's
+ *  problem: it refuses the next open and nothing else. Closing windows on a settings change would
+ *  be destructive, and the cap is a resource guard, never a security control. */
+export function canOpen(openCount: number, cap: number = WINDOW_CAP): boolean {
+  return openCount < clampWindowCap(cap);
 }
 
 /** Where a window's tether attaches: the middle of its chrome bar, on the edge nearest the

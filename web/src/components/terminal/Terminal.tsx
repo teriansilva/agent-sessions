@@ -10,6 +10,7 @@ import {
   PanelRight,
   RotateCw,
   ScrollText,
+  SquareDashedBottom,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -131,6 +132,7 @@ export function Terminal({
   rowKey,
   fresh,
   onReconcileId,
+  onToMap,
   onSaveAsTemplate,
   onOpenGallery,
   filesOpen,
@@ -166,6 +168,10 @@ export function Terminal({
   /** Server reconciled to the real engine-qualified id (#127, opencode new-session).
    *  The owner converges the URL/sidebar without tearing down the socket. */
   onReconcileId?: (sid: string) => void;
+  /** Put this session on the map as a window and go there (#936) — the exact inverse of a
+   *  window's ⤢. Optional, and passed ONLY by the full-screen route: a session already living
+   *  in a window must not offer to window itself. */
+  onToMap?: () => void;
   /** The #184/#293 role verdict, published for a host that frames this pane (#208: the map's
    *  window chrome shows READ-ONLY). Read-only signal — the pane keeps rendering its own
    *  banner and Take over button; nothing about ownership moves out here. */
@@ -1760,6 +1766,31 @@ export function Terminal({
               );
               setHandoffOpen(true);
             },
+          },
+        ]
+      : []),
+    // "To map" (#936) — the inverse of a window's ⤢, and the only way back into window mode
+    // once a session has been opened full screen. Passed only by `SessionView`, so it never
+    // appears inside a window.
+    //
+    // POSITION IS LOAD-BEARING: after Hand off, before the zoom pair. HeadActions folds from the
+    // END (#783), so anything inserted earlier pushes Hand off into the "…" overflow and turns
+    // session-recap.spec.ts red — which is the contract working, not a stale test.
+    //
+    // Position alone was not enough. #744/#859's coarse-pointer contract is that at 420px all SIX
+    // icon-only chips fit and nothing folds; a seventh broke it, so `SessionView` withholds this
+    // one below the ≤800px breakpoint — which it owes the operator anyway, since a phone can
+    // never host a window.
+    ...(onToMap
+      ? [
+          {
+            id: "to-map",
+            label: "To map",
+            aria: "Open this session as a window on the map",
+            title:
+              "To map: open this session as a floating window on the overview map, alongside the others",
+            icon: <SquareDashedBottom size={13} aria-hidden="true" />,
+            run: () => onToMap(),
           },
         ]
       : []),

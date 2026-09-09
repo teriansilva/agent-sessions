@@ -5,7 +5,10 @@ import type { TemplateDraft } from "../components/terminal/Compose";
 import { FilePanel } from "../components/files/FilePanel";
 import { pathToken } from "../lib/pathToken";
 import panel from "../components/files/filePanel.module.css";
+import { useIsMobile } from "../lib/useIsMobile";
+import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
+import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import {
   loadPanelState,
   migratePanelState,
@@ -124,6 +127,43 @@ export function SessionView() {
   // scope hides — the accessor fetches the single row, so the Files trigger opens on the real
   // cwd instead of sitting disabled behind "this session has not reported a folder yet".
   const row = useSessionRow(sessionKey, liveKey);
+
+  // "To map" (#936) — put this session on the map as a window and go there, the inverse of a
+  // window's ⤢.
+  //
+  // It queues a REQUEST rather than opening anything: the anchor and the overlay box are facts
+  // only a mounted, measured canvas has, so the map opens the window when it arrives. And it
+  // asks under `liveKey` — the id the URL has settled on — never the frozen identity the terminal
+  // still transports on, which after a converge names a session that no longer exists (#867).
+  //
+  // While the URL itself is STILL a `new-<uuid>` placeholder (a fresh opencode/codex launch that
+  // has not reconciled yet) the chip is withheld entirely: a window on that id could only attach
+  // to a session the server does not have. It appears a second later, when the converge lands.
+  // Two gates, and they answer different questions.
+  //
+  // `useIsMobile` — the shell's own ≤800px breakpoint, not a second copy of it — because a phone
+  // can never host a window, and because the pane head's action run has a MEASURED contract at
+  // 420px (#744/#859: six icon-only chips fit and nothing folds) that a seventh chip breaks.
+  //
+  // `hostable` — the map's LAST measurement, because width alone does not establish map capacity:
+  // a 1920×400 desktop window is wide enough and far too short, and offering the chip there sent
+  // the operator to an empty map (Hermes on #939, finding 3). `mapReady` cannot serve: the map is
+  // unmounted whenever this route is up, so it is always false. `null` (never measured) counts as
+  // available — the drain hands an impossible request back to this route, so the cost of being
+  // wrong is a round trip, and refusing an action on a map nobody has opened yet is worse.
+  const isMobile = useIsMobile();
+  const workspace = useMapWindows();
+  const requestOpen = workspace?.requestOpen;
+  const onToMap = useCallback(() => {
+    if (!requestOpen || !engine || !id) return;
+    requestOpen({
+      key: liveKey,
+      engine,
+      id,
+      title: row?.title || row?.short_uuid || id,
+    });
+    navigate(MAP_PATH);
+  }, [requestOpen, engine, id, liveKey, row?.title, row?.short_uuid, navigate]);
   // The panel needs a real starting directory. A fresh launch carries one in router state before
   // the session row exists; otherwise it comes from the row. Until one of those is true the
   // trigger stays DISABLED rather than opening an empty tree — a session mid-reconcile has no
@@ -224,6 +264,16 @@ export function SessionView() {
           onReconcileId={onReconcileId}
           onSaveAsTemplate={onSaveAsTemplate}
           onOpenGallery={onOpenGallery}
+          // Only the full-screen route passes this: a session already IN a window must not
+          // offer to window itself (#936).
+          onToMap={
+            workspace &&
+            !isMobile &&
+            workspace.hostable !== false &&
+            !isNewSessionPlaceholder(liveKey)
+              ? onToMap
+              : undefined
+          }
           filesOpen={filesOpen}
           // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
           // during reconciliation. Dropping the action made it vanish and reappear, which reads

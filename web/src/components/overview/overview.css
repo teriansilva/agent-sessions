@@ -537,14 +537,47 @@
 }
 
 /* Workspace readout in the map toolbar (#208): how many windows are open, and the way out. */
+/* The windows readout + the operator's cap stepper (#936). One bordered control, not a readout
+ * beside two buttons: the count and the limit it is measured against belong together, and the
+ * shared frame is what says the steps act on the number to their left. Chrome matches
+ * `.tr-ov-toolbar button` exactly — no radius, no gradient (docs/design.md). */
 .tr-ov-wins {
+  display: inline-flex;
+  align-items: stretch;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+}
+.tr-ov-wins-label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 5px 9px;
 }
 .tr-ov-wins b {
   color: var(--accent);
   font-weight: 700;
+  /* Tabular, so the count stepping 9 → 10 doesn't shift the toolbar under the pointer. */
+  font-variant-numeric: tabular-nums;
+}
+.tr-ov-wins-step {
+  display: inline-flex;
+}
+.tr-ov-toolbar .tr-ov-wins-step button {
+  border: 0;
+  border-left: 1px solid var(--border);
+  padding: 5px 7px;
+  background: transparent;
+}
+.tr-ov-toolbar .tr-ov-wins-step button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--row-hover);
+}
+/* Dimmed, not hidden, at the clamp ends: a control that vanishes takes the range with it. */
+.tr-ov-toolbar .tr-ov-wins-step button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* The empty-map message while windows are still open (#208): the canvas is gone, the workspace

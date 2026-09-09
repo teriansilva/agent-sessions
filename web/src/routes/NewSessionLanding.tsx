@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
+import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
@@ -12,10 +13,23 @@ import styles from "./NewSessionLanding.module.css";
 /** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
  *  session (#448): a project owns a DEFAULT launch folder, so choosing a project prefills the
  *  folder; the folder is overridable for this one session via a ~/-rooted picker. We mint a
- *  client-side id, navigate to /s/:engine/:id carrying the fresh-launch params (cwd + bypass). */
+ *  client-side id, navigate to /s/:engine/:id carrying the fresh-launch params (cwd + bypass).
+ *
+ *  Unless the map sent us (#936): pressing "+ New session" with the workspace up carries
+ *  `returnTo: "/overview"` in router state, and then the launch goes back to the MAP as a window
+ *  rather than taking over the screen. The form itself stays a page either way — it wants the
+ *  room, and a 720×480 window has none to spare. */
 export function NewSessionLanding() {
   const config = useConfig();
   const navigate = useNavigate();
+  const location = useLocation();
+  const workspace = useMapWindows();
+  // Where the operator pressed the button, recorded in router state by the sidebar. Note it is
+  // NOT `mapReady`: this form replaced the map, so by the time it renders the map is unmounted
+  // and `mapReady` is already false. The request survives that because it is queued on the
+  // provider above the router, and the canvas drains it when it comes back.
+  const returnToMap =
+    (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
   const [engineChoice, setEngineChoice] = useState("");
   const [bypass, setBypass] = useState(true);
 
@@ -106,7 +120,26 @@ export function NewSessionLanding() {
   const start = () => {
     if (!canStart) return;
     const id = mintNewSessionId(engine);
-    navigate(`/s/${engine}/${id}`, { state: { fresh: { cwd, bypass } } });
+    const fresh = { cwd, bypass };
+    // Back to the map as a window, when that is where this came from AND the workspace has room
+    // under the operator's cap. The request is queued on the workspace and drained by the canvas
+    // once it has mounted and measured — the anchor and the overlay box are facts only the map
+    // has, so it is the map that opens the window.
+    //
+    // The `hasRoom` half is not a nicety: at capacity the map would refuse the open and raise a
+    // notice, and the launch — with the cwd and bypass choice just made on this form — would be
+    // gone (Hermes on #939, finding 2). Starting the session is the operator's actual intent, so
+    // a full workspace falls back to the ordinary full-screen launch rather than losing it. Note
+    // it does NOT consult `mapReady`: this form replaced the map, so that is already false.
+    if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
+      workspace.requestOpen(
+        { key: `${engine}:${id}`, engine, id, title: "New session" },
+        fresh,
+      );
+      navigate(MAP_PATH);
+    } else {
+      navigate(`/s/${engine}/${id}`, { state: { fresh } });
+    }
     // Stamp the project only when it's an explicit choice folder-resolution wouldn't already
     // produce (#361): a redundant owning entity isn't stamped; "" never stamps.
     const owningId = owningProjectId(cwd, entities);

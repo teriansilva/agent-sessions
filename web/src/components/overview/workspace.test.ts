@@ -1,17 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   canHostWindow,
-  CASCADE_STEP,
-  CHROME_H,
   canOpen,
+  CASCADE_STEP,
   cascadeRect,
+  CHROME_H,
   clampRect,
+  clampWindowCap,
   clipToBounds,
   DEFAULT_SIZE,
   MIN_SIZE,
   tetherAnchor,
   tetherPath,
   WINDOW_CAP,
+  WINDOW_CAP_MAX,
+  WINDOW_CAP_MIN,
 } from "./workspace";
 
 // The window workspace's geometry rules (#208). These are the decisions a browser test can only
@@ -145,5 +148,32 @@ describe("canHostWindow", () => {
     // 801px viewport is "desktop" by the ≤800px breakpoint, but the expanded sidebar leaves
     // ~460px of map — below the floor whose whole point is the agent's column count.
     expect(canHostWindow({ w: 461, h: 560 })).toBe(false);
+  });
+});
+
+describe("the operator's window cap (#936)", () => {
+  it("clamps into range and floors to a whole window", () => {
+    expect(clampWindowCap(WINDOW_CAP_MAX + 40)).toBe(WINDOW_CAP_MAX);
+    expect(clampWindowCap(0)).toBe(WINDOW_CAP_MIN);
+    expect(clampWindowCap(-9)).toBe(WINDOW_CAP_MIN);
+    expect(clampWindowCap(4.6)).toBe(5);
+  });
+
+  it("falls back to the DEFAULT for a value that is not a number — never to zero", () => {
+    // Read-lenient, like every other read path here: a hand-edited `localStorage` entry must
+    // not be able to turn the workspace off. Zero would do exactly that, silently.
+    for (const junk of [undefined, null, NaN, "lots", {}, []])
+      expect(clampWindowCap(junk)).toBe(WINDOW_CAP);
+  });
+
+  it("gates opening on the cap it is GIVEN, not on a module constant", () => {
+    expect(canOpen(2, 3)).toBe(true);
+    expect(canOpen(3, 3)).toBe(false);
+    // An out-of-range cap is clamped here too, so no caller can widen the ceiling by passing a
+    // bigger number than the stepper allows.
+    expect(canOpen(WINDOW_CAP_MAX, 9999)).toBe(false);
+    // Default preserved for the call sites that predate the setting.
+    expect(canOpen(WINDOW_CAP - 1)).toBe(true);
+    expect(canOpen(WINDOW_CAP)).toBe(false);
   });
 });

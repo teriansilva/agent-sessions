@@ -16,6 +16,7 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   FolderTree,
+  Minus,
   Plus,
   SquareDashedBottom,
 } from "lucide-react";
@@ -31,6 +32,7 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
+import { useWorkspaceCtx } from "../../app/workspaceWindows";
 import { api, ApiError } from "../../lib/api";
 import { engineColor } from "../../lib/format";
 import {
@@ -48,9 +50,13 @@ import { anchorPointOf } from "./nodeAnchor";
 import { OverviewActionsCtx } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
-import { useWorkspace } from "./useWorkspace";
+import type { WindowSeed } from "./useWorkspace";
 import { WindowLayer } from "./WindowLayer";
-import { canHostWindow, WINDOW_CAP } from "./workspace";
+import {
+  canHostWindow,
+  WINDOW_CAP_MAX,
+  WINDOW_CAP_MIN,
+} from "./workspace";
 import "./overview.css";
 
 // Stable identity (module scope) so React Flow doesn't re-register node types each render.
@@ -63,6 +69,16 @@ const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] =
     { key: "project", label: "Projects", Icon: Boxes },
     { key: "agent", label: "Agents", Icon: Bot },
   ];
+
+/** A session row → the seed a window opens from (#936). One mapping, shared by the chip click
+ *  and the drained requests, so the map cannot open a window under a different identity than the
+ *  sidebar asked for. */
+const seedOf = (s: Session): WindowSeed => ({
+  key: s.id,
+  engine: s.engine,
+  id: s.uuid,
+  title: s.title || s.short_uuid,
+});
 
 const miniMapColor = (n: Node): string =>
   n.type === "session"
@@ -121,16 +137,37 @@ function OverviewCanvasInner({
   // Where the workspace is off, a chip click navigates exactly as it always has.
   const isMobile = useIsMobile();
   const windowsOn = !compact && !isMobile;
-  const ws = useWorkspace();
+  // The workspace lives in a provider above the router now (#936), so the records survive
+  // leaving the map — this canvas is a consumer, not the owner. What it still owns is all the
+  // GEOMETRY: measurement, projection, the tether, and the decision of whether a window may open
+  // at all. Those are facts about a mounted, measured map, and nothing outside it can know them.
+  const ws = useWorkspaceCtx();
   // The actions are stable `useCallback`s; naming them here keeps them out of the dependency
   // arrays as `ws.*` (which changes identity whenever a window moves).
-  const { open: openWindow, close: closeWindow, syncTitles } = ws;
+  const {
+    open: openWindow,
+    syncTitles,
+    setMapReady,
+    restore: restoreWindows,
+    detach,
+    drain,
+    clearRejected,
+    setCap,
+  } = ws;
   const wrapRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   // The overlay box: screen origin (the shell offset every projection subtracts) + size, with
   // the top inset below the floating toolbar so a window's chrome can never hide under it.
   const [box, setBox] = useState({ x: 0, y: 0, w: 0, h: 0, top: 0 });
+  // Has a measurement HAPPENED? Tracked separately from the dimensions it produced, because the
+  // two are not the same question and conflating them hid a real case: the usable height
+  // legitimately clamps to zero when the toolbar chrome consumes the whole map area, so
+  // `box.h > 0` reads a completed measurement of an unusable box as "not measured yet" and
+  // suppresses the cannot-host fallback forever (Hermes on #939, round 2). "Unmeasured" must
+  // still mean unmeasured, though — the first effect pass genuinely sees zeroes, and treating
+  // that as a refusal would bounce every arrival straight off the map.
+  const [measured, setMeasured] = useState(false);
   useLayoutEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -147,6 +184,7 @@ function OverviewCanvasInner({
       };
       // Same-value guard: a ResizeObserver fires on layout, and re-setting an identical box
       // would re-render (and re-project) on every one of them.
+      setMeasured(true);
       setBox((cur) =>
         cur.x === next.x &&
         cur.y === next.y &&
@@ -256,6 +294,85 @@ function OverviewCanvasInner({
   // resizable browser, and a resize is not a reason to kill a live session.
   const layerOn = !compact && (canOpenWindow || ws.windows.length > 0);
 
+
+  // Publish "a mounted map can host a window" so the surfaces OUTSIDE the map — the sidebar row,
+  // the pane's To-map chip, the new-session landing — can decide between opening a window and
+  // navigating without re-deriving the breakpoint and the box they cannot see (#936). Cleared on
+  // unmount, so leaving `/overview` puts every one of them back to plain navigation.
+  useEffect(() => {
+    // Only publish a MEASUREMENT once the box has actually been measured — the first effect pass
+    // still sees zeroes, and recording that as "cannot host" would withhold the pane's To-map chip
+    // on a map that is perfectly capable of hosting.
+    if (measured) setMapReady(canOpenWindow);
+    // `null`, not `false`: this is an unmount, not a measurement. `false` here would make every
+    // navigation away from the map record it as unable to host one, which is what the pane reads
+    // to decide whether to offer To map at all.
+    return () => setMapReady(null);
+  }, [canOpenWindow, measured, setMapReady]);
+
+  // Unmounting the map takes every `<Terminal>` with it, which is exactly when a window's frozen
+  // transport identity stops being load-bearing and starts being a hazard: a window launched under
+  // a `new-<uuid>` placeholder would come back mounting the placeholder AND its `fresh` params,
+  // and send `new=1` a second time. `detach` normalises each record onto the id its engine
+  // actually minted. Mount-only, so it fires on the unmount and nowhere else.
+  useEffect(() => detach, [detach]);
+
+  // Apply the stored layout (#936, delivering #872) — once, on the first measured box that can
+  // host a window. Deliberately NOT at provider construction: `canHostWindow` and the mobile
+  // breakpoint are this canvas's to evaluate, and a desktop layout applied sight-unseen would
+  // mount eight terminals on a phone. `restore` is idempotent, so StrictMode's double effect is
+  // a no-op, and it also marks the workspace hydrated — which is what unblocks persistence, so
+  // an empty stored layout still has to go through it.
+  useEffect(() => {
+    if (!canOpenWindow || ws.hydrated) return;
+    restoreWindows(bounds);
+  }, [canOpenWindow, ws.hydrated, bounds, restoreWindows]);
+
+  // Drain the queue from outside the map. Resolving the anchor is why this cannot happen at the
+  // call site: it needs the chip's projected position, which only a measured, mounted canvas has.
+  //
+  // The whole queue goes through ONE atomic transition, which returns an explicit
+  // accepted/rejected outcome per request. That matters more than it looks: the two ways a
+  // request can fail — the map cannot host a window at all, or the cap is already full — used to
+  // be handled in two places, and the second one silently cleared the queue. A caller decided
+  // this session should be on screen, and a fresh one carries the cwd and bypass the operator had
+  // just chosen; neither may evaporate (Hermes on #939, rounds 1 + 2).
+  const pending = ws.pending;
+  useEffect(() => {
+    if (!pending.length || !measured) return;
+    const anchors = new Map(
+      pending.map((req) => {
+        const node = canOpenWindow ? rf.getNode(req.seed.key) : undefined;
+        return [
+          req.seed.key,
+          node
+            ? anchorPointOf(node, rf.getNode, rf.flowToScreenPosition, {
+                x: box.x,
+                y: box.y,
+              })
+            : null,
+        ] as const;
+      }),
+    );
+    drain(anchors, bounds, canOpenWindow);
+  }, [pending, canOpenWindow, measured, drain, rf, box.x, box.y, bounds]);
+
+  // A refused request is handed BACK to the route it came from — the full-screen pane, carrying
+  // `fresh` so the launch still happens. Anything else loses work the operator has already done.
+  //
+  // Only the first can be handed back; there is one screen. In practice there is never more than
+  // one, because every caller queues in response to a single press and navigates here at once.
+  const rejected = ws.rejected;
+  useEffect(() => {
+    if (!rejected.length) return;
+    const [first] = rejected;
+    clearRejected();
+    navigate(
+      `/s/${encodeURIComponent(first.seed.engine)}/${encodeURIComponent(first.seed.id)}`,
+      first.fresh ? { state: { fresh: first.fresh } } : undefined,
+    );
+  }, [rejected, clearRejected, navigate]);
+
   // Renames (the sidebar's, or an AI title landing) reach an OPEN window's chrome: the live
   // index goes to the workspace, which keeps each window's own title current. Resolving
   // live-or-captured at render time instead would make a window REVERT to its old name the
@@ -272,9 +389,26 @@ function OverviewCanvasInner({
   }, [titles, syncTitles]);
 
   // Chips whose session is open as a window (#208) — the map marks them.
+  //
+  // Memoized on a STRING SIGNATURE of the open keys, never on `ws.windows` (#936). That array
+  // gets a new identity on every `rect` dispatch, i.e. on every pointer move of a window drag,
+  // and this set feeds `buildOverview` — so the old dependency rebuilt the entire node array
+  // ~60 times a second while a window was being dragged. React Flow renders an unmeasured node
+  // with `visibility: hidden`, and a fresh array discards the measurements it had, so the whole
+  // map went BLANK for the length of the gesture and reappeared when it ended.
+  //
+  // The rule this encodes is the general one, not a patch for one dependency: **a gesture on
+  // the overlay must not rebuild the map's node array.** The set of open sessions genuinely
+  // does not change when one of them is dragged, so its identity must not either.
+  //
+  // `actionKey`, not `key`: after a converge the chip on the map carries the engine's real id.
+  const openSig = ws.windows
+    .map((w) => w.actionKey)
+    .sort()
+    .join("\u0000");
   const openIds = useMemo(
-    () => new Set(ws.windows.map((w) => w.key)),
-    [ws.windows],
+    () => new Set(openSig ? openSig.split("\u0000") : []),
+    [openSig],
   );
 
   const { nodes, edges } = useMemo(
@@ -407,7 +541,7 @@ function OverviewCanvasInner({
         // mobile — the click navigates exactly as it always did.
         if (canOpenWindow) {
           openWindow(
-            s,
+            seedOf(s),
             anchorPointOf(node, rf.getNode, rf.flowToScreenPosition, {
               x: box.x,
               y: box.y,
@@ -429,6 +563,10 @@ function OverviewCanvasInner({
   // Which map node a window's tether may attach to, best first: its own chip, else the cluster
   // that chip collapses into. Neither on the map (filtered, archived, another layout) → the
   // tether simply isn't drawn, and the window stays open and usable.
+  //
+  // Called with a window's `actionKey`, never its transport `key`: a window launched under a
+  // `new-` placeholder has no chip until the engine reconciles, and the chip it then gets carries
+  // the real id (#936).
   const anchorCandidates = useCallback(
     (key: string) => {
       const s = effectiveSessions.find((x) => x.id === key);
@@ -437,23 +575,35 @@ function OverviewCanvasInner({
     [effectiveSessions, groupBy],
   );
 
-  // ⤢ — hand this session to the full-screen route. The window closes with it; leaving
-  // /overview unmounts the whole workspace, so the route's socket is the only one left.
-  // Synced in an effect, never during render (the repo's `jiggleRef` idiom) — see Terminal.tsx.
+  // ⤢ — hand this session to the full-screen route.
+  //
+  // The window RECORD stays (#936). It used to be closed here, which was right while the
+  // workspace died with the map anyway; now that it survives, closing would make ⤢ a one-way
+  // door in a system that has a door back (the pane's "To map" chip), and the round trip would
+  // silently lose the window's place. Nothing is double-mounted by keeping it: the router renders
+  // one route at a time, so leaving `/overview` unmounts the layer and its socket regardless.
+  //
+  // The record is resolved through a ref so this handler stays stable across window state
+  // changes — an unstable one would re-render every mounted pane on every drag frame. Synced in
+  // an effect, never during render (the repo's `jiggleRef` idiom) — see Terminal.tsx.
   const windowsRef = useRef(ws.windows);
   useEffect(() => {
     windowsRef.current = ws.windows;
   });
   const onFullScreen = useCallback(
     (key: string) => {
-      // Resolved through a ref so this handler stays stable across window state changes — an
-      // unstable one would re-render every mounted pane on every drag frame.
       const w = windowsRef.current.find((x) => x.key === key);
       if (!w) return;
-      closeWindow(key);
-      navigate(`/s/${encodeURIComponent(w.engine)}/${encodeURIComponent(w.id)}`);
+      // The ROUTE gets the id the server should act on — after a converge that is the engine's
+      // real id, and navigating to the frozen placeholder would land on a session that does not
+      // exist (#867).
+      const [engine, ...rest] = w.actionKey.split(":");
+      const id = rest.join(":");
+      navigate(
+        `/s/${encodeURIComponent(engine || w.engine)}/${encodeURIComponent(id || w.id)}`,
+      );
     },
-    [navigate, closeWindow],
+    [navigate],
   );
 
   // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions.
@@ -584,13 +734,41 @@ function OverviewCanvasInner({
           </button>
           {layerOn && (
             <>
+              {/* The readout IS the cap control (#936): the limit is configured where it is
+                felt, not three clicks away in Settings. The stepper shares the readout's border
+                so the two read as one control; a step at either clamp end dims rather than
+                disappearing, so the range is legible without a tooltip. */}
               <span
                 className="tr-ov-wins"
                 data-window-readout
-                title={`${ws.windows.length} of ${WINDOW_CAP} session windows open`}
+                title={`${ws.windows.length} of ${ws.cap} session windows open`}
               >
-                <SquareDashedBottom size={14} aria-hidden="true" /> Windows{" "}
-                <b>{ws.windows.length}</b>/{WINDOW_CAP}
+                <span className="tr-ov-wins-label">
+                  <SquareDashedBottom size={14} aria-hidden="true" /> Windows{" "}
+                  <b>{ws.windows.length}</b>/{ws.cap}
+                </span>
+                <span className="tr-ov-wins-step">
+                  <button
+                    type="button"
+                    onClick={() => setCap(ws.cap - 1)}
+                    disabled={ws.cap <= WINDOW_CAP_MIN}
+                    aria-label="Fewer session windows allowed"
+                    title={`Lower the window limit (minimum ${WINDOW_CAP_MIN}). Windows already open are never closed by this.`}
+                    data-window-cap-down
+                  >
+                    <Minus size={12} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCap(ws.cap + 1)}
+                    disabled={ws.cap >= WINDOW_CAP_MAX}
+                    aria-label="More session windows allowed"
+                    title={`Raise the window limit (maximum ${WINDOW_CAP_MAX}). Each window is a live terminal, so this costs memory on this device.`}
+                    data-window-cap-up
+                  >
+                    <Plus size={12} aria-hidden="true" />
+                  </button>
+                </span>
               </span>
               {ws.windows.length > 0 && (
                 <button
@@ -676,6 +854,7 @@ function OverviewCanvasInner({
             onFullScreen={onFullScreen}
             onRect={ws.setRect}
             onRole={ws.setRole}
+            onReconcile={ws.reconcile}
           />
         )}
       </div>

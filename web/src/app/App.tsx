@@ -42,6 +42,7 @@ import { lazyWithReload } from "./lazyWithReload";
 import { useAppVersion } from "./useAppVersion";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { SessionsProvider } from "./SessionsContext";
+import { WorkspaceProvider } from "./WorkspaceContext";
 import { useSessionsStore } from "./sessionsStore";
 import {
   clampW,
@@ -587,7 +588,12 @@ export default function App() {
             <TermFontProvider>
               <OverviewPrefsProvider>
                 <SessionsProvider>
-                  <RouterProvider router={router} />
+                  {/* ABOVE the router (#936): the map's window records have to survive the
+                    navigations they exist to be resilient to, and a provider inside the routed
+                    tree would be remounted by exactly those. */}
+                  <WorkspaceProvider>
+                    <RouterProvider router={router} />
+                  </WorkspaceProvider>
                 </SessionsProvider>
               </OverviewPrefsProvider>
             </TermFontProvider>

@@ -43,6 +43,7 @@ export function WindowLayer({
   onFullScreen,
   onRect,
   onRole,
+  onReconcile,
 }: {
   layerRef: RefObject<HTMLDivElement | null>;
   windows: WorkspaceWindow[];
@@ -63,6 +64,8 @@ export function WindowLayer({
   onFullScreen: (key: string) => void;
   onRect: (key: string, rect: Rect) => void;
   onRole: (key: string, role: TermRole) => void;
+  /** A window launched under a `new-<uuid>` placeholder adopting the id its engine minted. */
+  onReconcile: (key: string, sid: string) => void;
 }) {
   const { flowToScreenPosition } = useReactFlow();
   // Re-project on every pan/zoom. The store's transform is a stable reference that changes only
@@ -88,7 +91,9 @@ export function WindowLayer({
       // collapsed into. Neither present (the chip was filtered off the map, the session was
       // archived, the grouping changed) → no tether at all, and the window stays open and
       // fully usable. A map filter never closes a window.
-      const node = anchorCandidates(w.key)
+      // `actionKey`, not `key`: a window still transporting on a `new-` placeholder has no chip
+      // until its engine reconciles, and the chip it gets then carries the real id (#936/#867).
+      const node = anchorCandidates(w.actionKey)
         .map((id) => lookup(id))
         .find((n): n is Node => !!n);
       if (!node) continue;
@@ -155,7 +160,9 @@ export function WindowLayer({
             wkey={w.key}
             engine={w.engine}
             id={w.id}
+            actionKey={w.actionKey}
             title={w.title}
+            fresh={w.fresh}
             // Fitted to the box as it is NOW; `w.rect` stays the operator's intent, so a map
             // that shrinks and grows returns the window to the layout it had.
             rect={clampRect(w.rect, bounds)}
@@ -167,6 +174,7 @@ export function WindowLayer({
             onFullScreen={onFullScreen}
             onRect={onRect}
             onRole={onRole}
+            onReconcile={onReconcile}
           />
         </div>
       ))}

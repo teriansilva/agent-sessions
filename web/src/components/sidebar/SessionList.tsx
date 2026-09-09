@@ -27,6 +27,7 @@ import {
 } from "react";
 import { Link, NavLink, useMatch, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
+import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
@@ -192,6 +193,36 @@ function Row({
   // Imperative route to a handoff peer from the ⋯ menu (#597 Phase 2) — the row itself is
   // a NavLink, so the peer link can't be nested inside it.
   const navigate = useNavigate();
+  // While a map is up and can host a window, a row press opens the session THERE instead of
+  // navigating away from the map (#936). `null` outside the shell's provider, and `mapReady`
+  // is false on mobile, in the squeezed embed, and on a map too small to host a window at its
+  // floor — every one of which falls through to the NavLink's own navigation.
+  const workspace = useMapWindows();
+  const openInMap = workspace?.openInMap;
+  const mapReady = workspace?.mapReady ?? false;
+  const onRowClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Never steal a modified click: ⌘/ctrl-click, middle-click and shift-click must still do
+    // what the browser promises for a link, and "open in a new tab" is a reasonable thing to
+    // want from a session row.
+    if (
+      mapReady &&
+      !e.defaultPrevented &&
+      e.button === 0 &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      openInMap?.({
+        key: s.id,
+        engine: s.engine,
+        id: s.uuid,
+        title: s.title || s.short_uuid,
+      })
+    ) {
+      e.preventDefault();
+    }
+    onNavigate?.();
+  };
 
   const handleMove = async (ref: ProjectRef | null) => {
     setMoving(false);
@@ -585,13 +616,16 @@ function Row({
           returnFocusTo={handoffReturnFocus}
         />
       )}
+      {/* Still a NavLink, deliberately (#936): the row keeps its href, so ⌘-click, middle-click
+        and "copy link" behave exactly as they always have, and a map that cannot host a window
+        needs no fallback branch — it simply doesn't preventDefault. */}
       <NavLink
         to={`/s/${s.engine}/${s.uuid}`}
         className={({ isActive }) =>
           isActive ? `${styles.row} ${styles.active}` : styles.row
         }
         style={proj}
-        onClick={onNavigate}
+        onClick={onRowClick}
       >
         {/* Project rail (#285): its own inset layer so the active row's border-left accent
             and the status LED stay legible as separate cues. */}
@@ -721,6 +755,10 @@ interface SessionListProps {
 /** Sidebar: filters + facets + paginated session list. Rows link to the session
  *  URL (open/switch) and expose rename + archive/unarchive actions. */
 export function SessionList({ onNavigate }: SessionListProps = {}) {
+  // Does "+ New session" hand its result back to the map? Only when a map is actually up and
+  // can host a window — the same single boolean the rows use, so the two entrances can never
+  // disagree about whether window mode is available.
+  const newSessionReturnsToMap = useMapWindows()?.mapReady ?? false;
   const {
     sessions,
     total,
@@ -898,7 +936,16 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
 
   return (
     <div className={styles.wrap}>
-      <Link to="/" className={`${styles.newBtn} shine`} onClick={onNavigate}>
+      {/* Pressing this with the map up should land the new session ON the map, not full screen
+        (#936). The landing form is still a page — it needs the room, and the map has none to
+        spare — so the map's address rides along in router state and the form returns there. The
+        `returnTo` idiom is the topbar Settings link's, reused rather than reinvented. */}
+      <Link
+        to="/"
+        state={newSessionReturnsToMap ? { returnTo: MAP_PATH } : undefined}
+        className={`${styles.newBtn} shine`}
+        onClick={onNavigate}
+      >
         <Plus size={16} />
         New session
       </Link>

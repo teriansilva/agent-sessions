@@ -3,6 +3,7 @@ import { memo, type PointerEvent as ReactPointerEvent, useCallback, useRef, useS
 import { useNavigate } from "react-router-dom";
 import { engineBadge, engineName } from "../../lib/format";
 import type { TermRole } from "../../lib/termSocket";
+import type { FreshSession } from "../../lib/termUrl";
 import type { TemplateDraft } from "../terminal/Compose";
 import { Terminal } from "../terminal/Terminal";
 import styles from "./sessionWindow.module.css";
@@ -25,7 +26,9 @@ export const SessionWindow = memo(function SessionWindow({
   wkey,
   engine,
   id,
+  actionKey,
   title,
+  fresh,
   rect,
   bounds,
   focused,
@@ -35,6 +38,7 @@ export const SessionWindow = memo(function SessionWindow({
   onFullScreen,
   onRect,
   onRole,
+  onReconcile,
 }: {
   /** The engine-qualified session id. Passed back to every handler so the handlers themselves
    *  can be the workspace's own stable callbacks rather than per-render closures — that is what
@@ -43,7 +47,15 @@ export const SessionWindow = memo(function SessionWindow({
   wkey: string;
   engine: string;
   id: string;
+  /** The id the SERVER should act on — the engine's real id after a converge, the transport key
+   *  before one. Handed straight to `<Terminal rowKey>`, which is the pane's own name for the
+   *  same split (#867): without it a converged window's Recap "Review now" and its Hand off
+   *  gate keep naming the `new-<uuid>` placeholder, i.e. a session that does not exist. */
+  actionKey: string;
   title: string;
+  /** Fresh-launch params for a window opened straight from the new-session flow (#936). The
+   *  pane freezes them itself (`freshRef`), so this is read once at mount and never again. */
+  fresh?: FreshSession;
   rect: Rect;
   /** The overlay box. Every move/resize is clamped against it, so a window can never be put
    *  somewhere it cannot be dragged back from. */
@@ -56,6 +68,9 @@ export const SessionWindow = memo(function SessionWindow({
   onFullScreen: (key: string) => void;
   onRect: (key: string, rect: Rect) => void;
   onRole: (key: string, role: TermRole) => void;
+  /** The engine reconciled a `new-` placeholder to its real id (#127/#315). The window's
+   *  transport identity does NOT change — see `WorkspaceWindow.actionKey`. */
+  onReconcile: (key: string, sid: string) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   // The template picker and "Save as template" leave through the ROUTER, never a document
@@ -190,6 +205,14 @@ export const SessionWindow = memo(function SessionWindow({
         <Terminal
           engine={engine}
           id={id}
+          // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
+          // identities the record keeps, handed to the pane under the name it already uses.
+          rowKey={actionKey}
+          fresh={fresh}
+          // The converge lands on the WORKSPACE, never on this component's own identity: the
+          // pane must keep its frozen `key` or React would remount it and tear down the socket
+          // of a session that just launched (#127). What changes is the record's `actionKey`.
+          onReconcileId={(sid) => onReconcile(wkey, sid)}
           onRole={(r) => onRole(wkey, r)}
           onOpenGallery={onOpenGallery}
           onSaveAsTemplate={onSaveAsTemplate}
