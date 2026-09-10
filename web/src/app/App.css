@@ -179,6 +179,19 @@
   padding: 0;
   border-bottom: 0;
 }
+/* …UNLESS IT IS HOLDING THE DRAWER'S CLOSE CONTROL (#940).
+ *
+ * The collapse above is right when the row's only child is the `sr-only` heading. In drawer mode
+ * it also holds the close button — the one control that can dismiss the panel, since the
+ * hamburger that opened it is in the now-inert header — and a 44px control inside a 0px row is
+ * present, focusable and reported visible while being impossible to TAP. That is a worse failure
+ * than the empty strip this collapse exists to remove, because it looks fine in every assertion
+ * short of a real click. */
+.sidebar-head.isMissionSection.hasDrawerClose {
+  height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
 .hud-h {
   margin: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -776,4 +789,29 @@ body.hud-static-grid {
   .shine:active {
     animation: none !important;
   }
+}
+
+/* The mobile drawer's own close control (#940).
+ *
+ * It exists because the hamburger that opened the drawer is inside the header, and the header is
+ * `inert` while the drawer is modal — so the control that would otherwise close it cannot be
+ * reached at all. It is also the focus target on open.
+ *
+ * Rendered only in drawer mode, so it needs no media query of its own; the JSX gates it. */
+.sidebar-drawer-close {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: 1rem;
+  line-height: 1;
+  /* The coarse-pointer floor, as everywhere else in the shell. */
+  min-width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+  margin-left: auto;
+}
+.sidebar-drawer-close:hover,
+.sidebar-drawer-close:focus-visible {
+  color: var(--text-1);
+  border-color: var(--accent);
 }

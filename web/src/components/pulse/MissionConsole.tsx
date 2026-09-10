@@ -42,7 +42,6 @@ import { ActionRow } from "./ActionRow";
 import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
-import { MissionDrawer } from "./MissionDrawer";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionLifecycle } from "./MissionLifecycle";
 import { type ObjectiveOp } from "./MissionObjectives";
@@ -700,16 +699,25 @@ export function MissionConsole({
   const [selected, setSelected] = useState<string | null>(null);
   const [stop, setStop] = useState<Stop>("THREAD");
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  /** The shell's sidebar slot (#935).
+   *
+   *  Read through the shell's own CONTEXT rather than by looking the element up in an effect.
+   *  The lookup version worked, but it set state synchronously inside an effect — a cascading
+   *  render the react-hooks rule rejects, and rightly: the shell already knows whether it is
+   *  offering the slot and can simply say so. `null` means "render in place", which is the
+   *  honest fallback rather than a blank column. */
+  const railSlot = useMissionRailSlot();
+  const { el: railSlotEl, dismiss: dismissRail } = railSlot;
 
   /** The composer's MODE, owned here rather than in the composer (#935, reshaped in #937
    *  review 1) — see `Composer.creating`. The draft text, the pending send and the turn history
    *  stay in the composer; only "which mode" needs to outlive a branch switch, because
    *  "+ New mission" in the rail switches a composer that has not mounted yet.
    *
-   *  Declared AFTER `drawerOpen` because `startNewMission` closes it: a `useCallback` reading a
-   *  `useState` setter declared below it is a TDZ error, which the react-hooks lint catches and
-   *  a browser would too. */
+   *  `startNewMission` dismisses whatever surface the rail lives in, so it closes over
+   *  `dismissRail` — which is why the slot is read ABOVE this. Reading a `const` declared below
+   *  it is a TDZ error, which the react-hooks lint catches and a browser would too. */
   const [composerCreating, setComposerCreating] = useState(false);
   const startNewMission = useCallback(() => {
     // LEAVE THE CURRENT MISSION FIRST (#937 review 1, finding 2). With one selected the console
@@ -720,17 +728,11 @@ export function MissionConsole({
     setSelected(UNTRACKED_VIEW);
     setStop("THREAD");
     setComposerCreating(true);
-    setDrawerOpen(false); // on a phone the rail IS the drawer; leaving it open hides the field
-  }, []);
+    // On a phone the rail IS the drawer; leaving it open hides the field the operator is about
+    // to type into.
+    dismissRail();
+  }, [dismissRail]);
 
-  /** The shell's sidebar slot (#935).
-   *
-   *  Read through the shell's own CONTEXT rather than by looking the element up in an effect.
-   *  The lookup version worked, but it set state synchronously inside an effect — a cascading
-   *  render the react-hooks rule rejects, and rightly: the shell already knows whether it is
-   *  offering the slot and can simply say so. `null` means "render in place", which is the
-   *  honest fallback rather than a blank column. */
-  const railSlot = useMissionRailSlot();
   const [adopting, setAdopting] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
@@ -741,7 +743,6 @@ export function MissionConsole({
    *  things the console can be showing. */
   const [turns, setTurns] = useState<Record<string, AskTurn[]>>({});
 
-  const drawerBtnRef = useRef<HTMLButtonElement | null>(null);
   /** What is selected RIGHT NOW, for callbacks that resolve later. A ref rather than the state
    *  value because a captured boolean answers the question as it was when the request started,
    *  which is exactly the moment that does not matter. */
@@ -1606,16 +1607,21 @@ export function MissionConsole({
     [],
   );
 
-  const select = useCallback((id: string) => {
-    setSelected(id);
-    setStop("THREAD");
-    setDrawerOpen(false);
-    setNote(null);
-    setTitle(null);
-    setHeldExtra([]);
-  }, []);
-
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const select = useCallback(
+    (id: string) => {
+      setSelected(id);
+      setStop("THREAD");
+      // CLOSE THE SURFACE THE RAIL LIVES IN (#940). Selection changes local state and never the
+      // URL, so the shell's pathname effect cannot see it — without this the drawer stays open
+      // over the mission that was just picked. `dismiss` is a no-op on a docked column, so this
+      // is unconditional rather than guarded on a width the console should not know about.
+      dismissRail();
+      setNote(null);
+      setTitle(null);
+      setHeldExtra([]);
+    },
+    [dismissRail],
+  );
 
   /** A decision settled here must also settle everywhere else it is drawn. The route owns the
    *  overview, so the console asks it to refetch rather than keeping a second copy. */
@@ -1657,47 +1663,27 @@ export function MissionConsole({
           Falls back to rendering in place when the slot is absent — an older shell, or the first
           paint of a route that has not mounted it yet. A rail in the wrong column beats no rail,
           and this is also what keeps the component testable on its own. */}
-      {railSlot ? (
-        createPortal(rail, railSlot)
+      {/* ONE RAIL, IN THE SHELL, AT EVERY WIDTH (#940).
+          The console used to keep its own `MissionDrawer` on a phone, because the shell's
+          off-canvas sidebar had a backdrop and none of the rest of the modal contract — so
+          portalling there would have removed a focus trap from the surface that most needs one.
+          The shell carries that contract now, so the second drawer has no reason to exist, and
+          the operator stops meeting two hamburgers on one screen.
+
+          The in-place fallback stays for the case the slot is genuinely absent: a route that
+          does not offer one, an older shell, the first paint before it mounts, and the component
+          rendered on its own in a unit test. A rail in the wrong column beats no rail. */}
+      {railSlotEl ? (
+        createPortal(rail, railSlotEl)
       ) : (
-        <>
-          <div className={styles.railInline}>{rail}</div>
-          {/* MOBILE KEEPS ITS OWN DRAWER, AND THAT IS NOT AN OVERSIGHT (#935).
-              The shell only offers the slot where its sidebar is a persistent column. Where it is
-              an off-canvas drawer instead, it has a backdrop but no `aria-modal`, no
-              `role="dialog"` and no focus trap — `MissionDrawer` has all three by design. Routing
-              the rail through the shell at every width would have traded a layout fix for an
-              accessibility regression on the surface where a trap matters most. Giving the shell
-              drawer the modal contract is worth doing, but it changes every route and belongs in
-              its own issue. */}
-          <MissionDrawer
-            open={drawerOpen}
-            onClose={closeDrawer}
-            triggerRef={drawerBtnRef}
-          >
-            {rail}
-          </MissionDrawer>
-        </>
+        <div className={styles.railInline}>{rail}</div>
       )}
 
       <div className={styles.centre}>
         <div className={styles.topbar}>
-          {/* The trigger belongs to the console's OWN drawer, so it stands down wherever the
-              shell is showing the rail as a column (#935). Leaving it visible would offer a
-              control that opens a drawer that is no longer rendered — inert chrome, which is the
-              class of thing this issue exists to remove. */}
-          {railSlot ? null : (
-            <button
-              type="button"
-              className={styles.drawerBtn}
-              onClick={() => setDrawerOpen(true)}
-              ref={drawerBtnRef}
-              aria-label="Missions"
-              data-testid="rail-drawer-open"
-            >
-              ☰
-            </button>
-          )}
+          {/* The console's own `☰` retired with its drawer (#940). The shell's hamburger is the
+              one control that opens the rail now, at every width — which is the whole point: the
+              operator was meeting two of them on one screen, opening two different lists. */}
           {/* NOT a second "MISSION CONTROL" (#929). The route's own <h1> says that a few
               pixels above, so this fell back to printing the page's name twice — one of the
               things that made the page read as two designs stacked. This says which MISSION

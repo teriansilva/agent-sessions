@@ -142,3 +142,49 @@ export function missionList(
     snapshot,
   };
 }
+
+/** Open the mission rail through the SHELL's control (#940).
+ *
+ *  The console's own `☰` retired with its drawer: at every width the rail now lives in the app
+ *  shell's sidebar, so the one control that reveals it is the shell's. Tests that used to click
+ *  `rail-drawer-open` go through here instead — which is also the point of the change, since the
+ *  operator was meeting two hamburgers on one screen.
+ *
+ *  A no-op where the sidebar is already a docked column: there is nothing to open, and asserting
+ *  on the rail directly is what those cases want.
+ */
+export async function openMissionRail(page: import("@playwright/test").Page): Promise<void> {
+  const trigger = page.getByRole("button", { name: /Open mission list/i });
+  // NO TRIGGER MEANS NO DRAWER, which is the docked-column case and a genuine no-op. Anything
+  // else below is a failure to open and is raised (#940 review 3).
+  if (!(await trigger.count())) return;
+  await trigger.first().click();
+
+  // WAIT FOR THE PANEL, not for a timeout. The drawer slides in on a CSS transform, so a caller
+  // that measures its box immediately reads the CLOSED position and concludes nothing happened.
+  // `role="dialog"` appears with the modal state, which is the earliest honest signal that the
+  // shell has committed to opening.
+  //
+  // THESE USED TO BE `.catch(() => {})`, and that was wrong in the specific way a helper can be
+  // wrong: a drawer that never opened returned as if it had, and the caller went on to count rows
+  // in a parked panel and assert something true about nothing. A `waitFor` that times out is the
+  // clearest signal available that the shell did not open — swallowing it converts a loud failure
+  // into a quiet one exactly where the quiet one is hardest to read.
+  await page.getByRole("dialog").waitFor({ state: "visible", timeout: 5000 });
+
+  // …and settle the transform, so a geometry assertion reads the resting position. `x >= 0` is
+  // the resting position of an OPEN panel; the closed one sits at roughly `-width`.
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector("aside.sidebar");
+      return el !== null && el.getBoundingClientRect().x >= 0;
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+}
+
+/** The shell's rail control, for assertions about its state rather than its effect. */
+export function missionRailTrigger(page: import("@playwright/test").Page) {
+  return page.getByRole("button", { name: /(Open|Collapse) mission list/i });
+}

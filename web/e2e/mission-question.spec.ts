@@ -15,6 +15,7 @@ import {
   missionList,
   missionRow,
   mockMissions,
+  openMissionRail,
 } from "./mission-console";
 
 const T = 1_700_000_000;
@@ -119,12 +120,19 @@ async function stub(page: Page, opts: { question?: unknown } = {}) {
 
 async function openMission(page: Page) {
   await expect(page.getByTestId("mission-console")).toBeVisible();
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  // Through the SHELL's control (#940). The console's own `☰` retired with `MissionDrawer`, so
+  // `isVisible()` on it was always false and the phone's drawer never opened — leaving every
+  // click below aimed at an off-canvas rail, which Playwright calls "visible" because it has a
+  // box. A no-op wherever the sidebar is already a docked column.
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-mission"]:visible').first().click();
-  const drawer = page.getByTestId("rail-drawer");
-  if (await drawer.isVisible().catch(() => false))
+  // …and closed again through the one dialog the shell now owns. `rail-drawer` was
+  // `MissionDrawer`'s panel; with that component deleted this matched nothing and left the drawer
+  // sitting over every subsequent click.
+  if (await page.getByRole("dialog").count()) {
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  }
 }
 
 test("choosing an option posts the INDEX, and the label never travels", async ({

@@ -1,4 +1,4 @@
-/** Where the mission rail renders, decided by the app shell (#935).
+/** Where the mission rail renders, decided by the app shell (#935, #940).
  *
  *  The console portals its rail into the shell's sidebar on the mission route, so it needs the
  *  destination element. It could look that element up by id in an effect — and the first version
@@ -6,18 +6,32 @@
  *  and which the `react-hooks` lint rejects on principle.
  *
  *  Context is the honest shape anyway: the shell is the component that DECIDES whether a slot is
- *  offered (it is not, where its sidebar is an off-canvas drawer without a focus trap), so the
- *  shell should say so rather than leave the console to infer it from the DOM. `null` means
- *  "render in place" — the fallback that keeps the console working standalone, in tests, and on
- *  any route that does not offer a slot.
+ *  offered, so the shell should say so rather than leave the console to infer it from the DOM.
+ *  `null` means "render in place" — the fallback that keeps the console working standalone, in
+ *  tests, and on any route that does not offer a slot.
+ *
+ *  **`dismiss` is not optional decoration (#940).** Where the slot is a drawer, choosing a mission
+ *  has to close it — and the console cannot do that itself: selection changes the console's local
+ *  state, never the URL, so the shell's pathname effect never fires and the drawer would sit open
+ *  over the mission the operator just picked. The shell owns the drawer, so the shell supplies the
+ *  way to close it; the console calls it and stays ignorant of whether a drawer exists at all.
  */
 import { createContext, useContext } from "react";
 
-const MissionRailSlot = createContext<HTMLElement | null>(null);
+export interface MissionRailSlot {
+  /** The element the mission rail should portal into, or `null` to render it in place. */
+  el: HTMLElement | null;
+  /** Close the surface the slot lives in, if it is one that closes. A no-op for a docked column,
+   *  so the console can call it unconditionally after a selection. */
+  dismiss: () => void;
+}
 
-export const MissionRailSlotProvider = MissionRailSlot.Provider;
+const NONE: MissionRailSlot = { el: null, dismiss: () => {} };
 
-/** The element the mission rail should portal into, or `null` to render it in place. */
-export function useMissionRailSlot(): HTMLElement | null {
-  return useContext(MissionRailSlot);
+const Ctx = createContext<MissionRailSlot>(NONE);
+
+export const MissionRailSlotProvider = Ctx.Provider;
+
+export function useMissionRailSlot(): MissionRailSlot {
+  return useContext(Ctx);
 }

@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import type { EngineInfo, HandoffMode } from "../../types/api";
 import styles from "./HandoffModal.module.css";
+import { useFocusContainment } from "../pulse/useModalDrawer";
 
 /** Hand-off modal (#597, Phases 1–2): pick a target engine and a seed mode, review/edit
  *  the seed the server prepared, and spawn a new seeded session in that engine.
@@ -81,6 +82,7 @@ export function HandoffModal({
   // `prepError` instead of being masked by a reassuring message (#703 review follow-up).
   const [renewalNotice, setRenewalNotice] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const keepEditingRef = useRef<HTMLButtonElement>(null);
   // Guards the commit continuation against a modal unmount mid-request (browser Back /
   // external route change): a late `navigate()` must not override the user's newer
@@ -131,6 +133,13 @@ export function HandoffModal({
     }
     onClose();
   }, [committing, pendingSwitch, onClose]);
+
+  /** TAB STAYS IN HERE (#940 review 2). This surface declares `aria-modal`, moves focus in and
+   *  restores it on close — the one part of that promise it never kept was containment, which was
+   *  survivable until the sidebar drawer beneath it became modal too and the two started fighting
+   *  over the same key. `useModalDrawer` stands the drawer down while this holds focus; this is
+   *  the other half of that coordination. */
+  useFocusContainment({ active: true, panelRef: dialogRef });
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -305,6 +314,7 @@ export function HandoffModal({
   return createPortal(
     <div className={styles.backdrop} onMouseDown={dismiss}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

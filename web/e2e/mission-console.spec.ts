@@ -16,6 +16,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 import {
   MISSION,
+  missionRailTrigger,
+  openMissionRail,
   missionList,
   missionRow,
   mockMissions,
@@ -175,7 +177,8 @@ for (const [width, railIsColumn, detailIsColumn] of [
     // The rail is either laid out beside the pane, or it is behind the drawer trigger.
     if (railIsColumn) {
       await expect(rail(page)).toBeVisible();
-      await expect(page.getByTestId("rail-drawer-open")).toBeHidden();
+      // The console's own trigger is GONE at every width now (#940), not merely hidden.
+      await expect(page.getByTestId("rail-drawer-open")).toHaveCount(0);
       const r = await rail(page).boundingBox();
       const pane = await page.getByTestId("pane").boundingBox();
       expect(r).not.toBeNull();
@@ -183,8 +186,21 @@ for (const [width, railIsColumn, detailIsColumn] of [
       // Beside, not stacked, and not overlapping.
       expect(r!.x + r!.width).toBeLessThanOrEqual(pane!.x + 1);
     } else {
-      await expect(page.getByTestId("rail-drawer-open")).toBeVisible();
-      await expect(rail(page)).toBeHidden();
+      // Behind the SHELL's control now, not the console's — which no longer exists.
+      await expect(page.getByTestId("rail-drawer-open")).toHaveCount(0);
+      await expect(missionRailTrigger(page)).toBeVisible();
+      // OFF-CANVAS, not `display:none` — so this is a GEOMETRY claim, not a visibility one.
+      // The shell's drawer translates out of the viewport; Playwright still calls that "visible"
+      // because it has a box, which is exactly why the old `toBeHidden()` stopped meaning
+      // anything once the rail moved into the shell (#940).
+      const closed = await rail(page).boundingBox();
+      expect(closed).not.toBeNull();
+      expect(closed!.x + closed!.width).toBeLessThanOrEqual(1);
+
+      // …and the shell's control brings it in.
+      await openMissionRail(page);
+      const opened = await rail(page).boundingBox();
+      expect(opened!.x).toBeGreaterThanOrEqual(0);
     }
 
     // The detail column and the tab strip are mutually exclusive: showing both would draw the
@@ -208,80 +224,20 @@ for (const [width, railIsColumn, detailIsColumn] of [
 }
 
 // ==============================================================================================
-// The rail drawer owes the whole modal contract. A breakpoint is not a modal.
+// THE DIALOG CONTRACT MOVED, IT WAS NOT DROPPED (#940).
+//
+// Two tests lived here — "the rail drawer is a real modal" and "Tab is contained inside the
+// drawer" — and they exercised `MissionDrawer`, the console's own panel. That panel is gone: the
+// rail lives in the app shell's sidebar at every width now, so the shell owns the modal contract
+// and its regressions belong beside it.
+//
+// They are `mission-shell-layout.spec.ts` → "the phone gets the same one rail, through the shell",
+// which asserts more than these did: `aria-modal`, focus in, focus restored on each of three close
+// paths, the background regions actually inert, the panel NOT inert, a desktop control proving the
+// docked column gains none of it, the same contract on a non-mission route, and the 800→801 resize
+// releasing the isolation.
 // ==============================================================================================
 
-test("the rail drawer is a real modal: focus in, background inert, Escape and scrim close, focus back", async ({
-  page,
-}) => {
-  await stub(page);
-  await mockMissions(page, {
-    missions: missionList([HELD_ROW]),
-    mission: { ...HELD, events: [], events_next_seq: null },
-  });
-  await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/pulse");
-
-  const trigger = page.getByTestId("rail-drawer-open");
-  await trigger.click();
-
-  const panel = page.getByTestId("rail-drawer");
-  await expect(panel).toBeVisible();
-  await expect(panel).toHaveAttribute("aria-modal", "true");
-
-  // Portalled OUTSIDE #root — which is what lets the background be made genuinely inert without
-  // also disabling the drawer.
-  const outside = await panel.evaluate(
-    (el) => !document.getElementById("root")?.contains(el),
-  );
-  expect(outside).toBe(true);
-  await expect(page.locator("#root")).toHaveAttribute("inert", "");
-
-  // Focus moved IN, to the drawer's own close control (the trigger is inert while open).
-  await expect(page.getByTestId("rail-drawer-close")).toBeFocused();
-
-  // Escape closes, the background is released, and focus RETURNS to the trigger.
-  await page.keyboard.press("Escape");
-  await expect(panel).toBeHidden();
-  await expect(page.locator("#root")).not.toHaveAttribute("inert", "");
-  await expect(trigger).toBeFocused();
-
-  // …and the scrim closes it too, with the same restore.
-  await trigger.click();
-  await expect(panel).toBeVisible();
-  // Click the scrim to the RIGHT of the panel. Its centre is behind the drawer, so a plain
-  // `.click()` is intercepted — which is correct behaviour, not a bug.
-  await page.mouse.click(page.viewportSize()!.width - 20, 400);
-  await expect(panel).toBeHidden();
-  await expect(trigger).toBeFocused();
-});
-
-test("Tab is contained inside the drawer", async ({ page }) => {
-  await stub(page);
-  await mockMissions(page, { missions: missionList([HELD_ROW]) });
-  await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/pulse");
-  // The console's fetches are what cause the churn: the shell renders at once, then the topbar,
-  // rail and stops re-render as the mission list and detail land — so an interaction issued in
-  // that window resolves an element and then loses it ("detached from the DOM, retrying").
-  // Waiting for the network to go idle waits for exactly that window, and for nothing else.
-  // (Checked: after it, the node is stable — tagging it and waiting 4s shows no sustained
-  // remount, so this is mount churn rather than a render loop.)
-  await page.waitForLoadState("networkidle");
-  await page.getByTestId("rail-drawer-open").click();
-  await expect(page.getByTestId("rail-drawer")).toBeVisible();
-
-  // Tab around the whole cycle; focus must never leave the panel. `inert` alone is not the
-  // proof — this is what makes the trap observable rather than inferred from an attribute.
-  for (let i = 0; i < 8; i++) {
-    await page.keyboard.press("Tab");
-    const inside = await page.evaluate(() => {
-      const panel = document.querySelector('[data-testid="rail-drawer"]');
-      return !!panel && panel.contains(document.activeElement);
-    });
-    expect(inside).toBe(true);
-  }
-});
 
 // ==============================================================================================
 // The geometry inventory. EVERY interactive control on the phone viewport, enumerated by the
@@ -475,7 +431,7 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     async () => {
       // NEW MISSION: a composer MODE, so its form is only in the DOM once opened — and it lives
       // in the UNTRACKED view, because the mission body's composer is the DURABLE one (#890).
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
       await page.locator('[data-testid="rail-untracked-view"]:visible').click();
       await page.keyboard.press("Escape");
       const mode = page.getByTestId("composer-mode-new");
@@ -485,7 +441,7 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await page.getByTestId("stop-thread").click();
       const mode = page.getByTestId("composer-mode-ask");
       if (await mode.isVisible().catch(() => false)) await mode.click();
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
     },
     async () => {
       // THE FOLLOW-THROUGH BOARD, where STAND DOWN lives. It is offered only for an objective
@@ -496,21 +452,21 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     async () => {
       // BEGIN: a `planned` mission holding a session. It exists in no other state, so a sweep
       // over the running mission alone never saw it.
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
       await page.locator('[data-testid="rail-mission"]:visible').nth(1).click();
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("mission-begin")).toBeVisible();
     },
     async () => {
       // REOPEN: a terminal mission. Same argument, other end of the lifecycle.
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
       await page.locator('[data-testid="rail-mission"]:visible').nth(2).click();
       await page.keyboard.press("Escape");
       await expect(page.getByTestId("mission-reopen")).toBeVisible();
     },
     async () => {
       // …and back to the running one, so the surfaces after this see the state they expect.
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
       await page
         .locator('[data-testid="rail-mission"]:visible')
         .first()
@@ -522,15 +478,18 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       // opened, and they live on the archived scope, which none of the surfaces above visits —
       // exactly the shape a new control slips through in.
       await page.keyboard.press("Escape");
-      await page.getByTestId("rail-drawer-open").click();
+      await openMissionRail(page);
       await page.locator('[data-testid="rail-scope"]:visible').first().click();
       await page
         .locator('[data-testid="rail-mission"]:visible')
         .first()
         .click();
-      const drawer = page.getByTestId("rail-drawer");
-      if (await drawer.isVisible().catch(() => false))
+      // Closed through the one dialog the shell owns (#940) — `rail-drawer` was `MissionDrawer`'s
+      // panel and that component is deleted, so this matched nothing.
+      if (await page.getByRole("dialog").count()) {
         await page.keyboard.press("Escape");
+        await expect(page.getByRole("dialog")).toHaveCount(0);
+      }
       await page.getByTestId("mission-unarchive").click();
       await expect(page.getByTestId("mission-unarchive-record")).toBeVisible();
     },
@@ -554,17 +513,42 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       // automatically. The app shell's own topbar and sidebar are out of this PR's scope and
       // carry pre-existing sub-44px icon buttons; asserting on them here would turn an unrelated
       // backlog item into this PR's problem and make the gate meaningless when it failed.
+      // The rail moved into the shell's sidebar (#940), so its controls are enumerated through
+      // the rail's own landmark rather than the console's retired drawer. The rest of the shell
+      // stays out of scope for the reason above — it carries pre-existing sub-44px icon buttons
+      // that are not this surface's to answer for, and pulling the whole <aside> in would turn an
+      // unrelated backlog item into a failure here.
+      // ONLY WHILE IT IS REACHABLE. The console's old drawer was rendered conditionally, so a
+      // closed one contributed no elements at all. The shell's sidebar is always in the DOM and
+      // merely translated out of the viewport when closed — so including it unconditionally
+      // reported every rail control as "outside the viewport", which is true and irrelevant: the
+      // operator cannot reach them, and the check exists to catch controls that overflow while
+      // reachable.
+      //
+      // `inert` IS THE REACHABILITY ANSWER, and geometry was only ever standing in for it (#940
+      // review 2). A parked drawer is inert now, and the two disagree for a few frames every time
+      // one closes: the panel slides out over a transition, so `left >= 0` still says "on screen"
+      // while the attribute already says "unreachable" — and every control inside it then reports
+      // `not focusable`, which is the isolation WORKING. Asking the attribute removes the race and
+      // says what the loop below actually means.
+      const railNav = document.querySelector<HTMLElement>('nav[aria-label="Missions" i]');
+      const railOnScreen =
+        railNav !== null &&
+        railNav.getBoundingClientRect().left >= 0 &&
+        railNav.closest("[inert]") === null;
       const roots = [
         document.querySelector('[data-testid="mission-console"]'),
-        document.querySelector('[data-testid="rail-drawer"]'),
+        railOnScreen ? railNav : null,
       ].filter(Boolean) as HTMLElement[];
       const bad: string[] = [];
       const names: string[] = [];
-      // THE DRAWER IS A FOCUS TRAP (#878), and while it is open the controls behind it are
-      // correctly unreachable — focus snaps back to its close button. So focusability is asked
-      // of what the operator can actually reach right now: everything, or, with the drawer open,
-      // what is inside it. Asserting it unconditionally would fail on the trap WORKING.
-      const trap = document.querySelector('[data-testid="rail-drawer"]');
+      // THE DRAWER IS A FOCUS TRAP (#878, now the shell's own — #940), and while it is open the
+      // controls behind it are correctly unreachable: the background regions are `inert`. So
+      // focusability is asked of what the operator can actually reach right now: everything, or,
+      // with the drawer open, what is inside it. Asserting it unconditionally would fail on the
+      // trap WORKING — which is exactly what happened when this kept looking for the console's
+      // retired `rail-drawer` and found nothing, concluding no trap was open.
+      const trap = document.querySelector('aside.sidebar[role="dialog"]');
       let focusChecked = 0;
       const els = roots.flatMap((r) =>
         Array.from(r.querySelectorAll<HTMLElement>(sel)),

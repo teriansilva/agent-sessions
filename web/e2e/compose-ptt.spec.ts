@@ -154,7 +154,19 @@ test("dictation survives the engine ending its own session — both utterances l
   // second one — red before the fix, where the textarea stopped at "deploy the staging build".
   await mic.hover();
   await page.mouse.down();
-  await expect(textarea).toHaveValue("deploy the staging build");
+  // THE FIRST PHRASE LANDED AND WAS NOT LOST — which is what this line is for, and it accepts the
+  // final value too because the intermediate one is not a state the test is entitled to observe.
+  //
+  // It asserted the exact intermediate string, and that is a wall-clock test of a frame-ordered
+  // property: the stub emits phrase one, the engine hangs up, dictation re-arms and phrase two
+  // lands, all without waiting for anyone. Under CI load this assertion can first run after that
+  // whole sequence, see the finished value, and fail — observed on `web-ci` at 947 passed / 1
+  // failed, and again on its retry. Nothing about the feature is different in that run; the test
+  // simply arrived late.
+  await expect(textarea).toHaveValue(
+    /^deploy the staging build( and watch the rollout)?$/,
+  );
+  // …AND THE SECOND ONE DID TOO. This is the claim in the test's name, and it is exact.
   await expect(textarea).toHaveValue(
     "deploy the staging build and watch the rollout",
   );

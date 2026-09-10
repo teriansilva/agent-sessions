@@ -7,7 +7,14 @@ import {
   PanelLeftClose,
   Settings as SettingsIcon,
 } from "lucide-react";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   createBrowserRouter,
   Link,
@@ -20,6 +27,7 @@ import {
 import { NotificationBell } from "../components/pulse/NotificationBell";
 import { SessionList } from "../components/sidebar/SessionList";
 import { MissionRailSlotProvider } from "../components/pulse/railSlot";
+import { useModalDrawer } from "../components/pulse/useModalDrawer";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
 import { Settings } from "../routes/Settings";
@@ -204,16 +212,81 @@ function Layout() {
    *  mission list and portals its existing rail into the slot below; the shell only supplies the
    *  space and the surrounding chrome.
    *
-   *  **Only where the sidebar is a persistent column.** On mobile it is an off-canvas drawer with
-   *  a backdrop but no `aria-modal` and no focus trap, while the console's own `MissionDrawer`
-   *  has both — so offering the slot there would trade a desktop layout fix for a mobile
-   *  accessibility regression. No slot means the console keeps exactly its current behaviour. */
+   *  **At every width, since #940.** It used to be desktop-only: the shell's off-canvas drawer had
+   *  a backdrop and nothing else, while the console's own `MissionDrawer` was a real modal, so
+   *  offering the slot on a phone would have traded a layout fix for a lost focus trap. The drawer
+   *  now carries the contract itself (see `useModalDrawer` below), which is what makes the phone
+   *  safe to include — and the operator's report was precisely about the phone: two hamburgers on
+   *  one screen, one opening sessions and one opening missions. */
   const missionRoute = location.pathname.startsWith("/pulse");
-  const railInSidebar = missionRoute && !isMobile;
+  const railInSidebar = missionRoute;
   /** Published to the console through context. A ref callback, not an effect: it fires on
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
    *  portal needs and avoids setting state from inside an effect. */
   const [railSlotEl, setRailSlotEl] = useState<HTMLElement | null>(null);
+
+  /** THE MOBILE DRAWER IS A MODAL, and it owes the whole contract (#940).
+   *
+   *  It had a backdrop and nothing else — no `role="dialog"`, no `aria-modal`, no focus moved in
+   *  or restored, no Tab containment, no Esc. That was tolerable while it was only a session list;
+   *  it stopped being tolerable when the mission rail moved into it, because the surface a
+   *  keyboard or screen-reader operator navigates missions with cannot be one they can Tab
+   *  straight out of into a page that is visually covered.
+   *
+   *  `useModalDrawer` is the same hook `NotificationBell` and `MissionDrawer` use — reused, not
+   *  re-implemented, because a focus trap is exactly the thing that rots when copied.
+   *
+   *  **It cannot be attached unchanged.** Its default isolates the background by making `#root`
+   *  inert, which is right for a panel portalled out of the root — and the shell's `<aside>` is
+   *  not: it is a grid track of `.app`, inside that root. So this names the regions to isolate
+   *  instead. The header and the routed pane are the whole interactive background; the sidebar and
+   *  its backdrop deliberately are not among them.
+   *
+   *  Desktop gets NONE of this. There the sidebar is a docked column, not a dialog — `aria-modal`
+   *  on it would tell a screen reader the rest of the page does not exist. */
+  const asideRef = useRef<HTMLElement | null>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const backdropRef = useRef<HTMLButtonElement | null>(null);
+  const navToggleRef = useRef<HTMLButtonElement | null>(null);
+  const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
+  const drawerIsModal = isMobile && navOpen;
+  /** A PARKED DRAWER IS NOT A REACHABLE ONE (#940 review 2).
+   *
+   *  The shell's `<aside>` is always mounted and merely translated out of the viewport when
+   *  closed — unlike the console's old `MissionDrawer`, which was unmounted. Translation hides it
+   *  from the eye and from nothing else: at 412px, tabbing from the header toggle put focus on a
+   *  mission row whose right edge sat at −2px, off-screen, with no dialog open. The operator gets
+   *  no visible focus and can drive mission selection without ever revealing the control.
+   *
+   *  `inert` is the whole fix, and it is the right one rather than `tabindex="-1"` sweeps or
+   *  `aria-hidden`: it removes the subtree from the tab order AND from the accessibility tree AND
+   *  from pointer events, in one attribute the browser owns. Desktop is untouched — a docked
+   *  column is reachable by definition, which is why this is gated on `isMobile` and not on
+   *  `surfaceOpen`. */
+  const drawerIsParked = isMobile && !navOpen;
+  const inertRegions = useMemo(() => [headerRef, mainRef], []);
+  const insideRegions = useMemo(() => [backdropRef], []);
+  useModalDrawer({
+    active: drawerIsModal,
+    panelRef: asideRef,
+    initialFocusRef: drawerCloseRef,
+    triggerRef: navToggleRef,
+    onClose: closeMobileDrawer,
+    insideRefs: insideRegions,
+    inertRefs: inertRegions,
+  });
+
+  /** Handed to the console with the slot. Closing is only meaningful while the sidebar IS the
+   *  drawer — on a docked column there is nothing to dismiss, and closing `navOpen` there would
+   *  be a no-op anyway, but saying so here keeps the console from having to know which it is. */
+  const dismissRail = useCallback(() => {
+    if (isMobile) setNavOpen(false);
+  }, [isMobile]);
+  const railSlot = useMemo(
+    () => ({ el: railSlotEl, dismiss: dismissRail }),
+    [railSlotEl, dismissRail],
+  );
 
   // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
   // many are live (within the working window). Derived from the shared store the list fills.
@@ -260,10 +333,11 @@ function Layout() {
           backdrop-root (overflow:hidden + stacking context), so a canvas outside it can't be
           blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
         <DataFlowCanvas />
-        <header className="hud-topbar">
+        <header className="hud-topbar" ref={headerRef}>
           <button
             type="button"
             className="navToggle"
+            ref={navToggleRef}
             aria-label={
               railInSidebar
                 ? surfaceOpen
@@ -333,7 +407,26 @@ function Layout() {
             </Link>
           </span>
         </header>
-        <aside className="sidebar">
+        {/* `role="dialog"` + `aria-modal` ONLY while this is the off-canvas drawer (#940). A
+            breakpoint is not a modal, and a docked column that claims to be one hides the rest of
+            the page from assistive tech. */}
+        <aside
+          className="sidebar"
+          ref={asideRef}
+          // See `drawerIsParked`. React renders `inert` as a boolean attribute, so `false` omits
+          // it — `undefined` and `false` behave the same here, and the explicit `false` says the
+          // desktop case was considered rather than forgotten.
+          inert={drawerIsParked}
+          role={drawerIsModal ? "dialog" : undefined}
+          aria-modal={drawerIsModal ? true : undefined}
+          aria-label={
+            drawerIsModal
+              ? railInSidebar
+                ? "Missions"
+                : "Sessions"
+              : undefined
+          }
+        >
           <span className="hud-cnr tl" />
           <span className="hud-cnr tr" />
           <span className="hud-cnr bl" />
@@ -342,11 +435,35 @@ function Layout() {
             sort-order toggle — same chrome, functional content. The heading stays for the
             <aside> landmark's accessible name, visually hidden. */}
           <header
-            className={`sidebar-head${railInSidebar ? " isMissionSection" : ""}`}
+            className={`sidebar-head${railInSidebar ? " isMissionSection" : ""}${
+              drawerIsModal ? " hasDrawerClose" : ""
+            }`}
           >
             <h2 className="hud-h sr-only">
               {railInSidebar ? "Missions" : "Sessions"}
             </h2>
+            {/* THE DRAWER CARRIES ITS OWN CLOSE (#940). The hamburger that opened it lives in the
+                header, which goes `inert` while the drawer is modal — so it is not merely
+                redundant to rely on it, it is unreachable. This is also where focus lands on
+                open, which is why it comes first in the panel.
+
+                Named just "Close": the dialog itself carries the name ("Missions" / "Sessions"),
+                so this announces as "Close, button" inside a labelled dialog. Repeating the list
+                name here collided with the scrim's own "Close session list" — two controls under
+                one accessible name, which broke an existing shell test and would have been just
+                as ambiguous for an operator driving by voice. */}
+            {drawerIsModal ? (
+              <button
+                type="button"
+                className="sidebar-drawer-close"
+                ref={drawerCloseRef}
+                onClick={closeMobileDrawer}
+                aria-label="Close"
+                data-testid="drawer-close"
+              >
+                ✕
+              </button>
+            ) : null}
             {/* THE WHOLE CONTROL STANDS DOWN, NOT JUST ITS LABEL (#935, #937 review 1,
                 finding 3). Hiding only the "Order" tag left Recent / Created rendered above the
                 mission rail — and they were not merely inert: clicking Created wrote
@@ -485,11 +602,12 @@ function Layout() {
         <button
           type="button"
           className="backdrop"
-          aria-label="Close session list"
+          ref={backdropRef}
+          aria-label={railInSidebar ? "Close mission list" : "Close session list"}
           tabIndex={-1}
           onClick={() => setNavOpen(false)}
         />
-        <main className="terminal-pane">
+        <main className="terminal-pane" ref={mainRef}>
           <span className="hud-cnr hero tl" />
           <span className="hud-cnr hero tr" />
           <span className="hud-cnr hero bl" />
@@ -499,7 +617,7 @@ function Layout() {
               fallback={<div className="tr-overview tr-ov-state">Loading…</div>}
             >
               {/* The console reads the slot from here (#935) — see `railSlot.tsx`. */}
-              <MissionRailSlotProvider value={railSlotEl}>
+              <MissionRailSlotProvider value={railSlot}>
                 <Routes>
                   <Route path="/" element={<NewSessionLanding />} />
                   {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the

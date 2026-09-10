@@ -210,7 +210,11 @@ export function RowMenu({
                 but on mobile a click-through, dynamic-viewport-height flex box that pins the
                 sheet to the *visible* bottom — above the browser's collapsing toolbar — so the
                 lower actions + Cancel can't hide behind it (the sheet itself scrolls when tall). */}
-            <div className={styles.sheetWrap}>
+            {/* PART OF WHATEVER PANEL OPENED IT (#940 review 1). This subtree is portalled to
+                <body>, so a modal drawer testing DOM containment sees a press here as a press
+                outside itself and dismisses — taking the host of any inline editor this menu
+                mounts with it. The attribute is the opt-in `useModalDrawer` looks for. */}
+            <div className={styles.sheetWrap} data-modal-inside="">
               <div
                 ref={menuRef}
                 className={styles.menu}

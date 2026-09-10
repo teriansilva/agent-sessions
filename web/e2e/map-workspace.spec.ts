@@ -291,7 +291,13 @@ test.describe("map workspace", () => {
     await expect(page.locator("[data-session-window]")).toHaveCount(1);
 
     // ...and off the map the row navigates exactly as it always did.
-    await page.goto("/pulse");
+    //
+    // NOT `/pulse` — that route's sidebar lists MISSIONS, not sessions (#937), so there is no
+    // session row on it to press and this asserted against an element that cannot exist. It was
+    // red on `main` before #940 touched anything; fixed here because it gates this PR, and the
+    // correction is to pick a route that still has a session list rather than to weaken the
+    // assertion, which is the behaviour the test is actually about.
+    await page.goto("/");
     await sidebarRow(page, 3).click();
     await expect(page).toHaveURL(/\/s\/claude\/s3$/);
   });

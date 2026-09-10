@@ -13,6 +13,7 @@ import { inlineMarkup } from "../../lib/inlineMarkup";
 import { sessionStatus, type SessionStatusBase } from "../../lib/sessionStatus";
 import type { ProjectRef } from "../../types/api";
 import styles from "./SessionRecapModal.module.css";
+import { useFocusContainment } from "../pulse/useModalDrawer";
 
 /** Session-brief modal (#481): the recap icon in the terminal header opens this. Re-entering a
  *  session, this is where you find out what it IS and what happened in it without scrolling the
@@ -94,6 +95,7 @@ export function SessionRecapModal({
   const [reviewing, setReviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   // Has a local "Review now" produced a result? Once it has, THIS modal owns the state and
   // incoming props must not overwrite it — the review is newer than the row the header holds.
   // State, not a ref: it is read during render to decide whether to reconcile, and refs are not
@@ -119,6 +121,13 @@ export function SessionRecapModal({
     setSeen(incomingKey);
     setState(incoming);
   }
+
+  /** TAB STAYS IN HERE (#940 review 2). This surface declares `aria-modal`, moves focus in and
+   *  restores it on close — the one part of that promise it never kept was containment, which was
+   *  survivable until the sidebar drawer beneath it became modal too and the two started fighting
+   *  over the same key. `useModalDrawer` stands the drawer down while this holds focus; this is
+   *  the other half of that coordination. */
+  useFocusContainment({ active: true, panelRef: dialogRef });
 
   // Move focus to the close button on open + restore it to the trigger on close.
   useEffect(() => {
@@ -213,6 +222,7 @@ export function SessionRecapModal({
   return createPortal(
     <div className={styles.backdrop} onMouseDown={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

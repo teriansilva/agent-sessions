@@ -192,8 +192,16 @@ test.describe("the thread fills the width it was given (#935)", () => {
   });
 });
 
-test.describe("mobile keeps the console's own drawer, on purpose (#935)", () => {
-  test("the rail is not portalled where the shell sidebar is off-canvas", async ({
+test.describe("the phone gets the same one rail, through the shell (#940)", () => {
+  /** THE INVERSION. This asserted the opposite until #940: no slot on a phone, the console's own
+   *  `☰` visible, and `MissionDrawer` supplying the dialog. That was the right call while the
+   *  shell's off-canvas panel had a backdrop and none of the rest of the modal contract — trading
+   *  a focus trap for a layout win is a bad bargain on the surface that most needs one.
+   *
+   *  The shell carries the contract itself now, so the trade is gone and with it the reason for a
+   *  second drawer. The operator's report was exactly this: two hamburgers on one screen, one
+   *  opening sessions and one opening missions. */
+  test("one rail, opened by the shell's control, and it is a real modal", async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
@@ -201,23 +209,263 @@ test.describe("mobile keeps the console's own drawer, on purpose (#935)", () => 
     await page.goto("/pulse");
     await page.getByTestId("mission-console").waitFor();
 
-    // No slot: the shell's off-canvas panel has a backdrop but no `aria-modal` and no focus trap,
-    // and `MissionDrawer` has both. The layout win is not worth that trade on a phone.
-    await expect(page.locator("#mission-rail-slot")).toHaveCount(0);
-    const trigger = page.getByTestId("rail-drawer-open");
-    await expect(trigger).toBeVisible();
+    // The slot IS offered here now, and the console's own trigger is gone — not hidden, gone.
+    await expect(page.locator("#mission-rail-slot")).toHaveCount(1);
+    await expect(page.getByTestId("rail-drawer-open")).toHaveCount(0);
 
+    const trigger = page.getByRole("button", { name: /Open mission list/i });
+    await expect(trigger).toBeVisible();
     await trigger.click();
+
+    // `aria-modal` is a PROMISE, so this checks the promise and not just the attribute: the panel
+    // itself stays interactive while the background regions go inert.
     const dialog = page.getByRole("dialog");
     await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("header.hud-topbar[inert]")).toHaveCount(1);
+    await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
+    await expect(page.locator("aside.sidebar[inert]")).toHaveCount(0);
 
-    // Selecting closes it, and focus returns to the trigger — the contract that would have been
-    // lost by routing the rail through the shell here.
+    // Focus moved IN — and to the drawer's own close control, because the hamburger that opened
+    // it is inside the now-inert header and cannot be reached.
+    await expect(page.getByTestId("drawer-close")).toBeFocused();
+
+    // Selecting closes it and returns focus to the trigger. Selection changes local state and
+    // never the URL, so this only works because the shell hands the console a close callback.
     await dialog.getByRole("button", { name: /a mission/i }).first().click();
-    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("header.hud-topbar[inert]")).toHaveCount(0);
     await expect(trigger).toBeFocused();
   });
+
+  test("Escape closes it and restores focus", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
+    await page.goto("/pulse");
+    await page.getByTestId("mission-console").waitFor();
+    const trigger = page.getByRole("button", { name: /Open mission list/i });
+    await trigger.click();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  test("the drawer's own close button closes it", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
+    await page.goto("/pulse");
+    await page.getByTestId("mission-console").waitFor();
+    const trigger = page.getByRole("button", { name: /Open mission list/i });
+    await trigger.click();
+    await page.getByTestId("drawer-close").click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  /** THE CONTROL. A docked column is not a dialog, and saying it is would tell a screen reader
+   *  the rest of the page does not exist. Desktop must gain none of this. */
+  test("the desktop column is NOT a dialog and nothing goes inert", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "desktop shell");
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
+    await page.goto("/pulse");
+    await page.getByTestId("pane").waitFor();
+
+    await expect(page.locator("aside.sidebar")).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("aside.sidebar[aria-modal]")).toHaveCount(0);
+    await expect(page.locator("[inert]")).toHaveCount(0);
+    await expect(page.getByTestId("drawer-close")).toHaveCount(0);
+  });
+
+  /** The drawer is app-wide, so the contract has to hold off this route too (#940). */
+  test("a non-mission route's drawer is modal in the same way", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, []);
+    await page.goto("/");
+    const trigger = page.getByRole("button", { name: /Open session list/i });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+    await expect(page.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  /** Resizing OUT of drawer mode while it is open must release the isolation — otherwise the
+   *  operator lands on a desktop column with an inert page behind it. */
+  test("crossing 800→801 with the drawer open releases inert", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto("/pulse");
+    await page.getByTestId("mission-console").waitFor();
+    await page.getByRole("button", { name: /Open mission list/i }).click();
+    await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
+
+    await page.setViewportSize({ width: 801, height: 900 });
+    await expect(page.locator("[inert]")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  /** A PARKED DRAWER IS NOT A REACHABLE ONE (#940 review 2, finding 2).
+   *
+   *  The console's old `MissionDrawer` was UNMOUNTED when closed. The shell's `<aside>` is always
+   *  in the DOM and merely translated out of the viewport — which hides it from the eye and from
+   *  nothing else. Measured at 412×900 before the fix: tabbing forward from the header toggle put
+   *  focus on a mission row whose right edge sat at −2px, with no dialog open. The operator gets
+   *  no visible focus ring and can drive mission selection without ever revealing the control.
+   *
+   *  The claim is about REACHABILITY, not about geometry: a control that is off-screen AND
+   *  unreachable is a parked drawer working correctly, which is why this asserts on where focus
+   *  lands rather than on any box. */
+  test("a CLOSED drawer keeps its controls out of the tab order", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
+    await page.goto("/pulse");
+    await page.getByTestId("mission-console").waitFor();
+    await page.waitForLoadState("networkidle");
+
+    // Closed — no dialog, and the rail is parked off-canvas.
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    const rail = page.getByRole("navigation", { name: /missions/i });
+    const parked = await rail.boundingBox();
+    expect(parked).not.toBeNull();
+    expect(parked!.x + parked!.width).toBeLessThanOrEqual(1);
+
+    // Walk forward from the shell's own toggle, well past the handful of controls the header and
+    // the console offer, and never land inside the parked panel.
+    await page.getByRole("button", { name: /Open mission list/i }).focus();
+    for (let i = 0; i < 14; i++) {
+      await page.keyboard.press("Tab");
+      const landed = await page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el) return { inside: false, label: "none" };
+        return {
+          inside: !!el.closest("aside.sidebar"),
+          label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 40),
+        };
+      });
+      expect(
+        landed.inside,
+        `press ${i + 1} focused "${landed.label}" inside the parked drawer`,
+      ).toBe(false);
+    }
+
+    // …AND THE CONTROL: opening it puts them back. Without this the fix could be "make the
+    // sidebar permanently unreachable on a phone", which passes the loop above and breaks the app.
+    await page.getByRole("button", { name: /Open mission list/i }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+    await expect(page.getByTestId("drawer-close")).toBeFocused();
+    await page.keyboard.press("Tab");
+    const inside = await page.evaluate(
+      () => !!document.activeElement?.closest("aside.sidebar"),
+    );
+    expect(inside, "an OPEN drawer must be reachable").toBe(true);
+  });
+
+  /** TAB IS CONTAINED, FORWARDS AND BACKWARDS (#940 review).
+   *
+   *  `inert` on the background is an attribute; containment is the behaviour it is supposed to
+   *  buy, and only pressing the key establishes it. The test this replaces pressed Tab eight
+   *  times against the console's own `MissionDrawer`; the shell owns the panel now, so the
+   *  assertion moves here — and gains the reverse direction, because a trap that holds going
+   *  forward and leaks on Shift+Tab is a trap that leaks. */
+  test("Tab is contained inside the drawer, in both directions", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "phone shell");
+    await stub(page, [
+      missionRow({ id: "m1", title: "a mission" }),
+      missionRow({ id: "m2", title: "another mission" }),
+    ]);
+    await page.goto("/pulse");
+    await page.getByTestId("mission-console").waitFor();
+    // The console's fetches are what cause the churn: the shell renders at once, then the rail
+    // and stops re-render as the mission list and detail land — so an interaction issued in that
+    // window resolves an element and then loses it ("detached from the DOM, retrying"). Waiting
+    // for the network to go idle waits for exactly that window, and for nothing else.
+    await page.waitForLoadState("networkidle");
+    await page.getByRole("button", { name: /Open mission list/i }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
+
+    const inside = () =>
+      page.evaluate(() => {
+        const panel = document.querySelector('aside.sidebar[role="dialog"]');
+        return !!panel && panel.contains(document.activeElement);
+      });
+
+    // Forwards, past the end of the panel's own controls so the WRAP is what is being tested and
+    // not merely "there were still tab stops left".
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Tab");
+      expect(await inside(), `focus escaped forwards on press ${i + 1}`).toBe(
+        true,
+      );
+    }
+    // …and backwards, past the start.
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Shift+Tab");
+      expect(await inside(), `focus escaped backwards on press ${i + 1}`).toBe(
+        true,
+      );
+    }
+  });
+
+  /** THE CONTRACT IS APP-WIDE, so it is asserted off `/` as well (#940 review).
+   *
+   *  `/` was the only non-mission route covered, and it is the one route whose pane is the new-
+   *  session landing — the lightest content in the app. A session pane and the settings form are
+   *  where the background actually has focusable content to leak into, which is what makes them
+   *  the interesting cases rather than extra ones. */
+  for (const [name, path] of [
+    ["a session pane", "/s/claude/11111111-2222-3333-4444-555555555555"],
+    ["settings", "/settings"],
+  ] as const) {
+    test(`the drawer is modal on ${name} too`, async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile", "phone shell");
+      await stub(page, []);
+      await page.goto(path);
+
+      const trigger = page.getByRole("button", { name: /Open session list/i });
+      await expect(trigger).toBeVisible();
+      await trigger.click();
+
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toHaveAttribute("aria-modal", "true");
+      await expect(page.locator("header.hud-topbar[inert]")).toHaveCount(1);
+      await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
+      await expect(page.locator("aside.sidebar[inert]")).toHaveCount(0);
+      await expect(page.getByTestId("drawer-close")).toBeFocused();
+
+      // The route's own content is behind the isolation, so Tab cannot reach it.
+      for (let i = 0; i < 6; i++) {
+        await page.keyboard.press("Tab");
+        const inside = await page.evaluate(() => {
+          const panel = document.querySelector('aside.sidebar[role="dialog"]');
+          return !!panel && panel.contains(document.activeElement);
+        });
+        expect(inside, `focus escaped into ${path} on press ${i + 1}`).toBe(
+          true,
+        );
+      }
+
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+    });
+  }
 });
+
 
 /** The teardown contract (#935).
  *

@@ -16,6 +16,7 @@ import {
   missionList,
   missionRow,
   mockMissions,
+  openMissionRail,
 } from "./mission-console";
 
 const T = 1_700_000_000;
@@ -121,16 +122,19 @@ async function railDupes(page: Page) {
 /** Close the rail drawer if one is open. On a phone it is a modal over the composer, so leaving
  *  it open makes every subsequent click land on the scrim. */
 async function closeRail(page: Page) {
-  const drawer = page.getByTestId("rail-drawer");
-  if (await drawer.isVisible().catch(() => false))
+  // The SHELL's drawer, which is the only dialog on this page (#940). `rail-drawer` was
+  // `MissionDrawer`'s panel and that component is deleted, so this used to match nothing and
+  // leave the drawer open over every subsequent click.
+  if (await page.getByRole("dialog").count()) {
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  }
 }
 
 /** Flip the Active/Archived scope, opening the drawer first where the rail is one. */
 async function toggleScope(page: Page) {
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').click();
   await closeRail(page);
 }
@@ -139,11 +143,12 @@ async function toggleScope(page: Page) {
  *  it again, so a count never leaves a modal sitting over the next interaction. */
 async function railCount(page: Page): Promise<number> {
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  const isDrawer = await opener.isVisible().catch(() => false);
-  if (isDrawer) await opener.click();
+  // Opened through the SHELL (#940). The console's own `☰` is gone, so `isVisible()` on it was
+  // always false and the drawer never opened — every mobile count below read an off-canvas rail,
+  // which Playwright calls "visible" because it has a box.
+  await openMissionRail(page);
   const n = await railRows(page).count();
-  if (isDrawer) await closeRail(page);
+  await closeRail(page);
   return n;
 }
 
@@ -171,8 +176,7 @@ async function expectMissionSelected(page: Page, name: string | RegExp) {
 
 async function selectMission(page: Page, name: string | RegExp) {
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await railRows(page).filter({ hasText: name }).click();
   await closeRail(page);
 }
@@ -192,20 +196,22 @@ async function goToObjectives(page: Page) {
 /** …and the UNTRACKED view, same reason. */
 async function selectUntracked(page: Page) {
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-untracked-view"]:visible').click();
 }
 
 /** How many rows the rail shows, on whatever layout the project supplies.
  *
- *  The rail is a column at >=1100px and a DRAWER below it, and the opener re-renders as the rail
- *  updates — so a bare `if (visible) click()` can resolve the locator and then lose it. Opening is
- *  therefore best-effort and the COUNT is what the caller polls. */
+ *  Through the SHELL's control since #940; the console's own `☰` is gone.
+ *
+ *  THE OPENING IS NO LONGER BEST-EFFORT (#940 review 4). This swallowed a failed open with
+ *  `.catch(() => undefined)`, on the reasoning that the opener re-renders as the rail updates and
+ *  the COUNT is what the caller polls — but a suppressed open means the count is taken from a
+ *  PARKED panel, and `expect.poll` then retries a number that can never move while reporting the
+ *  timeout as if the rail were wrong. The helper itself stopped swallowing its readiness waits;
+ *  leaving the suppression here would keep the same silence one level up. */
 async function railRowCount(page: Page) {
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false))
-    await opener.click({ timeout: 2_000 }).catch(() => undefined);
+  await openMissionRail(page);
   const n = await railRows(page).count();
   // CLOSED AGAIN, always. Leaving it open makes the NEXT helper's opener sit behind the scrim,
   // where it resolves but never becomes stable — a 30s hang that looks like a product bug.
@@ -1101,8 +1107,7 @@ test("a LOAD MORE that lands first does not make the refresh that followed it lo
   await expectMissionSelected(page, "Vanishing");
 
   // 1. Ask for the next page. It is held.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-load-more"]:visible').click();
   await closeRail(page);
 
@@ -1120,8 +1125,7 @@ test("a LOAD MORE that lands first does not make the refresh that followed it lo
   // 3. NOW the append lands. It must not resurrect the row the refresh dropped.
   releaseAppend?.();
   await page.waitForTimeout(400);
-  const opener2 = page.getByTestId("rail-drawer-open");
-  if (await opener2.isVisible().catch(() => false)) await opener2.click();
+  await openMissionRail(page);
   await expect(railRows(page).filter({ hasText: "Vanishing" })).toHaveCount(0);
 });
 
@@ -1184,8 +1188,7 @@ test("a refresh that lands first is not undone by the LOAD MORE it overtook", as
 
   // The refresh is in flight. Ask for the next page — its answer belongs to the list the
   // refresh is about to replace.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-load-more"]:visible').click();
   await closeRail(page);
   await page.waitForTimeout(300);
@@ -1194,8 +1197,7 @@ test("a refresh that lands first is not undone by the LOAD MORE it overtook", as
 
   // The authoritative answer wins whenever it lands: the archived row is gone AND the page that
   // was appended to the list it replaced does not survive it.
-  const opener2 = page.getByTestId("rail-drawer-open");
-  if (await opener2.isVisible().catch(() => false)) await opener2.click();
+  await openMissionRail(page);
   await expect(railRows(page).filter({ hasText: "Vanishing" })).toHaveCount(0);
   await expect(railRows(page).filter({ hasText: "Stale page" })).toHaveCount(0);
 });
@@ -1434,8 +1436,7 @@ test("a late CLOSE for a mission you left still refreshes UNTRACKED", async ({
     .poll(() => overviewReads, { timeout: 10_000 })
     .toBeGreaterThan(before);
   // …and the released session is back under UNTRACKED.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect(
     page.locator('[data-testid="rail-untracked-view"]:visible'),
   ).toBeVisible();
@@ -1486,8 +1487,7 @@ test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').first().click();
   await railRows(page).filter({ hasText: "Shelved" }).click();
   await closeRail(page);
@@ -1507,8 +1507,7 @@ test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own
   // …and the other one asks for the relaunch, explicitly. Reached from the Archived rail again:
   // a successful unarchive now lands the operator in the scope the mission moved INTO, which is
   // its own test below — this one is about the two choices, so it goes back and presses the other.
-  const opener2 = page.getByTestId("rail-drawer-open");
-  if (await opener2.isVisible().catch(() => false)) await opener2.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').first().click();
   await railRows(page).filter({ hasText: "Shelved" }).click();
   await closeRail(page);
@@ -1705,8 +1704,7 @@ test("a stale PAGINATION cleanup cannot unlock a newer request", async ({
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
 
   // A1 — held.
   await page.locator('[data-testid="rail-load-more"]:visible').click();
@@ -1763,8 +1761,7 @@ test("a CURRENT list failure says the store could not be read", async ({
   await ready(page);
   // On a phone the rail is a DRAWER, so the notice is only on screen once it is opened. Asserting
   // on `:visible` without opening it fails for the layout rather than for the fence.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect(
     page.locator('[data-testid="rail-store-error"]:visible').first(),
   ).toBeVisible();
@@ -1825,8 +1822,7 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').first().click();
   await expect(
     page.locator('[data-testid="rail-scope"]:visible').first(),
@@ -1840,8 +1836,7 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
   // THE SCOPE ON SCREEN IS ACTIVE. The toggle offers the way back to Archived, which it only
   // does from the active rail.
   const scope = page.locator('[data-testid="rail-scope"]:visible').first();
-  const drawer = page.getByTestId("rail-drawer-open");
-  if (await drawer.isVisible().catch(() => false)) await drawer.click();
+  await openMissionRail(page);
   await expect(scope).toHaveText("Show archived");
   // …and the ACTIVE rail is what was read for it, carrying the restored row.
   await expect(railRows(page).filter({ hasText: "Shelved" })).toHaveCount(1);
@@ -2413,8 +2408,7 @@ test("a LATE archive still takes its row out of the Active rail after you have m
 
   // Alpha is GONE from the Active rail, on the server's word, and Bravo is untouched.
   const rows = railRows(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("Bravo");
 });
@@ -2476,8 +2470,7 @@ test("LOAD MORE dedupes, and still advances past what it consumed", async ({
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
 
   // PAGE 1 overlaps page 0 by one row, so 100 + 100 rows arrive and 199 are shown.
@@ -2565,8 +2558,7 @@ test("a REMOVAL between pages leaves no duplicate, and the rail says so anyway",
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
 
   await page.locator('[data-testid="rail-load-more"]:visible').first().click();
@@ -2661,8 +2653,7 @@ test("a rail refresh reads ONE snapshot, so a deletion between pages cannot hide
 
   await page.goto("/pulse");
   await ready(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
   await page.locator('[data-testid="rail-load-more"]:visible').first().click();
   await expect.poll(() => railRows(page).count()).toBe(200);
@@ -2681,7 +2672,10 @@ test("a rail refresh reads ONE snapshot, so a deletion between pages cannot hide
   expect(asked.filter((a) => a.offset > 0)).toEqual([]);
   expect(asked.length).toBeGreaterThan(0);
 
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  // Re-opened to LOOK, through the shell (#940). This site reused the `opener` binding from the
+  // top of the test rather than declaring its own — invisible to eslint and to tsc, because no
+  // tsconfig here includes `e2e/`. The browser found it: `ReferenceError: opener is not defined`.
+  await openMissionRail(page);
   // …and the row that a stitched read would have lost is on screen.
   await expect(railRows(page).filter({ hasText: "M100" })).toHaveCount(1);
   await expect(railRows(page).filter({ hasText: "M50" })).toHaveCount(0);
@@ -2750,8 +2744,7 @@ test("a LATE archive does not delete the row from the ARCHIVED rail it just ente
   // THE OPERATOR SWITCHES TO ARCHIVED while the archive is still in flight, and the fresh
   // archived list correctly carries Alpha.
   await toggleScope(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect(railRows(page)).toHaveCount(1);
   await expect(railRows(page).first()).toContainText("Alpha");
 
@@ -2827,8 +2820,7 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
   // The FIRST row is M0, which is the one the mock archives. Selected by position rather than by
   // text: a rail row carries its state and its time too, so an anchored title match finds nothing.
   await ready(page);
-  const first = page.getByTestId("rail-drawer-open");
-  if (await first.isVisible().catch(() => false)) await first.click();
+  await openMissionRail(page);
   await railRows(page).first().click();
   await closeRail(page);
   // The first rail row IS M0, and clicking it selects it. Asserted on the row rather than on the
@@ -2843,8 +2835,7 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
   // excludes the archived mission, so 100 of 101 are shown.
   await toggleScope(page);
   await toggleScope(page);
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
 
   listsFail = true; // the reload that follows the late response fails
@@ -2988,8 +2979,7 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   // open on one project and not the other — and the objectives live behind a stop on the phone,
   // which the drawer covers. Open, read, close, act.
   const railNeedsYou = async () => {
-    const opener = page.getByTestId("rail-drawer-open");
-    if (await opener.isVisible().catch(() => false)) await opener.click();
+    await openMissionRail(page);
     const n = await railRows(page)
       .first()
       .getByRole("img", { name: "Needs you" })
@@ -3085,8 +3075,7 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
   // carries it is inside a `min-width: 1100px` block, so its text is not the same on both
   // projects and an assertion on it would pass on one viewport and be meaningless on the other.
   const railState = async () => {
-    const opener = page.getByTestId("rail-drawer-open");
-    if (await opener.isVisible().catch(() => false)) await opener.click();
+    await openMissionRail(page);
     const label = await railRows(page)
       .first()
       .getByRole("img")
@@ -3359,8 +3348,7 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
   await page.getByTestId("new-mission-start").click();
 
   // …and the operator opens the next page while it is in flight.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   const beforeClick = asked.length;
   await page.locator('[data-testid="rail-load-more"]:visible').first().click();
   // The ask is OUT and its answer is HELD, so nothing about that page has rendered.
@@ -3485,8 +3473,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
     .toBe(2);
 
   // …and the operator opens the next page while it is in flight.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-load-more"]:visible').first().click();
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(200);
 
@@ -3495,8 +3482,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
   // the pages the operator opened are still exactly the rest of it and stay where they are.
   releaseRefresh?.();
   const railFirst = async () => {
-    const o = page.getByTestId("rail-drawer-open");
-    if (await o.isVisible().catch(() => false)) await o.click();
+    await openMissionRail(page);
     const t = await railRows(page).first().innerText();
     await closeRail(page);
     return t;
@@ -3592,8 +3578,7 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
     .toBe(2);
 
   // …and the operator opens the next page while it is still in flight.
-  const opener = page.getByTestId("rail-drawer-open");
-  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await openMissionRail(page);
   await page.locator('[data-testid="rail-load-more"]:visible').first().click();
   await expect
     .poll(() => asked.some((a) => a.offset === 100), { timeout: 10_000 })
@@ -3680,8 +3665,7 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   releaseStale?.();
   await page.waitForTimeout(750);
 
-  const rail = page.getByTestId("rail-drawer-open");
-  if (await rail.isVisible().catch(() => false)) await rail.click();
+  await openMissionRail(page);
   expect((await railRows(page).allInnerTexts()).join(" ")).not.toContain(
     "Alpha",
   );
