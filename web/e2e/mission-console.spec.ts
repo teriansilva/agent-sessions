@@ -105,10 +105,15 @@ const HELD = {
 };
 
 // ==============================================================================================
-// The three mobile stops, asserted BY NAME so the contract cannot drift from the implementation.
+// The stops, asserted BY NAME so the contract cannot drift from the implementation.
+//
+// FOUR of them since #942, and they are no longer "the mobile stops": CONTEXT joined when the
+// 340px detail column was deleted, and the same strip is now the wide layout too. The column used
+// to stack objectives, follow-through and context under three headings, which is why the narrow
+// case split at one seam into three stops rather than four.
 // ==============================================================================================
 
-test("the mobile stops are exactly THREAD · OBJECTIVES · TIMELINE, in that order", async ({
+test("the stops are exactly THREAD · OBJECTIVES · CONTEXT · TIMELINE, in that order", async ({
   page,
 }) => {
   await stub(page);
@@ -120,18 +125,19 @@ test("the mobile stops are exactly THREAD · OBJECTIVES · TIMELINE, in that ord
   await page.goto("/pulse");
 
   const tabs = stops(page);
-  await expect(tabs).toHaveCount(3);
+  await expect(tabs).toHaveCount(4);
   await expect(tabs.nth(0)).toHaveText("THREAD");
   await expect(tabs.nth(1)).toHaveText("OBJECTIVES");
-  await expect(tabs.nth(2)).toHaveText("TIMELINE");
+  await expect(tabs.nth(2)).toHaveText("CONTEXT");
+  await expect(tabs.nth(3)).toHaveText("TIMELINE");
   // THREAD is the default — the decision surface, not the log.
   await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
 
   await tabs.nth(1).click();
   await expect(page.getByText(/objectives/i).first()).toBeVisible();
-  await tabs.nth(2).click();
-  // Scoped to the pane: the detail column renders the same timeline and is merely
-  // `display: none` at this width, so it is still in the DOM and the query is ambiguous.
+  await tabs.nth(3).click();
+  // Still scoped to the pane. The detail column that made this query ambiguous is gone (#942),
+  // but the scoping is what fails loudly if a second copy is ever mounted again.
   await expect(
     page.getByTestId("pane").getByTestId("timeline-empty"),
   ).toBeVisible();
@@ -146,25 +152,27 @@ const rail = (p: Page) => p.getByRole("navigation", { name: /missions/i });
  *  an unscoped `getByRole("tab")` counts five. */
 const stops = (p: Page) =>
   p.getByRole("tablist", { name: /mission view/i }).getByRole("tab");
-const detail = (p: Page) =>
-  p.getByRole("complementary", { name: /mission detail/i });
 
 /* #935 moved the rail into the app shell's sidebar wherever that sidebar is a persistent
  * column — which the shell decides on its OWN breakpoint (<=800px is the off-canvas drawer),
  * not the console's old 1100px one. So 1099 is now a column case: the rail is in the sidebar
- * and the console's drawer trigger stands down. 412 keeps the console's own `MissionDrawer`,
- * deliberately: the shell's off-canvas panel has a backdrop but no `aria-modal` and no focus
- * trap, and trading those away for a layout fix would be a bad bargain. */
-for (const [width, railIsColumn, detailIsColumn] of [
-  [412, false, false],
-  [1099, true, false],
-  [1100, true, false],
-  [1399, true, false],
-  [1400, true, true],
+ * and the console's drawer trigger stands down.
+ *
+ * THE SECOND AXIS IS GONE (#942). This used to enumerate `detailIsColumn` too, and 1400 was the
+ * one width where it flipped: below it the stop strip carried objectives and the timeline, at and
+ * above it a 340px column did, and the strip hid. That was two different layouts on one page —
+ * the thing the operator called a mess. There is no column now, so the table has one axis and the
+ * detail assertion below is the same at every width. */
+for (const [width, railIsColumn] of [
+  [412, false],
+  [1099, true],
+  [1100, true],
+  [1399, true],
+  [1400, true],
 ] as const) {
-  test(`layout at ${width}px: rail ${railIsColumn ? "column" : "drawer"}, detail ${
-    detailIsColumn ? "column" : "tabs"
-  }`, async ({ page }) => {
+  test(`layout at ${width}px: rail ${railIsColumn ? "column" : "drawer"}, detail tabs`, async ({
+    page,
+  }) => {
     await stub(page);
     await mockMissions(page, {
       missions: missionList([HELD_ROW]),
@@ -203,15 +211,11 @@ for (const [width, railIsColumn, detailIsColumn] of [
       expect(opened!.x).toBeGreaterThanOrEqual(0);
     }
 
-    // The detail column and the tab strip are mutually exclusive: showing both would draw the
-    // objectives twice, and showing neither would lose them.
-    if (detailIsColumn) {
-      await expect(detail(page)).toBeVisible();
-      await expect(stops(page).first()).toBeHidden();
-    } else {
-      await expect(detail(page)).toBeHidden();
-      await expect(stops(page)).toHaveCount(3);
-    }
+    // ONE LAYOUT, AT EVERY WIDTH (#942). The four tabs are the detail surface, and the column
+    // that used to replace them above 1400 is gone rather than hidden — so this is a `toHaveCount`
+    // claim about the DOM, not a visibility one that a `display: none` copy would satisfy.
+    await expect(page.getByTestId("detail-column")).toHaveCount(0);
+    await expect(stops(page)).toHaveCount(4);
 
     // No sideways scroll at any of the five widths.
     const wide = await page.evaluate(
@@ -723,6 +727,10 @@ test("a stale probe shows its LAST OBSERVED state, and marks nothing met on data
   });
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/pulse");
+  // THROUGH THE TAB, at 1400 as at 412 (#942). This used to need no click: a 340px detail column
+  // rendered the objectives unprompted at this width, which is exactly the second layout the
+  // rework deleted. One route to the pane now, and it is the same one on a phone.
+  await page.getByTestId("stop-objectives").click();
   await expect(page.getByTestId("objective-stale")).toContainText(/stale/i);
   await expect(page.getByText(/forge unreachable since 14:22/)).toBeVisible();
   // The objective is NOT met — nothing is marked on data the server could not fetch.
@@ -1079,8 +1087,11 @@ test("the timeline pages by CURSOR, and older events append rather than replace"
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/pulse");
 
-  // No tab click: 1440 is the widest layout mode, where all three panes are on screen at once.
-  // The tab strip belongs to the narrower modes and is asserted by the layout tests above.
+  // THROUGH THE TAB (#942). This used to say "no tab click: 1440 is the widest layout mode, where
+  // all three panes are on screen at once" — that mode is gone, along with the 340px track that
+  // made it. The strip is the detail surface at every width, so the timeline is one press away
+  // here exactly as it is at 412.
+  await page.getByTestId("stop-timeline").click();
   await expect(page.getByTestId("timeline-row")).toHaveCount(2);
   await page.getByTestId("timeline-more").click();
 

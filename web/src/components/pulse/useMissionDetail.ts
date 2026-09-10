@@ -64,6 +64,10 @@ export interface MissionDetailState {
   mission: Mission | null;
   events: MissionEvent[];
   objectives: MissionObjective[];
+  /** The objectives READ failed. `[]` alone cannot tell "this mission has none" from "we could
+   *  not look", and since #942 folded follow-through onto these rows the difference is load-
+   *  bearing: no rows means no assessment on screen. */
+  objectivesFailed: boolean;
   context: MissionContext | null;
   cursor: number | null;
   loadingMore: boolean;
@@ -100,6 +104,17 @@ export function useMissionDetail(missionId: string): MissionDetailState {
   const [mission, setMission] = useState<Mission | null>(null);
   const [events, setEvents] = useState<MissionEvent[]>([]);
   const [objectives, setObjectives] = useState<MissionObjective[]>([]);
+  /** Did the objectives READ fail? (#942 review 1.)
+   *
+   *  `[]` used to mean two different things — "this mission has none" and "we could not look" —
+   *  because the load swallowed its rejection. That was survivable while the supervisor's board
+   *  rendered from its own list; once follow-through folded onto the objective rows, an empty list
+   *  meant no rows, and no rows meant the assessment and its STAND DOWN controls vanished while
+   *  "1 unmet gate" went on being displayed above them. The console said, in one breath, that a
+   *  gate was unmet and that there was nothing to follow through on.
+   *
+   *  Same three-way answer the rest of this codebase insists on: none, not-yet, and unreadable. */
+  const [objectivesFailed, setObjectivesFailed] = useState(false);
   const [context, setContext] = useState<MissionContext | null>(null);
   // A COUNTER, not a callback: the loader lives inside the effect (it closes over `live`, which
   // is what makes a late response harmless), so the way to re-run it is to re-run the effect.
@@ -195,12 +210,35 @@ export function useMissionDetail(missionId: string): MissionDetailState {
       if (ticket < objApplied.current) return;
       objApplied.current = ticket;
       setObjectives(rows);
+      // A SUCCESS CLEARS THE READ FAILURE, and it is cleared HERE rather than at the call site
+      // (#942 review 4). The flag first lived beside the one load path that set it, so every
+      // OTHER accepted install — the pending-producer poll, the settlement recovery — applied
+      // fresh rows and left "could not be read" on screen over them. Reproduced: an initial 503
+      // followed by a settled `skipped` mission and a successful empty list still said the list
+      // could not be read, instead of "No objectives were proposed", and nothing later repaired
+      // it because the producer had stopped being pending.
+      //
+      // Data and read-status are one fact about one read, so they are applied together under one
+      // ticket. That is also what makes a superseded failure harmless: `putObjectivesFailed`
+      // below drops any ticket this applier has already passed.
+      setObjectivesFailed(false);
       // Only a read issued after the failure can have seen the settled list.
       if (objOwedFrom.current && ticket >= objOwedFrom.current)
         objOwedFrom.current = 0;
     },
     [],
   );
+
+  /** Record that an objectives read FAILED — under the same ordering as a success.
+   *
+   *  Without the ticket a slow rejection could land after a newer read had already succeeded and
+   *  paint "could not be read" over rows that are on screen. The applier is the single place that
+   *  decides which read is current, so both outcomes have to go through it. */
+  const putObjectivesFailed = useCallback((ticket: number) => {
+    if (ticket < objApplied.current) return;
+    objApplied.current = ticket;
+    setObjectivesFailed(true);
+  }, []);
 
   /** Install a mission row — and, when this row is the one that ENDS the objective producer's
    *  wait, the list that settlement refers to, in the SAME render.
@@ -279,7 +317,7 @@ export function useMissionDetail(missionId: string): MissionDetailState {
         // response is applied, and this one may well not qualify — the mount's read can have
         // snapshotted before the producer settled and resolve long afterwards.
         .then((r) => live && putObjectives(ticket, r.objectives))
-        .catch(() => undefined);
+        .catch(() => live && putObjectivesFailed(ticket));
       api
         .missionContext(missionId)
         .then((c) => live && setContext(c))
@@ -321,6 +359,7 @@ export function useMissionDetail(missionId: string): MissionDetailState {
     installMission,
     objTicket,
     putObjectives,
+    putObjectivesFailed,
     rowTicket,
   ]);
 
@@ -461,6 +500,7 @@ export function useMissionDetail(missionId: string): MissionDetailState {
     mission,
     events,
     objectives,
+    objectivesFailed,
     context,
     cursor,
     loadingMore,

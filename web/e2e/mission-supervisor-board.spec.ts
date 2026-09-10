@@ -1,12 +1,14 @@
-/** The supervisor's follow-through board, in a real browser (#885).
+/** The supervisor's follow-through, in a real browser (#885) — on the objective rows since #942.
  *
  * jsdom already pins the classification and the wording (`MissionSupervisorBoard.test.tsx`). What
  * it cannot pin, and what is asserted here:
  *
- *  - the board actually REACHES the console. It is wired through `MissionConsole` →
- *    `ObjectivesPane` from `d.mission?.supervisor`, and a detail payload that carries `supervisor`
- *    while the pane reads it from somewhere else renders an empty board with no error anywhere —
- *    green units, blank UI. This spec drives the real fetch path, so that gap is visible.
+ *  - the reading actually REACHES the console. It is wired through `MissionConsole` →
+ *    `ObjectivesPane` → `MissionObjectives` from `d.mission?.supervisor`, and a detail payload
+ *    that carries `supervisor` while the pane reads it from somewhere else renders a bare list
+ *    with no error anywhere — green units, blank UI. This spec drives the real fetch path, so
+ *    that gap is visible. It also pins the JOIN the fold introduced: the assessment is matched to
+ *    the objective by `key`, so a row whose reading went missing is a row with no badge.
  *  - the four boards are DISTINGUISHABLE on screen, not merely present in the DOM: each badge is
  *    laid out, visible, and carries its own colour. A colour assertion is only meaningful in a
  *    real engine, since jsdom resolves no custom properties.
@@ -130,6 +132,28 @@ const SUPERVISOR = {
 
 const ROW = missionRow({ session_keys: [] });
 
+/** THE OBJECTIVE ROWS THE ASSESSMENT WAS MADE FROM.
+ *
+ *  `mission_supervisor.assess` iterates `_objective_rows(mission_id)`, so a supervisor entry
+ *  always has a matching objective — and since #942 the objective row is what renders the badge.
+ *  A fixture with four assessments over an empty objective list is a state the producer cannot
+ *  emit, and folding against it would show nothing while every unit test stayed green. */
+const OBJECTIVES = {
+  objectives: SUPERVISOR.objectives.map((o, i) => ({
+    mission_id: "msn_1",
+    key: o.key,
+    ord: i,
+    title: o.title,
+    probe: "manual",
+    probe_args: null,
+    gate: o.gate,
+    state: o.state,
+    met_at: null,
+    observed: null,
+    source: "test",
+  })),
+};
+
 async function openConsole(page: Page, supervisor: unknown | undefined) {
   await stub(page);
   const mission: Record<string, unknown> = {
@@ -138,7 +162,13 @@ async function openConsole(page: Page, supervisor: unknown | undefined) {
     events_next_seq: null,
   };
   if (supervisor !== undefined) mission.supervisor = supervisor;
-  await mockMissions(page, { missions: missionList([ROW]), mission });
+  await mockMissions(page, {
+    missions: missionList([ROW]),
+    mission,
+    // The rows the assessment describes — see OBJECTIVES. Supplied even in the ABSENT-assessment
+    // case, so that test isolates "no supervisor" rather than also having no list.
+    objectives: OBJECTIVES,
+  });
   await page.goto("/pulse");
 }
 
@@ -163,17 +193,18 @@ async function showObjectives(page: Page) {
     .click();
 }
 
-/** The console mounts the detail pane TWICE — the drawer and the inline column both exist in the
- *  DOM at every width, and only one is displayed. Every assertion here is therefore scoped to the
- *  DISPLAYED copy; an unscoped `getByTestId` is a strict-mode violation, and `.first()` would
- *  silently pick the hidden one at some widths. */
+/** Scoped to the DISPLAYED copy. The console used to mount the detail pane twice — a drawer and
+ *  an inline 340px column, both in the DOM at every width with one hidden — which made an
+ *  unscoped `getByTestId` a strict-mode violation and `.first()` a coin flip. #942 deleted the
+ *  column, so there is one copy now; the scoping stays because it costs nothing and it is what
+ *  fails loudly if a second copy is ever reintroduced. */
 const shown = (page: Page, id: string) => page.locator(`[data-testid="${id}"]:visible`);
 
 test("all four boards reach the console and are told apart on screen", async ({ page }) => {
   await openConsole(page, SUPERVISOR);
   await showObjectives(page);
 
-  const board = shown(page, "supervisor-board");
+  const board = shown(page, "objectives");
   await expect(board).toBeVisible();
 
   const rows = board.getByRole("listitem");
@@ -183,9 +214,10 @@ test("all four boards reach the console and are told apart on screen", async ({ 
   await expect(rows.nth(2)).toHaveAttribute("data-board", "waiting");
   await expect(rows.nth(3)).toHaveAttribute("data-board", "ready");
 
-  // Every badge is laid out and visible — not merely in the DOM.
+  // Every badge is laid out and visible — not merely in the DOM. Taken from the supervisor's
+  // cell rather than from the row: the row's own first span is the objective's state dot.
   for (let i = 0; i < 4; i++) {
-    const badge = rows.nth(i).locator("span").first();
+    const badge = rows.nth(i).getByTestId("supervisor-cell").locator("span").first();
     await expect(badge).toBeVisible();
     const box = await badge.boundingBox();
     expect(box?.width ?? 0).toBeGreaterThan(0);
@@ -194,7 +226,12 @@ test("all four boards reach the console and are told apart on screen", async ({ 
   // Colour is load-bearing per the design rules, and a custom property only resolves in a real
   // engine: READY and SPENT must not paint the same, or the boards are decorative.
   const colourOf = (i: number) =>
-    rows.nth(i).locator("span").first().evaluate((el) => getComputedStyle(el).color);
+    rows
+      .nth(i)
+      .getByTestId("supervisor-cell")
+      .locator("span")
+      .first()
+      .evaluate((el) => getComputedStyle(el).color);
   expect(await colourOf(3)).not.toBe(await colourOf(1));
   expect(await colourOf(1)).not.toBe(await colourOf(2));
 });
@@ -203,7 +240,7 @@ test("the server's refusal sentence is readable, not clipped", async ({ page }) 
   await openConsole(page, SUPERVISOR);
   await showObjectives(page);
 
-  const board = shown(page, "supervisor-board");
+  const board = shown(page, "objectives");
   for (const sentence of [HELD_SENTENCE, SPENT_SENTENCE, WAITING_SENTENCE]) {
     const el = board.getByText(sentence);
     await expect(el).toBeVisible();
@@ -224,7 +261,7 @@ test("the server's refusal sentence is readable, not clipped", async ({ page }) 
 test("a row meets the 44px coarse-pointer floor", async ({ page }) => {
   await openConsole(page, SUPERVISOR);
   await showObjectives(page);
-  const rows = shown(page, "supervisor-board").getByRole("listitem");
+  const rows = shown(page, "objectives").getByRole("listitem");
   for (let i = 0; i < 4; i++) {
     const box = await rows.nth(i).boundingBox();
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -240,7 +277,9 @@ test("an ABSENT assessment says so in the console, and never shows a clean board
   await showObjectives(page);
 
   await expect(shown(page, "supervisor-unreadable")).toBeVisible();
-  // Not merely "the displayed one is absent" — no copy of a clean board exists anywhere.
-  await expect(page.getByTestId("supervisor-board")).toHaveCount(0);
+  // Not merely "the displayed one is absent" — no copy of a clean reading exists anywhere. The
+  // objective LIST is still there (the mission has objectives); what must not appear is any
+  // supervisor cell, which is what a clean board would now look like.
+  await expect(page.getByTestId("supervisor-cell")).toHaveCount(0);
   await expect(page.getByTestId("supervisor-unmeasured")).toHaveCount(0);
 });

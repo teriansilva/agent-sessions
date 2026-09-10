@@ -1,7 +1,7 @@
 /** #935 — the mission route owns the shell.
  *
  *  Real-browser tests because every claim here is a GEOMETRY claim, and the defect they guard was
- *  invisible to the tests that already existed: `detail-column` was asserted *visible*, and it
+ *  invisible to the tests that already existed: the detail column was asserted *visible*, and it
  *  was — stacked under the thread at full width, in a console whose third grid track nothing had
  *  ever occupied. Visibility could not tell those apart. Boxes can.
  */
@@ -158,27 +158,31 @@ test.describe("the thread fills the width it was given (#935)", () => {
     });
   }
 
-  test("a selected mission puts the detail BESIDE the thread, not under it", async ({
+  test("a selected mission ALSO gets the whole width — no track beside the thread (#942)", async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/pulse");
-    await page.getByTestId("detail-column").waitFor();
+    await page.getByTestId("mission-state").waitFor();
 
+    const con = await box(page, "mission-console");
     const pane = await box(page, "pane");
-    const det = await box(page, "detail-column");
 
-    // THE ACTUAL DEFECT. The aside was a flex child of a column-direction parent, so it stacked
-    // BELOW the thread at full width while every existing test — which asked only whether it was
-    // visible — went on passing. Same top edge, further right, narrower than the thread.
-    expect(Math.abs(det.y - pane.y)).toBeLessThan(4);
-    expect(det.x).toBeGreaterThan(pane.x + pane.width - 4);
-    expect(det.width).toBeLessThan(pane.width);
+    // THIS TEST USED TO ASSERT THE COLUMN'S GEOMETRY, and #935 was right to: the aside was a flex
+    // child of a column-direction parent, so it stacked BELOW the thread at full width while every
+    // test that asked only whether it was VISIBLE went on passing. #942 deleted the column — four
+    // unrelated panes in a 340px track, none of them big enough to be useful — so the claim
+    // becomes the one the operator cares about: with a mission selected, the thread still owns the
+    // full content width. The same measurement as the no-mission case above, which is the point:
+    // there is one layout now, not two.
+    const shortfall = con.x + con.width - (pane.x + pane.width);
+    expect(shortfall).toBeLessThan(24);
+    await expect(page.getByTestId("detail-column")).toHaveCount(0);
   });
 
-  test("below the wide breakpoint there is no detail column at all", async ({
+  test("the stop strip owns every pane, at 1399 and above (#942)", async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
@@ -186,9 +190,14 @@ test.describe("the thread fills the width it was given (#935)", () => {
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/pulse");
     await page.getByTestId("pane").waitFor();
-    // The stop strip owns objectives/timeline at this width; a column here would draw them twice.
-    await expect(page.getByTestId("detail-column")).toBeHidden();
+    await expect(page.getByTestId("detail-column")).toHaveCount(0);
     await expect(page.getByTestId("stop-objectives")).toBeVisible();
+    await expect(page.getByTestId("stop-context")).toBeVisible();
+
+    // …and the breakpoint that used to switch layouts no longer switches anything.
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(page.getByTestId("stop-objectives")).toBeVisible();
+    await expect(page.getByTestId("stop-context")).toBeVisible();
   });
 });
 
@@ -643,7 +652,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     // A populated list auto-selects, so this is the ORDINARY state — and the one where the first
     // implementation did nothing at all: the console renders `MissionBody`, whose composer sends
     // messages to that mission and has no creation field. The empty-list test passed throughout.
-    await page.getByTestId("detail-column").waitFor();
+    await page.getByTestId("mission-state").waitFor();
 
     await page.getByTestId("rail-new-mission").click();
 
@@ -747,7 +756,7 @@ test("a slow creation settling later cannot close a newer form or eat its draft 
   });
 
   await page.goto("/pulse");
-  await page.getByTestId("detail-column").waitFor();
+  await page.getByTestId("mission-state").waitFor();
 
   // A: start a creation and submit it, leaving the response in flight.
   await page.getByTestId("rail-new-mission").click();
@@ -760,7 +769,7 @@ test("a slow creation settling later cannot close a newer form or eat its draft 
 
   // Move to an existing mission — this unmounts the composer A was typed in.
   await page.locator('[data-testid="rail-mission"]').first().click();
-  await expect(page.getByTestId("detail-column")).toBeVisible();
+  await expect(page.getByTestId("mission-state")).toBeVisible();
 
   // B: come back and start a second creation, with a draft in it.
   await page.getByTestId("rail-new-mission").click();

@@ -194,8 +194,17 @@
   overflow: hidden;
 }
 
+/* ONE ROW WHERE THERE IS ROOM, TWO WHERE THERE IS NOT (#942).
+ *
+ * The header carries the mission's title AND its state + primary + `⋯`. At 412px those do not fit
+ * beside each other: the phone geometry sweep caught ABANDON at `x=305..424` on a 412px viewport —
+ * the `⋯` trigger itself had been pushed past the right edge, taking the menu anchored to it with
+ * it. `flex-wrap` is the fix, and it is honest about the constraint: "one header row" was always a
+ * claim about the desktop, where the alternative was a title above a SECOND BAR of four buttons.
+ * A title that wraps to its own line above its own controls is not that. */
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
@@ -238,18 +247,6 @@
   display: flex;
   border-bottom: 1px solid var(--line);
 }
-@media (min-width: 1400px) {
-  /* Hidden only where a detail column ACTUALLY replaces it (#929). This used to hide `.stops`
-     on width alone, justified by "the detail column is persistent" — it is not: it belongs to
-     `MissionBody`, so the untracked view had no column and no tabs, and OBJECTIVES/TIMELINE
-     were reachable on a phone and unreachable on a desktop. The component sets
-     `.stopsReplaced` when the column is rendered, so the rule now keys off the fact rather
-     than inferring it from the viewport. */
-  .stopsReplaced {
-    display: none;
-  }
-}
-
 .stop {
   flex: 1 1 0;
   min-height: 44px;
@@ -273,16 +270,18 @@
   border-bottom-color: var(--accent);
 }
 
-/* THE THREAD/DETAIL SPLIT, AT THEIR ACTUAL SHARED PARENT (#935).
+/* ONE COLUMN, AT EVERY WIDTH (#942).
  *
- * Deliberately a wrapper rather than turning `.centre` itself into a two-column grid: `.centre`
- * also holds the topbar, the stop strip and the notices, so a grid there would need every one of
- * them placed `1 / -1` and would drop any future sibling into a cell — a new auto-placement bug
- * in place of the one being fixed. Wrapping exactly the two elements that are being split cannot
- * have that failure mode.
+ * This used to become `grid-template-columns: 1fr 340px` at ≥1400px, putting a second, different
+ * layout on the wide viewport: a 340px track stacking objectives, follow-through and context —
+ * four unrelated things, each too small to be useful, with follow-through's error copy given the
+ * prominence. The tabs carry those panes now, so the track is gone rather than resized, and the
+ * thread gets the width it was sharing.
  *
- * Column by default so a lone pane fills the height (`.pane` is `flex: 1 1 auto`); a real grid
- * only where a detail pane exists AND there is room for it. */
+ * Still a wrapper rather than `.centre` itself: `.centre` also holds the topbar, the stop strip
+ * and the notices, so making it the flex parent would put every one of them in the same
+ * distribution as the thread. Wrapping exactly what is being laid out cannot have that failure
+ * mode, and it is what lets `.pane` claim `flex: 1 1 auto` and actually fill the height. */
 .split {
   display: flex;
   flex-direction: column;
@@ -290,18 +289,31 @@
   min-height: 0;
   min-width: 0;
 }
-@media (min-width: 1400px) {
-  .splitWide {
-    display: grid;
-    grid-template-columns: 1fr 340px;
-    /* The pane keeps `flex: 1 1 auto`, which a grid item ignores — the row must therefore do the
-     * stretching, or a short thread leaves the detail column floating at content height. */
-    grid-template-rows: 100%;
-  }
+
+/* A SHORT THREAD SITS AT THE BOTTOM (#942).
+ *
+ * Pinning the composer to the bottom edge fixed half of the dead band and moved the other half:
+ * the events stayed top-aligned, so a four-turn mission on a 950px screen put ~350px of void
+ * between the last answer and the box you type into. Chats do not do that — messages grow UP from
+ * the composer, which is why a quiet conversation reads as quiet rather than as broken.
+ *
+ * `margin-top: auto` on the inner box is the whole mechanism, and it is chosen over
+ * `justify-content: flex-end` on the scroller for one non-obvious reason: when the content is
+ * TALLER than the box, flex-end pushes the overflow past `scrollTop: 0` and makes the earliest
+ * events unreachable in some engines. An auto margin absorbs only POSITIVE free space, so a full
+ * pane behaves exactly as it did before.
+ *
+ * ONLY THE THREAD. A list starts at the top — bottom-aligning OBJECTIVES or the TIMELINE would
+ * push the first row down the screen for no reason, which is the same defect wearing the opposite
+ * sign. The class is applied per stop rather than to `.paneInner` itself. */
+.paneAtBottom {
+  margin-top: auto;
 }
 
 .pane {
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   /* `overflow-y: auto` PROMOTES overflow-x to auto — that is #494's root cause, and it is why
    * every text class below sets `overflow-wrap: anywhere`. A single unbroken token (an AI
@@ -313,42 +325,38 @@
   padding: 12px 14px;
 }
 
-/* --- detail column ------------------------------------------------------------- */
-
-.detail {
-  display: none;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-  overflow-y: auto;
-  border-left: 1px solid var(--line);
-  padding: 12px 14px;
-}
-@media (min-width: 1400px) {
-  .detail {
-    display: flex;
-  }
-}
-
-.section {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  margin: 14px 0 8px;
-}
-.section:first-child {
-  margin-top: 0;
-}
+/* `.section` lived here — the "Objectives" / "Follow-through" / "Context" headings that stacked
+ * inside the 340px detail column. Each of those is a TAB now (#942), and a heading that repeats
+ * the selected tab's own label is the "two headers" defect one level down, so the class went with
+ * the column rather than being kept for a caller that no longer exists. */
 
 /* --- objectives ---------------------------------------------------------------- */
 
+/* THREE COLUMNS, NOT A STACK (#942): state dot | what the objective is | what you can do to it.
+ *
+ * Folding follow-through onto the row put the supervisor's reading under the title and left the
+ * edit controls between them — five boxed 44px buttons on a line of their own, so one objective
+ * was ~190px tall and a three-objective mission filled the screen with loose chrome. The actions
+ * belong at the end of the row they act on; the reading belongs under the title it describes. */
 .objRow {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  /* MOBILE FIRST, and the reason is a measurement: at 412px a third `auto` track sized itself to
+   * the five controls (~300px) and starved `minmax(0, 1fr)` down to about one character per line,
+   * so "CI is green on the head SHA" rendered as a vertical column of letters. An `auto` track
+   * wins that argument every time, so on a phone the actions go BELOW the title instead — same
+   * three regions, stacked rather than side by side. */
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
-  padding: 6px 0;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--line);
+  /* The 44px coarse-pointer floor, inherited from the follow-through row this absorbed (#942).
+   * The row is not a tap target itself; it is the rhythm the controls that land in it — STAND
+   * DOWN, RENAME, NOT REQUIRED, REMOVE — sit inside. */
+  min-height: 44px;
+}
+.objRow:last-child {
+  border-bottom: 0;
 }
 .objTitle {
   overflow-wrap: anywhere;
@@ -665,25 +673,20 @@
  * amber for "needs a human" (a spent budget IS that), `--status-unknown` for a state we chose
  * not to act on or could not establish. A met objective is a hollow ring, never a green dot —
  * done is an absence of work, not a running light. */
-.supList {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+/* THE SUPERVISOR'S READING, ON THE OBJECTIVE ROW (#942).
+ *
+ * This replaces `.supRow`'s three-column grid, and the change of layout model is the point: the
+ * grid was sized for a list of its own, so the same badge/budget/prose set is now a WRAPPING flex
+ * line under the objective's title. `why_not` is server prose of unbounded length landing in a
+ * 412px column — it has to be allowed to take a line of its own rather than being squeezed into a
+ * fixed track, which is what `flex-wrap` plus `.supWhy`'s own `flex-basis` below do. */
+.supCell {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.supRow {
-  display: grid;
-  grid-template-columns: 4.75rem 1fr auto;
-  align-items: baseline;
-  gap: 0 0.6rem;
-  padding: 0.55rem 0.75rem;
-  border-bottom: 1px solid var(--line);
-  /* 44px coarse-pointer floor — this row is not a tap target itself, but it sets the rhythm the
-   * controls that land here in Phase 5b inherit. */
-  min-height: 44px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.3rem;
+  min-width: 0;
 }
 
 .supBadge {
@@ -732,12 +735,6 @@
   border-style: dashed;
 }
 
-.supTitle {
-  color: var(--text-1);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .supGate {
   font-family: var(--font-mono);
   font-size: 0.6rem;
@@ -762,11 +759,16 @@
 
 /* The refusal sentence spans the full row under the title — it is prose, and cramming it into the
  * title column makes every row a different height. */
+/* THE SERVER'S REFUSAL SENTENCE — prose of unbounded length, in a 412px column.
+ * `flex-basis: 100%` puts it on its own line inside `.supCell` rather than fighting the badge and
+ * the counter for a share of one, which is what `grid-column: 2 / -1` did while it lived in a
+ * grid. `overflow-wrap` is what keeps a long path from widening the whole page (#494). */
 .supWhy {
-  grid-column: 2 / -1;
+  flex: 1 0 100%;
   font-size: 0.78rem;
   color: var(--text-3);
-  margin-top: 0.2rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .supProposal,
@@ -924,13 +926,20 @@
   color: var(--danger-text);
 }
 
+/* The mission's state + actions. It renders INSIDE the console's header row (#942), so it carries
+ * no padding and no rule of its own — it used to be a second bar under the title, and its
+ * border-bottom drew a stray 250px line across the header when it moved.
+ *
+ * IT STILL WRAPS, and that is not a leftover. The bar also hosts the UNARCHIVE confirmation — a
+ * full sentence about restarting agents plus two buttons — and `nowrap` ran that straight off the
+ * right edge: the phone geometry sweep caught RECORD ONLY and RESTART AGENTS at `x=724..951` on a
+ * 412px viewport, with the sentence clipped mid-word. `.topbar` decides where the row breaks; this
+ * only has to not fight it. */
 .missionBar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
 }
 .missionBarState {
   font-family: var(--font-mono);
@@ -946,11 +955,31 @@
   line-height: 1.5;
 }
 
+/* The row's third column. `justify-content: flex-end` keeps it against the right edge at any
+ * width; it still wraps rather than overflowing on a phone, where the grid collapses the middle
+ * column instead of pushing this off-screen. */
 .objEdit {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 6px;
+  /* Column 2 of the NEXT row on a phone — stated explicitly, because auto-placement would
+   * otherwise drop it into column 1, under the state dot. */
+  grid-column: 2;
+  justify-content: flex-start;
+}
+
+/* Wide enough for the third track to earn its place: the controls sit at the end of the row they
+ * act on, and the title keeps the width it needs. 900px is where five 44px controls plus a
+ * readable title stop competing, measured rather than guessed. */
+@media (min-width: 900px) {
+  .objRow {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .objEdit {
+    grid-column: 3;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
 }
 .objEditBtn {
   min-height: 44px;
@@ -1407,4 +1436,81 @@
 }
 .composerBelow {
   order: 1;
+}
+
+/* --- the thread column: a chat that fills, with its input on the bottom edge (#942) ---------
+ *
+ * The composer used to be the last child of `.pane`, so it scrolled with the transcript and came
+ * to rest directly under the final event — leaving the remainder of the column empty. On a
+ * 1600×950 desktop with a quiet mission that measured roughly 60% of the content area, and it is
+ * what the operator reported as "a mess". The pane and the dock are now siblings: the pane takes
+ * the slack and scrolls, the dock never shrinks and never scrolls away. */
+.threadCol {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  /* Without this a flex child refuses to shrink below its content and the dock is pushed off the
+   * bottom of the viewport — the classic flexbox min-height:auto trap. */
+  min-height: 0;
+  min-width: 0;
+}
+
+.composerDock {
+  flex: none;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 8px 14px;
+}
+
+/* --- the secondary-lifecycle overflow (#942) ------------------------------------------------ */
+.overflowWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.overflowMenu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 180px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  padding: 6px;
+  /* Flat fill, hairline border, zero radius — `docs/design.md`. The elevation cue is the border
+   * and the ground change, never a shadow gradient. */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.overflowItems {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.overflowItems:focus-visible {
+  outline: none;
+}
+/* Full-width rows inside the menu: side by side they were competing controls, stacked they are a
+ * list of choices, which is the whole point of moving them here. */
+.overflowItems > button {
+  width: 100%;
+  text-align: left;
+  /* The coarse-pointer floor, as everywhere else. */
+  min-height: 44px;
+}
+
+/* The header's action slot (#942): the mission's state + primary + overflow, on the same row as
+ * its title. `margin-left: auto` is what makes it a right-hand cluster without a second grid. */
+/* The header's action slot (#942): the mission's state + primary + overflow. `margin-left: auto`
+ * is what makes it a right-hand cluster without a second grid — and on the wrap it simply starts
+ * the next line, still right-aligned. `flex-shrink: 0` keeps the controls at their real size: a
+ * shrunk `MARK DONE` is a control the operator cannot read, and the title is the thing that should
+ * give way (it already wraps at any character). */
+.topbarActions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
 }

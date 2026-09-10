@@ -610,7 +610,11 @@ test("switching missions starts a clean composer — the console KEYS the missio
   }));
   renderPulse({ configured: true } as PulseConfig);
 
-  await screen.findByText("Mission A");
+  // TWO matches now, and both are correct: the rail row names the mission and so does the
+  // console header (#942 — the header reads its title from the mission the body is rendering,
+  // which is what removed the "Select a mission" contradiction). This test is about the
+  // composer being keyed per mission, so it only needs to wait until the mission is on screen.
+  await screen.findAllByText("Mission A");
   await userEvent.type(
     screen.getByTestId("composer-input"),
     "half-written thought",

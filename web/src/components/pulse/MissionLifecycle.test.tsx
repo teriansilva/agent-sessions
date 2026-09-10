@@ -61,6 +61,24 @@ beforeEach(() => {
   vi.mocked(api.unarchiveMission).mockReset();
 });
 
+/** Open the secondary-lifecycle menu (#942).
+ *
+ *  ARCHIVE, ABANDON, MARK FAILED and NOT YET moved behind `⋯` — four controls at near-equal
+ *  weight, two destructive, left the operator no primary to aim at. They kept their testids and
+ *  their confirmations; the only change a test needs is to open the menu, which is what an
+ *  operator now does too. */
+async function openOverflow() {
+  const t = screen.queryByTestId("mission-overflow");
+  if (!t) return;
+  // IDEMPOTENT, and it has to be (#942 review 3). Several tests call this twice — once to open
+  // the menu and once more before the CONFIRM tap on the same item, which is already inside it.
+  // While the trigger could not close what it opened, the second call looked like a no-op and
+  // these tests passed on that bug; with the toggle working it correctly shuts the menu and the
+  // item vanishes. So ask before pressing, the way an operator looking at the screen would.
+  if (t.getAttribute("aria-expanded") === "true") return;
+  await userEvent.click(t);
+}
+
 test("a transition sends the state the client BELIEVES, as the comparand", async () => {
   vi.mocked(api.setMissionState).mockResolvedValue(mission({ state: "done" }));
   render(
@@ -178,6 +196,7 @@ test("archiving a LIVE mission confirms first, and says it will stop the agents"
       onNote={() => {}}
     />,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
   // No call yet — the first tap only asks.
   expect(api.archiveMission).not.toHaveBeenCalled();
@@ -188,6 +207,7 @@ test("archiving a LIVE mission confirms first, and says it will stop the agents"
     /transcript is kept/i,
   );
 
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
   await waitFor(() => expect(api.archiveMission).toHaveBeenCalled());
   // `abandon` is a REAL boolean and it is true only because the mission is live. The route
@@ -206,10 +226,12 @@ test("archiving a CLOSED mission does not ask to abandon it", async () => {
       onNote={() => {}}
     />,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
   expect(screen.getByTestId("mission-confirm-archive")).not.toHaveTextContent(
     /abandon/i,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
   await waitFor(() => expect(api.archiveMission).toHaveBeenCalled());
   expect(vi.mocked(api.archiveMission).mock.calls[0][1]).toEqual({
@@ -244,11 +266,13 @@ test("abandon is confirmed, and says it cannot be undone", async () => {
       onNote={() => {}}
     />,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-abandon"));
   expect(api.setMissionState).not.toHaveBeenCalled();
   expect(screen.getByTestId("mission-confirm-abandon")).toHaveTextContent(
     /cannot be reopened/i,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-abandon"));
   await waitFor(() => expect(api.setMissionState).toHaveBeenCalled());
   expect(vi.mocked(api.setMissionState).mock.calls[0][1]).toEqual({
@@ -386,7 +410,9 @@ test("a FAILED archive reconciles membership too, but leaves the scope alone", a
       onNote={() => {}}
     />,
   );
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-archive"));
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
   const opts = onChanged.mock.calls.at(-1)?.[0] as

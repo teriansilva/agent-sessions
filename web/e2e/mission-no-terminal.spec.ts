@@ -115,9 +115,10 @@ async function openContext(page: Page) {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
-  // The context panel is a stop on a phone and a column on a desktop.
-  const stop = page.getByTestId("stop-objectives");
-  if (await stop.isVisible().catch(() => false)) await stop.click();
+  // CONTEXT IS ITS OWN STOP, at every width (#942). It used to be the third heading inside
+  // OBJECTIVES — which is why this reached for `stop-objectives` — and on a desktop it was inside
+  // a 340px column that needed no click at all. One tab, one route to it, both projects.
+  await page.getByTestId("stop-context").click();
 }
 
 test("VIEW SCREEN reads the live screen and OPENS NO SOCKET", async ({

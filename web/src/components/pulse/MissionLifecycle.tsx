@@ -26,6 +26,7 @@ import { useCallback, useState } from "react";
 import { ApiError, api } from "../../lib/api";
 import type { Mission } from "../../types/api";
 
+import { MissionOverflow } from "./MissionOverflow";
 import styles from "./mission.module.css";
 
 /** The transitions this surface offers, per state. A strict subset of the server's `_ALLOWED`:
@@ -270,12 +271,49 @@ export function MissionLifecycle({
         </button>
       ) : null}
 
+      {/* THE ONE PRIMARY, by state. `running`/`review` close as DONE; the other states each have
+          their own next step above. Accent is reserved for exactly this control. */}
+      {state === "running" || state === "review" ? (
+        <button
+          type="button"
+          className={styles.send}
+          disabled={busy}
+          onClick={() =>
+            confirming === "done" ? void to("done", "done") : setConfirming("done")
+          }
+          data-testid="mission-done"
+        >
+          {confirming === "done" ? `CONFIRM ${CLOSE_LABEL.done}` : CLOSE_LABEL.done}
+        </button>
+      ) : null}
+
+      {/* REOPEN is the primary for a terminal mission — it is the only forward move left, so it
+          takes the accent rather than sitting in the overflow with the destructive pair. */}
+      {state === "done" || state === "failed" ? (
+        <button
+          type="button"
+          className={styles.send}
+          disabled={busy}
+          onClick={() => void to("running")}
+          data-testid="mission-reopen"
+        >
+          REOPEN
+        </button>
+      ) : null}
+
+      {/* EVERYTHING BELOW IS SECONDARY, AND IT LIVES BEHIND `⋯` (#942).
+          Four controls at near-equal weight — two of them red — is four shouts and no primary.
+          The state's own next step stays inline above; the rest, including both destructive
+          paths, collapse into a labelled menu. They keep their accessible names and their
+          two-tap confirmations; only their prominence changes. */}
+      <MissionOverflow busy={busy}>
       {state === "review" ? (
         <button
           type="button"
           className={styles.missionBtn}
           disabled={busy}
           onClick={() => void to("running")}
+          role="menuitem"
           data-testid="mission-reopen-review"
         >
           NOT YET
@@ -286,32 +324,18 @@ export function MissionLifecycle({
           other destructive lifecycle actions take (#896 review 6, finding 2). #889 asks for
           "confirm done" in those words; the first version closed on the first click, so a
           mistap changed session ownership with nothing in between. */}
-      {state === "running" || state === "review"
-        ? (["done", "failed"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              className={s === "done" ? styles.send : styles.missionBtn}
-              disabled={busy}
-              onClick={() =>
-                confirming === s ? void to(s, s) : setConfirming(s)
-              }
-              data-testid={`mission-${s}`}
-            >
-              {confirming === s ? `CONFIRM ${CLOSE_LABEL[s]}` : CLOSE_LABEL[s]}
-            </button>
-          ))
-        : null}
-
-      {state === "done" || state === "failed" ? (
+      {state === "running" || state === "review" ? (
         <button
           type="button"
           className={styles.missionBtn}
           disabled={busy}
-          onClick={() => void to("running")}
-          data-testid="mission-reopen"
+          onClick={() =>
+            confirming === "failed" ? void to("failed", "failed") : setConfirming("failed")
+          }
+          role="menuitem"
+          data-testid="mission-failed"
         >
-          REOPEN
+          {confirming === "failed" ? `CONFIRM ${CLOSE_LABEL.failed}` : CLOSE_LABEL.failed}
         </button>
       ) : null}
 
@@ -328,6 +352,7 @@ export function MissionLifecycle({
               ? void to("abandoned", "abandoned")
               : setConfirming("abandon")
           }
+          role="menuitem"
           data-testid="mission-abandon"
         >
           {confirming === "abandon" ? "CONFIRM ABANDON" : "ABANDON"}
@@ -350,10 +375,12 @@ export function MissionLifecycle({
               )
             : setConfirming("archive")
         }
+        role="menuitem"
         data-testid="mission-archive"
       >
         {confirming === "archive" ? "CONFIRM ARCHIVE" : "ARCHIVE"}
       </button>
+      </MissionOverflow>
 
       {confirming === "abandon" ? (
         <p

@@ -15,8 +15,10 @@
  *   2. `#root` is made genuinely `inert` — the panel and scrim are portalled OUTSIDE `#root`,
  *      so the background is isolated without touching either;
  *   3. Tab is contained, which is what makes the trap observable in a test rather than inferred
- *      from an attribute — and stands down for a NESTED modal, because the topmost surface owns
- *      the keyboard (`nestedSurfaceHasFocus`);
+ *      from an attribute. It has two exceptions and they answer different questions: it stands
+ *      down for a NESTED modal, because the topmost surface owns the keyboard
+ *      (`nestedSurfaceHasFocus`), and it is opt-out entirely (`containFocus`) for a caller that
+ *      is a MENU rather than a modal, because a menu's Tab must be able to leave;
  *   4. focus RETURNS to the trigger on every close path — Escape, scrim, an action inside, or a
  *      resize that drops drawer mode.
  */
@@ -97,6 +99,19 @@ export interface ModalDrawerOptions {
   triggerRef: RefObject<HTMLElement | null>;
   /** Escape and scrim/outside-click both call this. */
   onClose: () => void;
+  /** Whether Tab is CONTAINED inside the panel. Default `true`, which is what `aria-modal`
+   *  promises and what every drawer here wants.
+   *
+   *  A small anchored MENU wants the opposite, and "pass an empty `inertRefs`" does not buy it
+   *  (#942 review): the containment effect below is installed independently of the isolation, so
+   *  a caller that made nothing inert still had its Tab cycle wrapped — a non-modal surface with
+   *  a modal trap in it, which is the worst of both. Tab must be able to LEAVE a menu; the menu
+   *  handles the key itself and closes.
+   *
+   *  Separate from `inertRefs` on purpose. They answer different questions — "can the background
+   *  be reached" and "can focus leave" — and a surface that is inert-free but focus-trapped is
+   *  exactly the bug this flag exists to make impossible to write by omission. */
+  containFocus?: boolean;
   /** Regions that count as "inside" for outside-click purposes. The panel is portalled to
    *  <body>, so testing a wrapper alone would close it on every tap of its own rows. */
   insideRefs?: RefObject<HTMLElement | null>[];
@@ -151,6 +166,7 @@ export function useModalDrawer({
   onClose,
   insideRefs = [],
   inertRefs,
+  containFocus = true,
 }: ModalDrawerOptions): void {
   // TWO TESTS, and each covers what the other cannot. The stack knows a child is open even while
   // focus is still outside it (a dialog waiting on a fetch); the focus test knows a surface that
@@ -199,40 +215,70 @@ export function useModalDrawer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, onClose, panelRef]);
 
-  // Focus in, background inert, focus back out.
+  /** BACKGROUND ISOLATION, on its own lifetime (#942 review 2).
+   *
+   *  This used to share one effect with the focus move, and sharing was the bug. The focus effect
+   *  moves focus IN on setup and queues the restore to the trigger on CLEANUP, so depending on
+   *  `inertRefs` identity meant: any caller passing an array literal re-ran that whole cycle on
+   *  every render of its own component. `MissionOverflow` passes `inertRefs: []`, so a
+   *  confirmation re-render — MARK FAILED becoming CONFIRM MARK FAILED — tore the effect down and
+   *  back up, and the queued `requestAnimationFrame` put focus on `⋯` while the menu was still
+   *  open. The next Enter operated the trigger instead of confirming.
+   *
+   *  Splitting them is the honest fix rather than mirroring the prop into a ref: these are two
+   *  different lifetimes that happened to be written together. Isolation depends on WHAT is
+   *  isolated; focus depends on whether the panel is open. Now each says so.
+   *
+   *  DEFINED FIRST, deliberately: on unmount React runs cleanups in definition order, so `inert`
+   *  comes off before the focus effect below restores the trigger — and the trigger lives inside
+   *  the isolated region, where it could not take focus while inert. */
   useEffect(() => {
     if (!active) return;
-    const trigger = triggerRef.current;
     // Named regions when the caller gave them, `#root` otherwise. Resolved here rather than at
     // the call site so the cleanup un-sets exactly what it set, even if a ref has since changed.
     const isolated: HTMLElement[] = inertRefs
-      ? inertRefs.map((r) => r.current).filter((el): el is HTMLElement => el !== null)
+      ? inertRefs
+          .map((r) => r.current)
+          .filter((el): el is HTMLElement => el !== null)
       : [document.getElementById("root")].filter(
           (el): el is HTMLElement => el !== null,
         );
-    initialFocusRef.current?.focus();
     // Only add `inert` where it was not already set. An element that was inert before this
     // drawer opened must stay inert after it closes — clearing it would hand interactivity to
     // something another surface had deliberately switched off.
     const added = isolated.filter((el) => !el.hasAttribute("inert"));
     for (const el of added) el.setAttribute("inert", "");
     return () => {
-      // Order matters: the trigger lives inside the isolated region and cannot take focus while
-      // it is inert.
       for (const el of added) el.removeAttribute("inert");
-      // …and the restore waits a frame. On the Escape path a synchronous `focus()` sticks, but
-      // when the drawer is dismissed by a TAP the browser is still settling focus from that
-      // pointer sequence and finishes after this passive cleanup — landing on <body> and
-      // silently undoing the restore. A frame later the event is done and the trigger keeps it.
+    };
+    // `inertRefs` IS a dependency here — this effect is about the isolation set, so a genuinely
+    // different set must be re-applied. A caller that re-allocates an equivalent array re-runs
+    // only this, which adds and removes the same attributes and is invisible.
+  }, [active, inertRefs]);
+
+  // Focus in, and back out to the trigger on close.
+  useEffect(() => {
+    if (!active) return;
+    const trigger = triggerRef.current;
+    initialFocusRef.current?.focus();
+    return () => {
+      // The restore waits a frame. On the Escape path a synchronous `focus()` sticks, but when
+      // the drawer is dismissed by a TAP the browser is still settling focus from that pointer
+      // sequence and finishes after this passive cleanup — landing on <body> and silently undoing
+      // the restore. A frame later the event is done and the trigger keeps it.
       requestAnimationFrame(() => trigger?.focus());
     };
-  }, [active, initialFocusRef, triggerRef, inertRefs]);
+  }, [active, initialFocusRef, triggerRef]);
 
+  // `containFocus` gates the CALL rather than living inside the hook: the menu's opt-out is a
+  // statement about this drawer, while the hook is a primitive three other surfaces now share.
   useFocusContainment({
-    active,
+    active: active && containFocus,
     panelRef,
     // Registered by the drawer itself above, so the containment hook must not push a SECOND token
-    // for the same surface — that would make the drawer permanently "below" itself.
+    // for the same surface — that would make the drawer permanently "below" itself. Note this is
+    // independent of `containFocus`: the drawer is still an open SURFACE when its menu opts out
+    // of containment, so its registration must not ride on that flag either.
     register: false,
     hasSurfaceAbove,
   });

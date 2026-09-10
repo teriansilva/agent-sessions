@@ -1,4 +1,15 @@
-/** The supervisor's follow-through board (#885).
+/** The supervisor's follow-through (#885), now rendered ON the objective rows (#942).
+ *
+ * FOLLOW-THROUGH used to be a panel of its own, printing a second list of the same objectives
+ * under different titles. It folded onto the rows it was always describing, so these tests render
+ * the composition the operator actually meets — `MissionObjectives` fed both reads — rather than
+ * a component nothing mounts. That is what makes them still able to fail for the right reason:
+ * a fold that dropped a badge, a sentence or the episode fence shows up here.
+ *
+ * The two reads are keyed to each other because the SERVER keys them: `mission_supervisor.assess`
+ * iterates the mission's own objective rows, so a supervisor entry and an objective with the same
+ * `key` are the same objective. The harness below builds the objective list from the assessment
+ * for exactly that reason — a fixture where they disagree is a fixture the producer cannot emit.
  *
  * Pinned, each mutation-tested against an implementation that would otherwise pass:
  *
@@ -18,9 +29,51 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 
-import type { MissionSupervisor, SupervisorObjective } from "../../types/api";
-import { MissionSupervisorBoard } from "./MissionSupervisorBoard";
+import type {
+  MissionObjective,
+  MissionSupervisor,
+  SupervisorObjective,
+} from "../../types/api";
+import { MissionObjectives } from "./MissionObjectives";
 import { boardFor } from "./supervisorBoard";
+
+/** The objective row an assessment entry belongs to. Same `key`, because the server produced one
+ *  from the other. Only the fields this surface reads are meaningful; the rest exist so the row
+ *  is a real `MissionObjective` rather than a cast. */
+function rowFor(o: SupervisorObjective): MissionObjective {
+  return {
+    mission_id: "msn_1",
+    key: o.key,
+    ord: 0,
+    title: o.title ?? o.key,
+    probe: "manual",
+    probe_args: null,
+    gate: o.gate,
+    state: o.state,
+    met_at: null,
+    observed: null,
+    source: "test",
+  };
+}
+
+/** The follow-through as it now renders: the objective list, with the assessment folded in.
+ *  `onOps` is deliberately absent — these tests are about the supervisor's half, and the editing
+ *  controls have their own file. */
+function MissionSupervisorBoard({
+  supervisor,
+  onStandDown,
+}: {
+  supervisor: MissionSupervisor | undefined;
+  onStandDown?: (key: string, episode: number) => void;
+}) {
+  return (
+    <MissionObjectives
+      objectives={(supervisor?.objectives ?? []).map(rowFor)}
+      supervisor={supervisor}
+      onStandDown={onStandDown}
+    />
+  );
+}
 
 function obj(over: Partial<SupervisorObjective> = {}): SupervisorObjective {
   return {
@@ -61,7 +114,7 @@ test("an absent assessment is reported, not rendered as an empty board", () => {
   render(<MissionSupervisorBoard supervisor={undefined} />);
   expect(screen.getByTestId("supervisor-unreadable")).toBeTruthy();
   // The distinguishing assertion: it must NOT claim there is nothing to follow up.
-  expect(screen.queryByTestId("supervisor-board")).toBeNull();
+  expect(screen.queryByTestId("objectives")).toBeNull();
   expect(screen.queryByTestId("supervisor-unmeasured")).toBeNull();
   expect(screen.getByTestId("supervisor-unreadable").textContent).toContain(
     "not a claim that there is nothing to follow up",
@@ -300,7 +353,7 @@ test("without `onStandDown` the board is read-only", () => {
   );
   expect(screen.queryByTestId("objective-stand-down")).toBeNull();
   // …and the row still renders its board. Read-only is not "hidden".
-  expect(screen.getByTestId("supervisor-board")).toBeInTheDocument();
+  expect(screen.getByTestId("objectives")).toBeInTheDocument();
 });
 
 test("a mission with NO SESSION says so instead of showing a board it cannot act on", () => {
@@ -327,7 +380,7 @@ test("a mission with NO SESSION says so instead of showing a board it cannot act
   expect(notice.textContent).toContain("holds no session");
   // …and no row claims the supervisor is about to act.
   expect(screen.queryByText("READY")).toBeNull();
-  expect(screen.getByTestId("supervisor-board")).toBeInTheDocument();
+  expect(screen.getByTestId("objectives")).toBeInTheDocument();
 });
 
 test("a mission that HOLDS a session shows no such notice", () => {

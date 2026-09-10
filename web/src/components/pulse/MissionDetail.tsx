@@ -1,5 +1,12 @@
-/** The two read-only panes, split from the loader so this file exports components only
- *  (`react-refresh/only-export-components`). The loader is `useMissionDetail.ts`. */
+/** The console's read-only panes, split from the loader so this file exports components only
+ *  (`react-refresh/only-export-components`). The loader is `useMissionDetail.ts`.
+ *
+ *  **THERE ARE THREE OF THEM NOW, AND THAT IS THE POINT (#942).** `ObjectivesPane` used to stack
+ *  Objectives, Follow-through and Context under three headings inside one 340px column — four
+ *  unrelated things in a junk drawer, each too small to be useful. Follow-through folded onto the
+ *  objective rows it was always describing (`MissionObjectives`), and Context became its own tab,
+ *  so each pane is now one subject and the stop strip is what switches between them at every
+ *  width. No pane lost a control in the move; they changed owner, not membership. */
 import type {
   MissionContext,
   MissionEvent,
@@ -9,38 +16,59 @@ import type {
 
 import { MissionContextPanel } from "./MissionContext";
 import { MissionObjectives, type ObjectiveOp } from "./MissionObjectives";
-import { MissionSupervisorBoard } from "./MissionSupervisorBoard";
 import { MissionTimeline } from "./MissionTimeline";
-import styles from "./mission.module.css";
 
 export function ObjectivesPane({
   objectives,
   objectivesState,
-  context,
-  loading,
+  objectivesFailed,
   supervisor,
   onOps,
   onStandDown,
-  onDetach,
-  onMembershipChanged,
   busy,
-  spawn,
 }: {
   objectives: MissionObjective[];
   /** From the mission row: `pending` while the producer is still running (#883). The empty state
    *  renders it, because "we have not been told yet" and "there are none" are different claims. */
   objectivesState?: string | null;
+  /** The objectives read failed — "we could not look", not "there are none" (#942 review 1). */
+  objectivesFailed?: boolean;
+  /** Absent when `assess()` could not run — the notices say so rather than rendering a clean
+   *  list, which would read as "nothing to follow up". */
+  supervisor?: MissionSupervisor;
+  /** Both absent ⇒ read-only, which is what an archived or closed mission gets (#889). */
+  onOps?: (ops: ObjectiveOp[]) => Promise<boolean>;
+  onStandDown?: (key: string, episode: number) => void;
+  busy?: boolean;
+}) {
+  return (
+    <MissionObjectives
+      objectives={objectives}
+      objectivesState={objectivesState}
+      objectivesFailed={objectivesFailed}
+      onOps={onOps}
+      supervisor={supervisor}
+      onStandDown={onStandDown}
+      busy={busy}
+    />
+  );
+}
+
+/** The mission's roster and working directory — its own tab since #942, where it used to be the
+ *  third heading inside OBJECTIVES. */
+export function ContextPane({
+  context,
+  loading,
+  onDetach,
+  onMembershipChanged,
+  busy,
+  spawn,
+}: {
   context: MissionContext | null;
   loading: boolean;
   /** Forwarded to the per-session controls: the server refused one because the mission no longer
    *  holds its session, so the roster has to be re-read. */
   onMembershipChanged?: () => void;
-  /** Absent when `assess()` could not run — the board says so rather than rendering a clean
-   *  slate, which would read as "nothing to follow up". */
-  supervisor?: MissionSupervisor;
-  /** Both absent ⇒ read-only, which is what an archived or closed mission gets (#889). */
-  onOps?: (ops: ObjectiveOp[]) => Promise<boolean>;
-  onStandDown?: (key: string, episode: number) => void;
   onDetach?: (sessionKey: string) => void;
   busy?: boolean;
   /** Passed straight through to the roster (#894). Absent ⇒ this mission cannot spawn. */
@@ -55,29 +83,14 @@ export function ObjectivesPane({
   };
 }) {
   return (
-    <>
-      <div className={styles.section}>Objectives</div>
-      <MissionObjectives
-        objectives={objectives}
-        objectivesState={objectivesState}
-        onOps={onOps}
-      />
-      <div className={styles.section}>Follow-through</div>
-      <MissionSupervisorBoard
-        supervisor={supervisor}
-        onStandDown={onStandDown}
-        busy={busy}
-      />
-      <div className={styles.section}>Context</div>
-      <MissionContextPanel
-        context={context}
-        loading={loading}
-        onDetach={onDetach}
-        onMembershipChanged={onMembershipChanged}
-        busy={busy}
-        spawn={spawn}
-      />
-    </>
+    <MissionContextPanel
+      context={context}
+      loading={loading}
+      onDetach={onDetach}
+      onMembershipChanged={onMembershipChanged}
+      busy={busy}
+      spawn={spawn}
+    />
   );
 }
 

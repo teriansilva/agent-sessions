@@ -19,6 +19,23 @@ import {
   openMissionRail,
 } from "./mission-console";
 
+/** Open the mission's secondary-lifecycle menu, then act (#942).
+ *
+ *  ARCHIVE, ABANDON, MARK FAILED and NOT YET moved behind `⋯`: four controls at near-equal weight,
+ *  two of them destructive, gave the operator no primary to aim at. They kept their testids and
+ *  their two-tap confirmations, so the only change a test needs is to open the menu first — which
+ *  is also what an operator now does, so going through here keeps these tests honest about the
+ *  real interaction rather than reaching past it.
+ *
+ *  Idempotent: already-open is a no-op, so a second action in one test does not toggle it shut.
+ */
+async function overflow(page: Page) {
+  const menu = page.getByTestId("mission-overflow-menu");
+  if (await menu.count()) return;
+  await page.getByTestId("mission-overflow").click();
+  await menu.waitFor({ state: "visible" });
+}
+
 const T = 1_700_000_000;
 
 const CONFIG = {
@@ -191,6 +208,12 @@ async function goToObjectives(page: Page) {
   await ready(page);
   const stop = page.getByTestId("stop-objectives");
   if (await stop.isVisible().catch(() => false)) await stop.click();
+}
+
+/** …and CONTEXT, which owns the mission's roster since #942. */
+async function goToContext(page: Page) {
+  await ready(page);
+  await page.getByTestId("stop-context").click();
 }
 
 /** …and the UNTRACKED view, same reason. */
@@ -407,6 +430,26 @@ test("STAND DOWN posts the episode the board was RENDERED at", async ({
         checked_at: T,
       },
     },
+    // THE ROW THE ASSESSMENT IS ABOUT. `mission_supervisor.assess` iterates the mission's own
+    // objectives, so a reading always has a matching row — and since #942 that row is where the
+    // reading renders. Without it there is no STAND DOWN to press.
+    objectives: {
+      objectives: [
+        {
+          mission_id: "msn_1",
+          key: "checks",
+          ord: 0,
+          title: "Checks are green",
+          probe: "forge_checks",
+          probe_args: null,
+          gate: true,
+          state: "pending",
+          met_at: null,
+          observed: null,
+          source: "playbook",
+        },
+      ],
+    },
   });
   await page.route("**/api/missions/*/objectives/*/stand-down", (r) => {
     posts.push({ url: r.request().url(), body: r.request().postDataJSON() });
@@ -442,6 +485,7 @@ test("archiving a live mission asks first and says it stops the agents", async (
   });
 
   await page.goto("/pulse");
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // Nothing has happened yet, and the copy says what it will do — masters stopped, transcripts
@@ -451,6 +495,7 @@ test("archiving a live mission asks first and says it stops the agents", async (
   await expect(confirm).toContainText(/abandon it first/i);
   await expect(confirm).toContainText(/transcript is kept/i);
 
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({ abandon: true });
@@ -619,7 +664,9 @@ test("archiving the mission you SELECTED does not leave it on screen", async ({
   await selectMission(page, "Going");
   await expectMissionSelected(page, "Going");
 
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // The rail is Active and "Going" is not in it any more, so the body must not still be showing
@@ -792,7 +839,8 @@ test("RELEASE puts the session back in UNTRACKED, not just posts a detach", asyn
   });
 
   await page.goto("/pulse");
-  await goToObjectives(page);
+  // CONTEXT owns the roster since #942 — it used to be the third heading inside OBJECTIVES.
+  await goToContext(page);
   const release = page.getByTestId("session-detach").first();
   await expect(release).toBeVisible();
   await release.click();
@@ -972,10 +1020,15 @@ for (const state of ["done", "failed", "abandoned"] as const) {
         events: [],
         events_next_seq: null,
         supervisor: {
+          // KEYED TO THE OBJECTIVE BELOW, because the server keys them: `assess` iterates the
+          // mission's own objective rows. Since #942 the reading renders ON that row, so a
+          // fixture naming a different key would make "no stand-down" pass by rendering no
+          // supervisor cell at all — a vacuous green over a control that is meant to be
+          // WITHDRAWN, not merely absent.
           objectives: [
             {
-              key: "checks",
-              title: "Checks are green",
+              key: "pr_open",
+              title: "A PR is open",
               gate: true,
               state: "pending",
               met: false,
@@ -1032,7 +1085,14 @@ for (const state of ["done", "failed", "abandoned"] as const) {
     await expect(page.getByTestId("objective-drop")).toHaveCount(0);
     await expect(page.getByTestId("objective-add")).toHaveCount(0);
     await expect(page.getByTestId("objective-rename")).toHaveCount(0);
+    // The supervisor's reading is RENDERED — read-only is not hidden — and its one control is the
+    // thing that is gone. Asserting the count alone would pass against a row with no reading.
+    await expect(page.getByTestId("supervisor-cell").first()).toBeVisible();
     await expect(page.getByTestId("objective-stand-down")).toHaveCount(0);
+
+    // …and the roster's control, on the tab that now owns it (#942). This used to sit in the same
+    // pane; asserting it from OBJECTIVES would now pass simply because it is elsewhere.
+    await page.getByTestId("stop-context").click();
     await expect(page.getByTestId("session-detach")).toHaveCount(0);
   });
 }
@@ -1112,7 +1172,9 @@ test("a LOAD MORE that lands first does not make the refresh that followed it lo
   await closeRail(page);
 
   // 2. Archive, which issues the authoritative refresh. It answers immediately.
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
   await expect
     .poll(async () =>
@@ -1183,7 +1245,9 @@ test("a refresh that lands first is not undone by the LOAD MORE it overtook", as
 
   await page.goto("/pulse");
   await selectMission(page, "Vanishing");
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // The refresh is in flight. Ask for the next page — its answer belongs to the list the
@@ -1250,7 +1314,9 @@ test("a FAILED archive leaves you on the mission whose error you were just hande
   // it was written to fail. The header is what says which mission the body is showing.
   await expect(page.getByTestId("console-title")).toHaveText("Going");
 
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // The server's own reason is shown…
@@ -2138,9 +2204,10 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   // `pending` is a list the server is about to change, and the console says so rather than
   // showing an empty one as a settled answer.
   await goToObjectives(page);
-  // SCOPED TO THE PANE. At >=1400px the objectives are rendered TWICE — the stop's content and
-  // the persistent detail column — so an unscoped locator is a strict-mode violation on desktop
-  // and a passing test on mobile only.
+  // SCOPED TO THE PANE. The objectives used to render TWICE at ≥1400px — the stop's content and
+  // the persistent detail column — so an unscoped locator was a strict-mode violation on desktop
+  // and a passing test on mobile only. #942 deleted the column, so there is one copy; the scoping
+  // stays because it is what fails loudly if a second is ever mounted again.
   const pane = page.getByTestId("pane");
   await expect(pane.getByTestId("objectives-pending")).toBeVisible();
   server.objectivesReady = true;
@@ -2190,8 +2257,10 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await expect(page.getByTestId("mission-state")).toHaveText("done");
 
   // ── 6. ARCHIVE ───────────────────────────────────────────────────────────────────────────
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
   await expect(page.getByTestId("mission-confirm-archive")).toBeVisible();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // THE ACTIVE RAIL LOSES IT — and the console does not go on rendering a body for a mission the
@@ -2337,7 +2406,9 @@ test("an ARCHIVED mission leaves the Active rail even when the refresh that foll
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
 
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // THE ROW IS GONE FROM THE ACTIVE RAIL, on the server's word rather than on a re-read that
@@ -2396,7 +2467,9 @@ test("a LATE archive still takes its row out of the Active rail after you have m
   await page.goto("/pulse");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // THE OPERATOR MOVES ON while the archive is still in flight — which unmounts Alpha's body.
@@ -2663,7 +2736,9 @@ test("a rail refresh reads ONE snapshot, so a deletion between pages cannot hide
   await closeRail(page);
   await expect(page.getByTestId("mission-state")).toContainText("done");
   asked.length = 0;
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
   await page.waitForTimeout(1200);
 
@@ -2738,7 +2813,9 @@ test("a LATE archive does not delete the row from the ARCHIVED rail it just ente
   await page.goto("/pulse");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // THE OPERATOR SWITCHES TO ARCHIVED while the archive is still in flight, and the fresh
@@ -2828,7 +2905,9 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
   // console (#935), and "the console mentions the word M0" was never the property under test.
   await expectMissionSelected(page, "M0");
   await expect(page.getByTestId("mission-state")).toContainText("done");
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
 
   // A NEWER LIST INSTALLS — the scope toggle is the cheapest way to force one — and it already
@@ -3649,7 +3728,9 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   await page.goto("/pulse");
   await selectMission(page, "Alpha");
   phase = "hold";
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
+  await overflow(page);
   await page.getByTestId("mission-archive").click();
   await expect.poll(() => heldSeen, { timeout: 10_000 }).toBe(true);
 

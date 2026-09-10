@@ -1,13 +1,19 @@
 /** MISSION CONTROL — the console (#878, Phase 2b of #840).
  *
- * A rail of missions, a thread per mission, and a detail column stacking objectives, context and
- * the timeline. This replaces the card grid: a session that used to be a card is now a mission
- * row, and a live session no mission owns appears under UNTRACKED with ADOPT — which is both the
- * migration path and the permanent home for work started from the sidebar.
+ * A rail of missions in the app shell's sidebar, and one content column per mission: a header
+ * row, a thread that fills the height, a composer on the bottom edge, and four tabs — THREAD /
+ * OBJECTIVES / CONTEXT / TIMELINE — for everything the thread is not. This replaces the card
+ * grid: a session that used to be a card is now a mission row, and a live session no mission owns
+ * appears under UNTRACKED with ADOPT — which is both the migration path and the permanent home
+ * for work started from the sidebar.
  *
- * Two breakpoints, THREE modes. The middle one (1100–1399: rail is a column, detail is still a
- * tab strip) is the mode neither Playwright project lands on, so the breakpoint spec tests both
- * edges of both boundaries rather than a representative width.
+ * **ONE LAYOUT, AT EVERY WIDTH (#942).** There used to be a second: at ≥1400px a persistent 340px
+ * column stacked objectives, follow-through and context beside the thread, and the tab strip hid
+ * because the column was said to replace it. That column was the operator's "the current layout
+ * is a mess" — four unrelated panes, none of them big enough to be useful, with follow-through's
+ * error copy given the prominence, and the thread 340px narrower for it. It is deleted, not
+ * resized: the tabs are the detail surface at 412 and at 1600 alike, follow-through folded onto
+ * the objective rows it was always describing, and the thread got the width back.
  *
  * Every decision renders through the SERVER's projection (`projection` / `can_approve` /
  * `can_reject`). Nothing here re-derives controls from `state` — that drift is what #862 exists
@@ -47,7 +53,7 @@ import { MissionLifecycle } from "./MissionLifecycle";
 import { type ObjectiveOp } from "./MissionObjectives";
 import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
 import { BAND_LABEL } from "./bands";
-import { ObjectivesPane, TimelinePane } from "./MissionDetail";
+import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
 import { useMissionDetail } from "./useMissionDetail";
 import styles from "./mission.module.css";
 
@@ -101,7 +107,14 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
   return rows.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 }
 
-const STOPS = ["THREAD", "OBJECTIVES", "TIMELINE"] as const;
+/** THE TABS, AT EVERY WIDTH (#942).
+ *
+ *  CONTEXT joined them when the 340px detail column was deleted. That column stacked objectives,
+ *  follow-through and context under three headings, which is why the narrow case used to split at
+ *  one seam into three stops rather than four — the column was not three separate things, it was
+ *  a junk drawer. It is now four panes, one subject each, and the same strip switches between them
+ *  whether the viewport is 412 or 1600. One layout, not two. */
+const STOPS = ["THREAD", "OBJECTIVES", "CONTEXT", "TIMELINE"] as const;
 
 /** The states that have RELEASED the mission's roster (#896 review 20, finding 2). A mission in
  *  one of these holds no sessions and follows nothing through, so it cannot be the target of an
@@ -159,6 +172,7 @@ function MissionBody({
   onNote,
   isCurrent,
   onMissionChanged,
+  lifecycleSlot,
 }: {
   missionId: string;
   stop: Stop;
@@ -175,6 +189,12 @@ function MissionBody({
   /** A lifecycle change landed (or was refused). The RAIL has to re-read too: closing, archiving
    *  or abandoning a mission changes the row the operator is looking at and, for archive, which
    *  scope it belongs in. `moved` says the mission left this rail entirely, and where it went. */
+  /** Where the mission's lifecycle bar renders (#942). The console owns the header row — one row
+   *  carrying the title, the state and the actions — but only this component has the mission
+   *  detail those actions act on. So the header supplies the destination and the body fills it,
+   *  the same shape the rail already uses for the shell's sidebar. `null` renders in place, which
+   *  keeps this component standalone in tests. */
+  lifecycleSlot?: HTMLElement | null;
   onMissionChanged: (opts?: {
     /** Set only when THIS mount is still the one on screen — it clears the SELECTION. */
     scopeCleared?: boolean;
@@ -417,12 +437,20 @@ function MissionBody({
     <ObjectivesPane
       objectives={d.objectives}
       objectivesState={d.mission?.objectives_state}
-      context={d.context}
-      loading={!d.context}
+      objectivesFailed={d.objectivesFailed}
       supervisor={d.mission?.supervisor}
-      onMembershipChanged={d.reloadContext}
       onOps={editable ? onOps : undefined}
       onStandDown={editable ? onStandDown : undefined}
+      busy={mutating}
+    />
+  );
+  /** CONTEXT IS ITS OWN TAB (#942). It used to be the third heading inside OBJECTIVES; the props
+   *  are unchanged, only the pane they arrive on. */
+  const context = (
+    <ContextPane
+      context={d.context}
+      loading={!d.context}
+      onMembershipChanged={d.reloadContext}
       onDetach={editable ? onDetach : undefined}
       busy={mutating}
       // SPAWN IS OFFERED ONLY WHERE IT COULD LAND (#894): a mission actually `running`, with an
@@ -488,22 +516,70 @@ function MissionBody({
     />
   );
 
+  const lifecycle = d.mission ? (
+    <MissionLifecycle
+      mission={d.mission}
+      onChanged={(opts) => {
+        d.reload();
+        changedIfCurrent(opts);
+      }}
+      onNote={noteIfCurrent}
+    />
+  ) : null;
+
+  /** THE COMPOSER, DOCKED (#942, #890).
+   *
+   *  It sends DURABLE turns: the transcript above IS the mission timeline — the route writes the
+   *  operator's message in its claim transaction and the answer in its settlement — so the
+   *  composer owns only the draft and the turn in flight. None of that changes here.
+   *
+   *  What changes is where it sits. It used to be the last child of the scrolling pane, on the
+   *  THREAD stop only, which put it immediately under the final event with the rest of the column
+   *  empty beneath it. Docked, it is on the bottom edge at every height — and it stays mounted
+   *  across stops, so a half-typed message survives a glance at OBJECTIVES instead of being
+   *  discarded by an unmount the operator did not ask for.
+   */
+  const composerDock = (
+    <div className={styles.composerDock}>
+      <MissionComposer
+        missionId={missionId}
+        configured={configured}
+        isCurrent={isCurrent}
+        onSettled={d.reload}
+        detail={d.mission ?? null}
+      />
+    </div>
+  );
+
   return (
     <>
+      {lifecycleSlot && lifecycle ? createPortal(lifecycle, lifecycleSlot) : null}
+      {/* THE THREAD COLUMN — a scrolling pane with the composer docked under it (#942).
+          The composer used to be the last child of the scrolling pane, so it sat immediately
+          after the final event and everything below it was empty: on a 1600×950 desktop with a
+          quiet mission that is roughly 60% of the column, which is what the operator reported as
+          "a mess". A chat fills its column and pins its input to the bottom edge. Splitting the
+          two is the whole fix — the pane keeps `flex: 1` and scrolls, the dock is `flex: none`
+          and sits on the bottom edge, so the empty space becomes thread instead of void. */}
+      <div className={styles.threadCol}>
       <div className={styles.pane} data-testid="pane">
-        {/* The mission's own controls, above its content and on every stop — closing a mission
-            from the timeline is as reasonable as closing it from the thread, and hiding them
-            behind one stop would make the control depend on where you happened to be. */}
-        {d.mission ? (
-          <MissionLifecycle
-            mission={d.mission}
-            onChanged={(opts) => {
-              d.reload();
-              changedIfCurrent(opts);
-            }}
-            onNote={noteIfCurrent}
-          />
-        ) : null}
+        {/* THE SCROLLING CONTENT, in its own box so a SHORT thread sits at the BOTTOM (#942).
+            Pinning the composer fixed half the dead band and moved the other half: the events
+            stayed top-aligned, so a four-turn mission on a 950px screen put ~350px of void
+            between the last answer and the box you type into. Chats grow up from the composer.
+            `.paneInner` carries `margin-top: auto` — see the note beside `.pane`. */}
+        <div
+          className={`${styles.paneInner} ${stop === "THREAD" ? styles.paneAtBottom : ""}`}
+        >
+        {/* ONE HEADER ROW (#942). The mission's controls live in the console's header now, beside
+            the title and the state, instead of on a second row of their own inside the pane —
+            two stacked headers before any content was one of the things that made the page read
+            as two designs. They are still on every stop: closing a mission from the timeline is
+            as reasonable as closing it from the thread.
+
+            Rendered in place when no slot is offered, which is what keeps this component
+            standalone in a unit test. */}
+        {d.mission && !lifecycleSlot ? lifecycle : null}
         {stop === "THREAD" ? (
           <>
             {!configured ? (
@@ -588,37 +664,19 @@ function MissionBody({
             ) : (
               d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
             )}
-            {/* THE COMPOSER SENDS DURABLE TURNS (#890). The transcript above IS the mission
-                timeline — the route writes the operator's message in its claim transaction and
-                the answer in its settlement — so the composer owns only the draft and the turn
-                in flight. */}
-            <MissionComposer
-              missionId={missionId}
-              configured={configured}
-              isCurrent={isCurrent}
-              onSettled={d.reload}
-              detail={d.mission ?? null}
-            />
           </>
         ) : stop === "OBJECTIVES" ? (
           objectives
+        ) : stop === "CONTEXT" ? (
+          context
         ) : (
           timeline
         )}
+        </div>
+      </div>
+        {composerDock}
       </div>
 
-      {/* The persistent detail column at ≥1400px. It STACKS objectives, context and the timeline
-          — which is why mobile splits at that one seam into three stops rather than four: the
-          column is not three separate things. */}
-      <aside
-        className={styles.detail}
-        aria-label="Mission detail"
-        data-testid="detail-column"
-      >
-        {objectives}
-        <div className={styles.section}>Timeline</div>
-        {timeline}
-      </aside>
     </>
   );
 }
@@ -1275,12 +1333,18 @@ export function MissionConsole({
     return untracked.length ? UNTRACKED_VIEW : null;
   }, [missions, untracked]);
   const shown = selected ?? autoSelected;
-  /** Is a persistent detail column rendered beside the pane? Only `MissionBody` draws one, so
-   *  this is exactly "a real mission is selected" (#929). The stop strip keys off THIS rather
-   *  than off the viewport: the old rule hid the tabs at ≥1400px on the theory that a column
-   *  always replaced them, which is false in the untracked view — leaving OBJECTIVES and
-   *  TIMELINE unreachable on desktop and reachable on a phone. */
-  const hasDetailColumn = !!shown && shown !== UNTRACKED_VIEW;
+  /** The header's title, from the SAME mission the body renders.
+   *
+   *  `title` is pushed up by the body after its detail fetch, so on its own it is null for the
+   *  whole of that round trip — and the header contradicted the body for exactly that window.
+   *  The rail row is already loaded and already carries the title, so it answers immediately; the
+   *  fetched value still wins when it differs, which is what keeps a rename correct. */
+  const shownRow = shown ? missions.find((m) => m.id === shown) : undefined;
+  const shownTitle = title ?? shownRow?.title ?? null;
+  /** The header's slot for the mission's lifecycle bar — see `MissionBody.lifecycleSlot`. */
+  const [lifecycleSlotEl, setLifecycleSlotEl] = useState<HTMLElement | null>(
+    null,
+  );
   /** A genuinely fresh install: the ACTIVE rail has been read and holds nothing (#929).
    *
    *  Every clause earns its place. `listLoaded` separates "none" from "not yet"; `!storeError`
@@ -1305,10 +1369,16 @@ export function MissionConsole({
         data-testid={`no-mission-${stop.toLowerCase()}`}
       >
         <div className={styles.emptyLead}>No mission selected.</div>
+        {/* ONE SENTENCE PER STOP (#942 review 4). CONTEXT became reachable when the tabs replaced
+            the detail column, and it fell through to the TIMELINE's sentence — telling the
+            operator that a timeline belongs to a mission on a tab that is about neither. A
+            two-branch ternary was correct while there were two stops that could be empty. */}
         <div>
           {stop === "OBJECTIVES"
             ? "Objectives belong to a mission — they appear once you choose one from the rail or start a new one."
-            : "A timeline belongs to a mission — it appears once you choose one from the rail or start a new one."}
+            : stop === "CONTEXT"
+              ? "Context belongs to a mission — its sessions, its directory and its repository appear once you choose one from the rail or start a new one."
+              : "A timeline belongs to a mission — it appears once you choose one from the rail or start a new one."}
         </div>
       </div>
     );
@@ -1326,12 +1396,12 @@ export function MissionConsole({
    *
    *  `select()` already does this, but `shown` is `selected ?? autoSelected` — so a mission can
    *  be ENTERED without anyone selecting it, when a list arrives and `autoSelected` picks the
-   *  first row. The stop then survives that entry, and at >=1400px the consequence is not
-   *  cosmetic: `hasDetailColumn` becomes true, the tab strip is hidden because the detail column
-   *  is meant to have replaced it, and `MissionBody` goes on rendering OBJECTIVES in the main
-   *  pane. The thread and its composer are then unreachable with no control on screen to get
-   *  back — clicking the same mission in the rail is the only way out, which is precisely the
-   *  tell that this is stale state rather than missing data.
+   *  first row. Entering a mission on whatever tab the last one was left on is stale state, not
+   *  data: the operator asked to look at a mission, and the thread is what that means. (Before
+   *  #942 this was worse than untidy — at >=1400px the strip was hidden on the theory that a
+   *  detail column had replaced it, so the thread and its composer were unreachable with no
+   *  control on screen to get back. The strip is now always rendered, so this is once again just
+   *  the right default rather than the only way out.)
    *
    *  Keyed on `shown` rather than on the auto/explicit distinction: a tab press does not change
    *  `shown`, so switching stops on a mission still works exactly as before. */
@@ -1688,21 +1758,35 @@ export function MissionConsole({
               pixels above, so this fell back to printing the page's name twice — one of the
               things that made the page read as two designs stacked. This says which MISSION
               you are looking at, or what to do if you are not looking at one. */}
+          {/* THE TITLE COMES FROM THE MISSION THE BODY IS RENDERING (#942).
+              It used to come from `title`, a separate piece of console state the body pushed up
+              after its detail fetch resolved — so between selecting a mission and that fetch
+              landing, and after any re-render that cleared it, the header said "Select a mission"
+              while that mission's own state and controls rendered underneath. At 1280 that was
+              reproducible on load. The rail already knows the row's title, so the header reads it
+              from there and falls back to the fetched one only to catch a rename. */}
           <span className={styles.missionTitle} data-testid="console-title">
-            {title ??
+            {shownTitle ??
               (missions.length ? "Select a mission" : "No missions yet")}
           </span>
+          {/* Where `MissionBody` portals the mission's state and actions, so the header is ONE
+              row rather than a title above a second bar. */}
+          <span
+            className={styles.topbarActions}
+            ref={setLifecycleSlotEl}
+            data-testid="header-actions"
+          />
         </div>
 
-        {/* HIDDEN ONLY WHEN SOMETHING REPLACES IT (#929).
-            The rule used to be width alone: `@media (min-width: 1400px) { .stops { display:none } }`,
-            justified by "the detail column is persistent, so there is nothing to switch between".
-            The column is not persistent — it belongs to `MissionBody`, so with no mission selected
-            there was no column AND no tabs, and OBJECTIVES/TIMELINE were unreachable on desktop
-            while remaining reachable on a phone. The class says whether the replacement is
-            actually there, and the media query keys off that instead of guessing from width. */}
+        {/* ALWAYS ON SCREEN (#942), which retires the whole #929 problem rather than fixing it
+            again. The strip used to be hidden at ≥1400px on the theory that a persistent detail
+            column replaced it; the column was not persistent (it belonged to `MissionBody`), so
+            with nothing selected there was no column AND no tabs, and OBJECTIVES/TIMELINE were
+            unreachable on desktop while reachable on a phone. #929 fixed that by keying the
+            media query off a class rather than the viewport. There is no column now — the tabs
+            ARE the wide layout — so there is no rule to key off anything. */}
         <div
-          className={`${styles.stops} ${hasDetailColumn ? styles.stopsReplaced : ""}`}
+          className={styles.stops}
           role="tablist"
           aria-label="Mission view"
         >
@@ -1748,7 +1832,7 @@ export function MissionConsole({
         ) : null}
 
         <div
-          className={`${styles.split} ${hasDetailColumn ? styles.splitWide : ""}`}
+          className={styles.split}
           data-testid="split"
         >
           {shown === UNTRACKED_VIEW ? (
@@ -1996,6 +2080,7 @@ export function MissionConsole({
               onResolved={onResolved}
               onNote={setNote}
               isCurrent={isCurrent}
+              lifecycleSlot={lifecycleSlotEl}
               onMissionChanged={onMissionChanged}
             />
           ) : (

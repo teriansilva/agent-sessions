@@ -1,15 +1,28 @@
-/** The supervisor's follow-through board (#885).
+/** The supervisor's follow-through, ON the objective rows (#885, folded by #942).
  *
  *  The operator's complaint this answers is "the supervisor did nothing" — which is
- *  indistinguishable from a broken feature unless the silence is *named*. So every row here
- *  renders one of four boards, and three of them are reasons not to act:
+ *  indistinguishable from a broken feature unless the silence is *named*. So every objective
+ *  carries one of four boards, and three of them are reasons not to act:
  *
  *    HELD    the operator stood this objective down    — quiet on purpose, not a fault
  *    SPENT   the per-episode nudge budget is gone      — needs a human
  *    WAITING a nudge is in flight or its fate is unknown
  *    READY   the supervisor may nudge this next pass
  *
- *  Two rules hold this together, and both are deliberate:
+ *  **This used to be a panel of its own, and that was the mistake #942 names.** FOLLOW-THROUGH sat
+ *  beside OBJECTIVES in a 340px stack, printing a second list of the same objectives under
+ *  different titles — so reading "why has nothing happened to objective 3" meant finding row 3 in
+ *  one list and row 3 in the other and trusting they were the same row. `assess()` iterates the
+ *  mission's own objective rows (`mission_supervisor.assess`), so they always were. The board is
+ *  now the row: `SupervisorCell` renders on the objective it describes.
+ *
+ *  What could NOT fold is the part that is about the MISSION rather than an objective — an
+ *  assessment that could not run, a roster that could not be read, a mission holding no session,
+ *  every gate met. Those have no row to attach to, and one of them (`unmeasured`) is precisely the
+ *  case where there are no rows at all. They stay mission-level, above the list, as
+ *  `MissionSupervisorNotices`.
+ *
+ *  Three rules hold this together, and all three are deliberate:
  *
  *  1. **The state is classified from the STRUCTURED fields, the sentence comes from the server.**
  *     `stood_down` / `remaining` / `may_nudge` pick the board; `why_not` is printed verbatim.
@@ -21,6 +34,11 @@
  *     `assess()` succeeded; when it could not run the key is missing, and this renders "could not
  *     be read" rather than a clean board. "Nothing to follow up" and "we could not look" are
  *     different claims and the operator acts differently on each.
+ *
+ *  3. **STAND DOWN sends the episode the row was RENDERED at**, never "whatever is current". If
+ *     the objective has moved since, the server answers 409 and the console re-renders — a stale
+ *     tap must not silence a report nobody has seen. Folding the control onto the objective row
+ *     changes where it sits and nothing else about that fence.
  */
 import type { MissionSupervisor, SupervisorObjective } from "../../types/api";
 
@@ -37,35 +55,39 @@ const CLASS: Record<Board, string> = {
   ready: styles.supReady,
 };
 
-function ObjectiveRow({
+/** The supervisor's reading of ONE objective, rendered on that objective's own row.
+ *
+ *  Everything here was a cell of the old board's grid; nothing is added and nothing is dropped.
+ *  The badge, the `spent/budget` counter with its episode suffix, the server's verbatim sentence
+ *  and STAND DOWN — in that order, which is the order they were in. */
+export function SupervisorCell({
   o,
-  budget,
+  budget = 3,
   onStandDown,
-  busy,
+  busy = false,
 }: {
   o: SupervisorObjective;
-  budget: number;
+  budget?: number;
   /** Silence this objective for the episode it is RENDERED at. Absent ⇒ read-only. */
   onStandDown?: (key: string, episode: number) => void;
-  busy: boolean;
+  busy?: boolean;
 }) {
   const board = boardFor(o);
   return (
-    <li className={styles.supRow} data-board={board} data-key={o.key}>
+    <span className={styles.supCell} data-testid="supervisor-cell">
       <span className={`${styles.supBadge} ${CLASS[board]}`}>
         {BOARD_LABEL[board]}
       </span>
-      <span className={styles.supTitle}>
-        {o.title || o.key}
-        {o.gate ? (
-          <span
-            className={styles.supGate}
-            title="A gate — the mission cannot finish until this is met"
-          >
-            GATE
-          </span>
-        ) : null}
-      </span>
+      {/* A GATE is a fact about the objective, and it travels here rather than on the objective
+          row's own markup because the objective read does not carry it — `assess()` does. */}
+      {o.gate ? (
+        <span
+          className={styles.supGate}
+          title="A gate — the mission cannot finish until this is met"
+        >
+          GATE
+        </span>
+      ) : null}
       <span
         className={styles.supBudget}
         title={`${o.spent} of ${budget} nudges spent this episode`}
@@ -75,15 +97,13 @@ function ObjectiveRow({
           <span className={styles.supEpisode}> · ep {o.episode}</span>
         ) : null}
       </span>
-      {/* The server's sentence, verbatim. Absent when the supervisor is free to act. */}
-      {o.why_not ? <span className={styles.supWhy}>{o.why_not}</span> : null}
-      {/* "Stop telling me about this one" (#889).
+      {/* "Stop telling me about this one" (#889) — BEFORE the sentence, not after it.
+          `why_not` takes a line of its own (it is unbounded server prose), so a control placed
+          after it lands on a THIRD line and the row grows by 44px for the objectives that have
+          something to explain — exactly the ones the operator is most likely to act on.
           Hidden once the objective is already stood down — HELD is the state this produces, so
           offering it again would suggest a second thing to do that does not exist. Also hidden on
-          a settled objective: silencing something already met is a control with no effect.
-          The EPISODE the row was rendered at is what gets sent, never "whatever is current". If
-          the objective has moved since, the server answers 409 and the console re-renders — a
-          stale tap must not silence a report nobody has seen. */}
+          a settled objective: silencing something already met is a control with no effect. */}
       {onStandDown && !o.stood_down && !o.met ? (
         <button
           type="button"
@@ -97,21 +117,21 @@ function ObjectiveRow({
           STAND DOWN
         </button>
       ) : null}
-    </li>
+      {/* The server's sentence, verbatim. Absent when the supervisor is free to act. */}
+      {o.why_not ? <span className={styles.supWhy}>{o.why_not}</span> : null}
+    </span>
   );
 }
 
-export function MissionSupervisorBoard({
+/** What the supervisor has to say about the MISSION — the part with no objective to sit on.
+ *
+ *  Rendered above the objective list, and it renders whether or not there is a list: "no
+ *  objectives, so there is nothing to follow through on" is the one notice whose whole meaning is
+ *  that the list is empty. */
+export function MissionSupervisorNotices({
   supervisor,
-  budget = 3,
-  onStandDown,
-  busy = false,
 }: {
   supervisor: MissionSupervisor | undefined;
-  budget?: number;
-  /** Absent ⇒ the board is read-only (an archived or closed mission). */
-  onStandDown?: (key: string, episode: number) => void;
-  busy?: boolean;
 }) {
   if (!supervisor) {
     return (
@@ -132,12 +152,12 @@ export function MissionSupervisorBoard({
     );
   }
   return (
-    <div data-testid="supervisor-board">
+    <div data-testid="supervisor-notices">
       {/* NOTHING TO FOLLOW THROUGH WITH, said out loud (#896 review 7, finding 2).
           Releasing the last session leaves a `running` mission the supervisor cannot act on: it
           iterates held sessions and there are none. The server already refuses every nudge for
           that reason and says so per objective; this is the one sentence that explains the whole
-          board at once, so the operator is not left inferring it from five identical rows.
+          list at once, so the operator is not left inferring it from five identical rows.
           It is a claim about the MISSION, not about an agent — "idle" and "stalled" are claims
           about an agent, and there is no agent here to be either. */}
       {/* AND "WE COULD NOT LOOK" IS ITS OWN ANSWER (#896 review 8, finding 2). An unreadable
@@ -173,17 +193,6 @@ export function MissionSupervisorBoard({
           {supervisor.unmet_gates === 1 ? "gate" : "gates"}
         </div>
       ) : null}
-      <ul className={styles.supList}>
-        {objectives.map((o) => (
-          <ObjectiveRow
-            key={o.key}
-            o={o}
-            budget={budget}
-            onStandDown={onStandDown}
-            busy={busy}
-          />
-        ))}
-      </ul>
     </div>
   );
 }

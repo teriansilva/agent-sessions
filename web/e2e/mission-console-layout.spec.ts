@@ -150,11 +150,13 @@ test.describe("stops are reachable at every width (#929)", () => {
     });
   }
 
-  test("with a mission selected at 1600px the column replaces the strip", async ({
+  test("with a mission selected at 1600px the strip is STILL there (#942)", async ({
     page,
   }) => {
-    // The other half: where a column DOES render, the tabs are redundant and stay hidden. Without
-    // this the fix could be "always show the tabs", which trades one wrong layout for another.
+    // THIS ASSERTION IS THE INVERSE OF WHAT IT WAS, and the inversion is the point. #929 fixed
+    // "the tabs vanish at ≥1400px" by keying the hide on whether a detail column had actually
+    // rendered — the honest fix for the rule as it stood. #942 deleted the column, so there is
+    // nothing to replace the tabs with and nothing to key off: they are simply always there.
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, { missions: [missionRow()] });
     await page.goto("/pulse");
@@ -164,8 +166,10 @@ test.describe("stops are reachable at every width (#929)", () => {
       .getByRole("button", { name: /Kimi transcript adapter/i })
       .first()
       .click();
-    await expect(page.getByTestId("detail-column")).toBeVisible();
-    await expect(page.getByTestId("stop-objectives")).toBeHidden();
+    await expect(page.getByTestId("mission-state")).toBeVisible();
+    await expect(page.getByTestId("detail-column")).toHaveCount(0);
+    await expect(page.getByTestId("stop-objectives")).toBeVisible();
+    await expect(page.getByTestId("stop-context")).toBeVisible();
   });
 });
 
@@ -443,14 +447,16 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
     await expect(page.getByTestId("no-mission-objectives")).toBeVisible();
 
     // The list lands, and the mission is entered by derivation rather than by selection.
-    // (The console title comes from the per-mission detail fetch, not the list row, so the
-    // detail column is the honest witness that a mission was actually entered.)
+    // (The mission's own lifecycle state is the honest witness that a mission was entered — it
+    // renders only from the detail read, so it cannot appear for a mission nobody is on. The
+    // detail column that used to play this role was deleted by #942.)
     gate.resolve();
-    await expect(page.getByTestId("detail-column")).toBeVisible();
+    await expect(page.getByTestId("mission-state")).toBeVisible();
 
     // RED before the fix: the pane is still showing OBJECTIVES while the tab strip that could
-    // leave it is hidden behind the detail column, so the thread and its composer are absent
-    // with nothing on screen to get back to them.
+    // leave it was hidden behind the detail column, so the thread and its composer were absent
+    // with nothing on screen to get back to them. The strip no longer hides, but entering a
+    // mission on the previous mission's tab is still stale state, so the reset still matters.
     //
     // Asserted on the MISSION composer specifically. A bare `getByRole("textbox")` passes
     // against the defect — the app shell's own "Search titles…" box is a visible textbox on
@@ -458,8 +464,12 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
     await expect(
       page.getByLabel("Send a message to this mission"),
     ).toBeVisible();
-    // And the main pane is the thread, not the stop the operator left behind: the objectives
-    // heading belongs to the detail column here, never to the pane.
-    await expect(page.getByTestId("detail-column")).toBeVisible();
+    // And the main pane is the THREAD, not the stop the operator left behind — asserted on the
+    // pane's own content rather than on a sibling column that no longer exists.
+    await expect(page.getByTestId("stop-thread")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(page.getByTestId("objectives")).toHaveCount(0);
   });
 });
