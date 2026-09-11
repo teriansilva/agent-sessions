@@ -4,6 +4,8 @@
  * started from the sidebar. Deleting the card grid without it would orphan every live session
  * that nobody has adopted, which is the one way this phase could lose something real.
  */
+import { relTime } from "../../lib/format";
+import type { ReactNode } from "react";
 import type { MissionListRow, PulseCard } from "../../types/api";
 
 import styles from "./mission.module.css";
@@ -20,7 +22,7 @@ function dotClass(m: MissionListRow): string {
 
 function stateLabel(m: MissionListRow): string {
   if (m.needs_you) return "needs you";
-  return m.state;
+  return m.state === "dispatching" ? "starting" : m.state;
 }
 
 /** The sentinel id for the UNTRACKED view. A real mission id is `msn_…`, so this cannot collide.
@@ -33,6 +35,11 @@ function stateLabel(m: MissionListRow): string {
 export const UNTRACKED_VIEW = "__untracked__";
 
 export interface MissionRailProps {
+  filters?: ReactNode;
+  untrackedFilters?: ReactNode;
+  loading?: boolean;
+  filtered?: boolean;
+  projectNames?: Record<string, string>;
   missions: MissionListRow[];
   /** Live sessions with no mission. `PulseCard` is the existing overview row shape. */
   untracked: PulseCard[];
@@ -87,9 +94,27 @@ export function MissionRail({
   archived = false,
   onScope,
   onNewMission,
+  filters,
+  untrackedFilters,
+  loading = false,
+  filtered = false,
+  projectNames = {},
 }: MissionRailProps) {
   return (
-    <nav className={styles.rail} aria-label="Missions">
+    <nav
+      className={`${styles.rail} ${selectedId === UNTRACKED_VIEW ? styles.railWithSessions : ""}`}
+      aria-label="Missions"
+    >
+      <div className={styles.railHeading}>
+        Missions{" "}
+        <small>
+          {loading
+            ? "Loading…"
+            : storeError && !missions.length
+              ? "Unavailable"
+              : `${total} ${archived ? "archived" : "active"}`}
+        </small>
+      </div>
       {storeError ? (
         // A store that would not answer is NOT "you have no missions". Saying the second when
         // the first is true is the lie this notice exists to prevent.
@@ -102,8 +127,16 @@ export function MissionRail({
             The mission store could not be read.
           </div>
           <div>
-            {storeError}. Missions are not listed; live sessions below are
-            unaffected.
+            {storeError}.{" "}
+            {missions.length
+              ? "Showing the last available result."
+              : "Missions are unavailable."}{" "}
+            Sessions below are unaffected.
+            {onReRead ? (
+              <button type="button" className={styles.more} onClick={onReRead}>
+                Retry missions
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -122,6 +155,7 @@ export function MissionRail({
         </button>
       ) : null}
 
+      {filters}
       <div className={styles.railGroup}>
         <span>{archived ? "Archived" : "Missions"}</span>
         {/* A scope SWITCH, not a filter chip: the two scopes are disjoint (the server's
@@ -140,61 +174,80 @@ export function MissionRail({
           </button>
         ) : null}
       </div>
-      {missions.length === 0 && !storeError ? (
-        <div className={styles.empty} data-testid="rail-no-missions">
-          {archived ? "Nothing archived yet." : "Nothing tracked yet."}
-        </div>
-      ) : null}
-      {missions.map((m) => (
-        <button
-          key={m.id}
-          type="button"
-          className={`${styles.railRow} ${m.id === selectedId ? styles.railRowOn : ""}`}
-          aria-current={m.id === selectedId ? "true" : undefined}
-          onClick={() => onSelect(m.id)}
-          data-testid="rail-mission"
-        >
-          <span
-            className={`${styles.dot} ${dotClass(m)}`}
-            role="img"
-            aria-label={m.needs_you ? "Needs you" : m.state}
-          />
-          <span>
-            <span className={styles.railTitle}>{m.title}</span>
-            <span className={styles.railMeta}>
-              {m.project_id || "no project"} · {m.session_keys.length}{" "}
-              {m.session_keys.length === 1 ? "session" : "sessions"} ·{" "}
-              {stateLabel(m)}
+      <div className={styles.railScroll} data-testid="mission-list-scroll">
+        {loading ? (
+          <div className={styles.empty} role="status">
+            Loading missions…
+          </div>
+        ) : null}
+        {missions.length === 0 && !storeError && !loading ? (
+          <div className={styles.empty} data-testid="rail-no-missions">
+            {filtered
+              ? "No missions match these filters."
+              : archived
+                ? "Nothing archived yet."
+                : "Nothing tracked yet."}
+          </div>
+        ) : null}
+        {missions.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`${styles.railRow} ${m.id === selectedId ? styles.railRowOn : ""}`}
+            aria-current={m.id === selectedId ? "true" : undefined}
+            onClick={() => onSelect(m.id)}
+            data-testid="rail-mission"
+          >
+            <span
+              className={`${styles.dot} ${dotClass(m)}`}
+              role="img"
+              aria-label={m.needs_you ? "Needs you" : m.state}
+            />
+            <span>
+              <span className={styles.railTitle}>{m.title}</span>
+              <span className={styles.railMeta}>
+                {m.project_id
+                  ? projectNames[m.project_id] ||
+                    (m.cwd?.split("/").filter(Boolean).at(-1) ??
+                      "Unavailable project")
+                  : "No project"}{" "}
+                · {m.session_keys.length}{" "}
+                {m.session_keys.length === 1 ? "session" : "sessions"}
+                <span className={styles.railState}>
+                  {stateLabel(m)}
+                  {m.archived_at != null ? " · archived" : ""} ·{" "}
+                  {relTime(m.updated_at)}
+                </span>
+              </span>
             </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        ))}
 
-      {needsReRead && onReRead ? (
-        <button
-          type="button"
-          className={styles.more}
-          onClick={onReRead}
-          disabled={loadingMore}
-          data-testid="rail-re-read"
-        >
-          This list was read in pages — re-read it
-        </button>
-      ) : null}
-      {hasMore ? (
-        <button
-          type="button"
-          className={styles.more}
-          onClick={onLoadMore}
-          disabled={loadingMore}
-          data-testid="rail-load-more"
-        >
-          {loadingMore
-            ? "Loading…"
-            : `Load more — ${missions.length} of ${total}`}
-        </button>
-      ) : null}
-
+        {needsReRead && onReRead ? (
+          <button
+            type="button"
+            className={styles.more}
+            onClick={onReRead}
+            disabled={loadingMore}
+            data-testid="rail-re-read"
+          >
+            This list was read in pages — re-read it
+          </button>
+        ) : null}
+        {hasMore ? (
+          <button
+            type="button"
+            className={styles.more}
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            data-testid="rail-load-more"
+          >
+            {loadingMore
+              ? "Loading…"
+              : `Load more — ${missions.length} of ${total}`}
+          </button>
+        ) : null}
+      </div>
       {untracked.length > 0 ? (
         <>
           <button
@@ -218,7 +271,7 @@ export function MissionRail({
             />
             <span>
               <span className={styles.railTitle}>
-                Untracked · {untracked.length}
+                Sessions without a mission · {untracked.length}
               </span>
               <span className={styles.railMeta}>
                 {untracked.filter((c) => c.pending_action).length
@@ -234,6 +287,7 @@ export function MissionRail({
               without opening it. One navigation row, and the sessions live in the view. */}
         </>
       ) : null}
+      {selectedId === UNTRACKED_VIEW ? untrackedFilters : null}
     </nav>
   );
 }

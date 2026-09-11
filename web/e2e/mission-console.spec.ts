@@ -1,3 +1,5 @@
+import { openMissionConversation } from "./mission-console";
+import { openMissionDetails } from "./mission-console";
 /** MISSION CONTROL's own browser gates (#878).
  *
  * Four things here cannot be proved in jsdom, which is why they are asserted in a real browser:
@@ -113,7 +115,7 @@ const HELD = {
 // case split at one seam into three stops rather than four.
 // ==============================================================================================
 
-test("the stops are exactly THREAD · OBJECTIVES · CONTEXT · TIMELINE, in that order", async ({
+test("Conversation and Details open the four ordered disclosures", async ({
   page,
 }) => {
   await stub(page);
@@ -125,21 +127,22 @@ test("the stops are exactly THREAD · OBJECTIVES · CONTEXT · TIMELINE, in that
   await page.goto("/pulse");
 
   const tabs = stops(page);
-  await expect(tabs).toHaveCount(4);
-  await expect(tabs.nth(0)).toHaveText("THREAD");
-  await expect(tabs.nth(1)).toHaveText("OBJECTIVES");
-  await expect(tabs.nth(2)).toHaveText("CONTEXT");
-  await expect(tabs.nth(3)).toHaveText("TIMELINE");
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.nth(0)).toHaveText("Conversation");
+  await expect(tabs.nth(1)).toHaveText("Details");
+  await expect(
+    page.getByTestId("mission-details").locator("section > button"),
+  ).toHaveText([/Context/, /Objectives/, /Follow-through/, /Timeline/]);
   // THREAD is the default — the decision surface, not the log.
   await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
 
   await tabs.nth(1).click();
   await expect(page.getByText(/objectives/i).first()).toBeVisible();
-  await tabs.nth(3).click();
+  await openMissionDetails(page, "timeline");
   // Still scoped to the pane. The detail column that made this query ambiguous is gone (#942),
   // but the scoping is what fails loudly if a second copy is ever mounted again.
   await expect(
-    page.getByTestId("pane").getByTestId("timeline-empty"),
+    page.getByTestId("mission-details").getByTestId("timeline-empty"),
   ).toBeVisible();
 });
 
@@ -215,7 +218,9 @@ for (const [width, railIsColumn] of [
     // that used to replace them above 1400 is gone rather than hidden — so this is a `toHaveCount`
     // claim about the DOM, not a visibility one that a `display: none` copy would satisfy.
     await expect(page.getByTestId("detail-column")).toHaveCount(0);
-    await expect(stops(page)).toHaveCount(4);
+    if (width >= 1400)
+      await expect(page.getByTestId("stop-details")).toBeHidden();
+    else await expect(stops(page)).toHaveCount(2);
 
     // No sideways scroll at any of the five widths.
     const wide = await page.evaluate(
@@ -241,7 +246,6 @@ for (const [width, railIsColumn] of [
 // docked column gains none of it, the same contract on a non-mission route, and the 800→801 resize
 // releasing the isolation.
 // ==============================================================================================
-
 
 // ==============================================================================================
 // The geometry inventory. EVERY interactive control on the phone viewport, enumerated by the
@@ -424,14 +428,14 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
   // re-checking the touch floor.
   const surfaces: (() => Promise<void>)[] = [
     async () => {},
-    async () => void (await page.getByTestId("stop-objectives").click()),
+    async () => void (await openMissionDetails(page, "objectives")),
     async () => {
       // The objective row's own edit controls, plus the rename field it swaps in.
-      await page.getByTestId("stop-objectives").click();
+      await openMissionDetails(page, "objectives");
       const rename = page.getByTestId("objective-rename").first();
       if (await rename.isVisible().catch(() => false)) await rename.click();
     },
-    async () => void (await page.getByTestId("stop-timeline").click()),
+    async () => void (await openMissionDetails(page, "timeline")),
     async () => {
       // NEW MISSION: a composer MODE, so its form is only in the DOM once opened — and it lives
       // in the UNTRACKED view, because the mission body's composer is the DURABLE one (#890).
@@ -442,16 +446,18 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       if (await mode.isVisible().catch(() => false)) await mode.click();
     },
     async () => {
-      await page.getByTestId("stop-thread").click();
+      await openMissionConversation(page);
       const mode = page.getByTestId("composer-mode-ask");
       if (await mode.isVisible().catch(() => false)) await mode.click();
       await openMissionRail(page);
     },
     async () => {
-      // THE FOLLOW-THROUGH BOARD, where STAND DOWN lives. It is offered only for an objective
-      // that is unmet and not already stood down, which is why the fixture above had to grow one.
+      // Return from the untracked view to the mission owning this assessment.
       await page.keyboard.press("Escape");
-      await page.getByTestId("stop-objectives").click();
+      await openMissionRail(page);
+      await page.getByTestId("rail-mission").first().click();
+      await openMissionDetails(page, "objectives");
+      await openMissionDetails(page, "followThrough");
     },
     async () => {
       // BEGIN: a `planned` mission holding a session. It exists in no other state, so a sweep
@@ -535,7 +541,9 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       // while the attribute already says "unreachable" — and every control inside it then reports
       // `not focusable`, which is the isolation WORKING. Asking the attribute removes the race and
       // says what the loop below actually means.
-      const railNav = document.querySelector<HTMLElement>('nav[aria-label="Missions" i]');
+      const railNav = document.querySelector<HTMLElement>(
+        'nav[aria-label="Missions" i]',
+      );
       const railOnScreen =
         railNav !== null &&
         railNav.getBoundingClientRect().left >= 0 &&
@@ -633,7 +641,7 @@ test("a focused control shows a visible focus ring", async ({ page }) => {
   await page.goto("/pulse");
   await page.waitForLoadState("networkidle");
 
-  const tab = page.getByTestId("stop-objectives");
+  const tab = page.getByTestId("stop-details");
   await tab.focus();
   const ring = await tab.evaluate((el) => {
     const s = getComputedStyle(el);
@@ -730,7 +738,7 @@ test("a stale probe shows its LAST OBSERVED state, and marks nothing met on data
   // THROUGH THE TAB, at 1400 as at 412 (#942). This used to need no click: a 340px detail column
   // rendered the objectives unprompted at this width, which is exactly the second layout the
   // rework deleted. One route to the pane now, and it is the same one on a phone.
-  await page.getByTestId("stop-objectives").click();
+  await openMissionDetails(page, "objectives");
   await expect(page.getByTestId("objective-stale")).toContainText(/stale/i);
   await expect(page.getByText(/forge unreachable since 14:22/)).toBeVisible();
   // The objective is NOT met — nothing is marked on data the server could not fetch.
@@ -1091,7 +1099,7 @@ test("the timeline pages by CURSOR, and older events append rather than replace"
   // all three panes are on screen at once" — that mode is gone, along with the 340px track that
   // made it. The strip is the detail surface at every width, so the timeline is one press away
   // here exactly as it is at 412.
-  await page.getByTestId("stop-timeline").click();
+  await openMissionDetails(page, "timeline");
   await expect(page.getByTestId("timeline-row")).toHaveCount(2);
   await page.getByTestId("timeline-more").click();
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSectionState } from "../app/sectionState";
 import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { ProjectRef, Session, SessionsQuery } from "../types/api";
@@ -30,7 +31,10 @@ interface Facets {
 /** The sidebar's data layer: filtered + paginated session list with server facets.
  *  Changing a filter resets to page 0; `loadMore` appends the next page. */
 export function useSessionsList() {
-  const [filters, setFilters] = useState<Filters>(EMPTY);
+  const [filters, setFilters] = useSectionState<Filters>(
+    "sessions.filters",
+    EMPTY,
+  );
   const [sessions, setSessions] = useState<Session[]>([]);
   const [nextOffset, setNextOffset] = useState<number | null>(0);
   const [total, setTotal] = useState(0);
@@ -215,9 +219,9 @@ export function useSessionsList() {
 
   const update = useCallback(
     (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch })),
-    [],
+    [setFilters],
   );
-  const clear = useCallback(() => setFilters(EMPTY), []);
+  const clear = useCallback(() => setFilters(EMPTY), [setFilters]);
 
   // Rename in place: the row stays in the current view, only its title changes.
   const renameRow = useCallback(async (id: string, title: string) => {

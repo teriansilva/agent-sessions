@@ -1,3 +1,4 @@
+import { openMissionDetails } from "./mission-console";
 /** No terminal required — VIEW SCREEN and relay, from the thread (#894, Phase 6 of #840).
  *
  * #840's central promise: *"Jumping into the terminal stays available at every moment; it stops
@@ -118,7 +119,7 @@ async function openContext(page: Page) {
   // CONTEXT IS ITS OWN STOP, at every width (#942). It used to be the third heading inside
   // OBJECTIVES — which is why this reached for `stop-objectives` — and on a desktop it was inside
   // a 340px column that needed no click at all. One tab, one route to it, both projects.
-  await page.getByTestId("stop-context").click();
+  await openMissionDetails(page, "context");
 }
 
 test("VIEW SCREEN reads the live screen and OPENS NO SOCKET", async ({
@@ -487,8 +488,7 @@ test("a relay's OUTCOME survives a reload, and the three answers stay different"
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
   }
-  const stop = page.getByTestId("stop-timeline");
-  if (await stop.isVisible().catch(() => false)) await stop.click();
+  await openMissionDetails(page, "timeline");
 
   const states = page.locator('[data-testid="timeline-relay-state"]:visible');
   await expect(states).toHaveCount(4);
@@ -683,10 +683,14 @@ test("a POLL that lands mid-spawn does not eat the draft", async ({ page }) => {
 
   // While the launch is in flight the panel must still be there, brief intact.
   await expect(page.getByTestId("spawn-card")).toBeVisible();
-  await expect(page.getByTestId("spawn-brief")).toHaveValue("Review the open PR");
+  await expect(page.getByTestId("spawn-brief")).toHaveValue(
+    "Review the open PR",
+  );
 
   release?.();
-  await expect(page.getByTestId("spawn-error")).toContainText(/autonomy is off/);
+  await expect(page.getByTestId("spawn-error")).toContainText(
+    /autonomy is off/,
+  );
   await expect(page.getByTestId("spawn-brief")).toHaveValue(
     "Review the open PR",
     { timeout: 5000 },
@@ -719,9 +723,13 @@ test("a FAILED start is reported, even though the mission stays running", async 
   await page.getByTestId("spawn-start").click();
 
   // The reason reaches the operator…
-  await expect(page.getByTestId("console-note")).toContainText(/never registered/);
+  await expect(page.getByTestId("console-note")).toContainText(
+    /never registered/,
+  );
   // …and the work they typed is still there, because nothing started.
-  await expect(page.getByTestId("spawn-brief")).toHaveValue("Review the open PR");
+  await expect(page.getByTestId("spawn-brief")).toHaveValue(
+    "Review the open PR",
+  );
 });
 
 test("a REFUSED spawn keeps the brief that was typed", async ({ page }) => {

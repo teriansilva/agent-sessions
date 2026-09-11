@@ -1,3 +1,4 @@
+import { openMissionDetails } from "./mission-console";
 /** The supervisor's follow-through, in a real browser (#885) — on the objective rows since #942.
  *
  * jsdom already pins the classification and the wording (`MissionSupervisorBoard.test.tsx`). What
@@ -19,7 +20,12 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { MISSION, missionList, missionRow, mockMissions } from "./mission-console";
+import {
+  MISSION,
+  missionList,
+  missionRow,
+  mockMissions,
+} from "./mission-console";
 
 const T = 1_700_000_000;
 
@@ -35,15 +41,24 @@ const CONFIG = {
 
 async function stub(page: Page) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0, uncertain: 0, settled: [] } }),
+    r.fulfill({
+      json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
+    }),
   );
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({
@@ -64,7 +79,8 @@ async function stub(page: Page) {
   );
 }
 
-const HELD_SENTENCE = "the operator asked not to be told about this objective again";
+const HELD_SENTENCE =
+  "the operator asked not to be told about this objective again";
 const SPENT_SENTENCE = "the 3-nudge budget for this episode is spent";
 const WAITING_SENTENCE =
   "a previous nudge may or may not have been delivered; not sending another";
@@ -185,12 +201,8 @@ async function showObjectives(page: Page) {
   if ((await railRow.count()) > 0 && (await railRow.first().isVisible())) {
     await railRow.first().click();
   }
-  await page
-    .getByRole("tablist", { name: /mission view/i })
-    .getByRole("tab")
-    .filter({ hasText: "OBJECTIVES" })
-    .first()
-    .click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 }
 
 /** Scoped to the DISPLAYED copy. The console used to mount the detail pane twice — a drawer and
@@ -198,9 +210,12 @@ async function showObjectives(page: Page) {
  *  unscoped `getByTestId` a strict-mode violation and `.first()` a coin flip. #942 deleted the
  *  column, so there is one copy now; the scoping stays because it costs nothing and it is what
  *  fails loudly if a second copy is ever reintroduced. */
-const shown = (page: Page, id: string) => page.locator(`[data-testid="${id}"]:visible`);
+const shown = (page: Page, id: string) =>
+  page.locator(`[data-testid="${id}"]:visible`);
 
-test("all four boards reach the console and are told apart on screen", async ({ page }) => {
+test("all four boards reach the console and are told apart on screen", async ({
+  page,
+}) => {
   await openConsole(page, SUPERVISOR);
   await showObjectives(page);
 
@@ -217,7 +232,11 @@ test("all four boards reach the console and are told apart on screen", async ({ 
   // Every badge is laid out and visible — not merely in the DOM. Taken from the supervisor's
   // cell rather than from the row: the row's own first span is the objective's state dot.
   for (let i = 0; i < 4; i++) {
-    const badge = rows.nth(i).getByTestId("supervisor-cell").locator("span").first();
+    const badge = rows
+      .nth(i)
+      .getByTestId("supervisor-cell")
+      .locator("span")
+      .first();
     await expect(badge).toBeVisible();
     const box = await badge.boundingBox();
     expect(box?.width ?? 0).toBeGreaterThan(0);
@@ -236,7 +255,9 @@ test("all four boards reach the console and are told apart on screen", async ({ 
   expect(await colourOf(1)).not.toBe(await colourOf(2));
 });
 
-test("the server's refusal sentence is readable, not clipped", async ({ page }) => {
+test("the server's refusal sentence is readable, not clipped", async ({
+  page,
+}) => {
   await openConsole(page, SUPERVISOR);
   await showObjectives(page);
 
@@ -246,14 +267,18 @@ test("the server's refusal sentence is readable, not clipped", async ({ page }) 
     await expect(el).toBeVisible();
     // Not truncated: the rendered box is tall enough to hold every line it wrapped to.
     const clipped = await el.evaluate(
-      (n) => n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1,
+      (n) =>
+        n.scrollHeight > n.clientHeight + 1 ||
+        n.scrollWidth > n.clientWidth + 1,
     );
     expect(clipped, `"${sentence.slice(0, 30)}…" is clipped`).toBe(false);
   }
 
   // The page itself must not scroll sideways to fit that prose.
   const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth + 1,
   );
   expect(overflow).toBe(false);
 });

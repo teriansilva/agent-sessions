@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// #494: on mobile the drawer's Help / Pulse / Overview / Settings actions must render as ONE
+// #494: on mobile the drawer's Help / Overview / Templates / Settings actions must render as ONE
 // icon-only row (no text labels), not a stacked, labelled column — recovering vertical space.
 // Real-browser layout test (jsdom can't model flex direction / box geometry).
 
@@ -39,29 +39,29 @@ test.describe("Mobile drawer nav — one icon-only row (#494)", () => {
     await page.getByRole("button", { name: /open session list/i }).click();
   });
 
-  test("Help/Pulse/Overview/Templates/Settings share a single row, icon-only", async ({
+  test("Help/Overview/Templates/Settings share a single row, icon-only", async ({
     page,
   }) => {
     const actions = page.locator(".sidebar-actions");
     await expect(actions).toBeVisible();
 
     const items = actions.locator(":scope > *");
-    await expect(items).toHaveCount(5);
+    await expect(items).toHaveCount(4);
 
     const boxes = [];
-    for (let i = 0; i < 5; i++) boxes.push((await items.nth(i).boundingBox())!);
+    for (let i = 0; i < 4; i++) boxes.push((await items.nth(i).boundingBox())!);
 
-    // One row: all five share the same top (within a couple px) and march left → right.
+    // One row: all four share the same top (within a couple px) and march left → right.
     for (const b of boxes)
       expect(Math.abs(b.y - boxes[0].y)).toBeLessThanOrEqual(2);
     for (let i = 1; i < boxes.length; i++)
       expect(boxes[i].x).toBeGreaterThan(boxes[i - 1].x);
 
-    // The container is a single row tall — a stacked column of 5 would be ~200px.
+    // The container is a single row tall — a stacked column of 4 would be ~200px.
     expect((await actions.boundingBox())!.height).toBeLessThan(64);
 
     // Icon-only: an aria-label is the affordance, no visible text label remains.
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       expect((await items.nth(i).innerText()).trim()).toBe("");
       expect(await items.nth(i).getAttribute("aria-label")).toBeTruthy();
     }

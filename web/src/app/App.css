@@ -815,3 +815,84 @@ body.hud-static-grid {
   color: var(--text-1);
   border-color: var(--accent);
 }
+
+/* The two work sections stay named and reachable on either route (#944). */
+.section-nav {
+  display: flex;
+  align-self: stretch;
+  gap: 8px;
+  margin-left: 20px;
+}
+.section-nav a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  text-decoration: none;
+  font-weight: 600;
+}
+.section-nav a[aria-current="page"] {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+  background: var(--glass);
+}
+.section-nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (max-width: 1100px) {
+  .hud-telemetry {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .app {
+    grid-template-rows: 100px minmax(0, 1fr) 28px;
+  }
+  .hud-topbar {
+    flex-wrap: wrap;
+    height: 100px;
+    align-content: flex-start;
+    gap: 0 12px;
+  }
+  .hud-brand,
+  .hud-topbar > .navToggle,
+  .hud-topbar-actions {
+    height: 48px;
+  }
+  .section-nav {
+    order: 10;
+    width: 100%;
+    height: 52px;
+    margin: 0;
+    gap: 0;
+  }
+  .section-nav a {
+    flex: 1;
+  }
+  .sidebar,
+  .backdrop {
+    top: 100px;
+  }
+  .sidebar {
+    height: calc(100dvh - 100px);
+    padding-top: 0;
+  }
+}
+
+/* Keep the command row on one line on the narrowest supported screens. */
+@media (max-width: 360px) {
+  .hud-topbar {
+    padding-inline: 10px;
+    gap: 0 6px;
+  }
+  .hud-brand {
+    font-size: 12px;
+    gap: 6px;
+    letter-spacing: 0.12em;
+  }
+}

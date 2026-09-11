@@ -316,6 +316,8 @@ test("mobile: one column, and every action is a real touch target", async ({ pag
   const toggle = page.getByRole("button", { name: /hide|show/i });
   await expect(toggle).toBeVisible();
   expect((await toggle.boundingBox())!.y).toBeGreaterThan((await form.boundingBox())!.y);
+  // The taller section navigation leaves this lazy thumbnail below the initial viewport.
+  await page.getByRole("group", { name: /^Images/ }).scrollIntoViewIfNeeded();
   await expect(page.getByRole("img", { name: "shot.png" })).toBeVisible();
   await expectTouchTargets(page, page.locator("main"));
 });

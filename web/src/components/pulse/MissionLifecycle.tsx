@@ -1,4 +1,5 @@
-/** The mission's own controls: mark it running, close it, reopen it, archive it (#889).
+/** Mission lifecycle controls: close, reopen and archive (#889).
+ * Begin and Re-plan belong to MissionPlanCard, the single planning/start owner (#944).
  *
  * **Every transition is a compare-and-set and the UI must not paper over a lost one.** The route
  * takes `from` — the state the client *believes* the mission is in — because a state read before
@@ -29,9 +30,6 @@ import type { Mission } from "../../types/api";
 import { MissionOverflow } from "./MissionOverflow";
 import styles from "./mission.module.css";
 
-/** The transitions this surface offers, per state. A strict subset of the server's `_ALLOWED`:
- *  `dispatching` is Phase 4's and is not offered here, and `draft -> planned` is folded into the
- *  single BEGIN action below rather than being a button of its own. */
 /** Reaching a TERMINAL state releases every session the mission holds, server-side
  *  (`missions.set_state`). So those transitions are membership changes as much as detach is, and
  *  the released sessions have to reappear under UNTRACKED — which is derived from the overview's
@@ -92,7 +90,6 @@ export function MissionLifecycle({
 
   const state = mission.state;
   const archived = mission.archived_at != null;
-  const holdsSession = (mission.sessions ?? []).some((s) => !s.removed_at);
 
   const act = useCallback(
     async (
@@ -238,39 +235,6 @@ export function MissionLifecycle({
         {state}
       </span>
 
-      {/* BEGIN — the adopted path. Two CAS calls, because they are two facts: a crash between
-          them leaves the mission `planned`, which is true and recoverable. A single call that
-          skipped `planned` would need `draft -> running` in the graph, and the graph deliberately
-          refuses that: a draft has not been decided on yet. */}
-      {state === "draft" ? (
-        <button
-          type="button"
-          className={styles.send}
-          disabled={busy}
-          onClick={() => void to("planned")}
-          data-testid="mission-plan"
-        >
-          READY
-        </button>
-      ) : null}
-
-      {state === "planned" ? (
-        <button
-          type="button"
-          className={styles.send}
-          disabled={busy || !holdsSession}
-          onClick={() => void to("running")}
-          data-testid="mission-begin"
-          title={
-            holdsSession
-              ? "Work is underway on this mission's session"
-              : "Adopt a session first — a running mission with no session has nothing to follow through on"
-          }
-        >
-          BEGIN
-        </button>
-      ) : null}
-
       {/* THE ONE PRIMARY, by state. `running`/`review` close as DONE; the other states each have
           their own next step above. Accent is reserved for exactly this control. */}
       {state === "running" || state === "review" ? (
@@ -279,11 +243,15 @@ export function MissionLifecycle({
           className={styles.send}
           disabled={busy}
           onClick={() =>
-            confirming === "done" ? void to("done", "done") : setConfirming("done")
+            confirming === "done"
+              ? void to("done", "done")
+              : setConfirming("done")
           }
           data-testid="mission-done"
         >
-          {confirming === "done" ? `CONFIRM ${CLOSE_LABEL.done}` : CLOSE_LABEL.done}
+          {confirming === "done"
+            ? `CONFIRM ${CLOSE_LABEL.done}`
+            : CLOSE_LABEL.done}
         </button>
       ) : null}
 
@@ -307,79 +275,83 @@ export function MissionLifecycle({
           paths, collapse into a labelled menu. They keep their accessible names and their
           two-tap confirmations; only their prominence changes. */}
       <MissionOverflow busy={busy}>
-      {state === "review" ? (
-        <button
-          type="button"
-          className={styles.missionBtn}
-          disabled={busy}
-          onClick={() => void to("running")}
-          role="menuitem"
-          data-testid="mission-reopen-review"
-        >
-          NOT YET
-        </button>
-      ) : null}
+        {state === "review" ? (
+          <button
+            type="button"
+            className={styles.missionBtn}
+            disabled={busy}
+            onClick={() => void to("running")}
+            role="menuitem"
+            data-testid="mission-reopen-review"
+          >
+            NOT YET
+          </button>
+        ) : null}
 
-      {/* CLOSING A MISSION RELEASES EVERY SESSION IT HOLDS, so it takes the same two taps the
+        {/* CLOSING A MISSION RELEASES EVERY SESSION IT HOLDS, so it takes the same two taps the
           other destructive lifecycle actions take (#896 review 6, finding 2). #889 asks for
           "confirm done" in those words; the first version closed on the first click, so a
           mistap changed session ownership with nothing in between. */}
-      {state === "running" || state === "review" ? (
-        <button
-          type="button"
-          className={styles.missionBtn}
-          disabled={busy}
-          onClick={() =>
-            confirming === "failed" ? void to("failed", "failed") : setConfirming("failed")
-          }
-          role="menuitem"
-          data-testid="mission-failed"
-        >
-          {confirming === "failed" ? `CONFIRM ${CLOSE_LABEL.failed}` : CLOSE_LABEL.failed}
-        </button>
-      ) : null}
+        {state === "running" || state === "review" ? (
+          <button
+            type="button"
+            className={styles.missionBtn}
+            disabled={busy}
+            onClick={() =>
+              confirming === "failed"
+                ? void to("failed", "failed")
+                : setConfirming("failed")
+            }
+            role="menuitem"
+            data-testid="mission-failed"
+          >
+            {confirming === "failed"
+              ? `CONFIRM ${CLOSE_LABEL.failed}`
+              : CLOSE_LABEL.failed}
+          </button>
+        ) : null}
 
-      {/* ABANDON is available from every non-terminal state — it is the operator saying "not
+        {/* ABANDON is available from every non-terminal state — it is the operator saying "not
           this", and `_ALLOWED` accepts it from all of them. It is terminal in the strong sense:
           an abandoned mission cannot be reopened, which is why it confirms. */}
-      {!terminal ? (
-        <button
-          type="button"
-          className={`${styles.missionBtn} ${styles.missionBtnDanger}`}
-          disabled={busy}
-          onClick={() =>
-            confirming === "abandon"
-              ? void to("abandoned", "abandoned")
-              : setConfirming("abandon")
-          }
-          role="menuitem"
-          data-testid="mission-abandon"
-        >
-          {confirming === "abandon" ? "CONFIRM ABANDON" : "ABANDON"}
-        </button>
-      ) : null}
+        {!terminal ? (
+          <button
+            type="button"
+            className={`${styles.missionBtn} ${styles.missionBtnDanger}`}
+            disabled={busy}
+            onClick={() =>
+              confirming === "abandon"
+                ? void to("abandoned", "abandoned")
+                : setConfirming("abandon")
+            }
+            role="menuitem"
+            data-testid="mission-abandon"
+          >
+            {confirming === "abandon" ? "CONFIRM ABANDON" : "ABANDON"}
+          </button>
+        ) : null}
 
-      {/* Archive is terminal-state-only; a live mission is a 409, not a prompt. The two-step
+        {/* Archive is terminal-state-only; a live mission is a 409, not a prompt. The two-step
           `abandon: true` path exists for a live one, and it is only offered after saying plainly
           what it does. */}
-      <button
-        type="button"
-        className={`${styles.missionBtn} ${terminal ? "" : styles.missionBtnDanger}`}
-        disabled={busy}
-        onClick={() =>
-          confirming === "archive"
-            ? void act(
-                () => api.archiveMission(mission.id, { abandon: !terminal }),
-                "Archiving",
-                { movedTo: "archived", membershipChanged: true },
-              )
-            : setConfirming("archive")
-        }
-        role="menuitem"
-        data-testid="mission-archive"
-      >
-        {confirming === "archive" ? "CONFIRM ARCHIVE" : "ARCHIVE"}
-      </button>
+        <button
+          type="button"
+          className={`${styles.missionBtn} ${terminal ? "" : styles.missionBtnDanger}`}
+          disabled={busy}
+          onClick={() =>
+            confirming === "archive"
+              ? void act(
+                  () => api.archiveMission(mission.id, { abandon: !terminal }),
+                  "Archiving",
+                  { movedTo: "archived", membershipChanged: true },
+                )
+              : setConfirming("archive")
+          }
+          role="menuitem"
+          data-testid="mission-archive"
+        >
+          {confirming === "archive" ? "CONFIRM ARCHIVE" : "ARCHIVE"}
+        </button>
       </MissionOverflow>
 
       {confirming === "abandon" ? (

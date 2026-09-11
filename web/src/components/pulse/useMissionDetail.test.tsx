@@ -711,3 +711,25 @@ test("a console with NO open turn keeps the ordinary cadence and nothing else", 
   });
   expect(vi.mocked(api.mission).mock.calls.length).toBe(afterMount);
 });
+
+test("reload rejects an earlier row even before the effect cleanup runs", async () => {
+  const initial = { ...detail("done"), title: "Current" };
+  let release!: (row: unknown) => void;
+  const stale = new Promise<unknown>((r) => (release = r));
+  vi.mocked(api.mission)
+    .mockReset()
+    .mockResolvedValueOnce(initial as never)
+    .mockReturnValueOnce(stale as never)
+    .mockImplementation(() => new Promise(() => {}));
+  const { result } = renderHook(() => useMissionDetail("msn_1"));
+  await waitFor(() => expect(result.current.mission?.title).toBe("Current"));
+  await vi.advanceTimersByTimeAsync(150_000);
+  expect(api.mission).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    result.current.reload();
+    release({ ...initial, title: "Stale before mutation" });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(result.current.mission?.title).toBe("Current");
+});

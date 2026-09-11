@@ -1,12 +1,6 @@
-/** The console's read-only panes, split from the loader so this file exports components only
- *  (`react-refresh/only-export-components`). The loader is `useMissionDetail.ts`.
- *
- *  **THERE ARE THREE OF THEM NOW, AND THAT IS THE POINT (#942).** `ObjectivesPane` used to stack
- *  Objectives, Follow-through and Context under three headings inside one 340px column — four
- *  unrelated things in a junk drawer, each too small to be useful. Follow-through folded onto the
- *  objective rows it was always describing (`MissionObjectives`), and Context became its own tab,
- *  so each pane is now one subject and the stop strip is what switches between them at every
- *  width. No pane lost a control in the move; they changed owner, not membership. */
+/** Mission detail components shared by the Context-first disclosures (#944).
+ * Objective-specific follow-through stays on its objective; mission-level notices
+ * have their own collapsible section. */
 import type {
   MissionContext,
   MissionEvent,
@@ -22,12 +16,14 @@ export function ObjectivesPane({
   objectives,
   objectivesState,
   objectivesFailed,
+  showNotices,
   supervisor,
   onOps,
   onStandDown,
   busy,
 }: {
   objectives: MissionObjective[];
+  showNotices?: boolean;
   /** From the mission row: `pending` while the producer is still running (#883). The empty state
    *  renders it, because "we have not been told yet" and "there are none" are different claims. */
   objectivesState?: string | null;
@@ -43,6 +39,7 @@ export function ObjectivesPane({
 }) {
   return (
     <MissionObjectives
+      showNotices={showNotices}
       objectives={objectives}
       objectivesState={objectivesState}
       objectivesFailed={objectivesFailed}

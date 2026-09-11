@@ -1,3 +1,4 @@
+import { openMissionConversation } from "./mission-console";
 /** #929 — the Pulse shell is gone, and the two defects its removal exposed are closed.
  *
  *  These are real-browser tests because both findings are LAYOUT facts a DOM emulator cannot
@@ -138,14 +139,14 @@ test.describe("stops are reachable at every width (#929)", () => {
       await page.goto("/pulse");
       await page.getByTestId("pane").waitFor();
 
-      await page.getByTestId("stop-objectives").click();
-      await expect(page.getByTestId("no-mission-objectives")).toContainText(
-        /objectives belong to a mission/i,
+      await page.getByTestId("stop-details").click();
+      await expect(page.getByTestId("no-mission-details")).toContainText(
+        /choose one from the list/i,
       );
 
-      await page.getByTestId("stop-timeline").click();
-      await expect(page.getByTestId("no-mission-timeline")).toContainText(
-        /timeline belongs to a mission/i,
+      await page.getByTestId("stop-details").click();
+      await expect(page.getByTestId("no-mission-details")).toContainText(
+        /choose one from the list/i,
       );
     });
   }
@@ -168,8 +169,8 @@ test.describe("stops are reachable at every width (#929)", () => {
       .click();
     await expect(page.getByTestId("mission-state")).toBeVisible();
     await expect(page.getByTestId("detail-column")).toHaveCount(0);
-    await expect(page.getByTestId("stop-objectives")).toBeVisible();
-    await expect(page.getByTestId("stop-context")).toBeVisible();
+    await expect(page.getByTestId("mission-details")).toBeVisible();
+    await expect(page.getByTestId("detail-context")).toBeVisible();
   });
 });
 
@@ -209,9 +210,9 @@ test("mobile keeps the stops and the same content (#929)", async ({
   test.skip(testInfo.project.name !== "mobile", "phone layout");
   await stub(page);
   await page.goto("/pulse");
-  await page.getByTestId("stop-objectives").click();
-  await expect(page.getByTestId("no-mission-objectives")).toContainText(
-    /objectives belong to a mission/i,
+  await page.getByTestId("stop-details").click();
+  await expect(page.getByTestId("no-mission-details")).toContainText(
+    /choose one from the list/i,
   );
 });
 
@@ -278,14 +279,14 @@ test.describe("#930 review 1 — the console under a slow store", () => {
       await page.goto("/pulse");
       await page.getByTestId("pane").waitFor();
 
-      await page.getByTestId("stop-objectives").click();
-      await expect(page.getByTestId("no-mission-objectives")).toContainText(
-        /objectives belong to a mission/i,
+      await page.getByTestId("stop-details").click();
+      await expect(page.getByTestId("no-mission-details")).toContainText(
+        /choose one from the list/i,
       );
 
-      await page.getByTestId("stop-timeline").click();
-      await expect(page.getByTestId("no-mission-timeline")).toContainText(
-        /timeline belongs to a mission/i,
+      await page.getByTestId("stop-details").click();
+      await expect(page.getByTestId("no-mission-details")).toContainText(
+        /choose one from the list/i,
       );
     });
   }
@@ -303,7 +304,8 @@ test.describe("#930 review 1 — the console under a slow store", () => {
     // handed the query string, which is what distinguishes the archived read from the active one.
     await stub(page, {
       missionsResolver: async (q) => {
-        const archived = q.get("archived") === "1" || q.get("archived") === "true";
+        const archived =
+          q.get("archived") === "1" || q.get("archived") === "true";
         if (!archived && holdActive) await gate.promise;
         return { missions: [], total: 0, error: null };
       },
@@ -351,12 +353,12 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
       await box.fill(draft);
       await expect(box).toHaveValue(draft);
 
-      await page.getByTestId("stop-objectives").click();
-      await expect(page.getByTestId("no-mission-objectives")).toBeVisible();
+      await page.getByTestId("stop-details").click();
+      await expect(page.getByTestId("no-mission-details")).toBeVisible();
       // The composer is still MOUNTED while the explanatory pane shows — that is the fix.
       await expect(page.getByRole("textbox").first()).toHaveValue(draft);
 
-      await page.getByTestId("stop-thread").click();
+      await openMissionConversation(page);
       // RED before the fix: "" here, with no navigation and no scope change.
       await expect(page.getByRole("textbox").first()).toHaveValue(draft);
       if (mode === "new mission") {
@@ -407,9 +409,9 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
     // A draft typed WHILE the first is still running — the thing a remount would drop.
     await box.fill("and a second thought");
 
-    await page.getByTestId("stop-timeline").click();
-    await expect(page.getByTestId("no-mission-timeline")).toBeVisible();
-    await page.getByTestId("stop-thread").click();
+    await page.getByTestId("stop-details").click();
+    await expect(page.getByTestId("no-mission-details")).toBeVisible();
+    await openMissionConversation(page);
 
     // Same instance: busy state and draft both intact, and no duplicate request was issued by
     // a fresh mount replaying its state.
@@ -443,8 +445,8 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
 
     await page.goto("/pulse");
     await page.getByTestId("pane").waitFor();
-    await page.getByTestId("stop-objectives").click();
-    await expect(page.getByTestId("no-mission-objectives")).toBeVisible();
+    await page.getByTestId("stop-details").click();
+    await expect(page.getByTestId("no-mission-details")).toBeVisible();
 
     // The list lands, and the mission is entered by derivation rather than by selection.
     // (The mission's own lifecycle state is the honest witness that a mission was entered — it

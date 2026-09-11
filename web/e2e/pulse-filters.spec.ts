@@ -1,3 +1,8 @@
+import {
+  chooseUntrackedFilter,
+  clearUntrackedFilters,
+  untrackedFilterOption,
+} from "./mission-console";
 import { expect, test } from "@playwright/test";
 
 import { mockMissions } from "./mission-console";
@@ -160,82 +165,82 @@ test.beforeEach(async ({ page }) => {
 
 test("project and agent filters narrow the whole list", async ({ page }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // The orchestrator queue is deliberately empty here: it is a separate list on this branch and
   // is not what these filters govern, so leaving an action in it would have the same title
   // appear twice and the assertion would be measuring the wrong surface.
   // Counts come from the unfiltered set, so a chip states what selecting it would yield.
-  await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
+  await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
   await expect(page.getByText("Relay cap")).toBeVisible();
   await expect(page.getByText("Switch the default model")).toHaveCount(0);
 
   // …and the chip is still there with the same count after filtering.
-  await expect(
-    page.getByRole("button", { name: /^battlelab\s+1$/i }),
-  ).toBeVisible();
+  await expect(untrackedFilterOption(page, /^battlelab\s+·\s*1$/i)).toHaveCount(
+    1,
+  );
 
-  await page.getByRole("button", { name: /clear filters/i }).click();
+  await clearUntrackedFilters(page);
   await expect(page.getByText("Switch the default model")).toBeVisible();
 });
 
-test("two projects with the same name are two chips, not one", async ({
+test("two projects with the same name remain separate filter options", async ({
   page,
 }) => {
   // Keyed by display name, `/work/a/app` and `/work/b/app` collapsed into one `app 2` chip and
   // selecting it showed both. Keyed by id they are separate, and the parent disambiguates them.
   await mockMissions(page);
-    await page.goto("/pulse");
-  await expect(
-    page.getByRole("button", { name: /^app · a\s+1$/i }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /^app · b\s+1$/i }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: /^app\s+2$/i })).toHaveCount(0);
+  await page.goto("/pulse");
+  await expect(untrackedFilterOption(page, /^app · a\s+·\s*1$/i)).toHaveCount(
+    1,
+  );
+  await expect(untrackedFilterOption(page, /^app · b\s+·\s*1$/i)).toHaveCount(
+    1,
+  );
+  await expect(untrackedFilterOption(page, /^app\s+·\s*2$/i)).toHaveCount(0);
 
-  await page.getByRole("button", { name: /^app · a\s+1$/i }).click();
-  await expect(page.getByText("App one")).toBeVisible();
+  await chooseUntrackedFilter(page, /^app · a\s+·\s*1$/i);
+  await expect(page.getByText("App one")).toHaveCount(1);
   await expect(page.getByText("App two")).toHaveCount(0);
 });
 
 test("project and agent compose to their intersection", async ({ page }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
 
   // infra holds two sessions, one per engine.
-  await page.getByRole("button", { name: /^infra\s+2$/i }).click();
+  await chooseUntrackedFilter(page, /^infra\s+·\s*2$/i);
   await expect(page.getByText("Switch the default model")).toBeVisible();
   await expect(page.getByText("Docs pass")).toBeVisible();
 
   // Adding the agent narrows it further rather than replacing the project filter.
-  await page.getByRole("button", { name: /^codex\s+3$/i }).click();
+  await chooseUntrackedFilter(page, /^codex\s+·\s*3$/i);
   await expect(page.getByText("Docs pass")).toBeVisible();
   await expect(page.getByText("Switch the default model")).toHaveCount(0);
   await expect(page.getByText("App two")).toHaveCount(0); // still inside infra
 
   // Both chips read as pressed — the state is not carried by colour alone.
   await expect(
-    page.getByRole("button", { name: /^infra\s+2$/i }),
-  ).toHaveAttribute("aria-pressed", "true");
+    untrackedFilterOption(page, /^infra\s+·\s*2$/i),
+  ).toHaveJSProperty("selected", true);
   await expect(
-    page.getByRole("button", { name: /^codex\s+3$/i }),
-  ).toHaveAttribute("aria-pressed", "true");
+    untrackedFilterOption(page, /^codex\s+·\s*3$/i),
+  ).toHaveJSProperty("selected", true);
 });
 
 test("a combination that matches nothing says so and offers one-action recovery", async ({
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   // battlelab is codex-only, so this intersection is empty — the list area used to just go blank.
-  await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
-  await page.getByRole("button", { name: /^claude\s+2$/i }).click();
+  await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
+  await chooseUntrackedFilter(page, /^claude\s+·\s*2$/i);
 
-  await expect(
-    page.getByText(/no sessions match these filters/i),
-  ).toBeVisible();
+  await expect(page.getByText(/no sessions match these filters/i)).toHaveCount(
+    1,
+  );
   await page.getByRole("button", { name: /show all sessions/i }).click();
   await expect(page.getByText("Relay cap")).toBeVisible();
   await expect(page.getByText("Switch the default model")).toBeVisible();
@@ -295,8 +300,8 @@ test("a scan that invalidates the selection does not leave a blank page", async 
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
-  await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
+  await page.goto("/pulse");
+  await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   await page.getByRole("button", { name: /^approve$/i }).click();
@@ -351,22 +356,23 @@ test("unadopted scratch dirs collapse into one Default chip, and nothing scrolls
     r.fulfill({ json: overview(UNADOPTED) }),
   );
   await mockMissions(page);
-    await page.goto("/pulse");
+  await page.goto("/pulse");
   await expect(page.getByText("Real work")).toBeVisible();
 
   // 1. One Default chip carrying the SUMMED count — not one chip per scratch directory.
-  await expect(
-    page.getByRole("button", { name: /^Default\s+2$/ }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /^Battlelab\s+1$/ }),
-  ).toBeVisible();
+  await expect(untrackedFilterOption(page, /^Default\s+·\s*2$/)).toHaveCount(1);
+  await expect(untrackedFilterOption(page, /^Battlelab\s+·\s*1$/)).toHaveCount(
+    1,
+  );
 
   // 2. No chip in the row is labelled with a filesystem path. This is the assertion that goes
   //    red on the unfixed code, where each cwd became its own ~110-char chip.
   const labels = await page
-    .getByRole("group", { name: /project/i })
-    .getByRole("button")
+    .getByRole("combobox", {
+      name: "Filter untracked sessions by project",
+      includeHidden: true,
+    })
+    .getByRole("option", { includeHidden: true })
     .allTextContents();
   expect(labels.filter((l) => l.includes("/"))).toEqual([]);
 
@@ -380,7 +386,7 @@ test("unadopted scratch dirs collapse into one Default chip, and nothing scrolls
   expect(overflow).toBeLessThanOrEqual(0);
 
   // Selecting Default filters to EXACTLY the unadopted cards — not a plausible subset.
-  await page.getByRole("button", { name: /^Default\s+2$/ }).click();
+  await chooseUntrackedFilter(page, /^Default\s+·\s*2$/);
   await expect(page.getByText("Scratch one")).toBeVisible();
   await expect(page.getByText("Scratch two")).toBeVisible();
   await expect(page.getByText("Real work")).toHaveCount(0);

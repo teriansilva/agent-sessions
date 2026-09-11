@@ -9,7 +9,7 @@
  *     without a comparand lets two tabs overwrite each other's acknowledged changes (#904
  *     review 6). The `plan_id` on the wire is asserted, not the rendering.
  */
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -25,6 +25,7 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     api: {
+      setMissionState: vi.fn(),
       planMission: vi.fn(),
       editMissionPlan: vi.fn(),
       dispatchMission: vi.fn(),
@@ -108,7 +109,7 @@ beforeEach(() => {
 
 test("an unplanned mission offers PLAN, and planning launches nothing", async () => {
   const { onChanged } = mount(mission());
-  await userEvent.click(screen.getByTestId("mission-plan-propose"));
+  await userEvent.click(screen.getByTestId("mission-replan"));
   await waitFor(() => expect(api.planMission).toHaveBeenCalledWith("msn_1"));
   // THE SEPARATION IS THE FEATURE: a proposal, and no launch.
   expect(api.dispatchMission).not.toHaveBeenCalled();
@@ -125,17 +126,17 @@ test("…including one that still CARRIES a plan (#904 review 17)", () => {
   // outlives the states allowed to act on it — rendered the full card: EDIT and DISPATCH that
   // the server answers with a 409. The test above passed the whole time because it mounted a
   // mission with NO plan, which is the other branch entirely.
-  for (const state of ["dispatching", "running", "done", "failed"] as const) {
+  for (const state of ["running", "done", "failed"] as const) {
     cleanup();
     mount(mission({ state, plan: plan() }));
     expect(screen.queryByTestId("mission-plan-card")).toBeNull();
-    expect(screen.queryByTestId("mission-dispatch")).toBeNull();
+    expect(screen.queryByTestId("mission-begin")).toBeNull();
   }
 });
 
 test("DISPATCH confirms, and says what it starts and where", async () => {
   mount(mission({ state: "planned", plan: plan() }));
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
   // The first tap starts nothing.
   expect(api.dispatchMission).not.toHaveBeenCalled();
   expect(screen.getByTestId("mission-dispatch-confirm")).toHaveTextContent(
@@ -144,7 +145,7 @@ test("DISPATCH confirms, and says what it starts and where", async () => {
   expect(screen.getByTestId("mission-dispatch-confirm")).toHaveTextContent(
     "unattended",
   );
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() =>
     // …AND THE DIRECTORY IT CONFIRMED, as a comparand. The server re-resolves the project and
     // refuses if what it resolves is not what the operator approved (#904 review 2, finding 6).
@@ -204,8 +205,8 @@ test("a dispatch that did not reach `running` reports the server's own reason", 
     session_key: "claude:a",
   });
   const { onNote } = mount(mission({ state: "planned", plan: plan() }));
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() =>
     expect(onNote).toHaveBeenCalledWith(
       "the session never started: no store record",
@@ -227,7 +228,7 @@ test("a plan the model could not complete cannot be dispatched, and says why", (
       plan: plan({ project_id: null, cwd: null, dropped: ["project"] }),
     }),
   );
-  expect(screen.getByTestId("mission-dispatch")).toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(screen.getByTestId("mission-plan-no-project")).toHaveTextContent(
     "the model did not give one",
   );
@@ -242,12 +243,12 @@ test("a CLEARED brief disables DISPATCH rather than sending the old one", async 
   // Red against a `ready` computed from the stored brief alone.
   mount(mission({ state: "planned", plan: plan() }));
   const box = screen.getByTestId("mission-plan-brief");
-  expect(screen.getByTestId("mission-dispatch")).not.toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).not.toBeDisabled();
 
   await userEvent.clear(box);
   await userEvent.tab(); // blur: an empty brief is not saved
 
-  expect(screen.getByTestId("mission-dispatch")).toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(screen.getByTestId("mission-plan-unsaved")).toHaveTextContent(
     /A brief is required/i,
   );
@@ -260,9 +261,9 @@ test("an UNSAVED edit disables DISPATCH and says why", async () => {
   // brief from the one that would be sent.
   mount(mission({ state: "planned", plan: plan() }));
   await userEvent.type(screen.getByTestId("mission-plan-brief"), " and more");
-  expect(screen.getByTestId("mission-dispatch")).toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(screen.getByTestId("mission-plan-unsaved")).toHaveTextContent(
-    /has not been saved/i,
+    /have not been saved/i,
   );
 });
 
@@ -281,83 +282,35 @@ test("the card says WHAT DONE MEANS, and says so when there is nothing", () => {
     }),
   );
   const list = screen.getByTestId("mission-plan-objectives");
-  expect(list).toHaveTextContent("A PR is open");
-  expect(list).toHaveTextContent("Checks are green");
+  expect(list).toHaveTextContent("2 objectives define what done means");
 
   cleanup();
   mount(mission({ state: "planned", plan: plan(), objectives: [] }));
   expect(screen.getByTestId("mission-plan-no-objectives")).toHaveTextContent(
-    /add at least one below/i,
+    /0 objectives/i,
   );
 });
 
-test("an empty checklist can be FIXED where the refusal is", async () => {
-  // #904 review 7, finding 3. The refusal pointed at the OBJECTIVES stop, which is a read-only
-  // list in this PR — so an install whose objective production is `skipped` (no AI endpoint) or
-  // `failed` could never dispatch at all: the card refused, and the place it named could not fix
-  // it. The recovery path has to exist where the refusal is.
-  //
-  // Red against a card that only prints the refusal.
-  vi.mocked(api.patchMissionObjectives).mockResolvedValue({
-    objectives: [],
-  } as never);
-  const { onChanged } = mount(
-    mission({
-      state: "planned",
-      plan: plan(),
-      objectives: [],
-      objectives_state: "skipped",
-    } as never),
+test("an empty checklist links to the editable Objectives section", async () => {
+  const onObjectives = vi.fn();
+  render(
+    <MissionPlanCard
+      mission={mission({
+        state: "planned",
+        plan: plan(),
+        objectives: [],
+        objectives_state: "skipped",
+      })}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+      onObjectives={onObjectives}
+    />,
   );
-  expect(screen.getByTestId("mission-dispatch")).toBeDisabled();
-
-  await userEvent.type(
-    screen.getByTestId("plan-objective-title"),
-    "A PR is open",
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+  await userEvent.click(
+    screen.getAllByRole("button", { name: "Add objectives" })[0],
   );
-  await userEvent.click(screen.getByTestId("plan-objective-add"));
-
-  await waitFor(() => expect(api.patchMissionObjectives).toHaveBeenCalled());
-  const [id, ops] = vi.mocked(api.patchMissionObjectives).mock.calls[0];
-  expect(id).toBe("msn_1");
-  // A GATE, because that is what makes the mission measurable: a non-gating note leaves
-  // `unmet_gates` at zero and the supervisor with nothing to hold the mission open for.
-  expect(ops).toEqual([
-    { op: "add", key: "a_pr_is_open", title: "A PR is open", gate: true },
-  ]);
-  // …and the console re-reads, which is what brings the new checklist — and DISPATCH — back.
-  expect(onChanged).toHaveBeenCalled();
-
-  // AND IT ACTUALLY COMES BACK (#904 review 18, test fidelity). Asserting the request and the
-  // callback proves the card ASKED; it does not prove the refusal lifts, which is the whole
-  // claim of this test. The console's re-read is what re-renders this card with the objective
-  // the operator just added, so that is what is played here — anything less leaves a card that
-  // could stay disabled for ever while every assertion above still passed.
-  cleanup();
-  mount(
-    mission({
-      state: "planned",
-      plan: plan(),
-      objectives: [
-        {
-          mission_id: "msn_1",
-          key: "a_pr_is_open",
-          ord: 0,
-          title: "A PR is open",
-          probe: null,
-          probe_args: null,
-          gate: true,
-          state: "pending",
-          met_at: null,
-          observed: null,
-          source: "operator",
-        },
-      ],
-      objectives_state: "skipped",
-    } as never),
-  );
-  expect(screen.getByTestId("mission-dispatch")).toBeEnabled();
-  expect(screen.queryByTestId("mission-plan-no-objectives")).toBeNull();
+  expect(onObjectives).toHaveBeenCalledOnce();
 });
 
 test("an EMPTY checklist disables DISPATCH rather than warning beside it", async () => {
@@ -375,9 +328,11 @@ test("an EMPTY checklist disables DISPATCH rather than warning beside it", async
         objectives_state: state,
       } as never),
     );
-    const btn = screen.getByTestId("mission-dispatch");
+    const btn = screen.getByTestId("mission-begin");
     expect(btn).toBeDisabled();
-    expect(btn.getAttribute("title")).toMatch(/add what done means/i);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /add at least one objective/i,
+    );
     cleanup();
   }
 
@@ -392,7 +347,7 @@ test("an EMPTY checklist disables DISPATCH rather than warning beside it", async
       objectives_state: "skipped",
     } as never),
   );
-  expect(screen.getByTestId("mission-dispatch")).not.toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).not.toBeDisabled();
 });
 
 test("DISPATCH waits for the objectives to be worked out", async () => {
@@ -408,9 +363,9 @@ test("DISPATCH waits for the objectives to be worked out", async () => {
       objectives_state: "pending",
     } as never),
   );
-  expect(screen.getByTestId("mission-dispatch")).toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(screen.getByTestId("mission-plan-no-objectives")).toHaveTextContent(
-    /still working out/i,
+    /Preparing objectives/i,
   );
 
   cleanup();
@@ -423,7 +378,7 @@ test("DISPATCH waits for the objectives to be worked out", async () => {
       objectives_state: "done",
     } as never),
   );
-  expect(screen.getByTestId("mission-dispatch")).not.toBeDisabled();
+  expect(screen.getByTestId("mission-begin")).not.toBeDisabled();
 });
 
 test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async () => {
@@ -450,9 +405,9 @@ test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async 
     />,
   );
 
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
-  expect(screen.getByTestId("mission-dispatch")).toHaveTextContent(
-    "CONFIRM DISPATCH",
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  expect(screen.getByTestId("mission-begin")).toHaveTextContent(
+    "Confirm begin",
   );
 
   // THE CHECKLIST CHANGES UNDER THE ARMED BUTTON — a poll, or another tab retitling it. The plan
@@ -468,16 +423,12 @@ test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async 
   // THE ARM IS RELEASED, and the operator is told why rather than left holding a tap that would
   // be refused.
   await waitFor(() =>
-    expect(screen.getByTestId("mission-dispatch")).toHaveTextContent(
-      /^DISPATCH$/,
-    ),
+    expect(screen.getByTestId("mission-begin")).toHaveTextContent(/^Begin$/),
   );
-  expect(onNote).toHaveBeenCalledWith(
-    expect.stringMatching(/checklist changed/i),
-  );
+  expect(screen.getByRole("alert")).toHaveTextContent(/checklist changed/i);
 
   // …and a tap now re-arms against what is on screen rather than dispatching.
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
   expect(api.dispatchMission).not.toHaveBeenCalled();
 });
 
@@ -494,7 +445,7 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
   const { rerender } = render(
     <MissionPlanCard mission={first} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
 
   // An objective becoming MET is progress, not a different checklist — the digest covers key,
   // title and gate only — so the arm survives this and the send must still happen.
@@ -510,7 +461,7 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
       onNote={vi.fn()}
     />,
   );
-  await userEvent.click(screen.getByTestId("mission-dispatch"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() => expect(api.dispatchMission).toHaveBeenCalled());
   // THE DIGEST OF WHAT WAS ON SCREEN WHEN IT WAS ARMED, computed through the SHARED encoder
   // rather than a hand-copied string — a second copy of the rule here is exactly the drift
@@ -520,4 +471,103 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
     objectivesDigestInput([{ key: "pr", title: "A PR is open", gate: true }]),
   );
   expect(vi.mocked(api.dispatchMission).mock.calls[0][3]).toBe(expected);
+});
+
+for (const state of ["draft", "planned"] as const) {
+  test(`Begin tracks a ${state} attached session without a proposal`, async () => {
+    vi.mocked(api.setMissionState)
+      .mockReset()
+      .mockResolvedValue({} as never);
+    mount(
+      mission({
+        state,
+        cwd: "/repo",
+        sessions: [{ session_key: "claude:a", removed_at: null }] as never,
+      }),
+    );
+    await userEvent.click(screen.getByTestId("mission-begin"));
+    await waitFor(() =>
+      expect(api.setMissionState).toHaveBeenLastCalledWith("msn_1", {
+        from: "planned",
+        to: "running",
+      }),
+    );
+    expect(api.setMissionState).toHaveBeenCalledTimes(
+      state === "draft" ? 2 : 1,
+    );
+    expect(api.dispatchMission).not.toHaveBeenCalled();
+  });
+}
+
+test("refused tracking stays visible, waits for reload and never launches", async () => {
+  vi.mocked(api.setMissionState)
+    .mockReset()
+    .mockRejectedValue(new ApiError(409, "attached session is no longer live"));
+  const original = mission({
+    state: "planned",
+    cwd: "/repo",
+    sessions: [{ session_key: "claude:a", removed_at: null }] as never,
+  });
+  const { rerender } = render(
+    <MissionPlanCard mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
+  );
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent("no longer live"),
+  );
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+  expect(api.dispatchMission).not.toHaveBeenCalled();
+  rerender(
+    <MissionPlanCard
+      mission={{ ...original }}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+    />,
+  );
+  expect(screen.getByTestId("mission-begin")).toBeEnabled();
+});
+
+test("a detached-only roster uses the launch path, never tracking", async () => {
+  vi.mocked(api.setMissionState).mockReset();
+  mount(
+    mission({
+      state: "planned",
+      plan: plan(),
+      sessions: [{ session_key: "claude:old", removed_at: 123 }] as never,
+    }),
+  );
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await waitFor(() => expect(api.dispatchMission).toHaveBeenCalledOnce());
+  expect(api.setMissionState).not.toHaveBeenCalled();
+});
+
+test("a poll during Begin cannot count as its post-result refresh", async () => {
+  let finish!: () => void;
+  const held = new Promise<void>((resolve) => (finish = resolve));
+  vi.mocked(api.dispatchMission).mockImplementation(async () => {
+    await held;
+    throw new ApiError(503, "connection lost");
+  });
+  const original = mission({ state: "planned", plan: plan() });
+  const { rerender } = render(
+    <MissionPlanCard mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
+  );
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  const polled = { ...original };
+  rerender(
+    <MissionPlanCard mission={polled} onChanged={vi.fn()} onNote={vi.fn()} />,
+  );
+  await act(async () => finish());
+  expect(screen.getByRole("alert")).toHaveTextContent("connection lost");
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+  rerender(
+    <MissionPlanCard
+      mission={{ ...polled }}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+    />,
+  );
+  expect(screen.getByTestId("mission-begin")).toBeEnabled();
 });

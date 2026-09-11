@@ -1,3 +1,8 @@
+import {
+  chooseUntrackedFilter,
+  clearUntrackedFilters,
+  untrackedFilterOption,
+} from "./mission-console";
 import { expect, test } from "@playwright/test";
 
 import { mockMissions } from "./mission-console";
@@ -156,11 +161,9 @@ test("a session appears ONCE, with its decision controls on the card", async ({
 }) => {
   await mockMissions(page);
   await page.goto("/pulse");
-  // The page's own name, not the route's. #895 renamed the header to MISSION CONTROL and left
-  // `/pulse` alone deliberately — the URL is in every bookmark and every issue in the history.
   await expect(
-    page.getByRole("heading", { name: /mission control/i }),
-  ).toBeVisible();
+    page.getByRole("link", { name: "Missions", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
 
   // The action's own title appears exactly once on the page — the queue used to render it a
   // second time in its own list.
@@ -199,16 +202,16 @@ test("project and agent filters narrow the whole list and compose", async ({
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // Counts come from the unfiltered set, so a chip states what selecting it would yield.
-  await page.getByRole("button", { name: /^battlelab\s+1$/i }).click();
+  await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
   await expect(page.getByText("Relay cap")).toBeVisible();
   await expect(page.getByText("Switch the default model")).toHaveCount(0);
 
   // …and the chip is still there with the same count after filtering.
-  await expect(
-    page.getByRole("button", { name: /^battlelab\s+1$/i }),
-  ).toBeVisible();
+  await expect(untrackedFilterOption(page, /^battlelab\s+·\s*1$/i)).toHaveCount(
+    1,
+  );
 
-  await page.getByRole("button", { name: /clear filters/i }).click();
+  await clearUntrackedFilters(page);
   await expect(page.getByText("Switch the default model")).toBeVisible();
 });
 
@@ -258,7 +261,9 @@ test("the manual pass lives in Settings and reports what the pass actually said 
   await run.click();
 
   // The pass's own assessment, not a canned string.
-  await expect(page.getByText("one action")).toBeVisible();
+  await expect(
+    page.getByText("one action", { exact: true }).first(),
+  ).toBeVisible();
   expect(scanned).toBe(true);
 
   // And the route no longer carries a second copy of the control (#929).

@@ -1,3 +1,5 @@
+import { openMissionConversation } from "./mission-console";
+import { openMissionDetails } from "./mission-console";
 /** #942 — the console reads as one thing.
  *
  *  Every claim here is a GEOMETRY or an AGREEMENT claim, and the defects they guard were all
@@ -7,7 +9,12 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { MISSION, missionList, missionRow, mockMissions } from "./mission-console";
+import {
+  MISSION,
+  missionList,
+  missionRow,
+  mockMissions,
+} from "./mission-console";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -118,17 +125,30 @@ async function stub(
   objectives?: unknown,
 ) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0, uncertain: 0, settled: [] } }),
+    r.fulfill({
+      json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
+    }),
   );
   await page.route(/\/api\/pulse$/, (r) => r.fulfill({ json: OVERVIEW }));
   await page.route("**/api/pulse/orchestrator", (r) =>
@@ -142,8 +162,16 @@ async function stub(
 }
 
 const ROWS = [
-  missionRow({ id: "msn_1", title: "Kimi transcript adapter", state: "running" }),
-  missionRow({ id: "msn_2", title: "Fix the relay reconnect storm", state: "review" }),
+  missionRow({
+    id: "msn_1",
+    title: "Kimi transcript adapter",
+    state: "running",
+  }),
+  missionRow({
+    id: "msn_2",
+    title: "Fix the relay reconnect storm",
+    state: "review",
+  }),
 ];
 
 // ==============================================================================================
@@ -155,7 +183,9 @@ for (const [w, h] of [
   [1280, 900],
   [412, 915],
 ] as const) {
-  test(`the composer sits on the bottom edge at ${w}x${h} (#942)`, async ({ page }) => {
+  test(`the composer sits on the bottom edge at ${w}x${h} (#942)`, async ({
+    page,
+  }) => {
     await stub(page, ROWS);
     await page.setViewportSize({ width: w, height: h });
     await page.goto("/pulse");
@@ -199,7 +229,9 @@ test("the thread takes the slack: a taller viewport grows the pane, not the gap 
 // ==============================================================================================
 
 for (const w of [1280, 1400, 1600] as const) {
-  test(`the header names the mission the body is rendering at ${w}px (#942)`, async ({ page }) => {
+  test(`the header names the mission the body is rendering at ${w}px (#942)`, async ({
+    page,
+  }) => {
     await stub(page, ROWS);
     await page.setViewportSize({ width: w, height: 900 });
     await page.goto("/pulse");
@@ -214,7 +246,9 @@ for (const w of [1280, 1400, 1600] as const) {
   });
 }
 
-test("the header names the mission BEFORE its detail lands (#942)", async ({ page }) => {
+test("the header names the mission BEFORE its detail lands (#942)", async ({
+  page,
+}) => {
   // THE HONEST REPRO. The three width cases above wait for the body to finish, and by then the
   // pushed-up `title` has arrived — so they pass against the broken code too. The contradiction
   // lived in the ROUND TRIP, so this test holds the detail request open and asserts the header
@@ -227,7 +261,9 @@ test("the header names the mission BEFORE its detail lands (#942)", async ({ pag
   // Registered AFTER `stub`, so it wins: Playwright matches the most recently added route first.
   await page.route(/\/api\/missions\/msn_1(\?.*)?$/, async (r) => {
     await held;
-    await r.fulfill({ json: { ...MISSION, events: [], events_next_seq: null } });
+    await r.fulfill({
+      json: { ...MISSION, events: [], events_next_seq: null },
+    });
   });
 
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -236,12 +272,16 @@ test("the header names the mission BEFORE its detail lands (#942)", async ({ pag
   // The RAIL has its rows — the list call was never held — and a mission is auto-selected. The
   // detail is still in flight, which is the whole point.
   await expect(page.getByTestId("rail-mission").first()).toBeVisible();
-  await expect(page.getByTestId("console-title")).toHaveText("Kimi transcript adapter");
+  await expect(page.getByTestId("console-title")).toHaveText(
+    "Kimi transcript adapter",
+  );
 
   // …and it still agrees once the detail lands, so the fallback is not merely masking it.
   release();
   await expect(page.getByTestId("mission-state")).toBeVisible();
-  await expect(page.getByTestId("console-title")).toHaveText("Kimi transcript adapter");
+  await expect(page.getByTestId("console-title")).toHaveText(
+    "Kimi transcript adapter",
+  );
 });
 
 test("with nothing selected the header says so, and no state is claimed (#942)", async ({
@@ -252,7 +292,9 @@ test("with nothing selected the header says so, and no state is claimed (#942)",
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/pulse");
   await expect(page.getByTestId("mission-console")).toBeVisible();
-  await expect(page.getByTestId("console-title")).toHaveText(/no missions yet/i);
+  await expect(page.getByTestId("console-title")).toHaveText(
+    /no missions yet/i,
+  );
   await expect(page.getByTestId("mission-state")).toHaveCount(0);
 });
 
@@ -271,7 +313,11 @@ test("one primary action inline; the destructive lifecycle is behind the overflo
   // Inline: the state's own next step, and nothing else.
   await expect(page.getByTestId("mission-done")).toBeVisible();
   await expect(page.getByTestId("mission-overflow")).toBeVisible();
-  for (const hidden of ["mission-failed", "mission-abandon", "mission-archive"]) {
+  for (const hidden of [
+    "mission-failed",
+    "mission-abandon",
+    "mission-archive",
+  ]) {
     await expect(page.getByTestId(hidden)).toHaveCount(0);
   }
 
@@ -279,12 +325,18 @@ test("one primary action inline; the destructive lifecycle is behind the overflo
   await page.getByTestId("mission-overflow").click();
   const menu = page.getByTestId("mission-overflow-menu");
   await expect(menu).toBeVisible();
-  for (const shown of ["mission-failed", "mission-abandon", "mission-archive"]) {
+  for (const shown of [
+    "mission-failed",
+    "mission-abandon",
+    "mission-archive",
+  ]) {
     await expect(menu.getByTestId(shown)).toBeVisible();
   }
 });
 
-test("the overflow is a real menu: Escape closes it and focus returns (#942)", async ({ page }) => {
+test("the overflow is a real menu: Escape closes it and focus returns (#942)", async ({
+  page,
+}) => {
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
@@ -307,11 +359,15 @@ test("the overflow does NOT claim to be modal — the console stays reachable (#
   await page.goto("/pulse");
   await page.getByTestId("mission-overflow").click();
   await expect(page.getByTestId("mission-overflow-menu")).toBeVisible();
-  await expect(page.locator('[data-testid="mission-overflow-menu"][aria-modal]')).toHaveCount(0);
+  await expect(
+    page.locator('[data-testid="mission-overflow-menu"][aria-modal]'),
+  ).toHaveCount(0);
   await expect(page.locator("[inert]")).toHaveCount(0);
 });
 
-test("the overflow honours the ARROW KEYS its role promises (#942)", async ({ page }) => {
+test("the overflow honours the ARROW KEYS its role promises (#942)", async ({
+  page,
+}) => {
   // `role="menu"` is a contract about the keyboard, not a label: Up/Down move between items,
   // Home/End jump to the ends, and the menu is one tab stop. A menu that leaves Tab to walk its
   // items reads correct in the accessibility tree and behaves wrong under a screen reader — which
@@ -360,52 +416,41 @@ async function selectFirst(page: Page) {
   await expect(page.getByTestId("mission-state")).toBeVisible();
 }
 
-const tab = (page: Page, name: string) =>
-  page
-    .getByRole("tablist", { name: /mission view/i })
-    .getByRole("tab")
-    .filter({ hasText: name })
-    .first();
-
 for (const [w, h] of [
   [1600, 950],
   [412, 915],
 ] as const) {
-  test(`all four tabs are reachable at ${w}x${h}, and each opens its own pane (#942)`, async ({
+  test(`all four disclosures are reachable at ${w}x${h}, and each opens its own pane (#942)`, async ({
     page,
   }) => {
-    await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
+    await stub(
+      page,
+      ROWS,
+      { supervisor: SUPERVISOR },
+      { objectives: OBJ_ROWS },
+    );
     await page.setViewportSize({ width: w, height: h });
     await page.goto("/pulse");
     await selectFirst(page);
 
-    // THE DEFECT THIS REPLACES: at ≥1400px the strip was hidden on the theory that a persistent
-    // 340px column had replaced it — a column that only existed when a mission was selected, so
-    // OBJECTIVES and TIMELINE were reachable on a phone and unreachable on a desktop. CONTEXT was
-    // reachable at NO width as a tab; it was the third heading inside that column.
-    for (const name of ["THREAD", "OBJECTIVES", "CONTEXT", "TIMELINE"]) {
-      await expect(tab(page, name)).toBeVisible();
-    }
-
-    await tab(page, "OBJECTIVES").click();
+    await openMissionDetails(page, "objectives");
+    await openMissionDetails(page, "followThrough");
     await expect(page.getByTestId("objectives")).toBeVisible();
-
-    await tab(page, "CONTEXT").click();
-    await expect(page.getByTestId("objectives")).toHaveCount(0);
-    // The roster is what CONTEXT is; asserting the tab is selected would pass against a tab that
-    // shows nothing.
-    await expect(tab(page, "CONTEXT")).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByTestId("pane").getByText(/session|director|repo|cwd/i).first()).toBeVisible();
-
-    await tab(page, "TIMELINE").click();
-    await expect(tab(page, "TIMELINE")).toHaveAttribute("aria-selected", "true");
-
-    await tab(page, "THREAD").click();
+    await expect(page.getByTestId("detail-context")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await openMissionDetails(page, "timeline");
+    await expect(page.getByTestId("detail-timeline")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await openMissionConversation(page);
     await expect(page.getByTestId("composer-input")).toBeVisible();
   });
 }
 
-test("the console has NO dead track — the thread gets the whole width at 1600 (#942)", async ({
+test("the wide workspace uses the available width for conversation and details (#944)", async ({
   page,
 }) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
@@ -421,18 +466,21 @@ test("the console has NO dead track — the thread gets the whole width at 1600 
   const shell = await page.getByTestId("mission-console").boundingBox();
   expect(pane).not.toBeNull();
   expect(shell).not.toBeNull();
-  expect(shell!.width - pane!.width).toBeLessThan(60);
+  const details = (await page.getByTestId("mission-details").boundingBox())!;
+  expect(shell!.width - pane!.width - details.width).toBeLessThan(60);
 
   // …and nothing is rendered off to the side of it.
-  await expect(page.getByTestId("detail-column")).toHaveCount(0);
+  await expect(page.getByTestId("mission-details")).toBeVisible();
 });
 
-test("a half-typed message survives a tab round trip (#942)", async ({ page }) => {
+test("a half-typed message survives a tab round trip (#942)", async ({
+  page,
+}) => {
   // OBJECTIVES has a composer of its own ("Add an objective"). Two inputs on one surface is how a
   // draft gets eaten — and losing an unsent turn to a tab press is a worse bug than the layout
   // this phase set out to fix.
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
-  await page.setViewportSize({ width: 1600, height: 950 });
+  await page.setViewportSize({ width: 1200, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
 
@@ -440,12 +488,13 @@ test("a half-typed message survives a tab round trip (#942)", async ({ page }) =
   const composer = page.getByTestId("composer-input");
   await composer.fill(draft);
 
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
   await expect(page.getByTestId("objectives")).toBeVisible();
   // The objective composer is a DIFFERENT input and starts empty — it never inherits the draft.
   await expect(page.getByTestId("objective-add-input")).toHaveValue("");
 
-  await tab(page, "THREAD").click();
+  await openMissionConversation(page);
   await expect(page.getByTestId("composer-input")).toHaveValue(draft);
 });
 
@@ -453,12 +502,15 @@ test("a half-typed message survives a tab round trip (#942)", async ({ page }) =
 // FOLLOW-THROUGH folded onto the rows it was always describing.
 // ==============================================================================================
 
-test("the supervisor's reading renders ON the objective it describes (#942)", async ({ page }) => {
+test("the supervisor's reading renders ON the objective it describes (#942)", async ({
+  page,
+}) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   const rows = page.getByTestId("objectives").getByTestId("objective");
   await expect(rows).toHaveCount(2);
@@ -485,12 +537,15 @@ test("the supervisor's reading renders ON the objective it describes (#942)", as
   await expect(page.getByTestId("supervisor-board")).toHaveCount(0);
 });
 
-test("STAND DOWN moved to the row and kept its episode fence (#942)", async ({ page }) => {
+test("STAND DOWN moved to the row and kept its episode fence (#942)", async ({
+  page,
+}) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   const row = page.getByTestId("objectives").getByTestId("objective").first();
   const btn = row.getByTestId("objective-stand-down");
@@ -520,22 +575,30 @@ test("the mission-level notices survive the fold, including the no-rows case (#9
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   await expect(page.getByTestId("supervisor-unmeasured")).toBeVisible();
   await expect(page.getByTestId("supervisor-unreadable")).toHaveCount(0);
 });
 
-test("an unmet gate is still counted above the rows (#942)", async ({ page }) => {
+test("an unmet gate is still counted above the rows (#942)", async ({
+  page,
+}) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
-  await expect(page.getByTestId("supervisor-unmet-gates")).toHaveText("1 unmet gate");
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
+  await expect(page.getByTestId("supervisor-unmet-gates")).toHaveText(
+    "1 unmet gate",
+  );
 });
 
-test("the overflow lets Tab LEAVE — it is a menu, not a trap (#942)", async ({ page }) => {
+test("the overflow lets Tab LEAVE — it is a menu, not a trap (#942)", async ({
+  page,
+}) => {
   // THE OUTCOME, which is what the operator meets: the menu goes away and focus is not inside it.
   //
   // It does NOT isolate `containFocus`, and saying it did would be false: the menu's own Tab
@@ -573,13 +636,20 @@ test("the overflow lets Tab LEAVE — it is a menu, not a trap (#942)", async ({
 // ==============================================================================================
 
 for (const theme of ["dark", "light"] as const) {
-  test(`the reworked console is readable in the ${theme} theme (#942)`, async ({ page }) => {
+  test(`the reworked console is readable in the ${theme} theme (#942)`, async ({
+    page,
+  }) => {
     // Seed the DEVICE choice before first paint — the device cache wins over `/api/config`, and
     // seeding after load would race the reconcile.
     await page.addInitScript((t) => {
       localStorage.setItem("tr-theme", t);
     }, theme);
-    await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
+    await stub(
+      page,
+      ROWS,
+      { supervisor: SUPERVISOR },
+      { objectives: OBJ_ROWS },
+    );
     await page.setViewportSize({ width: 1600, height: 950 });
     await page.goto("/pulse");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
@@ -589,33 +659,39 @@ for (const theme of ["dark", "light"] as const) {
      *  nearest ancestor that actually paints a background. That is exactly what a token defined
      *  only inside a `@media (prefers-color-scheme: dark)` block fails in the other theme. */
     const readable = (testId: string) =>
-      page.getByTestId(testId).first().evaluate((el) => {
-        const fg = getComputedStyle(el as HTMLElement).color;
-        let n: HTMLElement | null = el as HTMLElement;
-        let bg = "rgba(0, 0, 0, 0)";
-        while (n) {
-          const c = getComputedStyle(n).backgroundColor;
-          if (c && c !== "rgba(0, 0, 0, 0)" && c !== "transparent") {
-            bg = c;
-            break;
+      page
+        .getByTestId(testId)
+        .first()
+        .evaluate((el) => {
+          const fg = getComputedStyle(el as HTMLElement).color;
+          let n: HTMLElement | null = el as HTMLElement;
+          let bg = "rgba(0, 0, 0, 0)";
+          while (n) {
+            const c = getComputedStyle(n).backgroundColor;
+            if (c && c !== "rgba(0, 0, 0, 0)" && c !== "transparent") {
+              bg = c;
+              break;
+            }
+            n = n.parentElement;
           }
-          n = n.parentElement;
-        }
-        return { fg, bg };
-      });
+          return { fg, bg };
+        });
 
     // THE HEADER ROW — the title and the action cluster this issue put on one line.
     for (const id of ["console-title", "mission-state", "mission-done"]) {
       const { fg, bg } = await readable(id);
       expect(fg, `${id} has no colour in ${theme}`).not.toBe("");
       expect(fg, `${id} is its own background in ${theme}`).not.toBe(bg);
-      expect(bg, `nothing paints behind ${id} in ${theme}`).not.toBe("rgba(0, 0, 0, 0)");
+      expect(bg, `nothing paints behind ${id} in ${theme}`).not.toBe(
+        "rgba(0, 0, 0, 0)",
+      );
     }
 
     // THE FOLDED SUPERVISOR CELL — the badge is a small mono WORD, which is where the raw status
     // hues fail on the light ground. `contrast.test.ts` pins the rule; this pins that the rule is
     // actually reached at runtime, in both themes.
-    await tab(page, "OBJECTIVES").click();
+    await openMissionDetails(page, "objectives");
+    await openMissionDetails(page, "followThrough");
     const cell = await readable("supervisor-cell");
     expect(cell.fg).not.toBe(cell.bg);
     const badge = await page
@@ -651,7 +727,9 @@ test("a LONG thread still leaves the composer on the bottom edge, and its last e
   // The dock is still ON the bottom edge — a thread that overflows must scroll, not push it off.
   const dock = (await page.locator('[class*="composerDock"]').boundingBox())!;
   const shell = (await page.getByTestId("mission-console").boundingBox())!;
-  expect(Math.abs(dock.y + dock.height - (shell.y + shell.height))).toBeLessThanOrEqual(2);
+  expect(
+    Math.abs(dock.y + dock.height - (shell.y + shell.height)),
+  ).toBeLessThanOrEqual(2);
 
   // …and the last event is reachable by scrolling the PANE, not the page.
   await expect(page.getByTestId("thread-event")).toHaveCount(60);
@@ -659,7 +737,9 @@ test("a LONG thread still leaves the composer on the bottom edge, and its last e
   await last.scrollIntoViewIfNeeded();
   await expect(last).toBeInViewport();
   const wide = await page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth + 1,
   );
   expect(wide).toBe(false);
 });
@@ -705,19 +785,24 @@ test("a LONG objective list scrolls inside the pane, composer still docked (#942
   await page.setViewportSize({ width: 412, height: 915 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
   await expect(page.getByTestId("objective")).toHaveCount(25);
 
-  const dock = (await page.locator('[class*="composerDock"]').boundingBox())!;
-  const shell = (await page.getByTestId("mission-console").boundingBox())!;
-  expect(Math.abs(dock.y + dock.height - (shell.y + shell.height))).toBeLessThanOrEqual(2);
+  await expect(page.getByTestId("composer-input")).toBeHidden();
+  const scroll = page.getByTestId("mission-details");
+  expect(await scroll.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(
+    true,
+  );
 
   const last = page.getByTestId("objective").last();
   await last.scrollIntoViewIfNeeded();
   await expect(last).toBeInViewport();
   // The server's prose is unbounded and this is 412px — it must wrap, not widen the page.
   const wide = await page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth + 1,
   );
   expect(wide).toBe(false);
 });
@@ -743,7 +828,8 @@ test("a FAILED objectives read keeps the supervisor's reading and its STAND DOWN
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   // The assessment survives on rows of its own.
   const rows = page.getByTestId("objective");
@@ -764,7 +850,9 @@ test("a FAILED objectives read keeps the supervisor's reading and its STAND DOWN
   await expect(page.getByTestId("objective-drop")).toHaveCount(0);
 });
 
-test("a failed objectives read says so instead of 'no objectives yet' (#942)", async ({ page }) => {
+test("a failed objectives read says so instead of 'no objectives yet' (#942)", async ({
+  page,
+}) => {
   // The same failure with NO assessment to fall back on — the case where the empty state is all
   // the operator gets, so what it says is the whole answer.
   await stub(page, ROWS, {}, { objectives: [] });
@@ -774,7 +862,8 @@ test("a failed objectives read says so instead of 'no objectives yet' (#942)", a
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   await expect(page.getByTestId("objectives-unreadable")).toBeVisible();
   await expect(page.getByTestId("objectives-unreadable")).toContainText(
@@ -815,7 +904,9 @@ test("a confirmation rerender does not throw focus out of the open menu (#942)",
   await expect(menu.getByTestId("mission-abandon")).toBeFocused();
 });
 
-test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async ({ page }) => {
+test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async ({
+  page,
+}) => {
   // TWO REAL CLICKS, because a synthetic `click()` cannot see this: it dispatches no mousedown,
   // and mousedown is where the hook decided the press was "outside" and closed the menu — leaving
   // the click that followed to toggle it straight back open.
@@ -836,7 +927,9 @@ test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async 
   await expect(menu).toHaveCount(1);
 });
 
-test("a RECOVERED objectives read stops claiming it could not be read (#942)", async ({ page }) => {
+test("a RECOVERED objectives read stops claiming it could not be read (#942)", async ({
+  page,
+}) => {
   // THE STATE THE ERROR FIX ITSELF CREATED. `objectivesFailed` first lived beside the one load
   // path that set it, so every OTHER accepted install — the pending-producer poll, the settlement
   // recovery — applied fresh rows and left "could not be read" on screen above them. The producer
@@ -871,7 +964,8 @@ test("a RECOVERED objectives read stops claiming it could not be read (#942)", a
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/pulse");
   await selectFirst(page);
-  await tab(page, "OBJECTIVES").click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 
   // The failure is shown first — the honest answer while it is the only one we have.
   await expect(page.getByTestId("objectives-unreadable")).toBeVisible();
@@ -887,7 +981,9 @@ test("a RECOVERED objectives read stops claiming it could not be read (#942)", a
   await expect(page.getByTestId("objectives-unreadable")).toHaveCount(0);
 });
 
-test("CONTEXT with nothing selected explains ITSELF, not the timeline (#942)", async ({ page }) => {
+test("CONTEXT with nothing selected explains ITSELF, not the timeline (#942)", async ({
+  page,
+}) => {
   // CONTEXT became reachable when the tabs replaced the detail column, and fell through to the
   // timeline's sentence — an explanation about a surface the operator is not looking at.
   await stub(page, []);
@@ -895,14 +991,15 @@ test("CONTEXT with nothing selected explains ITSELF, not the timeline (#942)", a
   await page.goto("/pulse");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
-  await tab(page, "CONTEXT").click();
-  const ctx = page.getByTestId("no-mission-context");
+  await page.getByTestId("stop-details").click();
+  const ctx = page.getByTestId("no-mission-details");
   await expect(ctx).toBeVisible();
-  await expect(ctx).toContainText(/context belongs to a mission/i);
-  await expect(ctx).not.toContainText(/timeline/i);
+  await expect(ctx).toContainText(
+    /context, objectives, follow-through and timeline belong to a mission/i,
+  );
 
-  await tab(page, "TIMELINE").click();
-  await expect(page.getByTestId("no-mission-timeline")).toContainText(
-    /a timeline belongs to a mission/i,
+  await page.getByTestId("stop-details").click();
+  await expect(page.getByTestId("no-mission-details")).toContainText(
+    /timeline belong to a mission/i,
   );
 });

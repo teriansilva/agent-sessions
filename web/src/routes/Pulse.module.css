@@ -5,12 +5,12 @@
 
 .pulse {
   height: 100%;
-  /* #494: overflow-y:auto silently promotes overflow-x from `visible` to `auto`, so the panel
-   * scrolls sideways whenever any descendant exceeds its width. Pin the x-axis to hidden — Pulse
-   * never scrolls horizontally; long content wraps/ellipsizes within the card (rules below). */
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 18px 20px 32px;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px;
   color: var(--text-1);
 }
 
@@ -613,4 +613,39 @@
 .lastRepeats {
   border: 1px solid var(--line);
   padding: 0 4px;
+}
+
+/* The list filters belong to the rail, including the secondary untracked view. */
+.sidebarFilters {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+}
+.sidebarFilters label {
+  display: grid;
+  gap: 6px;
+}
+.sidebarFilters select,
+.sidebarFilters button {
+  min-height: 44px;
+  min-width: 0;
+  width: 100%;
+  background: var(--panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.pulse > .head {
+  flex: none;
+  margin-bottom: 8px;
+}
+@media (max-width: 800px) {
+  .pulse {
+    padding: 8px;
+  }
+  .pulse > .head {
+    display: none;
+  }
 }

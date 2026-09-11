@@ -153,7 +153,9 @@ export function missionList(
  *  A no-op where the sidebar is already a docked column: there is nothing to open, and asserting
  *  on the rail directly is what those cases want.
  */
-export async function openMissionRail(page: import("@playwright/test").Page): Promise<void> {
+export async function openMissionRail(
+  page: import("@playwright/test").Page,
+): Promise<void> {
   const trigger = page.getByRole("button", { name: /Open mission list/i });
   // NO TRIGGER MEANS NO DRAWER, which is the docked-column case and a genuine no-op. Anything
   // else below is a failure to open and is raised (#940 review 3).
@@ -187,4 +189,48 @@ export async function openMissionRail(page: import("@playwright/test").Page): Pr
 /** The shell's rail control, for assertions about its state rather than its effect. */
 export function missionRailTrigger(page: import("@playwright/test").Page) {
   return page.getByRole("button", { name: /(Open|Collapse) mission list/i });
+}
+
+/** Open the shared disclosure at either responsive layout. */
+export async function openMissionDetails(page: Page, section = "objectives") {
+  const toggle = page.getByTestId(`detail-${section}`);
+  await toggle.waitFor({ state: "attached" });
+  const tab = page.getByTestId("stop-details");
+  if (await tab.isVisible()) await tab.click();
+  if ((await toggle.getAttribute("aria-expanded")) !== "true")
+    await toggle.click();
+}
+
+export async function openMissionConversation(page: Page) {
+  const tab = page.getByTestId("stop-thread");
+  if (await tab.isVisible()) await tab.click();
+}
+
+export function untrackedFilterOption(page: Page, name: RegExp) {
+  return page
+    .getByRole("combobox", {
+      name: /Filter untracked sessions by/,
+      includeHidden: true,
+    })
+    .getByRole("option", { name, includeHidden: true });
+}
+
+export async function chooseUntrackedFilter(page: Page, name: RegExp) {
+  await openMissionRail(page);
+  const option = untrackedFilterOption(page, name);
+  await option.waitFor({ state: "attached" });
+  await option
+    .locator("..")
+    .selectOption((await option.getAttribute("value"))!);
+  if (await page.getByRole("dialog").count())
+    await page.keyboard.press("Escape");
+}
+
+export async function clearUntrackedFilters(page: Page) {
+  await openMissionRail(page);
+  await page
+    .getByRole("button", { name: "Clear session filters", exact: true })
+    .click();
+  if (await page.getByRole("dialog").count())
+    await page.keyboard.press("Escape");
 }

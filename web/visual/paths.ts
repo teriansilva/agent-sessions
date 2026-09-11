@@ -7,7 +7,11 @@
 
 export type WaitForSelector = { selector: string; timeoutMs?: number };
 export type WaitForTimeout = { timeoutMs: number };
-export type WaitForNetworkIdle = { kind: "networkidle"; timeoutMs?: number; reason: string };
+export type WaitForNetworkIdle = {
+  kind: "networkidle";
+  timeoutMs?: number;
+  reason: string;
+};
 export type WaitFor = WaitForSelector | WaitForTimeout | WaitForNetworkIdle;
 
 export type VisualPath = {
@@ -38,8 +42,14 @@ export const VIEWPORT_NAMES = Object.keys(VIEWPORTS) as ViewportName[];
 
 const DEFAULT_SELECTOR_TIMEOUT_MS = 8000;
 // The login form's heading + the SPA's mounted shell are the stable readiness signals.
-const LOGIN_FORM = { selector: 'form[action="/login"]', timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS } as const;
-const SPA_MOUNTED = { selector: "#root *", timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS } as const;
+const LOGIN_FORM = {
+  selector: 'form[action="/login"]',
+  timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS,
+} as const;
+const SPA_MOUNTED = {
+  selector: "#root *",
+  timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS,
+} as const;
 
 export const VISUAL_PATHS: VisualPath[] = [
   {
@@ -54,9 +64,13 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "public",
     path: "/connect.html",
     name: "connect",
-    description: "Home Free public connect page — centered sign-in + floating connected controls",
+    description:
+      "Home Free public connect page — centered sign-in + floating connected controls",
     requireAuth: false,
-    waitFor: { selector: ".connect-card", timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS },
+    waitFor: {
+      selector: ".connect-card",
+      timeoutMs: DEFAULT_SELECTOR_TIMEOUT_MS,
+    },
   },
   {
     group: "authed",
@@ -78,7 +92,8 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/settings",
     name: "settings",
-    description: "Settings — tabbed shell, Appearance tab (theme + accent + compose) (#109/#211/#357)",
+    description:
+      "Settings — tabbed shell, Appearance tab (theme + accent + compose) (#109/#211/#357)",
     requireAuth: "admin",
     waitFor: SPA_MOUNTED,
   },
@@ -86,7 +101,8 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/overview",
     name: "overview",
-    description: "Session Overview map — clustered projects/sessions (#139/#211 HUD)",
+    description:
+      "Session Overview map — clustered projects/sessions (#139/#211 HUD)",
     requireAuth: "admin",
     waitFor: {
       kind: "networkidle",
@@ -99,11 +115,10 @@ export const VISUAL_PATHS: VisualPath[] = [
     path: "/pulse",
     name: "pulse",
     description:
-      "Pulse — AI-curated recent-work overview: banner + sessions grouped by state with Jump in (#441 HUD)",
+      "Missions — searchable sidebar, conversation and collapsible mission details (#944)",
     requireAuth: "admin",
-    // The seeded pulse-cache.json (web/visual/seed.py) makes this populated; wait for the
-    // first card's Jump-in link (a stable, non-hashed aria-label selector) to paint.
-    waitFor: { selector: 'a[aria-label^="Jump into"]', timeoutMs: 8000 },
+    // Readiness belongs to the mission workspace, including the empty-store case.
+    waitFor: { selector: '[data-testid="mission-console"]', timeoutMs: 8000 },
   },
   {
     group: "authed",
@@ -111,14 +126,17 @@ export const VISUAL_PATHS: VisualPath[] = [
     // against the fake-agent transcript so the terminal pane renders representative output.
     path: "/s/claude/019e2ba1-1590-7003-8e4a-51ab62cec900",
     name: "session-view",
-    description: "Open session — terminal chrome (header + scrollback + compose bar) (#211 HUD)",
+    description:
+      "Open session — terminal chrome (header + scrollback + compose bar) (#211 HUD)",
     requireAuth: "admin",
     // Wait for the xterm canvas to mount + the fake-agent transcript to paint.
     waitFor: { selector: ".xterm-screen", timeoutMs: 12000 },
   },
 ];
 
-export const KNOWN_AREA_KEYS: ReadonlySet<string> = new Set(VISUAL_PATHS.map((p) => p.name));
+export const KNOWN_AREA_KEYS: ReadonlySet<string> = new Set(
+  VISUAL_PATHS.map((p) => p.name),
+);
 export const SEEDED_AREA_KEYS: ReadonlySet<string> = new Set(
   VISUAL_PATHS.filter((p) => p.seeded).map((p) => p.name),
 );

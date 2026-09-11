@@ -38,6 +38,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     api: {
+      projectEntities: vi.fn().mockResolvedValue({ projects: [] }),
       pulse: vi.fn(),
       pulseScan: vi.fn(),
       pulseAsk: vi.fn(),
@@ -412,7 +413,7 @@ test("unadopted cwds collapse into one Default chip, never a raw path (#803)", a
   );
   renderPulse();
   expect(
-    await screen.findByRole("button", { name: /default/i }),
+    await screen.findByRole("option", { name: /default/i }),
   ).toBeInTheDocument();
   expect(screen.queryByText(/tmp\/scratch-one/)).not.toBeInTheDocument();
   expect(screen.queryByText(/tmp\/scratch-two/)).not.toBeInTheDocument();
@@ -439,8 +440,11 @@ test("selecting Default narrows UNTRACKED to exactly the unadopted sessions (#80
     }),
   );
   renderPulse();
-  await userEvent.click(
-    await screen.findByRole("button", { name: /default/i }),
+  await userEvent.selectOptions(
+    await screen.findByRole("combobox", {
+      name: "Filter untracked sessions by project",
+    }),
+    await screen.findByRole("option", { name: /default/i }),
   );
   expect(within(pane()).getByText("Scratch one")).toBeInTheDocument();
   expect(within(pane()).queryByText("Real project")).not.toBeInTheDocument();
@@ -467,7 +471,7 @@ test("two entities sharing a name still get two chips (#754 regression, #803)", 
   );
   renderPulse();
   // Two chips, disambiguated — collapsing them by label showed one chip carrying both.
-  const chips = await screen.findAllByRole("button", { name: /api/i });
+  const chips = await screen.findAllByRole("option", { name: /api/i });
   expect(chips.length).toBeGreaterThanOrEqual(2);
 });
 
@@ -491,7 +495,7 @@ test("a folder ref with no usable id still routes to Default (#803)", async () =
   );
   renderPulse();
   expect(
-    await screen.findByRole("button", { name: /default/i }),
+    await screen.findByRole("option", { name: /default/i }),
   ).toBeInTheDocument();
 });
 
@@ -688,9 +692,14 @@ test("a filter that excludes a held session does NOT withdraw its mission's deci
   expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
 
   // Filter to the OTHER project, which excludes the held session entirely.
-  await userEvent.click(
-    await screen.findByRole("button", { name: /^beta\s+1$/i }),
+  await userEvent.click(screen.getByTestId("rail-untracked-view"));
+  await userEvent.selectOptions(
+    await screen.findByRole("combobox", {
+      name: "Filter untracked sessions by project",
+    }),
+    "beta",
   );
+  await userEvent.click(screen.getByTestId("rail-mission"));
 
   // The mission is still selected, so its decision is still there to be made.
   expect(screen.getByText("Tests were not run.")).toBeInTheDocument();
@@ -772,8 +781,9 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
   // Scoped to the pane: jsdom applies no media queries, so the persistent detail column renders
   // the same timeline alongside the tab strip. That duplication is correct in a browser at
   // ≥1400px and only ambiguous here.
-  await userEvent.click(await screen.findByTestId("stop-timeline"));
-  const pane = await screen.findByTestId("pane");
+  await userEvent.click(await screen.findByTestId("stop-details"));
+  await userEvent.click(screen.getByTestId("detail-timeline"));
+  const pane = await screen.findByTestId("mission-details");
   expect(await within(pane).findByText("event 9")).toBeInTheDocument();
   expect(within(pane).queryByText("event 7")).not.toBeInTheDocument();
 

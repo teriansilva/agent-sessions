@@ -125,7 +125,6 @@ export function useMissionDetail(missionId: string): MissionDetailState {
   /** Bumped by `reload`. Part of the load effect's identity, which is what makes a manual re-read
    *  take the same cleanup-fenced path as the mount load. */
   const [nonce, setNonce] = useState(0);
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   /** The installed mission, readable from inside a resolved promise without re-identifying the
    *  effect that issued it. `installMission` needs to know whether the row it is about to write
@@ -205,6 +204,14 @@ export function useMissionDetail(missionId: string): MissionDetailState {
     objOwedFrom.current = 0;
   }, [missionId]);
   const objTicket = useCallback(() => (objIssued.current += 1), []);
+  const reload = useCallback(() => {
+    // Revoke earlier reads synchronously (#944). A response can resolve before
+    // React runs the old effect's cleanup; it must not release Begin's retry gate.
+    rowApplied.current = rowTicket();
+    objApplied.current = objTicket();
+    setNonce((n) => n + 1);
+  }, [rowTicket, objTicket]);
+
   const putObjectives = useCallback(
     (ticket: number, rows: MissionObjective[]) => {
       if (ticket < objApplied.current) return;

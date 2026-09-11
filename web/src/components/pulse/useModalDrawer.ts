@@ -202,6 +202,8 @@ export function useModalDrawer({
       if (hasSurfaceAbove()) return;
       const host = panelRef.current;
       if (host && nestedSurfaceHasFocus(host, document.activeElement)) return;
+      // Escape closes the surface; it must not also clear a focused search field (#944).
+      e.preventDefault();
       onClose();
     };
     document.addEventListener("mousedown", onDown);

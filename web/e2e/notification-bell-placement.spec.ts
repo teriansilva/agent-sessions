@@ -86,8 +86,8 @@ test("the bell is in the topbar and never in the drawer's nav row", async ({
     // test exists to stop is a fifth control appearing here.
     await page.getByRole("button", { name: /open session list/i }).click();
     const items = page.locator(".sidebar-actions").locator(":scope > *");
-    // Help / Pulse / Overview / Templates (#905) / Settings — and never the bell.
-    await expect(items).toHaveCount(5);
+    // Help / Overview / Templates / Settings; Missions now has its own section (#944).
+    await expect(items).toHaveCount(4);
   }
 });
 

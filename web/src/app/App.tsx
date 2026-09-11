@@ -1,6 +1,7 @@
 import {
   BookMarked,
   Crosshair,
+  TerminalSquare,
   HelpCircle,
   Menu,
   Network,
@@ -41,6 +42,7 @@ import { TermFontProvider } from "../theme/TermFontProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { useIsMobile } from "../lib/useIsMobile";
+import { SectionStateContext } from "./sectionState";
 import { api } from "../lib/api";
 import "./App.css";
 import { useConfig, useConfigRefresh } from "./config";
@@ -108,6 +110,15 @@ function Layout() {
   // now has exactly one owner (`useIsMobile`) shared with the map's window workspace (#208).
   const isMobile = useIsMobile();
   const location = useLocation();
+  const [sectionMemory] = useState(() => new Map<string, unknown>());
+  const routePath = location.pathname + location.search;
+  const isSessionPath =
+    location.pathname === "/" || location.pathname.startsWith("/s/");
+  const [lastSessionPath, setLastSessionPath] = useState(
+    isSessionPath ? routePath : "/",
+  );
+  if (isSessionPath && lastSessionPath !== routePath)
+    setLastSessionPath(routePath);
   const config = useConfig();
   // First-run onboarding (#463): show the setup wizard once the password gate has cleared and
   // the install isn't already onboarded. `setupDismissed` hides it immediately on finish/skip
@@ -323,7 +334,7 @@ function Layout() {
     .join(" ");
 
   return (
-    <>
+    <SectionStateContext.Provider value={sectionMemory}>
       <ButtonGlitch />
       <div
         className={cls}
@@ -358,6 +369,24 @@ function Layout() {
             </span>
             BATTLE<b>LAB</b>
           </span>
+          <nav className="section-nav" aria-label="Main sections">
+            <Link
+              to={lastSessionPath}
+              aria-current={!missionRoute ? "page" : undefined}
+              onClick={closeMobileDrawer}
+            >
+              <TerminalSquare size={16} />
+              Sessions
+            </Link>
+            <Link
+              to="/pulse"
+              aria-current={missionRoute ? "page" : undefined}
+              onClick={closeMobileDrawer}
+            >
+              <Crosshair size={16} />
+              Missions
+            </Link>
+          </nav>
           <span className="hud-telemetry">
             <SysClock />
             <MissionTimer />
@@ -371,14 +400,6 @@ function Layout() {
             >
               <HelpCircle size={18} />
             </button>
-            <Link
-              to="/pulse"
-              className="gear"
-              aria-label="Open mission control"
-              onClick={closeMobileDrawer}
-            >
-              <Crosshair size={18} />
-            </Link>
             <NotificationBell />
             <Link
               to="/overview"
@@ -517,14 +538,6 @@ function Layout() {
               <HelpCircle size={18} />
             </button>
             <Link
-              to="/pulse"
-              className="gear"
-              aria-label="Open mission control"
-              onClick={closeMobileDrawer}
-            >
-              <Crosshair size={18} />
-            </Link>
-            <Link
               to="/overview"
               className="gear"
               aria-label="Open session overview"
@@ -603,7 +616,9 @@ function Layout() {
           type="button"
           className="backdrop"
           ref={backdropRef}
-          aria-label={railInSidebar ? "Close mission list" : "Close session list"}
+          aria-label={
+            railInSidebar ? "Close mission list" : "Close session list"
+          }
           tabIndex={-1}
           onClick={() => setNavOpen(false)}
         />
@@ -687,7 +702,7 @@ function Layout() {
           }}
         />
       )}
-    </>
+    </SectionStateContext.Provider>
   );
 }
 

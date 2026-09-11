@@ -149,42 +149,16 @@ test("the re-read happens on SUCCESS too, not only on a refusal", async () => {
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
 });
 
-test("BEGIN is offered only from `planned`, and only with a session to follow", async () => {
-  const { rerender } = render(
-    <MissionLifecycle
-      mission={mission({ state: "planned", sessions: [] })}
-      onChanged={() => {}}
-      onNote={() => {}}
-    />,
-  );
-  // Present but refused, with the reason on the control — a hidden button would leave the
-  // operator with no way to learn that adopting a session is what unblocks it.
-  expect(screen.getByTestId("mission-begin")).toBeDisabled();
-
-  rerender(
+test("planning states leave Begin and Re-plan to the shared plan owner", () => {
+  render(
     <MissionLifecycle
       mission={mission({ state: "planned" })}
       onChanged={() => {}}
       onNote={() => {}}
     />,
   );
-  expect(screen.getByTestId("mission-begin")).toBeEnabled();
-});
-
-test("a detached-only roster does not count as holding a session", () => {
-  render(
-    <MissionLifecycle
-      mission={mission({
-        state: "planned",
-        sessions: [{ session_key: "claude:a", removed_at: 123 }],
-      })}
-      onChanged={() => {}}
-      onNote={() => {}}
-    />,
-  );
-  // The roster keeps history; ACTIVE membership is what the server guards on, and the client
-  // must read the same fact or it offers a control the server will refuse.
-  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+  expect(screen.queryByTestId("mission-begin")).toBeNull();
+  expect(screen.queryByTestId("mission-plan")).toBeNull();
 });
 
 test("archiving a LIVE mission confirms first, and says it will stop the agents", async () => {
@@ -388,7 +362,8 @@ test("a LOST terminal CAS still reconciles the OVERVIEW, and still does not move
 
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
   const opts = onChanged.mock.calls.at(-1)?.[0] as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   // THE GLOBAL half rides on the failure …
   expect(opts?.membershipChanged).toBe(true);
   // … and the VIEW-LOCAL half does not: a scope move clears the selection, so forwarding it
@@ -416,7 +391,8 @@ test("a FAILED archive reconciles membership too, but leaves the scope alone", a
   await userEvent.click(screen.getByTestId("mission-archive"));
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
   const opts = onChanged.mock.calls.at(-1)?.[0] as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   expect(opts?.membershipChanged).toBe(true);
   expect(opts?.movedTo).toBeUndefined();
 });

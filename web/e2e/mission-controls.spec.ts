@@ -1,3 +1,5 @@
+import { openMissionConversation } from "./mission-console";
+import { openMissionDetails } from "./mission-console";
 /** The operator's controls, in a real browser (#889).
  *
  * jsdom can prove that a handler posts the right body. It cannot prove the thing this PR is
@@ -206,14 +208,14 @@ async function selectMission(page: Page, name: string | RegExp) {
  *  viewport was hiding. A no-op where the stop strip is not rendered. */
 async function goToObjectives(page: Page) {
   await ready(page);
-  const stop = page.getByTestId("stop-objectives");
-  if (await stop.isVisible().catch(() => false)) await stop.click();
+  await openMissionDetails(page, "objectives");
+  await openMissionDetails(page, "followThrough");
 }
 
 /** …and CONTEXT, which owns the mission's roster since #942. */
 async function goToContext(page: Page) {
   await ready(page);
-  await page.getByTestId("stop-context").click();
+  await openMissionDetails(page, "context");
 }
 
 /** …and the UNTRACKED view, same reason. */
@@ -350,7 +352,9 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
   await expect(begin).toBeVisible();
   await expect(begin).toBeDisabled();
   // The reason is ON the control. A disabled button with no explanation is a dead end.
-  await expect(begin).toHaveAttribute("title", /adopt a session/i);
+  await expect(page.locator("#mission-start-reason")).toContainText(
+    /Re-plan to prepare a proposal/i,
+  );
 });
 
 test("an objective edit posts ONE batch of ops", async ({ page }) => {
@@ -1092,7 +1096,7 @@ for (const state of ["done", "failed", "abandoned"] as const) {
 
     // …and the roster's control, on the tab that now owns it (#942). This used to sit in the same
     // pane; asserting it from OBJECTIVES would now pass simply because it is elsewhere.
-    await page.getByTestId("stop-context").click();
+    await openMissionDetails(page, "context");
     await expect(page.getByTestId("session-detach")).toHaveCount(0);
   });
 }
@@ -2208,7 +2212,7 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   // the persistent detail column — so an unscoped locator was a strict-mode violation on desktop
   // and a passing test on mobile only. #942 deleted the column, so there is one copy; the scoping
   // stays because it is what fails loudly if a second is ever mounted again.
-  const pane = page.getByTestId("pane");
+  const pane = page.getByTestId("mission-console");
   await expect(pane.getByTestId("objectives-pending")).toBeVisible();
   server.objectivesReady = true;
   // No reload, no click: the console's own bounded poll is what ends the wait.
@@ -2231,10 +2235,8 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
 
   // ── 4. ADOPT ─────────────────────────────────────────────────────────────────────────────
   // BEGIN is refused without one, and the button SAYS so before the adoption.
-  await page.getByTestId("stop-thread").click();
-  await expect(page.getByTestId("mission-plan")).toBeVisible();
-  await page.getByTestId("mission-plan").click();
-  await expect(page.getByTestId("mission-state")).toHaveText("planned");
+  await openMissionConversation(page);
+  await expect(page.getByTestId("mission-state")).toHaveText("draft");
   await expect(page.getByTestId("mission-begin")).toBeDisabled();
 
   await selectUntracked(page);
@@ -3167,8 +3169,8 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
   await ready(page);
   await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
 
-  await expect(page.getByTestId("mission-plan-propose")).toBeVisible();
-  await page.getByTestId("mission-plan-propose").click();
+  await expect(page.getByTestId("mission-replan")).toBeVisible();
+  await page.getByTestId("mission-replan").click();
 
   // The PANE gets the proposal…
   await expect(page.getByTestId("mission-plan-brief")).toBeVisible();
@@ -3262,9 +3264,9 @@ test("a late DISPATCH failure cannot paint over the mission you moved to", async
   await expect(page.getByTestId("mission-plan-card")).toBeVisible();
 
   // Two taps: the first arms the confirmation, the second starts it — and it is held open.
-  await page.getByTestId("mission-dispatch").click();
+  await page.getByTestId("mission-begin").click();
   await expect(page.getByTestId("mission-dispatch-confirm")).toBeVisible();
-  await page.getByTestId("mission-dispatch").click();
+  await page.getByTestId("mission-begin").click();
 
   // Away, while the dispatch is still in flight.
   await selectMission(page, "Bravo");

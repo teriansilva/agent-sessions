@@ -36,8 +36,12 @@ async function stub(page: Page, rows: unknown[] = []) {
     r.fulfill({ json: { version: "test" } }),
   );
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
       json: {
@@ -124,15 +128,23 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
     await stub(page);
 
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Sessions" })).toBeAttached();
+    await expect(
+      page.getByRole("heading", { name: "Sessions" }),
+    ).toBeAttached();
 
     await page.goto("/pulse");
     await page.getByTestId("mission-console").waitFor();
-    await expect(page.getByRole("heading", { name: "Missions" })).toBeAttached();
-    await expect(page.getByRole("heading", { name: "Sessions" })).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Missions" }),
+    ).toBeAttached();
+    await expect(page.getByRole("heading", { name: "Sessions" })).toHaveCount(
+      0,
+    );
 
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Sessions" })).toBeAttached();
+    await expect(
+      page.getByRole("heading", { name: "Sessions" }),
+    ).toBeAttached();
   });
 });
 
@@ -178,8 +190,9 @@ test.describe("the thread fills the width it was given (#935)", () => {
     // full content width. The same measurement as the no-mission case above, which is the point:
     // there is one layout now, not two.
     const shortfall = con.x + con.width - (pane.x + pane.width);
-    expect(shortfall).toBeLessThan(24);
-    await expect(page.getByTestId("detail-column")).toHaveCount(0);
+    const details = (await page.getByTestId("mission-details").boundingBox())!;
+    expect(shortfall - details.width).toBeLessThan(24);
+    expect(details.x).toBeGreaterThanOrEqual(pane.x + pane.width);
   });
 
   test("the stop strip owns every pane, at 1399 and above (#942)", async ({
@@ -190,14 +203,14 @@ test.describe("the thread fills the width it was given (#935)", () => {
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/pulse");
     await page.getByTestId("pane").waitFor();
-    await expect(page.getByTestId("detail-column")).toHaveCount(0);
-    await expect(page.getByTestId("stop-objectives")).toBeVisible();
-    await expect(page.getByTestId("stop-context")).toBeVisible();
+    await page.getByTestId("stop-details").click();
+    await expect(page.getByTestId("mission-details")).toBeVisible();
+    await expect(page.getByTestId("detail-context")).toBeVisible();
 
     // …and the breakpoint that used to switch layouts no longer switches anything.
     await page.setViewportSize({ width: 1600, height: 900 });
-    await expect(page.getByTestId("stop-objectives")).toBeVisible();
-    await expect(page.getByTestId("stop-context")).toBeVisible();
+    await expect(page.getByTestId("mission-details")).toBeVisible();
+    await expect(page.getByTestId("detail-context")).toBeVisible();
   });
 });
 
@@ -240,7 +253,10 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
 
     // Selecting closes it and returns focus to the trigger. Selection changes local state and
     // never the URL, so this only works because the shell hands the console a close callback.
-    await dialog.getByRole("button", { name: /a mission/i }).first().click();
+    await dialog
+      .getByRole("button", { name: /a mission/i })
+      .first()
+      .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.locator("header.hud-topbar[inert]")).toHaveCount(0);
     await expect(trigger).toBeFocused();
@@ -259,7 +275,9 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     await expect(trigger).toBeFocused();
   });
 
-  test("the drawer's own close button closes it", async ({ page }, testInfo) => {
+  test("the drawer's own close button closes it", async ({
+    page,
+  }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/pulse");
@@ -299,7 +317,10 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     const trigger = page.getByRole("button", { name: /Open session list/i });
     await expect(trigger).toBeVisible();
     await trigger.click();
-    await expect(page.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    await expect(page.getByRole("dialog")).toHaveAttribute(
+      "aria-modal",
+      "true",
+    );
     await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -361,7 +382,9 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
         if (!el) return { inside: false, label: "none" };
         return {
           inside: !!el.closest("aside.sidebar"),
-          label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 40),
+          label: (el.getAttribute("aria-label") || el.textContent || "")
+            .trim()
+            .slice(0, 40),
         };
       });
       expect(
@@ -475,7 +498,6 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   }
 });
 
-
 /** The teardown contract (#935).
  *
  *  The issue is explicit that this does NOT promise a surviving socket: `/pulse` and
@@ -506,7 +528,9 @@ test("navigating to the mission route does not remount the shell (#935)", async 
   // with a remount, which is precisely the distinction under test.
   await page.evaluate(() => {
     const mark = (sel: string, tag: string) => {
-      const el = document.querySelector(sel) as (HTMLElement & Record<string, unknown>) | null;
+      const el = document.querySelector(sel) as
+        | (HTMLElement & Record<string, unknown>)
+        | null;
       if (el) el["__probe935"] = tag;
     };
     mark(".app", "app");
@@ -517,30 +541,42 @@ test("navigating to the mission route does not remount the shell (#935)", async 
   // CLIENT-SIDE navigation, via the control an operator actually uses. `page.goto` is a full
   // document load and would tear the DOM down whatever the code did — it could never distinguish
   // a remount from a reload, so it would have "failed" against a correct implementation.
-  await page.getByRole("link", { name: /open mission control/i }).click();
+  await page.getByRole("link", { name: "Missions", exact: true }).click();
   await page.getByTestId("mission-console").waitFor();
   await expect(page.locator("#mission-rail-slot")).toBeAttached();
 
   const survived = await page.evaluate(() => {
     const read = (sel: string) =>
-      (document.querySelector(sel) as (HTMLElement & Record<string, unknown>) | null)?.[
-        "__probe935"
-      ] ?? null;
-    return { app: read(".app"), sidebar: read(".sidebar"), topbar: read(".hud-topbar") };
+      (
+        document.querySelector(sel) as
+          | (HTMLElement & Record<string, unknown>)
+          | null
+      )?.["__probe935"] ?? null;
+    return {
+      app: read(".app"),
+      sidebar: read(".sidebar"),
+      topbar: read(".hud-topbar"),
+    };
   });
 
   // The shell, its sidebar and its topbar are the SAME elements — only what the sidebar renders
   // inside itself changed. RED if the swap were done by remounting the shell.
-  expect(survived).toEqual({ app: "app", sidebar: "sidebar", topbar: "topbar" });
+  expect(survived).toEqual({
+    app: "app",
+    sidebar: "sidebar",
+    topbar: "topbar",
+  });
 
   // …and back out again, still the same shell.
   await page.goBack();
   await expect(page.getByRole("heading", { name: "Sessions" })).toBeAttached();
   const stillThere = await page.evaluate(
     () =>
-      (document.querySelector(".sidebar") as (HTMLElement & Record<string, unknown>) | null)?.[
-        "__probe935"
-      ] ?? null,
+      (
+        document.querySelector(".sidebar") as
+          | (HTMLElement & Record<string, unknown>)
+          | null
+      )?.["__probe935"] ?? null,
   );
   expect(stillThere).toBe("sidebar");
 });
@@ -614,7 +650,12 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
       const rail = document.querySelector(
         'nav[aria-label="Missions" i]',
       ) as HTMLElement;
-      const owner = [slot, rail].find((el) => el.scrollHeight > el.clientHeight);
+      const list = document.querySelector(
+        '[data-testid="mission-list-scroll"]',
+      ) as HTMLElement;
+      const owner = [slot, rail, list].find(
+        (el) => el.scrollHeight > el.clientHeight,
+      );
       return {
         bodyH: body.clientHeight,
         slotH: slot.clientHeight,
@@ -633,7 +674,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     // pass against an unbounded container by moving the page instead of the list.
     const last = page.locator('[data-testid="rail-mission"]').last();
     const before = (await last.boundingBox())!.y;
-    await page.locator("#mission-rail-slot").hover();
+    await page.getByTestId("mission-list-scroll").hover();
     await page.mouse.wheel(0, 4000);
     await expect
       .poll(async () => (await last.boundingBox())!.y)
@@ -681,7 +722,9 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     // RED before the fix: only the "Order" LABEL was hidden, so Recent / Created still rendered
     // above the mission rail — and clicking Created wrote `session_list_order` to /api/prefs.
     // An active control for the wrong collection, not a stale word.
-    await expect(page.getByRole("radio", { name: /^created$/i })).toHaveCount(0);
+    await expect(page.getByRole("radio", { name: /^created$/i })).toHaveCount(
+      0,
+    );
     await expect(page.getByRole("radio", { name: /^recent$/i })).toHaveCount(0);
     expect(
       prefWrites.filter((w) =>
@@ -691,9 +734,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
 
     // …and it is still there for the collection it belongs to.
     await page.goto("/");
-    await expect(
-      page.getByRole("radio", { name: /^created$/i }),
-    ).toBeVisible();
+    await expect(page.getByRole("radio", { name: /^created$/i })).toBeVisible();
   });
 });
 
@@ -712,7 +753,10 @@ test("the mission sidebar has no empty header strip where the sort control was (
   // <aside> still needs an accessible name.
   const head = await page.evaluate(() => {
     const el = document.querySelector(".sidebar-head") as HTMLElement;
-    return { h: el.getBoundingClientRect().height, name: el.textContent?.trim() };
+    return {
+      h: el.getBoundingClientRect().height,
+      name: el.textContent?.trim(),
+    };
   });
   expect(head.h).toBeLessThan(4);
   expect(head.name).toBe("Missions");
@@ -722,7 +766,12 @@ test("the mission sidebar has no empty header strip where the sort control was (
     (await page.locator(".sidebarBody").boundingBox())!,
     (await page.getByTestId("rail-new-mission").boundingBox())!,
   ];
-  expect(create.y - slot.y).toBeLessThan(24);
+  await expect(
+    page
+      .getByRole("navigation", { name: "Missions" })
+      .getByText("Missions", { exact: true }),
+  ).toBeVisible();
+  expect(create.y - slot.y).toBeLessThan(56);
 });
 
 /** #937 review 2 — a stale creation must not close a newer form.

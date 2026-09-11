@@ -1,12 +1,10 @@
+import { useSectionState } from "../app/sectionState";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConfig } from "../app/config";
 import { MissionConsole } from "../components/pulse/MissionConsole";
 import { OrchestratorHealth } from "../components/pulse/OrchestratorHealth";
 import { api } from "../lib/api";
-// `shortCwd` is for the CARD BODY only — it rewrites a `/home/<user>/` prefix and nothing else,
-// so it does not shorten a `/tmp/…` path at all. It is not the fix for a raw-path filter chip
-// (#803); the chips group under `Default` instead. Don't reach for it in the label path.
-import { engineBadge, engineName } from "../lib/format";
+import { engineName } from "../lib/format";
 import { DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME } from "../lib/overviewGraph";
 import { OPERATOR_PENDING } from "../lib/orchestratorAction";
 import type {
@@ -151,8 +149,14 @@ export default function Pulse() {
   // (#929). `routes/PulseSettings.tsx` retains both the depth/window configuration and the
   // manual scan path, so nothing here is orphaned — only unreachable from this page.
 
-  const [projectFilter, setProjectFilter] = useState<string | null>(null);
-  const [engineFilter, setEngineFilter] = useState<string | null>(null);
+  const [projectFilter, setProjectFilter] = useSectionState<string | null>(
+    "missions.untracked.project",
+    null,
+  );
+  const [engineFilter, setEngineFilter] = useSectionState<string | null>(
+    "missions.untracked.engine",
+    null,
+  );
 
   // Counts come from the UNFILTERED set, so a chip always states what selecting it would yield
   // and never vanishes because of the current selection — the same rule `/api/sessions` facets
@@ -299,88 +303,6 @@ export default function Pulse() {
 
       {/* Narrow the whole list, not just the queue (#754) — the filters reach all sessions,
           including the ones the orchestrator has said nothing about, which is most of them. */}
-      {facets.total > 1 &&
-        (facets.projects.length > 1 || facets.engines.length > 1) && (
-          <div className={styles.filters}>
-            {/* Selection is a toggle state, not just a colour: without `aria-pressed` a screen
-                reader hears an identical button list whatever is filtered. */}
-            <div
-              className={styles.filterGroup}
-              role="group"
-              aria-labelledby="pulse-filter-project"
-            >
-              <span className={styles.filterLabel} id="pulse-filter-project">
-                Project
-              </span>
-              <button
-                type="button"
-                className={`${styles.chip} ${effProject === null ? styles.chipOn : ""}`}
-                aria-pressed={effProject === null}
-                onClick={() => setProjectFilter(null)}
-              >
-                All <span className={styles.chipN}>{facets.total}</span>
-              </button>
-              {facets.projects.map((f) => (
-                <button
-                  key={f.key}
-                  type="button"
-                  className={`${styles.chip} ${effProject === f.key ? styles.chipOn : ""}`}
-                  aria-pressed={effProject === f.key}
-                  onClick={() =>
-                    setProjectFilter(effProject === f.key ? null : f.key)
-                  }
-                >
-                  {f.label} <span className={styles.chipN}>{f.n}</span>
-                </button>
-              ))}
-            </div>
-            {facets.engines.length > 1 && (
-              <>
-                <span className={styles.filterSep} aria-hidden="true" />
-                <div
-                  className={styles.filterGroup}
-                  role="group"
-                  aria-labelledby="pulse-filter-agent"
-                >
-                  <span className={styles.filterLabel} id="pulse-filter-agent">
-                    Agent
-                  </span>
-                  {facets.engines.map((f) => (
-                    <button
-                      key={f.key}
-                      type="button"
-                      className={`${styles.chip} ${effEngine === f.key ? styles.chipOn : ""}`}
-                      aria-pressed={effEngine === f.key}
-                      // `cx` on its own is not a name. The label carries the engine's real
-                      // name and its count, so the button is usable without the tooltip.
-                      aria-label={`${engineName(f.key)} ${f.n}`}
-                      onClick={() =>
-                        setEngineFilter(effEngine === f.key ? null : f.key)
-                      }
-                      title={engineName(f.key)}
-                    >
-                      {engineBadge(f.key)}{" "}
-                      <span className={styles.chipN}>{f.n}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-            {(effProject || effEngine) && (
-              <button
-                type="button"
-                className={styles.clearFilters}
-                onClick={() => {
-                  setProjectFilter(null);
-                  setEngineFilter(null);
-                }}
-              >
-                Clear filters
-              </button>
-            )}
-          </div>
-        )}
-
       {/* THE AUTONOMY STRIP IS GONE (#929), and its own comment is why.
           It read: "The AUTONOMY strip, below the console (#878) … what you arrive to USE goes
           above what you arrive to READ" — while rendering ABOVE the console, doing the thing it
@@ -397,10 +319,55 @@ export default function Pulse() {
           the standalone Ask box — a card is now a mission row in the rail, the banner is the
           mission's own recap stream, and Ask is the composer. Nothing is orphaned by that: a
           live session with no mission lists under UNTRACKED with ADOPT. */}
-      {/* The filter chips above still narrow this: `cards` is the filtered, sorted set, and it
-          feeds the rail's UNTRACKED group. The chips did not belong to the grid — they belong to
-          the session list, and the session list moved. */}
+      {/* Sidebar filters narrow `cards` for the untracked view. `allCards` stays unfiltered so
+          a mission never loses its decisions because of a session-list filter. */}
       <MissionConsole
+        untrackedFilters={
+          <div className={styles.sidebarFilters}>
+            <span>Sessions without a mission</span>
+            <label>
+              Project
+              <select
+                aria-label="Filter untracked sessions by project"
+                value={effProject ?? ""}
+                onChange={(e) => setProjectFilter(e.target.value || null)}
+              >
+                <option value="">All projects</option>
+                {facets.projects.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {f.label} · {f.n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Agent
+              <select
+                aria-label="Filter untracked sessions by agent"
+                value={effEngine ?? ""}
+                onChange={(e) => setEngineFilter(e.target.value || null)}
+              >
+                <option value="">All agents</option>
+                {facets.engines.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {engineName(f.key)} · {f.n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {effProject || effEngine ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setProjectFilter(null);
+                  setEngineFilter(null);
+                }}
+              >
+                Clear session filters
+              </button>
+            ) : null}
+          </div>
+        }
         cards={cards}
         allCards={overview?.cards ?? []}
         configured={cfg?.configured ?? false}

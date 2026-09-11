@@ -17,8 +17,8 @@
  * objective rows, so they were always the same rows — which meant "why has nothing happened to
  * objective 3" was a cross-reference between two lists. The badge, the budget, the server's
  * refusal sentence and STAND DOWN now render on the objective they describe. What is about the
- * MISSION rather than an objective stays mission-level, above the list; see
- * `MissionSupervisorBoard.tsx`.
+ * MISSION rather than an objective appears in the Follow-through disclosure in the console;
+ * standalone callers can retain the notices above the list. See `MissionSupervisorBoard.tsx`.
  *
  * **An empty list is not the same as no objectives.** `POST /api/missions` returns before the
  * producer has run, so a mission legitimately has nothing here for a moment. `objectives_state`
@@ -143,6 +143,7 @@ export function MissionObjectives({
   objectives,
   objectivesState,
   objectivesFailed,
+  showNotices = true,
   onOps,
   supervisor,
   budget = 3,
@@ -150,6 +151,8 @@ export function MissionObjectives({
   busy = false,
 }: {
   objectives: MissionObjective[];
+  /** The console renders these once in the Follow-through disclosure. */
+  showNotices?: boolean;
   /** `pending` / `done` / `failed` / `skipped` from the mission row — see the module note. */
   objectivesState?: string | null;
   /** Apply operator edits. Absent ⇒ the list is read-only (an archived or closed mission).
@@ -274,7 +277,9 @@ export function MissionObjectives({
   if (rows.length === 0 && !onOps) {
     return (
       <>
-        <MissionSupervisorNotices supervisor={supervisor} />
+        {showNotices ? (
+          <MissionSupervisorNotices supervisor={supervisor} />
+        ) : null}
         <EmptyObjectives
           objectivesState={objectivesState}
           failed={objectivesFailed}
@@ -287,7 +292,9 @@ export function MissionObjectives({
     <>
       {/* THE MISSION-LEVEL HALF, above the rows — see the module note. It renders on the empty
           case too, which is the one notice whose entire meaning is that there are no rows. */}
-      <MissionSupervisorNotices supervisor={supervisor} />
+      {showNotices ? (
+        <MissionSupervisorNotices supervisor={supervisor} />
+      ) : null}
       {rows.length === 0 ? (
         <EmptyObjectives
           objectivesState={objectivesState}
@@ -407,9 +414,7 @@ export function MissionObjectives({
                       className={styles.objEditBtn}
                       disabled={busyKey !== null || i === 0}
                       onClick={() =>
-                        void run(o.key, [
-                          { op: "reorder", keys: moved(i, -1) },
-                        ])
+                        void run(o.key, [{ op: "reorder", keys: moved(i, -1) }])
                       }
                       data-testid="objective-up"
                       aria-label={`Move "${o.title ?? o.key}" up`}
@@ -419,13 +424,9 @@ export function MissionObjectives({
                     <button
                       type="button"
                       className={styles.objEditBtn}
-                      disabled={
-                        busyKey !== null || i === objectives.length - 1
-                      }
+                      disabled={busyKey !== null || i === objectives.length - 1}
                       onClick={() =>
-                        void run(o.key, [
-                          { op: "reorder", keys: moved(i, 1) },
-                        ])
+                        void run(o.key, [{ op: "reorder", keys: moved(i, 1) }])
                       }
                       data-testid="objective-down"
                       aria-label={`Move "${o.title ?? o.key}" down`}

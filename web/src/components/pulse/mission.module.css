@@ -8,27 +8,12 @@
  *   - The BRAND `--accent` marks affordances only — ADOPT, JUMP IN, SEND, selection. It never
  *     means a state. A green LED as a bullet is exactly the confusion this separation removes.
  *
- * Two breakpoints, three modes. The middle one (1100–1399: rail is a column, detail is a tab
- * strip) is the mode neither Playwright project lands on, so it is the one that ships broken —
- * `web/e2e/mission-console-breakpoints.spec.ts` tests both edges of both boundaries.
+ * The shell owns the rail breakpoint (800px). At 1400px the workspace shows conversation
+ * beside collapsible details; narrower workspaces select Conversation or Details.
  */
 
-/* ONE TRACK, BECAUSE THE RAIL IS NOT IN HERE ANY MORE (#935).
- *
- * This used to be `300px 1fr` at 1100 and `300px 1fr 340px` at 1400, next to the app shell's own
- * 320px session sidebar — two vertical lists about different things, 620px of a desktop. The rail
- * now renders into the shell's sidebar on this route, so the console is the thread and nothing
- * else.
- *
- * The third track was also never occupied. Measured at 1600 before the change:
- *
- *     .console  grid-template-columns: 300px 580px 340px   (computed)
- *     .console  children: 2  →  .railInline | .centre
- *
- * `MissionDrawer` renders nothing inline, so auto-placement filled tracks 1 and 2 and left 340px
- * dead in EVERY state — and the "persistent detail column" was a flex child of `.centre`, i.e.
- * stacked BELOW the thread rather than beside it. The split now lives on `.split`, which is the
- * actual parent of the two things being split. */
+/* The shell owns the rail. The console holds one centre column; `.split` lays out
+ * conversation and details inside that column only while a mission is selected. */
 .console {
   display: grid;
   grid-template-columns: 1fr;
@@ -270,18 +255,9 @@
   border-bottom-color: var(--accent);
 }
 
-/* ONE COLUMN, AT EVERY WIDTH (#942).
- *
- * This used to become `grid-template-columns: 1fr 340px` at ≥1400px, putting a second, different
- * layout on the wide viewport: a 340px track stacking objectives, follow-through and context —
- * four unrelated things, each too small to be useful, with follow-through's error copy given the
- * prominence. The tabs carry those panes now, so the track is gone rather than resized, and the
- * thread gets the width it was sharing.
- *
- * Still a wrapper rather than `.centre` itself: `.centre` also holds the topbar, the stop strip
- * and the notices, so making it the flex parent would put every one of them in the same
- * distribution as the thread. Wrapping exactly what is being laid out cannot have that failure
- * mode, and it is what lets `.pane` claim `flex: 1 1 auto` and actually fill the height. */
+/* The viewport below the mission header owns the conversation and details (#944).
+ * Narrow layouts show one view at a time. At 1400px the details become a second
+ * column; neither layout lets the surrounding route acquire a scrollbar. */
 .split {
   display: flex;
   flex-direction: column;
@@ -324,11 +300,6 @@
   min-width: 0;
   padding: 12px 14px;
 }
-
-/* `.section` lived here — the "Objectives" / "Follow-through" / "Context" headings that stacked
- * inside the 340px detail column. Each of those is a TAB now (#942), and a heading that repeats
- * the selected tab's own label is the "two headers" defect one level down, so the class went with
- * the column rather than being kept for a caller that no longer exists. */
 
 /* --- objectives ---------------------------------------------------------------- */
 
@@ -1513,4 +1484,375 @@
   align-items: center;
   flex-shrink: 0;
   min-width: 0;
+}
+
+/* #944: bounded workspace, searchable rail and Context-first disclosures. */
+.console {
+  flex: 1 1 0;
+  height: auto;
+  min-width: 0;
+}
+.rail {
+  overflow: hidden;
+  padding: 16px 0 0;
+  border: 0;
+}
+.railHeading {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 16px 12px;
+  font: 600 13px var(--font-mono);
+  text-transform: uppercase;
+}
+.railHeading small {
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 400;
+}
+.rail .newMission {
+  width: calc(100% - 32px);
+  margin: 0 16px 16px;
+  flex: none;
+}
+.railFilters {
+  padding: 0 16px;
+  display: grid;
+  gap: 12px;
+}
+.railFilters label {
+  display: grid;
+  gap: 6px;
+  font: 10px var(--font-mono);
+  color: var(--text-2);
+  text-transform: uppercase;
+}
+.railFilters input,
+.railFilters select,
+.railFilters button {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: 12px system-ui;
+}
+.railGroup {
+  flex: none;
+  padding: 6px 16px;
+  min-height: 52px;
+}
+.railScroll {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  scrollbar-gutter: stable;
+  padding: 0 8px;
+}
+.railRow {
+  flex: none;
+  padding: 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.railTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.railMeta {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.railState {
+  display: block;
+  text-transform: uppercase;
+  font: 10px var(--font-mono);
+  margin-top: 6px;
+}
+.rail .dot {
+  border-radius: 50%;
+}
+.split {
+  flex-direction: row;
+  overflow: hidden;
+}
+.threadCol {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.detailsWrap {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.detailsColumn {
+  overflow-y: auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  padding: 0 18px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.disclosure {
+  border-bottom: 1px solid var(--line);
+}
+.disclosureToggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  min-height: 60px;
+  padding: 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  font: 600 11px var(--font-mono);
+  text-transform: uppercase;
+}
+.disclosureToggle > svg {
+  flex: none;
+}
+.disclosureToggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.disclosureToggle small {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+}
+.disclosureToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.disclosureContent {
+  padding-bottom: 20px;
+  overflow-wrap: anywhere;
+}
+.disclosureContent[hidden] {
+  display: none;
+}
+.disclosureContent .objRow {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.disclosureContent .objEdit {
+  grid-column: 2;
+  grid-row: auto;
+  justify-content: flex-start;
+}
+.hideThread {
+  display: none;
+}
+.hideDetails {
+  display: none;
+}
+.topbar {
+  flex: none;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+}
+.missionTitle {
+  padding-top: 8px;
+  font-size: 1.2rem;
+  line-height: 1.4;
+}
+.titleButton {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 8px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.titleButton .missionTitle {
+  padding-top: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.titleButton > svg {
+  flex: none;
+  margin-top: 5px;
+}
+.titleButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.titleDialog {
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-1);
+}
+.titleDialog::backdrop {
+  background: color-mix(in srgb, var(--bg-0) 75%, transparent);
+}
+.titleDialog h2 {
+  margin: 0;
+  font: 600 12px var(--font-mono);
+  text-transform: uppercase;
+}
+.titleDialog p {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.topbarActions {
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.startControls {
+  order: -1;
+  min-width: 0;
+  max-width: 460px;
+}
+.startButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.startButtons > button {
+  white-space: nowrap;
+  min-height: 44px;
+  padding: 0 16px;
+}
+.startReason {
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.5;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.linkButton {
+  display: inline-block;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  min-height: 44px;
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.planFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.planFields select {
+  margin-top: 6px;
+}
+.planCard {
+  margin-bottom: 20px;
+  padding: 16px;
+}
+.filterNotice {
+  flex: none;
+  padding: 0 14px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.filterNotice button {
+  min-height: 44px;
+  border: 0;
+  color: var(--text-1);
+  background: transparent;
+  text-decoration: underline;
+}
+@media (min-width: 1400px) {
+  .hasDetails {
+    display: none;
+  }
+  .detailsWrap {
+    flex: 0 0 330px;
+    border-left: 1px solid var(--line);
+  }
+  .hideDetails {
+    display: flex;
+  }
+  .hideThread {
+    display: flex;
+  }
+}
+@media (max-width: 800px) {
+  .topbar {
+    padding: 10px 8px;
+  }
+  .topbarActions {
+    width: 100%;
+  }
+  .startControls {
+    flex: 1;
+    max-width: none;
+  }
+  .overflowWrap > .missionBtn {
+    min-width: 44px;
+    padding: 8px;
+  }
+  .startButtons > button {
+    padding: 0 10px;
+    flex: 1 0 auto;
+    min-width: max-content;
+  }
+  .planFields {
+    grid-template-columns: 1fr;
+  }
+  .planCard {
+    padding: 12px;
+  }
+  .pane {
+    padding: 12px 8px;
+  }
+}
+
+.disclosureContent .empty {
+  padding: 16px 0;
+}
+
+.railFilters {
+  flex: none;
+}
+@media (max-height: 680px) {
+  .rail {
+    overflow-y: auto;
+  }
+  .railScroll {
+    flex: none;
+    overflow: visible;
+  }
+}
+
+.railWithSessions {
+  overflow-y: auto;
+}
+.railWithSessions .railScroll {
+  flex: none;
+  overflow: visible;
 }

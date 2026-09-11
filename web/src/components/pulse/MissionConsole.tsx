@@ -1,33 +1,21 @@
-/** MISSION CONTROL — the console (#878, Phase 2b of #840).
- *
- * A rail of missions in the app shell's sidebar, and one content column per mission: a header
- * row, a thread that fills the height, a composer on the bottom edge, and four tabs — THREAD /
- * OBJECTIVES / CONTEXT / TIMELINE — for everything the thread is not. This replaces the card
- * grid: a session that used to be a card is now a mission row, and a live session no mission owns
- * appears under UNTRACKED with ADOPT — which is both the migration path and the permanent home
- * for work started from the sidebar.
- *
- * **ONE LAYOUT, AT EVERY WIDTH (#942).** There used to be a second: at ≥1400px a persistent 340px
- * column stacked objectives, follow-through and context beside the thread, and the tab strip hid
- * because the column was said to replace it. That column was the operator's "the current layout
- * is a mess" — four unrelated panes, none of them big enough to be useful, with follow-through's
- * error copy given the prominence, and the thread 340px narrower for it. It is deleted, not
- * resized: the tabs are the detail surface at 412 and at 1600 alike, follow-through folded onto
- * the objective rows it was always describing, and the thread got the width back.
- *
- * Every decision renders through the SERVER's projection (`projection` / `can_approve` /
- * `can_reject`). Nothing here re-derives controls from `state` — that drift is what #862 exists
- * to end, and `ActionRow` already consumes the contract.
- *
- * **Per-mission state is fenced by REMOUNTING, not by resetting.** `MissionBody` is keyed on the
- * mission id, so switching missions destroys the old instance rather than clearing it field by
- * field. A late response from the previous mission then resolves into an unmounted component and
- * updates nothing — a guarantee that cannot be forgotten when a sixth fetch is added, unlike a
- * captured-id check inside every `.then`.
- */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+/** Mission workspace (#944): searchable rail, one start action and Context-first
+ * disclosures. List and detail requests retain their generation/mission fences;
+ * changing a view never changes a session’s ownership or terminal lifetime. */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
+import { useSectionState } from "../../app/sectionState";
+import { MissionFilters, type MissionFiltersValue } from "./MissionFilters";
+import { MissionDetails } from "./MissionDetails";
+import { MissionTitle } from "./MissionTitle";
+import { MissionSupervisorNotices } from "./MissionSupervisorBoard";
 import { useMissionRailSlot } from "./railSlot";
 
 import { ApiError, api } from "../../lib/api";
@@ -107,14 +95,9 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
   return rows.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 }
 
-/** THE TABS, AT EVERY WIDTH (#942).
- *
- *  CONTEXT joined them when the 340px detail column was deleted. That column stacked objectives,
- *  follow-through and context under three headings, which is why the narrow case used to split at
- *  one seam into three stops rather than four — the column was not three separate things, it was
- *  a junk drawer. It is now four panes, one subject each, and the same strip switches between them
- *  whether the viewport is 412 or 1600. One layout, not two. */
-const STOPS = ["THREAD", "OBJECTIVES", "CONTEXT", "TIMELINE"] as const;
+/** Below 1400px the workspace selects Conversation or Details. The wide layout
+ * displays both; an empty workspace keeps Details available with an explanation. */
+const STOPS = ["THREAD", "DETAILS"] as const;
 
 /** The states that have RELEASED the mission's roster (#896 review 20, finding 2). A mission in
  *  one of these holds no sessions and follows nothing through, so it cannot be the target of an
@@ -164,6 +147,8 @@ function ThreadEvent({ event }: { event: MissionEvent }) {
 function MissionBody({
   missionId,
   stop,
+  onDetails,
+  onConversation,
   configured,
   onTitle,
   onSessions,
@@ -176,6 +161,8 @@ function MissionBody({
 }: {
   missionId: string;
   stop: Stop;
+  onDetails: () => void;
+  onConversation: () => void;
   configured: boolean;
   onTitle: (t: string | null) => void;
   onSessions: (keys: string[]) => void;
@@ -204,6 +191,11 @@ function MissionBody({
   }) => void;
 }) {
   const d = useMissionDetail(missionId);
+  const [revealObjectives, setRevealObjectives] = useState(0);
+  const showObjectives = () => {
+    onDetails();
+    setRevealObjectives((n) => n + 1);
+  };
 
   // Publish upward for the topbar and the UNTRACKED computation. In an effect rather than during
   // render, because it writes to a parent.
@@ -435,6 +427,7 @@ function MissionBody({
 
   const objectives = (
     <ObjectivesPane
+      showNotices={false}
       objectives={d.objectives}
       objectivesState={d.mission?.objectives_state}
       objectivesFailed={d.objectivesFailed}
@@ -553,7 +546,9 @@ function MissionBody({
 
   return (
     <>
-      {lifecycleSlot && lifecycle ? createPortal(lifecycle, lifecycleSlot) : null}
+      {lifecycleSlot && lifecycle
+        ? createPortal(lifecycle, lifecycleSlot)
+        : null}
       {/* THE THREAD COLUMN — a scrolling pane with the composer docked under it (#942).
           The composer used to be the last child of the scrolling pane, so it sat immediately
           after the final event and everything below it was empty: on a 1600×950 desktop with a
@@ -561,17 +556,19 @@ function MissionBody({
           "a mess". A chat fills its column and pins its input to the bottom edge. Splitting the
           two is the whole fix — the pane keeps `flex: 1` and scrolls, the dock is `flex: none`
           and sits on the bottom edge, so the empty space becomes thread instead of void. */}
-      <div className={styles.threadCol}>
-      <div className={styles.pane} data-testid="pane">
-        {/* THE SCROLLING CONTENT, in its own box so a SHORT thread sits at the BOTTOM (#942).
+      <div
+        className={`${styles.threadCol} ${stop === "DETAILS" ? styles.hideThread : ""}`}
+      >
+        <div className={styles.pane} data-testid="pane">
+          {/* THE SCROLLING CONTENT, in its own box so a SHORT thread sits at the BOTTOM (#942).
             Pinning the composer fixed half the dead band and moved the other half: the events
             stayed top-aligned, so a four-turn mission on a 950px screen put ~350px of void
             between the last answer and the box you type into. Chats grow up from the composer.
             `.paneInner` carries `margin-top: auto` — see the note beside `.pane`. */}
-        <div
-          className={`${styles.paneInner} ${stop === "THREAD" ? styles.paneAtBottom : ""}`}
-        >
-        {/* ONE HEADER ROW (#942). The mission's controls live in the console's header now, beside
+          <div
+            className={`${styles.paneInner} ${stop === "THREAD" ? styles.paneAtBottom : ""}`}
+          >
+            {/* ONE HEADER ROW (#942). The mission's controls live in the console's header now, beside
             the title and the state, instead of on a second row of their own inside the pane —
             two stacked headers before any content was one of the things that made the page read
             as two designs. They are still on every stop: closing a mission from the timeline is
@@ -579,104 +576,129 @@ function MissionBody({
 
             Rendered in place when no slot is offered, which is what keeps this component
             standalone in a unit test. */}
-        {d.mission && !lifecycleSlot ? lifecycle : null}
-        {stop === "THREAD" ? (
-          <>
-            {!configured ? (
-              <div className={styles.notice} data-testid="no-ai-notice">
-                <div className={styles.noticeLead}>
-                  No AI endpoint configured.
-                </div>
-                <div>
-                  Off: suggestions, recaps, progress, completion proposals, and
-                  the composer. Still works: create, adopt, objectives,
-                  timeline, approvals.
-                </div>
-              </div>
-            ) : null}
-            {/* THE QUESTION FIRST, above the thread and above the composer — it is the thing
+            {d.mission && !lifecycleSlot ? lifecycle : null}
+            {
+              <>
+                {!configured ? (
+                  <div className={styles.notice} data-testid="no-ai-notice">
+                    <div className={styles.noticeLead}>
+                      No AI endpoint configured.
+                    </div>
+                    <div>
+                      Off: suggestions, recaps, progress, completion proposals,
+                      and the composer. Still works: create, adopt, objectives,
+                      timeline, approvals.
+                    </div>
+                  </div>
+                ) : null}
+                {/* THE QUESTION FIRST, above the thread and above the composer — it is the thing
                 the mission is waiting on, and burying it under the history would make
                 `needs_you` point at something the operator has to scroll to find (#892). It
                 outranks the proposal for the same reason: a question is already open, while a
                 plan is something to start. */}
-            {d.mission?.question ? (
-              /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
+                {d.mission?.question ? (
+                  /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
                  question is superseded in place: the answer 409s, the reload lands question B in
                  the same prop, and an unkeyed card keeps its state across the swap — so the free
                  text the operator typed about A is sitting in the box, enabled, over B. The key
                  makes the replacement a remount, which is the only thing that reliably clears
                  state a child owns. */
-              <MissionQuestionCard
-                key={d.mission.question.seq}
-                missionId={missionId}
-                question={d.mission.question}
-                onAnswered={d.reload}
-                // THE SAME FENCE AS EVERY OTHER CONSUMER (#896 review 23, finding 4). An
-                // answer settles asynchronously — a 409 for a superseded question, or
-                // `applied_ok: false` — and the raw callback let mission A's refusal paint
-                // over mission B after the operator had navigated. This is what makes the
-                // claim above ("every consumer gets the one fence") true rather than nearly.
-                onNote={noteIfCurrent}
-              />
-            ) : null}
-            {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
+                  <MissionQuestionCard
+                    key={d.mission.question.seq}
+                    missionId={missionId}
+                    question={d.mission.question}
+                    onAnswered={d.reload}
+                    // THE SAME FENCE AS EVERY OTHER CONSUMER (#896 review 23, finding 4). An
+                    // answer settles asynchronously — a 409 for a superseded question, or
+                    // `applied_ok: false` — and the raw callback let mission A's refusal paint
+                    // over mission B after the operator had navigated. This is what makes the
+                    // claim above ("every consumer gets the one fence") true rather than nearly.
+                    onNote={noteIfCurrent}
+                  />
+                ) : null}
+                {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
                 for a decision that starts an agent — and it renders nothing at all once the
                 mission has left the planning states. */}
-            {d.mission ? (
-              <MissionPlanCard
-                key={d.mission.plan?.plan_id ?? "no-plan"}
-                mission={d.mission}
-                // BOTH HALVES, like every other mutation on this screen (#904 review 18, finding
-                // 2). `d.reload` re-reads the mission DETAIL and nothing else, so planning left
-                // the rail row saying `draft` next to a pane showing the plan, and a dispatch
-                // left the session it had just attached sitting in UNTRACKED until the next
-                // supervisor poll. The rule is stated forty lines up and this was the one
-                // surface that did not follow it.
-                onChanged={(opts) => {
-                  d.reload();
-                  changedIfCurrent(opts);
-                }}
-                // THROUGH THE MOUNT FENCE, like every other async consumer (#904 review 17,
-                // finding 2). A dispatch is the LONGEST await on this screen — it launches a
-                // process — and the operator is free to move to another mission while it runs.
-                // The raw callback here made the claim four lines above ("every consumer gets
-                // the one fence") false by exactly one component: mission A's failure was
-                // rendered on mission B's pane.
-                onNote={noteIfCurrent}
-              />
-            ) : null}
-            {decisions.map((a) => (
-              <ActionRow
-                key={a.id}
-                action={a}
-                onResolved={onResolved}
-                // FENCED, like every other note this body emits (finding 6 from #896's review).
-                // `ActionRow` calls this from its own 409 path — a compare-and-execute that lost
-                // carries the settled record — so an approval decided on mission A and refused
-                // while the operator moved to B would otherwise show A's refusal over B. The
-                // browser test that caught the lifecycle instance of this now covers this path
-                // too; it is the same bug one consumer further along.
-                onNote={noteIfCurrent}
-              />
-            ))}
-            {d.events.length === 0 && decisions.length === 0 ? (
-              <div className={styles.empty}>Nothing has happened yet.</div>
-            ) : (
-              d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
-            )}
-          </>
-        ) : stop === "OBJECTIVES" ? (
-          objectives
-        ) : stop === "CONTEXT" ? (
-          context
-        ) : (
-          timeline
-        )}
+                {d.mission ? (
+                  <MissionPlanCard
+                    mission={d.mission}
+                    actionSlot={lifecycleSlot}
+                    onObjectives={showObjectives}
+                    onPlan={onConversation}
+                    // BOTH HALVES, like every other mutation on this screen (#904 review 18, finding
+                    // 2). `d.reload` re-reads the mission DETAIL and nothing else, so planning left
+                    // the rail row saying `draft` next to a pane showing the plan, and a dispatch
+                    // left the session it had just attached sitting in UNTRACKED until the next
+                    // supervisor poll. The rule is stated forty lines up and this was the one
+                    // surface that did not follow it.
+                    onChanged={(opts) => {
+                      d.reload();
+                      changedIfCurrent(opts);
+                    }}
+                    // THROUGH THE MOUNT FENCE, like every other async consumer (#904 review 17,
+                    // finding 2). A dispatch is the LONGEST await on this screen — it launches a
+                    // process — and the operator is free to move to another mission while it runs.
+                    // The raw callback here made the claim four lines above ("every consumer gets
+                    // the one fence") false by exactly one component: mission A's failure was
+                    // rendered on mission B's pane.
+                    onNote={noteIfCurrent}
+                  />
+                ) : null}
+                {decisions.map((a) => (
+                  <ActionRow
+                    key={a.id}
+                    action={a}
+                    onResolved={onResolved}
+                    // FENCED, like every other note this body emits (finding 6 from #896's review).
+                    // `ActionRow` calls this from its own 409 path — a compare-and-execute that lost
+                    // carries the settled record — so an approval decided on mission A and refused
+                    // while the operator moved to B would otherwise show A's refusal over B. The
+                    // browser test that caught the lifecycle instance of this now covers this path
+                    // too; it is the same bug one consumer further along.
+                    onNote={noteIfCurrent}
+                  />
+                ))}
+                {d.events.length === 0 && decisions.length === 0 ? (
+                  <div className={styles.empty}>Nothing has happened yet.</div>
+                ) : (
+                  d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
+                )}
+              </>
+            }
+          </div>
         </div>
-      </div>
         {composerDock}
       </div>
-
+      <div
+        className={`${styles.detailsWrap} ${stop === "THREAD" ? styles.hideDetails : ""}`}
+      >
+        <MissionDetails
+          missionId={missionId}
+          context={context}
+          objectives={objectives}
+          followThrough={
+            <MissionSupervisorNotices supervisor={d.mission?.supervisor} />
+          }
+          timeline={timeline}
+          revealObjectives={revealObjectives}
+          summaries={{
+            context: d.context?.cwd ? "Folder & sessions" : "Unavailable",
+            objectives: d.objectivesFailed
+              ? "Unavailable"
+              : d.mission?.objectives_state === "pending"
+                ? "Preparing…"
+                : d.objectives.length
+                  ? `${d.objectives.filter((o) => o.state === "met").length} / ${d.objectives.length}`
+                  : "Unmeasured",
+            followThrough: d.mission?.supervisor
+              ? d.mission.supervisor.objectives.length
+                ? `${d.mission.supervisor.unmet_gates} unmet gates`
+                : "Unmeasured"
+              : "Unavailable",
+            timeline: `${d.events.length} events`,
+          }}
+        />
+      </div>
     </>
   );
 }
@@ -690,6 +712,7 @@ export function MissionConsole({
   onMembershipChanged,
   filtered,
   onClearFilters,
+  untrackedFilters,
 }: {
   /** Live sessions from the existing overview, AFTER the project/agent chips. This narrows the
    *  UNTRACKED list and nothing else. */
@@ -713,12 +736,13 @@ export function MissionConsole({
   /** The overview scan is still running. Only affects the UNTRACKED group's honesty: "no live
    *  sessions" and "we have not looked yet" are different claims. */
   loading?: boolean;
-  /** The project/agent chips are narrowing the list right now. Needed to tell "you have no
+  /** The sidebar project/agent filters are narrowing the list right now. Needed to tell "you have no
    *  sessions" from "this COMBINATION has none" — the second is recoverable in one tap and the
    *  first is not, and saying the wrong one leaves the operator staring at a blank pane with no
    *  way back (#803). */
   filtered?: boolean;
   onClearFilters?: () => void;
+  untrackedFilters?: ReactNode;
 }) {
   /** THE RAIL'S ROWS AND ITS COUNT, as ONE value (#896 review 13, finding 1).
    *
@@ -745,6 +769,42 @@ export function MissionConsole({
     snapshot?: string | null;
   }>({ rows: [], total: 0, consumed: 0 });
   const missions = list.rows;
+  const [filters, saveFilters] = useSectionState<MissionFiltersValue>(
+    "missions.filters",
+    { q: "", project: "", state: "" },
+  );
+  const filtersRef = useRef(filters);
+  const missionFiltered = Boolean(
+    filters.q || filters.project || filters.state,
+  );
+  const [facets, setFacets] = useState<{
+    projects: string[];
+    states: string[];
+  }>({ projects: [], states: [] });
+  const [projectNames, setProjectNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    void api
+      .projectEntities({ includeArchived: true })
+      .then((r) => {
+        if (!live) return;
+        const projects = r.projects ?? [];
+        setProjectNames(
+          Object.fromEntries(
+            projects.map((p) => [
+              p.id,
+              projects.filter((x) => x.name === p.name).length > 1
+                ? `${p.name} · ${p.folders[0] ?? "project"}`
+                : p.name,
+            ]),
+          ),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
   const [storeError, setStoreError] = useState<string | null>(null);
   /** Has a mission-list read SUCCEEDED for the scope on screen? (#929)
    *
@@ -754,9 +814,11 @@ export function MissionConsole({
    *  not be read would be the same absence-read-as-evidence mistake the mission work has already
    *  paid for twice. Set only in `applyList`, which runs on a fenced success. */
   const [listLoaded, setListLoaded] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [stop, setStop] = useState<Stop>("THREAD");
-
+  const [selected, setSelected] = useSectionState<string | null>(
+    "missions.selected",
+    null,
+  );
+  const [stop, setStop] = useSectionState<Stop>("missions.view", "THREAD");
 
   /** The shell's sidebar slot (#935).
    *
@@ -789,7 +851,7 @@ export function MissionConsole({
     // On a phone the rail IS the drawer; leaving it open hides the field the operator is about
     // to type into.
     dismissRail();
-  }, [dismissRail]);
+  }, [dismissRail, setSelected, setStop]);
 
   const [adopting, setAdopting] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -885,7 +947,7 @@ export function MissionConsole({
   /** Which scope the rail lists. Archiving is not deletion, so there has to be a way back in:
    *  without one, a mission's objectives, timeline and decisions become unreachable the moment
    *  it is put away. */
-  const [archived, setArchived] = useState(false);
+  const [archived, setArchived] = useSectionState("missions.archived", false);
   /** Which SCOPE a list response belongs to, as a monotonic counter.
    *
    *  A list request outlives the scope it was issued for. "Load more" on the active rail can
@@ -942,6 +1004,7 @@ export function MissionConsole({
       scope: boolean,
       r: {
         missions: MissionListRow[];
+        facets?: { projects: string[]; states: string[] };
         total?: number;
         store_error?: string | null;
         consumed?: number;
@@ -1010,6 +1073,7 @@ export function MissionConsole({
           snapshot,
         };
       });
+      if (r.facets) setFacets(r.facets);
       setStoreError(r.store_error ?? null);
     },
     [],
@@ -1020,7 +1084,7 @@ export function MissionConsole({
     let live = true;
     const gen = nextGen();
     api
-      .missions({ limit: PAGE, archived })
+      .missions({ ...filters, limit: PAGE, archived })
       .then((r) => live && applyList(gen, archived, r))
       // A read that fails empties the rail and SAYS SO; it never takes the console down, and it
       // is never conflated with "you have no missions".
@@ -1044,7 +1108,7 @@ export function MissionConsole({
     return () => {
       live = false;
     };
-  }, [applyList, archived, nextGen]);
+  }, [applyList, archived, filters, nextGen]);
 
   /** Refresh the pages the operator has already opened.
    *
@@ -1070,6 +1134,7 @@ export function MissionConsole({
     // current when its closure was made and had the answer accepted into the one on screen
     // (#896 review 3, finding 3).
     const scope = archivedRef.current;
+    const query = filtersRef.current;
     const gen = nextGen();
 
     // ONE REQUEST IS THE ONLY PROOF (#896 reviews 16 and 17).
@@ -1085,9 +1150,14 @@ export function MissionConsole({
     // back from a single statement over a single snapshot and there is nothing to stitch.
     if (open <= SNAPSHOT_MAX) {
       try {
-        const r = await api.missions({ limit: open, archived: scope });
+        const r = await api.missions({
+          ...query,
+          limit: open,
+          archived: scope,
+        });
         if (scope !== archivedRef.current) return;
         applyList(gen, scope, {
+          facets: r.facets,
           missions: dedupe(r.missions),
           total: r.total,
           store_error: r.store_error,
@@ -1108,6 +1178,7 @@ export function MissionConsole({
       for (let i = 0; i < pages; i += 1) {
         results.push(
           await api.missions({
+            ...query,
             limit: PAGE,
             offset: i * PAGE,
             archived: scope,
@@ -1132,6 +1203,7 @@ export function MissionConsole({
         snap !== null && results.every((r) => (r.snapshot ?? null) === snap);
       return {
         rows,
+        facets: results[0].facets,
         torn: rows.length !== fetched.length || !oneSnapshot,
         consumed: fetched.length,
         total: results[results.length - 1].total,
@@ -1153,6 +1225,7 @@ export function MissionConsole({
       }
       if (!out) return;
       applyList(gen, scope, {
+        facets: out.facets,
         missions: out.rows,
         total: out.total,
         store_error: out.store_error,
@@ -1218,7 +1291,12 @@ export function MissionConsole({
     const base = appliedGen.current;
     const issued = listGen.current;
     api
-      .missions({ limit: PAGE, offset: consumed, archived: scope })
+      .missions({
+        ...filtersRef.current,
+        limit: PAGE,
+        offset: consumed,
+        archived: scope,
+      })
       .then((r) => {
         // Three questions, and an append has to answer all three:
         //
@@ -1309,17 +1387,15 @@ export function MissionConsole({
     return cards.filter((c) => !held.has(c.id) && !c.mission_id);
   }, [cards, heldExtra]);
 
-  /** What the console opens on when the operator has not chosen yet — DERIVED, never stored.
+  /** What the console opens on before either list has settled — derived from both reads.
    *
    *  It opens on WHAT NEEDS YOU. A decision the operator has to go looking for is a decision
    *  they will miss, which is the failure this whole feature exists to remove. So: a mission
    *  whose ledger says `needs_you` first, then an untracked session carrying a pending decision,
    *  then simply the first mission.
    *
-   *  Derived rather than written into state on load because the mission list and the overview
-   *  arrive independently — storing it would need an effect per arrival, each racing the
-   *  operator's own click. A derivation cannot race anything: the moment `selected` is set, it
-   *  wins, for ever. */
+   *  The reads arrive independently. Keep deriving until both have settled, then remember the
+   *  selection for section navigation. An explicit selection always wins. */
   const autoSelected = useMemo(() => {
     // NOTE: `untracked`, not `cards` — a card a mission already holds is that mission's
     // decision, and jumping to UNTRACKED for it would send the operator to a list it is not in.
@@ -1333,6 +1409,8 @@ export function MissionConsole({
     return untracked.length ? UNTRACKED_VIEW : null;
   }, [missions, untracked]);
   const shown = selected ?? autoSelected;
+  if (selected === null && autoSelected !== null && listLoaded && !loading)
+    setSelected(autoSelected);
   /** The header's title, from the SAME mission the body renders.
    *
    *  `title` is pushed up by the body after its detail fetch, so on its own it is null for the
@@ -1353,7 +1431,7 @@ export function MissionConsole({
    *  none of them, a first-run panel would appear on a degraded or still-loading page and tell
    *  the operator their work does not exist. */
   const firstRun =
-    listLoaded && !storeError && !archived && missions.length === 0;
+    listLoaded && !storeError && !archived && !missionFiltered && total === 0;
 
   /** The honest answer to "show me the objectives" when there is no mission to show them for
    *  (#929) — a DELIBERATE explanatory empty state, never invented mission data.
@@ -1374,11 +1452,8 @@ export function MissionConsole({
             operator that a timeline belongs to a mission on a tab that is about neither. A
             two-branch ternary was correct while there were two stops that could be empty. */}
         <div>
-          {stop === "OBJECTIVES"
-            ? "Objectives belong to a mission — they appear once you choose one from the rail or start a new one."
-            : stop === "CONTEXT"
-              ? "Context belongs to a mission — its sessions, its directory and its repository appear once you choose one from the rail or start a new one."
-              : "A timeline belongs to a mission — it appears once you choose one from the rail or start a new one."}
+          Context, objectives, follow-through and timeline belong to a mission.
+          Choose one from the list or create a mission.
         </div>
       </div>
     );
@@ -1410,7 +1485,7 @@ export function MissionConsole({
     if (enteredRef.current === shown) return;
     enteredRef.current = shown;
     setStop("THREAD");
-  }, [shown]);
+  }, [shown, setStop]);
 
   /** Adoption needs a real, LIVE mission. In the UNTRACKED view `shown` is the sentinel, so the
    *  target is the first mission that can actually hold work — and when there is none the
@@ -1436,27 +1511,30 @@ export function MissionConsole({
    *  scope. Without this the console kept showing the active mission it was on while the rail
    *  listed archived ones — a body and a rail describing different sets, with nothing on screen
    *  saying so. */
-  const setScope = useCallback((next: boolean) => {
-    // FIRST, so every response already in flight is stale before anything else changes. The ref
-    // moves here rather than in the effect, because a response can resolve between this call and
-    // the effect's re-run and must already be seen as belonging to the old scope.
-    listGen.current += 1;
-    appliedGen.current = listGen.current;
-    archivedRef.current = next;
-    setLoadingMore(false);
-    setArchived(next);
-    setSelected(null);
-    setRail({ rows: [], total: 0, consumed: 0 });
-    setStoreError(null);
-    // …AND THE EVIDENCE THAT A LIST WAS READ, which belongs to the scope that produced it
-    // (#930 review 1, finding 4). `listLoaded` is what separates "no missions" from "not asked
-    // yet", so carrying the previous scope's successful read across a scope change makes
-    // `firstRun` true the instant Archived → Active is clicked — inviting the operator to start
-    // their first mission while their actual active list is still in flight. Cleared here, in
-    // the same synchronous step as the rows, so no render ever sees rows from neither scope
-    // alongside a loaded flag from the old one.
-    setListLoaded(false);
-  }, []);
+  const setScope = useCallback(
+    (next: boolean) => {
+      // FIRST, so every response already in flight is stale before anything else changes. The ref
+      // moves here rather than in the effect, because a response can resolve between this call and
+      // the effect's re-run and must already be seen as belonging to the old scope.
+      listGen.current += 1;
+      appliedGen.current = listGen.current;
+      archivedRef.current = next;
+      setLoadingMore(false);
+      setArchived(next);
+      setSelected(null);
+      setRail({ rows: [], total: 0, consumed: 0 });
+      setStoreError(null);
+      // …AND THE EVIDENCE THAT A LIST WAS READ, which belongs to the scope that produced it
+      // (#930 review 1, finding 4). `listLoaded` is what separates "no missions" from "not asked
+      // yet", so carrying the previous scope's successful read across a scope change makes
+      // `firstRun` true the instant Archived → Active is clicked — inviting the operator to start
+      // their first mission while their actual active list is still in flight. Cleared here, in
+      // the same synchronous step as the rows, so no render ever sees rows from neither scope
+      // alongside a loaded flag from the old one.
+      setListLoaded(false);
+    },
+    [setArchived, setSelected],
+  );
 
   /** A mission was created from a composer (#889).
    *
@@ -1579,7 +1657,7 @@ export function MissionConsole({
       // not where the ownership fact lives.
       if (opts?.membershipChanged) onMembershipChanged?.();
     },
-    [reload, onMembershipChanged, setScope],
+    [reload, onMembershipChanged, setScope, setSelected],
   );
 
   const onCreated = useCallback(
@@ -1609,7 +1687,7 @@ export function MissionConsole({
       setSelected(m.id);
       setStop("THREAD");
     },
-    [archived, setScope, reload],
+    [archived, setScope, reload, setSelected, setStop],
   );
 
   const adopt = useCallback(
@@ -1690,11 +1768,28 @@ export function MissionConsole({
       setTitle(null);
       setHeldExtra([]);
     },
-    [dismissRail],
+    [dismissRail, setSelected, setStop],
   );
 
   /** A decision settled here must also settle everywhere else it is drawn. The route owns the
    *  overview, so the console asks it to refetch rather than keeping a second copy. */
+  const changeFilters = useCallback(
+    (next: MissionFiltersValue) => {
+      filtersRef.current = next;
+      listGen.current += 1;
+      appliedGen.current = listGen.current;
+      pageAttempt.current += 1;
+      openRef.current = PAGE;
+      setSelected(shownRef.current);
+      saveFilters(next);
+      setRail({ rows: [], total: 0, consumed: 0 });
+      setLoadingMore(false);
+      setStoreError(null);
+      setListLoaded(false);
+    },
+    [saveFilters, setSelected],
+  );
+
   const onResolved = useCallback(
     (a: OrchestratorAction) => onActionResolved?.(a),
     [onActionResolved],
@@ -1703,7 +1798,21 @@ export function MissionConsole({
   const rail = (
     <MissionRail
       missions={missions}
-      untracked={untracked}
+      untracked={allCards.filter(
+        (c) => !c.mission_id && !heldExtra.includes(c.id),
+      )}
+      filters={
+        <MissionFilters
+          value={filters}
+          onChange={changeFilters}
+          facets={facets}
+          projectNames={projectNames}
+        />
+      }
+      untrackedFilters={untrackedFilters}
+      projectNames={projectNames}
+      loading={!listLoaded && !storeError}
+      filtered={missionFiltered}
       selectedId={shown}
       onSelect={select}
       storeError={storeError}
@@ -1718,6 +1827,39 @@ export function MissionConsole({
       onNewMission={startNewMission}
     />
   );
+
+  const filteredEmpty =
+    filtered && untracked.length === 0 ? (
+      <div className={styles.empty} data-testid="console-filtered-empty">
+        <div className={styles.emptyLead}>No sessions match these filters</div>
+        <div>
+          There is work here, just not in this combination — the sidebar filters
+          are narrowing it.
+        </div>
+        <button
+          type="button"
+          className={styles.adoptInline}
+          onClick={onClearFilters}
+        >
+          Show all sessions
+        </button>
+      </div>
+    ) : null;
+
+  const filteredMissionsEmpty =
+    missionFiltered && listLoaded && !storeError && total === 0 ? (
+      <div className={styles.empty} data-testid="mission-filter-empty">
+        <div className={styles.emptyLead}>No missions match these filters.</div>
+        <div>Clear the mission filters to choose an existing mission.</div>
+        <button
+          type="button"
+          className={styles.adoptInline}
+          onClick={() => changeFilters({ q: "", project: "", state: "" })}
+        >
+          Clear mission filters
+        </button>
+      </div>
+    ) : null;
 
   return (
     <div className={styles.console} data-testid="mission-console">
@@ -1765,10 +1907,19 @@ export function MissionConsole({
               while that mission's own state and controls rendered underneath. At 1280 that was
               reproducible on load. The rail already knows the row's title, so the header reads it
               from there and falls back to the fetched one only to catch a rename. */}
-          <span className={styles.missionTitle} data-testid="console-title">
-            {shownTitle ??
-              (missions.length ? "Select a mission" : "No missions yet")}
-          </span>
+          {shown && shown !== UNTRACKED_VIEW && shownTitle ? (
+            <MissionTitle key={shown} title={shownTitle} />
+          ) : (
+            <span className={styles.missionTitle} data-testid="console-title">
+              {shown === UNTRACKED_VIEW
+                ? "Sessions without a mission"
+                : missions.length
+                  ? "Select a mission"
+                  : missionFiltered
+                    ? "No matching missions"
+                    : "No missions yet"}
+            </span>
+          )}
           {/* Where `MissionBody` portals the mission's state and actions, so the header is ONE
               row rather than a title above a second bar. */}
           <span
@@ -1778,15 +1929,9 @@ export function MissionConsole({
           />
         </div>
 
-        {/* ALWAYS ON SCREEN (#942), which retires the whole #929 problem rather than fixing it
-            again. The strip used to be hidden at ≥1400px on the theory that a persistent detail
-            column replaced it; the column was not persistent (it belonged to `MissionBody`), so
-            with nothing selected there was no column AND no tabs, and OBJECTIVES/TIMELINE were
-            unreachable on desktop while reachable on a phone. #929 fixed that by keying the
-            media query off a class rather than the viewport. There is no column now — the tabs
-            ARE the wide layout — so there is no rule to key off anything. */}
+        {/* Hide the tabs only when a wide mission workspace has a details column. */}
         <div
-          className={styles.stops}
+          className={`${styles.stops} ${shown && shown !== UNTRACKED_VIEW ? styles.hasDetails : ""}`}
           role="tablist"
           aria-label="Mission view"
         >
@@ -1800,11 +1945,29 @@ export function MissionConsole({
               onClick={() => setStop(s)}
               data-testid={`stop-${s.toLowerCase()}`}
             >
-              {s}
+              {s === "THREAD" ? "Conversation" : "Details"}
             </button>
           ))}
         </div>
 
+        {shown &&
+        shown !== UNTRACKED_VIEW &&
+        listLoaded &&
+        !shownRow &&
+        missionFiltered ? (
+          <div className={styles.filterNotice}>
+            {hasMore || needsReRead || storeError
+              ? "Not in the loaded mission results"
+              : "Outside current filters"}{" "}
+            ·{" "}
+            <button
+              type="button"
+              onClick={() => changeFilters({ q: "", project: "", state: "" })}
+            >
+              Clear mission filters
+            </button>
+          </div>
+        ) : null}
         {note ? (
           <div
             className={styles.notice}
@@ -1831,10 +1994,7 @@ export function MissionConsole({
           </div>
         ) : null}
 
-        <div
-          className={styles.split}
-          data-testid="split"
-        >
+        <div className={styles.split} data-testid="split">
           {shown === UNTRACKED_VIEW ? (
             <div
               className={`${styles.pane} ${styles.untrackedPane}`}
@@ -1853,7 +2013,11 @@ export function MissionConsole({
                 the page led with a list of dead buttons and hid the one live action beneath
                 them. This puts the way out first. It is shown only for a rail that was
                 successfully READ and found empty; see `firstRun`. */}
-              {firstRun && stop === "THREAD" ? (
+              {filteredEmpty && stop === "THREAD" ? (
+                filteredEmpty
+              ) : filteredMissionsEmpty && stop === "THREAD" ? (
+                filteredMissionsEmpty
+              ) : firstRun && stop === "THREAD" ? (
                 <div className={styles.empty} data-testid="first-run">
                   <div className={styles.emptyLead}>
                     Start your first mission.
@@ -2073,6 +2237,8 @@ export function MissionConsole({
               key={shown}
               missionId={shown}
               stop={stop}
+              onDetails={() => setStop("DETAILS")}
+              onConversation={() => setStop("THREAD")}
               configured={configured}
               onTitle={setTitle}
               onSessions={setHeldExtra}
@@ -2088,26 +2254,10 @@ export function MissionConsole({
               {/* Same shape as the untracked branch above, for the same reason: the stop swaps
                 the CONTENT and never the composer (#930 review 2, finding 1). */}
               {noMissionStop}
-              {stop !== "THREAD" ? null : filtered ? (
-                <div
-                  className={styles.empty}
-                  data-testid="console-filtered-empty"
-                >
-                  <div className={styles.emptyLead}>
-                    No sessions match these filters
-                  </div>
-                  <div>
-                    There is work here, just not in this combination — the chips
-                    above are narrowing it.
-                  </div>
-                  <button
-                    type="button"
-                    className={styles.adoptInline}
-                    onClick={onClearFilters}
-                  >
-                    Show all sessions
-                  </button>
-                </div>
+              {stop !== "THREAD" ? null : filteredMissionsEmpty ? (
+                filteredMissionsEmpty
+              ) : filtered ? (
+                filteredEmpty
               ) : (
                 <div className={styles.empty} data-testid="console-empty">
                   <div className={styles.emptyLead}>Nothing tracked yet.</div>
