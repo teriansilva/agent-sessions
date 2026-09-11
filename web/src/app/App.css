@@ -7,6 +7,7 @@
  *   the command bar carries the hamburger. No rounded corners anywhere — the brackets are the
  *   corner treatment (only LEDs/dots stay circular). */
 .app {
+  --app-header-height: 52px;
   display: grid;
   /* Desktop sidebar column width is the resizable `--sidebar-w` (#507), defaulting to 320px.
    * Collapsed + mobile rules below override this track entirely. */
@@ -18,7 +19,7 @@
    * shrinks the terminal instead of overflowing it (#7) and window-resize reflow works (#8).
    * The deck panels take margins (below) so they float on the ambient canvas with their corner
    * brackets fully visible. */
-  grid-template-rows: 52px minmax(0, 1fr) 28px;
+  grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
   grid-template-areas:
     "topbar   topbar"
     "sidebar  pane"
@@ -335,7 +336,7 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 52px;
+  height: var(--app-header-height);
   padding: 0 18px;
   background: color-mix(in srgb, var(--bg-1) 55%, transparent);
   backdrop-filter: blur(7px) saturate(110%);
@@ -361,7 +362,7 @@
   display: none;
 }
 @media (max-width: 640px) {
-  /* Topbar collapses to hamburger + wordmark; the Overview/Settings actions move into the
+  /* The topbar keeps hamburger, wordmark and sections; the Overview/Settings actions move into the
    * drawer (the session title lives in the terminal panel header now, #243).
    *
    * The notification bell is the one exception (#726): it stays in the topbar at every
@@ -738,41 +739,7 @@ body.hud-static-grid {
   }
 }
 
-/* Button glitch (#211) — replaces the old shine sweep (per the user's request). Cosmetic
- * flicker via `filter` + a sub-pixel `transform` jitter. Fired rarely on a random button
- * (see ButtonGlitch) and briefly on :active for press feedback.
- * MUST NOT animate `clip-path` (or anything that changes the button's box): `clip-path`
- * removes the clipped region from HIT-TESTING, so a click landing in the clipped slice mid-
- * animation misses the button and no navigation fires — the ":active glitch ate my click,
- * had to click New session a couple of times" bug. Keep this purely visual. */
-@keyframes hud-btn-glitch {
-  0% {
-    transform: none;
-    filter: none;
-  }
-  25% {
-    transform: translate(-1px, 0);
-    filter: brightness(1.35) contrast(1.25);
-  }
-  50% {
-    transform: translate(1px, 0);
-    filter: brightness(0.9) contrast(1.35);
-  }
-  75% {
-    transform: translate(-1px, 0);
-    filter: brightness(1.2) contrast(1.15);
-  }
-  100% {
-    transform: none;
-    filter: none;
-  }
-}
-.shine.glitching {
-  animation: hud-btn-glitch 280ms steps(1, end);
-}
-.shine:active {
-  animation: hud-btn-glitch 160ms steps(1, end);
-}
+/* Button feedback is shared with the connect shell in hud/buttonGlitch.css (#946). */
 /* Retire the gold reflection sweep that .shine used to paint (#211). */
 .shine::after {
   content: none !important;
@@ -784,10 +751,6 @@ body.hud-static-grid {
   }
   .hud-led {
     animation: none;
-  }
-  .shine.glitching,
-  .shine:active {
-    animation: none !important;
   }
 }
 
@@ -816,29 +779,34 @@ body.hud-static-grid {
   border-color: var(--accent);
 }
 
-/* The two work sections stay named and reachable on either route (#944). */
+/* The work sections share the wordmark row at every width (#944 / #946).
+ * Match Send's compact mono typography and 44px hit area; the active section carries its fill. */
 .section-nav {
   display: flex;
-  align-self: stretch;
-  gap: 8px;
-  margin-left: 20px;
+  align-self: center;
+  gap: 6px;
+  margin-left: 4px;
 }
 .section-nav a {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  flex: none;
   min-height: 44px;
-  padding: 0 16px;
-  border-bottom: 2px solid transparent;
+  min-width: 76px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
   color: var(--text-2);
   text-decoration: none;
-  font-weight: 600;
+  font: 400 0.68rem var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 .section-nav a[aria-current="page"] {
-  color: var(--text-1);
-  border-bottom-color: var(--accent);
-  background: var(--glass);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
 }
 .section-nav a:focus-visible {
   outline: 2px solid var(--accent);
@@ -851,48 +819,64 @@ body.hud-static-grid {
 }
 @media (max-width: 800px) {
   .app {
-    grid-template-rows: 100px minmax(0, 1fr) 28px;
+    grid-template-rows: var(--app-header-height) minmax(0, 1fr) 28px;
   }
   .hud-topbar {
-    flex-wrap: wrap;
-    height: 100px;
-    align-content: flex-start;
-    gap: 0 12px;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding-inline: 10px;
   }
   .hud-brand,
-  .hud-topbar > .navToggle,
   .hud-topbar-actions {
-    height: 48px;
+    height: auto;
+  }
+  .hud-brand {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    gap: 4px;
   }
   .section-nav {
-    order: 10;
-    width: 100%;
-    height: 52px;
-    margin: 0;
-    gap: 0;
+    margin: 0 0 0 auto;
+    gap: 4px;
   }
   .section-nav a {
-    flex: 1;
+    padding: 0 8px;
+  }
+  .section-nav svg {
+    display: none;
+  }
+  .hud-topbar-actions {
+    margin-left: 0;
+    flex: none;
   }
   .sidebar,
   .backdrop {
-    top: 100px;
+    top: var(--app-header-height);
   }
   .sidebar {
-    height: calc(100dvh - 100px);
+    height: calc(100dvh - var(--app-header-height));
     padding-top: 0;
   }
 }
 
 /* Keep the command row on one line on the narrowest supported screens. */
-@media (max-width: 360px) {
+@media (max-width: 380px) {
   .hud-topbar {
-    padding-inline: 10px;
-    gap: 0 6px;
+    padding-inline: 6px;
+    gap: 4px;
   }
   .hud-brand {
-    font-size: 12px;
-    gap: 6px;
-    letter-spacing: 0.12em;
+    font-size: 11px;
+    gap: 2px;
+    letter-spacing: 0.04em;
+  }
+  .hud-brand .mk {
+    display: none;
+  }
+  .section-nav {
+    gap: 3px;
+  }
+  .section-nav a {
+    padding-inline: 5px;
   }
 }

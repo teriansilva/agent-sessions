@@ -7,13 +7,11 @@ import { SysClock } from "./SysClock";
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
     "matchMedia",
-    vi
-      .fn()
-      .mockReturnValue({
-        matches: reduce,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
+    vi.fn().mockReturnValue({
+      matches: reduce,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }),
   );
 }
 
@@ -44,19 +42,29 @@ test("ButtonGlitch renders nothing", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
-test("ButtonGlitch briefly glitches a visible .shine button, then clears it", () => {
+test.each([
+  "<button>Action</button>",
+  '<a class="shine" href="/">New session</a>',
+  '<nav class="section-nav"><a href="/pulse">Missions</a></nav>',
+  '<a class="gear" href="/settings">Settings</a>',
+  '<div role="button" tabindex="0">Action</div>',
+  '<input type="submit" value="Save">',
+])("ButtonGlitch animates enabled button controls: %s", (markup) => {
   mockReducedMotion(false);
   // random=0 → fixed 7000ms schedule, so we can land between the add and the +300ms clear.
   const rand = vi.spyOn(Math, "random").mockReturnValue(0);
   vi.useFakeTimers();
-  const btn = document.createElement("button");
-  btn.className = "shine";
+  const host = document.createElement("div");
+  host.innerHTML = markup;
+  const btn = host.querySelector<HTMLElement>(
+    "button, a, [role=button], input",
+  )!;
   // jsdom doesn't compute layout → offsetParent is null; force it visible for the filter.
   Object.defineProperty(btn, "offsetParent", {
     get: () => document.body,
     configurable: true,
   });
-  document.body.appendChild(btn);
+  document.body.appendChild(host);
   try {
     render(<ButtonGlitch />);
     vi.advanceTimersByTime(7001); // just past the first schedule (add), before the +300 clear
@@ -64,7 +72,7 @@ test("ButtonGlitch briefly glitches a visible .shine button, then clears it", ()
     vi.advanceTimersByTime(300); // the clear timeout fires
     expect(btn.classList.contains("glitching")).toBe(false);
   } finally {
-    btn.remove();
+    host.remove();
     rand.mockRestore();
   }
 });
@@ -85,5 +93,41 @@ test("ButtonGlitch is a no-op under prefers-reduced-motion", () => {
     expect(btn.classList.contains("glitching")).toBe(false);
   } finally {
     btn.remove();
+  }
+});
+
+test("ambient glitch skips unavailable controls and cleans up the active control", () => {
+  mockReducedMotion(false);
+  vi.useFakeTimers();
+  const rand = vi.spyOn(Math, "random").mockReturnValue(0);
+  const host = document.createElement("div");
+  host.innerHTML = `
+    <button disabled>Disabled</button>
+    <fieldset disabled><button>Disabled by fieldset</button></fieldset>
+    <button aria-disabled="true">ARIA disabled</button>
+    <div aria-disabled="true"><button>Unavailable group</button></div>
+    <div inert><button>Inert</button></div>
+    <div hidden><button>Hidden</button></div>
+    <div aria-hidden="true"><button>ARIA hidden</button></div>
+    <button style="visibility:hidden">Invisible</button>
+    <button style="opacity:0">Transparent</button>
+    <button id="enabled">Enabled</button>`;
+  document.body.appendChild(host);
+  for (const button of host.querySelectorAll("button")) {
+    Object.defineProperty(button, "offsetParent", { get: () => document.body });
+  }
+  try {
+    const { unmount } = render(<ButtonGlitch />);
+    vi.advanceTimersByTime(7001);
+    expect([...host.querySelectorAll(".glitching")]).toEqual([
+      host.querySelector("#enabled"),
+    ]);
+    unmount();
+    expect(host.querySelectorAll(".glitching")).toHaveLength(0);
+    vi.advanceTimersByTime(60000);
+    expect(host.querySelectorAll(".glitching")).toHaveLength(0);
+  } finally {
+    host.remove();
+    rand.mockRestore();
   }
 });

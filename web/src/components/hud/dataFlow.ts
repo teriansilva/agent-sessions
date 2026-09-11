@@ -6,6 +6,8 @@
 // Both are cosmetic, non-interactive, and a no-op under prefers-reduced-motion. Each returns its
 // own teardown; callers must invoke it (React does so from useEffect's cleanup).
 
+import "./buttonGlitch.css";
+
 const noop = () => {};
 
 function prefersReducedMotion(): boolean {
@@ -116,26 +118,49 @@ export function runDataFlow(canvas: HTMLCanvasElement): () => void {
 }
 
 /**
- * Every ~7–23s, briefly add `.glitching` to a random *visible* `.shine` CTA, which runs the
- * cosmetic keyframes in App.css / the connect shell's inline style. Never disables the button
- * (no pointer-events change). Returns a teardown that clears both pending timers.
+ * Every ~7–23s, briefly glitch one visible, enabled button control (including section/gear
+ * links). The SPA and connect shell share geometry-stable feedback in buttonGlitch.css.
+ * Reduced motion, hidden/inert controls and disabled actions stay quiet. Teardown clears
+ * both timers and any in-flight class before the connect shell yields to the SPA.
  */
 export function runButtonGlitch(): () => void {
   if (prefersReducedMotion()) return noop;
   let timer: ReturnType<typeof setTimeout>;
   let clearCls: ReturnType<typeof setTimeout>;
+  let current: HTMLElement | undefined;
   const schedule = () => {
     timer = setTimeout(
       () => {
-        const btns = Array.from(
-          document.querySelectorAll<HTMLElement>(".shine"),
-        ).filter(
-          (b) => b.offsetParent !== null, // visible only
-        );
+        const btns = prefersReducedMotion()
+          ? []
+          : Array.from(
+              document.querySelectorAll<HTMLElement>(
+                'button, [role="button"], input[type="button"], input[type="submit"], input[type="reset"], .shine, .gear, .section-nav a',
+              ),
+            ).filter((b) => {
+              if (
+                b.matches(":disabled") ||
+                b.closest(
+                  '[inert], [hidden], [aria-hidden="true"], [aria-disabled="true"]',
+                )
+              )
+                return false;
+              const style = getComputedStyle(b);
+              return (
+                (b.offsetParent !== null || b.getClientRects().length > 0) &&
+                style.visibility !== "hidden" &&
+                style.visibility !== "collapse" &&
+                style.opacity !== "0"
+              );
+            });
         if (btns.length) {
           const b = btns[Math.floor(Math.random() * btns.length)];
+          current = b;
           b.classList.add("glitching");
-          clearCls = setTimeout(() => b.classList.remove("glitching"), 300);
+          clearCls = setTimeout(() => {
+            b.classList.remove("glitching");
+            current = undefined;
+          }, 300);
         }
         schedule();
       },
@@ -146,5 +171,6 @@ export function runButtonGlitch(): () => void {
   return () => {
     clearTimeout(timer);
     clearTimeout(clearCls);
+    current?.classList.remove("glitching");
   };
 }

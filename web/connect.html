@@ -122,22 +122,10 @@
         animation: hud-blink 1.6s ease-in-out infinite;
       }
 
-      /* Button glitch (#211): cosmetic flicker only — never animate clip-path or box geometry,
-       * it removes the clipped slice from hit-testing and eats clicks. */
-      @keyframes hud-btn-glitch {
-        0% { transform: none; filter: none; }
-        25% { transform: translate(-1px, 0); filter: brightness(1.35) contrast(1.25); }
-        50% { transform: translate(1px, 0); filter: brightness(0.9) contrast(1.35); }
-        75% { transform: translate(-1px, 0); filter: brightness(1.2) contrast(1.15); }
-        100% { transform: none; filter: none; }
-      }
-      .shine.glitching { animation: hud-btn-glitch 280ms steps(1, end); }
-      .shine:active { animation: hud-btn-glitch 160ms steps(1, end); }
+      /* Button feedback comes from the shared dataFlow module / buttonGlitch.css (#946). */
       @media (prefers-reduced-motion: reduce) {
         .hud-led { animation: none; }
         body[data-state="connecting"] .link-led { animation: none; }
-        .shine.glitching,
-        .shine:active { animation: none !important; }
       }
 
       /* ---- Sign-in card ----------------------------------------------------------------- */

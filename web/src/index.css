@@ -7,16 +7,14 @@
   box-sizing: border-box;
 }
 
-/* Shiny CTAs (#91 polish): a gold reflection sweeps across the button now and then.
- * Global helper so it composes with any module's button class. ~7s cycle = a ~1.3s sweep
- * then a long pause. Disabled buttons + reduced-motion users get no sweep. */
+/* Legacy CTA layout helper; all enabled buttons share the HUD glitch in
+ * components/hud/buttonGlitch.css (#946). Disabled/reduced-motion controls stay quiet. */
 .shine {
   position: relative;
   overflow: hidden;
 }
 /* The old gold reflection SWEEP (a gradient ::after) is gone (#211) — the HUD has no
-   gradients; .shine now only carries the button glitch (keyframes in App.css). The base rule
-   above keeps position/overflow so the glitch clip-path is contained. */
+   gradients. The helper keeps its positioning/overflow for existing CTA layouts. */
 html,
 body,
 #root {

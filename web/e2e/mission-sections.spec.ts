@@ -80,6 +80,249 @@ export async function setupSections(page: Page) {
   });
 }
 
+test("section buttons share the brand row and Send typography at every width (#946)", async ({
+  page,
+}) => {
+  await setupSections(page);
+  await page.goto("/pulse");
+  await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
+  for (const width of [320, 360, 375, 412, 640, 641, 800, 801, 1100, 1440]) {
+    await page.setViewportSize({ width, height: 740 });
+    const header = page.locator(".hud-topbar");
+    const brand = page.locator(".hud-brand");
+    const nav = page.getByRole("navigation", { name: "Main sections" });
+    const hb = (await header.boundingBox())!;
+    const bb = (await brand.boundingBox())!;
+    expect(hb.height, `header at ${width}`).toBeLessThanOrEqual(52);
+    const sendStyle = await page.getByTestId("composer-send").evaluate((el) => {
+      const s = getComputedStyle(el);
+      return [
+        s.fontFamily,
+        s.fontSize,
+        s.fontWeight,
+        s.letterSpacing,
+        s.minHeight,
+      ];
+    });
+    for (const name of ["Sessions", "Missions"]) {
+      const link = nav.getByRole("link", { name, exact: true });
+      const b = (await link.boundingBox())!;
+      expect(
+        Math.abs(b.y + b.height / 2 - (bb.y + bb.height / 2)),
+        `${name} row at ${width}`,
+      ).toBeLessThan(2);
+      expect(b.x).toBeGreaterThanOrEqual(bb.x + bb.width);
+      expect(b.x + b.width).toBeLessThanOrEqual(width);
+      expect(b.height).toBeGreaterThanOrEqual(44);
+      expect(b.height).toBeLessThanOrEqual(44);
+      expect(
+        await link.evaluate((el) => {
+          const s = getComputedStyle(el);
+          return [
+            s.fontFamily,
+            s.fontSize,
+            s.fontWeight,
+            s.letterSpacing,
+            s.minHeight,
+          ];
+        }),
+      ).toEqual(sendStyle);
+      await link.click({ trial: true });
+    }
+    await page.locator(".hud-topbar > .navToggle").click({ trial: true });
+    await page
+      .locator(".hud-topbar [data-topbar-keep] button")
+      .click({ trial: true });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+  }
+});
+
+test("ordinary buttons and section links glitch without losing hit areas (#946)", async ({
+  page,
+}) => {
+  await setupSections(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/pulse");
+  await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
+  await page.getByTestId("composer-input").fill("Keep this draft");
+  const controls = [
+    page.locator(".hud-topbar > .navToggle"),
+    page.getByRole("button", { name: "Show full mission title" }),
+    page.getByTestId("composer-send"),
+    page.getByRole("link", { name: "Sessions", exact: true }),
+    page.getByRole("link", { name: "Missions", exact: true }),
+  ];
+  for (const control of controls) {
+    const result = await control.evaluate((el) => {
+      const before = el.getBoundingClientRect();
+      el.classList.add("glitching");
+      const animation = el
+        .getAnimations()
+        .find((a) => (a as CSSAnimation).animationName === "hud-btn-glitch");
+      if (!animation)
+        return { animated: false, stable: false, hittable: false };
+      animation.pause();
+      let stable = true;
+      let hittable = true;
+      for (const time of [0, 75, 145, 215, 275]) {
+        animation.currentTime = time;
+        const rect = el.getBoundingClientRect();
+        stable &&=
+          rect.x === before.x &&
+          rect.y === before.y &&
+          rect.width === before.width &&
+          rect.height === before.height;
+        for (const x of [
+          rect.left + 0.5,
+          rect.left + rect.width / 2,
+          rect.right - 0.5,
+        ]) {
+          for (const y of [
+            rect.top + 0.5,
+            rect.top + rect.height / 2,
+            rect.bottom - 0.5,
+          ]) {
+            const hit = document.elementFromPoint(x, y);
+            hittable &&= hit === el || el.contains(hit);
+          }
+        }
+      }
+      el.classList.remove("glitching");
+      return { animated: true, stable, hittable };
+    });
+    expect(result).toEqual({ animated: true, stable: true, hittable: true });
+    await control.click({ trial: true });
+  }
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const control of controls) {
+    expect(
+      await control.evaluate((el) => {
+        el.classList.add("glitching");
+        const name = getComputedStyle(el).animationName;
+        el.classList.remove("glitching");
+        return name;
+      }),
+    ).toBe("none");
+  }
+  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Sessions", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await page.getByRole("link", { name: "Missions", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Missions", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+});
+
+test("ambient and press feedback reach ordinary controls and respect reduced motion (#946)", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    Math.random = () => 0;
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await setupSections(page);
+  await page.goto("/pulse");
+  await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
+  const toggle = page.locator(".hud-topbar > .navToggle");
+  await page.clock.fastForward(7001);
+  await expect(toggle).toHaveClass(/glitching/);
+  await page.clock.fastForward(301);
+  await expect(toggle).not.toHaveClass(/glitching/);
+
+  const missions = page.getByRole("link", { name: "Missions", exact: true });
+  // The next ambient selection must skip a disabled ordinary button in the real DOM.
+  await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = true));
+  await page.clock.fastForward(7001);
+  await expect(toggle).not.toHaveClass(/glitching/);
+  await expect(
+    page.getByRole("link", { name: "Sessions", exact: true }),
+  ).toHaveClass(/glitching/);
+  await page.clock.fastForward(301);
+  await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = false));
+  // A modal's inert background cannot be an ambient candidate.
+  await page
+    .locator(".hud-topbar")
+    .evaluate((el) => ((el as HTMLElement).inert = true));
+  await page.clock.fastForward(7001);
+  await expect(page.locator(".hud-topbar .glitching")).toHaveCount(0);
+  await page
+    .locator(".hud-topbar")
+    .evaluate((el) => ((el as HTMLElement).inert = false));
+  await page.clock.fastForward(301);
+  const box = (await missions.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  expect(
+    await missions.evaluate((el) => getComputedStyle(el).animationName),
+  ).toBe("hud-btn-glitch");
+  await page.mouse.up();
+  await expect(missions).toHaveAttribute("aria-current", "page");
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.clock.fastForward(7001);
+  await expect(page.locator(".glitching")).toHaveCount(0);
+  await page.mouse.down();
+  expect(
+    await missions.evaluate((el) => getComputedStyle(el).animationName),
+  ).toBe("none");
+  await page.mouse.up();
+});
+
+test("compact header keeps drawer and notification anchors reachable (#946)", async ({
+  page,
+}) => {
+  await setupSections(page);
+  for (const width of [320, 800, 801]) {
+    await page.setViewportSize({ width, height: 740 });
+    await page.goto("/pulse");
+    await expect(page.getByTestId("console-title")).toHaveText(
+      "Mission layout",
+    );
+    if (width <= 800) {
+      await page.locator(".hud-topbar > .navToggle").click();
+      const drawer = page.locator(".sidebar");
+      await expect(drawer).toHaveAttribute("role", "dialog");
+      await expect.poll(async () => (await drawer.boundingBox())!.x).toBe(0);
+      const box = (await drawer.boundingBox())!;
+      expect(box.y).toBe(52);
+      expect(box.y + box.height).toBe(740);
+      await page.getByTestId("drawer-close").click();
+    }
+    const bell = page.getByRole("button", {
+      name: "Notifications",
+      exact: true,
+    });
+    await bell.click();
+    const panel = page.getByRole("dialog", {
+      name: "Notifications",
+      exact: true,
+    });
+    await expect(panel).toBeVisible();
+    await panel.evaluate(async (el) => {
+      await Promise.all(
+        el.getAnimations().map((a) => a.finished.catch(() => {})),
+      );
+    });
+    const before = (await panel.boundingBox())!;
+    await bell.evaluate((el) => {
+      el.classList.add("glitching");
+      const animation = el.getAnimations()[0];
+      animation?.pause();
+      if (animation) animation.currentTime = 75;
+    });
+    expect(await panel.boundingBox()).toEqual(before);
+    expect(before.x).toBeGreaterThanOrEqual(0);
+    expect(before.x + before.width).toBeLessThanOrEqual(width);
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(bell).toBeFocused();
+  }
+});
+
 test("sections restore mission search in both navigation directions", async ({
   page,
   isMobile,
