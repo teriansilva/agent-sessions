@@ -7,14 +7,15 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useConfig, useConfigRefresh } from "../app/config";
-import { api, ApiError } from "../lib/api";
+import { useConfig } from "../app/config";
+import { api } from "../lib/api";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
+import { AiEndpointSetup } from "./AiEndpointSetup";
 
 /** Corner-bracket frame (the `.hud-cnr` primitive in App.css). Inlined here — the shared
  *  `HudFrame` component lands on the HUD-compliance branch (#466); App.tsx inlines them too. */
@@ -152,24 +153,6 @@ function Slideshow({
   );
 }
 
-/** AI-step endpoint/model state (#692) — a lean local mirror of the Settings → AI Review
- *  control: "Save & validate" persists the endpoint then probes `/api/ai-review/models`
- *  (the key stays server-side), so the Model field can become a dropdown on success while
- *  a listing failure never blocks setup (free-text fallback). Types kept local — the wizard
- *  does NOT import Settings' dirty-form lifecycle. */
-type ModelsState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "ok"; models: string[] }
-  | { kind: "unsupported" };
-type EndpointState =
-  | { kind: "idle" }
-  | { kind: "saving" }
-  | { kind: "validating" }
-  | { kind: "ok"; count: number }
-  | { kind: "incomplete" }
-  | { kind: "error"; message: string };
-
 /** First-run onboarding (#463). `mode="wizard"` is the gated setup flow; `mode="tour"` is the
  *  replayable slideshow (from the topbar Help entry). `onClose` dismisses the overlay — the
  *  wizard also persists `onboarded` (via the Launch/Finish/Skip actions) so it never returns. */
@@ -209,25 +192,6 @@ export function Onboarding({
         : null,
     [twofaEnroll],
   );
-  // AI (Set up AI step) — a compact view over the existing /api/prefs → ai_review contract.
-  // Reuses the Settings endpoint/model pattern: "Save & validate" persists the endpoint then
-  // probes /api/ai-review/models (key never leaves the server), and the Model field becomes a
-  // dropdown on success with a free-text fallback. refreshConfig() after every write so
-  // Settings → AI reflects the wizard's config live without a reload (the reported bug, #692).
-  const refreshConfig = useConfigRefresh();
-  const [aiBase, setAiBase] = useState("");
-  const [aiKey, setAiKey] = useState("");
-  const [aiModel, setAiModel] = useState("");
-  // The last model actually persisted server-side — the free-text fallback's blur handler
-  // compares against THIS (not the live `aiModel`, which onChange already synced) so a typed
-  // model is committed (#692 / Hermes PR #693: the old `!== aiModel` guard never fired).
-  const [aiPersistedModel, setAiPersistedModel] = useState("");
-  const [aiEndpoint, setAiEndpoint] = useState<EndpointState>({ kind: "idle" });
-  const [aiModels, setAiModels] = useState<ModelsState>({ kind: "idle" });
-  // Monotonic probe id: a response whose id is stale (endpoint edited / superseded) is ignored.
-  const aiProbeSeq = useRef(0);
-  const aiBusy =
-    aiEndpoint.kind === "saving" || aiEndpoint.kind === "validating";
   // Project + folder.
   const [folders, setFolders] = useState<Folder[]>([]);
   const [home, setHome] = useState("");
@@ -275,11 +239,6 @@ export function Onboarding({
   const [seeded, setSeeded] = useState(false);
   if (!seeded && config) {
     setSeeded(true);
-    if (config.ai_review) {
-      setAiBase(config.ai_review.base_url);
-      setAiModel(config.ai_review.model);
-      setAiPersistedModel(config.ai_review.model);
-    }
     if (config.default_project) setCwd(config.default_project);
   }
 
@@ -320,97 +279,6 @@ export function Onboarding({
       );
     } finally {
       setTwofaBusy(false);
-    }
-  };
-
-  // Editing the endpoint (base URL or key) invalidates any in-flight probe and clears the
-  // now-stale model list — its result would describe credentials the user is replacing (#692).
-  const onAiEndpointEdit = () => {
-    if (aiModels.kind !== "idle" || aiEndpoint.kind !== "idle") {
-      aiProbeSeq.current++;
-      setAiModels({ kind: "idle" });
-      setAiEndpoint({ kind: "idle" });
-    }
-  };
-
-  // Probe the persisted endpoint's /models (key stays server-side). Success → dropdown;
-  // an empty list or error → free-text fallback (never blocks setup). Stale responses drop.
-  const probeAiModels = useCallback(async () => {
-    const seq = ++aiProbeSeq.current;
-    setAiModels({ kind: "loading" });
-    setAiEndpoint({ kind: "validating" });
-    try {
-      const d = await api.aiReviewModels();
-      if (seq !== aiProbeSeq.current) return; // superseded by a newer probe / endpoint edit
-      if (d.models.length > 0) {
-        setAiModels({ kind: "ok", models: d.models });
-        setAiEndpoint({ kind: "ok", count: d.models.length });
-      } else {
-        setAiModels({ kind: "unsupported" });
-        setAiEndpoint({ kind: "ok", count: 0 });
-      }
-    } catch (e) {
-      if (seq !== aiProbeSeq.current) return;
-      setAiModels({ kind: "unsupported" });
-      setAiEndpoint({
-        kind: "error",
-        message:
-          e instanceof ApiError && e.message
-            ? e.message
-            : "Endpoint validation failed.",
-      });
-    }
-  }, []);
-
-  // Persist base URL + key (+ any typed model) together, then validate by probing /models.
-  // The blank key is the "unchanged" sentinel and is never sent (write-only, #692).
-  const saveAndValidateAi = async () => {
-    if (aiBusy) return;
-    // Endpoint-only patch — the model persists on its own (dropdown change / free-text blur),
-    // mirroring Settings, so validation and model persistence stay distinct transitions (#692).
-    const patch: Record<string, unknown> = { base_url: aiBase.trim() };
-    const key = aiKey.trim();
-    if (key) patch.api_key = key;
-    setAiEndpoint({ kind: "saving" });
-    let next:
-      { base_url: string; model: string; configured: boolean } | undefined;
-    try {
-      const r = (await api.setPrefs({ ai_review: patch })) as {
-        ai_review?: { base_url: string; model: string; configured: boolean };
-      };
-      next = r.ai_review;
-    } catch (e) {
-      setAiEndpoint({
-        kind: "error",
-        message:
-          e instanceof ApiError && e.message
-            ? e.message
-            : "Couldn’t save — check the endpoint URL and key.",
-      });
-      return;
-    }
-    setAiKey(""); // write-only: the field clears once the key is stored
-    if (next) {
-      setAiBase(next.base_url);
-      refreshConfig(); // Settings → AI must reflect this without a reload (#692)
-    }
-    if (!next?.configured) {
-      setAiEndpoint({ kind: "incomplete" });
-      setAiModels({ kind: "idle" });
-      return;
-    }
-    await probeAiModels();
-  };
-
-  // A model choice (dropdown or free-text) persists on its own as a partial patch + refresh.
-  const saveAiModel = async (m: string) => {
-    setAiModel(m);
-    try {
-      await api.setPrefs({ ai_review: { model: m } });
-      setAiPersistedModel(m); // only on success, so a failed save re-fires on the next blur
-      refreshConfig();
-    } catch {
-      /* keep the local selection; the next save / visit re-syncs from config */
     }
   };
 
@@ -717,97 +585,9 @@ export function Onboarding({
         {step === "ai" && (
           <Step
             title="Set up your AI"
-            desc="Powers AI Review, Auto-sort & mission control. You provide it — an OpenAI-compatible endpoint."
+            desc="Powers session review, auto-sort and mission control. You provide it — an OpenAI-compatible endpoint: connect it, then pick the model."
           >
-            <label className={styles.field}>
-              <span>Endpoint base URL</span>
-              <input
-                value={aiBase}
-                onChange={(e) => {
-                  setAiBase(e.target.value);
-                  onAiEndpointEdit();
-                }}
-                placeholder="https://api.openai.com/v1"
-                spellCheck={false}
-              />
-            </label>
-            <label className={styles.field}>
-              <span>
-                API key{" "}
-                {config?.ai_review?.api_key_set
-                  ? "(set — leave blank to keep)"
-                  : ""}
-              </span>
-              <input
-                type="password"
-                value={aiKey}
-                onChange={(e) => {
-                  setAiKey(e.target.value);
-                  onAiEndpointEdit();
-                }}
-                placeholder="sk-…  (write-only — never echoed)"
-                autoComplete="off"
-              />
-            </label>
-            <label className={styles.field}>
-              <span>Model</span>
-              {aiModels.kind === "ok" ? (
-                <select
-                  aria-label="Model"
-                  value={aiModel}
-                  onChange={(e) => void saveAiModel(e.target.value)}
-                >
-                  {!aiModel && <option value="">— pick a model —</option>}
-                  {aiModel && !aiModels.models.includes(aiModel) && (
-                    <option value={aiModel}>{aiModel}</option>
-                  )}
-                  {aiModels.models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  aria-label="Model"
-                  value={aiModel}
-                  onChange={(e) => setAiModel(e.target.value)}
-                  onBlur={(e) => {
-                    // Persist any change from the last saved model — INCLUDING clearing it (an
-                    // empty value differs from a stored model), so a re-run can remove the model
-                    // (#693). Guarding on `v` truthiness would silently drop a clear.
-                    const v = e.target.value.trim();
-                    if (v !== aiPersistedModel.trim()) void saveAiModel(v);
-                  }}
-                  placeholder={
-                    aiModels.kind === "loading"
-                      ? "loading model list…"
-                      : "gpt-4o"
-                  }
-                  spellCheck={false}
-                />
-              )}
-            </label>
-            {aiEndpoint.kind === "saving" ||
-            aiEndpoint.kind === "validating" ? (
-              <p className={styles.desc}>
-                {aiEndpoint.kind === "saving"
-                  ? "Saving…"
-                  : "Validating endpoint…"}
-              </p>
-            ) : aiEndpoint.kind === "ok" ? (
-              <p className={styles.note}>
-                {aiEndpoint.count > 0
-                  ? `✓ Endpoint validated — ${aiEndpoint.count} model${aiEndpoint.count === 1 ? "" : "s"} available.`
-                  : "✓ Endpoint saved — it doesn’t list models; enter the model id manually."}
-              </p>
-            ) : aiEndpoint.kind === "error" ? (
-              <p className={styles.err}>✗ {aiEndpoint.message}</p>
-            ) : aiEndpoint.kind === "incomplete" ? (
-              <p className={styles.desc}>
-                Saved. Set both the base URL and an API key to validate.
-              </p>
-            ) : null}
+            <AiEndpointSetup variant="wizard" />
             <Foot>
               <button
                 type="button"
@@ -823,18 +603,6 @@ export function Onboarding({
                 onClick={() => setStep("agents")}
               >
                 <ArrowLeft size={14} /> Back
-              </button>
-              <button
-                type="button"
-                className={styles.btn}
-                onClick={() => void saveAndValidateAi()}
-                disabled={aiBusy || !aiBase.trim()}
-              >
-                {aiEndpoint.kind === "saving"
-                  ? "Saving…"
-                  : aiEndpoint.kind === "validating"
-                    ? "Validating…"
-                    : "Save & validate"}
               </button>
               <button
                 type="button"

@@ -803,6 +803,16 @@ export const api = {
     getJsonWithDetail<{ models: string[] }>(
       `/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`,
     ),
+  /** Check a DRAFT AI connection without saving it (#956). CSRF-guarded. The stored key is used
+   *  only when `base_url` is on the origin it was saved for; any other origin needs `api_key`
+   *  (422 otherwise, with no request made). `listing: "unsupported"` = the endpoint answered but
+   *  can't list models; a 502 carries the gateway's own (key-redacted) reason. */
+  testAiEndpoint: (body: { base_url: string; api_key?: string }) =>
+    mutateJson<{ models: string[]; listing: "ok" | "unsupported" }>(
+      "POST",
+      "/api/ai-review/endpoint/test",
+      body,
+    ),
   /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
    *  endpoint isn't configured; 502 when the review failed (last good result stays).
    *  `mutateJson` so the server's error `detail` (gateway timeout, endpoint HTTP status)

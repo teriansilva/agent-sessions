@@ -176,10 +176,16 @@ def test_memo_suppresses_reprobing(ai_prefs, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [("model", "other-model"), ("base_url", "https://elsewhere.test/v1")],
+    "patch",
+    [
+        pytest.param({"model": "other-model"}, id="model"),
+        # Another host needs its own key: the stored one is only sent where it was saved (#956).
+        pytest.param(
+            {"base_url": "https://elsewhere.test/v1", "api_key": "sk-elsewhere"}, id="base_url"
+        ),
+    ],
 )
-def test_memo_is_invalidated_by_config_change(ai_prefs, monkeypatch, field, value):
+def test_memo_is_invalidated_by_config_change(ai_prefs, monkeypatch, patch):
     sent: list[dict] = []
 
     def handler(request, n):
@@ -191,9 +197,10 @@ def test_memo_is_invalidated_by_config_change(ai_prefs, monkeypatch, field, valu
     monkeypatch.setattr(review, "_TRANSPORT", _recording(handler, sent))
     asyncio.run(_complete())
     assert not _thinking_off(sent[-1])
-    prefs.set_ai_review({field: value})
+    prefs.set_ai_review(patch)
     asyncio.run(_complete())
-    assert _thinking_off(sent[2]), f"a changed {field} must re-probe, not inherit the verdict"
+    changed = next(iter(patch))
+    assert _thinking_off(sent[2]), f"a changed {changed} must re-probe, not inherit the verdict"
 
 
 def test_model_override_does_not_poison_the_configured_model(ai_prefs, monkeypatch):

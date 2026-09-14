@@ -65,6 +65,8 @@ vi.mock("../lib/api", async () => {
       pulseScan: vi.fn(),
       // #956: the Prompts page renders the catalog (a deep link lands there).
       prompts: vi.fn().mockResolvedValue({ prompts: [] }),
+      // #956: the Endpoint & model page checks a draft through this route.
+      testAiEndpoint: vi.fn(),
     },
   };
 });
@@ -273,7 +275,7 @@ test("the sidebar lists every section, grouped, in registry order — one curren
   renderSettings("dark", "#ffb000", "/settings/projects");
   const nav = screen.getByRole("navigation", { name: "Settings" });
   const links = within(nav).getAllByRole("link");
-  expect(links.map((l) => l.textContent)).toEqual(
+  expect(links.map((l) => sectionLabel(l))).toEqual(
     SETTINGS_SECTIONS.map((s) => s.label),
   );
   for (const group of ["General", "AI", "System", "About"]) {
@@ -282,7 +284,7 @@ test("the sidebar lists every section, grouped, in registry order — one curren
   expect(
     links
       .filter((l) => l.getAttribute("aria-current") === "page")
-      .map((l) => l.textContent),
+      .map((l) => sectionLabel(l)),
   ).toEqual(["Projects"]);
   await flushFetches();
 });
@@ -334,7 +336,7 @@ test.each([
   ["appearance", ["Appearance"]],
   ["session-defaults", ["Session defaults"]],
   ["projects", ["Projects", "Session overview"]],
-  ["ai-endpoint", ["AI endpoint"]],
+  ["ai-endpoint", ["Connection", "Model"]],
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
   ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
@@ -363,7 +365,7 @@ test("the registry and the pages agree: every section id renders something", () 
 test("the Endpoint & model page renders the endpoint fields", async () => {
   renderSettings("dark", "#ffb000", "/settings/ai-endpoint");
   expect(
-    await screen.findByRole("heading", { name: "AI endpoint" }),
+    await screen.findByRole("heading", { name: /Connection/ }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText(/API key/i)).toBeInTheDocument();
   // Session review is its own page now.
@@ -372,6 +374,12 @@ test("the Endpoint & model page renders the endpoint fields", async () => {
   ).not.toBeInTheDocument();
   await flushFetches();
 });
+
+/** A nav row's section label. The Endpoint & model row also carries its status LED (and, on a
+ *  phone, the active model), so the label is read from its own marked span (#956). */
+function sectionLabel(link: HTMLElement): string | null | undefined {
+  return link.querySelector("[data-section-label]")?.textContent;
+}
 
 /** A phone viewport for `useIsMobile` (jsdom has no matchMedia of its own). */
 function asPhone(): () => void {
@@ -393,7 +401,7 @@ test("phone: bare /settings is the grouped index, and a section opens full-width
     renderSettings("dark", "#ffb000", "/settings");
     expect(screen.getByTestId("location")).toHaveTextContent(/^\/settings$/);
     const nav = screen.getByRole("navigation", { name: "Settings" });
-    expect(within(nav).getAllByRole("link").map((l) => l.textContent)).toEqual(
+    expect(within(nav).getAllByRole("link").map((l) => sectionLabel(l))).toEqual(
       SETTINGS_SECTIONS.map((s) => s.label),
     );
     expect(

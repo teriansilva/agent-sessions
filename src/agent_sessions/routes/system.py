@@ -141,6 +141,12 @@ def _preflight_prefs(payload: dict) -> None:
             err = validator(payload[key])
             if err is not None:
                 raise bad(err)
+    # The key-origin policy (#956), checked up front too so a multi-block patch fails before
+    # ANY block is written. `set_ai_review` re-checks inside its lock; that one is authoritative.
+    if "ai_review" in payload:
+        why = prefs.key_origin_violation(prefs.get_ai_review(), payload["ai_review"])
+        if why is not None:
+            raise bad(why)
     if "project_names" in payload:
         v = payload["project_names"]
         if not isinstance(v, dict) or not all(
@@ -492,6 +498,23 @@ def register(
         # nothing was persisted, not that the keys before the bad one already landed.
         _preflight_prefs(payload)
         out: dict[str, object] = {}
+        # The AI block commits FIRST (Hermes on #960). Its key-origin check runs again inside the
+        # prefs lock and can refuse a patch the pre-check passed (another save landed in between);
+        # committing it before any other block means that refusal leaves the whole patch unwritten.
+        if "ai_review" in payload:
+            # AI review config (#356): a REAL nested validator (URL shape, length caps,
+            # interval floor, max_input_chars bounds, unknown-key rejection) — never a
+            # nested pass-through. The api_key is masked-sentinel: ""/mask → unchanged,
+            # null → cleared, anything else → replaced. The echo is the PUBLIC view.
+            err = prefs.validate_ai_review_patch(payload["ai_review"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            try:
+                prefs.set_ai_review(payload["ai_review"])
+            except prefs.KeyOriginError as e:
+                # Lost a race: the block changed between the pre-check and the lock.
+                raise HTTPException(status_code=422, detail=str(e)) from None
+            out["ai_review"] = prefs.public_ai_review()
         if "theme" in payload:
             if payload["theme"] not in prefs.THEMES:
                 raise HTTPException(status_code=422, detail="unknown theme")
@@ -565,16 +588,6 @@ def register(
                 # list so the client sees what actually took effect (#465); others echo the raw
                 # stored value.
                 out[key] = project_dirs.project_roots() if key == "project_roots" else stored
-        if "ai_review" in payload:
-            # AI review config (#356): a REAL nested validator (URL shape, length caps,
-            # interval floor, max_input_chars bounds, unknown-key rejection) — never a
-            # nested pass-through. The api_key is masked-sentinel: ""/mask → unchanged,
-            # null → cleared, anything else → replaced. The echo is the PUBLIC view.
-            err = prefs.validate_ai_review_patch(payload["ai_review"])
-            if err is not None:
-                raise HTTPException(status_code=422, detail=err)
-            prefs.set_ai_review(payload["ai_review"])
-            out["ai_review"] = prefs.public_ai_review()
         if "forge" in payload:
             # The forge connection the objective probes read (#891). Same masked-sentinel
             # contract as the AI key — ""/mask preserve, null clears — so a form that round-trips

@@ -1,9 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { promptPath, settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser checks for the AI session review surface (#356 PR 1, manual slice):
-// Settings → AI → Endpoint & model (write-only key, model dropdown via the server proxy) and
-// Session review (link into the prompt catalog) and the sidebar row (summary line + amber intervention badge). Network is
+// Settings → AI → Endpoint & model (the two-step connection/model flow, the write-only key, the
+// model list through the server proxy, and every stale-response case #956 pins) and Session
+// review (link into the prompt catalog) and the sidebar row (summary line + amber intervention badge). Network is
 // fully mocked — the suite never talks to a backend or a real AI endpoint.
 
 const AI_REVIEW = {
@@ -89,41 +90,110 @@ test.beforeEach(async ({ page }) => {
       json: { models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"] },
     }),
   );
+  // The draft check (#956) answers with the same list unless a test says otherwise.
+  await page.route("**/api/ai-review/endpoint/test", (r) =>
+    r.fulfill({
+      json: {
+        models: ["minimax-m2.7", "qwen3-vl", "gpt-oss-120b"],
+        listing: "ok",
+      },
+    }),
+  );
 });
 
-test("settings: AI Review panel — write-only key, proxied model dropdown, prompt save", async ({
+/** A server whose /api/config reflects what /api/prefs stored — the real contract, so the config
+ *  refresh after a save shows that save. `hold` delays every prefs response until it resolves
+ *  (the body is recorded first), which is how an accepted-but-slow save is staged. */
+async function statefulServer(page: Page, hold?: Promise<void>) {
+  const ai: Record<string, unknown> = { request_timeout: null, ...AI_REVIEW };
+  const posts: Record<string, unknown>[] = [];
+  let configCalls = 0;
+  await page.route("**/api/config", (r) => {
+    configCalls += 1;
+    return r.fulfill({
+      json: {
+        csrf: "x",
+        new_session_engines: [],
+        terminal_backend: "ws",
+        auth_mode: "none",
+        ai_review: { ...ai },
+        auto_sort: AUTO_SORT,
+      },
+    });
+  });
+  await page.route("**/api/prefs", async (r) => {
+    const body = (r.request().postDataJSON() ?? {}) as {
+      ai_review?: Record<string, unknown>;
+    };
+    posts.push(body);
+    if (hold) await hold;
+    const patch = body.ai_review ?? {};
+    for (const k of ["base_url", "model", "request_timeout"]) {
+      if (k in patch) ai[k] = patch[k];
+    }
+    if ("api_key" in patch) ai.api_key_set = patch.api_key !== null;
+    ai.configured = ai.base_url !== "" && ai.api_key_set === true;
+    await r.fulfill({ json: { ai_review: { ...ai } } });
+  });
+  return { posts, configCalls: () => configCalls };
+}
+
+/** Hold a route until the test releases it — a slow gateway. */
+function held() {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  return { gate, release };
+}
+
+/** In-app section switch (no reload): the sidebar on desktop, back to the index on a phone. */
+async function openSection(page: Page, label: string) {
+  const back = page.getByRole("link", { name: "Back to settings" });
+  if (await back.isVisible()) {
+    await back.click();
+  }
+  const nav = page.getByRole("navigation", { name: "Settings", exact: true });
+  await nav
+    .getByRole("link")
+    .filter({ has: page.getByText(label, { exact: true }) })
+    .click();
+}
+
+/** Give the page time to act on a response it is expected to IGNORE. There is nothing to wait
+ *  for when the correct behaviour is "nothing happens", so the proof is a bounded settle. */
+const settle = (page: Page) =>
+  page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
+
+test("settings: picking a model does not save it — Save model stores model and timeout together", async ({
   page,
 }) => {
-  let prefsBody: unknown = null;
-  await page.route("**/api/prefs", async (r) => {
-    prefsBody = r.request().postDataJSON();
-    await r.fulfill({ json: { ai_review: AI_REVIEW } });
-  });
-
+  const server = await statefulServer(page);
   await page.goto(settingsPath("ai-endpoint"));
-  await expect(
-    page.getByRole("heading", { name: "AI endpoint" }),
-  ).toBeVisible();
-
-  // Endpoint config renders from /api/config; the key is write-only — with one stored the
-  // panel shows a static readout (no fillable field) + the SET badge (#834).
-  await expect(page.getByLabel(/Endpoint base URL/i)).toHaveValue(
+  await expect(page.getByRole("heading", { name: "Connection" })).toBeVisible();
+  // The endpoint renders from /api/config; with a key stored there is a readout, not a field.
+  await expect(page.getByLabel(/Base URL/i)).toHaveValue(
     "https://ai.example.io/v1",
   );
-  await expect(page.locator("#ai-api-key")).toHaveCount(0);
-  await expect(page.getByText(/stored$/)).toBeVisible();
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
   await expect(page.getByText("set", { exact: true })).toBeVisible();
 
-  // Model dropdown is populated through the server-side proxy (the key never left the server).
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toHaveValue("minimax-m2.7");
   await model.selectOption("qwen3-vl");
-  await expect
-    .poll(() => prefsBody)
-    .toEqual({ ai_review: { model: "qwen3-vl" } });
+  await expect(
+    page.getByText("● Unsaved — active is still minimax-m2.7."),
+  ).toBeVisible();
+  expect(server.posts).toEqual([]);
 
-  // The prompt itself is not edited here (#824) — the Prompts catalog owns every prompt. Session
-  // review is its own page (#956); what stays there is the link into the right row.
+  await page.getByLabel("Request timeout").fill("240");
+  await page.getByRole("button", { name: "Save model" }).click();
+  await expect
+    .poll(() => server.posts)
+    .toEqual([{ ai_review: { model: "qwen3-vl", request_timeout: 240 } }]);
+  await expect(
+    page.getByText(/✓ Model saved — active: qwen3-vl · 240 s timeout/),
+  ).toBeVisible();
+
+  // The prompt is not edited here (#824) — Session review links into the catalog row.
   await page.goto(settingsPath("ai-session-review"));
   const review = page.getByRole("region", { name: "Session review" });
   await expect(review.getByRole("textbox", { name: "Review prompt" })).toHaveCount(0);
@@ -132,22 +202,22 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
   ).toHaveAttribute("href", promptPath("tail_review"));
 });
 
-test("settings: a plain visit with a stored config stays quiet — no phantom dirty/validating state (#543)", async ({
+test("settings: a plain visit is quiet — the saved connection listed, a readout, nothing unsaved (#543)", async ({
   page,
 }) => {
+  const server = await statefulServer(page);
   await page.goto(settingsPath("ai-endpoint"));
-  // Mount probe done: the dropdown is populated through the proxy.
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
-  // The status line reports explicit actions only — a plain visit must show neither the
-  // save-style validation lifecycle nor an unsaved-changes warning (#543).
-  await expect(page.getByText(/Validating endpoint/i)).toBeHidden();
-  await expect(page.getByText(/Endpoint validated/i)).toBeHidden();
-  await expect(page.getByText(/● Unsaved changes/)).toBeHidden();
-  // The key field opts out of password-manager autofill — browsers ignore "off" and would
-  // fill a saved password here, dirtying the form. It only exists after "Replace key" now
-  // (#834); the opt-out still rides it for the window in which it does exist.
+  await expect(page.getByTestId("endpoint-status")).toContainText("Connected");
+  await expect(page.getByText(/● Unsaved/)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Save connection" }),
+  ).toBeDisabled();
+  expect(server.posts).toEqual([]);
+  // The key field exists only after Replace key (#834), and opts out of password managers.
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Replace key" }).click();
   await expect(page.getByLabel(/API key/i)).toHaveAttribute(
     "autocomplete",
@@ -155,170 +225,286 @@ test("settings: a plain visit with a stored config stays quiet — no phantom di
   );
 });
 
-test("settings: a rejected Save & validate says WHY — the dirty warning never swallows it (#834)", async ({
+test("settings: a failed check saves nothing and says why; Save without testing stores it on purpose (#834/#956)", async ({
   page,
 }) => {
-  // The reported bug: a failed save left the panel showing a bare "● Unsaved changes" and
-  // nothing else, because `endpointDirty` was tested before the error state — and a failed
-  // save deliberately KEEPS the typed key, so the form stays dirty and the error branch was
-  // unreachable. The user reads it as "it can't save a new key" with no reason given.
-  await page.route("**/api/prefs", (r) =>
-    r.fulfill({ status: 422, json: { detail: "ai_review.base_url must be an http(s) URL" } }),
+  const gateway =
+    "LiteLLM Virtual Key expected. Received=abc…, expected to start with 'sk-'";
+  const server = await statefulServer(page);
+  await page.route("**/api/ai-review/endpoint/test", (r) =>
+    r.fulfill({ status: 502, json: { detail: gateway } }),
   );
   await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
-
   await page.getByRole("button", { name: "Replace key" }).click();
-  await page.getByLabel(/API key/i).fill("sk-a-brand-new-key");
-  await page.getByRole("button", { name: "Save & validate" }).click();
+  await page.getByLabel(/API key/i).fill("sk-wrong-key");
+  await page.getByRole("button", { name: "Save connection" }).click();
 
-  // The server's own reason, verbatim — and NOT the dirty warning standing in for it.
-  await expect(
-    page.getByText(/ai_review\.base_url must be an http\(s\) URL/),
-  ).toBeVisible();
-  await expect(page.getByText(/● Unsaved changes/)).toBeHidden();
-  // The typed key survives the failure — the user doesn't retype it to try again.
-  await expect(page.getByLabel(/API key/i)).toHaveValue("sk-a-brand-new-key");
+  await expect(page.getByText(`✗ Not saved — ${gateway}`)).toBeVisible();
+  expect(server.posts).toEqual([]); // the saved config is untouched
+  await expect(page.getByLabel(/API key/i)).toHaveValue("sk-wrong-key"); // nothing to retype
 
-  // The verdict describes the values that were rejected, so the next edit retires it and
-  // the dirty warning takes back over — a stale error must not stay pinned to new text.
-  await page.getByLabel(/Endpoint base URL/i).fill("https://fixed.example.io/v1");
-  await expect(
-    page.getByText(/ai_review\.base_url must be an http\(s\) URL/),
-  ).toBeHidden();
-  await expect(page.getByText(/● Unsaved changes/)).toBeVisible();
+  await page.getByRole("button", { name: "Save without testing" }).click();
+  await expect
+    .poll(() => server.posts)
+    .toEqual([
+      {
+        ai_review: {
+          base_url: "https://ai.example.io/v1",
+          api_key: "sk-wrong-key",
+        },
+      },
+    ]);
+  await expect(page.getByText("Saved without testing.")).toBeVisible();
 });
 
-test("settings: a rejected /models probe shows the GATEWAY's message, not a bare status (#834)", async ({
+test("settings: a failed check of the SAVED connection shows the gateway's reason and Check failed (#834)", async ({
   page,
 }) => {
-  // The save succeeds, then the validation probe is rejected by the endpoint. `#382` says
-  // that message renders verbatim — but the client's plain `getJson` reduced every non-2xx
-  // to "GET /api/ai-review/models… → 502" and threw the server's `detail` away, so the
-  // panel could only ever show the status code. Unit tests missed it: they mock the api
-  // module, which is precisely the boundary that was dropping the text.
-  const gateway =
-    "model listing returned HTTP 401: Authentication Error - virtual key expected.";
-  await page.route("**/api/prefs", (r) =>
-    r.fulfill({ json: { ai_review: AI_REVIEW } }),
-  );
-  await page.goto(settingsPath("ai-endpoint"));
-  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
-    "minimax-m2.7",
-  );
-  // Only the save-time probe fails — the mount probe already populated the list.
+  const gateway = "LiteLLM Virtual Key expected";
+  await statefulServer(page);
   await page.route("**/api/ai-review/models**", (r) =>
     r.fulfill({ status: 502, json: { detail: gateway } }),
   );
-
-  await page.getByRole("button", { name: "Replace key" }).click();
-  await page.getByLabel(/API key/i).fill("sk-wrong-key");
-  await page.getByRole("button", { name: "Save & validate" }).click();
-
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByText(`✗ ${gateway}`)).toBeVisible();
-  await expect(page.getByText(/GET \/api\/ai-review\/models/)).toBeHidden();
+  await expect(page.getByTestId("endpoint-status")).toContainText(
+    "Check failed",
+  );
+  await expect(page.getByText(/GET \/api\/ai-review\/models/)).toHaveCount(0);
 });
 
-test("settings: a stored key has no fillable field until Replace key (#834)", async ({
+test("settings: a stored key has no fillable field until Replace key; a new one saves once and folds away (#834)", async ({
   page,
 }) => {
-  // Why this is structural and not another `autocomplete` hint: a persistent type=password
-  // input is a password-manager magnet — the browser offers to SAVE whatever key is typed
-  // there and refills it on every later visit, which left a plain visit permanently dirty
-  // and put the refilled value one click from overwriting a working key. A field that isn't
-  // on the page can't be filled.
-  let prefsBody: unknown = null;
-  await page.route("**/api/prefs", async (r) => {
-    prefsBody = r.request().postDataJSON();
-    await r.fulfill({ json: { ai_review: AI_REVIEW } });
-  });
+  const server = await statefulServer(page);
   await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
 
-  // A plain visit: readout only, and the form cannot be dirty because there is nothing to fill.
-  await expect(page.locator("#ai-api-key")).toHaveCount(0);
-  await expect(page.getByText(/● Unsaved changes/)).toBeHidden();
-  await expect(
-    page.getByRole("button", { name: "Save & validate" }),
-  ).toBeDisabled();
-
-  // Replace key reveals an EMPTY input; Cancel puts the secret back out of reach.
   await page.getByRole("button", { name: "Replace key" }).click();
   await expect(page.getByLabel(/API key/i)).toHaveValue("");
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator("#ai-api-key")).toHaveCount(0);
-  expect(prefsBody).toBeNull(); // cancelling never touches the stored key
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  expect(server.posts).toEqual([]); // cancelling never touches the stored key
 
-  // Replace → type → save: the new key goes up once and the field folds away again.
   await page.getByRole("button", { name: "Replace key" }).click();
   await page.getByLabel(/API key/i).fill("sk-rotated");
-  await page.getByRole("button", { name: "Save & validate" }).click();
+  await page.getByRole("button", { name: "Save connection" }).click();
   await expect
-    .poll(() => prefsBody)
-    .toEqual({
-      ai_review: { base_url: "https://ai.example.io/v1", api_key: "sk-rotated" },
-    });
-  await expect(page.locator("#ai-api-key")).toHaveCount(0);
-  await expect(page.getByText(/● Unsaved changes/)).toBeHidden();
+    .poll(() => server.posts)
+    .toEqual([
+      {
+        ai_review: { base_url: "https://ai.example.io/v1", api_key: "sk-rotated" },
+      },
+    ]);
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  await expect(page.getByText(/✓ Connected — 3 models available/)).toBeVisible();
 });
 
-test("settings: the model control, when locked, LOOKS locked and says why (#834)", async ({
+test("settings: while the connection has unsaved edits the model step LOOKS locked and says why (#834)", async ({
   page,
 }) => {
-  // `modelLocked` disables the select while the endpoint has uncommitted edits that no
-  // validated probe backs (#394) — in practice, after a save fails. `.aiInput` had no
-  // `:disabled` rule, so that dead control rendered identically to a live one: the panel
-  // went unusable and the only way to find out was to click and get nothing.
-  await page.route("**/api/prefs", (r) =>
-    r.fulfill({ status: 422, json: { detail: "nope" } }),
-  );
+  await statefulServer(page);
   await page.goto(settingsPath("ai-endpoint"));
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toBeEnabled();
-
-  await page.getByLabel(/Endpoint base URL/i).fill("https://other.example.io/v1");
-  await page.getByRole("button", { name: "Save & validate" }).click();
+  await page.getByLabel(/Base URL/i).fill("https://ai.example.io/v2");
   await expect(model).toBeDisabled();
-  await expect(page.getByText(/Locked while the endpoint above/i)).toBeVisible();
+  await expect(
+    page.getByText(/Save the connection first — this list belongs to the saved endpoint/),
+  ).toBeVisible();
   const opacity = await model.evaluate((el) =>
     Number(getComputedStyle(el).opacity),
   );
   expect(opacity).toBeLessThan(1);
 });
 
-test("settings: the endpoint's save row groups with the fields it commits (#834)", async ({
+test("settings: an endpoint that can't list models is saved, and the model step takes a typed id (#956)", async ({
   page,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop spacing check");
-  // The reported "the save button is over the model dropdown": the row sat 22px below the
-  // key hint and 10px above MODEL, so it read as the dropdown's own save control.
-  await page.route("**/api/prefs", (r) =>
-    r.fulfill({ json: { ai_review: AI_REVIEW } }),
+}) => {
+  const server = await statefulServer(page);
+  await page.route("**/api/ai-review/endpoint/test", (r) =>
+    r.fulfill({ json: { models: [], listing: "unsupported" } }),
+  );
+  await page.route("**/api/ai-review/models**", (r) =>
+    r.fulfill({ json: { models: [] } }),
   );
   await page.goto(settingsPath("ai-endpoint"));
-  const save = page.getByRole("button", { name: "Save & validate" });
-  await expect(save).toBeVisible();
-  const hint = page.getByText(/Write-only: the stored key is never shown/);
-  const modelLabel = page.getByText("Model", { exact: true });
-
-  const [h, s, m] = await Promise.all([
-    hint.boundingBox(),
-    save.boundingBox(),
-    modelLabel.boundingBox(),
+  await page.getByLabel(/Base URL/i).fill("https://ai.example.io/openai");
+  await page.getByRole("button", { name: "Save connection" }).click();
+  await expect(
+    page.getByText(/Saved — this endpoint doesn’t list models; type the model id below/),
+  ).toBeVisible();
+  expect(server.posts).toEqual([
+    { ai_review: { base_url: "https://ai.example.io/openai" } },
   ]);
-  const above = s!.y - (h!.y + h!.height); // gap to the group it belongs to
-  const below = m!.y - (s!.y + s!.height); // gap to the field it does NOT commit
-  expect(below).toBeGreaterThan(above);
+  const model = page.getByRole("textbox", { name: "Model" });
+  await expect(model).toBeEnabled();
+  await model.fill("gpt-oss-120b");
+  await page.getByRole("button", { name: "Save model" }).click();
+  await expect
+    .poll(() => server.posts.at(-1))
+    .toEqual({ ai_review: { model: "gpt-oss-120b", request_timeout: null } });
+});
 
-  // …and the button must not resize when the status line appears beside it.
-  const clean = (await save.boundingBox())!.height;
-  await page.getByLabel(/Endpoint base URL/i).fill("https://other.example.io/v1");
-  await expect(page.getByText(/● Unsaved changes/)).toBeVisible();
-  expect((await save.boundingBox())!.height).toBe(clean);
+test("settings: editing while Save connection's check is pending saves nothing and publishes nothing (#956)", async ({
+  page,
+}) => {
+  const server = await statefulServer(page);
+  const slow = held();
+  await page.route("**/api/ai-review/endpoint/test", async (r) => {
+    await slow.gate;
+    await r.fulfill({ json: { models: ["late-model"], listing: "ok" } });
+  });
+  await page.goto(settingsPath("ai-endpoint"));
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
+    "minimax-m2.7",
+  );
+  const url = page.getByLabel(/Base URL/i);
+  await url.fill("https://ai.example.io/v2");
+  await page.getByRole("button", { name: "Save connection" }).click();
+  await expect(page.getByText(/then saving/)).toBeVisible();
+
+  await url.fill("https://ai.example.io/v3"); // the operator keeps typing
+  const answered = page.waitForResponse("**/api/ai-review/endpoint/test");
+  slow.release();
+  await answered;
+  await settle(page);
+
+  expect(server.posts).toEqual([]);
+  await expect(page.getByText(/● Unsaved/)).toBeVisible();
+  await expect(page.getByRole("option", { name: "late-model" })).toHaveCount(0);
+  await expect(page.getByTestId("endpoint-status")).not.toContainText(
+    "Check failed",
+  );
+});
+
+test("settings: leaving the page while a check is pending saves nothing (#956)", async ({
+  page,
+}) => {
+  const server = await statefulServer(page);
+  const slow = held();
+  await page.route("**/api/ai-review/endpoint/test", async (r) => {
+    await slow.gate;
+    await r.fulfill({ json: { models: ["late-model"], listing: "ok" } });
+  });
+  await page.goto(settingsPath("ai-endpoint"));
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
+    "minimax-m2.7",
+  );
+  await page.getByLabel(/Base URL/i).fill("https://ai.example.io/v2");
+  await page.getByRole("button", { name: "Save connection" }).click();
+  await expect(page.getByText(/then saving/)).toBeVisible();
+
+  await openSection(page, "Session review");
+  await expect(page.getByRole("region", { name: "Session review" })).toBeVisible();
+  const answered = page.waitForResponse("**/api/ai-review/endpoint/test");
+  slow.release();
+  await answered;
+  await settle(page);
+  expect(server.posts).toEqual([]);
+
+  await openSection(page, "Endpoint & model");
+  await expect(page.getByLabel(/Base URL/i)).toHaveValue(
+    "https://ai.example.io/v1",
+  );
+  await expect(page.getByRole("option", { name: "late-model" })).toHaveCount(0);
+});
+
+test("settings: a save the server accepted is adopted after a newer edit, which stays unsaved (#956)", async ({
+  page,
+}) => {
+  const slow = held();
+  const server = await statefulServer(page, slow.gate);
+  await page.goto(settingsPath("ai-endpoint"));
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
+    "minimax-m2.7",
+  );
+  const url = page.getByLabel(/Base URL/i);
+  await url.fill("https://ai.example.io/v2");
+  await page.getByRole("button", { name: "Save connection" }).click();
+  await expect.poll(() => server.posts.length).toBe(1); // checked, and the save is in flight
+
+  await url.fill("https://ai.example.io/v2-next");
+  const saved = page.waitForResponse("**/api/prefs");
+  slow.release();
+  await saved;
+
+  await expect(url).toHaveValue("https://ai.example.io/v2-next");
+  await expect(page.getByText(/● Unsaved/)).toBeVisible();
+  await expect.poll(() => server.configCalls()).toBeGreaterThan(1);
+  // The accepted save IS the saved state now: typing it back leaves nothing unsaved.
+  await url.fill("https://ai.example.io/v2");
+  await expect(page.getByText(/● Unsaved/)).toHaveCount(0);
+});
+
+test("settings: a pick back to the previous model while Save model is in flight survives the accepted save (#956)", async ({
+  page,
+}) => {
+  const slow = held();
+  const server = await statefulServer(page, slow.gate);
+  await page.goto(settingsPath("ai-endpoint"));
+  const model = page.getByRole("combobox", { name: "Model" });
+  await expect(model).toHaveValue("minimax-m2.7");
+  await model.selectOption("qwen3-vl");
+  await page.getByRole("button", { name: "Save model" }).click();
+  await expect.poll(() => server.posts.length).toBe(1); // the save is in flight
+
+  await model.selectOption("minimax-m2.7"); // back to what was saved before
+  const saved = page.waitForResponse("**/api/prefs");
+  slow.release();
+  await saved;
+
+  // The accepted save is the saved state; the newer pick is still the draft, unsaved and saveable.
+  await expect(
+    page.getByText("● Unsaved — active is still qwen3-vl."),
+  ).toBeVisible();
+  await expect(model).toHaveValue("minimax-m2.7");
+  const save = page.getByRole("button", { name: "Save model" });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect
+    .poll(() => server.posts)
+    .toEqual([
+      { ai_review: { model: "qwen3-vl", request_timeout: null } },
+      { ai_review: { model: "minimax-m2.7", request_timeout: null } },
+    ]);
+});
+
+test("settings: each save sits at the foot of the card it saves, never between two cards (#834/#956)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop geometry check");
+  await statefulServer(page);
+  await page.goto(settingsPath("ai-endpoint"));
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
+    "minimax-m2.7",
+  );
+  const connection = page.getByRole("region", { name: "Connection" });
+  const modelCard = page.getByRole("region", { name: "Model" });
+  const saveConn = connection.getByRole("button", { name: "Save connection" });
+  const saveModel = modelCard.getByRole("button", { name: "Save model" });
+  const [c, sc, m, sm] = await Promise.all([
+    connection.boundingBox(),
+    saveConn.boundingBox(),
+    modelCard.boundingBox(),
+    saveModel.boundingBox(),
+  ]);
+  // Inside its own card, in that card's foot.
+  expect(sc!.y).toBeGreaterThan(c!.y + c!.height - 64);
+  expect(sc!.y + sc!.height).toBeLessThanOrEqual(c!.y + c!.height);
+  expect(sm!.y).toBeGreaterThan(m!.y + m!.height - 64);
+  expect(sm!.y + sm!.height).toBeLessThanOrEqual(m!.y + m!.height);
+  // A dirty form never grows the button (#834).
+  const clean = sc!.height;
+  await page.getByLabel(/Base URL/i).fill("https://ai.example.io/v2");
+  await expect(page.getByText(/● Unsaved/)).toBeVisible();
+  expect((await saveConn.boundingBox())!.height).toBe(clean);
 });
 
 test("settings: Remove key clears the stored secret and refetches /api/config", async ({
@@ -381,15 +567,14 @@ test("mobile: the Endpoint & model page renders at phone width", async ({
     r.fulfill({ json: { ai_review: AI_REVIEW } }),
   );
   await page.goto(settingsPath("ai-endpoint"));
-  await expect(
-    page.getByRole("heading", { name: "AI endpoint" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connection" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Model" })).toBeVisible();
 
   // The key row carries a field plus two actions (#834) — at phone width it must wrap
   // rather than squeeze the key readout to "*****…", and its buttons must clear the 44px
   // touch target (docs/design.md §8).
-  const readout = page.getByText(/stored$/);
+  // The key readout itself — the status strip also says "Key stored".
+  const readout = page.getByText(/^\*+ stored$/);
   const replace = page.getByRole("button", { name: "Replace key" });
   const [ro, rb] = await Promise.all([
     readout.boundingBox(),

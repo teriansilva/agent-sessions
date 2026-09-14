@@ -774,11 +774,116 @@ def _valid_base_url(value: object) -> bool:
         return True
     if len(s) > AI_REVIEW_BASE_URL_MAX:
         return False
+    if any(ch.isspace() for ch in s):
+        return False
     try:
         parts = urlsplit(s)
+        # A non-numeric or out-of-range port raises here. Checked on purpose (Hermes on #960): a
+        # URL the transport cannot parse would otherwise pass this check and fail later as an
+        # unhandled `httpx.InvalidURL` instead of a 422.
+        _ = parts.port
     except ValueError:
         return False
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+def is_valid_ai_base_url(value: object) -> bool:
+    """Public form of the base-URL shape check, for the endpoint test route (#956)."""
+    return _valid_base_url(value)
+
+
+# --- The key-origin policy (#956) ------------------------------------------------------
+# The stored API key is only ever sent to the ORIGIN it was saved for. Changing the host means
+# supplying the key for it (or clearing the key). Enforced in two places that read the same
+# rule: `set_ai_review`'s locked merge (authoritative — it sees the lock-current block, so a
+# save racing another save cannot pair one host with the other's key) and the endpoint test
+# route (against one snapshot). A pre-lock check in `/api/prefs` exists only so a multi-block
+# patch fails before any block is written; it is not what makes the rule hold.
+
+
+class KeyOriginError(ValueError):
+    """A patch would send the stored API key to an origin it was not saved for (→ 422)."""
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def endpoint_origin(url: object) -> str | None:
+    """`scheme://host:port`, lower-cased, with the scheme's default port made explicit — so
+    `https://AI.example.io/v1` and `https://ai.example.io:443/x` are one origin and
+    `http://ai.example.io` is another. `None` for an empty or unparseable URL."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in _DEFAULT_PORTS or not host:
+        return None
+    return f"{scheme}://{host}:{port if port is not None else _DEFAULT_PORTS[scheme]}"
+
+
+def is_new_api_key(value: object) -> bool:
+    """Exactly what `_merge_ai_review` treats as a REPLACEMENT key: a string that is non-empty
+    after strip() and is not the mask. Blank, whitespace and the mask PRESERVE the stored key,
+    so none of them may authorize a host change."""
+    return isinstance(value, str) and value.strip() not in ("", AI_REVIEW_KEY_MASK)
+
+
+def key_origin_violation(stored: dict, patch: dict) -> str | None:
+    """Why `patch` may not be merged into `stored`, or None when it may.
+
+    A STORED key is bound to the origin of the stored base URL. A patch that changes that URL —
+    to another origin, or to nothing — must also supply a new key or clear the key
+    (`api_key: null`). Clearing the URL is refused too (Hermes on #960): it would drop the binding
+    while keeping the key, and the next URL-only patch would then attach the old key to any host.
+
+    A key stored while the URL is EMPTY was never bound to a host, so the first URL binds it.
+    Only a truly empty stored URL counts: an unparseable one still binds the key, so any change
+    away from it needs a key too."""
+    if not stored.get("api_key") or "base_url" not in patch:
+        return None
+    old_base = str(stored.get("base_url") or "").strip()
+    if not old_base:
+        return None
+    new_base = str(patch.get("base_url") or "").strip()
+    old_origin = endpoint_origin(old_base)
+    if new_base and old_origin is not None and endpoint_origin(new_base) == old_origin:
+        return None
+    if "api_key" in patch and (patch["api_key"] is None or is_new_api_key(patch["api_key"])):
+        return None
+    if not new_base:
+        return (
+            "clear the API key too (api_key: null) — a stored key cannot outlive the endpoint it "
+            "was saved for"
+        )
+    return (
+        f"enter the API key for {endpoint_origin(new_base) or new_base} — the stored key is only "
+        "sent to the endpoint it was saved for"
+    )
+
+
+def resolve_test_key(stored: dict, base_url: str, api_key: object) -> tuple[str | None, str | None]:
+    """The key an endpoint TEST may use, from ONE snapshot of the stored block: `(key, None)` or
+    `(None, reason)`. The request's own new key wins; otherwise the stored key, but only for the
+    origin it was saved for. Keyless endpoints are unsupported (as `configured` and
+    `review._require_config` already require a key)."""
+    if is_new_api_key(api_key):
+        return str(api_key).strip(), None
+    stored_key = str(stored.get("api_key") or "")
+    if not stored_key:
+        return None, "an API key is required to test an endpoint"
+    new_origin = endpoint_origin(base_url)
+    stored_origin = endpoint_origin(stored.get("base_url"))
+    if stored_origin is None or new_origin != stored_origin:
+        return None, (
+            f"enter the API key for {new_origin or base_url.strip()} — the stored key is only sent "
+            "to the endpoint it was saved for"
+        )
+    return stored_key, None
 
 
 def _coerce_ai_review(raw: object) -> dict:
@@ -902,7 +1007,14 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
     can no longer clobber each other."""
 
     def merge(raw: object) -> dict:
-        return _merge_ai_review(_coerce_ai_review(raw), patch)
+        cur = _coerce_ai_review(raw)
+        # Against the LOCK-CURRENT block (#956): a check before the lock could pass against
+        # origin A, lose a race to a save of origin B + key B, and then pair URL A with key B.
+        # Raising here aborts before `_mutate` writes anything.
+        why = key_origin_violation(cur, patch)
+        if why is not None:
+            raise KeyOriginError(why)
+        return _merge_ai_review(cur, patch)
 
     return _mutate("ai_review", merge, path)
 

@@ -2,23 +2,27 @@ import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
 // #692: the setup wizard's "Set up your AI" step must (1) persist the endpoint + model and
-// (2) surface it in Settings → AI WITHOUT a page reload — the bug was Onboarding.saveAi()
-// never calling useConfigRefresh(), so the shared ConfigCtx stayed stale and Settings kept
-// showing the pre-save (unconfigured) state. It also brings the wizard's Model field to
-// parity with Settings: a /models-populated dropdown with a free-text fallback.
+// (2) surface it in Settings → AI WITHOUT a page reload. Since #956 the wizard hosts the same
+// Endpoint & model component Settings uses — Save connection (checked, then saved), then Save
+// model — so this also proves the wizard runs that flow and not a copy of the old one.
 //
-// Real-browser proof (runs on desktop + the mobile ≤800px project): start AT /settings/ai-review
-// so the Settings panel is mounted UNDER the wizard overlay; save in the wizard, dismiss the
-// overlay (no navigation, no reload) and observe the Settings panel — through the same
-// ConfigProvider — reflect the saved endpoint + the model dropdown. RED before #692 (Settings
-// stays stale: empty endpoint, free-text model), GREEN after (refreshConfig crosses the boundary).
+// Real-browser proof (desktop + the mobile ≤800px project): start AT Settings → AI → Endpoint &
+// model so its page is mounted UNDER the wizard overlay; save in the wizard, dismiss the overlay
+// (no navigation, no reload) and observe the page — through the same ConfigProvider — reflect the
+// saved endpoint and model.
 
 const MODELS = ["gpt-4o", "gpt-4o-mini", "o3-mini"];
 
 async function mockApp(page: Page) {
   // Mutable server state: a /api/prefs write flips ai_review unconfigured → configured, and
   // /api/config echoes it — exactly the provider boundary the fix has to cross live.
-  const ai = { base_url: "", model: "", api_key_set: false, configured: false };
+  const ai = {
+    base_url: "",
+    model: "",
+    request_timeout: null as number | null,
+    api_key_set: false,
+    configured: false,
+  };
   let onboarded = false;
 
   await page.route("**/api/config", (r) =>
@@ -37,7 +41,7 @@ async function mockApp(page: Page) {
           model: ai.model,
           interval_minutes: 5,
           max_input_chars: 24000,
-          request_timeout: null,
+          request_timeout: ai.request_timeout,
           api_key_set: ai.api_key_set,
           configured: ai.configured,
         },
@@ -77,10 +81,18 @@ async function mockApp(page: Page) {
   await page.route("**/api/ai-review/models**", (r) =>
     r.fulfill({ json: { models: MODELS } }),
   );
+  await page.route("**/api/ai-review/endpoint/test", (r) =>
+    r.fulfill({ json: { models: MODELS, listing: "ok" } }),
+  );
   await page.route("**/api/prefs", async (r) => {
     const body = (r.request().postDataJSON() ?? {}) as {
       onboarded?: boolean;
-      ai_review?: { base_url?: string; api_key?: string; model?: string };
+      ai_review?: {
+        base_url?: string;
+        api_key?: string;
+        model?: string;
+        request_timeout?: number | null;
+      };
     };
     if (body.onboarded) onboarded = true;
     if (body.ai_review) {
@@ -88,13 +100,18 @@ async function mockApp(page: Page) {
       if (p.base_url !== undefined) ai.base_url = p.base_url;
       if (p.api_key) ai.api_key_set = true;
       if (p.model !== undefined) ai.model = p.model;
+      if (p.request_timeout !== undefined) ai.request_timeout = p.request_timeout;
       ai.configured = !!ai.base_url && ai.api_key_set;
     }
     await r.fulfill({
       json: {
         ai_review: {
+          enabled: false,
           base_url: ai.base_url,
           model: ai.model,
+          interval_minutes: 5,
+          max_input_chars: 24000,
+          request_timeout: ai.request_timeout,
           api_key_set: ai.api_key_set,
           configured: ai.configured,
         },
@@ -121,18 +138,22 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   await expect(dialog.getByText("claude", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: /^next$/i }).click(); // → ai
 
-  // Fill + Save & validate → the Model field becomes a dropdown populated from /models.
-  await dialog
-    .getByPlaceholder(/api\.openai\.com/i)
-    .fill("https://api.openai.com/v1");
-  await dialog.getByPlaceholder(/never echoed/i).fill("sk-secret");
-  await dialog.getByRole("button", { name: /save & validate/i }).click();
-  const wizModel = dialog.getByRole("combobox", { name: /model/i });
+  // Save connection → checked, saved, and the Model field becomes a dropdown from the listing.
+  await expect(
+    dialog.getByRole("button", { name: /save & validate/i }),
+  ).toHaveCount(0);
+  await dialog.getByLabel(/Base URL/i).fill("https://api.openai.com/v1");
+  await dialog.getByLabel(/API key/i).fill("sk-secret");
+  await dialog.getByRole("button", { name: "Save connection" }).click();
+  const wizModel = dialog.getByRole("combobox", { name: "Model" });
   await expect(wizModel).toBeVisible();
   await expect(
-    dialog.getByText(/endpoint validated — 3 models/i),
+    dialog.getByText(/✓ Connected — 3 models available/),
   ).toBeVisible();
+  // Picking is not saving: Save model stores it.
   await wizModel.selectOption("o3-mini");
+  await dialog.getByRole("button", { name: "Save model" }).click();
+  await expect(dialog.getByText(/✓ Model saved — active: o3-mini/)).toBeVisible();
 
   // The AI step must not scroll the page horizontally at this width (≤800px footer wrap, #494).
   await expectNoHScroll(page);
@@ -141,14 +162,12 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  // Settings → AI now reflects the wizard-saved endpoint + the /models dropdown, WITHOUT reload.
-  await expect(
-    page.getByRole("heading", { name: /ai endpoint/i }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("textbox", { name: /endpoint base url/i }),
-  ).toHaveValue("https://api.openai.com/v1");
-  const settingsModel = page.getByRole("combobox", { name: /model/i });
+  // Settings → AI → Endpoint & model now reflects the wizard's save, WITHOUT a reload.
+  await expect(page.getByRole("heading", { name: "Connection" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: /Base URL/i })).toHaveValue(
+    "https://api.openai.com/v1",
+  );
+  const settingsModel = page.getByRole("combobox", { name: "Model" });
   await expect(settingsModel).toBeVisible();
   await expect(settingsModel).toHaveValue("o3-mini");
 });

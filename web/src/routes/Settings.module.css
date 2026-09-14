@@ -154,7 +154,7 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-.indexLink span {
+.indexLink [data-section-label] {
   flex: 1;
   min-width: 0;
 }
@@ -1739,4 +1739,135 @@
 .objective > select {
   flex: 1 1 160px;
   min-width: 0;
+}
+
+/* Endpoint & model (#956): a status strip, then two cards, each saved by the button at its own
+ * foot. The foot sits on a dashed rule inside the card, so a save can never read as belonging
+ * to the card below it (the #834 complaint about "Save & validate" in the middle). */
+.endpointStrip {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 640px;
+  margin: 0 auto 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.endpointStrip > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-right: 1px solid var(--border);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.endpointStrip b {
+  color: var(--text-2, var(--text));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+.endpointStrip > .endpointStripState {
+  margin-left: auto;
+  border-right: 0;
+}
+.stepNum {
+  color: var(--brand, var(--accent));
+}
+.endpointPlain {
+  margin: 0 0 18px;
+}
+.endpointPlain h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+}
+.cardFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 16px -18px -16px;
+  padding: 11px 18px;
+  border-top: 1px dashed var(--border);
+}
+.endpointPlain .cardFoot {
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+}
+.cardFoot > p {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.cardActions button {
+  justify-content: center;
+  text-align: center;
+}
+.lockBand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+/* Every control on this page is a 44px target on a phone (docs/design.md §8). */
+@media (max-width: 800px), (pointer: coarse) {
+  .endpointCard input,
+  .endpointCard select,
+  .endpointCard button {
+    min-height: 44px;
+  }
+  .endpointCard .aiModelRow button {
+    min-width: 44px;
+  }
+  .cardFoot > p {
+    flex-basis: 100%;
+  }
+  .cardActions {
+    width: 100%;
+  }
+  .cardActions button {
+    flex: 1;
+  }
+}
+/* The sidebar / index LED on Endpoint & model. */
+.navLed {
+  margin-left: auto;
+}
+.indexModel {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans, inherit);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
 }

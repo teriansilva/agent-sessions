@@ -114,7 +114,7 @@ test.describe("desktop", () => {
     await page.goto(LEGACY_AI_TAB);
     await expect(page).toHaveURL(urlOf(settingsPath("ai-endpoint")));
     await expect(
-      page.getByRole("heading", { name: "AI endpoint" }),
+      page.getByRole("heading", { name: "Connection" }),
     ).toBeVisible();
 
     // A prompt deep link keeps pointing at the prompt it named, and opens that row.
@@ -223,7 +223,7 @@ test.describe("phone", () => {
     const pages: [string, string][] = [
       [settingsPath(), "Settings"],
       [settingsPath("ai-mission-control"), "Orchestrator"],
-      [settingsPath("ai-endpoint"), "AI endpoint"],
+      [settingsPath("ai-endpoint"), "Connection"],
       [settingsPath("agents"), "Connected agents"],
     ];
     for (const theme of ["dark", "light"]) {

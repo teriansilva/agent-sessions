@@ -369,8 +369,17 @@ def test_models_route(auth_cfg, ai_prefs, monkeypatch):
     r = c.get("/api/ai-review/models")
     assert r.status_code == 200
     assert r.json() == {"models": ["m1"]}
-    # Upstream without /models → 502 (the UI falls back to free-text entry).
+    # Upstream without /models → an empty list, not an error (#956): the endpoint answered, so
+    # the UI types the model id instead, and a 502 is left meaning "rejected or unreachable".
     monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(lambda _r: httpx.Response(404)))
+    r = c.get("/api/ai-review/models?refresh=1")
+    assert r.status_code == 200
+    assert r.json() == {"models": []}
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        httpx.MockTransport(lambda _r: httpx.Response(401, json={"error": {"message": "bad key"}})),
+    )
     assert c.get("/api/ai-review/models?refresh=1").status_code == 502
 
 

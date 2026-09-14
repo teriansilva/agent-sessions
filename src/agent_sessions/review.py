@@ -136,6 +136,11 @@ class NotConfiguredError(ReviewError):
     """The ai_review endpoint is not configured (missing base URL / API key)."""
 
 
+class ModelsUnsupportedError(ReviewError):
+    """The endpoint answered but cannot list models (404/405, or a body that is not a model
+    list) — distinct from a rejection, because the URL and key can still be right (#956)."""
+
+
 def _client(timeout: float) -> httpx.AsyncClient:
     # trust_env=False (Hermes on PR #367): httpx defaults to honoring ambient
     # HTTP_PROXY/HTTPS_PROXY/ALL_PROXY env vars, which would silently route the
@@ -945,7 +950,7 @@ def _cache_key(cfg: dict) -> str:
     return f"{_base(cfg)}|{digest}"
 
 
-async def list_models(*, force: bool = False) -> list[str]:
+async def list_models(*, force: bool = False, cfg: dict | None = None) -> list[str]:
     """Proxy ``GET {base_url}/models`` with the stored key (#356): the browser never sees
     the key (and would hit CORS anyway). Small in-memory TTL cache; ``force`` (the UI
     refresh button) bypasses it. Raises NotConfiguredError when unset, ReviewError when
@@ -953,29 +958,40 @@ async def list_models(*, force: bool = False) -> list[str]:
     free-text model entry. This call doubles as the save-time validation probe (#394):
     a non-200 carries a bounded extract of the gateway's own error text (#382) so the
     Settings panel can show WHY the endpoint/key were rejected."""
-    cfg = _require_config()
+    # `cfg` is a DRAFT connection from the endpoint test route (#956): same single request, so
+    # the outbound-call inventory still counts one site here — but a draft never reads or fills
+    # the cache, which describes saved connections only.
+    draft = cfg is not None
+    if cfg is None:
+        cfg = _require_config()
     ck = _cache_key(cfg)
     now = time.monotonic()
-    if not force:
+    if not force and not draft:
         hit = _models_cache.get(ck)
         if hit and now - hit[0] < MODELS_CACHE_TTL_S:
             return hit[1]
     try:
         async with _client(MODELS_TIMEOUT_S) as client:
             r = await client.get(_base(cfg) + "/models", headers=_headers(cfg))
+    except httpx.InvalidURL:
+        # Not an HTTPError subclass. The base-URL validator rejects these first; this keeps a URL
+        # stored before that check tightened from escaping as an unhandled 500 (#960).
+        raise ReviewError("the endpoint URL is not valid") from None
     except httpx.HTTPError as e:
         raise ReviewError(f"model listing unreachable ({type(e).__name__})") from None
+    if r.status_code in (404, 405):
+        raise ModelsUnsupportedError(_gateway_error(r, cfg))
     if r.status_code != 200:
         raise ReviewError(_gateway_error(r, cfg))
     try:
         payload = r.json()
     except ValueError:
-        raise ReviewError("model listing returned invalid JSON") from None
+        raise ModelsUnsupportedError("model listing returned invalid JSON") from None
     raw = payload.get("data") if isinstance(payload, dict) else None
     if raw is None and isinstance(payload, dict):
         raw = payload.get("models")
     if not isinstance(raw, list):
-        raise ReviewError("model listing returned an unexpected shape")
+        raise ModelsUnsupportedError("model listing returned an unexpected shape")
     models: list[str] = []
     for item in raw:
         if isinstance(item, str):
@@ -983,5 +999,6 @@ async def list_models(*, force: bool = False) -> list[str]:
         elif isinstance(item, dict) and isinstance(item.get("id"), str):
             models.append(item["id"])
     models = sorted(set(models))
-    _models_cache[ck] = (now, models)
+    if not draft:
+        _models_cache[ck] = (now, models)
     return models

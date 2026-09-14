@@ -41,6 +41,7 @@ import {
 } from "../lib/projectTree";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
+import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
@@ -80,6 +81,11 @@ import type {
   UpdateInfo,
   UpdateSettings,
 } from "../types/api";
+import {
+  ENDPOINT_LED_CLASS,
+  ENDPOINT_LED_LABEL,
+  useEndpointLed,
+} from "../lib/aiEndpointStatus";
 import { useIsMobile } from "../lib/useIsMobile";
 import {
   DEFAULT_SETTINGS_SECTION,
@@ -120,6 +126,21 @@ function groupSections(group: SettingsGroupId) {
   return { items, label, showLabel };
 }
 
+/** The Endpoint & model LED (#956). Status, not decoration: it reports the last check of the
+ *  SAVED connection (`useEndpointLed`), and it carries its state as an accessible label so colour
+ *  is never the only signal (docs/design.md §8). */
+function EndpointLed() {
+  const led = useEndpointLed(useConfig()?.ai_review);
+  return (
+    <span
+      className={`hud-led ${ENDPOINT_LED_CLASS[led]} ${styles.navLed}`}
+      role="img"
+      aria-label={`AI endpoint: ${ENDPOINT_LED_LABEL[led]}`}
+      title={ENDPOINT_LED_LABEL[led]}
+    />
+  );
+}
+
 /** The desktop settings sidebar (#956): grouped links, one per section, rendered from the
  *  registry. Links, not an ARIA tablist — each section is its own URL, so this is navigation
  *  between pages and the browser's own Tab order and history apply. The router state (the #155
@@ -151,7 +172,8 @@ function SettingsNav({ active }: { active: SettingsSectionId }) {
                     className={styles.navLink}
                     aria-current={s.id === active ? "page" : undefined}
                   >
-                    {s.label}
+                    <span data-section-label="">{s.label}</span>
+                    {s.id === "ai-endpoint" && <EndpointLed />}
                   </Link>
                 </li>
               ))}
@@ -160,6 +182,17 @@ function SettingsNav({ active }: { active: SettingsSectionId }) {
         );
       })}
     </nav>
+  );
+}
+
+/** The active model and the LED on the phone index's Endpoint & model row (#956). */
+function IndexEndpointMeta() {
+  const model = useConfig()?.ai_review?.model;
+  return (
+    <>
+      {model && <small className={styles.indexModel}>{model}</small>}
+      <EndpointLed />
+    </>
   );
 }
 
@@ -205,7 +238,8 @@ function SettingsIndex({ returnTo }: { returnTo: string }) {
                       state={location.state}
                       className={styles.indexLink}
                     >
-                      <span>{s.label}</span>
+                      <span data-section-label="">{s.label}</span>
+                      {s.id === "ai-endpoint" && <IndexEndpointMeta />}
                       <ChevronRight size={16} aria-hidden="true" />
                     </Link>
                   </li>
@@ -2783,8 +2817,8 @@ export function Settings() {
 
         {/* The AI pages (#956). These eight panels used to stack in ONE column under a single
             "AI" tab; each now has the page its job warrants. */}
-        {section === "ai-endpoint" && <AiReviewSettings view="endpoint" />}
-        {section === "ai-session-review" && <AiReviewSettings view="review" />}
+        {section === "ai-endpoint" && <AiEndpointSetup />}
+        {section === "ai-session-review" && <AiReviewSettings />}
         {section === "ai-auto-sort" && <AutoSortSettings />}
         {section === "ai-mission-control" && (
           <>
