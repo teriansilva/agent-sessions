@@ -564,13 +564,15 @@
   padding: 2px 7px;
   border-radius: 0;
 }
+/* 2FA on is a healthy state, so it wears the up status hue. `--ok` was never a token, and its blue
+ * fallback painted instead (#948). */
 .twofaOn {
-  background: color-mix(in srgb, var(--ok, #36c) 28%, transparent);
+  background: color-mix(in srgb, var(--status-up) 28%, transparent);
   color: var(--text, #fff);
 }
 .twofaOff {
   background: var(--surface-2, #222);
-  color: var(--text-dim, #9a9a9a);
+  color: var(--text-muted);
 }
 .twofaActions {
   display: flex;
@@ -653,7 +655,7 @@
   width: 84px;
   background: var(--surface-3);
   color: var(--text, #fff);
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 7px 9px;
   font: inherit;
@@ -664,7 +666,7 @@
   max-width: 420px;
   background: var(--surface-3);
   color: var(--text, #fff);
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 8px 10px;
   font: inherit;
@@ -725,7 +727,7 @@
 /* Per-project custom-name input (#148). */
 .nameInput {
   width: 100%;
-  background: var(--surface-3, #0b0617);
+  background: var(--surface-3);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 0;
@@ -758,7 +760,7 @@
   text-underline-offset: 3px;
 }
 .nameButton:focus-visible {
-  outline: 2px solid var(--focus, #ffe28a);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 /* Adopted folders are named by their project (#615 Phase 3): the row shows the path as static
@@ -793,9 +795,9 @@
 .enrollPanel {
   margin-top: 12px;
   padding: 14px;
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
-  background: var(--surface-2, #14102e);
+  background: var(--surface-2);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -814,7 +816,7 @@
   font-size: 13px;
   word-break: break-all;
   background: var(--surface-3);
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 7px 9px;
 }
@@ -822,14 +824,14 @@
   width: 100%;
   background: var(--surface-3);
   color: var(--text, #fff);
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 9px 11px;
   font: inherit;
   letter-spacing: 0.12em;
 }
 .recoveryBox {
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 10px 12px;
 }
@@ -844,16 +846,16 @@
   font-size: 13px;
 }
 .warn {
-  color: var(--warn, #ffb454);
+  color: var(--warn-text);
   font-size: 12px;
 }
 .err {
-  color: var(--danger, #ff9a9a);
+  color: var(--danger-text);
   font-size: 12px;
 }
 /* Confirmed endpoint-validation state (#394). */
 .ok {
-  color: var(--ok, #58c772);
+  color: var(--ok-text);
   font-size: 12px;
 }
 
@@ -903,7 +905,7 @@
 .aiInput {
   background: var(--surface-3);
   color: var(--text, #fff);
-  border: 1px solid var(--border, #2f2658);
+  border: 1px solid var(--border);
   border-radius: 0;
   padding: 8px 10px;
   font: inherit;
@@ -928,7 +930,7 @@
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
-  border: 1px dashed var(--border, #2f2658);
+  border: 1px dashed var(--border);
   background: var(--surface-3);
   color: var(--text-muted);
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -1710,9 +1712,9 @@
 }
 
 .playbookId {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
   padding: 4px 6px;
   border: 1px solid var(--border);
 }

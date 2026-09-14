@@ -59,9 +59,11 @@ export function engineColor(engine: string): string {
       : engine === "gemini"
         ? "#7aa2ff" // blue
         : engine === "antigravity"
-          ? "#a78bfa" // violet — agy
+          ? // lime — agy. It was violet until #948 removed hard-coded purple from the app; lime is
+            // the widest gap left between codex green and claude amber.
+            "#c5e15a"
           : engine === "kimi"
-            ? "#f472b6" // magenta — Kimi Code (#714); the remaining gap between violet and amber
+            ? "#f472b6" // magenta — Kimi Code (#714)
             : engine === "shell"
               ? "#8b98a5" // neutral slate — a plain terminal, deliberately NOT a vivid "agent" hue
               : "#d98a5c"; // claude — amber

@@ -422,6 +422,10 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
    *
    *  Which is why this is a table rather than one more case: where a child is mounted is a
    *  rendering detail, and any assertion that can tell the two apart is testing the wrong thing.
+   *
+   *  Since #948 Move to project portals to `<body>` too, like the other two. The sidebar is a
+   *  containing block for `position: fixed`, so its backdrop had been trapped in the drawer. That
+   *  mount change is exactly what this table was written to be indifferent to.
    */
   for (const child of [
     {
@@ -435,9 +439,9 @@ test.describe("the drawer survives its own portalled menu (#940)", () => {
       close: /close hand ?off/i,
     },
     {
-      name: "Move to project (rendered IN the sidebar row)",
+      name: "Move to project (portalled to <body>)",
       item: /move session to a project/i,
-      close: null,
+      close: /close move dialog/i,
     },
   ] as const) {
     test(`one Escape closes ${child.name} and leaves the drawer open`, async ({

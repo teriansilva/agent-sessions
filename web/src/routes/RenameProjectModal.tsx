@@ -1,15 +1,21 @@
+import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import dlg from "../components/HudDialog.module.css";
 import { shortCwd } from "../lib/format";
-import styles from "./RenameProjectModal.module.css";
 
 /** Rename-a-project modal (#174). Replaces the inline rename input in Settings — a
  *  modal makes the affordance unmistakable and the path read-only context disambiguates
  *  duplicate display names.
  *
- *  Accessibility: `role="dialog"`, `aria-modal`, labelled by the title; focus moves to
- *  the input on open and returns to the trigger on close; Esc cancels (no save); clicking
- *  the backdrop cancels (no save); Enter / clicking Save commits. Empty input clears the
- *  custom name (handled by the parent on save). */
+ *  Accessibility: `role="dialog"`, `aria-modal`, labelled by the head tag; focus moves to
+ *  the input on open and returns to the trigger on close; Esc, the close button and the
+ *  backdrop cancel (no save); Enter / clicking Save commits. Empty input clears the
+ *  custom name (handled by the parent on save).
+ *
+ *  Drawn with the Hand off design (#597) and portalled to `<body>` (#948). It carried a copy of
+ *  the sheet that named undefined tokens and painted purple, and the Settings pane it opens
+ *  from is a containing block for its fixed backdrop. */
 export function RenameProjectModal({
   cwd,
   initialName,
@@ -55,25 +61,38 @@ export function RenameProjectModal({
   const save = () => onSave(draft.trim());
   const titleId = "rename-project-title";
 
-  return (
-    <div className={styles.backdrop} onMouseDown={onCancel}>
+  return createPortal(
+    <div className={dlg.backdrop} onMouseDown={onCancel}>
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={styles.dialog}
+        className={`${dlg.dialog} ${dlg.narrow}`}
         // Stop clicks inside the dialog from bubbling to the backdrop → no accidental cancel.
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} className={styles.title}>
-          Rename project
-        </h3>
-        <p className={styles.path}>{shortCwd(cwd)}</p>
-        <label className={styles.field}>
-          <span className={styles.label}>Display name</span>
+        <div className={dlg.head}>
+          <span id={titleId} className={dlg.tag}>
+            Rename project
+          </span>
+          <button
+            type="button"
+            className={dlg.close}
+            onClick={onCancel}
+            aria-label="Close rename dialog"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <p className={dlg.from}>
+          <span className={dlg.fromLabel}>PATH //</span>
+          <b className={dlg.fromTitle}>{shortCwd(cwd)}</b>
+        </p>
+        <label className={dlg.field}>
+          <span className={dlg.label}>Display name //</span>
           <input
             ref={inputRef}
-            className={styles.input}
+            className={dlg.input}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={shortCwd(cwd)}
@@ -86,19 +105,20 @@ export function RenameProjectModal({
             aria-label={`Custom name for ${cwd}`}
           />
         </label>
-        <p className={styles.help}>
+        <p className={dlg.help}>
           Leave the name blank to clear it. The path stays the same — filtering
           still uses the full cwd.
         </p>
-        <div className={styles.actions}>
-          <button type="button" className={styles.cancel} onClick={onCancel}>
+        <div className={dlg.actions}>
+          <button type="button" className={dlg.cancel} onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className={styles.save} onClick={save}>
+          <button type="button" className={dlg.go} onClick={save}>
             Save
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

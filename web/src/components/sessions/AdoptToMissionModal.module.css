@@ -1,64 +1,38 @@
-/* The adopt dialog (#948 P5). Built on MoveToProjectModal.module.css — backdrop, dialog, list and
-   option chrome come from there — and only widens it, adds search, and the refusal/error lines.
-   Flat fills, hairline borders, zero radius; controls clear the §8 44px touch floor. */
-
-.dialog {
-  width: min(560px, 100%);
-}
-
-.heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
+/* The adopt dialog (#948 P5). The chrome is the shared HUD dialog (../HudDialog.module.css, the Hand
+   off design); this sheet holds only what is adoption's own: the search box, the two-line mission
+   rows with their refusal reason, Load more, and the load error with its Retry. */
 
 .searchWrap {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 10px;
-  padding: 0 9px;
+  margin: 0 0 12px;
+  padding: 0 11px;
   min-height: 44px;
+  background: var(--bg-2);
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-2, var(--bg)) 55%, transparent);
-  color: var(--text-muted);
+  border-radius: 0;
+  color: var(--text-3);
 }
 .searchWrap:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .search {
   flex: 1;
   min-width: 0;
+  min-height: 42px;
+  appearance: none;
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--text);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-1);
+  font-family: var(--font-mono);
   font-size: 12px;
 }
-
-.list {
-  max-height: 320px;
-}
-
-.option {
-  min-height: 44px;
-  border-left-width: 2px;
-}
-.option[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--row-hover);
-}
-.option:disabled {
-  cursor: default;
-  opacity: 0.55;
+.search::placeholder {
+  color: var(--text-3);
 }
 
 .body {
@@ -69,53 +43,34 @@
   min-width: 0;
 }
 
+/* The mission's state, session count and age are INFORMATION on a row the operator can pick, not a
+   decorative label, so they take --text-2: --text-3 at 9.5px measured 3.63:1 on the row, below the
+   4.5:1 small-text floor (#961 review 4813). */
 .meta,
 .why {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--text-2);
 }
+/* The refusal is a sentence the operator has to read, so it keeps its case. */
 .why {
-  color: var(--text-3);
+  letter-spacing: 0.02em;
   text-transform: none;
 }
 
 .more {
   justify-content: center;
-  color: var(--text-muted);
-}
-
-.error {
-  margin: 0 0 12px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--status-down) 60%, transparent);
-  font-size: 13px;
-  color: var(--text);
-}
-
-.actions {
-  margin-top: 4px;
-}
-
-.button {
-  min-height: 44px;
-  padding: 0 18px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  cursor: pointer;
 }
 
-.primary {
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.primary:disabled {
-  cursor: default;
-  opacity: 0.45;
+.loadError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }

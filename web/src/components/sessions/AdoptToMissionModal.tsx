@@ -1,12 +1,13 @@
-import { Crosshair, Search } from "lucide-react";
+import { Crosshair, Search, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, ApiError } from "../../lib/api";
-import { engineBadge, relTime } from "../../lib/format";
+import { engineName, relTime } from "../../lib/format";
 import { announceSessionMissionChanged } from "../../lib/missionEvents";
 import { MISSION_PATH } from "../../lib/missionLink";
 import type { MissionListRow, Session, SessionMissionRef } from "../../types/api";
 import { useFocusContainment } from "../pulse/useModalDrawer";
-import base from "../sidebar/MoveToProjectModal.module.css";
+import dlg from "../HudDialog.module.css";
 import styles from "./AdoptToMissionModal.module.css";
 
 /** States the store refuses an adoption into — `_adopt_tx`: "reopen it before adopting". */
@@ -31,6 +32,11 @@ function stateLabel(m: MissionListRow): string {
  *  reservation and roster fences are the authority. A refusal — a 409 naming the mission that
  *  already holds the session, a 503 while a fence is busy — is shown in place and the dialog stays
  *  open, so the operator can pick again.
+ *
+ *  **It looks like Hand off** (#597) and is portalled to `<body>` like it. It used to render where
+ *  it was opened, inside the sidebar row or the pane, and both of those are containing blocks for
+ *  `position: fixed`, so its backdrop covered one column. It also drew on a sheet built on tokens
+ *  the app never defined, which painted purple (#948, the operator's report).
  *
  *  Same modal contract as `MoveToProjectModal`: `role="dialog"`, `aria-modal`, focus enters on
  *  mount and returns to the opener on close, Tab is contained, Escape and the backdrop cancel. */
@@ -176,26 +182,41 @@ export function AdoptToMissionModal({
     }
   };
 
-  return (
-    <div className={base.backdrop} onMouseDown={onClose}>
+  return createPortal(
+    <div className={dlg.backdrop} onMouseDown={onClose}>
       <div
         ref={dialogRef}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`${base.dialog} ${styles.dialog}`}
+        className={dlg.dialog}
         onMouseDown={(e) => e.stopPropagation()}
         data-testid="adopt-dialog"
       >
-        <h3 id={titleId} className={`${base.title} ${styles.heading}`}>
-          <Crosshair size={15} aria-hidden="true" />
-          Adopt to mission
-        </h3>
-        <p className={base.path}>
-          {session.title || "(untitled)"} · {engineBadge(session.engine)}
-          {session.project.kind === "project" ? ` · ${session.project.name}` : ""}
+        <div className={dlg.head}>
+          {/* The tag is the accessible name, so its text stays "Adopt to mission"; the uppercase is
+              CSS and does not change what a screen reader or a test reads. */}
+          <span id={titleId} className={dlg.tag}>
+            Adopt to mission
+          </span>
+          <button
+            type="button"
+            className={dlg.close}
+            onClick={onClose}
+            aria-label="Close adopt dialog"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <p className={dlg.from}>
+          <span className={dlg.fromLabel}>SESSION //</span>
+          <b className={dlg.fromTitle}>
+            {engineName(session.engine).toUpperCase()} · {session.title || "(untitled)"}
+            {session.project.kind === "project" ? ` · ${session.project.name}` : ""}
+          </b>
         </p>
+        <span className={dlg.label}>Mission //</span>
         <label className={styles.searchWrap}>
           <Search size={13} aria-hidden="true" />
           <input
@@ -209,11 +230,15 @@ export function AdoptToMissionModal({
           />
         </label>
         {loadError ? (
-          <p className={base.empty} role="status" data-testid="adopt-load-error">
+          <p
+            className={`${dlg.muted} ${styles.loadError}`}
+            role="status"
+            data-testid="adopt-load-error"
+          >
             {loadError}{" "}
             <button
               type="button"
-              className={styles.button}
+              className={dlg.cancel}
               onClick={() => {
                 setLoadError(null);
                 setRows(null);
@@ -224,11 +249,11 @@ export function AdoptToMissionModal({
             </button>
           </p>
         ) : rows === null ? (
-          <p className={base.empty} role="status">
+          <p className={dlg.muted} role="status">
             Loading missions…
           </p>
         ) : rows.length === 0 ? (
-          <p className={base.empty} data-testid="adopt-empty">
+          <p className={dlg.muted} data-testid="adopt-empty">
             {debounced ? (
               "No open mission matches that search."
             ) : (
@@ -238,7 +263,7 @@ export function AdoptToMissionModal({
             )}
           </p>
         ) : (
-          <ul className={`${base.list} ${styles.list}`}>
+          <ul className={dlg.list}>
             {rows.map((m) => {
               const refusal = TERMINAL_STATES.has(m.state)
                 ? `${m.state.charAt(0).toUpperCase()}${m.state.slice(1)} — reopen it before adopting a session`
@@ -247,14 +272,14 @@ export function AdoptToMissionModal({
                 <li key={m.id}>
                   <button
                     type="button"
-                    className={`${base.option} ${styles.option}`}
+                    className={dlg.option}
                     aria-pressed={chosen === m.id}
                     disabled={refusal !== null}
                     onClick={() => setChosen(m.id)}
                     data-testid="adopt-option"
                   >
                     <span className={styles.body}>
-                      <span className={base.optName}>{m.title}</span>
+                      <span className={dlg.optName}>{m.title}</span>
                       <span className={styles.meta}>
                         {stateLabel(m)} · {m.session_keys.length}{" "}
                         {m.session_keys.length === 1 ? "session" : "sessions"} ·{" "}
@@ -270,7 +295,7 @@ export function AdoptToMissionModal({
               <li>
                 <button
                   type="button"
-                  className={`${base.option} ${styles.option} ${styles.more}`}
+                  className={`${dlg.option} ${styles.more}`}
                   onClick={loadMore}
                   disabled={loadingMore}
                 >
@@ -281,25 +306,27 @@ export function AdoptToMissionModal({
           </ul>
         )}
         {error ? (
-          <p className={styles.error} role="alert" data-testid="adopt-error">
+          <p className={dlg.error} role="alert" data-testid="adopt-error">
             {error}
           </p>
         ) : null}
-        <div className={`${base.actions} ${styles.actions}`}>
-          <button type="button" className={`${base.cancel} ${styles.button}`} onClick={onClose}>
+        <div className={dlg.actions}>
+          <button type="button" className={dlg.cancel} onClick={onClose}>
             Cancel
           </button>
           <button
             type="button"
-            className={`${styles.button} ${styles.primary}`}
+            className={dlg.go}
             onClick={() => void adopt()}
             disabled={!target || busy}
             data-testid="adopt-confirm"
           >
+            <Crosshair size={13} aria-hidden="true" />
             {busy ? "Adopting…" : "Adopt"}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

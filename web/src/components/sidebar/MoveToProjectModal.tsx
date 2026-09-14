@@ -1,18 +1,24 @@
-import { Check, FolderTree } from "lucide-react";
+import { Check, FolderTree, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../../lib/api";
 import { shortCwd } from "../../lib/format";
 import type { ProjectEntity, ProjectRef, Session } from "../../types/api";
-import styles from "./MoveToProjectModal.module.css";
+import dlg from "../HudDialog.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 
 /** Pick a project to reassign a session to — the keyboard-accessible equivalent of the map's
  *  drag-to-reassign (#424 Phase 5). Opened from the sidebar row's ⋯ menu.
  *
- *  Accessibility: `role="dialog"`, `aria-modal`, labelled by the title; focus moves to the
- *  first option on open and returns to the trigger on close; Esc cancels; clicking the backdrop
- *  cancels; each option is a real `<button>` (Tab to move, Enter/Space to choose). The current
- *  assignment is marked and choosing it is a harmless no-op (handled by the parent). */
+ *  Accessibility: `role="dialog"`, `aria-modal`, labelled by the head tag; focus moves into the
+ *  dialog on open and returns to the trigger on close; Esc, the close button and the backdrop all
+ *  cancel; each option is a real `<button>` (Tab to move, Enter/Space to choose). The current
+ *  assignment is marked and choosing it is a harmless no-op (handled by the parent).
+ *
+ *  Drawn with the Hand off design (#597) and portalled to `<body>` like Hand off (#948). Rendered
+ *  in the sidebar row it opens from, its fixed backdrop was trapped in the sidebar, which is a
+ *  containing block (backdrop-filter on desktop, the drawer's transform on a phone). Its old sheet
+ *  also named tokens that do not exist and painted their purple fallbacks. */
 export function MoveToProjectModal({
   session,
   onCancel,
@@ -96,8 +102,8 @@ export function MoveToProjectModal({
 
   const titleId = "move-to-project-title";
 
-  return (
-    <div className={styles.backdrop} onMouseDown={onCancel}>
+  return createPortal(
+    <div className={dlg.backdrop} onMouseDown={onCancel}>
       <div
         ref={dialogRef}
         // Focusable as a target, never as a tab stop — the loading and error states have no
@@ -107,25 +113,39 @@ export function MoveToProjectModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={styles.dialog}
+        className={`${dlg.dialog} ${dlg.narrow}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} className={styles.title}>
-          Move to project
-        </h3>
-        <p className={styles.path}>{session.title || shortCwd(session.cwd)}</p>
+        <div className={dlg.head}>
+          <span id={titleId} className={dlg.tag}>
+            Move to project
+          </span>
+          <button
+            type="button"
+            className={dlg.close}
+            onClick={onCancel}
+            aria-label="Close move dialog"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <p className={dlg.from}>
+          <span className={dlg.fromLabel}>SESSION //</span>
+          <b className={dlg.fromTitle}>{session.title || shortCwd(session.cwd)}</b>
+        </p>
+        <span className={dlg.label}>Project //</span>
         {error ? (
-          <p className={styles.empty}>{error}</p>
+          <p className={dlg.muted}>{error}</p>
         ) : projects === null ? (
-          <p className={styles.empty}>Loading projects…</p>
+          <p className={dlg.muted}>Loading projects…</p>
         ) : (
-          <ul className={styles.list}>
+          <ul className={dlg.list}>
             {projects.map((p, i) => (
               <li key={p.id}>
                 <button
                   ref={i === 0 ? firstRef : undefined}
                   type="button"
-                  className={styles.option}
+                  className={dlg.option}
                   aria-current={currentId === p.id ? "true" : undefined}
                   onClick={() =>
                     onMove({
@@ -138,12 +158,12 @@ export function MoveToProjectModal({
                 >
                   {p.color && (
                     <span
-                      className={styles.dot}
+                      className={dlg.dot}
                       style={{ background: p.color }}
                       aria-hidden="true"
                     />
                   )}
-                  <span className={styles.optName}>{p.name}</span>
+                  <span className={dlg.optName}>{p.name}</span>
                   {currentId === p.id && (
                     <Check size={14} aria-label="current" />
                   )}
@@ -154,33 +174,34 @@ export function MoveToProjectModal({
               <button
                 ref={projects.length === 0 ? firstRef : undefined}
                 type="button"
-                className={styles.option}
+                className={dlg.option}
                 aria-current={currentId === null ? "true" : undefined}
                 onClick={() => onMove(null)}
               >
                 <FolderTree size={14} aria-hidden="true" />
-                <span className={styles.optName}>Default project</span>
+                <span className={dlg.optName}>Default project</span>
                 {currentId === null && <Check size={14} aria-label="current" />}
               </button>
             </li>
           </ul>
         )}
         {projects?.length === 0 && !error && (
-          <p className={styles.help}>
+          <p className={dlg.help}>
             No projects yet — create one in Settings or the overview map.
           </p>
         )}
-        <div className={styles.actions}>
+        <div className={dlg.actions}>
           <button
             ref={cancelRef}
             type="button"
-            className={styles.cancel}
+            className={dlg.cancel}
             onClick={onCancel}
           >
             Cancel
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

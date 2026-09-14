@@ -977,7 +977,11 @@
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
-  font: 11px var(--font-sans, inherit);
+  /* `inherit`, which is what these controls have always rendered (#948). The old
+     `font: 11px var(--font-sans, inherit)` named a token that does not exist, and its fallback
+     made the shorthand invalid, so the whole declaration fell back to inheriting. Same for the
+     relay and question inputs and the option buttons below. */
+  font: inherit;
   letter-spacing: 0.06em;
   cursor: pointer;
 }
@@ -1011,7 +1015,7 @@
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
-  font: 12px var(--font-sans, inherit);
+  font: inherit;
 }
 
 .relayInput:focus-visible {
@@ -1239,7 +1243,7 @@
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
-  font: 12px var(--font-sans, inherit);
+  font: inherit;
   min-width: 0;
 }
 
@@ -1263,7 +1267,7 @@
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
-  font: 12px var(--font-sans, inherit);
+  font: inherit;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
