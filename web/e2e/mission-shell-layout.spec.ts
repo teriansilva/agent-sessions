@@ -7,7 +7,9 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { missionList, missionRow, mockMissions } from "./mission-console";
+import { missionList, missionRow, mockMissions,
+  flipMissionScope,
+} from "./mission-console";
 
 const T = 1_700_000_000;
 const CONFIG = {
@@ -619,7 +621,7 @@ test("the archived scope offers no create, because the server refuses one (#935)
   await page.goto("/mission");
   await expect(page.getByTestId("rail-new-mission")).toBeVisible();
 
-  await page.getByTestId("rail-scope").click();
+  await flipMissionScope(page);
   // Offering it here would advertise a mutation the backend answers 409 to.
   await expect(page.getByTestId("rail-new-mission")).toHaveCount(0);
 });
@@ -747,30 +749,24 @@ test("the mission sidebar has no empty header strip where the sort control was (
   await page.goto("/mission");
   await page.getByTestId("rail-new-mission").waitFor();
 
-  // Removing the session sort control left its 38px row rendered and empty, with a rule under
-  // it — a blank strip above the rail, which is the "weird margins" complaint this whole line of
-  // work started from. The box collapses; the sr-only landmark heading stays, because the
-  // <aside> still needs an accessible name.
+  // THE HEAD ROW IS A ROW (#948 P2). Removing the session sort control once left its 38px row
+  // rendered and EMPTY — a blank strip with a rule under it, the "weird margins" complaint — so
+  // #937 collapsed it. #948 gives the mission route the same 38px head the sessions sidebar has,
+  // carrying the MISSIONS tag and the rail's counts. What must never come back is the empty strip,
+  // so the row has to hold visible content, not just height.
   const head = await page.evaluate(() => {
     const el = document.querySelector(".sidebar-head") as HTMLElement;
-    return {
-      h: el.getBoundingClientRect().height,
-      name: el.textContent?.trim(),
-    };
+    return { h: el.getBoundingClientRect().height };
   });
-  expect(head.h).toBeLessThan(4);
-  expect(head.name).toBe("Missions");
+  expect(head.h).toBeGreaterThanOrEqual(36);
+  await expect(page.locator(".sidebar-head [data-testid='rail-counts']")).toBeVisible();
+  await expect(page.locator(".sidebar-head [data-testid='rail-counts']")).toContainText(/\d+ active/);
 
   // And the primary action starts at the very top of the sidebar body.
   const [slot, create] = [
     (await page.locator(".sidebarBody").boundingBox())!,
     (await page.getByTestId("rail-new-mission").boundingBox())!,
   ];
-  await expect(
-    page
-      .getByRole("navigation", { name: "Missions" })
-      .getByText("Missions", { exact: true }),
-  ).toBeVisible();
   expect(create.y - slot.y).toBeLessThan(56);
 });
 

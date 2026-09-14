@@ -7,7 +7,7 @@
  * untouched. That is the point: a Tier-B spec whose assertion changes during this migration is a
  * red flag, not a migration.
  */
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 export const EMPTY_MISSIONS = {
   missions: [],
@@ -233,4 +233,20 @@ export async function clearUntrackedFilters(page: Page) {
     .click();
   if (await page.getByRole("dialog").count())
     await page.keyboard.press("Escape");
+}
+
+/** Flip the rail between its Active and Archived scopes (#948 P2).
+ *
+ *  The scope used to be one toggle button (`rail-scope`, "Show archived" / "Show active"); it is
+ *  now the sessions sidebar's Active | Archived tab pair. Specs that flipped the scope keep their
+ *  meaning through this: click whichever tab is not selected, on the copy that is on screen. */
+export async function flipMissionScope(page: Page): Promise<void> {
+  const archived = page.locator('[data-testid="rail-scope-archived"]:visible').first();
+  const active = page.locator('[data-testid="rail-scope-active"]:visible').first();
+  const target = (await archived.getAttribute("aria-selected")) === "true" ? active : archived;
+  await target.click();
+  // WAIT FOR THE FLIP TO LAND. The decision above reads the tab state NOW, so two flips in a row —
+  // or a flip right after something else switched the scope — would otherwise read a state that
+  // has not rendered yet and click the tab that is already on its way to being selected.
+  await expect(target).toHaveAttribute("aria-selected", "true");
 }

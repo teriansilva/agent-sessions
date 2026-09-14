@@ -1,4 +1,6 @@
-import { openMissionConversation } from "./mission-console";
+import { openMissionConversation,
+  flipMissionScope,
+} from "./mission-console";
 import { openMissionDetails } from "./mission-console";
 /** The operator's controls, in a real browser (#889).
  *
@@ -154,7 +156,7 @@ async function closeRail(page: Page) {
 async function toggleScope(page: Page) {
   await ready(page);
   await openMissionRail(page);
-  await page.locator('[data-testid="rail-scope"]:visible').click();
+  await flipMissionScope(page);
   await closeRail(page);
 }
 
@@ -1558,7 +1560,7 @@ test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own
   await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
-  await page.locator('[data-testid="rail-scope"]:visible').first().click();
+  await flipMissionScope(page);
   await railRows(page).filter({ hasText: "Shelved" }).click();
   await closeRail(page);
 
@@ -1577,8 +1579,16 @@ test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own
   // …and the other one asks for the relaunch, explicitly. Reached from the Archived rail again:
   // a successful unarchive now lands the operator in the scope the mission moved INTO, which is
   // its own test below — this one is about the two choices, so it goes back and presses the other.
+  //
+  // WAIT FOR THAT LANDING before flipping. `flipMissionScope` reads which tab is selected NOW; on
+  // desktop `openMissionRail` is a no-op, so it could read Archived before the unarchive's scope
+  // switch had rendered, "flip" to Active, and the switch then left the rail on an Active list with
+  // no Shelved row in it.
+  await expect(
+    page.locator('[data-testid="rail-scope-active"]:visible').first(),
+  ).toHaveAttribute("aria-selected", "true");
   await openMissionRail(page);
-  await page.locator('[data-testid="rail-scope"]:visible').first().click();
+  await flipMissionScope(page);
   await railRows(page).filter({ hasText: "Shelved" }).click();
   await closeRail(page);
   await page.getByTestId("mission-unarchive").click();
@@ -1781,8 +1791,8 @@ test("a stale PAGINATION cleanup cannot unlock a newer request", async ({
   await expect.poll(() => pageCalls).toBe(1);
 
   // The scope round-trip, which returns `archivedRef` to exactly what A1 captured.
-  await page.locator('[data-testid="rail-scope"]:visible').first().click();
-  await page.locator('[data-testid="rail-scope"]:visible').first().click();
+  await flipMissionScope(page);
+  await flipMissionScope(page);
   await expect
     .poll(async () =>
       page.locator('[data-testid="rail-mission"]:visible').count(),
@@ -1893,10 +1903,10 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
   await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
-  await page.locator('[data-testid="rail-scope"]:visible').first().click();
+  await flipMissionScope(page);
   await expect(
-    page.locator('[data-testid="rail-scope"]:visible').first(),
-  ).toHaveText("Show active");
+    page.locator('[data-testid="rail-scope-archived"]:visible').first(),
+  ).toHaveAttribute("aria-selected", "true");
   await railRows(page).filter({ hasText: "Shelved" }).click();
   await closeRail(page);
 
@@ -1905,9 +1915,9 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
 
   // THE SCOPE ON SCREEN IS ACTIVE. The toggle offers the way back to Archived, which it only
   // does from the active rail.
-  const scope = page.locator('[data-testid="rail-scope"]:visible').first();
+  const scope = page.locator('[data-testid="rail-scope-active"]:visible').first();
   await openMissionRail(page);
-  await expect(scope).toHaveText("Show archived");
+  await expect(scope).toHaveAttribute("aria-selected", "true");
   // …and the ACTIVE rail is what was read for it, carrying the restored row.
   await expect(railRows(page).filter({ hasText: "Shelved" })).toHaveCount(1);
   expect(scopes.at(-1)).toBe("active");

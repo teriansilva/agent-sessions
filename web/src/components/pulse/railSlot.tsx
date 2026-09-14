@@ -21,12 +21,15 @@ import { createContext, useContext } from "react";
 export interface MissionRailSlot {
   /** The element the mission rail should portal into, or `null` to render it in place. */
   el: HTMLElement | null;
+  /** The shell's sidebar HEAD row (#948 P2): the rail's counts render here, in the same 38px row
+   *  the sessions sidebar uses for its ORDER control. `null` renders them in place. */
+  headEl: HTMLElement | null;
   /** Close the surface the slot lives in, if it is one that closes. A no-op for a docked column,
    *  so the console can call it unconditionally after a selection. */
   dismiss: () => void;
 }
 
-const NONE: MissionRailSlot = { el: null, dismiss: () => {} };
+const NONE: MissionRailSlot = { el: null, headEl: null, dismiss: () => {} };
 
 const Ctx = createContext<MissionRailSlot>(NONE);
 

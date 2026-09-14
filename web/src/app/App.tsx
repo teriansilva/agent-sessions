@@ -238,6 +238,8 @@ function Layout() {
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
    *  portal needs and avoids setting state from inside an effect. */
   const [railSlotEl, setRailSlotEl] = useState<HTMLElement | null>(null);
+  /** The head-row slot beside it (#948 P2): where the rail's counts render. */
+  const [railHeadEl, setRailHeadEl] = useState<HTMLElement | null>(null);
 
   /** THE MOBILE DRAWER IS A MODAL, and it owes the whole contract (#940).
    *
@@ -298,8 +300,8 @@ function Layout() {
     if (isMobile) setNavOpen(false);
   }, [isMobile]);
   const railSlot = useMemo(
-    () => ({ el: railSlotEl, dismiss: dismissRail }),
-    [railSlotEl, dismissRail],
+    () => ({ el: railSlotEl, headEl: railHeadEl, dismiss: dismissRail }),
+    [railSlotEl, dismissRail, railHeadEl],
   );
 
   // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
@@ -495,7 +497,22 @@ function Layout() {
                 re-sort the operator's SESSION list. An active control for the wrong collection
                 is worse than a stale label. Missions have their own ordering and their own scope
                 switch inside the rail; when they want an order control it will be theirs. */}
-            {railInSidebar ? null : (
+            {railInSidebar ? (
+              /* THE HEAD ROW IS A ROW AGAIN (#948 P2). It collapsed to 0px when the ORDER control
+                 stood down (#937), which left the mission rail without the 38px head the sessions
+                 sidebar has. The visible tag is presentational — the sr-only heading above already
+                 names the landmark — and the rail portals its counts into the slot beside it. */
+              <>
+                <span className="hud-tag" aria-hidden="true">
+                  Missions
+                </span>
+                <span
+                  className="missionHeadSlot"
+                  ref={setRailHeadEl}
+                  data-testid="mission-head-slot"
+                />
+              </>
+            ) : (
               <>
                 <span className="hud-tag" id="list-order-label">
                   Order

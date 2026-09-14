@@ -78,3 +78,15 @@
   border-color: transparent;
   font-weight: 600;
 }
+
+/* TOUCH FLOOR (#948 P2, docs/design.md §8). The mission rail wears these classes too, and it used to
+ * hold every control at 44px at every width. Aligning the two sidebars must not shrink a touch
+ * target, so BOTH get the floor wherever a finger is the pointer; desktop keeps these metrics. */
+@media (pointer: coarse), (max-width: 800px) {
+  .search,
+  .selects select,
+  .clear,
+  .tabs button {
+    min-height: 44px;
+  }
+}

@@ -1,4 +1,6 @@
-import { openMissionConversation } from "./mission-console";
+import { openMissionConversation,
+  flipMissionScope,
+} from "./mission-console";
 import { openMissionDetails } from "./mission-console";
 /** MISSION CONTROL's own browser gates (#878).
  *
@@ -489,7 +491,7 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       // exactly the shape a new control slips through in.
       await page.keyboard.press("Escape");
       await openMissionRail(page);
-      await page.locator('[data-testid="rail-scope"]:visible').first().click();
+      await flipMissionScope(page);
       await page
         .locator('[data-testid="rail-mission"]:visible')
         .first()
@@ -1025,7 +1027,7 @@ test("archived missions are reachable, and refuse adoption while shown", async (
     "Kimi transcript adapter",
   );
 
-  await page.getByTestId("rail-scope").click();
+  await flipMissionScope(page);
   await expect(page.getByTestId("rail-mission")).toHaveCount(1);
   await expect(page.getByTestId("rail-mission")).toContainText(
     "Shipped last month",
@@ -1038,7 +1040,7 @@ test("archived missions are reachable, and refuse adoption while shown", async (
   await expect(adopt).toHaveAttribute("title", /unarchive/i);
 
   // …and back, which is the half a one-way filter would have shipped broken.
-  await page.getByTestId("rail-scope").click();
+  await flipMissionScope(page);
   await expect(page.getByTestId("rail-mission")).toContainText(
     "Kimi transcript adapter",
   );
@@ -1155,7 +1157,7 @@ test("a page still in flight cannot land in the scope the operator switched to",
   await page.getByTestId("rail-load-more").click();
 
   // …switch scope while it is in flight, and let the archived rail settle.
-  await page.getByTestId("rail-scope").click();
+  await flipMissionScope(page);
   await expect(page.getByTestId("rail-mission")).toHaveCount(1);
   await expect(page.getByTestId("rail-mission")).toContainText(
     "Shipped last month",

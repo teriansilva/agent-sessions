@@ -44,86 +44,6 @@
   }
 }
 
-.railGroup {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  overflow-wrap: anywhere;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  padding: 12px 14px 6px;
-}
-
-/* The archived-scope switch. It sits in the group header rather than in the list because it
-   changes WHICH list is shown, not which rows within one. 44px is the touch floor the geometry
-   inventory measures against; the negative margin keeps the header's own optical height while
-   the hit area stays full-size. */
-.scope {
-  flex: none;
-  min-height: 44px;
-  margin: -12px 0;
-  padding: 0 8px;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
-  cursor: pointer;
-}
-
-.scope:hover,
-.scope:focus-visible {
-  color: var(--text-1);
-}
-
-.railRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-  /* 44px floor — the geometry inventory measures EVERY interactive control, not a sample. */
-  min-height: 44px;
-  padding: 8px 14px;
-  border: 0;
-  border-left: 3px solid transparent;
-  background: transparent;
-  color: var(--text-1);
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-}
-.railRow:hover {
-  background: var(--row-hover);
-}
-.railRow:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.railRowOn {
-  background: var(--row-hover);
-  /* Selection is an AFFORDANCE, so it may use the brand accent. */
-  border-left-color: var(--accent);
-}
-
-.railTitle {
-  display: block;
-  font-size: 0.86rem;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-.railMeta {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--text-3);
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-}
-
 /* The state dot. Semantic tokens only. */
 .dot {
   flex: 0 0 auto;
@@ -800,29 +720,6 @@
   background: var(--row-hover);
 }
 
-/* The rail's primary action (#935), sized and placed to match the sessions sidebar's
- * "+ New session" — the two sections are siblings and should offer the same shape of verb.
- * Accent fill, dark ink on it (amber is light), zero radius per docs/design.md. */
-.newMission {
-  display: block;
-  width: 100%;
-  margin: 0 0 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--accent);
-  border-radius: 0;
-  background: var(--accent);
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  text-align: left;
-  min-height: 44px; /* touch target (docs/design.md §8) — the rail is a drawer on a phone */
-}
-.newMission:hover {
-  background: color-mix(in srgb, var(--accent) 88%, var(--bg-0));
-}
-
 .newMissionRow {
   display: flex;
   gap: 8px;
@@ -1494,85 +1391,18 @@
 }
 .rail {
   overflow: hidden;
-  padding: 16px 0 0;
+  padding: 0;
   border: 0;
 }
-.railHeading {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 16px 12px;
-  font: 600 13px var(--font-mono);
-  text-transform: uppercase;
-}
-.railHeading small {
-  color: var(--text-2);
-  font-size: 10px;
-  font-weight: 400;
-}
-.rail .newMission {
-  width: calc(100% - 32px);
-  margin: 0 16px 16px;
-  flex: none;
-}
-.railFilters {
-  padding: 0 16px;
-  display: grid;
-  gap: 12px;
-}
-.railFilters label {
-  display: grid;
-  gap: 6px;
-  font: 10px var(--font-mono);
-  color: var(--text-2);
-  text-transform: uppercase;
-}
-.railFilters input,
-.railFilters select,
-.railFilters button {
-  width: 100%;
-  min-width: 0;
-  min-height: 44px;
-  padding: 8px 10px;
-  color: var(--text-1);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 0;
-  font: 12px system-ui;
-}
-.railGroup {
-  flex: none;
-  padding: 6px 16px;
-  min-height: 52px;
-}
+
 .railScroll {
   overflow-y: auto;
   min-height: 0;
   flex: 1;
   scrollbar-gutter: stable;
-  padding: 0 8px;
+  padding: 0;
 }
-.railRow {
-  flex: none;
-  padding: 14px 10px;
-  border-bottom: 1px solid var(--line);
-}
-.railTitle {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.5;
-}
-.railMeta {
-  margin-top: 6px;
-  color: var(--text-2);
-  font-size: 11px;
-  line-height: 1.7;
-}
-.railState {
-  display: block;
-  text-transform: uppercase;
-  font: 10px var(--font-mono);
-  margin-top: 6px;
-}
+
 .rail .dot {
   border-radius: 50%;
 }
@@ -1836,9 +1666,6 @@
   padding: 16px 0;
 }
 
-.railFilters {
-  flex: none;
-}
 @media (max-height: 680px) {
   .rail {
     overflow-y: auto;
@@ -1855,4 +1682,40 @@
 .railWithSessions .railScroll {
   flex: none;
   overflow: visible;
+}
+
+/* #948 P2 — a mission row is a <button> wearing the SESSION list's `.row` / `.active` classes, and
+   "+ New mission" is a <button> wearing `.newBtn` (a link in the sessions sidebar). These reset only
+   what a button brings with it; every visible value comes from SessionList.module.css. `font`
+   is not reset as a shorthand, because that would also reset the weight `.newBtn` sets. */
+.railButton,
+.railButtonReset {
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+.railButtonReset {
+  border-left: 0;
+}
+.railButton {
+  width: 100%;
+  text-align: left;
+  background-color: transparent;
+}
+/* The attribute selector outranks the reset above, so the selected row keeps `.active`'s ground. */
+.railButton[aria-current="true"] {
+  background-color: var(--row-hover);
+}
+/* Title spans need a block box for `.title`'s ellipsis to apply inside a button. */
+.railText {
+  display: block;
+}
+/* The session row's LED is 6px; the mission state dot matches it in the rail. */
+.railDot {
+  width: 6px;
+  height: 6px;
 }

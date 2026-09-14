@@ -1,4 +1,10 @@
-import styles from "./mission.module.css";
+import filterStyles from "../sidebar/Filters.module.css";
+
+/** The mission rail's search + project/state filters, drawn with the SESSIONS filter bar's own
+ *  classes (#948 P2): one search input, then the two selects side by side with Clear beside
+ *  them. The visible labels went with the old stacked layout; every control keeps its
+ *  `aria-label`, which is what a screen reader and the specs address them by. The bar wrapper
+ *  itself is the rail's, because the Active | Archived tabs live in the same bar. */
 
 export interface MissionFiltersValue {
   q: string;
@@ -16,17 +22,18 @@ export function MissionFilters({
   facets: { projects: string[]; states: string[] };
   projectNames: Record<string, string>;
 }) {
+  const active = !!(value.q || value.project || value.state);
   return (
-    <div className={styles.railFilters}>
+    <>
       <input
+        className={filterStyles.search}
         type="search"
         aria-label="Search missions"
         placeholder="Search missions…"
         value={value.q}
         onChange={(e) => onChange({ ...value, q: e.target.value })}
       />
-      <label>
-        Project
+      <div className={filterStyles.selects}>
         <select
           aria-label="Filter missions by project"
           value={value.project}
@@ -44,9 +51,6 @@ export function MissionFilters({
             </option>
           ))}
         </select>
-      </label>
-      <label>
-        State
         <select
           aria-label="Filter missions by state"
           value={value.state}
@@ -66,15 +70,17 @@ export function MissionFilters({
             </option>
           ))}
         </select>
-      </label>
-      {value.q || value.project || value.state ? (
-        <button
-          type="button"
-          onClick={() => onChange({ q: "", project: "", state: "" })}
-        >
-          Clear mission filters
-        </button>
-      ) : null}
-    </div>
+        {active ? (
+          <button
+            type="button"
+            className={filterStyles.clear}
+            onClick={() => onChange({ q: "", project: "", state: "" })}
+            aria-label="Clear mission filters"
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
+    </>
   );
 }

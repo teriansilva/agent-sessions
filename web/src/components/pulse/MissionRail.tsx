@@ -1,12 +1,22 @@
 /** The rail: every mission, plus the live sessions no mission owns yet (#878).
  *
+ * It is drawn with the SESSIONS sidebar's own classes (#948 P2) — the `+ New session` button,
+ * the filter bar and its Active | Archived tabs, and the row anatomy (LED, one title line, one
+ * mono meta line). The mission rail used to restate every one of those values in its own rules,
+ * and restating them is exactly how the two sidebars drifted apart; sharing the classes is what
+ * keeps them aligned. Only what a `<button>` brings with it is reset locally.
+ *
  * The UNTRACKED group is not a migration ramp that goes away — it is the permanent home for work
  * started from the sidebar. Deleting the card grid without it would orphan every live session
  * that nobody has adopted, which is the one way this phase could lose something real.
  */
-import { relTime } from "../../lib/format";
+import { Plus } from "lucide-react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { relTime } from "../../lib/format";
 import type { MissionListRow, PulseCard } from "../../types/api";
+import filterStyles from "../sidebar/Filters.module.css";
+import listStyles from "../sidebar/SessionList.module.css";
 
 import styles from "./mission.module.css";
 
@@ -70,13 +80,14 @@ export interface MissionRailProps {
    *  every finished mission the moment it is put away. */
   archived?: boolean;
   onScope?: (archived: boolean) => void;
-  /** Start a new mission from the rail (#935).
-   *
-   *  The sessions sidebar leads with "+ New session"; this is its counterpart, so the two
-   *  sections offer the same shape of action rather than one of them hiding its primary verb in
-   *  the thread. It does not create anything by itself — it puts the composer into NEW MISSION
-   *  mode and focuses it, which is where the name and the brief are written. */
+  /** Start a new mission from the rail (#935). The sessions sidebar leads with "+ New session";
+   *  this is its counterpart, and since #948 it is literally the same button class. It does not
+   *  create anything by itself — it opens the place where the brief is written. */
   onNewMission?: () => void;
+  /** The shell's head-row slot (#948 P2). The counts render there, in the same 38px row the
+   *  sessions sidebar uses for its ORDER control. `null` renders an equivalent row in place — the
+   *  standalone fallback for tests and for any mount without the shell. */
+  headEl?: HTMLElement | null;
 }
 
 export function MissionRail({
@@ -99,22 +110,46 @@ export function MissionRail({
   loading = false,
   filtered = false,
   projectNames = {},
+  headEl = null,
 }: MissionRailProps) {
+  // Counted over the LOADED rows, like the rail's own dots — a count of what is on screen.
+  const needsYou = missions.filter((m) => m.needs_you).length;
+  const counts = (
+    <span className="hud-tag" data-testid="rail-counts">
+      {loading ? (
+        "Loading…"
+      ) : storeError && !missions.length ? (
+        "Unavailable"
+      ) : (
+        <>
+          <b className="num">{total}</b> {archived ? "archived" : "active"}
+          {needsYou ? (
+            <>
+              {" · "}
+              <b className="num">{needsYou}</b> needs you
+            </>
+          ) : null}
+        </>
+      )}
+    </span>
+  );
+
+  const rowClass = (on: boolean) =>
+    `${listStyles.row} ${styles.railButton} ${on ? listStyles.active : ""}`;
+
   return (
     <nav
       className={`${styles.rail} ${selectedId === UNTRACKED_VIEW ? styles.railWithSessions : ""}`}
       aria-label="Missions"
     >
-      <div className={styles.railHeading}>
-        Missions{" "}
-        <small>
-          {loading
-            ? "Loading…"
-            : storeError && !missions.length
-              ? "Unavailable"
-              : `${total} ${archived ? "archived" : "active"}`}
-        </small>
-      </div>
+      {headEl ? (
+        createPortal(counts, headEl)
+      ) : (
+        <div className="sidebar-head">
+          <span className="hud-tag">Missions</span>
+          {counts}
+        </div>
+      )}
       {storeError ? (
         // A store that would not answer is NOT "you have no missions". Saying the second when
         // the first is true is the lie this notice exists to prevent.
@@ -141,47 +176,64 @@ export function MissionRail({
         </div>
       ) : null}
 
-      {/* The primary action, first — the same place the sessions sidebar puts "+ New session".
-          Hidden in the archived scope, where the server refuses ordinary mutations anyway and
-          offering a create would advertise something the backend will not honour. */}
+      {/* The primary action, first — the sessions sidebar's own button. Hidden in the archived
+          scope, where the server refuses ordinary mutations anyway and offering a create would
+          advertise something the backend will not honour. */}
       {onNewMission && !archived ? (
         <button
           type="button"
-          className={styles.newMission}
+          className={`${listStyles.newBtn} ${styles.railButtonReset} shine`}
           onClick={onNewMission}
           data-testid="rail-new-mission"
         >
-          + New mission
+          <Plus size={16} />
+          New mission
         </button>
       ) : null}
 
-      {filters}
-      <div className={styles.railGroup}>
-        <span>{archived ? "Archived" : "Missions"}</span>
-        {/* A scope SWITCH, not a filter chip: the two scopes are disjoint (the server's
-            `archived` flag partitions the set), so the rail shows one or the other and says
-            which. `aria-pressed` carries the state to a screen reader, which a styled class
-            alone does not. */}
+      <div className={filterStyles.bar}>
+        {filters}
+        {/* The scope, as the sessions sidebar's Active | Archived tabs. The two scopes are
+            disjoint (the server's `archived` flag partitions the set), which is exactly what a
+            tab pair expresses — and `aria-selected` carries it to a screen reader. */}
         {onScope ? (
-          <button
-            type="button"
-            className={styles.scope}
-            aria-pressed={archived}
-            onClick={() => onScope(!archived)}
-            data-testid="rail-scope"
+          <div
+            className={filterStyles.tabs}
+            role="tablist"
+            aria-label="Mission scope"
           >
-            {archived ? "Show active" : "Show archived"}
-          </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!archived}
+              className={!archived ? filterStyles.on : ""}
+              onClick={() => archived && onScope(false)}
+              data-testid="rail-scope-active"
+            >
+              Active
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={archived}
+              className={archived ? filterStyles.on : ""}
+              onClick={() => !archived && onScope(true)}
+              data-testid="rail-scope-archived"
+            >
+              Archived
+            </button>
+          </div>
         ) : null}
       </div>
+
       <div className={styles.railScroll} data-testid="mission-list-scroll">
         {loading ? (
-          <div className={styles.empty} role="status">
+          <div className={listStyles.empty} role="status">
             Loading missions…
           </div>
         ) : null}
         {missions.length === 0 && !storeError && !loading ? (
-          <div className={styles.empty} data-testid="rail-no-missions">
+          <div className={listStyles.empty} data-testid="rail-no-missions">
             {filtered
               ? "No missions match these filters."
               : archived
@@ -190,77 +242,83 @@ export function MissionRail({
           </div>
         ) : null}
         {missions.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            className={`${styles.railRow} ${m.id === selectedId ? styles.railRowOn : ""}`}
-            aria-current={m.id === selectedId ? "true" : undefined}
-            onClick={() => onSelect(m.id)}
-            data-testid="rail-mission"
-          >
-            <span
-              className={`${styles.dot} ${dotClass(m)}`}
-              role="img"
-              aria-label={m.needs_you ? "Needs you" : m.state}
-            />
-            <span>
-              <span className={styles.railTitle}>{m.title}</span>
-              <span className={styles.railMeta}>
-                {m.project_id
-                  ? projectNames[m.project_id] ||
-                    (m.cwd?.split("/").filter(Boolean).at(-1) ??
-                      "Unavailable project")
-                  : "No project"}{" "}
-                · {m.session_keys.length}{" "}
-                {m.session_keys.length === 1 ? "session" : "sessions"}
-                <span className={styles.railState}>
-                  {stateLabel(m)}
-                  {m.archived_at != null ? " · archived" : ""} ·{" "}
-                  {relTime(m.updated_at)}
+          <div key={m.id} className={listStyles.rowWrap}>
+            <button
+              type="button"
+              className={rowClass(m.id === selectedId)}
+              aria-current={m.id === selectedId ? "true" : undefined}
+              onClick={() => onSelect(m.id)}
+              data-testid="rail-mission"
+            >
+              <span
+                className={`${listStyles.led} ${styles.dot} ${styles.railDot} ${dotClass(m)}`}
+                role="img"
+                aria-label={m.needs_you ? "Needs you" : m.state}
+              />
+              <span className={listStyles.body}>
+                <span className={`${listStyles.title} ${styles.railText}`}>
+                  {m.title}
+                </span>
+                <span className={listStyles.meta}>
+                  <span className={listStyles.engineTag}>{stateLabel(m)}</span>
+                  <span className={listStyles.metaText}>
+                    {" · "}
+                    {m.project_id
+                      ? projectNames[m.project_id] ||
+                        (m.cwd?.split("/").filter(Boolean).at(-1) ??
+                          "Unavailable project")
+                      : "No project"}
+                    {" · "}
+                    {m.session_keys.length}{" "}
+                    {m.session_keys.length === 1 ? "session" : "sessions"}
+                    {m.archived_at != null ? " · archived" : ""}
+                    {" · "}
+                    {relTime(m.updated_at)}
+                  </span>
                 </span>
               </span>
-            </span>
-          </button>
+            </button>
+          </div>
         ))}
 
         {needsReRead && onReRead ? (
-          <button
-            type="button"
-            className={styles.more}
-            onClick={onReRead}
-            disabled={loadingMore}
-            data-testid="rail-re-read"
-          >
-            This list was read in pages — re-read it
-          </button>
+          <div className={listStyles.more}>
+            <button
+              type="button"
+              onClick={onReRead}
+              disabled={loadingMore}
+              data-testid="rail-re-read"
+            >
+              This list was read in pages — re-read it
+            </button>
+          </div>
         ) : null}
         {hasMore ? (
-          <button
-            type="button"
-            className={styles.more}
-            onClick={onLoadMore}
-            disabled={loadingMore}
-            data-testid="rail-load-more"
-          >
-            {loadingMore
-              ? "Loading…"
-              : `Load more — ${missions.length} of ${total}`}
-          </button>
+          <div className={listStyles.more}>
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              data-testid="rail-load-more"
+            >
+              {loadingMore
+                ? "Loading…"
+                : `Load more — ${missions.length} of ${total}`}
+            </button>
+          </div>
         ) : null}
       </div>
       {untracked.length > 0 ? (
-        <>
+        <div className={listStyles.rowWrap}>
           <button
             type="button"
-            className={`${styles.railRow} ${
-              selectedId === UNTRACKED_VIEW ? styles.railRowOn : ""
-            }`}
+            className={rowClass(selectedId === UNTRACKED_VIEW)}
             aria-current={selectedId === UNTRACKED_VIEW ? "true" : undefined}
             onClick={() => onSelect(UNTRACKED_VIEW)}
             data-testid="rail-untracked-view"
           >
             <span
-              className={`${styles.dot} ${
+              className={`${listStyles.led} ${styles.dot} ${styles.railDot} ${
                 untracked.some((c) => c.pending_action)
                   ? styles.dotNeedsYou
                   : untracked.some((c) => c.live)
@@ -269,14 +327,16 @@ export function MissionRail({
               }`}
               aria-hidden="true"
             />
-            <span>
-              <span className={styles.railTitle}>
+            <span className={listStyles.body}>
+              <span className={`${listStyles.title} ${styles.railText}`}>
                 Sessions without a mission · {untracked.length}
               </span>
-              <span className={styles.railMeta}>
-                {untracked.filter((c) => c.pending_action).length
-                  ? `${untracked.filter((c) => c.pending_action).length} waiting on you`
-                  : "live sessions with no mission"}
+              <span className={listStyles.meta}>
+                <span className={listStyles.metaText}>
+                  {untracked.filter((c) => c.pending_action).length
+                    ? `${untracked.filter((c) => c.pending_action).length} waiting on you`
+                    : "live sessions with no mission"}
+                </span>
               </span>
             </span>
           </button>
@@ -285,7 +345,7 @@ export function MissionRail({
               both put the same title in two places — which is duplication on a desktop and, on a
               phone where the rail is a DRAWER, put half of it somewhere the operator cannot see
               without opening it. One navigation row, and the sessions live in the view. */}
-        </>
+        </div>
       ) : null}
       {selectedId === UNTRACKED_VIEW ? untrackedFilters : null}
     </nav>

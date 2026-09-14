@@ -170,28 +170,12 @@
   border-bottom: 1px solid var(--line);
 }
 
-/* WITH THE SORT CONTROL GONE, THIS ROW HAS NOTHING VISIBLE IN IT (#937 review 1, finding 3).
- * Its only remaining child is the `sr-only` landmark heading, so on the mission route it was a
- * 38px empty strip with a rule under it — the "weird margins" the operator complained about in
- * the first place. Collapse the box and keep the heading, which the <aside> still needs for its
- * accessible name. */
-.sidebar-head.isMissionSection {
-  height: 0;
-  padding: 0;
-  border-bottom: 0;
-}
-/* …UNLESS IT IS HOLDING THE DRAWER'S CLOSE CONTROL (#940).
- *
- * The collapse above is right when the row's only child is the `sr-only` heading. In drawer mode
- * it also holds the close button — the one control that can dismiss the panel, since the
- * hamburger that opened it is in the now-inert header — and a 44px control inside a 0px row is
- * present, focusable and reported visible while being impossible to TAP. That is a worse failure
- * than the empty strip this collapse exists to remove, because it looks fine in every assertion
- * short of a real click. */
-.sidebar-head.isMissionSection.hasDrawerClose {
-  height: 38px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line);
+/* The mission route's head row (#948 P2): "MISSIONS" plus the rail's counts, portalled into
+ * `.missionHeadSlot`, in the same 38px row the sessions ORDER control uses. It used to collapse to
+ * 0px once that control stood down (#937), which is exactly the misalignment #948 removes; with the
+ * drawer's close button present the row simply holds three children. */
+.missionHeadSlot {
+  margin-left: auto;
 }
 .hud-h {
   margin: 0;

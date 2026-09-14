@@ -1831,6 +1831,7 @@ export function MissionConsole({
 
   const rail = (
     <MissionRail
+      headEl={railSlotEl ? railSlot.headEl : null}
       missions={missions}
       untracked={allCards.filter(
         (c) => !c.mission_id && !heldExtra.includes(c.id),

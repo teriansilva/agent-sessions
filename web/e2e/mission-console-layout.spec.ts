@@ -1,4 +1,6 @@
-import { openMissionConversation } from "./mission-console";
+import { openMissionConversation,
+  flipMissionScope,
+} from "./mission-console";
 /** #929 — the Pulse shell is gone, and the two defects its removal exposed are closed.
  *
  *  These are real-browser tests because both findings are LAYOUT facts a DOM emulator cannot
@@ -315,11 +317,11 @@ test.describe("#930 review 1 — the console under a slow store", () => {
     await expect(page.getByTestId("first-run")).toBeVisible();
 
     // Into the archived scope, which answers; then back, with Active parked.
-    const scope = page.getByTestId("rail-scope"); // "Show archived" / "Show active"
-    await scope.click();
+    // Flip to Archived, then back to Active (#948 P2: the scope is a tab pair now).
+    await flipMissionScope(page);
     await expect(page.getByTestId("first-run")).toHaveCount(0);
     holdActive = true;
-    await scope.click();
+    await flipMissionScope(page);
 
     // RED before the fix: the invitation is already back, on a read that has not happened.
     await expect(page.getByTestId("first-run")).toHaveCount(0);
