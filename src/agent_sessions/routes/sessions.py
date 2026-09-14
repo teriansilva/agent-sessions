@@ -303,6 +303,30 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "handoff_to": m.handoff_to,
         }
 
+    def _membership_index() -> dict[str, dict] | None:
+        """Which mission holds each session (#948), or ``None`` when the store could not be read.
+
+        ``None`` is not "no memberships". Rows then carry NO ``mission`` key at all, which the
+        client reads as unknown and offers no adopt/open control for — the same tri-state
+        ``/api/pulse`` stamps on its cards. A missions-store failure must never take the session
+        list down with it, so this is fail-soft where the reservation paths are fail-closed: it
+        only decides what is displayed, never what may be mutated.
+        """
+        try:
+            return missions.active_membership_rows()
+        except Exception:
+            return None
+
+    def _stamp_mission(row: dict, index: dict[str, dict] | None, aliases: dict) -> None:
+        """``row["mission"]``: the holding mission's ``{id, title, state}``, or ``None``.
+
+        Left ABSENT when the store could not be read. A membership may be recorded under the
+        logical key or the physical one (an opencode placeholder), so both are consulted."""
+        if index is None:
+            return
+        key = row["id"]
+        row["mission"] = index.get(key) or index.get(engines.physical_key(key, aliases))
+
     @app.get("/api/sessions")
     async def list_sessions(
         _: str = Depends(logged_in),
@@ -312,6 +336,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         q: str | None = Query(None),
         project: str | None = Query(None),
         engine: str | None = Query(None),
+        mission: str | None = Query(None),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
@@ -329,6 +354,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 q=q,
                 project=project,
                 engine=engine,
+                mission=mission,
             )
 
         # #652 measurement probe: time the whole request-serving pipeline (cached scan +
@@ -345,6 +371,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         q: str | None,
         project: str | None,
         engine: str | None,
+        mission: str | None = None,
     ) -> dict:
         meta_index = metadata.load()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
@@ -388,6 +415,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             for row in [_row(s, _meta_for(s), project_index)]
             if keep(row["cwd"], row["project"], archived=row["archived"], want_archived=archived)
         ]
+        # Which mission holds each row (#948). Read ONCE per request, after scoping and before
+        # filtering, so the stamp, the filter and the facet all describe the same answer.
+        memberships = _membership_index()
+        for r in scoped:
+            _stamp_mission(r, memberships, aliases)
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
         # archived-scoped set, BEFORE q/project/engine filtering — so the dropdown lists every
@@ -436,10 +468,40 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "projects": project_facets,
             "engines": sorted({r["engine"] for r in scoped}),
         }
+        # Mission facets (#948): computed over the SAME unfiltered scoped set as the project and
+        # agent facets, so the dropdown keeps every option however the list is filtered. Only
+        # missions holding at least one scoped row are listed; `no_mission` counts the rest.
+        # Omitted when the store could not be read — an empty list would read as "no missions".
+        if memberships is not None:
+            by_mission: dict[str, dict] = {}
+            no_mission = 0
+            for r in scoped:
+                ref = r.get("mission")
+                if ref is None:
+                    no_mission += 1
+                    continue
+                by_mission.setdefault(ref["id"], {**ref, "count": 0})["count"] += 1
+            facets["missions"] = sorted(
+                by_mission.values(), key=lambda m: (m["title"].casefold(), m["id"])
+            )
+            facets["no_mission"] = no_mission
         # Normalize filters; empty / whitespace-only means "no filter".
         q_norm = (q or "").strip().casefold()
         project_f = (project or "").strip() or None
         engine_f = (engine or "").strip() or None
+        # `none` = held by no mission. A mission id is `msn_<hex>`, so it cannot collide.
+        mission_f = (mission or "").strip() or None
+        if mission_f is not None and memberships is None:
+            # A mission filter the store cannot answer. Returning the unfiltered list would label
+            # every session as a match; returning a bare empty page would say "no sessions".
+            # Both are false, so say which question could not be answered.
+            return {
+                "sessions": [],
+                "next_offset": None,
+                "total": 0,
+                "facets": facets,
+                "mission_filter_unavailable": True,
+            }
 
         def _keep(r: dict) -> bool:
             # Match the displayed title OR the raw first message (#284): once a meaningless
@@ -463,6 +525,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     return False
             if engine_f is not None and r["engine"] != engine_f:
                 return False
+            if mission_f is not None:
+                held = r.get("mission")
+                if mission_f == "none":
+                    if held is not None:
+                        return False
+                elif held is None or held["id"] != mission_f:
+                    return False
             return True
 
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
@@ -554,6 +623,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # follows the terminal.
             if not in_scope(row["cwd"], row["project"]):
                 return None  # refused, not missing — a re-walk cannot change this
+            # The pane reads the same membership the list does (#948), so the header and the
+            # sidebar row can never disagree about which mission holds this session.
+            _stamp_mission(row, _membership_index(), aliases)
             return row
         return _NOT_FOUND
 

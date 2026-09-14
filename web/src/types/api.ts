@@ -59,6 +59,9 @@ export interface Session {
    *  half (peer archived/deleted) is tolerated — display strings, never dereferenced. */
   handoff_from?: string;
   handoff_to?: string;
+  /** The mission holding this session (#948): `null` when none does. ABSENT when the server
+   *  could not read the mission store — unknown, so no adopt/open control is offered. */
+  mission?: SessionMissionRef | null;
 }
 
 /** One pasted/uploaded attachment carried by a compose draft (#477) — the server-issued
@@ -541,7 +544,23 @@ export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
   total: number;
-  facets: { projects: ProjectRef[]; engines: string[] };
+  facets: {
+    projects: ProjectRef[];
+    engines: string[];
+    /** Missions holding at least one session in scope (#948). Absent when the store was unreadable. */
+    missions?: (SessionMissionRef & { count: number })[];
+    /** Sessions in scope held by no mission (#948). */
+    no_mission?: number;
+  };
+  /** A `mission` filter was requested but the mission store could not be read (#948). */
+  mission_filter_unavailable?: boolean;
+}
+
+/** The mission that holds a session, as stamped on session rows (#948). */
+export interface SessionMissionRef {
+  id: string;
+  title: string;
+  state: string;
 }
 
 /** What a session BELONGS to (#361): a project entity, or the implicit folder group
@@ -890,6 +909,8 @@ export interface SessionsQuery {
   q?: string;
   project?: string;
   engine?: string;
+  /** A mission id, or `none` for sessions no mission holds (#948). */
+  mission?: string;
 }
 
 /** Seed-generation mode (#597): "quick" builds the tail locally; "ai" (Phase 2) asks the

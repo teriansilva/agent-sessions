@@ -297,6 +297,7 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   if (q.q?.trim()) p.set("q", q.q.trim());
   if (q.project) p.set("project", q.project);
   if (q.engine) p.set("engine", q.engine);
+  if (q.mission) p.set("mission", q.mission);
   return `/api/sessions?${p.toString()}`;
 }
 

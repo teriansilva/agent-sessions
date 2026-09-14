@@ -3574,6 +3574,29 @@ def all_active_memberships(*, path: Path | None = None) -> dict[str, str]:
         con.close()
 
 
+def active_membership_rows(*, path: Path | None = None) -> dict[str, dict]:
+    """``session_key -> {"id", "title", "state"}`` for every open membership, in ONE query (#948).
+
+    The session list stamps each row with the mission that holds it and filters and facets on it,
+    so it needs the title and state as well as the id. A per-row lookup would scale one list
+    request with the size of the fleet; this is the joined counterpart to
+    :func:`all_active_memberships` and reads the same open rows.
+    """
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT ms.session_key AS session_key, m.id AS id, m.title AS title, m.state AS state "
+            "FROM mission_sessions ms JOIN missions m ON m.id = ms.mission_id "
+            "WHERE ms.removed_at IS NULL"
+        ).fetchall()
+        return {
+            r["session_key"]: {"id": r["id"], "title": r["title"], "state": r["state"]}
+            for r in rows
+        }
+    finally:
+        con.close()
+
+
 def sessions_barred_from_automation(*, path: Path | None = None) -> set[str]:
     """Session keys no action may be written for or delivered into, right now (#871).
 
