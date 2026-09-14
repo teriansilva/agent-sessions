@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { FILES_ACTION, headAction, headActionsReady } from "./headActions";
 
 /** A session opened by LINK still names itself (#867) — real-browser proof, mobile + desktop.
  *
@@ -90,7 +91,7 @@ async function open(page: Page, lookup: boolean) {
   await mockApp(page, { lookup });
   await page.goto(`/s/claude/${UUID}`);
   await expect(page.locator("#root")).toBeVisible();
-  await page.locator("[data-head-action]").first().waitFor();
+  await headActionsReady(page);
 }
 
 test("a deep-linked session names its project in the pane header", async ({ page }, info) => {
@@ -110,11 +111,8 @@ test("a deep-linked session names its project in the pane header", async ({ page
 
 test("a deep-linked session can open its files — the trigger is not disabled", async ({ page }) => {
   await open(page, true);
-  const direct = page.locator("[data-head-action='files']");
-  const trigger = (await direct.count())
-    ? direct
-    : (await page.getByRole("button", { name: "More session actions" }).click(),
-      page.getByRole("menuitem", { name: /Files/ }));
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  const trigger = await headAction(page, FILES_ACTION);
   await expect(trigger).toBeEnabled();
 });
 

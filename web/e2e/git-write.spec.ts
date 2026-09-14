@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** The GIT tab's WRITE side (#806) — real-browser proof, desktop AND mobile.
  *
@@ -146,13 +147,8 @@ async function mockApp(page: Page, opts: Opts = {}) {
 async function openGit(page: Page, opts: Opts = {}) {
   await mockApp(page, opts);
   await page.goto(`/s/claude/${UUID}`);
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await page.getByRole("tab", { name: /Git/ }).click();
   await expect(page.locator("[data-git-tab]")).toBeVisible();

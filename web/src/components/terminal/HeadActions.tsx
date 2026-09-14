@@ -25,6 +25,10 @@ const GAP = 6; // matches .headActions gap
 
 /** Pane-head actions with measurement-driven overflow (#783).
  *
+ *  **At the shell's ≤800px breakpoint there is no measuring (#948 P6).** `collapsed` puts every
+ *  action into the one "Actions for this session" menu, capped to the viewport and scrollable. The
+ *  measured fold described below applies to wider panes only.
+ *
  *  The header carries a *measured* contract (`Terminal.module.css`): three labelled buttons occupy
  *  ~240px and "button labels are never hidden … the labelled buttons still fit a 320px pane". A
  *  fourth (`Files`) breaks that at a 320px pane and is marginal at the 360px `PANE_MIN`. Shrinking
@@ -38,12 +42,18 @@ const GAP = 6; // matches .headActions gap
  *  The menu is portalled to <body> because `.terminal-pane` is `overflow: hidden` — the same
  *  reason KeyBar portals its own. KeyBar supplies the measurement and portal pattern only; the
  *  menu a11y (focus-in, arrow keys, Esc, focus return, roving `menuitem`) is implemented here. */
-export function HeadActions({ actions, className, btnClassName, labelClassName }: {
+export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false }: {
   actions: HeadAction[];
   className: string;
   btnClassName: string;
   /** Wraps the visible text so the stylesheet can drop it on coarse pointers. */
   labelClassName: string;
+  /** ONE MENU ON A SMALL SCREEN (#948 P6). At the shell's ≤800px breakpoint the header renders a
+   *  single labelled "Actions" trigger and every action lives in the menu, with its full label.
+   *  This deliberately replaces #744/#859's "every action one tap away on touch" on phones only —
+   *  the operator asked for the header to become a context menu there. Wider panes, touch or not,
+   *  keep the measured fold below. */
+  collapsed?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
@@ -54,7 +64,7 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
   // settled narrower rung from the previous wider one (#909). Absent until the first measurement.
   const [fit, setFit] = useState<{ sig: string; n: number; w?: number }>({ sig: "", n: actions.length });
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; right: number; maxHeight: number } | null>(null);
 
   // A stable identity for "which actions are these". `actions` is rebuilt every render, so keying
   // anything on the array itself re-runs on every commit and re-measures against a target that is
@@ -67,11 +77,12 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
   if (fit.sig !== sig) {
     setFit({ sig, n: actions.length });
   }
-  const visible = fit.sig === sig ? fit.n : actions.length;
+  const visible = collapsed ? 0 : fit.sig === sig ? fit.n : actions.length;
 
   useLayoutEffect(() => {
     const el = wrapRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
+    // Collapsed, there are no chips to measure — everything is in the menu.
+    if (collapsed || !el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       // Recapture the natural widths whenever every chip is on the bar — which is exactly the
       // state a new action set starts in, so no explicit reset is needed (and a ref write during
@@ -119,14 +130,20 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
     if (el.parentElement) ro.observe(el.parentElement);
     return () => ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig]);
+  }, [sig, collapsed]);
 
   const inline = actions.slice(0, visible);
   const overflow = actions.slice(visible);
 
   const place = useCallback(() => {
     const r = moreRef.current?.getBoundingClientRect();
-    if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    if (!r) return;
+    const top = r.bottom + 4;
+    // On a phone EVERY action lives in this menu (#948 P6), so on a short viewport (a landscape
+    // phone) it can be taller than the space under the trigger. Cap it to that space and let it
+    // scroll, so the last action stays reachable (#958 review). Re-placed on resize and scroll.
+    const maxHeight = Math.max(88, window.innerHeight - top - 8);
+    setPos({ top, right: Math.max(8, window.innerWidth - r.right), maxHeight });
   }, []);
 
   useEffect(() => {
@@ -158,12 +175,18 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("pointerdown", onDown, true);
     window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
+    // A scroll INSIDE the menu (the list scrolling under its own height cap, #958) must not re-place
+    // it: that is the menu moving its content, not the trigger moving on the page.
+    const onScroll = (e: Event) => {
+      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) return;
+      place();
+    };
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", onScroll, true);
     };
   }, [open, place]);
 
@@ -183,8 +206,17 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
   // and `pos` is set by the effect above, so doing this there ran against a null ref and did
   // nothing at all — the a11y contract only looked implemented. Repaint is disabled while the
   // socket is down and can be first in the overflow, so skipping disabled items matters here.
+  // ONCE PER OPENING (#958 review 4810). `pos` changes on every resize and page scroll, and this used
+  // to re-run on each one — so ArrowDown to an offscreen item scrolled it into view, the scroll re-placed
+  // the menu, and focus jumped back to the first item. The ref is cleared when the menu closes.
+  const focusedOnOpen = useRef(false);
   useEffect(() => {
-    if (!open || !pos) return;
+    if (!open) {
+      focusedOnOpen.current = false;
+      return;
+    }
+    if (!pos || focusedOnOpen.current) return;
+    focusedOnOpen.current = true;
     menuRef.current?.querySelector<HTMLElement>("[role='menuitem']:not([disabled])")?.focus();
   }, [open, pos]);
 
@@ -219,10 +251,12 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
             className={btnClassName}
             aria-haspopup="menu"
             aria-expanded={open}
-            aria-label="More session actions"
-            title="More session actions"
+            aria-label={collapsed ? "Actions for this session" : "More session actions"}
+            title={collapsed ? "Actions for this session" : "More session actions"}
             onClick={() => setOpen((o) => !o)}
+            data-testid={collapsed ? "head-actions-menu" : undefined}
           >
+            {collapsed ? <span>Actions</span> : null}
             <MoreHorizontal size={13} aria-hidden="true" />
           </button>
           {open &&
@@ -232,8 +266,8 @@ export function HeadActions({ actions, className, btnClassName, labelClassName }
                 ref={menuRef}
                 className={menu.headMenu}
                 role="menu"
-                aria-label="More session actions"
-                style={{ top: pos.top, right: pos.right }}
+                aria-label={collapsed ? "Actions for this session" : "More session actions"}
+                style={{ top: pos.top, right: pos.right, maxHeight: pos.maxHeight }}
               >
                 {overflow.map((a) => (
                   <button

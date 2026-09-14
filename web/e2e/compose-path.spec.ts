@@ -1,4 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
+import { clickHeadAction, FILES_ACTION, headActionsReady } from "./headActions";
 
 /** Sending a path from the file panel into the compose draft (#792) — desktop AND mobile.
  *
@@ -123,19 +124,15 @@ async function mockApp(page: Page) {
 /** Open the panel WITHOUT navigating. Re-running `openPanel` mid-test would reload the page and
  *  throw away the draft under test — which is exactly the state these tests are about. */
 async function showPanel(page: Page) {
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
 }
 
 async function openPanel(page: Page) {
   await mockApp(page);
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
+  await headActionsReady(page);
   await showPanel(page);
 }
 

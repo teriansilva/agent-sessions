@@ -6,6 +6,7 @@
 // WITHOUT any user input is exactly the user-visible contract.
 import { expect, test } from "@playwright/test";
 import { setupBench } from "./harness";
+import { ACTIONS_MENU, clickHeadAction, closeHeadActionsMenu, headActionsReady, paneHead } from "../headActions";
 
 const SESSIONS = [
   {
@@ -166,8 +167,9 @@ test("the REPAINT button recovers a mid-session blank — no reconnect, no resta
   });
   await expect(page.locator(".xterm-rows")).not.toContainText("content line"); // screen went blank
 
-  // Owner taps REPAINT → the agent redraws its current frame. No RESTART, no reconnect.
-  await page.getByRole("button", { name: /repaint/i }).click();
+  // Owner taps REPAINT → the agent redraws its current frame. No RESTART, no reconnect. On a phone
+  // REPAINT lives in the header's Actions menu (#948 P6), so it is reached wherever it is.
+  await clickHeadAction(page, /repaint/i);
   await expect(page.locator(".xterm-rows")).toContainText("LIVE (repainted)", {
     timeout: 5000,
   });
@@ -191,6 +193,14 @@ test("REPAINT is hidden for a read-only secondary viewer (#485)", async ({
     timeout: 15000,
   });
   await expect(page.getByText(/read-only|another tab/i)).toBeVisible(); // take-over banner
-  await expect(page.getByRole("button", { name: /repaint/i })).toHaveCount(0); // owner-only → absent
+  // Owner-only → absent. On a phone every header action is inside the Actions menu (#948 P6), so the
+  // bar alone would pass whether or not REPAINT is offered; look inside the menu too.
+  if ((await headActionsReady(page)) === "collapsed") {
+    await paneHead(page).getByRole("button", { name: ACTIONS_MENU }).click();
+    await expect(page.getByRole("menu", { name: ACTIONS_MENU })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /repaint/i })).toHaveCount(0);
+    await closeHeadActionsMenu(page);
+  }
+  await expect(page.getByRole("button", { name: /repaint/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /restart/i })).toHaveCount(0); // RESTART removed (#503)
 });

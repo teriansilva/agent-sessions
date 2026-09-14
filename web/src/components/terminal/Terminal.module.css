@@ -533,3 +533,22 @@
     display: none;
   }
 }
+
+/* ONE ACTIONS MENU ON A SMALL SCREEN (#948 P6). At the shell's ≤800px breakpoint every head action
+ * moves into a single labelled menu, so the bar is a 44px row with a 44px trigger whatever the
+ * pointer class — the trigger is the only control on it, and it is a finger's target. */
+@media (max-width: 800px) {
+  .panelHead {
+    height: 44px;
+  }
+  .headActions [data-testid="head-actions-menu"] {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 12px;
+    gap: 6px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+}

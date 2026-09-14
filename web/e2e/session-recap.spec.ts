@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { ACTIONS_MENU, clickHeadAction, MORE_MENU } from "./headActions";
 import { setupBench } from "./terminal/harness";
 
 // Real-browser coverage for the session-brief modal (#481): the recap icon in the terminal
@@ -64,10 +65,10 @@ test("recap icon opens the session-brief modal with the chronological recap (#48
 }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
 
-  // The header recap icon (absent on origin/main — the red→green gate).
-  const trigger = page.getByRole("button", { name: /open session brief/i });
-  await expect(trigger).toBeVisible();
-  await trigger.click();
+  // The header recap icon (absent on origin/main — the red→green gate). `clickHeadAction` asserts
+  // it is visible wherever the head put it and returns the control focus comes back to: the chip
+  // inline, or the "Actions" trigger at ≤800px (#948 P6), whose item unmounts with the menu.
+  const trigger = await clickHeadAction(page, /open session brief/i);
 
   const dialog = page.getByRole("dialog", { name: /fix the auth token/i });
   await expect(dialog).toBeVisible();
@@ -130,72 +131,124 @@ test("the header sheds meta before the buttons as the pane narrows (#744)", asyn
   await expect(updated).toBeVisible();
   await expect(recap).toBeVisible();
 
+  // FINE POINTER: the #744/#783 fold ladder, with its expectations unchanged. It used to be
+  // driven by the VIEWPORT (420px, then 300px), but since #948 P6 any viewport ≤800px swaps the
+  // chips for one "Actions" menu whatever the pointer — measured: the old viewport steps failed
+  // on desktop at 420px with no Recap chip at all. So this ladder only exists on a narrow PANE in
+  // a wide window now, and it is driven there: the same two widths, squeezed on the pane (the
+  // idiom of the pane-width test below), waiting for a fit measured at each (#909).
+  if (!isMobile) {
+    await squeezePane(head, 420);
+    await waitForFit(head, 420);
+    // Update time is the first fact to go; the project survives because it answers "where am I".
+    await expect(updated).toBeHidden();
+    await expect(project).toBeVisible();
+    await expect(recap).toBeVisible();
+
+    await squeezePane(head, 300);
+    await waitForFit(head, 300);
+    await expect(project).toBeHidden();
+    // The engine box and the LED are the floor — and every action is still reachable.
+    await expect(head.locator('[class*="headEng"]')).toBeVisible();
+    await expect(head.getByRole("img", { name: /^status: / })).toBeVisible();
+
+    // #783 added a FOURTH action (Files); #859 added a fifth and sixth (the terminal quick zoom).
+    // What this is really about is REACH — every action stays available at every width. On a
+    // fine pointer labels stay (a 26px bar makes an icon-only chip a poor target), and labelled
+    // chips have never fitted 300px, so the trailing actions fold into a "…" menu carrying their
+    // full labels. The quick-zoom pair is deliberately LAST in Terminal.tsx's action array so
+    // that wherever only some actions fold, it is the newest pair and never Hand off.
+    const more = head.getByRole("button", { name: /more session actions/i });
+    await expect(more).toBeVisible();
+    await more.click();
+
+    // Assert REACH, not position: with the menu open, every action is one tap away somewhere —
+    // still on the bar, or inside the menu.
+    const reachable = (name: RegExp) =>
+      page
+        .getByRole("menuitem", { name })
+        .or(head.getByRole("button", { name }))
+        .first();
+    await expect(reachable(/hand off/i)).toBeVisible();
+    await expect(reachable(/smaller terminal text/i)).toBeVisible();
+    const recapItem = page.getByRole("menuitem", { name: /open session brief/i });
+    const foldedRecap = await recapItem.isVisible().catch(() => false);
+    // The menu is a portalled overlay, so a still-inline chip cannot be clicked underneath it.
+    if (!foldedRecap) await page.keyboard.press("Escape");
+    const openRecap = foldedRecap ? recapItem : recap;
+    await expect(openRecap).toBeVisible();
+
+    // Still a real control, not a clipped sliver: it opens the dialog at 300px.
+    await openRecap.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await squeezePane(head, null);
+  }
+
+  // A ≤800px VIEWPORT, BOTH projects (#948 P6). 420px is a REAL phone width (a Pixel 7 is 412), so
+  // this is what a human actually sees. The meta run still sheds in the same order; the actions
+  // are no longer chips at all — this deliberately replaces #744/#859's "every action one tap
+  // away" on phones with ONE labelled "Actions" trigger whose menu carries every action. REACH is
+  // still the contract: two taps, and nothing is dropped.
   await page.setViewportSize({ width: 420, height: 720 });
   // Update time is the first fact to go; the project survives because it answers "where am I".
   await expect(updated).toBeHidden();
   await expect(project).toBeVisible();
-  await expect(recap).toBeVisible();
-  // 420px is a REAL phone width (a Pixel 7 is 412), so this is the one that describes what a
-  // human actually sees. #859 took the action count from four to six, and on coarse all six
-  // still fit as icon-only chips here — nothing folds, everything stays one tap away.
-  if (isMobile) {
-    await expect(head.getByRole("button", { name: /hand off/i })).toBeVisible();
-    await expect(
-      head.getByRole("button", { name: /smaller terminal text/i }),
-    ).toBeVisible();
-    await expect(
-      head.getByRole("button", { name: /bigger terminal text/i }),
-    ).toBeVisible();
-  }
+  await expectOneActionsMenu(page, head);
+  // Esc closes the menu and hands focus back to the trigger.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu", { name: ACTIONS_MENU })).toBeHidden();
+  await expect(head.getByRole("button", { name: ACTIONS_MENU })).toBeFocused();
 
   await page.setViewportSize({ width: 300, height: 720 });
   await expect(project).toBeHidden();
   // The engine box and the LED are the floor — and every action is still reachable.
   await expect(head.locator('[class*="headEng"]')).toBeVisible();
   await expect(head.getByRole("img", { name: /^status: / })).toBeVisible();
-
-  // #783 added a FOURTH action (Files); #859 added a fifth and sixth (the terminal quick zoom).
-  // What this test is really about is REACH — every action stays available at every width — and
-  // both pointer classes now answer that the same way at this floor.
-  //
-  //  - FINE: labels stay (a 26px bar makes an icon-only chip a poor target), and labelled chips
-  //    have never fitted 300px, so the trailing actions fold into a "…" menu carrying their
-  //    full labels.
-  //  - COARSE: the bar grows to 44px and the chips go icon-only. Four of those fitted 300px, so
-  //    nothing used to fold here. Six do not — measured: the bar seats three plus the "…" — so
-  //    the coarse ladder gained the rung the fine one already had. This is arithmetic, not a
-  //    regression: at 420px (asserted above, and wider than any real phone) all six are still
-  //    inline, and at 300px every one of them is still one tap away inside the menu.
-  //
-  // The quick-zoom pair is deliberately LAST in Terminal.tsx's action array so that wherever
-  // only some actions fold, it is the newest pair and never Hand off (see the comment there).
-  const more = head.getByRole("button", { name: /more session actions/i });
-  await expect(more).toBeVisible();
-  await more.click();
-
-  // Assert REACH, not position. Which actions fold differs by pointer class — coarse seats
-  // three icon-only chips plus the "…", fine seats two labelled ones — so pinning any given
-  // action to the bar or to the menu would encode one class's arithmetic as the contract.
-  // What must hold for both is that with the menu open, every action is one tap away
-  // somewhere: still on the bar, or inside the menu.
-  const reachable = (name: RegExp) =>
-    page
-      .getByRole("menuitem", { name })
-      .or(head.getByRole("button", { name }))
-      .first();
-  await expect(reachable(/hand off/i)).toBeVisible();
-  await expect(reachable(/smaller terminal text/i)).toBeVisible();
-  const recapItem = page.getByRole("menuitem", { name: /open session brief/i });
-  const foldedRecap = await recapItem.isVisible().catch(() => false);
-  // The menu is a portalled overlay, so a still-inline chip cannot be clicked underneath it.
-  if (!foldedRecap) await page.keyboard.press("Escape");
-  const openRecap = foldedRecap ? recapItem : recap;
-  await expect(openRecap).toBeVisible();
+  await expectOneActionsMenu(page, head);
 
   // Still a real control, not a clipped sliver: it opens the dialog at 300px.
-  await openRecap.click();
+  await page.getByRole("menuitem", { name: /open session brief/i }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
 });
+
+/** Squeeze (or, with `null`, restore) the pane the head lives in, leaving the viewport alone. */
+async function squeezePane(head: Locator, px: number | null) {
+  await head.evaluate((el, w) => {
+    (el.parentElement as HTMLElement).style.width = w === null ? "" : `${w}px`;
+  }, px);
+}
+
+/** #948 P6: at a ≤800px viewport the head carries NO inline action — only one labelled "Actions"
+ *  trigger — and that menu carries every action under the same accessible name its chip had.
+ *  Opens the menu and leaves it open. */
+async function expectOneActionsMenu(page: Page, head: Locator) {
+  const trigger = head.getByRole("button", { name: ACTIONS_MENU });
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveText(/actions/i);
+  // No chip on the bar, and no "…" fold beside the trigger either.
+  await expect(head.locator("[data-head-action]")).toHaveCount(0);
+  await expect(
+    head.getByRole("button", {
+      name: /open session brief|hand off|terminal text|repaint|browse session files/i,
+    }),
+  ).toHaveCount(0);
+  await expect(head.getByRole("button", { name: MORE_MENU })).toHaveCount(0);
+
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: ACTIONS_MENU });
+  await expect(menu).toBeVisible();
+  for (const name of [
+    /hand off session/i,
+    /smaller terminal text/i,
+    /bigger terminal text/i,
+    /open session brief/i,
+  ]) {
+    await expect(menu.getByRole("menuitem", { name })).toBeVisible();
+  }
+}
 
 // The ladder is a CONTAINER query, so it must fire on the header's own width — a wide viewport
 // with a narrow pane (sidebar open, narrow split) is exactly the case a viewport media query
@@ -237,16 +290,7 @@ test("the collapse ladder follows the pane width, not the viewport (#744)", asyn
  *  pass (Hermes on #911). In the settled placement Recap must be reachable: the inline button, or
  *  the "…" menu's item. A settled overflow that omits Recap fails here — neither exists. */
 async function expectRecapReachable(page: Page, head: Locator, paneWidth: number) {
-  const stamp = head.locator("[data-fit-width]");
-  await expect
-    .poll(
-      async () => {
-        const v = await stamp.getAttribute("data-fit-width");
-        return v === null || v === "unmeasured" ? Number.POSITIVE_INFINITY : Number(v);
-      },
-      { timeout: 15000, message: `the head never applied a fit measured at <= ${paneWidth}px` },
-    )
-    .toBeLessThanOrEqual(paneWidth);
+  await waitForFit(head, paneWidth);
   const recap = head.getByRole("button", { name: /open session brief/i });
   const more = head.getByRole("button", { name: /more session actions/i });
   if (await more.isVisible()) {
@@ -261,11 +305,26 @@ async function expectRecapReachable(page: Page, head: Locator, paneWidth: number
   await expect(recap).toBeVisible();
 }
 
+/** Wait for the head to commit a fit measured at the pane's squeezed width (`data-fit-width`) —
+ *  "the '…' trigger exists" cannot tell a settled narrower rung from the previous wider one. */
+async function waitForFit(head: Locator, paneWidth: number) {
+  const stamp = head.locator("[data-fit-width]");
+  await expect
+    .poll(
+      async () => {
+        const v = await stamp.getAttribute("data-fit-width");
+        return v === null || v === "unmeasured" ? Number.POSITIVE_INFINITY : Number(v);
+      },
+      { timeout: 15000, message: `the head never applied a fit measured at <= ${paneWidth}px` },
+    )
+    .toBeLessThanOrEqual(paneWidth);
+}
+
 test("the session brief carries the sidebar's identity and an ordered timeline (#744)", async ({
   page,
 }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /open session brief/i }).click();
+  await clickHeadAction(page, /open session brief/i);
   const dialog = page.getByRole("dialog");
 
   // Everything the sidebar row shows about this session.
@@ -292,7 +351,7 @@ test("clicking the backdrop closes the session-brief modal (#481)", async ({
   page,
 }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /open session brief/i }).click();
+  await clickHeadAction(page, /open session brief/i);
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   // The backdrop covers the viewport; a corner click lands outside the centered/bottom dialog.

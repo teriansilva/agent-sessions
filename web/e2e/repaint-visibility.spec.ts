@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { closeHeadActionsMenu, headAction } from "./headActions";
 
 // #503: returning to a backgrounded/minimized tab should auto-repaint (the same non-destructive
 // rows−1→rows nudge as the REPAINT button), because a frozen/blanked tab often comes back stale.
@@ -28,9 +29,10 @@ test("returning to the foreground auto-repaints (a fresh resize nudge) for the o
   await page.goto("/s/claude/repaint-503");
   await expect(page.locator(".xterm")).toBeVisible();
   // role defaults to owner → the REPAINT control is present and the auto-repaint effect is wired.
-  await expect(
-    page.getByRole("button", { name: /repaint screen/i }),
-  ).toBeVisible();
+  // Wherever the head put it — inline, or in the ≤800px Actions menu (#948 P6). Checking it there
+  // opened that menu, so close it again: the rest of this test is about the socket, not the menu.
+  await expect(await headAction(page, /repaint screen/i)).toBeVisible();
+  await closeHeadActionsMenu(page);
   // Let the initial connect + fit settle (its own resize frames land first).
   await page.waitForFunction(
     () =>

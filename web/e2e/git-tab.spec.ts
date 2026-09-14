@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** GIT tab (#784) — real-browser proof, desktop AND mobile.
  *
@@ -178,13 +179,8 @@ async function mockApp(page: Page) {
 async function openGit(page: Page) {
   await mockApp(page);
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await page.getByRole("tab", { name: /Git/ }).click();
   await expect(page.locator("[data-git-tab]")).toBeVisible();
@@ -278,13 +274,8 @@ test("not-a-repository is a state, not a disappearing tab", async ({
     }),
   );
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  await clickHeadAction(page, FILES_ACTION);
   await page.getByRole("tab", { name: /Git/ }).click();
   await expect(page.locator("[data-git-tab]")).toHaveCount(0);
   await expect(page.locator("[data-file-panel]")).toContainText(

@@ -1,4 +1,5 @@
 import { type Page, expect, test } from "@playwright/test";
+import { clickHeadAction, FILES_ACTION, headActionsReady } from "./headActions";
 
 /** Two file paths tapped into a LIVE dictation, aimed at adjacent selections (#809).
  *
@@ -139,12 +140,8 @@ const draft = (page: Page) => page.getByPlaceholder(/Type here/i);
 /** Show the file panel without navigating — a `goto` would throw away the draft under test. */
 async function showPanel(page: Page) {
   if (await page.locator("[data-file-panel]").isVisible()) return;
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6) — wherever the head put it.
+  await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
 }
 
@@ -164,7 +161,7 @@ test("two paths aimed at adjacent selections both survive the dictation handoff 
   await page.addInitScript(GUM_STUB);
   await mockApp(page);
   await page.goto(`/s/claude/${SID}`);
-  await page.locator("[data-head-action]").first().waitFor();
+  await headActionsReady(page);
 
   // Compose is collapsed on desktop; the mic only exists once it is open.
   const mic = page.getByRole("button", { name: /start voice input/i });

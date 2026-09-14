@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { connect, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
+import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** #807's acceptance evidence: an upload **through the tunnel**, appearing in the tree (#579).
  *
@@ -48,13 +49,7 @@ test("a picked file crosses the relay, lands on disk, and shows up in the tree",
 
   await connect(page, stack);
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });
-  await page.locator("[data-head-action]").first().waitFor({ timeout: 30_000 });
-  const files = page.locator("[data-head-action='files']");
-  if (await files.count()) await files.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  await clickHeadAction(page, FILES_ACTION, { timeout: 30_000 });
   await expect(page.locator("[data-file-panel]")).toBeVisible({ timeout: 20_000 });
   await expect(page.locator("[data-file-tree]")).toBeVisible({ timeout: 20_000 });
 

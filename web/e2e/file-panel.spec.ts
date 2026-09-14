@@ -1,4 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import {
+  actionsMenuTrigger,
+  clickHeadAction,
+  FILES_ACTION,
+  headAction,
+  headActionsReady,
+  paneHead,
+} from "./headActions";
 
 /** File panel (#783) — real-browser proof, desktop AND mobile.
  *
@@ -204,14 +212,10 @@ async function openSession(page: Page) {
   await mockApp(page);
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
   await expect(page.locator("#root")).toBeVisible();
-  // Wait for the head to finish measuring before deciding where the trigger lives — checking
-  // too early races the overflow calculation and finds neither form. Target by data attribute:
-  // once the panel opens it has a "Files" TAB too, so a by-name query would be ambiguous.
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) return direct;
-  await page.getByRole("button", { name: "More session actions" }).click();
-  return page.getByRole("menuitem", { name: /Files/ });
+  // Inline, behind "…", or in the ≤800px Actions menu (#948 P6). The helper waits for the head to
+  // render before deciding, and resolves by name SCOPED to the head / its menu — once the panel
+  // opens it has a "Files" TAB too, which an unscoped by-name query would collide with.
+  return headAction(page, FILES_ACTION);
 }
 
 test.describe("file panel", () => {
@@ -360,9 +364,20 @@ test.describe("file panel — touch", () => {
   }) => {
     // The reason the 44px `::after` idea was dropped: expanded hit boxes in a 26px bar overlap,
     // so a size assertion passes while the tap routes to the neighbour. Assert NON-OVERLAP.
+    //
+    // A touch viewport WIDER than 800px: at ≤800px the head carries no chips at all, only the one
+    // "Actions" menu trigger (#948 P6), so at the phone's own width this would compare an empty
+    // list and pass vacuously. Chips on a coarse pointer now exist only on a wider touch screen.
+    await page.setViewportSize({ width: 1024, height: 768 });
     await mockApp(page);
     await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
     await expect(page.locator("#root")).toBeVisible();
+    expect(await headActionsReady(page)).toBe("inline");
+    await expect
+      .poll(() => page.locator("[data-head-action]").count(), {
+        message: "there must be adjacent chips to compare, or this proves nothing",
+      })
+      .toBeGreaterThan(1);
     const boxes = await page
       .locator("[data-head-action]")
       .evaluateAll((els) =>
@@ -434,7 +449,7 @@ test.describe("file panel — state and navigation", () => {
     await expect(page.locator("[data-file-panel]")).toHaveCount(0);
 
     await page.reload();
-    await page.locator("[data-head-action]").first().waitFor();
+    await headActionsReady(page);
     await expect(page.locator("[data-file-panel]")).toHaveCount(0);
 
     const reopen = await openSession(page);
@@ -451,27 +466,26 @@ test.describe("file panel — state and navigation", () => {
   }) => {
     test.skip(!isMobile, "sheet mode only");
     const trigger = await openSession(page);
+    // The control that OPENED the sheet: the Files chip when it is inline, but the "Actions" menu
+    // trigger at a phone width (#948 P6) — the menu item unmounts with the menu, so HeadActions
+    // hands the trigger over as the focus target. Still one specific element, not "focus moved".
+    const opener =
+      (await headActionsReady(page)) === "collapsed"
+        ? actionsMenuTrigger(page)
+        : paneHead(page).locator("[data-head-action='files']");
     await trigger.tap();
     await expect(page.locator("[data-file-panel='sheet']")).toBeVisible();
     await page.getByRole("button", { name: "Close the file panel" }).click();
-    const focused = await page.evaluate(() =>
-      document.activeElement?.getAttribute("data-head-action"),
-    );
-    expect(focused).toBe("files");
+    await expect(opener).toBeFocused();
 
     // ...and via ESCAPE, which is a different code path through the same `close`. Asserting the
     // specific target (not merely "focus moved") is what catches a broken returnFocusTo chain.
-    await trigger.tap();
+    // Re-resolved: a menu item from the first open no longer exists.
+    await (await headAction(page, FILES_ACTION)).tap();
     await expect(page.locator("[data-file-panel='sheet']")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator("[data-file-panel='sheet']")).toHaveCount(0);
-    await expect
-      .poll(() =>
-        page.evaluate(() =>
-          document.activeElement?.getAttribute("data-head-action"),
-        ),
-      )
-      .toBe("files");
+    await expect(opener).toBeFocused();
   });
 
   test("overflow arrow keys skip a disabled action and reach the ones behind it", async ({
@@ -480,14 +494,28 @@ test.describe("file panel — state and navigation", () => {
   }) => {
     test.skip(
       isMobile,
-      "no overflow on touch — the chips go icon-only and all four stay inline",
+      "desktop fold contract — at ≤800px the header is one Actions menu (#948), so there is no inline overflow to walk",
     );
     // Repaint is disabled while the socket is not connected and can be first in the overflow.
     // Focusing it is a no-op, so the old code left focus on the trigger and every ArrowDown
     // retried that same dead button — stranding Recap and Hand off.
     await mockApp(page);
-    await page.setViewportSize({ width: 300, height: 720 });
+    // A 300px PANE in a wide window, not a 300px viewport: at a ≤800px viewport the head is one
+    // "Actions" menu (#948 P6), so the "…" overflow this pins now only exists when the pane is
+    // narrow and the window is not. Same squeeze idiom as session-recap's collapse-ladder test,
+    // and the same #909 wait: act only once a fit measured at the squeezed width has landed.
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
+    const head = paneHead(page);
+    await expect(head.locator("[data-head-action]").first()).toBeVisible();
+    await head.evaluate((el) => {
+      (el.parentElement as HTMLElement).style.width = "300px";
+    });
+    await expect
+      .poll(async () =>
+        Number(await head.locator("[data-fit-width]").getAttribute("data-fit-width")),
+      )
+      .toBeLessThanOrEqual(300);
     const more = page.getByRole("button", { name: "More session actions" });
     await expect(more).toBeVisible();
     await more.click();
@@ -514,8 +542,7 @@ test("navigating A → B does not carry A's panel state onto B (#127 converge on
   // entry — and going back moved B's state onto A. Only the converge edge may migrate.
   await mockApp(page);
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
-  await page.locator("[data-head-action='files']").click();
+  await clickHeadAction(page, FILES_ACTION);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await expect(
     page.locator("[data-file-row]", { hasText: "README.md" }),
@@ -523,12 +550,12 @@ test("navigating A → B does not carry A's panel state onto B (#127 converge on
 
   // Straight to B, which has never been opened: it must start closed, not inherit A's panel.
   await page.goto(`/s/claude/${SESSION_B.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
+  await headActionsReady(page);
   await expect(page.locator("[data-file-panel]")).toHaveCount(0);
 
   // ...and A must still have its own state, not have had it moved away.
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-  await page.locator("[data-head-action]").first().waitFor();
+  await headActionsReady(page);
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await expect(
     page.locator("[data-file-row]", { hasText: "README.md" }),
@@ -543,8 +570,7 @@ test.describe("file panel — contracts from review round 6", () => {
     // change: A's local root/expansions survived and the persistence effect wrote them under B.
     await mockApp(page);
     await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
-    await page.locator("[data-head-action]").first().waitFor();
-    await page.locator("[data-head-action='files']").click();
+    await clickHeadAction(page, FILES_ACTION);
     await expect(
       page.locator("[data-file-row]", { hasText: "README.md" }),
     ).toBeVisible();
@@ -583,7 +609,9 @@ test.describe("file panel — contracts from review round 6", () => {
     await mockApp(page);
     // A session the sidebar does not know about yet: no row, no fresh state, so no cwd.
     await page.goto("/s/claude/cccccccc-0000-4000-8000-000000000009");
-    const files = page.locator("[data-head-action='files']");
+    // Inline, behind "…", or in the ≤800px Actions menu (#948 P6): a disabled item stays listed,
+    // with its reason, wherever it lives.
+    const files = await headAction(page, FILES_ACTION);
     await expect(files).toBeVisible();
     await expect(files).toBeDisabled();
     await expect(files).toHaveAttribute("title", /has not reported a folder/i);

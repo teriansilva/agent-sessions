@@ -137,14 +137,12 @@ test("…including one that still CARRIES a plan (#904 review 17)", () => {
 test("DISPATCH confirms, and says what it starts and where", async () => {
   mount(mission({ state: "planned", plan: plan() }));
   await userEvent.click(screen.getByTestId("mission-begin"));
-  // The first tap starts nothing.
+  // The first tap starts nothing. The confirmation arms after an ASYNC digest (`sha256Hex`), so the
+  // click can resolve before it renders on a loaded runner: wait for it, never read it synchronously.
+  const confirm = await screen.findByTestId("mission-dispatch-confirm");
   expect(api.dispatchMission).not.toHaveBeenCalled();
-  expect(screen.getByTestId("mission-dispatch-confirm")).toHaveTextContent(
-    "/repo/the-app",
-  );
-  expect(screen.getByTestId("mission-dispatch-confirm")).toHaveTextContent(
-    "unattended",
-  );
+  expect(confirm).toHaveTextContent("/repo/the-app");
+  expect(confirm).toHaveTextContent("unattended");
   await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() =>
     // …AND THE DIRECTORY IT CONFIRMED, as a comparand. The server re-resolves the project and
@@ -206,6 +204,8 @@ test("a dispatch that did not reach `running` reports the server's own reason", 
   });
   const { onNote } = mount(mission({ state: "planned", plan: plan() }));
   await userEvent.click(screen.getByTestId("mission-begin"));
+  // Armed first (async digest): a second tap that lands before the arm only arms again.
+  await screen.findByTestId("mission-dispatch-confirm");
   await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() =>
     expect(onNote).toHaveBeenCalledWith(
@@ -449,6 +449,8 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
     <MissionPlanCard mission={first} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
+  // The arm has to have LANDED before the rerender below, or this tests the rerender, not the arm.
+  await screen.findByTestId("mission-dispatch-confirm");
 
   // An objective becoming MET is progress, not a different checklist — the digest covers key,
   // title and gate only — so the arm survives this and the send must still happen.
@@ -540,6 +542,8 @@ test("a detached-only roster uses the launch path, never tracking", async () => 
     }),
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
+  // Armed first (async digest): a second tap that lands before the arm only arms again.
+  await screen.findByTestId("mission-dispatch-confirm");
   await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() => expect(api.dispatchMission).toHaveBeenCalledOnce());
   expect(api.setMissionState).not.toHaveBeenCalled();
@@ -557,6 +561,8 @@ test("a poll during Begin cannot count as its post-result refresh", async () => 
     <MissionPlanCard mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
+  // Armed first (async digest): a second tap that lands before the arm only arms again.
+  await screen.findByTestId("mission-dispatch-confirm");
   await userEvent.click(screen.getByTestId("mission-begin"));
   const polled = { ...original };
   rerender(

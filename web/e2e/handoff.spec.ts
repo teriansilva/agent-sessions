@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { clickHeadAction } from "./headActions";
 import { setupBench } from "./terminal/harness";
 
 // Real-browser coverage for the cross-engine handoff modal (#597, Phase 1): the "Hand off"
@@ -86,10 +87,10 @@ test("hand-off control opens the modal; picker + preview render; confirm lands o
 }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
 
-  // The header control (absent on origin/main — the red→green gate).
-  const trigger = page.getByRole("button", { name: /hand off session/i });
-  await expect(trigger).toBeVisible();
-  await trigger.click();
+  // The header control (absent on origin/main — the red→green gate). `clickHeadAction` asserts it
+  // is visible wherever the header put it: an inline chip, or a menu item behind the ≤800px
+  // "Actions" trigger (#948 P6).
+  await clickHeadAction(page, /hand off session/i);
 
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   await expect(dialog).toBeVisible();
@@ -127,8 +128,9 @@ test("Escape closes the hand-off modal and returns focus to the trigger (#597)",
   page,
 }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  const trigger = page.getByRole("button", { name: /hand off session/i });
-  await trigger.click();
+  // The trigger is the chip inline, or the menu's trigger when it lives in a menu — the item
+  // unmounts with the menu, so that is where focus has to come back to.
+  const trigger = await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
@@ -138,7 +140,7 @@ test("Escape closes the hand-off modal and returns focus to the trigger (#597)",
 
 test("backdrop click closes the hand-off modal (#597)", async ({ page }) => {
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /hand off session/i }).click();
+  await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   await expect(dialog).toBeVisible();
   await page.mouse.click(5, 5);
@@ -189,7 +191,7 @@ test("AI summary mode prepares an AI seed, and an edit is what gets handed off (
   });
 
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /hand off session/i }).click();
+  await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
 
   // Switching to AI mode re-prepares and shows the AI brief.
@@ -226,7 +228,7 @@ test("a degraded AI handoff tells the user it fell back to the quick tail (#597 
     }),
   );
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /hand off session/i }).click();
+  await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   await dialog.getByRole("radio", { name: /ai summary/i }).click();
   await expect(dialog).toContainText(
@@ -258,7 +260,7 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
   });
 
   await page.goto(`/s/${ENGINE}/${UUID}`);
-  await page.getByRole("button", { name: /hand off session/i }).click();
+  await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   const preview = dialog.getByLabel(/seed preview/i);
 

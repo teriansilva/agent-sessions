@@ -49,6 +49,7 @@ import {
 } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
 import { useSessionRow } from "../../app/useSessionRow";
+import { useIsMobile } from "../../lib/useIsMobile";
 import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import {
@@ -233,6 +234,8 @@ export function Terminal({
   // Live column count for the quick-zoom readout (#859). Fed by xterm's own resize event, so
   // it tracks a rotation or a sidebar toggle, not just a stepper tap.
   const [cols, setCols] = useState(0);
+  // The shell's own ≤800px breakpoint (#948 P6): the header becomes one Actions menu there.
+  const isMobile = useIsMobile();
   // "Adopt to mission" / "Open mission" (#948 P5) — the header half of session-side adoption.
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptTrigger, setAdoptTrigger] = useState<HTMLElement | null>(null);
@@ -1838,7 +1841,8 @@ export function Terminal({
     // Position alone was not enough. #744/#859's coarse-pointer contract is that at 420px all SIX
     // icon-only chips fit and nothing folds; a seventh broke it, so `SessionView` withholds this
     // one below the ≤800px breakpoint — which it owes the operator anyway, since a phone can
-    // never host a window.
+    // never host a window. (Since #948 P6 a phone shows one Actions menu, so that fold no longer
+    // happens below 800px; the withholding stays for the window reason.)
     ...(onToMap
       ? [
           {
@@ -1858,7 +1862,8 @@ export function Terminal({
     // the moment you are looking at the unreadable pane.
     //
     // LAST IN THE ARRAY, deliberately — do not promote it. HeadActions folds from the END (#783),
-    // and #744's coarse-pointer contract is that every action stays ONE TAP away on touch. Six
+    // and #744's coarse-pointer contract is that every action stays ONE TAP away on touch (above
+    // the ≤800px breakpoint; below it every action is in one Actions menu, #948 P6). Six
     // icon-only chips do not fit a 300px pane, so something must fold there; putting the newest,
     // least critical pair last means it is these two and never Hand off. Inserting them earlier
     // pushed Hand off into the overflow and turned session-recap.spec.ts red — which is the
@@ -1945,6 +1950,7 @@ export function Terminal({
           btnClassName={styles.restartBtn}
           labelClassName={styles.headActionLabel}
           actions={headActions}
+          collapsed={isMobile}
         />
       </div>
       {adoptOpen && row && (

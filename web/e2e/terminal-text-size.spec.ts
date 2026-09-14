@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+// Pane-head actions are reached wherever HeadActions put them: inline on a wide pane, behind the
+// "…" overflow when folded (#783), or in the single ≤800px "Actions" menu on a phone (#948 P6).
+import { clickHeadAction } from "./headActions";
 
 // #859: the terminal font size IS the agent's column count. At the shipped 13 px a phone gives
 // it ~50 columns, where a column-laid-out TUI (opencode) collapses — its label column squeezed
@@ -73,18 +76,6 @@ function resizes(page: Page): Promise<number[]> {
   );
 }
 
-/** Click a pane-head action by its accessible name, wherever HeadActions put it: inline on a
- *  wide pane, behind the "…" overflow on a phone (#783). Both are the shipped affordance. */
-async function headAction(page: Page, name: RegExp) {
-  const inline = page.getByRole("button", { name });
-  if (await inline.isVisible().catch(() => false)) {
-    await inline.click();
-    return;
-  }
-  await page.getByRole("button", { name: /more actions|…/i }).click();
-  await page.getByRole("menuitem", { name }).click();
-}
-
 test.beforeEach(async ({ page }) => {
   await mockApi(page);
   await page.addInitScript(RECORDING_WS);
@@ -102,7 +93,7 @@ test("smaller text gives the agent MORE columns (#859)", async ({ page }) => {
   // wide, the assertion below would prove nothing.
   expect(before).toBeGreaterThan(0);
 
-  await headAction(page, /smaller terminal text/i);
+  await clickHeadAction(page, /smaller terminal text/i);
 
   // RED before this change: there is no such control at all, and no new resize frame is sent.
   await expect
@@ -120,12 +111,12 @@ test("bigger text gives it fewer, and the pair is reversible (#859)", async ({
     .toBeGreaterThan(0);
   const start = (await resizes(page)).at(-1) as number;
 
-  await headAction(page, /smaller terminal text/i);
+  await clickHeadAction(page, /smaller terminal text/i);
   await expect
     .poll(async () => (await resizes(page)).at(-1) as number)
     .toBeGreaterThan(start);
 
-  await headAction(page, /bigger terminal text/i);
+  await clickHeadAction(page, /bigger terminal text/i);
   await expect
     .poll(async () => (await resizes(page)).at(-1) as number)
     .toBe(start);
@@ -219,7 +210,7 @@ test("the size survives a reload, per device (#859)", async ({ page }) => {
     .toBeGreaterThan(0);
   const baseline = (await resizes(page)).at(-1) as number;
 
-  await headAction(page, /smaller terminal text/i);
+  await clickHeadAction(page, /smaller terminal text/i);
   await expect
     .poll(async () => (await resizes(page)).at(-1) as number)
     .toBeGreaterThan(baseline);

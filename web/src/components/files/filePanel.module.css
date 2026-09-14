@@ -577,6 +577,9 @@
   z-index: 55;
   min-width: 152px;
   padding: 4px 0;
+  /* max-height is set inline to the space under the trigger; the list scrolls inside it (#958). */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-1);
   border: 1px solid var(--line-strong);
   box-shadow: 0 6px 18px rgb(0 0 0 / 38%);

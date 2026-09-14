@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { connect, PY_STACK_AVAILABLE, SESSION_UUID, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
+import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** #806's acceptance evidence: a branch switch **through the tunnel** (#579).
  *
@@ -52,13 +53,7 @@ test("the panel switches a real branch through the relay, and the repo moves on 
   // The streamed SPA lists the seeded session; open it, then the file panel's GIT tab.
   // The sidebar renders each session as a link to `/s/<engine>/<uuid>`.
   await page.locator(`a[href*="${SESSION_UUID}"]`).first().click({ timeout: 30_000 });
-  await page.locator("[data-head-action]").first().waitFor({ timeout: 30_000 });
-  const files = page.locator("[data-head-action='files']");
-  if (await files.count()) await files.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  await clickHeadAction(page, FILES_ACTION, { timeout: 30_000 });
   await expect(page.locator("[data-file-panel]")).toBeVisible({ timeout: 20_000 });
   await page.getByRole("tab", { name: /Git/ }).click();
   await expect(page.locator("[data-git-tab]")).toBeVisible({ timeout: 20_000 });
