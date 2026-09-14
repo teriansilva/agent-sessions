@@ -476,11 +476,13 @@
   overflow-wrap: anywhere;
 }
 
-/* System definition list */
+/* Host / Updates definition lists: the `<div>` only groups a dt/dd pair. It must NOT be a grid
+ * item of its own — `.meta` is already the two-column label/value grid, so a row-as-item put
+ * two ROWS side by side ("OS …  Platform …") and squeezed the second row's value to a character
+ * per line on a phone. `contents` hands dt and dd to `.meta`: one pair per line, labels and
+ * values each in one aligned column, exactly like the About list's bare dt/dd. */
 .metaRow {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
+  display: contents;
 }
 
 /* Support */
