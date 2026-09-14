@@ -242,6 +242,8 @@ function Layout() {
   const [railSlotEl, setRailSlotEl] = useState<HTMLElement | null>(null);
   /** The head-row slot beside it (#948 P2): where the rail's counts render. */
   const [railHeadEl, setRailHeadEl] = useState<HTMLElement | null>(null);
+  /** And the footer slot (#948 §1): where the rail's mission and held-session telemetry render. */
+  const [railFootEl, setRailFootEl] = useState<HTMLElement | null>(null);
 
   /** THE MOBILE DRAWER IS A MODAL, and it owes the whole contract (#940).
    *
@@ -302,8 +304,8 @@ function Layout() {
     if (isMobile) setNavOpen(false);
   }, [isMobile]);
   const railSlot = useMemo(
-    () => ({ el: railSlotEl, headEl: railHeadEl, dismiss: dismissRail }),
-    [railSlotEl, dismissRail, railHeadEl],
+    () => ({ el: railSlotEl, headEl: railHeadEl, footEl: railFootEl, dismiss: dismissRail }),
+    [railSlotEl, dismissRail, railHeadEl, railFootEl],
   );
 
   // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
@@ -600,14 +602,17 @@ function Layout() {
             )}
           </div>
           <footer className="sidebar-foot">
-            <span className="hud-tag">
-              {/* Sessions, on every route — including this one, where the sidebar is listing
-                  missions. Saying so is the difference between a fact and a mislabel (#937
-                  review 1). */}
-              <b className="num">{engaged}</b> ENGAGED ·{" "}
-              <b className="num">{live}</b> LIVE
-              {railInSidebar ? " SESSIONS" : ""}
-            </span>
+            {railInSidebar ? (
+              /* The footer describes the list above it (#948 §1). Where that list is missions, the
+                 rail portals its own telemetry here — mission count and held sessions — instead of
+                 the session counts #937 had to relabel. */
+              <span ref={setRailFootEl} data-testid="mission-foot-slot" />
+            ) : (
+              <span className="hud-tag">
+                <b className="num">{engaged}</b> ENGAGED ·{" "}
+                <b className="num">{live}</b> LIVE
+              </span>
+            )}
           </footer>
         </aside>
         {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the

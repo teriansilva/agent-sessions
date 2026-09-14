@@ -1,20 +1,40 @@
-import {
-  chooseUntrackedFilter,
-  clearUntrackedFilters,
-  untrackedFilterOption,
-} from "./mission-console";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
-import { mockMissions } from "./mission-console";
+import {
+  MISSION,
+  missionList,
+  missionRow,
+  mockMissions,
+} from "./mission-console";
+import { setupBench } from "./terminal/harness";
 
 // #754 — the orchestrator queue merged into the session cards, plus project/agent filters.
 //
 // Measured against the live stores before this change: 16 sessions had a live action and all 16
 // already appeared under "Needs you", with 0 exclusive to the queue. So the queue rendered one
 // session twice, in two visual languages, with two different affordances.
+//
+// #948 P3 moved the surfaces again, and this file follows them rather than the old markup:
+//   - a decision for a session NO mission holds renders in that session's pane
+//     (`session-decisions`), since the "Sessions without a mission" view is gone;
+//   - a decision for a session a mission HOLDS renders in that mission's thread, and settling it
+//     still goes through the route's local settlement + overview re-read (`Pulse.tsx`), which is
+//     what the #762 refresh-failure cases below were written against.
+//
+// REMOVED with the untracked view (#948 P3), each for the same reason — the UI no longer exists:
+//   - "a card with a live action sorts above one without": there is no session list under
+//     /mission to order any more.
+//   - "project and agent filters narrow the whole list and compose": the untracked project/agent
+//     selects are gone; the sessions sidebar's filters are pinned in
+//     `src/components/sidebar/Filters.test.tsx`.
 
 const NOW = Math.floor(Date.now() / 1000);
+
+const UUID = "aaaaaaaa-0000-4000-8000-000000000754";
+const OTHER = "bbbbbbbb-0000-4000-8000-000000000754";
+/** A server-shaped mission id (`msn_` + 32 hex), so the `?m=` deep link is honoured. */
+const MID = `msn_${"754a".repeat(8)}`;
 
 const ORCH_CONFIG = {
   enabled: true,
@@ -37,7 +57,7 @@ const ACTION = {
   ts: NOW,
   expires_at: NOW + 1800,
   tier: "suggest",
-  session_id: "claude:aaa",
+  session_id: `claude:${UUID}`,
   engine: "claude",
   title: "Switch the default model",
   project: "infra",
@@ -48,9 +68,21 @@ const ACTION = {
   evidence: "none",
 };
 
+/** A second decision, on a second session, that must SURVIVE the first one settling. */
+const OTHER_ACTION = {
+  ...ACTION,
+  id: "act-2",
+  session_id: `codex:${OTHER}`,
+  engine: "codex",
+  title: "Relay cap",
+  project: "battlelab",
+  project_id: "p2",
+  rationale: "stopped before running the relay tests",
+};
+
 function card(over: Record<string, unknown> = {}) {
   return {
-    id: "claude:aaa",
+    id: `claude:${UUID}`,
     engine: "claude",
     title: "Switch the default model",
     cwd: "/home/u/infra",
@@ -63,6 +95,30 @@ function card(over: Record<string, unknown> = {}) {
     ai_summary: "Editing opencode.json",
     synthesis: "",
     ...over,
+  };
+}
+
+function overview(cards: unknown[]) {
+  return {
+    cache_version: 2,
+    generated_at: NOW,
+    window_days: 3,
+    scan_depth: "slow",
+    input_fingerprint: null,
+    synthesis_skipped: false,
+    banner: null,
+    cards,
+  };
+}
+
+function orchestrator(pending: unknown[], feed: unknown[] = []) {
+  return {
+    config: ORCH_CONFIG,
+    pending,
+    feed,
+    expired_now: 0,
+    running: [],
+    last: {},
   };
 }
 
@@ -113,104 +169,77 @@ test.beforeEach(async ({ page }) => {
     r.fulfill({ json: { notifications: [], unread: 0 } }),
   );
   await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
-    r.fulfill({
-      json: {
-        config: ORCH_CONFIG,
-        pending: [ACTION],
-        feed: [],
-        expired_now: 0,
-        running: [],
-        last: {},
-      },
-    }),
+    r.fulfill({ json: orchestrator([ACTION]) }),
   );
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: [
-          card({ pending_action: ACTION }),
-          card({
-            id: "codex:bbb",
-            engine: "codex",
-            title: "Relay cap",
-            project: {
-              kind: "project",
-              id: "p2",
-              name: "battlelab",
-              color: "#ffb000",
-            },
-            state: "needs_you",
-          }),
-          card({ id: "claude:ccc", title: "Docs pass", state: "idle" }),
-        ],
-      },
+      json: overview([
+        card({ pending_action: ACTION }),
+        card({
+          id: `codex:${OTHER}`,
+          engine: "codex",
+          title: "Relay cap",
+          project: {
+            kind: "project",
+            id: "p2",
+            name: "battlelab",
+            color: "#ffb000",
+          },
+          state: "needs_you",
+        }),
+      ]),
     }),
   );
 });
 
-test("a session appears ONCE, with its decision controls on the card", async ({
+/** The pane of the session no mission holds — where its decision renders since #948 P3. */
+async function openPane(page: Page) {
+  await setupBench(page, {
+    sessions: [{ engine: "claude", uuid: UUID, title: ACTION.title }],
+  });
+  await page.goto(`/s/claude/${UUID}`);
+  return page.getByTestId("session-decisions");
+}
+
+/** A mission holding `keys`, opened by its deep link — its thread is where their decisions render. */
+async function openMissionHolding(page: Page, keys: string[]) {
+  await mockMissions(page, {
+    missions: missionList([
+      missionRow({ id: MID, title: "Unify the queue", session_keys: keys }),
+    ]),
+    mission: {
+      ...MISSION,
+      id: MID,
+      title: "Unify the queue",
+      sessions: keys.map((k) => ({ session_key: k, removed_at: null })),
+      events: [],
+      events_next_seq: null,
+    },
+  });
+  await page.goto(`/mission?m=${MID}`);
+  await expect(page.getByTestId("console-title")).toHaveText("Unify the queue");
+}
+
+test("a pending decision appears ONCE, in its session's pane, with its controls inside it", async ({
   page,
 }) => {
-  await mockMissions(page);
-  await page.goto("/mission");
-  await expect(
-    page.getByRole("link", { name: "Missions", exact: true }),
-  ).toHaveAttribute("aria-current", "page");
+  const strip = await openPane(page);
+  await expect(strip).toHaveCount(1);
 
-  // The action's own title appears exactly once on the page — the queue used to render it a
-  // second time in its own list.
-  await expect(page.getByText("Switch the default model")).toHaveCount(1);
+  // The decision's own words appear exactly once on the page — the queue used to render the
+  // action a second time in its own list.
+  await expect(page.getByText(ACTION.rationale)).toHaveCount(1);
+  // …and the strip does not restate the session's identity: the pane already names it, which is
+  // why `ActionRow` renders embedded here, as it did inside the card.
+  await expect(strip).not.toContainText(ACTION.title);
 
-  // …and the controls are ON that card, not in a separate block.
+  // The controls are INSIDE that strip, not in a separate block.
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toHaveCount(1);
-  const cardBox = (await page
-    .locator("li", { hasText: "Switch the default model" })
-    .first()
-    .boundingBox())!;
+  const stripBox = (await strip.boundingBox())!;
   const btnBox = (await approve.boundingBox())!;
-  expect(btnBox.y).toBeGreaterThan(cardBox.y);
-  expect(btnBox.y).toBeLessThan(cardBox.y + cardBox.height);
-});
-
-test("a card with a live action sorts above one without", async ({ page }) => {
-  await mockMissions(page);
-  await page.goto("/mission");
-  await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
-  const titles = await page.locator("li").allInnerTexts();
-  const withAction = titles.findIndex((t) =>
-    t.includes("Switch the default model"),
-  );
-  const without = titles.findIndex((t) => t.includes("Relay cap"));
-  expect(withAction).toBeGreaterThanOrEqual(0);
-  expect(without).toBeGreaterThan(withAction);
-});
-
-test("project and agent filters narrow the whole list and compose", async ({
-  page,
-}) => {
-  await mockMissions(page);
-  await page.goto("/mission");
-  await expect(page.getByText("Relay cap")).toBeVisible();
-
-  // Counts come from the unfiltered set, so a chip states what selecting it would yield.
-  await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
-  await expect(page.getByText("Relay cap")).toBeVisible();
-  await expect(page.getByText("Switch the default model")).toHaveCount(0);
-
-  // …and the chip is still there with the same count after filtering.
-  await expect(untrackedFilterOption(page, /^battlelab\s+·\s*1$/i)).toHaveCount(
-    1,
-  );
-
-  await clearUntrackedFilters(page);
-  await expect(page.getByText("Switch the default model")).toBeVisible();
+  expect(btnBox.y).toBeGreaterThan(stripBox.y);
+  expect(btnBox.y).toBeLessThan(stripBox.y + stripBox.height);
 });
 
 test("the manual pass lives in Settings and reports what the pass actually said (#929)", async ({
@@ -225,18 +254,9 @@ test("the manual pass lives in Settings and reports what the pass actually said 
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        // Before the pass the session has no action; after it, the card carries one.
-        cards: [
-          scanned ? card({ pending_action: ACTION }) : card({ state: "idle" }),
-        ],
-      },
+      json: overview([
+        scanned ? card({ pending_action: ACTION }) : card({ state: "idle" }),
+      ]),
     }),
   );
   await page.route(/\/api\/pulse\/orchestrate$/, async (r) => {
@@ -268,40 +288,32 @@ test("the manual pass lives in Settings and reports what the pass actually said 
   await expect(page.getByRole("button", { name: /run now/i })).toHaveCount(0);
 });
 
-test("resolving from a card still re-reads the orchestrator's own state", async ({
+test("resolving a mission's decision still re-reads the orchestrator's own state", async ({
   page,
 }) => {
-  // The panel owns its own pending/feed. Without telling it, approving on a card left
-  // "1 action needs you" sitting above a card that no longer had one (#754 review). #929
-  // removed that headline, but not the wiring underneath it — the health badge reads the same
-  // endpoint, so a settled action must still refresh it. The fetch count is deliberately what
-  // is asserted (see below); with the headline gone it is now the ONLY honest witness.
+  // The health badge owns its own read of the orchestrator. Without telling it, approving a
+  // decision left "1 action needs you" sitting above a row that no longer had one (#754 review).
+  // #929 removed that headline, but not the wiring underneath it — the badge reads the same
+  // endpoint, so a settled action must still refresh it. The fetch count is deliberately what is
+  // asserted; with the headline gone it is the ONLY honest witness.
   let settled = false;
+  const key = `claude:${UUID}`;
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: [settled ? card({}) : card({ pending_action: ACTION })],
-      },
+      json: overview([
+        settled
+          ? card({ mission_id: MID })
+          : card({ mission_id: MID, pending_action: ACTION }),
+      ]),
     }),
   );
   await page.unroute(/\/api\/pulse\/orchestrator$/);
   await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
     r.fulfill({
-      json: {
-        config: ORCH_CONFIG,
-        pending: settled ? [] : [ACTION],
-        feed: settled ? [{ ...ACTION, state: "delivered" }] : [],
-        expired_now: 0,
-        running: [],
-        last: {},
-      },
+      json: settled
+        ? orchestrator([], [{ ...ACTION, state: "delivered" }])
+        : orchestrator([ACTION]),
     }),
   );
   await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
@@ -309,17 +321,16 @@ test("resolving from a card still re-reads the orchestrator's own state", async 
     await r.fulfill({ json: { ...ACTION, state: "delivered" } });
   });
 
-  // Count the panel's OWN fetches. Asserting on its rendered text instead was useless: the
-  // text also disappears if the component happens to remount, so the assertion passed with the
-  // wiring removed. This measures the thing the fix actually does.
+  // Count the endpoint's OWN fetches. Asserting on rendered text instead was useless: the text
+  // also disappears if the component happens to remount, so the assertion passed with the wiring
+  // removed. This measures the thing the fix actually does.
   let orchFetches = 0;
   page.on("request", (req) => {
     if (/\/api\/pulse\/orchestrator$/.test(new URL(req.url()).pathname))
       orchFetches += 1;
   });
 
-  await mockMissions(page);
-  await page.goto("/mission");
+  await openMissionHolding(page, [key]);
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
   const before = orchFetches;
@@ -328,7 +339,7 @@ test("resolving from a card still re-reads the orchestrator's own state", async 
   await expect(approve).toHaveCount(0);
 
   // The orchestrator's own state is re-read, so nothing downstream of it can disagree with
-  // the cards.
+  // the decisions on screen.
   await expect.poll(() => orchFetches).toBeGreaterThan(before);
 });
 
@@ -340,28 +351,32 @@ test("a settled action loses its controls even when the background refresh fails
   // in its `finally` — leaving Approve/Reject enabled for an action the server had already
   // decided, until the operator reloaded the page (#762 review). The response already says
   // what happened, so the settlement is applied locally and the refetch only reconciles.
+  //
+  // Read in a MISSION'S THREAD since #948 P3: that is where the route's local settlement still
+  // decides what is drawn. (The card's LED band assertion that followed went with the untracked
+  // view — no surface under /mission draws a card's band any more.)
   let approved = false;
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, async (r) => {
     if (approved) return r.fulfill({ status: 500, json: { detail: "boom" } });
     await r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: [
-          // Exactly what `_attach_pending` emits: re-banded to `needs_you`, with the band it
-          // had before the overlay preserved so the client can put it back.
-          card({
-            pending_action: ACTION,
-            state: "needs_you",
-            state_without_action: "idle",
-          }),
-        ],
-      },
+      json: overview([
+        // Exactly what `_attach_pending` emits: re-banded to `needs_you`, with the band it had
+        // before the overlay preserved so the client can put it back.
+        card({
+          mission_id: MID,
+          pending_action: ACTION,
+          state: "needs_you",
+          state_without_action: "idle",
+        }),
+        card({
+          id: `codex:${OTHER}`,
+          engine: "codex",
+          title: "Relay cap",
+          mission_id: MID,
+          pending_action: OTHER_ACTION,
+        }),
+      ]),
     });
   });
   await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
@@ -369,87 +384,114 @@ test("a settled action loses its controls even when the background refresh fails
     await r.fulfill({ json: { ...ACTION, state: "delivered" } });
   });
 
-  await mockMissions(page);
-  await page.goto("/mission");
-  const approve = page.getByRole("button", { name: /^approve$/i });
+  await openMissionHolding(page, [`claude:${UUID}`, `codex:${OTHER}`]);
+  const row = page.locator("li", { hasText: ACTION.rationale });
+  const approve = row.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
+  await expect(page.getByText(OTHER_ACTION.rationale)).toBeVisible();
   await approve.click();
 
   // Two assertions this test needs to be worth anything:
   //
-  // The CARD must still be there. Without that, a blanked overview (a 500 body applied as if it
-  // were an overview) removes the controls too and the test passes for the wrong reason.
-  await expect(page.getByText("Switch the default model")).toBeVisible();
+  // The OTHER decision must still be there. Without that, a blanked overview (a 500 body applied
+  // as if it were an overview) removes every row too and the test passes for the wrong reason.
+  await expect(page.getByText(OTHER_ACTION.rationale)).toBeVisible();
   // And the check must be on something STABLE. `Approve` relabels itself to `Sending…` while
   // the request is in flight, so asserting the button is gone passes during that window —
-  // against the unfixed code as well, which is exactly how this test first fooled me. The
-  // action's rationale only leaves the DOM when the row itself does.
-  await expect(page.getByText(/finished the edit and stopped/i)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
+  // against the unfixed code as well. The action's rationale only leaves the DOM when the row
+  // itself does.
+  await expect(page.getByText(ACTION.rationale)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(1);
+});
 
-  // The BAND has to go back too. `_attach_pending` re-banded this card to `needs_you` because
-  // of the action; with the action gone it belongs under its own state again, or the session
-  // reads as needing you with nothing pending until a later fetch succeeds — and the fetch
-  // failing is precisely the case this branch exists for.
-  //
-  // The band used to be a section heading; since #754 it is the card's LED accessible name,
-  // so that is where this asserts it now — same fact, current structure.
-  await expect(page.getByRole("img", { name: "Needs you" })).toHaveCount(0);
-  await expect(page.getByRole("img", { name: "Idle" })).toHaveCount(1);
+test("a settled action loses its controls in the SESSION PANE too, even when the re-read fails", async ({
+  page,
+}) => {
+  // The same #762 guarantee on the surface an unheld session's decision moved to (#948 P3). The
+  // pane refreshes its decisions from `GET /api/pulse/orchestrator`; when that re-read fails after
+  // a successful approve, the settled action must not sit there offering Approve again.
+  let approved = false;
+  const SAME_SESSION = {
+    ...ACTION,
+    id: "act-3",
+    rationale: "a second question on the same session",
+    evidence: "none",
+    verb: "escalate",
+    state: "escalated",
+  };
+  await page.unroute(/\/api\/pulse\/orchestrator$/);
+  await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
+    approved
+      ? r.fulfill({ status: 500, json: { detail: "boom" } })
+      : r.fulfill({ json: orchestrator([ACTION, SAME_SESSION]) }),
+  );
+  await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
+    approved = true;
+    await r.fulfill({ json: { ...ACTION, state: "delivered" } });
+  });
+
+  const strip = await openPane(page);
+  await expect(strip.getByText(SAME_SESSION.rationale)).toBeVisible();
+  await strip.getByRole("button", { name: /^approve$/i }).click();
+
+  // The untouched decision proves the strip was not simply blanked…
+  await expect(strip.getByText(SAME_SESSION.rationale)).toBeVisible();
+  // …and the settled one is gone, anchored on its rationale rather than the relabelling button.
+  await expect(page.getByText(ACTION.rationale)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
 });
 
 test("a card that existed only for its action goes away with it", async ({
   page,
 }) => {
   // `_attach_pending` synthesizes a card when a live action has no cached card. Settle that
-  // action and there is nothing left to show: no summary, no controls, no real session row —
-  // just an empty phantom sitting under "Needs you" (#762 review).
+  // action and there is nothing left to show: no summary, no controls, no real session row
+  // (#762 review). Read in a mission's thread since #948 P3 — the route's settlement branch for a
+  // synthesized card is unchanged, and a real decision beside it must be untouched.
   let approved = false;
+  const PHANTOM = {
+    ...OTHER_ACTION,
+    id: "act-phantom",
+    rationale: "a proposal for a session with no cached card",
+  };
   await page.unroute(/\/api\/pulse$/);
   await page.route(/\/api\/pulse$/, async (r) => {
     if (approved) return r.fulfill({ status: 500, json: { detail: "boom" } });
     await r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: [
-          card({ state: "idle" }),
-          {
-            id: "codex:ddd",
-            engine: "codex",
-            title: "Phantom candidate",
-            cwd: "",
-            project: { kind: "project", id: "p3", name: "relay" },
-            state: "needs_you",
-            synthesized_for_action: true,
-            live: false,
-            last_activity: NOW - 60,
-            intervention_required: false,
-            intervention_reason: "",
-            ai_summary: "",
-            synthesis: "",
-            pending_action: { ...ACTION, id: "act-2", session_id: "codex:ddd" },
-          },
-        ],
-      },
+      json: overview([
+        card({ mission_id: MID, pending_action: ACTION }),
+        {
+          id: `codex:${OTHER}`,
+          engine: "codex",
+          title: "Phantom candidate",
+          cwd: "",
+          project: { kind: "project", id: "p3", name: "relay" },
+          state: "needs_you",
+          synthesized_for_action: true,
+          mission_id: MID,
+          live: false,
+          last_activity: NOW - 60,
+          intervention_required: false,
+          intervention_reason: "",
+          ai_summary: "",
+          synthesis: "",
+          pending_action: PHANTOM,
+        },
+      ]),
     });
   });
   await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
     approved = true;
-    await r.fulfill({ json: { ...ACTION, id: "act-2", state: "delivered" } });
+    await r.fulfill({ json: { ...PHANTOM, state: "delivered" } });
   });
 
-  await mockMissions(page);
-  await page.goto("/mission");
-  await expect(page.getByText("Phantom candidate")).toBeVisible();
+  await openMissionHolding(page, [`claude:${UUID}`, `codex:${OTHER}`]);
+  const phantomRow = page.locator("li", { hasText: PHANTOM.rationale });
+  await expect(phantomRow).toBeVisible();
 
-  await page.getByRole("button", { name: /^approve$/i }).click();
+  await phantomRow.getByRole("button", { name: /^approve$/i }).click();
 
-  await expect(page.getByText("Phantom candidate")).toHaveCount(0);
-  // The real session is untouched.
-  await expect(page.getByText("Switch the default model")).toBeVisible();
+  await expect(page.getByText(PHANTOM.rationale)).toHaveCount(0);
+  // The real session's decision is untouched.
+  await expect(page.getByText(ACTION.rationale)).toBeVisible();
 });

@@ -1,20 +1,16 @@
-/** The rail: every mission, plus the live sessions no mission owns yet (#878).
+/** The rail: every mission (#878).
  *
  * It is drawn with the SESSIONS sidebar's own classes (#948 P2) — the `+ New session` button,
  * the filter bar and its Active | Archived tabs, and the row anatomy (LED, one title line, one
  * mono meta line). The mission rail used to restate every one of those values in its own rules,
  * and restating them is exactly how the two sidebars drifted apart; sharing the classes is what
  * keeps them aligned. Only what a `<button>` brings with it is reset locally.
- *
- * The UNTRACKED group is not a migration ramp that goes away — it is the permanent home for work
- * started from the sidebar. Deleting the card grid without it would orphan every live session
- * that nobody has adopted, which is the one way this phase could lose something real.
  */
 import { Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { relTime } from "../../lib/format";
-import type { MissionListRow, PulseCard } from "../../types/api";
+import type { MissionListRow } from "../../types/api";
 import filterStyles from "../sidebar/Filters.module.css";
 import listStyles from "../sidebar/SessionList.module.css";
 
@@ -35,24 +31,12 @@ function stateLabel(m: MissionListRow): string {
   return m.state === "dispatching" ? "starting" : m.state;
 }
 
-/** The sentinel id for the UNTRACKED view. A real mission id is `msn_…`, so this cannot collide.
- *
- *  It exists because an untracked session can carry a PENDING DECISION, and before this phase
- *  that decision rode a card with controls. Without somewhere to render it the console would
- *  silently drop decisions for exactly the sessions nobody has organised yet — the opposite of
- *  what MISSION CONTROL is for. Selecting UNTRACKED shows those decisions in the thread, which
- *  is the surface wide enough for them. */
-export const UNTRACKED_VIEW = "__untracked__";
-
 export interface MissionRailProps {
   filters?: ReactNode;
-  untrackedFilters?: ReactNode;
   loading?: boolean;
   filtered?: boolean;
   projectNames?: Record<string, string>;
   missions: MissionListRow[];
-  /** Live sessions with no mission. `PulseCard` is the existing overview row shape. */
-  untracked: PulseCard[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   storeError?: string | null;
@@ -88,11 +72,13 @@ export interface MissionRailProps {
    *  sessions sidebar uses for its ORDER control. `null` renders an equivalent row in place — the
    *  standalone fallback for tests and for any mount without the shell. */
   headEl?: HTMLElement | null;
+  /** The shell's footer slot (#948 §1): mission and held-session telemetry. `null` renders
+   *  nothing — the footer belongs to the shell, and a standalone mount has none. */
+  footEl?: HTMLElement | null;
 }
 
 export function MissionRail({
   missions,
-  untracked,
   selectedId,
   onSelect,
   storeError,
@@ -106,11 +92,11 @@ export function MissionRail({
   onScope,
   onNewMission,
   filters,
-  untrackedFilters,
   loading = false,
   filtered = false,
   projectNames = {},
   headEl = null,
+  footEl = null,
 }: MissionRailProps) {
   // Counted over the LOADED rows, like the rail's own dots — a count of what is on screen.
   const needsYou = missions.filter((m) => m.needs_you).length;
@@ -134,14 +120,31 @@ export function MissionRail({
     </span>
   );
 
+  // Held sessions, counted the same way: distinct keys across the LOADED rows. With more pages to
+  // load that is a floor, so it says `+` rather than presenting a partial sum as the whole.
+  const held = new Set(missions.flatMap((m) => m.session_keys ?? [])).size;
+  const foot = (
+    <span className="hud-tag" data-testid="rail-foot">
+      <b className="num">{total}</b> MISSIONS ·{" "}
+      <b className="num">
+        {held}
+        {hasMore ? "+" : ""}
+      </b>{" "}
+      HELD
+    </span>
+  );
+
   const rowClass = (on: boolean) =>
     `${listStyles.row} ${styles.railButton} ${on ? listStyles.active : ""}`;
 
   return (
     <nav
-      className={`${styles.rail} ${selectedId === UNTRACKED_VIEW ? styles.railWithSessions : ""}`}
+      className={styles.rail}
       aria-label="Missions"
     >
+      {footEl && !loading && !(storeError && !missions.length)
+        ? createPortal(foot, footEl)
+        : null}
       {headEl ? (
         createPortal(counts, headEl)
       ) : (
@@ -165,8 +168,7 @@ export function MissionRail({
             {storeError}.{" "}
             {missions.length
               ? "Showing the last available result."
-              : "Missions are unavailable."}{" "}
-            Sessions below are unaffected.
+              : "Missions are unavailable."}
             {onReRead ? (
               <button type="button" className={styles.more} onClick={onReRead}>
                 Retry missions
@@ -308,46 +310,6 @@ export function MissionRail({
           </div>
         ) : null}
       </div>
-      {untracked.length > 0 ? (
-        <div className={listStyles.rowWrap}>
-          <button
-            type="button"
-            className={rowClass(selectedId === UNTRACKED_VIEW)}
-            aria-current={selectedId === UNTRACKED_VIEW ? "true" : undefined}
-            onClick={() => onSelect(UNTRACKED_VIEW)}
-            data-testid="rail-untracked-view"
-          >
-            <span
-              className={`${listStyles.led} ${styles.dot} ${styles.railDot} ${
-                untracked.some((c) => c.pending_action)
-                  ? styles.dotNeedsYou
-                  : untracked.some((c) => c.live)
-                    ? styles.dotRunning
-                    : styles.dot
-              }`}
-              aria-hidden="true"
-            />
-            <span className={listStyles.body}>
-              <span className={`${listStyles.title} ${styles.railText}`}>
-                Sessions without a mission · {untracked.length}
-              </span>
-              <span className={listStyles.meta}>
-                <span className={listStyles.metaText}>
-                  {untracked.filter((c) => c.pending_action).length
-                    ? `${untracked.filter((c) => c.pending_action).length} waiting on you`
-                    : "live sessions with no mission"}
-                </span>
-              </span>
-            </span>
-          </button>
-          {/* The sessions themselves are NOT listed here.
-              The rail navigates; the pane carries content. Listing every untracked session in
-              both put the same title in two places — which is duplication on a desktop and, on a
-              phone where the rail is a DRAWER, put half of it somewhere the operator cannot see
-              without opening it. One navigation row, and the sessions live in the view. */}
-        </div>
-      ) : null}
-      {selectedId === UNTRACKED_VIEW ? untrackedFilters : null}
     </nav>
   );
 }

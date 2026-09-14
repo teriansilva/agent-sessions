@@ -1,18 +1,28 @@
-import { openMissionConversation,
-  flipMissionScope,
-} from "./mission-console";
-/** #929 — the Pulse shell is gone, and the two defects its removal exposed are closed.
+/** #929 → #948 P3 — the console's layout under the front-door rework.
  *
- *  These are real-browser tests because both findings are LAYOUT facts a DOM emulator cannot
- *  answer: one is a media query, the other is what an operator can reach at a given width.
+ *  These are real-browser tests because the findings they guard are LAYOUT and TIMING facts a DOM
+ *  emulator cannot answer: a media query, what an operator can reach at a given width, and WHEN a
+ *  render happens relative to a request landing.
  *
- *  The invariant under test is reachability of CONTENT, never the presence of a tab. A tab that
- *  renders nothing would satisfy a `toBeVisible()` on the control and still leave the operator
- *  exactly where they started.
+ *  #948 P3 removed three surfaces this file used to exercise: the no-mission "first-run" block, the
+ *  Conversation / Details tab strip (and its "choose one from the list" explanatory pane), and the
+ *  untracked-session list. Each test below that survived is rewritten against what replaced them —
+ *  the new-mission landing (`mission-landing`), the rail's own empty state (`rail-no-missions`) and
+ *  the one details disclosure (`details-toggle`). The invariant is still reachability of CONTENT,
+ *  never the presence of a control.
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { missionList, missionRow, mockMissions } from "./mission-console";
+import {
+  MISSION,
+  flipMissionScope,
+  missionList,
+  missionRow,
+  mockMissions,
+  openMissionConversation,
+  openMissionDetails,
+  openMissionRail,
+} from "./mission-console";
 
 const T = 1_700_000_000;
 
@@ -40,9 +50,9 @@ const CONFIG = {
   projects_hidden: [],
   pulse: { configured: true },
 };
-/** One untracked session, so the UNTRACKED view actually renders. With zero sessions AND zero
- *  missions the console selects nothing and neither branch mounts — which would make every
- *  assertion below vacuous rather than failing. */
+/** A live session no mission holds. Since #948 P3 it renders nothing under `/mission` (its
+ *  decisions go to the session's own pane); it stays in the default fixture so that no layout
+ *  assertion here quietly depends on the overview being empty. */
 const CARD = {
   id: "claude:11111111-1111-1111-1111-111111111111",
   engine: "claude",
@@ -74,7 +84,7 @@ const OVERVIEW = {
   cards: [CARD],
 };
 
-/** `missions: []` is a SUCCESSFUL read that found nothing — the first-run case. */
+/** `missions: []` is a SUCCESSFUL read that found nothing — the fresh-install case. */
 async function stub(
   page: Page,
   opts: {
@@ -109,8 +119,6 @@ async function stub(
       json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
     }),
   );
-  // The overview is `/api/pulse` exactly — `**/api/pulse/overview` matches nothing and leaves
-  // the page with no cards, hence no untracked view and nothing to assert against.
   await page.route(/\/api\/pulse$/, (r) =>
     r.fulfill({ json: { ...OVERVIEW, cards: opts.cards ?? [CARD] } }),
   );
@@ -120,184 +128,170 @@ async function stub(
   // `missionList(...)` — NOT a bare array. `mockMissions` does `m ?? EMPTY_MISSIONS`, and `[]`
   // is not nullish, so passing one fulfils with an ARRAY where the console expects
   // `{missions, total, …}`; the parse fails, no list is applied, and `listLoaded` never flips.
-  // That silently defeats the first-run assertion rather than failing it honestly.
+  // That silently defeats every "the list has landed" witness below rather than failing honestly.
   await mockMissions(page, {
     missions:
       opts.missionsResolver ?? missionList(rows, opts.storeError ?? null),
   });
 }
 
-test.describe("stops are reachable at every width (#929)", () => {
+/** Select a mission from the rail. Nothing is auto-selected since #948 P3 — the section opens on
+ *  the new-mission page — so a test about a selected mission picks one itself, on either project. */
+async function selectFromRail(page: Page, title: RegExp) {
+  await openMissionRail(page);
+  await page
+    .getByRole("navigation", { name: /missions/i })
+    .getByRole("button", { name: title })
+    .first()
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByTestId("mission-state")).toBeVisible();
+}
+
+test.describe("the workspace's content is reachable at every width (#929, #948)", () => {
   for (const width of [1399, 1400, 1600]) {
-    test(`no mission selected at ${width}px: OBJECTIVES and TIMELINE render content`, async ({
+    test(`no mission selected at ${width}px: the new-mission page is the content, with nothing to disclose`, async ({
       page,
     }) => {
-      // The old rule hid the stop strip at >=1400px on the theory that a detail column always
-      // replaced it. With no mission there IS no column, so at 1400+ the operator saw neither —
-      // and at 1399 they saw both. This asserts the width does not decide it.
+      // #929's defect was a no-mission page whose content depended on the width: at 1400+ the
+      // operator saw neither the stops nor what they led to. The no-mission page is now the
+      // new-mission landing (#948 P3), and the width still must not decide what it offers.
       await page.setViewportSize({ width, height: 900 });
       await stub(page);
       await page.goto("/mission");
-      await page.getByTestId("pane").waitFor();
 
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("no-mission-details")).toContainText(
-        /choose one from the list/i,
+      await expect(page.getByTestId("mission-landing")).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "What should this mission achieve?" }),
+      ).toBeVisible();
+      await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
+        "aria-pressed",
+        "true",
       );
-
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("no-mission-details")).toContainText(
-        /choose one from the list/i,
-      );
+      await expect(page.getByTestId("new-mission-instruction")).toBeInViewport();
+      // Nothing is selected, so there is no mission header and no details to disclose.
+      await expect(page.getByTestId("console-title")).toHaveCount(0);
+      await expect(page.getByTestId("details-toggle")).toHaveCount(0);
+      await expect(page.getByTestId("mission-details")).toHaveCount(0);
     });
   }
 
-  test("with a mission selected at 1600px the strip is STILL there (#942)", async ({
+  test("with a mission selected at 1600px the details sit beside the thread, with no disclosure (#942, #948)", async ({
     page,
   }) => {
-    // THIS ASSERTION IS THE INVERSE OF WHAT IT WAS, and the inversion is the point. #929 fixed
-    // "the tabs vanish at ≥1400px" by keying the hide on whether a detail column had actually
-    // rendered — the honest fix for the rule as it stood. #942 deleted the column, so there is
-    // nothing to replace the tabs with and nothing to key off: they are simply always there.
+    // #942 deleted the old detail column; #948 P3 deleted the tab strip that replaced it. At 1400+
+    // the details are simply beside the thread, and the below-1400 disclosure is not shown.
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, { missions: [missionRow()] });
     await page.goto("/mission");
-    // Selected EXPLICITLY. With untracked sessions present the console auto-selects UNTRACKED,
-    // so asserting on the default view would have tested the other branch entirely.
-    await page
-      .getByRole("button", { name: /Kimi transcript adapter/i })
-      .first()
-      .click();
-    await expect(page.getByTestId("mission-state")).toBeVisible();
+    await selectFromRail(page, /Kimi transcript adapter/i);
     await expect(page.getByTestId("detail-column")).toHaveCount(0);
     await expect(page.getByTestId("mission-details")).toBeVisible();
     await expect(page.getByTestId("detail-context")).toBeVisible();
+    await expect(page.getByTestId("details-toggle")).toBeHidden();
+    const pane = (await page.getByTestId("pane").boundingBox())!;
+    const details = (await page.getByTestId("mission-details").boundingBox())!;
+    expect(details.x).toBeGreaterThanOrEqual(pane.x + pane.width);
   });
 });
 
-test("a fresh install leads with the composer, not with disabled ADOPTs (#929)", async ({
+test("a fresh install leads with the composer (#929, #948)", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page);
   await page.goto("/mission");
 
-  const firstRun = page.getByTestId("first-run");
-  await expect(firstRun).toContainText(/start your first mission/i);
+  // A READ that found nothing — the rail says so — not a list still in flight.
+  await expect(page.getByTestId("rail-no-missions")).toBeVisible();
 
-  // ASSERTED AS GEOMETRY, NOT AS DOM NESTING (#930 review 1, finding 1). The composer used to
-  // be a CHILD of the first-run block, which is what made the fresh-install flip a remount and
-  // cost the operator their draft. It is now one fixed mount whose ORDER moves, so "leads with
-  // the composer" has to be asked of the layout: is it above the session list, and below the
-  // invitation that explains it. Containment would now pass for a composer that renders
-  // nowhere near either.
+  // ASSERTED AS GEOMETRY, NOT AS DOM NESTING (#930 review 1, finding 1). "Leads with the composer"
+  // is a layout claim: the heading that explains it, then the composer, above the fold. (It was
+  // also measured against the untracked-session list below it; that list was removed by #948 P3.)
+  const heading = page.getByRole("heading", {
+    name: "What should this mission achieve?",
+  });
   const composer = page.getByTestId("composer-mode-new");
+  await expect(heading).toBeVisible();
   await expect(composer).toBeVisible();
-  const sessions = page.getByTestId("untracked-session").first();
-  await expect(sessions).toBeVisible();
-
-  const [fb, cb, sb] = [
-    (await firstRun.boundingBox())!,
+  const [hb, cb] = [
+    (await heading.boundingBox())!,
     (await composer.boundingBox())!,
-    (await sessions.boundingBox())!,
   ];
-  expect(cb.y).toBeGreaterThan(fb.y);
-  expect(cb.y).toBeLessThan(sb.y);
+  expect(cb.y).toBeGreaterThan(hb.y);
+  expect(cb.y + cb.height).toBeLessThanOrEqual(900);
+  // Nothing needs the operator and nothing is filtered, so there is no NEEDS YOU section either.
+  await expect(page.getByTestId("landing-needs-you")).toHaveCount(0);
 });
 
-test("mobile keeps the stops and the same content (#929)", async ({
-  page,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile", "phone layout");
-  await stub(page);
-  await page.goto("/mission");
-  await page.getByTestId("stop-details").click();
-  await expect(page.getByTestId("no-mission-details")).toContainText(
-    /choose one from the list/i,
-  );
-});
-
-test("a store failure does NOT get the first-run treatment (#929)", async ({
+test("a store failure is not read as 'you have no missions' (#929)", async ({
   page,
 }) => {
-  // The gate is `listLoaded && !storeError && !archived && missions.length === 0`, and this is
-  // the clause that matters most. An empty rail because the store could not be READ is not a
-  // fresh install — telling that operator to "start your first mission" would be inventing an
-  // answer out of an absence, which is the mistake the mission work has already paid for twice.
+  // An empty rail because the store could not be READ is not a fresh install. The first-run block
+  // that used to get this wrong is gone (#948 P3); what is left that could invent an answer out of
+  // an absence is the rail's "no missions" empty state and the landing's NEEDS YOU preview.
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page, { storeError: "the mission store could not be read" });
   await page.goto("/mission");
 
   await expect(page.getByTestId("console-store-error")).toBeVisible();
-  await expect(page.getByTestId("first-run")).toHaveCount(0);
+  await expect(page.getByTestId("rail-no-missions")).toHaveCount(0);
+  await expect(page.getByTestId("landing-needs-empty")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(/nothing needs you/i);
 });
 
-/** The four defects the first review of PR #930 found. Each is a real-browser test because each
- *  is about WHEN a render happens relative to a request landing — a thing a DOM emulator with
- *  synchronous fakes cannot put in the wrong order. */
+/** The defects the first review of PR #930 found. Each is about WHEN a render happens relative to
+ *  a request landing — a thing a DOM emulator with synchronous fakes cannot put in the wrong order. */
 test.describe("#930 review 1 — the console under a slow store", () => {
-  test("a draft survives the empty mission list arriving (finding 1)", async ({
-    page,
-  }) => {
-    // The composer used to be two mounts either side of `firstRun`. Typing while the list was
-    // still in flight and then having it resolve EMPTY flipped the flag, unmounted the mount
-    // being typed into, and mounted a fresh one — silently discarding the draft with no
-    // navigation and nothing on screen to explain it.
-    await page.setViewportSize({ width: 1280, height: 900 });
-    const gate = deferred();
-    await stub(page, {
-      missionsResolver: async () => {
-        await gate.promise;
-        return { missions: [], total: 0, error: null };
-      },
-    });
-
-    await page.goto("/mission");
-    const box = page.getByRole("textbox").first();
-    await box.waitFor();
-    await box.fill("what happened to the parser work");
-    await expect(box).toHaveValue("what happened to the parser work");
-
-    // The answer lands: an empty list, which is what turns first-run on.
-    gate.resolve();
-    await expect(page.getByTestId("first-run")).toBeVisible();
-
-    // RED before the fix: the value is "" here, because this is a different element.
-    await expect(page.getByRole("textbox").first()).toHaveValue(
-      "what happened to the parser work",
-    );
-  });
-
-  for (const width of [1399, 1600]) {
-    test(`zero missions AND zero sessions still answer the tabs at ${width}px (finding 3)`, async ({
+  for (const mode of ["new mission", "ask"] as const) {
+    test(`a ${mode} draft survives the empty mission list arriving (finding 1)`, async ({
       page,
     }) => {
-      // With no sessions the console selects `null`, not the UNTRACKED sentinel — a different
-      // branch, and the one an operator sees on a brand-new install. The tabs moved `stop` and
-      // nothing read it, so both buttons were inert on the emptiest page in the product.
-      await page.setViewportSize({ width, height: 900 });
-      await stub(page, { cards: [] });
+      // The composer used to be two mounts either side of the first-run flag. Typing while the list
+      // was still in flight and then having it resolve EMPTY unmounted the field being typed into
+      // and mounted a fresh one — silently discarding the draft. The landing keeps ONE composer
+      // mount (#948 P3), and this pins that the list arriving does not replace it.
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const gate = deferred();
+      await stub(page, {
+        missionsResolver: async () => {
+          await gate.promise;
+          return missionList([]);
+        },
+      });
+
       await page.goto("/mission");
-      await page.getByTestId("pane").waitFor();
-
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("no-mission-details")).toContainText(
-        /choose one from the list/i,
+      if (mode === "ask") await page.getByTestId("composer-mode-ask").click();
+      const field = page.getByTestId(
+        mode === "ask" ? "composer-input" : "new-mission-instruction",
       );
+      await field.waitFor();
+      const draft = "what happened to the parser work";
+      await field.fill(draft);
+      await expect(field).toHaveValue(draft);
+      const node = await field.elementHandle();
 
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("no-mission-details")).toContainText(
-        /choose one from the list/i,
-      );
+      // The answer lands: an empty list, which the rail announces.
+      gate.resolve();
+      await expect(page.getByTestId("rail-no-missions")).toBeAttached();
+
+      // RED if the list's arrival remounts the composer: the value would be "" and the node gone.
+      await expect(field).toHaveValue(draft);
+      expect(
+        await node!.evaluate(
+          (el) => (el as HTMLTextAreaElement).isConnected && (el as HTMLTextAreaElement).value,
+        ),
+      ).toBe(draft);
     });
   }
 
-  test("switching scope does not invite a first mission on the old scope's evidence (finding 4)", async ({
+  test("switching scope does not declare 'no missions' on the old scope's evidence (finding 4)", async ({
     page,
   }) => {
-    // `listLoaded` was set once and never cleared, so an Archived → Active flip satisfied
-    // `firstRun` from the ARCHIVED read while Active was still in flight: the console told the
-    // operator to start their first mission without having asked whether they had any.
+    // `listLoaded` was set once and never cleared, so an Archived → Active flip satisfied the empty
+    // state from the ARCHIVED read while Active was still in flight. The first-run invitation this
+    // used to be asserted through is gone (#948 P3); the rail's own "no missions" empty state reads
+    // the same flag, so it is the witness now.
     await page.setViewportSize({ width: 1280, height: 900 });
     let holdActive = false;
     const gate = deferred();
@@ -308,171 +302,166 @@ test.describe("#930 review 1 — the console under a slow store", () => {
         const archived =
           q.get("archived") === "1" || q.get("archived") === "true";
         if (!archived && holdActive) await gate.promise;
-        return { missions: [], total: 0, error: null };
+        return missionList([]);
       },
     });
 
     await page.goto("/mission");
-    await expect(page.getByTestId("first-run")).toBeVisible();
+    await expect(page.getByTestId("rail-no-missions")).toBeAttached();
 
     // Into the archived scope, which answers; then back, with Active parked.
-    // Flip to Archived, then back to Active (#948 P2: the scope is a tab pair now).
     await flipMissionScope(page);
-    await expect(page.getByTestId("first-run")).toHaveCount(0);
+    await expect(
+      page.locator('[data-testid="rail-scope-archived"]:visible').first(),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("rail-no-missions")).toBeAttached();
     holdActive = true;
     await flipMissionScope(page);
+    await expect(
+      page.locator('[data-testid="rail-scope-active"]:visible').first(),
+    ).toHaveAttribute("aria-selected", "true");
 
-    // RED before the fix: the invitation is already back, on a read that has not happened.
-    await expect(page.getByTestId("first-run")).toHaveCount(0);
+    // RED before the fix: "no missions" is already back, on a read that has not happened.
+    await expect(page.getByTestId("rail-no-missions")).toHaveCount(0);
 
     gate.resolve();
-    await expect(page.getByTestId("first-run")).toBeVisible();
+    await expect(page.getByTestId("rail-no-missions")).toBeAttached();
   });
 });
 
-/** #930 review 2 — two lifecycle defects that the FIRST round's fixes introduced. Both are
- *  about state surviving a transition it should not, so both are driven as round trips rather
- *  than as single renders. */
-test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
-  for (const mode of ["ask", "new mission"] as const) {
-    test(`a ${mode} draft survives an OBJECTIVES round trip (finding 1)`, async ({
-      page,
-    }) => {
-      // The explanatory pane used to be a SIBLING branch, so pressing a tab replaced the whole
-      // pane — composer included — and coming back mounted a fresh one. An operator lost what
-      // they had typed by looking at something.
-      await page.setViewportSize({ width: 1280, height: 900 });
-      await stub(page);
-      await page.goto("/mission");
-      const box = page.getByRole("textbox").first();
-      await box.waitFor();
-
-      if (mode === "new mission") {
-        await page.getByTestId("composer-mode-new").click();
-      }
-      const draft = `draft for ${mode}`;
-      await box.fill(draft);
-      await expect(box).toHaveValue(draft);
-
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("no-mission-details")).toBeVisible();
-      // The composer is still MOUNTED while the explanatory pane shows — that is the fix.
-      await expect(page.getByRole("textbox").first()).toHaveValue(draft);
-
-      await openMissionConversation(page);
-      // RED before the fix: "" here, with no navigation and no scope change.
-      await expect(page.getByRole("textbox").first()).toHaveValue(draft);
-      if (mode === "new mission") {
-        // …and the MODE comes back too, not just the text.
-        await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
-          "aria-pressed",
-          "true",
-        );
-      }
-    });
-  }
-
-  test("an IN-FLIGHT send survives the round trip, and is not sent twice (finding 1)", async ({
+/** #930 review 2 → #948 P3. These were the stop strip's own lifecycle defects: state surviving (or
+ *  not surviving) a switch between the thread and the details. The strip is gone; the details are
+ *  one disclosure below 1400px that must never unmount or move the thread. Driven as round trips,
+ *  on both projects, at a width where the disclosure is in play. */
+test.describe("#930 review 2 — the details disclosure's lifecycle", () => {
+  test("a draft in the mission's composer survives a DETAILS round trip (finding 1)", async ({
     page,
   }) => {
-    // The earlier version of this test parked `/api/pulse/chat` and never pressed SEND, so
-    // nothing was ever in flight and its name was a claim it did not test. This one submits to
-    // `/api/pulse/ask` — the endpoint the composer actually calls — holds the answer open across
-    // a tab round trip, and checks the three things a remount would each destroy: the busy
-    // state, a draft typed while busy, and the answer arriving to the same mounted component.
     await page.setViewportSize({ width: 1280, height: 900 });
-    await stub(page);
+    await stub(page, { missions: [missionRow()] });
+    await page.goto("/mission");
+    await selectFromRail(page, /Kimi transcript adapter/i);
+
+    const box = page.getByLabel("Send a message to this mission");
+    const draft = "draft for the mission";
+    await box.fill(draft);
+    const node = await box.elementHandle();
+
+    await openMissionDetails(page, "objectives");
+    await expect(page.getByTestId("mission-details")).toBeVisible();
+    // The thread — composer included — stays on screen while the details are open.
+    await expect(box).toBeVisible();
+    await expect(box).toHaveValue(draft);
+
+    await openMissionConversation(page);
+    await expect(page.getByTestId("mission-details")).toBeHidden();
+    await expect(box).toHaveValue(draft);
+    // The SAME element: no remount across the round trip.
+    expect(
+      await node!.evaluate(
+        (el) => (el as HTMLTextAreaElement).isConnected && (el as HTMLTextAreaElement).value,
+      ),
+    ).toBe(draft);
+  });
+
+  test("an IN-FLIGHT turn survives the round trip, and is not sent twice (finding 1)", async ({
+    page,
+  }) => {
+    // Holds the mission's turn open across a details round trip and checks the three things a
+    // remount would each destroy: the busy state, a draft typed while busy, and the settlement
+    // arriving to the same mounted component. (It used to do this on the no-mission Ask; that page
+    // has no disclosure since #948 P3, and a mission's composer is the one a round trip can reach.)
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await stub(page, { missions: [missionRow()] });
     const gate = deferred();
-    let asks = 0;
-    await page.route("**/api/pulse/ask**", async (r) => {
-      asks += 1;
+    let sends = 0;
+    await page.route("**/api/missions/*/message", async (r) => {
+      sends += 1;
       await gate.promise;
       await r.fulfill({
-        json: {
-          answer: "the held answer",
-          matches: [],
-          stage: "catalog",
-          configured: true,
-        },
+        json: { turn_id: "t1", state: "done", answer: "ok", matches: [] },
       });
     });
 
     await page.goto("/mission");
+    await selectFromRail(page, /Kimi transcript adapter/i);
     const box = page.getByTestId("composer-input");
-    await box.waitFor();
     await box.fill("a question mid-flight");
     await page.getByTestId("composer-send").click();
 
     // In flight: the send is busy and the request has left.
     await expect(page.getByTestId("composer-send")).toBeDisabled();
-    await expect.poll(() => asks).toBe(1);
+    await expect.poll(() => sends).toBe(1);
 
     // A draft typed WHILE the first is still running — the thing a remount would drop.
     await box.fill("and a second thought");
 
-    await page.getByTestId("stop-details").click();
-    await expect(page.getByTestId("no-mission-details")).toBeVisible();
+    await openMissionDetails(page, "objectives");
+    await expect(page.getByTestId("mission-details")).toBeVisible();
     await openMissionConversation(page);
 
-    // Same instance: busy state and draft both intact, and no duplicate request was issued by
-    // a fresh mount replaying its state.
+    // Same instance: busy state and draft both intact, and no duplicate request.
     await expect(page.getByTestId("composer-send")).toBeDisabled();
-    await expect(page.getByTestId("composer-input")).toHaveValue(
-      "and a second thought",
-    );
-    expect(asks).toBe(1);
+    await expect(box).toHaveValue("and a second thought");
+    expect(sends).toBe(1);
 
-    // And the answer lands on the component that asked for it.
+    // And the settlement lands on the component that asked: busy clears, the draft is still there.
     gate.resolve();
-    await expect(page.getByText("the held answer")).toBeVisible();
-    expect(asks).toBe(1);
+    await expect(page.getByTestId("composer-send")).toBeEnabled();
+    await expect(box).toHaveValue("and a second thought");
+    expect(sends).toBe(1);
   });
 
-  test("a mission ENTERED without a click lands on its thread, not a stale stop (finding 2)", async ({
+  test("a mission ENTERED by deep link while the details are open still shows its thread (finding 2)", async ({
     page,
   }) => {
-    // At 1600px the tabs are hidden once a detail column exists. If the stop survives an
-    // automatic entry, MissionBody renders OBJECTIVES in the main pane with no tab to leave
-    // it — the thread and its composer unreachable. Deliberately NO rail click: clicking is
-    // what `select()` already resets, and doing it here would mask the defect.
-    await page.setViewportSize({ width: 1600, height: 900 });
-    const gate = deferred();
+    // The old defect: a mission entered without a click inherited the previous view's stop, so the
+    // thread and its composer were unreachable. Auto-entry is gone (#948 P3); the entry without a
+    // click that remains is `?m=<id>`, and the disclosure's open state is kept for the visit. So
+    // enter mission B by deep link with the band still open from mission A, and assert B's thread
+    // and composer are on screen — the band never displaces them.
+    const A = "msn_" + "a".repeat(32);
+    const B = "msn_" + "b".repeat(32);
+    await page.setViewportSize({ width: 1280, height: 900 });
     await stub(page, {
-      missionsResolver: async () => {
-        await gate.promise;
-        return missionList([missionRow({ id: "m1", title: "the first one" })]);
-      },
+      missions: [
+        missionRow({ id: A, title: "Mission A" }),
+        missionRow({ id: B, title: "Mission B" }),
+      ],
+    });
+    await page.route(/\/api\/missions\/msn_[0-9a-f]{32}(\?.*)?$/, (r) => {
+      const id = /msn_[0-9a-f]{32}/.exec(r.request().url())![0];
+      return r.fulfill({
+        json: {
+          ...MISSION,
+          id,
+          title: id === A ? "Mission A" : "Mission B",
+          events: [],
+          events_next_seq: null,
+        },
+      });
     });
 
-    await page.goto("/mission");
-    await page.getByTestId("pane").waitFor();
-    await page.getByTestId("stop-details").click();
-    await expect(page.getByTestId("no-mission-details")).toBeVisible();
-
-    // The list lands, and the mission is entered by derivation rather than by selection.
-    // (The mission's own lifecycle state is the honest witness that a mission was entered — it
-    // renders only from the detail read, so it cannot appear for a mission nobody is on. The
-    // detail column that used to play this role was deleted by #942.)
-    gate.resolve();
-    await expect(page.getByTestId("mission-state")).toBeVisible();
-
-    // RED before the fix: the pane is still showing OBJECTIVES while the tab strip that could
-    // leave it was hidden behind the detail column, so the thread and its composer were absent
-    // with nothing on screen to get back to them. The strip no longer hides, but entering a
-    // mission on the previous mission's tab is still stale state, so the reset still matters.
-    //
-    // Asserted on the MISSION composer specifically. A bare `getByRole("textbox")` passes
-    // against the defect — the app shell's own "Search titles…" box is a visible textbox on
-    // this page, so the assertion was satisfied by furniture rather than by the thread.
-    await expect(
-      page.getByLabel("Send a message to this mission"),
-    ).toBeVisible();
-    // And the main pane is the THREAD, not the stop the operator left behind — asserted on the
-    // pane's own content rather than on a sibling column that no longer exists.
-    await expect(page.getByTestId("stop-thread")).toHaveAttribute(
-      "aria-selected",
+    await page.goto(`/mission?m=${A}`);
+    await expect(page.getByTestId("console-title")).toHaveText("Mission A");
+    await openMissionDetails(page, "objectives");
+    await expect(page.getByTestId("details-toggle")).toHaveAttribute(
+      "aria-expanded",
       "true",
     );
-    await expect(page.getByTestId("objectives")).toHaveCount(0);
+
+    // Client-side, the way an in-app link arrives: no reload, no click on the rail.
+    await page.evaluate((id) => {
+      window.history.pushState({}, "", `/mission?m=${id}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, B);
+    await expect(page.getByTestId("console-title")).toHaveText("Mission B");
+
+    // Asserted on the MISSION composer specifically. A bare `getByRole("textbox")` passes against
+    // the defect — the app shell's own search box is a visible textbox on this page.
+    await expect(page.getByTestId("pane")).toBeVisible();
+    await expect(
+      page.getByLabel("Send a message to this mission"),
+    ).toBeInViewport();
   });
 });

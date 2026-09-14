@@ -5,9 +5,9 @@
  * matters because `?m=<mission id>` is the one deep link into a specific mission: the session
  * header and row menu will use it, and it has to survive the hop.
  *
- * The linked mission is deliberately the SECOND rail row. The console auto-selects the first
- * mission when nothing is chosen, so a deep link to the first row would pass even if the link
- * were ignored entirely.
+ * The linked mission is deliberately the SECOND rail row, so the test cannot pass by the console
+ * settling on whichever mission comes first. Since #948 P3 nothing is selected without a choice:
+ * entering Missions without a valid link shows the new-mission page.
  */
 import { expect, test, type Page } from "@playwright/test";
 import { MISSION, missionList, missionRow, mockMissions } from "./mission-console";
@@ -92,7 +92,9 @@ test("a malformed ?m= selects nothing, costs no request, and the URL still settl
   const details = missionDetailRequests(page);
   await page.goto("/mission?m=msn_not-a-mission-id");
   await expect(page).toHaveURL(/\/mission$/);
-  // The console settles on its own default rather than the link.
-  await expect(page.getByTestId("console-title")).toHaveText("First mission");
+  // Nothing is selected: the section's default is the new-mission page, not a mission (#948 P3).
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
+  await expect(page.getByTestId("console-title")).toHaveCount(0);
+  await expect(page.locator('[data-testid="rail-mission"][aria-current="true"]')).toHaveCount(0);
   expect(details.some((id) => id.includes("not-a-mission-id"))).toBe(false);
 });

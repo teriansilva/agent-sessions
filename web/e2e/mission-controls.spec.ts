@@ -116,7 +116,7 @@ async function stub(page: Page) {
  *  is one is the only difference between the two, so it lives here rather than in every test. */
 async function ready(page: Page) {
   // `isVisible()` answers about NOW, so asking before the console has painted reports "no drawer"
-  // and "no stop strip" on a phone and every mobile navigation below silently does nothing.
+  // on a phone and every mobile navigation below silently does nothing.
   await expect(page.getByTestId("mission-console")).toBeVisible();
 }
 
@@ -204,9 +204,9 @@ async function selectMission(page: Page, name: string | RegExp) {
 /** Reach the OBJECTIVES content, on whatever viewport the project supplies.
  *
  *  At >=1400px the detail column is always on screen; below it the same content is behind the
- *  OBJECTIVES stop. Every objective, follow-through and context control lives there, so a test
- *  that only clicked them at 1440px was not testing the phone at all — which is what the forced
- *  viewport was hiding. A no-op where the stop strip is not rendered. */
+ *  Details disclosure (#948 P3). Every objective, follow-through and context control lives there,
+ *  so a test that only clicked them at 1440px was not testing the phone at all — which is what the
+ *  forced viewport was hiding. */
 async function goToObjectives(page: Page) {
   await ready(page);
   await openMissionDetails(page, "objectives");
@@ -219,11 +219,28 @@ async function goToContext(page: Page) {
   await openMissionDetails(page, "context");
 }
 
-/** …and the UNTRACKED view, same reason. */
-async function selectUntracked(page: Page) {
+/** Open the ONE mission a case is about (#948 P3).
+ *
+ *  Entering `/mission` selects nothing — the workspace is the new-mission page until the operator
+ *  picks a row — so every case that used to be handed its only mission by auto-selection now picks
+ *  it the way an operator does. The fixture ids are not the server's `msn_` + 32-hex shape, so the
+ *  `?m=` deep link is not available to these cases. */
+async function selectOnlyMission(page: Page) {
   await ready(page);
   await openMissionRail(page);
-  await page.locator('[data-testid="rail-untracked-view"]:visible').click();
+  await railRows(page).first().click();
+  await closeRail(page);
+  await expect(page.getByTestId("console-title")).toBeVisible();
+}
+
+/** Back to the new-mission page through the rail's "+ New mission" (#948 P3) — the way to the
+ *  landing composer while a mission is selected. */
+async function newMissionFromRail(page: Page) {
+  await ready(page);
+  await openMissionRail(page);
+  await page.locator('[data-testid="rail-new-mission"]:visible').first().click();
+  await closeRail(page);
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
 }
 
 /** How many rows the rail shows, on whatever layout the project supplies.
@@ -269,9 +286,13 @@ test("NEW MISSION posts the instruction and the project ENTITY id, and never a c
   });
 
   await page.goto("/mission");
-  await expect(page.getByTestId("mission-console")).toBeVisible();
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
 
-  await page.getByTestId("composer-mode-new").click();
+  // The new-mission page opens IN new-mission mode (#948 P3): there is no mode to switch to first.
+  await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await page
     .getByTestId("new-mission-instruction")
     .fill("implement the probe runner");
@@ -326,6 +347,7 @@ test("a REFUSED transition paints the server's state, not the one that was asked
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
   await expect(page.getByTestId("mission-state")).toHaveText("running");
 
   // MARK DONE confirms — closing releases every session the mission holds, so the
@@ -348,6 +370,7 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
     mission: { ...planned, events: [], events_next_seq: null },
   });
   await page.goto("/mission");
+  await selectOnlyMission(page);
 
   const begin = page.getByTestId("mission-begin");
   await expect(begin).toBeVisible();
@@ -389,6 +412,7 @@ test("an objective edit posts ONE batch of ops", async ({ page }) => {
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
   await goToObjectives(page);
   await expect(page.getByTestId("objective").first()).toBeVisible();
 
@@ -462,6 +486,7 @@ test("STAND DOWN posts the episode the board was RENDERED at", async ({
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
   await goToObjectives(page);
   const btn = page.getByTestId("objective-stand-down").first();
   await expect(btn).toBeVisible();
@@ -490,6 +515,7 @@ test("archiving a live mission asks first and says it stops the agents", async (
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
   await overflow(page);
   await page.getByTestId("mission-archive").click();
 
@@ -778,17 +804,20 @@ test("a refused APPROVAL for the mission you left is discarded too", async ({
   await expect(page.getByTestId("console-note")).toHaveCount(0);
 });
 
-test("RELEASE puts the session back in UNTRACKED, not just posts a detach", async ({
+test("RELEASE re-reads the overview that stamps ownership, not just posts a detach", async ({
   page,
 }) => {
   // The first version of this test asserted only the REQUEST BODY, which its own title claimed was
-  // not the point — a session that never reappears under UNTRACKED is the bug, and the request
-  // landing proves nothing about that. So this drives the whole loop: detach, the overview
-  // refetch, and the card arriving in UNTRACKED with its mission stamp gone.
+  // not the point — the request landing proves nothing about what the operator sees next. So this
+  // drives the loop: detach, then the overview refetch that carries the card's new mission stamp.
+  // (#948 P3 removed the "Sessions without a mission" list the card used to reappear in; the
+  // refresh is what every surface reading `mission_id` still depends on.)
   await stub(page);
   let held = true; // the overview stamps the card until the mission releases it
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
+  let overviewReads = 0;
+  await page.route(/\/api\/pulse$/, (r) => {
+    overviewReads += 1;
+    return r.fulfill({
       json: {
         ...OVERVIEW,
         cards: [
@@ -802,17 +831,15 @@ test("RELEASE puts the session back in UNTRACKED, not just posts a detach", asyn
             state: "in_flight",
             intervention_required: false,
             intervention_reason: "",
-            // THE OWNERSHIP FACT, stamped server-side. UNTRACKED filters on it.
+            // THE OWNERSHIP FACT, stamped server-side.
             mission_id: held ? "msn_1" : null,
           },
         ],
       },
-    }),
-  );
+    });
+  });
   await mockMissions(page, { missions: missionList([HELD_ROW]) });
-  // The mission's OWN roster has to follow the detach too — producer-faithful, because the console
-  // excludes a selected mission's roster from UNTRACKED (`heldExtra`), so a mock that keeps
-  // returning the released session hides the very thing this test is about.
+  // The mission's OWN roster follows the detach too — producer-faithful.
   await page.route("**/api/missions/*", (r) => {
     if (r.request().method() !== "GET") return r.fallback();
     return r.fulfill({
@@ -844,29 +871,33 @@ test("RELEASE puts the session back in UNTRACKED, not just posts a detach", asyn
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
   // CONTEXT owns the roster since #942 — it used to be the third heading inside OBJECTIVES.
   await goToContext(page);
   const release = page.getByTestId("session-detach").first();
   await expect(release).toBeVisible();
+  await expect.poll(() => overviewReads).toBeGreaterThan(0);
+  const before = overviewReads;
   await release.click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({ session_key: "claude:aaa" });
 
-  // …and the actual point: the released session is offered as untracked again. Without the
-  // overview refresh the card keeps its old `mission_id` and stays invisible until the outer poll.
-  await selectUntracked(page);
-  await expect(page.getByTestId("untracked-session")).toHaveCount(1);
+  // …and the actual point: the OVERVIEW is re-read. Without it the card keeps its old
+  // `mission_id` until the outer poll.
+  await expect.poll(() => overviewReads).toBeGreaterThan(before);
 });
 
-test("CLOSING a mission also puts its sessions back in UNTRACKED", async ({
+test("CLOSING a mission also re-reads the overview that stamps ownership", async ({
   page,
 }) => {
   // Reaching a terminal state releases every session the mission holds, server-side — so it is a
   // membership change exactly as detach is, and the same refresh has to happen.
   await stub(page);
   let held = true;
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
+  let overviewReads = 0;
+  await page.route(/\/api\/pulse$/, (r) => {
+    overviewReads += 1;
+    return r.fulfill({
       json: {
         ...OVERVIEW,
         cards: [
@@ -884,8 +915,8 @@ test("CLOSING a mission also puts its sessions back in UNTRACKED", async ({
           },
         ],
       },
-    }),
-  );
+    });
+  });
   await mockMissions(page, { missions: missionList([HELD_ROW]) });
   await page.route("**/api/missions/*", (r) => {
     if (r.request().method() !== "GET") return r.fallback();
@@ -909,12 +940,18 @@ test("CLOSING a mission also puts its sessions back in UNTRACKED", async ({
   });
 
   await page.goto("/mission");
+  await selectOnlyMission(page);
+  await expect(page.getByTestId("mission-state")).toHaveText("running");
+  await expect.poll(() => overviewReads).toBeGreaterThan(0);
+  const before = overviewReads;
   // MARK DONE confirms — closing releases every session the mission holds, so the
   // first tap only asks (#896 review 6, finding 2).
   await page.getByTestId("mission-done").click();
   await page.getByTestId("mission-done").click();
-  await selectUntracked(page);
-  await expect(page.getByTestId("untracked-session")).toHaveCount(1);
+  await expect(page.getByTestId("mission-state")).toHaveText("done");
+  // The overview is re-read, so the released card loses its mission stamp without waiting for the
+  // outer poll. (#948 P3 removed the untracked list this used to assert the card arriving in.)
+  await expect.poll(() => overviewReads).toBeGreaterThan(before);
 });
 
 test("a CREATE that lands after CANCEL refreshes the rail but does not steal the SELECTION", async ({
@@ -924,27 +961,6 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
   // does on its own, so it passed against the unfenced code. The hijack is observable in the
   // SELECTION: the console switching to a mission the operator has already walked away from.
   await stub(page);
-  // A LOOSE SESSION, so the UNTRACKED view exists in the rail — that is where NEW MISSION lives
-  // now that the mission body's composer is the durable one (#890).
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "working",
-            mission_id: null,
-          },
-        ],
-      },
-    }),
-  );
   const BRAVO = missionRow({ id: "msn_b", title: "Bravo" });
   const lists: string[] = [];
   await page.route("**/api/missions**", async (r) => {
@@ -984,12 +1000,11 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
   });
 
   await page.goto("/mission");
-  // NEW MISSION LIVES IN THE UNTRACKED VIEW. The mission body's composer is the DURABLE one
-  // (#890): its turns are that mission's own rows, and creating a different mission is not one
-  // of them. So the create starts here, and the operator then moves to a mission — which is the
-  // same sequence this test was always about, entered from where the control actually is.
-  await selectUntracked(page);
-  await closeRail(page);
+  // NEW MISSION LIVES ON THE NEW-MISSION PAGE, which is what `/mission` opens on (#948 P3). The
+  // mission body's composer is the DURABLE one (#890) and creating a different mission is not one
+  // of its turns, so the create starts here and the operator then moves to a mission — the same
+  // sequence this test was always about, entered from where the control actually is.
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
   await page.getByTestId("composer-mode-new").click();
   await page
     .getByTestId("new-mission-instruction")
@@ -1081,6 +1096,7 @@ for (const state of ["done", "failed", "abandoned"] as const) {
       },
     });
     await page.goto("/mission");
+    await selectOnlyMission(page);
     await goToObjectives(page);
     await expect(page.getByTestId("objective").first()).toBeVisible();
 
@@ -1328,106 +1344,25 @@ test("a FAILED archive leaves you on the mission whose error you were just hande
   await expect(page.getByTestId("mission-console")).toContainText(
     "another worker",
   );
-  // …ON the mission it is about. A cleared selection falls back to auto-selecting `Keep`.
+  // …ON the mission it is about. A cleared selection would drop to the new-mission page (#948 P3),
+  // which has no title at all.
   await expect(page.getByTestId("console-title")).toHaveText("Going");
 });
 
-test("a decision started in UNTRACKED does not paint its refusal over a mission", async ({
-  page,
-}) => {
-  // #896 review 5, finding 4. The UNTRACKED view is not inside the keyed mission body, so
-  // selecting a mission does not unmount it — and `ActionRow`'s settled-record 409 calls the
-  // console's note surface directly. Same rule as every other late outcome; it had just never
-  // been applied on this path.
-  await stub(page);
-  const A = missionRow({ id: "msn_a", title: "Alpha", session_keys: [] });
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "needs_you",
-            mission_id: null,
-            pending_action: {
-              id: "act_1",
-              verb: "answer",
-              title: "Switch the default model",
-              session_id: "claude:loose",
-              state: "proposed",
-              confidence: 0.9,
-              rationale: "the model is wrong",
-            },
-          },
-        ],
-      },
-    }),
-  );
-  await mockMissions(page, {
-    missions: missionList([A]),
-    mission: {
-      ...MISSION,
-      id: "msn_a",
-      title: "Alpha",
-      events: [],
-      events_next_seq: null,
-    },
-  });
+// REMOVED IN #948 P3: "a decision started in UNTRACKED does not paint its refusal over a mission".
+// The Missions section no longer renders a decision for a session no mission holds — that view is
+// gone, and the decision lives in the session's own pane (`session-decisions`), which has no
+// mission to paint over. The fence for decisions a MISSION holds is still pinned above.
 
-  let release: (() => void) | null = null;
-  const held = new Promise<void>((r) => (release = r));
-  await page.route("**/api/pulse/actions/*/approve", async (r) => {
-    await held;
-    // THE SETTLED RECORD IS THE BODY ITSELF, not a `record` key inside it. `mutateJson` carries
-    // the whole parsed body as `ApiError.record`, and `ActionRow` shape-checks `id`/`state` on
-    // it — so a nested shape takes the INLINE-note branch and never reaches the parent callback
-    // this test is about. That is a documented false-green in this repo and it caught this test
-    // once already.
-    return r.fulfill({
-      status: 409,
-      json: {
-        detail: "that action was already settled",
-        id: "act_1",
-        state: "stale",
-        verb: "answer",
-        title: "Switch the default model",
-        session_id: "claude:loose",
-      },
-    });
-  });
-
-  await page.goto("/mission");
-  await selectUntracked(page);
-  await page
-    .getByRole("button", { name: /^approve$/i })
-    .first()
-    .click();
-
-  // …and the operator moves to a mission while it is in flight.
-  await selectMission(page, "Alpha");
-  await expectMissionSelected(page, "Alpha");
-
-  release?.();
-  await page.waitForTimeout(500);
-  await expect(page.getByTestId("mission-console")).not.toContainText(
-    "already settled",
-  );
-});
-
-test("a late CLOSE for a mission you left still refreshes UNTRACKED", async ({
+test("a late CLOSE for a mission you left still re-reads the overview", async ({
   page,
 }) => {
   // #896 review 6, finding 1. Fencing the whole callback dropped BOTH effects, and only one of
   // them is mission-local. Closing releases the mission's sessions SERVER-SIDE, and the overview
   // cards keep their old `mission_id` until something re-reads them — so suppressing the
-  // membership refresh leaves those sessions in neither the roster nor UNTRACKED until the outer
-  // poll happens to run. The operator having navigated away does not un-release them.
+  // membership refresh leaves those sessions stamped with a mission that no longer holds them
+  // until the outer poll happens to run. The operator having navigated away does not un-release
+  // them.
   await stub(page);
   const A = missionRow({
     id: "msn_a",
@@ -1506,11 +1441,7 @@ test("a late CLOSE for a mission you left still refreshes UNTRACKED", async ({
   await expect
     .poll(() => overviewReads, { timeout: 10_000 })
     .toBeGreaterThan(before);
-  // …and the released session is back under UNTRACKED.
-  await openMissionRail(page);
-  await expect(
-    page.locator('[data-testid="rail-untracked-view"]:visible'),
-  ).toBeVisible();
+  // (The "back under UNTRACKED" rail check that followed was removed with that view in #948 P3.)
 });
 
 test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own choice", async ({
@@ -1663,83 +1594,8 @@ test("a SUPERSEDED list failure does not paint a store outage over newer rows", 
   await expect.poll(() => railCount(page)).toBeGreaterThan(0);
 });
 
-test("a late ADOPT failure is not filed against the mission you moved to", async ({
-  page,
-}) => {
-  // The refusal is a fact about THIS attempt — "already held by mission X" — and the console note
-  // outlives the view it was raised in. Started in UNTRACKED and resolved after the operator
-  // selected mission B, an unfenced error appeared over B with nothing to say which mission it
-  // was about (#896 review 9, finding 4).
-  await stub(page);
-  const A = missionRow({ id: "msn_a", title: "Alpha", session_keys: [] });
-  const B = missionRow({ id: "msn_b", title: "Bravo", session_keys: [] });
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "working",
-            // Membership KNOWN and empty — `undefined` means "could not be read", and the
-            // console correctly withholds ADOPT in that case.
-            mission_id: null,
-          },
-        ],
-      },
-    }),
-  );
-  await mockMissions(page, {
-    missions: missionList([A, B]),
-  });
-  await page.route("**/api/missions/*", (r) => {
-    if (r.request().method() !== "GET") return r.fallback();
-    const id = new URL(r.request().url()).pathname.split("/").pop();
-    return r.fulfill({
-      json: {
-        ...MISSION,
-        id,
-        title: id === "msn_b" ? "Bravo" : "Alpha",
-        sessions: [],
-        events: [],
-        events_next_seq: null,
-      },
-    });
-  });
-  let releaseAdopt: (() => void) | null = null;
-  const heldAdopt = new Promise<void>((r) => (releaseAdopt = r));
-  await page.route("**/api/missions/*/adopt", async (r) => {
-    await heldAdopt;
-    return r.fulfill({
-      status: 409,
-      json: { detail: "claude:loose is already held by mission msn_z" },
-    });
-  });
-
-  await page.goto("/mission");
-
-  // Start the adoption from UNTRACKED…
-  await selectUntracked(page);
-  await closeRail(page);
-  await page.locator('[data-testid="rail-adopt"]:visible').first().click();
-
-  // …then move to mission B while it is still in flight.
-  await selectMission(page, "Bravo");
-  await expectMissionSelected(page, "Bravo");
-
-  releaseAdopt?.();
-  await page.waitForTimeout(400);
-
-  // B's pane says nothing about a session it was never asked to adopt.
-  await expect(page.getByTestId("mission-console")).not.toContainText(
-    "already held by mission msn_z",
-  );
-});
+// REMOVED IN #948 P3: "a late ADOPT failure is not filed against the mission you moved to". The
+// console's ADOPT is gone; adoption is the session's own control (`mission-adopt.spec.ts`).
 
 test("a stale PAGINATION cleanup cannot unlock a newer request", async ({
   page,
@@ -1991,58 +1847,9 @@ test("a refusal from the visit you LEFT stays gone after you come back to that m
   await expect(page.getByTestId("console-note")).toHaveCount(0);
 });
 
-test("a REFUSED adopt reconciles the overview it just proved stale", async ({
-  page,
-}) => {
-  // #896 review 10, finding 5. The 409 this path exists to report NAMES another mission as the
-  // holder — which is positive evidence that the card the operator adopted from, still showing
-  // `mission_id: null`, is the stale picture. Refreshing the overview only on success left
-  // UNTRACKED asserting an ownership the server had just denied, until the outer poll ran.
-  await stub(page);
-  const A = missionRow({ id: "msn_a", title: "Alpha", session_keys: [] });
-  let overviewReads = 0;
-  await page.route(/\/api\/pulse$/, (r) => {
-    overviewReads += 1;
-    return r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "working",
-            // The claim the server is about to contradict.
-            mission_id: null,
-          },
-        ],
-      },
-    });
-  });
-  await mockMissions(page, { missions: missionList([A]) });
-  await page.route("**/api/missions/*/adopt", (r) =>
-    r.fulfill({
-      status: 409,
-      json: { detail: "claude:loose is already held by mission msn_z" },
-    }),
-  );
-
-  await page.goto("/mission");
-  await selectUntracked(page);
-  await closeRail(page);
-  await expect.poll(() => overviewReads).toBeGreaterThan(0);
-  const before = overviewReads;
-  await page.locator('[data-testid="rail-adopt"]:visible').first().click();
-
-  // The refusal still reaches the operator, naming the holder …
-  await expect(page.getByTestId("console-note")).toContainText("msn_z");
-  // … AND the overview is re-read, because the card that offered ADOPT is the thing the server
-  // just contradicted.
-  await expect.poll(() => overviewReads).toBeGreaterThan(before);
-});
+// REMOVED IN #948 P3: "a REFUSED adopt reconciles the overview it just proved stale". It drove the
+// console's ADOPT from the untracked view; both are gone, and adoption is the session's own
+// control (`mission-adopt.spec.ts`).
 
 test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGIN → confirm done → archive", async ({
   page,
@@ -2248,13 +2055,25 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await expect(page.getByTestId("mission-state")).toHaveText("draft");
   await expect(page.getByTestId("mission-begin")).toBeDisabled();
 
-  await selectUntracked(page);
-  await closeRail(page);
-  await page.locator('[data-testid="rail-adopt"]:visible').first().click();
+  // Adoption is the SESSION's control since #948 P3 — its row ⋯ menu and pane header, pinned by
+  // `mission-adopt.spec.ts` — and the console's ADOPT is gone. This journey is about the states
+  // CONNECTING, so the adopt is posted to the same evolving server from the page, as the request
+  // the session's control makes, and the console has to pick the result up.
+  const adoptStatus = await page.evaluate(async (mid) => {
+    const r = await fetch(`/api/missions/${mid}/adopt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_key: "claude:worker" }),
+    });
+    return r.status;
+  }, MID);
+  expect(adoptStatus).toBe(200);
   await expect.poll(() => adopts.length).toBe(1);
   expect(adopts[0]).toEqual({ session_key: "claude:worker" });
 
   // ── 5. BEGIN, then CONFIRM DONE ──────────────────────────────────────────────────────────
+  // Leave and come back, so the mission body mounts afresh and reads what the server now holds.
+  await newMissionFromRail(page);
   await selectMission(page, "Wire the adapter");
   await expect(page.getByTestId("mission-begin")).toBeEnabled();
   await page.getByTestId("mission-begin").click();
@@ -2283,94 +2102,9 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await expect.poll(() => railCount(page)).toBe(1);
 });
 
-test("a settled-action refusal from a PREVIOUS untracked visit stays gone", async ({
-  page,
-}) => {
-  // #896 review 11, finding 2. `noteIfUntracked` compared the sentinel ID, which is true again
-  // the moment the operator comes back — so UNTRACKED → mission B → UNTRACKED admitted a 409
-  // raised two views ago into a list that has since been re-read: "Not sent — already settled",
-  // about something the operator did before they stepped out.
-  //
-  // `ActionRow` reports at RESOLUTION time and takes no token, so the visit is captured in the
-  // callback identity it holds. Red against an id-only fence.
-  await stub(page);
-  const A = missionRow({ id: "msn_a", title: "Alpha", session_keys: [] });
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "working",
-            mission_id: null,
-            pending_action: {
-              id: "act_1",
-              // A REAL DELIVERING VERB. `ActionRow` renders Approve only for a verb that has
-              // something to deliver — an `escalate` row is a question, not a proposal — so a
-              // fixture with an invented verb has no button and the test would pass vacuously.
-              verb: "continue",
-              state: "proposed",
-              session_id: "claude:loose",
-              engine: "claude",
-              title: "A session no mission owns",
-              rationale: "it looks stuck",
-              confidence: 0.9,
-              ts: T - 600,
-              expires_at: T + 1800,
-              tier: "suggest",
-            },
-          },
-        ],
-      },
-    }),
-  );
-  await mockMissions(page, { missions: missionList([A]) });
-
-  let release: (() => void) | undefined;
-  const held = new Promise<void>((r) => (release = r));
-  await page.route("**/api/pulse/actions/*/approve", async (r) => {
-    await held;
-    // THE SETTLED RECORD, not just a `detail`. `ActionRow` raises the explanation to the CONSOLE
-    // only when the 409 carries one — a bare `{detail}` keeps the note on the row itself, which
-    // would make this test pass without ever reaching the fence it is about.
-    return r.fulfill({
-      status: 409,
-      json: {
-        detail: "that action was already settled",
-        id: "act_1",
-        state: "expired",
-        verb: "continue",
-        session_id: "claude:loose",
-      },
-    });
-  });
-
-  await page.goto("/mission");
-  await selectUntracked(page);
-  await closeRail(page);
-  await page
-    .getByRole("button", { name: /^approve$/i })
-    .first()
-    .click();
-
-  // Away …
-  await selectMission(page, "Alpha");
-  await expectMissionSelected(page, "Alpha");
-  // … AND BACK. By now the id fence says "UNTRACKED is current" again.
-  await selectUntracked(page);
-  await closeRail(page);
-
-  release?.();
-  // A beat, so a note that WOULD land has landed.
-  await page.waitForTimeout(750);
-  await expect(page.getByTestId("console-note")).toHaveCount(0);
-});
+// REMOVED IN #948 P3: "a settled-action refusal from a PREVIOUS untracked visit stays gone". The
+// untracked view — the visit this fenced — no longer exists, and an unheld session's decision is
+// decided in its own pane (`session-decisions`).
 
 test("an ARCHIVED mission leaves the Active rail even when the refresh that follows FAILS", async ({
   page,
@@ -2941,75 +2675,10 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
   ).toBeVisible();
 });
 
-const LOOSE_CARD = {
-  id: "claude:loose",
-  engine: "claude",
-  title: "A session no mission owns",
-  cwd: "/repo",
-  last_activity: T - 60,
-  live: true,
-  state: "working",
-  mission_id: null,
-};
-
-/** The UNTRACKED view with one loose session and whichever missions the case is about. */
-async function untrackedWith(page: Page, rows: unknown[], adopts: string[]) {
-  await stub(page);
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({ json: { ...OVERVIEW, cards: [LOOSE_CARD] } }),
-  );
-  await mockMissions(page, { missions: missionList(rows) });
-  await page.route("**/api/missions/*/adopt", async (r) => {
-    adopts.push(new URL(r.request().url()).pathname);
-    return r.fulfill({ json: { ...MISSION, sessions: [] } });
-  });
-  await page.goto("/mission");
-  await selectUntracked(page);
-  await closeRail(page);
-  return page.locator('[data-testid="rail-adopt"]:visible').first();
-}
-
-test("ADOPT offers nothing when every mission is CLOSED, and says why", async ({
-  page,
-}) => {
-  // #896 review 20, finding 2. A terminal transition RELEASES the roster — that is what it is for
-  // — so a `done` mission holds nothing and follows nothing through. The rail picked the first
-  // UNARCHIVED row regardless of state, so it aimed ADOPT at a mission the store was always going
-  // to refuse: the operator taps a live-looking control and gets a 409 for a reason the screen
-  // never mentioned.
-  //
-  // The store refusal is the guarantee (the route tests own that). This is the affordance.
-  //
-  // Red against a target picked from `missions[0]` without reading the state.
-  const adopts: string[] = [];
-  const adopt = await untrackedWith(
-    page,
-    [missionRow({ id: "msn_done", title: "Alpha", state: "done" })],
-    adopts,
-  );
-  await expect(adopt).toBeDisabled();
-  await expect(adopt).toHaveAttribute("title", /closed/i);
-  expect(adopts).toEqual([]);
-});
-
-test("ADOPT aims at the first mission that can hold work, not the first row", async ({
-  page,
-}) => {
-  // The other half: a closed mission ahead of an eligible one must not shadow it. Red against the
-  // same `missions[0]` pick — the request goes to `msn_done` and the server refuses it.
-  const adopts: string[] = [];
-  const adopt = await untrackedWith(
-    page,
-    [
-      missionRow({ id: "msn_done", title: "Alpha", state: "done" }),
-      missionRow({ id: "msn_open", title: "Bravo", state: "running" }),
-    ],
-    adopts,
-  );
-  await expect(adopt).toBeEnabled();
-  await adopt.click();
-  await expect.poll(() => adopts).toEqual(["/api/missions/msn_open/adopt"]);
-});
+// REMOVED IN #948 P3: "ADOPT offers nothing when every mission is CLOSED, and says why" and "ADOPT
+// aims at the first mission that can hold work, not the first row", with their untracked-view
+// fixture. Both pinned the console's ADOPT affordance, which is gone; adoption is the session's own
+// control (`mission-adopt.spec.ts`).
 
 test("waiving an objective refreshes the RAIL, not just the pane", async ({
   page,
@@ -3066,8 +2735,8 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   });
 
   // The rail is a COLUMN on desktop and a DRAWER on the phone, so reading it needs the drawer
-  // open on one project and not the other — and the objectives live behind a stop on the phone,
-  // which the drawer covers. Open, read, close, act.
+  // open on one project and not the other — and the objectives live behind the Details disclosure
+  // on the phone, which the drawer covers. Open, read, close, act.
   const railNeedsYou = async () => {
     await openMissionRail(page);
     const n = await railRows(page)
@@ -3083,6 +2752,7 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   // THE RAIL SAYS "NEEDS YOU" BEFORE THE MUTATION — the state the test is about.
   await expect.poll(railNeedsYou, { timeout: 10_000 }).toBe(1);
 
+  await selectOnlyMission(page);
   await goToObjectives(page);
   await expect(page.getByTestId("objective").first()).toBeVisible();
   const before = lists.length;
@@ -3178,6 +2848,7 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
   await ready(page);
   await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
 
+  await selectOnlyMission(page);
   await expect(page.getByTestId("mission-replan")).toBeVisible();
   await page.getByTestId("mission-replan").click();
 
@@ -3387,11 +3058,6 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
   // Red against a captured length AND against a rendered-length mirror: the rail falls back to
   // 100 rows in both.
   await stub(page);
-  // A LOOSE SESSION, so the UNTRACKED view exists — that is where NEW MISSION lives once the rail
-  // has missions in it (the mission body's composer is the durable one).
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({ json: { ...OVERVIEW, cards: [LOOSE_CARD] } }),
-  );
   const ALL = Array.from({ length: 200 }, (_, i) =>
     missionRow({ id: `msn_${i}`, title: `M${i}`, state: "running" }),
   );
@@ -3430,8 +3096,7 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
   // A CREATE, held open — its `onCreated` reload will be issued with a callback captured NOW.
-  await selectUntracked(page);
-  await closeRail(page);
+  // Started on the new-mission page, which is what `/mission` opens on (#948 P3).
   await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
@@ -3552,6 +3217,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
   await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
+  await selectOnlyMission(page);
   await goToObjectives(page);
   await expect(page.getByTestId("objective").first()).toBeVisible();
 
@@ -3611,9 +3277,6 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   // Red against a window an older answer may narrow, and against dropping a page whose digest
   // proves it is a continuation of the rail: the rail stops at 100 rows.
   await stub(page);
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({ json: { ...OVERVIEW, cards: [LOOSE_CARD] } }),
-  );
   const ALL = Array.from({ length: 200 }, (_, i) =>
     missionRow({ id: `msn_${i}`, title: `M${i}`, state: "running" }),
   );
@@ -3654,8 +3317,6 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
-  await selectUntracked(page);
-  await closeRail(page);
   await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
@@ -3697,9 +3358,6 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   //
   // Red against a success fenced on `appliedGen`: Alpha comes back.
   await stub(page);
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({ json: { ...OVERVIEW, cards: [LOOSE_CARD] } }),
-  );
   const ALPHA = missionRow({ id: "msn_a", title: "Alpha", state: "done" });
   const BRAVO = missionRow({ id: "msn_b", title: "Bravo", state: "running" });
   let releaseStale: (() => void) | null = null;
@@ -3746,8 +3404,8 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   await expect.poll(() => heldSeen, { timeout: 10_000 }).toBe(true);
 
   // A NEWER authoritative read, refused — `appliedGen` is untouched by it, which is the defect.
-  await selectUntracked(page);
-  await closeRail(page);
+  // The create starts from the new-mission page, reached through the rail's own "+ New mission".
+  await newMissionFromRail(page);
   await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");

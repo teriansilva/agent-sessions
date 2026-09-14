@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-import { mockMissions } from "./mission-console";
+import { setupBench } from "./terminal/harness";
 
 // #781 — one card, one box, one statement.
 //
@@ -9,11 +9,19 @@ import { mockMissions } from "./mission-console";
 // same session twice (the row's `Open session` beside the card's `Jump in`), and draw the action
 // as its OWN bordered box inside the card — a box in a box, each with its own footer.
 //
+// WHERE IT RENDERS (#948 P3): the card for a session no mission holds lived in the "Sessions
+// without a mission" view. That view is gone; the decision renders in the SESSION's own pane
+// (`session-decisions`), with `ActionRow` embedded exactly as it was inside the card. The strip is
+// the card's successor, so every "once" below is asserted on it.
+//
 // The box part is the reason this is a real-browser test and not only a jsdom one: "there is no
 // second frame" is a computed-style fact (border width, background) and "the controls share a
 // row" is a geometry fact. An emulator reports neither.
 
 const NOW = Math.floor(Date.now() / 1000);
+
+const UUID = "aaaaaaaa-0000-4000-8000-000000000781";
+const KEY = `claude:${UUID}`;
 
 const ORCH_CONFIG = {
   enabled: true,
@@ -34,6 +42,7 @@ const ORCH_CONFIG = {
 
 const RATIONALE = "Below the act threshold, so this one is yours to call.";
 const REASON = "Agent blocked on user choice between 3 options";
+const SUMMARY = "Editing opencode.json";
 
 const ACTION = {
   id: "act-1",
@@ -41,7 +50,7 @@ const ACTION = {
   ts: NOW - 600,
   expires_at: NOW + 1800,
   tier: "yolo",
-  session_id: "claude:aaa",
+  session_id: KEY,
   engine: "claude",
   title: "Switch the default model",
   project: "infra",
@@ -52,75 +61,49 @@ const ACTION = {
   evidence: "recap",
 };
 
-const CARD = {
-  id: "claude:aaa",
+/** The session's own row, carrying BOTH model passes' words about it — which is the whole point:
+ *  the review has something to say (summary + reason) and so does the orchestrator (rationale). */
+const ROW = {
+  id: KEY,
   engine: "claude",
-  title: "Switch the default model",
+  uuid: UUID,
+  short_uuid: "aaaaaaaa",
   cwd: "/home/u/infra",
-  project: { kind: "project", id: "p1", name: "infra", color: "#ffb000" },
-  state: "needs_you",
-  live: false,
-  last_activity: NOW - 720,
+  project: { kind: "project", id: "p1", name: "infra" },
   last_mtime: NOW - 720,
-  // Both model passes have something to say about this session — which is the whole point.
+  first_user_message: "",
+  title: ACTION.title,
+  sticky: false,
+  archived: false,
+  ai_summary: SUMMARY,
+  ai_title: ACTION.title,
   intervention_required: true,
   intervention_reason: REASON,
-  ai_summary: "Editing opencode.json",
-  synthesis: "",
-  pending_action: ACTION,
+  reviewed_at: NOW - 720,
+  review_excluded: false,
+  has_draft: false,
 };
 
-test.beforeEach(async ({ page }) => {
-  await page.route("**/api/config", (r) =>
+async function openPane(page: Page, pending: unknown[]) {
+  await setupBench(page, {
+    sessions: [{ engine: "claude", uuid: UUID, title: ACTION.title }],
+  });
+  // Only the LIST endpoint is overridden, so the bench's history/draft handling stays intact.
+  await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
     r.fulfill({
       json: {
-        csrf: "x",
-        new_session_engines: [],
-        terminal_backend: "ws",
-        auth_mode: "none",
-        pulse: {
-          auto_enabled: false,
-          interval_minutes: 30,
-          window_days: 3,
-          scan_depth: "slow",
-          configured: true,
-        },
-        orchestrator: ORCH_CONFIG,
-      },
-    }),
-  );
-  await page.route("**/api/version", (r) =>
-    r.fulfill({ json: { version: "test" } }),
-  );
-  await page.route("**/api/engines", (r) =>
-    r.fulfill({ json: { engines: [] } }),
-  );
-  await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-    r.fulfill({ json: { folders: [] } }),
-  );
-  await page.route(/\/api\/projects($|\?)/, (r) =>
-    r.fulfill({ json: { projects: [] } }),
-  );
-  await page.route("**/api/sessions**", (r) =>
-    r.fulfill({
-      json: {
-        sessions: [],
+        sessions: [ROW],
         next_offset: null,
-        total: 0,
-        facets: { projects: [], engines: [] },
+        total: 1,
+        facets: { projects: [ROW.project], engines: ["claude"] },
       },
     }),
-  );
-  await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0 } }),
   );
   await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
     r.fulfill({
       json: {
         config: ORCH_CONFIG,
-        pending: [ACTION],
+        pending,
         feed: [],
         expired_now: 0,
         running: [],
@@ -128,54 +111,42 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        banner: null,
-        cards: [CARD],
-      },
-    }),
-  );
-});
+  await page.goto(`/s/claude/${UUID}`);
+  const strip = page.getByTestId("session-decisions");
+  await expect(strip).toBeVisible();
+  return strip;
+}
 
-test("the action is not a second box inside the card, and the card speaks once", async ({
+test("the action is not a second box inside its host, and the host speaks once", async ({
   page,
 }) => {
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText(RATIONALE)).toBeVisible();
+  const strip = await openPane(page, [ACTION]);
+  await expect(strip.getByText(RATIONALE)).toBeVisible();
+  await expect(page.getByText(RATIONALE)).toHaveCount(1);
 
   // --- one statement -------------------------------------------------------------------
-  // The review's reason said the same thing the orchestrator's rationale says; it no longer
-  // repeats it, and neither does the ⚠ (whose accessible name carried that reason verbatim).
-  await expect(page.getByText(REASON)).toHaveCount(0);
+  // The review's reason says the same thing the orchestrator's rationale says; the decision does
+  // not repeat it, and neither does a ⚠ (whose accessible name carried that reason verbatim). The
+  // review's SUMMARY is the third description of the same session — it stands down too, so the
+  // decision carries exactly one prose line.
+  await expect(strip.getByText(REASON)).toHaveCount(0);
   await expect(
-    page.getByRole("img", { name: /intervention required/i }),
+    strip.getByRole("img", { name: /intervention required/i }),
   ).toHaveCount(0);
-  // The review's SUMMARY is the third description of the same session — it stands down too, so
-  // the card carries exactly one prose line. The title still gives the card its identity.
-  await expect(page.getByText("Editing opencode.json")).toHaveCount(0);
+  await expect(strip.getByText(SUMMARY)).toHaveCount(0);
 
   // --- one link ------------------------------------------------------------------------
-  const toSession = page.locator('a[href="/s/claude/aaa"]');
-  await expect(toSession).toHaveCount(1);
-  await expect(toSession).toHaveAccessibleName(/jump into/i);
-  // Anchored: the app shell's own nav carries an "Open session overview" link, which is not the
-  // row's duplicate and must not be matched here.
-  await expect(page.getByRole("link", { name: /^open session$/i })).toHaveCount(
+  // The pane IS the session, so the decision links to it zero times — no `Jump in`, and no
+  // `Open session` footer link beside it.
+  await expect(strip.locator(`a[href="/s/claude/${UUID}"]`)).toHaveCount(0);
+  await expect(strip.getByRole("link", { name: /^open session$/i })).toHaveCount(
     0,
   );
 
   // --- one box -------------------------------------------------------------------------
   // The real-browser part: the embedded row must draw NO frame of its own. Computed style, so
   // a stylesheet regression is caught rather than a class name that merely still exists.
-  const row = page.locator('[class*="actEmbedded"]');
+  const row = strip.locator('[class*="actEmbedded"]');
   await expect(row).toHaveCount(1);
   const box = await row.evaluate((el) => {
     const s = getComputedStyle(el);
@@ -192,19 +163,20 @@ test("the action is not a second box inside the card, and the card speaks once",
   expect(box.borderRight).toBe("0px");
   expect(box.borderBottom).toBe("0px");
   expect(box.borderLeft).toBe("0px");
-  // Fully transparent — the card's own background shows through, so there is no second surface.
+  // Fully transparent — the host's own background shows through, so there is no second surface.
   expect(box.bg).toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
   expect(box.padding).toBe("0px");
 
   // --- one footer ----------------------------------------------------------------------
-  // The action's state survives, exactly once, folded into the card's own footer.
-  await expect(page.getByText("escalated", { exact: true })).toHaveCount(1);
+  // The action's state survives, exactly once. Embedded, `ActionRow` drops its own footer on the
+  // promise that its host folds the state into the host's footer (#781).
+  await expect(strip.getByText("escalated", { exact: true })).toHaveCount(1);
 
   // --- no wasted line ------------------------------------------------------------------
   // Geometry: the evidence disclosure and the decision control sit on the SAME row. The ✕ used
   // to own a line of its own under the RECAP button.
-  const recap = page.getByRole("button", { name: /show recap/i });
-  const dismiss = page.getByRole("button", {
+  const recap = strip.getByRole("button", { name: /show recap/i });
+  const dismiss = strip.getByRole("button", {
     name: /dismiss this escalation/i,
   });
   const [rb, db] = [await recap.boundingBox(), await dismiss.boundingBox()];
@@ -223,47 +195,30 @@ test("the action is not a second box inside the card, and the card speaks once",
     }),
   );
   await recap.click();
-  const body = page.getByText("the recap body");
+  const body = strip.getByText("the recap body");
   await expect(body).toBeVisible();
-  // Scroll it in before measuring, and re-read the BUTTON in the same frame. #929's first-run
-  // block pushes this card to the bottom edge, so the opened body sits below the fold and a
-  // clipped box reported a `y` above the button's centre — a scroll artifact, not an inverted
-  // layout. Comparing two boxes taken after the same scroll is what makes the assertion mean
-  // "below the row" rather than "happens to be on screen".
+  // Scroll it in before measuring, and re-read the BUTTON in the same frame, so the two boxes are
+  // taken after the same scroll — "below the row", not "happens to be on screen".
   await body.scrollIntoViewIfNeeded();
   // The disclosure renames itself on open, so re-locate it across both states rather than
   // reusing the /show recap/ locator, which stops matching the moment it is clicked.
-  const recapOpen = page.getByRole("button", { name: /(show|hide) recap/i });
+  const recapOpen = strip.getByRole("button", { name: /(show|hide) recap/i });
   const [rb2, bb] = [await recapOpen.boundingBox(), await body.boundingBox()];
   expect(bb!.y).toBeGreaterThan(rb2!.y + rb2!.height / 2);
 });
 
-test("a blank rationale keeps the review's reason — the card never says nothing", async ({
+test("a blank rationale keeps the review's reason — a decision never says nothing", async ({
   page,
 }) => {
   // `str(item.get("rationale") or "")` accepts an empty rationale and `ActionRow` renders no
-  // line for it, so suppressing on the action alone would leave a card with controls and no
-  // explanation at all.
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        banner: null,
-        cards: [{ ...CARD, pending_action: { ...ACTION, rationale: "" } }],
-      },
-    }),
-  );
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText(REASON)).toBeVisible();
+  // line for it, so suppressing the review's reason on the action alone would leave controls with
+  // no explanation at all. The card fell back to the review's reason; its successor must too.
+  //
+  // (The card's ⚠ image and its summary line were decorations of the card itself, removed with the
+  // untracked view in #948 P3 — only the fallback, which is the guarantee, is asserted here.)
+  const strip = await openPane(page, [{ ...ACTION, rationale: "" }]);
   await expect(
-    page.getByRole("img", { name: /intervention required/i }),
-  ).toHaveCount(1);
-  // Nothing from the action to say, so the summary is still the card's line.
-  await expect(page.getByText("Editing opencode.json")).toBeVisible();
+    strip.getByRole("button", { name: /dismiss this escalation/i }),
+  ).toBeVisible();
+  await expect(strip.getByText(REASON)).toBeVisible();
 });

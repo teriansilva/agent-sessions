@@ -431,7 +431,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         only looked right because the e2e helper defaulted `feed` to empty, which hid it.
         """
         live = orchestrator_ledger.live_actions()
-        pending = [r for r in live if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES]
+        # PROJECTED, the same merge `/api/pulse` applies to a card's `pending_action`. Since #948 P3
+        # this list is what the session pane's decision strip renders controls from, and a raw
+        # ledger row sent `ActionRow` to its legacy state guess: a low-confidence escalation with a
+        # real `continue` verb offered Dismiss and no Approve, and an `approved` row offered an
+        # Approve the server treats as a no-op (#959 review 4805, finding 1). The fields are derived
+        # booleans on an authenticated read — which controls to offer, never what the action is.
+        pending = [
+            {**r, **orchestrator_ledger.project_for_operator(r.get("state"))}
+            for r in live
+            if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
+        ]
         pending_ids = {r.get("id") for r in pending}
         # ONE row per session (#774) — see `orchestrator_ledger.feed_by_session`, which
         # collapses across the COMPLETE action set so `FEED_LIMIT` bounds sessions rather than

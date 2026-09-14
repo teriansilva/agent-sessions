@@ -31,6 +31,11 @@ actually allows:
 
 ## Starting one
 
+Entering Missions opens on the new-mission page: the brief is the centre of the screen, with
+**+ New mission** in the rail to come back to it, and anything that needs you listed below. A
+**Template** control inserts a template from your library into the brief; nothing is sent until you
+start the mission.
+
 **NEW MISSION** is a mode of the composer rather than a pop-up dialog, so it is reachable from
 every state the page can be in — including a completely fresh install where there is nothing else
 on screen yet.
@@ -43,8 +48,10 @@ Objectives arrive a moment after the mission does; see below.
 
 ## Adopting a session you already started
 
-Work started from the sidebar is not orphaned. Live sessions no mission owns are listed under
-**UNTRACKED**, and **ADOPT** attaches one to a mission.
+Work started from the sidebar is not orphaned. Adopt it from the session itself: the **⋯** menu on
+its sidebar row, or the session pane's header, offers to adopt the session into a mission. A session
+a mission holds carries that mission's tag in the sidebar, and **Filter by mission** narrows the
+session list to one mission's sessions.
 
 A session belongs to at most one mission at a time. Adopting one another mission already holds
 comes back with a refusal that **names the holder**, so you are told where it went rather than just
@@ -136,8 +143,8 @@ has to be abandoned first, and the console says so before you confirm.
 
 ## What the console costs
 
-The scan behind the UNTRACKED list has three depths, and they differ in how much model work they
-do — not in how much they see.
+The Pulse session scan has three depths, and they differ in how much model work they do — not
+in how much they see.
 
 | Depth | Model calls | What you get |
 |---|---|---|
@@ -166,9 +173,9 @@ and the page says so rather than looking broken.
 
 ## On a phone
 
-Three stops: **THREAD** · **OBJECTIVES** · **TIMELINE**, with the mission rail as a drawer. The
-mission's own controls sit above the content on every stop, because closing a mission from the
-timeline is as reasonable as closing it from the thread.
+The mission rail is a drawer. There are no tabs: the mission's objectives and timeline sit behind
+one **DETAILS** disclosure above the thread, and opening it never moves the thread or loses what
+you were typing. The mission's own controls stay above the content.
 
 ## What moved, and what did not
 
@@ -180,7 +187,7 @@ relocated:
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
 | The Ask box | The composer, in the thread |
-| A session no mission owns | **UNTRACKED**, with ADOPT |
+| A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is
 more useful, not less, when one mission is driving several sessions. Jumping into a session and

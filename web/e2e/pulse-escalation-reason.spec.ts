@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-import { mockMissions } from "./mission-console";
+import { setupBench } from "./terminal/harness";
 
 // #795 — an escalation says why it escalated, and what you can do about it.
 //
@@ -17,11 +17,18 @@ import { mockMissions } from "./mission-console";
 // The low-confidence row's controls are covered in `Orchestrator.test.tsx`; adding it here would
 // need its own fixture rather than a reinterpretation of this one.
 //
+// WHERE THE ROW RENDERS (#948 P3): a decision for a session no mission holds used to sit in the
+// "Sessions without a mission" view under /mission. That view is gone, and the decision renders in
+// the SESSION's own pane (`session-decisions`) — `ActionRow` embedded, exactly as it was inside
+// the old card. Every assertion below is unchanged; only the page it is read from moved.
+//
 // Real-browser rather than jsdom for the second half: whether that single control is legible and
 // keeps its per-project touch geometry with a label added are computed-layout facts. An emulator
 // reports neither.
 
 const NOW = Math.floor(Date.now() / 1000);
+
+const UUID = "aaaaaaaa-0000-4000-8000-000000000795";
 
 const ORCH_CONFIG = {
   enabled: true,
@@ -46,7 +53,7 @@ const ACTION = {
   ts: NOW - 600,
   expires_at: NOW + 1800,
   tier: "suggest",
-  session_id: "claude:aaa",
+  session_id: `claude:${UUID}`,
   engine: "claude",
   title: "Bail on PR#30 for same-cause",
   project: "infra",
@@ -60,102 +67,7 @@ const ACTION = {
   escalation_reason: "model",
 };
 
-const LIVE_CARD = {
-  id: "claude:aaa",
-  engine: "claude",
-  title: "Bail on PR#30 for same-cause",
-  cwd: "/home/u/infra",
-  project: { kind: "project", id: "p1", name: "infra", color: "#ffb000" },
-  state: "needs_you",
-  live: false,
-  last_activity: NOW - 720,
-  last_mtime: NOW - 720,
-  intervention_required: false,
-  intervention_reason: "",
-  ai_summary: "",
-  synthesis: "",
-  pending_action: ACTION,
-};
-
-// A SETTLED session: no controls at all, just what the orchestrator last did here. This is the
-// other half of "no options" — the line used to print the ledger's own state name.
-const SETTLED_CARD = {
-  id: "claude:bbb",
-  engine: "claude",
-  title: "Awaiting Hermes re-review",
-  cwd: "/home/u/docs",
-  project: { kind: "project", id: "p2", name: "docs", color: "#ffb000" },
-  state: "idle",
-  live: false,
-  last_activity: NOW - 900,
-  last_mtime: NOW - 900,
-  intervention_required: false,
-  intervention_reason: "",
-  ai_summary: "Waiting on review",
-  synthesis: "",
-  last_action: {
-    id: "act-0",
-    state: "expired",
-    ts: NOW - 3600,
-    tier: "suggest",
-    session_id: "claude:bbb",
-    engine: "claude",
-    title: "Awaiting Hermes re-review",
-    project: "docs",
-    project_id: "p2",
-    verb: "escalate",
-    confidence: 0.8,
-    rationale: "",
-    evidence: "none",
-  },
-};
-
 test.beforeEach(async ({ page }) => {
-  await page.route("**/api/config", (r) =>
-    r.fulfill({
-      json: {
-        csrf: "x",
-        new_session_engines: [],
-        terminal_backend: "ws",
-        auth_mode: "none",
-        pulse: {
-          auto_enabled: false,
-          interval_minutes: 30,
-          window_days: 3,
-          scan_depth: "slow",
-          configured: true,
-        },
-        orchestrator: ORCH_CONFIG,
-      },
-    }),
-  );
-  await page.route("**/api/version", (r) =>
-    r.fulfill({ json: { version: "test" } }),
-  );
-  await page.route("**/api/engines", (r) =>
-    r.fulfill({ json: { engines: [] } }),
-  );
-  await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
-  await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
-    r.fulfill({ json: { folders: [] } }),
-  );
-  await page.route(/\/api\/projects($|\?)/, (r) =>
-    r.fulfill({ json: { projects: [] } }),
-  );
-  await page.route("**/api/sessions**", (r) =>
-    r.fulfill({
-      json: {
-        sessions: [],
-        next_offset: null,
-        total: 0,
-        facets: { projects: [], engines: [] },
-      },
-    }),
-  );
-  await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0 } }),
-  );
   await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
     r.fulfill({
       json: {
@@ -168,29 +80,25 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: NOW,
-        window_days: 3,
-        scan_depth: "slow",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: [LIVE_CARD, SETTLED_CARD],
-      },
-    }),
-  );
 });
+
+/** The session's pane, with its pending decision strip on screen. */
+async function openPane(page: Page) {
+  await setupBench(page, {
+    sessions: [{ engine: "claude", uuid: UUID, title: ACTION.title }],
+  });
+  await page.goto(`/s/claude/${UUID}`);
+  const strip = page.getByTestId("session-decisions");
+  await expect(strip.getByText(RATIONALE)).toBeVisible();
+  return strip;
+}
 
 test("an escalation names its real cause, never the threshold it never consulted", async ({
   page,
 }) => {
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText(RATIONALE)).toBeVisible();
+  const strip = await openPane(page);
 
-  const conf = page.getByText(/^conf 0\.90/);
+  const conf = strip.getByText(/^conf 0\.90/);
   await expect(conf).toBeVisible();
   // The fix: the suffix comes from the server's `escalation_reason`, so it says what actually
   // happened — the model handed this back on purpose.
@@ -204,16 +112,14 @@ test("an escalation names its real cause, never the threshold it never consulted
 test("the one control an escalation offers says what it does", async ({
   page,
 }) => {
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText(RATIONALE)).toBeVisible();
+  const strip = await openPane(page);
 
   // There is nothing to deliver, so there is no Approve — that part was already right.
-  await expect(page.getByRole("button", { name: /approve/i })).toHaveCount(0);
+  await expect(strip.getByRole("button", { name: /approve/i })).toHaveCount(0);
 
   // ...which makes the ✕ the row's ONLY control, sitting beside the RECAP disclosure where a
   // bare glyph reads as "close that panel". It carries a visible label now.
-  const dismiss = page.getByRole("button", {
+  const dismiss = strip.getByRole("button", {
     name: /dismiss this escalation/i,
   });
   await expect(dismiss).toBeVisible();
@@ -223,11 +129,9 @@ test("the one control an escalation offers says what it does", async ({
 test("the dismiss control keeps its geometry with the label added", async ({
   page,
 }, testInfo) => {
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText(RATIONALE)).toBeVisible();
+  const strip = await openPane(page);
 
-  const dismiss = page.getByRole("button", {
+  const dismiss = strip.getByRole("button", {
     name: /dismiss this escalation/i,
   });
   const box = await dismiss.boundingBox();
@@ -242,30 +146,18 @@ test("the dismiss control keeps its geometry with the label added", async ({
   // must not have wrapped the control onto a line of its own.
   expect(box!.height).toBeLessThan(min * 2);
 
-  const recap = page.getByRole("button", { name: /show recap/i });
+  const recap = strip.getByRole("button", { name: /show recap/i });
   const recapBox = await recap.boundingBox();
   expect(recapBox).not.toBeNull();
 
-  // Same row: their vertical centres agree within a few pixels. Unchanged by #878 — the
-  // untracked session block IS a card (it names and links its session), so `ActionRow` renders
-  // there `embedded`, exactly as it did inside the grid's card.
+  // Same row: their vertical centres agree within a few pixels. The session pane renders
+  // `ActionRow` `embedded` (#948 P3), exactly as the grid's card and the untracked block did.
   const centre = (b: { y: number; height: number }) => b.y + b.height / 2;
   expect(Math.abs(centre(box!) - centre(recapBox!))).toBeLessThan(6);
 });
 
-test("a settled action says what became of it, not which state it reached", async ({
-  page,
-}) => {
-  await mockMissions(page);
-  await page.goto("/mission");
-  // Scoped to the pane: since #878 a session appears in BOTH the rail row and the view, which is
-  // correct and makes an unscoped `getByText` ambiguous under strict mode. The assertion is
-  // unchanged — only the region it is read from is now named.
-  const pane = page.getByTestId("pane");
-  await expect(pane.getByText("Awaiting Hermes re-review")).toBeVisible();
-
-  // The other "no options" case: history, no controls. `EXPIRED` names a transition in a state
-  // machine the operator never sees.
-  await expect(pane.getByText(/no decision in time/i)).toBeVisible();
-  await expect(page.getByText(/^expired$/i)).toHaveCount(0);
-});
+// REMOVED (#948 P3): "a settled action says what became of it, not which state it reached". It
+// read the history line an untracked session's block rendered from the card's `last_action`. That
+// block went with the "Sessions without a mission" view, and no surface renders `last_action` any
+// more; the plain-words outcome it pinned ("no decision in time", never `expired`) is still pinned
+// on `actionOutcome` in `src/lib/orchestratorAction.test.ts`.

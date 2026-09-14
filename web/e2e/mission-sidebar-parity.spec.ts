@@ -110,6 +110,33 @@ test("every sidebar control on /mission computes exactly as its /sessions counte
   }
 });
 
+test("the mission sidebar footer counts missions and held sessions, not sessions", async ({ page }) => {
+  await setup(page);
+  await mockMissions(page, {
+    missions: {
+      ...missionList([
+        missionRow({ id: "msn_1", title: "A mission row", session_keys: ["claude:a", "claude:b"] }),
+        missionRow({ id: "msn_2", title: "Another mission", session_keys: ["claude:c"] }),
+      ]),
+      facets: { projects: [], states: ["running"] },
+    },
+  });
+  await page.goto("/");
+  await openMissionRail(page);
+  await expect(page.locator(".sidebar-foot")).toContainText(/ENGAGED · \d+ LIVE$/);
+
+  await page.goto("/mission");
+  await openMissionRail(page);
+  const foot = page.locator(".sidebar-foot");
+  await expect(foot.getByTestId("rail-foot")).toHaveText("2 MISSIONS · 3 HELD");
+  await expect(foot).not.toContainText("ENGAGED");
+  // Same typography as the sessions footer it replaces: both are the shell's .hud-tag.
+  const tag = await styleOf(foot.getByTestId("rail-foot"), TYPE);
+  await page.goto("/");
+  await openMissionRail(page);
+  expect(await styleOf(page.locator(".sidebar-foot .hud-tag"), TYPE)).toEqual(tag);
+});
+
 test("both sidebars keep the 44px touch floor on a phone", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch floor is a phone property");
   await setup(page);

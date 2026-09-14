@@ -1,7 +1,5 @@
 import { expect, test } from "@playwright/test";
 
-import { mockMissions } from "./mission-console";
-
 // Real-browser guard for #476: Pulse cards and Overview session chips are framed by the
 // HudFrame corner brackets ONLY — no engine/urgency `border-left` rail, so the bracketed left
 // edge never doubles up into a "double line". A jsdom test can't prove this (no real layout /
@@ -35,68 +33,9 @@ async function bordersUniform(locator: import("@playwright/test").Locator) {
 }
 
 test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
-  test("Pulse card: uniform border + four corner brackets", async ({
-    page,
-  }) => {
-    const card = {
-      id: "claude:need-1",
-      engine: "claude",
-      title: "Pulse needs-you card",
-      cwd: "/home/u/proj",
-      project: { kind: "folder", id: "/home/u/proj", name: "proj" },
-      last_activity: now,
-      ai_summary: "Awaiting a merge decision",
-      intervention_required: true,
-      intervention_reason: "Confirm the push",
-      reviewed_at: now,
-      live: false,
-      state: "needs_you",
-      synthesis: null,
-    };
-    await page.route("**/api/config", (r) => r.fulfill({ json: config }));
-    await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
-    await page.route("**/api/version", (r) =>
-      r.fulfill({ json: { version: "test" } }),
-    );
-    // Empty sidebar so the only matching <li> is the Pulse card.
-    await page.route("**/api/sessions**", (r) =>
-      r.fulfill({
-        json: {
-          sessions: [],
-          next_offset: null,
-          total: 0,
-          facets: { projects: [], engines: [] },
-        },
-      }),
-    );
-    await page.route("**/api/pulse", (r) =>
-      r.fulfill({
-        json: {
-          cache_version: 1,
-          generated_at: now,
-          window_days: 1,
-          scan_depth: "fast",
-          input_fingerprint: "fp",
-          synthesis_skipped: false,
-          banner: null,
-          cards: [card],
-        },
-      }),
-    );
-
-    await mockMissions(page);
-    await page.goto("/mission");
-
-    const li = page.locator("li", { hasText: "Pulse needs-you card" });
-    await expect(li).toBeVisible();
-
-    const b = await bordersUniform(li);
-    expect(b.left).toBe(b.top);
-    expect(b.left).toBe(b.right);
-    expect(b.left).toBe(b.bottom);
-
-    await expect(li.locator(".hud-cnr")).toHaveCount(4);
-  });
+  // REMOVED (#948 P3): "Pulse card: uniform border + four corner brackets". It measured the session
+  // card rendered under /mission for a session no mission held; that card went with the "Sessions
+  // without a mission" view, and nothing under /mission draws a bracketed card any more.
 
   test("Overview chip: uniform border + four corner brackets", async ({
     page,

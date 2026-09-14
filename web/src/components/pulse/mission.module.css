@@ -1723,3 +1723,226 @@
   width: 6px;
   height: 6px;
 }
+
+/* --- #948 P3: the new-mission page ------------------------------------------------ */
+/* Nothing selected = the section's front door. Centred, the composer as its centrepiece, prose at
+ * the §4 body size. The composer keeps its own classes; only its box grows here. */
+.landing {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 9vh 16px 24px;
+}
+.landingInner {
+  width: 100%;
+  max-width: 720px;
+}
+.landingHeading {
+  margin: 0;
+  text-align: center;
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-1);
+}
+.landingSub {
+  margin: 8px 0 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.landing .composerInput {
+  min-height: 120px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.landingNote {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.landingNote b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.landingNeeds {
+  margin-top: 40px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.landingNeedsHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.landingClear {
+  margin-left: auto;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.landingClear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.landingEmpty {
+  padding: 12px 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.landingRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  background: var(--glass);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.landingRow:hover,
+.landingRow:focus-visible {
+  border-left-color: var(--accent);
+  background: var(--row-hover);
+  outline: none;
+}
+.landingRow .dot {
+  margin-top: 7px;
+}
+.landingRowBody {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.landingRowTitle {
+  display: block;
+  font-size: 14px;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.landingRowMeta {
+  display: block;
+  margin-top: 3px;
+  /* An unbroken project name or path must wrap, never widen the landing past a 360px phone. */
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+/* --- #948 P3: details are ONE disclosure below 1400px, not a tab --------------------- */
+.detailsToggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.detailsToggle small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--text-3);
+}
+.detailsToggle > svg {
+  flex: none;
+}
+.detailsToggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.detailsToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (max-width: 1399px) {
+  /* The toggle, then the band, then the thread — by ORDER, so the DOM (and the thread's mount)
+     stays exactly where it is at every width. */
+  .split {
+    flex-direction: column;
+  }
+  .detailsToggle {
+    order: -2;
+  }
+  .detailsWrap {
+    order: -1;
+    flex: 0 0 auto;
+    max-height: 40%;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .threadCol {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+@media (min-width: 1400px) {
+  .detailsToggle {
+    display: none;
+  }
+}
+
+/* --- #948 P3: the workspace type scale, on the §4 specs ----------------------------- */
+/* Prose and the composer at the 14px body size; the mode control at 11px mono; the mission title at
+ * 16px/600. These used to run at 0.66–0.84rem. SEND keeps its size on purpose: #944/#946 pin the
+ * section navigation buttons to Send's typography, and moving one alone breaks that pairing. */
+.composerInput {
+  font-size: 14px;
+}
+.modeBtn {
+  font-size: 11px;
+}
+.empty {
+  font-size: 14px;
+}
+.missionTitle {
+  font-size: 16px;
+  font-weight: 600;
+}

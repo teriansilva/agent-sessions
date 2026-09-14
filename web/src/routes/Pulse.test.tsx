@@ -3,16 +3,15 @@
  * **This file is a MIGRATION, not a rewrite.** Every case below descends from one that tested
  * the card grid, the banner or the Ask box, and each keeps what it was actually guarding rather
  * than what it happened to assert. Where a behaviour genuinely no longer exists it is dropped
- * with the reason stated on the case that replaced it — a deleted test with no explanation is
+ * with the reason stated where it used to be — a deleted test with no explanation is
  * indistinguishable from a lost regression, and several of these guard real past ones (#754's
  * refresh-failure case, #803's chip collapse, #795's outcome wording).
  *
- * The 27 originals map to three destinations:
- *   - the HEADER (scan depth, Scan now, the degraded-scan notice) — unchanged, tests kept as-is;
- *   - the RAIL's UNTRACKED group, which is where a session that used to be a card now lives;
- *   - `ActionRow`, whose own behaviour is covered in `components/pulse/Orchestrator.test.tsx`
- *     and is NOT re-asserted here — this file checks that the console renders it in the right
- *     place, not how it behaves once rendered.
+ * #948 P3 changed the front door: entering the section selects NOTHING and shows the new-mission
+ * page; a mission is opened from the rail. The "Sessions without a mission" view and its filters
+ * are gone — a decision for a session no mission holds now renders in that session's own pane.
+ * `ActionRow`'s own behaviour is covered in `components/pulse/Orchestrator.test.tsx` and is NOT
+ * re-asserted here — this file checks that the console renders it in the right place.
  */
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -69,8 +68,6 @@ function card(
     intervention_required: false,
     intervention_reason: "",
     reviewed_at: null,
-    // Untracked-ness is about being LIVE and unheld: a card that is not live never reaches the
-    // rail at all, so every fixture here that expects a row must set it.
     live: true,
     synthesis: null,
     ...over,
@@ -169,11 +166,14 @@ function renderPulse(pulse: PulseConfig | undefined = undefined) {
   );
 }
 
-/** The rail NAVIGATES — missions plus one "Untracked · N" entry. It does not list sessions. */
+/** The rail NAVIGATES — it lists missions. With no shell slot in a unit test it renders in place. */
 const rail = () => screen.getByRole("navigation", { name: /missions/i });
-/** The centre pane CARRIES CONTENT — the thread, the objectives stop, or the untracked
- *  sessions. Session assertions belong here; that split is why they are not ambiguous. */
-const pane = () => screen.getByTestId("pane");
+
+/** Open a mission the way the operator does since #948 P3: nothing is selected on arrival, so a
+ *  test that wants a mission's body clicks its rail row. */
+async function openFromRail(title: string) {
+  await userEvent.click(await within(rail()).findByText(title));
+}
 
 beforeEach(() => {
   vi.mocked(api.pulse).mockReset().mockResolvedValue(overview());
@@ -207,306 +207,37 @@ beforeEach(() => {
 });
 
 // =============================================================================================
-// The header — unchanged by this phase. These three are kept VERBATIM; the scan controls and
-// the degraded-scan notice were never part of the grid.
-// =============================================================================================
-
-// =============================================================================================
-// UNTRACKED — where a session that used to be a card now lives.
+// REMOVED WITH THE UNTRACKED VIEW (#948 P3) — eleven cases that lived here, and where their
+// guarantees went:
 //
-// The card carried four things: a title + jump link, a summary line, its pending decision, and
-// what the orchestrator last did. All four survive; only their host changed. Losing any of them
-// would have made the rail say LESS about a session than the grid did, which is not a trade the
-// issue asked for.
+// * "a live session with no mission lists under UNTRACKED, with its line", "shows the per-session
+//   synthesis line", "with no synthesis, the review's summary is still the session's line", "a
+//   BLANK summary falls through to the intervention reason", "what the orchestrator last did
+//   rides the row", "a live action replaces the history line": all six asserted the rows of the
+//   "Sessions without a mission" view, which no longer exists anywhere under /mission. The
+//   outcome wording (#795) is still pinned on `actionOutcome` in `lib/orchestratorAction.test.ts`.
+// * "a decision on an untracked session is never dropped (#840)": the guarantee MOVED — such a
+//   decision now renders in the session's own pane (`session-decisions`), pinned in the browser by
+//   `e2e/session-decisions.spec.ts`, `e2e/orchestrator.spec.ts` and `e2e/pulse-unified.spec.ts`.
+// * the four #803 filter-chip cases ("unadopted cwds collapse into one Default chip", "selecting
+//   Default narrows UNTRACKED", "two entities sharing a name still get two chips", "a folder ref
+//   with no usable id still routes to Default"): they drove the untracked project select, which is
+//   removed. The sessions sidebar's own Default chip is pinned in
+//   `components/sidebar/Filters.test.tsx`.
 // =============================================================================================
-
-test("a live session with no mission lists under UNTRACKED, with its line (#441 P5, #754)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "codex:c-need",
-          engine: "codex",
-          title: "Deploy step",
-          state: "needs_you",
-        }),
-        card({
-          id: "claude:c-live",
-          title: "Failing build",
-          state: "in_flight",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  const rows = await screen.findAllByTestId("untracked-session");
-  expect(rows).toHaveLength(2);
-  expect(within(pane()).getByText("Deploy step")).toBeInTheDocument();
-  expect(within(pane()).getByText("Failing build")).toBeInTheDocument();
-  // The card's summary line, kept.
-  expect(rows[0]).toHaveTextContent("did a thing");
-  // …and the band still rides the LED's accessible name, since colour alone is not a state.
-  expect(within(rows[0]).getByRole("img")).toHaveAccessibleName("Needs you");
-});
-
-test("shows the per-session synthesis line instead of the summary when present (#441 P4/P5)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          state: "idle",
-          ai_summary: "old summary",
-          synthesis: "waiting on your review of the parser",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(
-    await within(await screen.findByTestId("pane")).findByText(
-      "waiting on your review of the parser",
-    ),
-  ).toBeInTheDocument();
-  expect(screen.queryByText("old summary")).not.toBeInTheDocument();
-});
-
-test("with no synthesis, the review's summary is still the session's line (#781)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({ id: "claude:c1", state: "idle", ai_summary: "reviewed it" }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByText("reviewed it")).toBeInTheDocument();
-});
-
-test("a BLANK summary falls through to the intervention reason — a row never says nothing (#781)", async () => {
-  // The original asserted this against the card body. The fallback chain is the regression, not
-  // the element it rendered into: an empty `ai_summary` is a real persisted shape.
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          state: "needs_you",
-          ai_summary: "",
-          synthesis: null,
-          intervention_required: true,
-          intervention_reason: "Confirm the push",
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByText("Confirm the push")).toBeInTheDocument();
-});
-
-test("what the orchestrator last did rides the row, worded as an OUTCOME (#777, #795)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          state: "idle",
-          last_action: pact({ state: "expired", verb: "escalate", repeats: 7 }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  const line = await screen.findByTestId("untracked-view-last-action");
-  expect(line).toHaveTextContent("ESCALATE");
-  // #795: what BECAME of it, never the ledger state — `expired` names a transition in a state
-  // machine the operator never sees.
-  expect(line).toHaveTextContent("no decision in time");
-  expect(line).not.toHaveTextContent("expired");
-  expect(line).toHaveTextContent("×7");
-});
-
-test("a live action replaces the history line, and renders its controls (#777)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          state: "needs_you",
-          pending_action: pact({ state: "proposed", verb: "continue" }),
-          last_action: pact({
-            id: "old",
-            state: "delivered",
-            verb: "continue",
-          }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  // The block shows no history line while something is pending…
-  await screen.findByTestId("untracked-session");
-  expect(
-    screen.queryByTestId("untracked-view-last-action"),
-  ).not.toBeInTheDocument();
-  // …and the decision itself renders, with real controls.
-  expect(
-    await screen.findByRole("button", { name: /approve/i }),
-  ).toBeInTheDocument();
-});
-
-test("a decision on an untracked session is never dropped (#840)", async () => {
-  // The regression this file exists to prevent. Before the console, this decision rode a card;
-  // if UNTRACKED had no view of its own it would have had nowhere to render, and a console that
-  // silently loses decisions for unorganised work is worse than the grid it replaced.
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:c1",
-          state: "needs_you",
-          pending_action: pact({
-            rationale: "Blocked on a choice only you can make.",
-          }),
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(await screen.findByTestId("rail-untracked-view")).toHaveTextContent(
-    "1 waiting on you",
-  );
-  expect(
-    within(pane()).getByText("Blocked on a choice only you can make."),
-  ).toBeInTheDocument();
-});
-
-// =============================================================================================
-// The filter chips (#803). They were never the grid's — they belong to the session list, and the
-// session list moved. All four originals are kept, retargeted at the rows they now narrow.
-// =============================================================================================
-
-test("unadopted cwds collapse into one Default chip, never a raw path (#803)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:a",
-          state: "idle",
-          cwd: "/tmp/scratch-one",
-          project: { kind: "folder", id: "", name: "" },
-        }),
-        card({
-          id: "claude:b",
-          state: "idle",
-          cwd: "/tmp/scratch-two",
-          project: { kind: "folder", id: "", name: "" },
-        }),
-        card({
-          id: "claude:c",
-          state: "idle",
-          project: { kind: "project", id: "p1", name: "battlelab" },
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(
-    await screen.findByRole("option", { name: /default/i }),
-  ).toBeInTheDocument();
-  expect(screen.queryByText(/tmp\/scratch-one/)).not.toBeInTheDocument();
-  expect(screen.queryByText(/tmp\/scratch-two/)).not.toBeInTheDocument();
-});
-
-test("selecting Default narrows UNTRACKED to exactly the unadopted sessions (#803)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:a",
-          title: "Scratch one",
-          state: "idle",
-          cwd: "/tmp/scratch-one",
-          project: { kind: "folder", id: "", name: "" },
-        }),
-        card({
-          id: "claude:c",
-          title: "Real project",
-          state: "idle",
-          project: { kind: "project", id: "p1", name: "battlelab" },
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  await userEvent.selectOptions(
-    await screen.findByRole("combobox", {
-      name: "Filter untracked sessions by project",
-    }),
-    await screen.findByRole("option", { name: /default/i }),
-  );
-  expect(within(pane()).getByText("Scratch one")).toBeInTheDocument();
-  expect(within(pane()).queryByText("Real project")).not.toBeInTheDocument();
-});
-
-test("two entities sharing a name still get two chips (#754 regression, #803)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:a",
-          state: "idle",
-          cwd: "/one/api",
-          project: { kind: "project", id: "p1", name: "api" },
-        }),
-        card({
-          id: "claude:b",
-          state: "idle",
-          cwd: "/two/api",
-          project: { kind: "project", id: "p2", name: "api" },
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  // Two chips, disambiguated — collapsing them by label showed one chip carrying both.
-  const chips = await screen.findAllByRole("option", { name: /api/i });
-  expect(chips.length).toBeGreaterThanOrEqual(2);
-});
-
-test("a folder ref with no usable id still routes to Default (#803)", async () => {
-  vi.mocked(api.pulse).mockResolvedValue(
-    overview({
-      cards: [
-        card({
-          id: "claude:a",
-          state: "idle",
-          cwd: "/tmp/x",
-          project: { kind: "folder", id: "", name: "" },
-        }),
-        card({
-          id: "claude:b",
-          state: "idle",
-          project: { kind: "project", id: "p1", name: "battlelab" },
-        }),
-      ],
-    }),
-  );
-  renderPulse();
-  expect(
-    await screen.findByRole("option", { name: /default/i }),
-  ).toBeInTheDocument();
-});
 
 // =============================================================================================
 // The console's own surfaces.
 // =============================================================================================
 
-test("no missions and no live sessions renders an invitation, not a blank (#878)", async () => {
+test("no missions renders the new-mission page, not a blank (#878, #948)", async () => {
   renderPulse();
-  expect(await screen.findByTestId("console-empty")).toHaveTextContent(
-    /nothing tracked yet/i,
+  // The invitation is the front door itself now: the new-mission page, with nothing selected and
+  // therefore no mission header above it.
+  expect(await screen.findByTestId("mission-landing")).toHaveTextContent(
+    /what should this mission achieve\?/i,
   );
+  expect(screen.queryByTestId("console-title")).not.toBeInTheDocument();
 });
 
 test("a store that will not answer says so, and is not 'you have no missions' (#878)", async () => {
@@ -563,9 +294,12 @@ test("a mission's own decision renders in its thread (#840 §15)", async () => {
     }),
   );
   renderPulse();
-  // It is in the mission's thread — and NOT in UNTRACKED, because the mission holds it.
+  // Nothing is selected on arrival (#948), so the decision is not on the front door…
+  await screen.findByTestId("mission-landing");
+  expect(screen.queryByText("Tests were not run.")).not.toBeInTheDocument();
+  // …and it is in the mission's thread once the mission is opened.
+  await openFromRail("Kimi transcript adapter");
   expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
-  expect(screen.queryByTestId("untracked-session")).not.toBeInTheDocument();
 });
 
 test("with no AI endpoint the composer is disabled and the notice says what is off (#878)", async () => {
@@ -578,6 +312,7 @@ test("with no AI endpoint the composer is disabled and the notice says what is o
     store_error: null,
   });
   renderPulse();
+  await openFromRail("Kimi transcript adapter");
   expect(await screen.findByTestId("no-ai-notice")).toHaveTextContent(
     /and the composer/i,
   );
@@ -613,11 +348,10 @@ test("switching missions starts a clean composer — the console KEYS the missio
   }));
   renderPulse({ configured: true } as PulseConfig);
 
-  // TWO matches now, and both are correct: the rail row names the mission and so does the
-  // console header (#942 — the header reads its title from the mission the body is rendering,
-  // which is what removed the "Select a mission" contradiction). This test is about the
-  // composer being keyed per mission, so it only needs to wait until the mission is on screen.
-  await screen.findAllByText("Mission A");
+  await openFromRail("Mission A");
+  await waitFor(() =>
+    expect(screen.getByTestId("console-title")).toHaveTextContent("Mission A"),
+  );
   await userEvent.type(
     screen.getByTestId("composer-input"),
     "half-written thought",
@@ -626,38 +360,43 @@ test("switching missions starts a clean composer — the console KEYS the missio
     "half-written thought",
   );
 
-  await userEvent.click(screen.getByText("Mission B"));
+  await userEvent.click(within(rail()).getByText("Mission B"));
   await waitFor(() =>
     expect(screen.getByTestId("composer-input")).toHaveValue(""),
   );
 });
 
-test("a filter that excludes a held session does NOT withdraw its mission's decision (#879)", async () => {
-  // The chips narrow the session LIST. They were never meant to withdraw a decision — but the
-  // console originally derived a mission's decisions from the same filtered array the rail uses,
-  // so choosing a project chip that excluded a held session removed its Approve/Reject row while
-  // the mission stayed selected and still said `needs_you`. A decision you cannot see is a
-  // decision you cannot make.
+test("a filter that excludes the selected mission does NOT withdraw its decision (#879)", async () => {
+  // A mission's decisions must not depend on what the rail is filtered to. The console originally
+  // derived them from the same filtered array the rail used, so a filter that excluded the held
+  // session removed its Approve/Reject row while the mission stayed selected and still said
+  // `needs_you`. A decision you cannot see is a decision you cannot make.
+  //
+  // The session chips that first exposed this went with the untracked view (#948 P3); the filter
+  // that remains is the MISSION filter, and it can exclude the selected mission outright — which
+  // is the same hazard in its current form.
   const held = mission({
     id: "msn_a",
     title: "Mission A",
     project_id: "alpha",
     sessions: [{ session_key: "claude:c1", removed_at: null }],
   });
-  vi.mocked(api.missions).mockResolvedValue({
-    missions: [
-      listRow({
-        id: "msn_a",
-        title: "Mission A",
-        project_id: "alpha",
-        session_keys: ["claude:c1"],
-      }),
-    ],
-    total: 1,
-    limit: 50,
-    offset: 0,
-    facets: { projects: [], states: [] },
-    store_error: null,
+  const row = listRow({
+    id: "msn_a",
+    title: "Mission A",
+    project_id: "alpha",
+    session_keys: ["claude:c1"],
+  });
+  vi.mocked(api.missions).mockImplementation(async (opts) => {
+    const filtered = Boolean(opts?.q);
+    return {
+      missions: filtered ? [] : [row],
+      total: filtered ? 0 : 1,
+      limit: 50,
+      offset: 0,
+      facets: { projects: [], states: [] },
+      store_error: null,
+    };
   });
   vi.mocked(api.mission).mockResolvedValue({
     ...held,
@@ -667,40 +406,38 @@ test("a filter that excludes a held session does NOT withdraw its mission's deci
   vi.mocked(api.pulse).mockResolvedValue(
     overview({
       cards: [
-        // The mission's own session, in project "alpha"…
         card({
           id: "claude:c1",
           title: "Held session",
           state: "needs_you",
+          mission_id: "msn_a",
           project: { kind: "project", id: "alpha", name: "alpha" },
           pending_action: pact({ rationale: "Tests were not run." }),
-        }),
-        // …and an unrelated one in another project, so the chips render at all.
-        card({
-          id: "codex:c2",
-          engine: "codex",
-          title: "Other work",
-          state: "idle",
-          project: { kind: "project", id: "beta", name: "beta" },
         }),
       ],
     }),
   );
   renderPulse({ configured: true } as PulseConfig);
 
+  await openFromRail("Mission A");
   expect(await screen.findByText("Tests were not run.")).toBeInTheDocument();
 
-  // Filter to the OTHER project, which excludes the held session entirely.
-  await userEvent.click(screen.getByTestId("rail-untracked-view"));
-  await userEvent.selectOptions(
-    await screen.findByRole("combobox", {
-      name: "Filter untracked sessions by project",
-    }),
-    "beta",
+  // Search for something the mission does not match: the rail empties under the selection.
+  await userEvent.type(
+    screen.getByRole("searchbox", { name: "Search missions" }),
+    "zzz",
   );
-  await userEvent.click(screen.getByTestId("rail-mission"));
+  await waitFor(() =>
+    expect(api.missions).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "zzz" }),
+    ),
+  );
+  await waitFor(() =>
+    expect(within(rail()).queryByText("Mission A")).not.toBeInTheDocument(),
+  );
 
   // The mission is still selected, so its decision is still there to be made.
+  expect(screen.getByTestId("console-title")).toHaveTextContent("Mission A");
   expect(screen.getByText("Tests were not run.")).toBeInTheDocument();
 });
 
@@ -776,11 +513,11 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
       : mission({ events: [ev(7)], events_next_seq: null }),
   );
   renderPulse();
+  await openFromRail("Kimi transcript adapter");
 
-  // Scoped to the pane: jsdom applies no media queries, so the persistent detail column renders
-  // the same timeline alongside the tab strip. That duplication is correct in a browser at
-  // ≥1400px and only ambiguous here.
-  await userEvent.click(await screen.findByTestId("stop-details"));
+  // Scoped to the details: the thread renders the same events, which is correct and only
+  // ambiguous here. The one details disclosure (#948) replaces the old Details tab.
+  await userEvent.click(await screen.findByTestId("details-toggle"));
   await userEvent.click(screen.getByTestId("detail-timeline"));
   const pane = await screen.findByTestId("mission-details");
   expect(await within(pane).findByText("event 9")).toBeInTheDocument();
@@ -816,14 +553,14 @@ test("the timeline pages by CURSOR across more than one page (#878)", async () =
 
 test("the route carries no scan chrome — that lives in Settings now (#929)", async () => {
   renderPulse();
-  await screen.findByText(/MISSION CONTROL/i);
+  // The route's heading — by role, since the new-mission page's own copy also says "Mission
+  // control" (#948).
+  await screen.findByRole("heading", { level: 1, name: /MISSION CONTROL/i });
   expect(screen.queryByRole("button", { name: /scan now/i })).toBeNull();
   for (const d of ["FAST", "MED", "SLOW"]) {
     expect(screen.queryByRole("button", { name: d })).toBeNull();
   }
-  // …and the header now orients on live sessions rather than on when a scan last ran.
-  // (The project/agent chips are a MISSION CONTROL surface and stay, but they render only
-  // when the overview has facets, so they are pinned in the filter tests rather than here.)
   expect(screen.queryByText(/not scanned yet/i)).toBeNull();
-  expect(screen.getByTestId("console-counts")).toBeInTheDocument();
+  // (The "N live sessions" count that replaced the scan window, `console-counts`, went with the
+  // untracked view in #948 P3 — there is no session list on this route left for it to count.)
 });

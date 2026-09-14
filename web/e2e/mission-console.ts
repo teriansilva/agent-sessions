@@ -191,48 +191,38 @@ export function missionRailTrigger(page: import("@playwright/test").Page) {
   return page.getByRole("button", { name: /(Open|Collapse) mission list/i });
 }
 
-/** Open the shared disclosure at either responsive layout. */
+/** Open one details section at either responsive layout (#948 P3).
+ *
+ *  Below 1400px the details sit behind ONE disclosure (`details-toggle`) above the thread; at
+ *  1400px and above that button is `display:none` and the details column is always beside the
+ *  thread. So: expand the band when the toggle is on screen and closed, then open the section. */
 export async function openMissionDetails(page: Page, section = "objectives") {
   const toggle = page.getByTestId(`detail-${section}`);
   await toggle.waitFor({ state: "attached" });
-  const tab = page.getByTestId("stop-details");
-  if (await tab.isVisible()) await tab.click();
+  const band = page.getByTestId("details-toggle");
+  await band.waitFor({ state: "attached" });
+  if (
+    (await band.isVisible()) &&
+    (await band.getAttribute("aria-expanded")) !== "true"
+  ) {
+    await band.click();
+    await expect(band).toHaveAttribute("aria-expanded", "true");
+  }
   if ((await toggle.getAttribute("aria-expanded")) !== "true")
     await toggle.click();
 }
 
+/** Give the thread its room back: collapse the details band if it is open. A no-op at 1400px and
+ *  above, where the band is hidden and the thread is always beside the details. */
 export async function openMissionConversation(page: Page) {
-  const tab = page.getByTestId("stop-thread");
-  if (await tab.isVisible()) await tab.click();
-}
-
-export function untrackedFilterOption(page: Page, name: RegExp) {
-  return page
-    .getByRole("combobox", {
-      name: /Filter untracked sessions by/,
-      includeHidden: true,
-    })
-    .getByRole("option", { name, includeHidden: true });
-}
-
-export async function chooseUntrackedFilter(page: Page, name: RegExp) {
-  await openMissionRail(page);
-  const option = untrackedFilterOption(page, name);
-  await option.waitFor({ state: "attached" });
-  await option
-    .locator("..")
-    .selectOption((await option.getAttribute("value"))!);
-  if (await page.getByRole("dialog").count())
-    await page.keyboard.press("Escape");
-}
-
-export async function clearUntrackedFilters(page: Page) {
-  await openMissionRail(page);
-  await page
-    .getByRole("button", { name: "Clear session filters", exact: true })
-    .click();
-  if (await page.getByRole("dialog").count())
-    await page.keyboard.press("Escape");
+  const band = page.getByTestId("details-toggle");
+  if (
+    (await band.isVisible()) &&
+    (await band.getAttribute("aria-expanded")) === "true"
+  ) {
+    await band.click();
+    await expect(band).toHaveAttribute("aria-expanded", "false");
+  }
 }
 
 /** Flip the rail between its Active and Archived scopes (#948 P2).

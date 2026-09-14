@@ -224,9 +224,9 @@ test("switching back to ASK abandons the draft instruction rather than sending i
 });
 
 test("a create begun in ACTIVE does not steal the selection into the ARCHIVED rail", async () => {
-  // #896 review 10, finding 4. The fence was `isCurrent(missionId)`, and this form lives in the
-  // UNTRACKED view — which the Active → Archived flip does NOT unmount and whose sentinel id
-  // does not change. So "the same view is showing" stayed true across the flip while the rail
+  // #896 review 10, finding 4. The fence was `isCurrent(missionId)`, and this form lives on the
+  // new-mission landing (the old UNTRACKED view until #948) — which the Active → Archived flip
+  // does NOT unmount and whose sentinel id does not change. So "the same view is showing" stayed true across the flip while the rail
   // underneath became a different set, and a create started in Active resolved as `focus: true`
   // over an archived rail: an active mission selected into a body and a rail describing
   // Archived, which is the exact mismatch `setScope` exists to prevent.

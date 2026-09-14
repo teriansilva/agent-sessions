@@ -1,7 +1,8 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
+import { setupBench } from "./terminal/harness";
 
 // Real-browser checks for Pulse orchestration (#726 Phases 1–2). Network is fully mocked —
 // the suite never talks to a backend or an AI endpoint.
@@ -11,8 +12,14 @@ import { mockMissions } from "./mission-console";
 // operator will actually hit — the session moved on between the proposal and the tap, so
 // nothing was written. A green unit test on a broken tap is exactly the failure mode the
 // workflow's UI rule exists to stop.
+//
+// WHERE THE CONTROLS RENDER (#948 P3): a decision for a session no mission holds used to ride that
+// session's row under /mission. That view is gone; the decision renders in the SESSION's own pane
+// (`session-decisions`, read from `GET /api/pulse/orchestrator`). The properties are unchanged.
 
 const NOW = Math.floor(Date.now() / 1000);
+
+const UUID = "aaaaaaaa-0000-4000-8000-000000000001";
 
 const ORCH_CONFIG = {
   enabled: true,
@@ -35,7 +42,7 @@ const CONTINUE_ACTION = {
   ts: NOW,
   expires_at: NOW + 1800,
   tier: "suggest",
-  session_id: "claude:aaaaaaaa-0000-4000-8000-000000000001",
+  session_id: `claude:${UUID}`,
   engine: "claude",
   title: "Kimi transcript adapter",
   project: "agent-sessions",
@@ -51,8 +58,6 @@ const ESCALATE_ACTION = {
   ...CONTINUE_ACTION,
   id: "act-escalate",
   state: "escalated",
-  session_id: "codex:bbbbbbbb-0000-4000-8000-000000000002",
-  engine: "codex",
   title: "Relay session cap",
   project: "battlelab-cloud",
   verb: "escalate",
@@ -117,62 +122,28 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-function mockOrchestrator(
-  page: import("@playwright/test").Page,
-  pending: unknown[],
-  feed: unknown[] = [],
-) {
+function mockOrchestrator(page: Page, pending: unknown[], feed: unknown[] = []) {
   // `feed` defaults to empty on purpose: an action present in BOTH lists renders twice, and a
   // spec that then matches "the approve button" is asserting against an accident.
-  // #754: the decision controls render ON the session card, so the cards route has to carry
-  // the same actions. Derived from `pending` rather than hand-listed, so the two cannot drift.
-  // Mutable so the cards route models the REAL transition: once an action settles it stops
-  // being live, so the reload after approve/reject must stop returning it. A frozen mock left
-  // the Approve button on screen forever and asserted a state the server cannot produce.
+  // Mutable so the route models the REAL transition: once an action settles it stops being
+  // pending, so the re-read after approve/reject must stop returning it. A frozen mock left the
+  // Approve button on screen forever and asserted a state the server cannot produce.
   let live = [...(pending as Record<string, unknown>[])];
   // Observed via `page.on("request")`, NOT a route. Each test registers its own
   // approve/reject responder AFTER this helper, and Playwright matches routes newest-first —
   // so that responder's `fulfill()` ends routing and a mutation route registered here would
-  // never run. The tests still passed for me, because the assertion beat the reload; they
-  // failed in review. Listening to the request instead is independent of route order and of
-  // that race.
+  // never run. Listening to the request instead is independent of route order.
   page.on("request", (req) => {
     const m = /\/api\/pulse\/actions\/(.+)\/(approve|reject)$/.exec(
       new URL(req.url()).pathname,
     );
     if (m) live = live.filter((a) => a.id !== m[1]);
   });
-  void page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        cache_version: 2,
-        generated_at: Math.floor(Date.now() / 1000),
-        window_days: 3,
-        scan_depth: "fast",
-        input_fingerprint: null,
-        synthesis_skipped: false,
-        cards: live.map((a) => ({
-          id: a.session_id,
-          engine: a.engine,
-          title: a.title,
-          cwd: "/home/u/p",
-          project: { kind: "project", id: a.project_id, name: a.project },
-          state: "needs_you",
-          live: false,
-          last_mtime: Math.floor(Date.now() / 1000) - 600,
-          intervention_required: false,
-          ai_summary: "",
-          synthesis: "",
-          pending_action: a,
-        })),
-      },
-    }),
-  );
   return page.route(/\/api\/pulse\/orchestrator$/, (r) =>
     r.fulfill({
       json: {
         config: ORCH_CONFIG,
-        pending,
+        pending: live,
         feed,
         expired_now: 0,
         running: [],
@@ -182,9 +153,19 @@ function mockOrchestrator(
   );
 }
 
+/** The session's own pane — where its pending decisions render since #948 P3. */
+async function openPane(page: Page) {
+  await setupBench(page, {
+    sessions: [{ engine: "claude", uuid: UUID, title: CONTINUE_ACTION.title }],
+  });
+  await page.goto(`/s/claude/${UUID}`);
+  return page.getByTestId("session-decisions");
+}
+
 test("approve delivers, and only a delivering verb offers the button", async ({
   page,
 }) => {
+  // Both on the ONE session, so both rows are in the one strip this test reads.
   await mockOrchestrator(page, [CONTINUE_ACTION, ESCALATE_ACTION]);
   let approvedId: string | null = null;
   await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
@@ -192,17 +173,14 @@ test("approve delivers, and only a delivering verb offers the button", async ({
     await r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } });
   });
 
-  await mockMissions(page);
-    await page.goto("/mission");
-  // The queue's own heading went in #754 and the panel that carried the "N actions need you"
-  // summary went in #929 — the controls ride on the mission's own rows, so wait on the control
-  // this test is about rather than on a headline no longer rendered anywhere.
-  const approveReady = page.getByRole("button", { name: /^approve$/i });
-  await expect(approveReady).toBeVisible();
+  const strip = await openPane(page);
+  // Wait on both rows, so a count of one Approve cannot be one row that simply has not arrived.
+  await expect(strip.getByText(CONTINUE_ACTION.rationale)).toBeVisible();
+  await expect(strip.getByText(ESCALATE_ACTION.rationale)).toBeVisible();
 
   // The escalation must NOT offer an approve button — it never reaches a session, and a
   // button implying otherwise would be a lie about what the system does.
-  const approve = page.getByRole("button", { name: /^approve$/i });
+  const approve = strip.getByRole("button", { name: /^approve$/i });
   await expect(approve).toHaveCount(1);
 
   await approve.click();
@@ -220,9 +198,8 @@ test("a stale 409 says nothing was sent, distinguishably from an error", async (
     }),
   );
 
-  await mockMissions(page);
-    await page.goto("/mission");
-  await page.getByRole("button", { name: /^approve$/i }).click();
+  const strip = await openPane(page);
+  await strip.getByRole("button", { name: /^approve$/i }).click();
   // Compare-and-execute refused: the operator must be able to tell "nothing happened" from
   // "something broke", because the two call for completely different responses.
   await expect(
@@ -246,13 +223,12 @@ test("evidence is pulled from the server on expand, not shipped with the proposa
     });
   });
 
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
+  const strip = await openPane(page);
+  await expect(strip.getByRole("button", { name: /^approve$/i })).toBeVisible();
   // Nothing is fetched until the operator asks — the proposal carries a KIND, never content.
   expect(evidenceCalls).toBe(0);
 
-  await page.getByRole("button", { name: /show live screen/i }).click();
+  await strip.getByRole("button", { name: /show live screen/i }).click();
   await expect(page.getByText(/parser complete/)).toBeVisible();
   expect(evidenceCalls).toBe(1);
 });
@@ -287,16 +263,15 @@ test.describe("mobile", () => {
       r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } }),
     );
 
-    await mockMissions(page);
-    await page.goto("/mission");
-    const approve = page.getByRole("button", { name: /^approve$/i });
+    const strip = await openPane(page);
+    const approve = strip.getByRole("button", { name: /^approve$/i });
     await expect(approve).toBeVisible();
 
     // 44px is the touch-target floor from the repo's design guidance.
     const box = await approve.boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);
 
-    // Pulse must never scroll horizontally (#494) — long rationales and screen dumps wrap or
+    // The page must never scroll horizontally (#494) — long rationales and screen dumps wrap or
     // scroll inside their own block.
     const overflow = await page.evaluate(
       () =>

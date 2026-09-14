@@ -350,44 +350,27 @@ test("the ANSWER's matched sessions are reachable from the timeline", async ({
   ).toHaveAttribute("href", "/s/claude/aaa");
 });
 
-test("UNTRACKED keeps its transient Ask and says why", async ({ page }) => {
+test("the landing's Ask stays transient and says why (#948: was the UNTRACKED view's)", async ({
+  page,
+}) => {
+  // The console has exactly one composer whose turns are NOT durable: the one on the new-mission
+  // page, where nothing is selected and there is no mission to file a turn under. It used to be
+  // the "Sessions without a mission" view's; that view is gone (#948 P3), and the landing is now
+  // where this Ask lives — so the operator still has to be TOLD its answers are not kept.
   await stub(page, []);
-  // UNTRACKED only exists when a session no mission owns does — which is the point of the view.
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          {
-            id: "claude:loose",
-            engine: "claude",
-            title: "A session no mission owns",
-            cwd: "/repo",
-            last_activity: T - 60,
-            live: true,
-            state: "working",
-            mission_id: null,
-          },
-        ],
-      },
-    }),
-  );
   await page.route("**/api/pulse/ask", (r) =>
     r.fulfill({ json: { answer: "nothing tracked", matches: [] } }),
   );
   await page.goto("/mission");
-  await expect(page.getByTestId("mission-console")).toBeVisible();
-  // Through the SHELL's control (#940). The console's own `☰` retired with `MissionDrawer`, so
-  // `isVisible()` on it was always false and the phone's drawer never opened — leaving every
-  // click below aimed at an off-canvas rail, which Playwright calls "visible" because it has a
-  // box. A no-op wherever the sidebar is already a docked column.
-  await openMissionRail(page);
-  await page.locator('[data-testid="rail-untracked-view"]:visible').click();
-  await page
-    .locator('[data-testid="composer-input"]:visible')
-    .fill("anything?");
-  await page.locator('[data-testid="composer-send"]:visible').click();
-  await expect(
-    page.locator('[data-testid="ask-transient"]:visible'),
-  ).toContainText("no mission to keep them in");
+  // Nothing selected on arrival: the landing, with no mission header.
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
+  await expect(page.getByTestId("console-title")).toHaveCount(0);
+  // The landing opens in NEW MISSION mode; Ask is one press away.
+  await page.getByTestId("composer-mode-ask").click();
+  await page.getByTestId("composer-input").fill("anything?");
+  await page.getByTestId("composer-send").click();
+  await expect(page.getByTestId("ask-turns")).toContainText("nothing tracked");
+  await expect(page.getByTestId("ask-transient")).toContainText(
+    "no mission to keep them in",
+  );
 });

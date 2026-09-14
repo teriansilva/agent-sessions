@@ -35,6 +35,7 @@ export function TemplatePickerModal({
   preselect,
   onInsert,
   onSend,
+  insertLabel = "Insert into composer",
   onClose,
   onOpenGallery,
   returnFocusTo,
@@ -42,7 +43,12 @@ export function TemplatePickerModal({
   /** Open with this template already selected (the gallery's USE lands here). */
   preselect?: string;
   onInsert: (t: Template, values: FieldValues) => void;
-  onSend: (t: Template, values: FieldValues) => void;
+  /** Send the template as one message. OPTIONAL (#948): the mission composer inserts a template
+   *  into its brief but has no session to send into, so it omits this and the picker offers
+   *  Insert only. */
+  onSend?: (t: Template, values: FieldValues) => void;
+  /** The Insert button's wording — "Insert into composer" by default. */
+  insertLabel?: string;
   onClose: () => void;
   /** The gallery links, as an in-app navigation (the composer flushes its draft first). Without
    *  it the links are plain anchors — the picker never assumes a router (#908 round 4). */
@@ -229,6 +235,7 @@ export function TemplatePickerModal({
                         {preview}
                       </pre>
                       <div className={styles.acts}>
+{onSend ? (
                         <button
                           type="button"
                           className={`${styles.act} ${styles.primary}`}
@@ -239,23 +246,26 @@ export function TemplatePickerModal({
                               : "Send now, as one message"
                           }
                           aria-label={`Send ${t.name}`}
-                          onClick={() => onSend(selected, values)}
+                          onClick={() => onSend?.(selected, values)}
                         >
                           <Send size={12} aria-hidden="true" />
                           Send
                         </button>
+                        ) : null}
                         <button
                           type="button"
                           className={styles.act}
-                          aria-label={`Insert ${t.name} into composer`}
+                          aria-label={`Insert ${t.name} into ${onSend ? "composer" : "mission brief"}`}
                           onClick={() => onInsert(selected, values)}
                         >
-                          Insert into composer
+                          {insertLabel}
                         </button>
                       </div>
-                      <p className={styles.note}>
-                        Sent as one message · recorded in sent history like any other
-                      </p>
+                      {onSend ? (
+                        <p className={styles.note}>
+                          Sent as one message · recorded in sent history like any other
+                        </p>
+                      ) : null}
                     </div>
                   )}
                 </li>

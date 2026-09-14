@@ -24,12 +24,15 @@ export interface MissionRailSlot {
   /** The shell's sidebar HEAD row (#948 P2): the rail's counts render here, in the same 38px row
    *  the sessions sidebar uses for its ORDER control. `null` renders them in place. */
   headEl: HTMLElement | null;
+  /** The shell's sidebar FOOTER (#948 §1): mission and held-session telemetry render here, where
+   *  the sessions sidebar shows ENGAGED · LIVE. `null` renders nothing — the shell owns a footer. */
+  footEl: HTMLElement | null;
   /** Close the surface the slot lives in, if it is one that closes. A no-op for a docked column,
    *  so the console can call it unconditionally after a selection. */
   dismiss: () => void;
 }
 
-const NONE: MissionRailSlot = { el: null, headEl: null, dismiss: () => {} };
+const NONE: MissionRailSlot = { el: null, headEl: null, footEl: null, dismiss: () => {} };
 
 const Ctx = createContext<MissionRailSlot>(NONE);
 

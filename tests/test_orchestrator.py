@@ -1766,6 +1766,41 @@ def test_the_operator_pending_set_is_the_one_the_queue_uses(auth_cfg, fake_jsonl
     assert on_cards == in_queue == {"a0", "a1", "a2"}
 
 
+def test_the_pending_list_carries_the_operator_projection(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
+    """`pending` is what the session pane's decision strip renders controls from (#948 P3), so it
+    must carry the SAME projection `/api/pulse` merges onto a card (#959 review 4805, finding 1).
+
+    Returned raw, every row fell through to `ActionRow`'s legacy state guess: a low-confidence
+    escalation with a real `continue` verb offered Dismiss and no Approve although the server
+    honours the approval, and an `approved` row offered an Approve the server treats as a no-op."""
+    rows = {
+        "low": ("escalated_low_confidence", "continue"),
+        "done": ("approved", "continue"),
+        "prop": ("proposed", "continue"),
+        "ask": ("escalated", "escalate"),
+    }
+    for i, (aid, (state, verb)) in enumerate(rows.items()):
+        ledger.append(
+            {"id": aid, "state": state, "verb": verb, "session_id": f"claude:s{i}", "ts": 1000 + i}
+        )
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    pending = {x["id"]: x for x in c.get("/api/pulse/orchestrator").json()["pending"]}
+    assert set(pending) == set(rows)
+    for aid, (state, _verb) in rows.items():
+        want = ledger.project_for_operator(state)
+        got = pending[aid]
+        assert {k: got.get(k) for k in want} == want, aid
+        # The raw record survives the merge — the strip still needs the verb and the rationale.
+        assert got["verb"] == rows[aid][1] and got["session_id"].startswith("claude:")
+    assert pending["low"]["can_approve"] is True
+    assert pending["low"]["can_reject"] is True
+    assert pending["done"]["can_approve"] is False
+    assert pending["done"]["can_reject"] is True
+    assert pending["ask"]["can_approve"] is False
+
+
 def test_the_overlay_records_the_band_it_replaced(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """Re-banding to `needs_you` is not reversible unless the old band is kept.
 

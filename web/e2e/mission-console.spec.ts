@@ -1,7 +1,8 @@
-import { openMissionConversation,
+import {
   flipMissionScope,
+  openMissionConversation,
+  openMissionDetails,
 } from "./mission-console";
-import { openMissionDetails } from "./mission-console";
 /** MISSION CONTROL's own browser gates (#878).
  *
  * Four things here cannot be proved in jsdom, which is why they are asserted in a real browser:
@@ -99,24 +100,31 @@ async function stub(page: Page, over: Record<string, unknown> = {}) {
   );
 }
 
+/** A mission id in the SERVER's shape (`missions.MISSION_ID_RE`), so `?m=` can select it.
+ *
+ *  Nothing is auto-selected any more (#948 P3): entering the section opens the new-mission page.
+ *  The deep link is how a test opens the held mission without walking a phone's drawer first. */
+const MID = "msn_0123456789abcdef0123456789abcdef";
+const HELD_URL = `/mission?m=${MID}`;
+
 /** The LIST row for the held mission — keys only, as the producer emits. */
-const HELD_ROW = missionRow({ session_keys: ["claude:aaa"] });
+const HELD_ROW = missionRow({ id: MID, session_keys: ["claude:aaa"] });
 /** …and its DETAIL, which is where the roster lives. */
 const HELD = {
   ...MISSION,
+  id: MID,
   sessions: [{ session_key: "claude:aaa", removed_at: null }],
 };
 
 // ==============================================================================================
-// The stops, asserted BY NAME so the contract cannot drift from the implementation.
+// The details, asserted BY NAME so the contract cannot drift from the implementation.
 //
-// FOUR of them since #942, and they are no longer "the mobile stops": CONTEXT joined when the
-// 340px detail column was deleted, and the same strip is now the wide layout too. The column used
-// to stack objectives, follow-through and context under three headings, which is why the narrow
-// case split at one seam into three stops rather than four.
+// FOUR sections since #942: CONTEXT joined when the 340px detail column was deleted. Since #948
+// they sit behind ONE disclosure below 1400px rather than a Conversation / Details tab pair — the
+// thread is always on screen and the band opens above it.
 // ==============================================================================================
 
-test("Conversation and Details open the four ordered disclosures", async ({
+test("the Details disclosure opens the four ordered sections above the thread", async ({
   page,
 }) => {
   await stub(page);
@@ -125,26 +133,28 @@ test("Conversation and Details open the four ordered disclosures", async ({
     mission: { ...HELD, events: [], events_next_seq: null },
   });
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/mission");
+  await page.goto(HELD_URL);
 
-  const tabs = stops(page);
-  await expect(tabs).toHaveCount(2);
-  await expect(tabs.nth(0)).toHaveText("Conversation");
-  await expect(tabs.nth(1)).toHaveText("Details");
+  const toggle = page.getByTestId("details-toggle");
+  await expect(toggle).toBeVisible();
+  // THE THREAD is the default — the decision surface, not the log — so the band starts closed.
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("mission-details")).toBeHidden();
   await expect(
     page.getByTestId("mission-details").locator("section > button"),
   ).toHaveText([/Context/, /Objectives/, /Follow-through/, /Timeline/]);
-  // THREAD is the default — the decision surface, not the log.
-  await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
 
-  await tabs.nth(1).click();
-  await expect(page.getByText(/objectives/i).first()).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("detail-objectives")).toBeVisible();
   await openMissionDetails(page, "timeline");
   // Still scoped to the pane. The detail column that made this query ambiguous is gone (#942),
   // but the scoping is what fails loudly if a second copy is ever mounted again.
   await expect(
     page.getByTestId("mission-details").getByTestId("timeline-empty"),
   ).toBeVisible();
+  // …and the thread did not give way to the details: its composer is still on screen.
+  await expect(page.getByTestId("composer-input")).toBeVisible();
 });
 
 // ==============================================================================================
@@ -152,10 +162,6 @@ test("Conversation and Details open the four ordered disclosures", async ({
 // ==============================================================================================
 
 const rail = (p: Page) => p.getByRole("navigation", { name: /missions/i });
-/** The console's OWN stops. The app shell's sidebar carries an "Archived filter" tablist too, so
- *  an unscoped `getByRole("tab")` counts five. */
-const stops = (p: Page) =>
-  p.getByRole("tablist", { name: /mission view/i }).getByRole("tab");
 
 /* #935 moved the rail into the app shell's sidebar wherever that sidebar is a persistent
  * column — which the shell decides on its OWN breakpoint (<=800px is the off-canvas drawer),
@@ -174,7 +180,7 @@ for (const [width, railIsColumn] of [
   [1399, true],
   [1400, true],
 ] as const) {
-  test(`layout at ${width}px: rail ${railIsColumn ? "column" : "drawer"}, detail tabs`, async ({
+  test(`layout at ${width}px: rail ${railIsColumn ? "column" : "drawer"}, details ${width >= 1400 ? "beside" : "disclosure"}`, async ({
     page,
   }) => {
     await stub(page);
@@ -183,8 +189,9 @@ for (const [width, railIsColumn] of [
       mission: { ...HELD, events: [], events_next_seq: null },
     });
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/mission");
+    await page.goto(HELD_URL);
     await expect(page.getByTestId("mission-console")).toBeVisible();
+    await page.getByTestId("pane").waitFor();
 
     // The rail is either laid out beside the pane, or it is behind the drawer trigger.
     if (railIsColumn) {
@@ -215,13 +222,19 @@ for (const [width, railIsColumn] of [
       expect(opened!.x).toBeGreaterThanOrEqual(0);
     }
 
-    // ONE LAYOUT, AT EVERY WIDTH (#942). The four tabs are the detail surface, and the column
-    // that used to replace them above 1400 is gone rather than hidden — so this is a `toHaveCount`
-    // claim about the DOM, not a visibility one that a `display: none` copy would satisfy.
+    // The 340px column #942 deleted is gone rather than hidden — a `toHaveCount` claim about the
+    // DOM, not a visibility one that a `display: none` copy would satisfy.
     await expect(page.getByTestId("detail-column")).toHaveCount(0);
-    if (width >= 1400)
-      await expect(page.getByTestId("stop-details")).toBeHidden();
-    else await expect(stops(page)).toHaveCount(2);
+    // ONE DISCLOSURE BELOW 1400, NONE FROM IT UP (#948). Below the breakpoint the details sit
+    // behind `details-toggle`, closed until asked for; from 1400 the toggle is `display:none` and
+    // the details are always beside the thread. 1399 and 1400 are both in the table.
+    if (width >= 1400) {
+      await expect(page.getByTestId("details-toggle")).toBeHidden();
+      await expect(page.getByTestId("mission-details")).toBeVisible();
+    } else {
+      await expect(page.getByTestId("details-toggle")).toBeVisible();
+      await expect(page.getByTestId("mission-details")).toBeHidden();
+    }
 
     // No sideways scroll at any of the five widths.
     const wide = await page.evaluate(
@@ -257,24 +270,9 @@ for (const [width, railIsColumn] of [
 test("every interactive control on a phone is ≥44px, focusable, and inside the viewport", async ({
   page,
 }) => {
+  // NEW MISSION lives on the LANDING (#948): with nothing selected the workspace is the new-mission
+  // page, so the sweep starts there and needs no loose session to reach it.
   await stub(page);
-  // …AND A LOOSE SESSION, so the rail carries an UNTRACKED view: NEW MISSION lives there now
-  // that the mission body's composer is the durable one (#890). `mission_id: null` is
-  // membership KNOWN and empty — `undefined` means "could not be read", which is a different
-  // state and correctly hides the view.
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        ...OVERVIEW,
-        cards: [
-          CARD,
-          // A DIFFERENT key from the one the mission holds: `claude:aaa` is `HELD_ROW`'s, so a
-          // card wearing it is that mission's, not an untracked one.
-          { ...CARD, id: "claude:loose", title: "Nobody's", mission_id: null },
-        ],
-      },
-    }),
-  );
   // AN ARCHIVED MISSION TOO, so the inventory can reach the UNARCHIVE confirmation — two controls
   // that exist only after it is opened, on a scope the default stops never visit (#896 review 7,
   // finding 3). Resolved from the query, because the two scopes are disjoint sets.
@@ -428,7 +426,29 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
   // measures neither — and they are exactly where a new control gets added without anyone
   // re-checking the touch floor.
   const surfaces: (() => Promise<void>)[] = [
-    async () => {},
+    async () => {
+      // THE LANDING (#948). Nothing is selected on arrival and the composer opens in NEW MISSION
+      // mode, so the brief, the REQUIRED project picker and TEMPLATE are on the first screen. The
+      // mission body's composer is the DURABLE one (#890); creating lives here.
+      await expect(page.getByTestId("mission-landing")).toBeVisible();
+      await expect(page.getByTestId("new-mission-project")).toBeVisible();
+    },
+    async () => {
+      // …and its ASK mode, whose input only exists once switched to.
+      await page.getByTestId("composer-mode-ask").click();
+      await expect(page.getByTestId("composer-input")).toBeVisible();
+    },
+    async () => {
+      // The rail, in the shell's drawer. Measured only while it is reachable — see the sweep.
+      await openMissionRail(page);
+    },
+    async () => {
+      // Select the mission owning the assessment below — explicitly, as the operator would.
+      await page.locator('[data-testid="rail-mission"]:visible').first().click();
+      if (await page.getByRole("dialog").count())
+        await page.keyboard.press("Escape");
+      await expect(page.getByTestId("mission-state")).toBeVisible();
+    },
     async () => void (await openMissionDetails(page, "objectives")),
     async () => {
       // The objective row's own edit controls, plus the rename field it swaps in.
@@ -438,27 +458,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     },
     async () => void (await openMissionDetails(page, "timeline")),
     async () => {
-      // NEW MISSION: a composer MODE, so its form is only in the DOM once opened — and it lives
-      // in the UNTRACKED view, because the mission body's composer is the DURABLE one (#890).
-      await openMissionRail(page);
-      await page.locator('[data-testid="rail-untracked-view"]:visible').click();
-      await page.keyboard.press("Escape");
-      const mode = page.getByTestId("composer-mode-new");
-      if (await mode.isVisible().catch(() => false)) await mode.click();
-    },
-    async () => {
-      await openMissionConversation(page);
-      const mode = page.getByTestId("composer-mode-ask");
-      if (await mode.isVisible().catch(() => false)) await mode.click();
-      await openMissionRail(page);
-    },
-    async () => {
-      // Return from the untracked view to the mission owning this assessment.
-      await page.keyboard.press("Escape");
-      await openMissionRail(page);
-      await page.getByTestId("rail-mission").first().click();
       await openMissionDetails(page, "objectives");
       await openMissionDetails(page, "followThrough");
+    },
+    async () => {
+      // …and the thread with the details band closed again.
+      await openMissionConversation(page);
     },
     async () => {
       // BEGIN: a `planned` mission holding a session. It exists in no other state, so a sweep
@@ -637,12 +642,19 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
 
 test("a focused control shows a visible focus ring", async ({ page }) => {
   await stub(page);
-  await mockMissions(page, { missions: missionList([HELD_ROW]) });
+  await mockMissions(page, {
+    missions: missionList([HELD_ROW]),
+    mission: { ...HELD, events: [], events_next_seq: null },
+  });
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/mission");
+  // Through the deep link, not a click: a pointer press would make the programmatic focus below
+  // non-`:focus-visible` and measure the wrong thing.
+  await page.goto(HELD_URL);
   await page.waitForLoadState("networkidle");
 
-  const tab = page.getByTestId("stop-details");
+  // The details disclosure is the workspace control the Details tab was (#948).
+  const tab = page.getByTestId("details-toggle");
+  await expect(tab).toBeVisible();
   await tab.focus();
   const ring = await tab.evaluate((el) => {
     const s = getComputedStyle(el);
@@ -663,9 +675,15 @@ test("no missions and no sessions is an invitation, not a blank", async ({
   await stub(page, { cards: [] });
   await mockMissions(page);
   await page.goto("/mission");
-  await expect(page.getByTestId("console-empty")).toContainText(
-    /nothing tracked yet/i,
-  );
+  // The invitation is the new-mission page itself (#948): its question, and a brief ready to type.
+  const landing = page.getByTestId("mission-landing");
+  await expect(landing).toBeVisible();
+  await expect(
+    landing.getByRole("heading", { name: /what should this mission achieve/i }),
+  ).toBeVisible();
+  await expect(page.getByTestId("new-mission-instruction")).toBeVisible();
+  // …and no header claims a mission that does not exist.
+  await expect(page.getByTestId("console-title")).toHaveCount(0);
 });
 
 test("a store that will not answer says so, and never claims you have no missions", async ({
@@ -679,8 +697,10 @@ test("a store that will not answer says so, and never claims you have no mission
   // In the PANE, not only the rail: on a phone the rail is a drawer, so a rail-only notice is
   // invisible exactly when the console is degraded.
   await expect(page.getByTestId("console-store-error")).toBeVisible();
-  // …and the live session is still listed: a store outage must not hide running work.
-  await expect(page.getByTestId("untracked-session")).toBeVisible();
+  // …and the outage does not take the workspace down: the new-mission page still renders. (The
+  // old "live session still listed" line is gone with the untracked view, #948 — running work is
+  // listed in the sessions sidebar, which never read the mission store.)
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
 });
 
 test("with no AI endpoint the composer is disabled and the notice names it", async ({
@@ -698,7 +718,7 @@ test("with no AI endpoint the composer is disabled and the notice names it", asy
     missions: missionList([HELD_ROW]),
     mission: { ...HELD, events: [], events_next_seq: null },
   });
-  await page.goto("/mission");
+  await page.goto(HELD_URL);
   await expect(page.getByTestId("no-ai-notice")).toContainText(
     /and the composer/i,
   );
@@ -735,10 +755,9 @@ test("a stale probe shows its LAST OBSERVED state, and marks nothing met on data
     },
   });
   await page.setViewportSize({ width: 1400, height: 900 });
-  await page.goto("/mission");
-  // THROUGH THE TAB, at 1400 as at 412 (#942). This used to need no click: a 340px detail column
-  // rendered the objectives unprompted at this width, which is exactly the second layout the
-  // rework deleted. One route to the pane now, and it is the same one on a phone.
+  await page.goto(HELD_URL);
+  // Through the section toggle, at 1400 as at 412 — the helper expands the #948 disclosure where
+  // it is on screen and is a no-op for it here, where the details sit beside the thread.
   await openMissionDetails(page, "objectives");
   await expect(page.getByTestId("objective-stale")).toContainText(/stale/i);
   await expect(page.getByText(/forge unreachable since 14:22/)).toBeVisible();
@@ -847,88 +866,21 @@ function pagedMissions(opts: {
   };
 }
 
-test("a session held by a mission the rail has NOT loaded is not offered for adoption", async ({
-  page,
-}) => {
-  // The regression. `claude:aaa` belongs to a mission on page 2, and the rail opens on page 1 —
-  // so the console has never seen its owner. Derived from the rows in memory it read as unheld
-  // and was offered an ADOPT the server refuses with 409; stamped by the server it is simply
-  // that mission's session.
-  const active = Array.from({ length: 120 }, (_, i) =>
-    missionRow({ id: `msn_${i + 1}`, title: `Mission ${i + 1}` }),
-  );
-  await stub(page, {
-    cards: [{ ...CARD, mission_id: "msn_120" }],
-  });
-  await mockMissions(page, { missions: pagedMissions({ active }) });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/mission");
+// Two tests lived here — "a session held by a mission the rail has NOT loaded is not offered for
+// adoption" and "ADOPT sends the mutation and the session leaves UNTRACKED". Both exercised the
+// console's untracked view and its ADOPT control, which #948 P3 removed: adoption starts from the
+// SESSION now (row ⋯ menu and pane header), and `mission-adopt.spec.ts` owns that flow.
 
-  await expect(page.getByTestId("rail-mission").first()).toBeVisible();
-  // The rail is showing a page, not the set…
-  await expect(page.getByTestId("rail-load-more")).toContainText("100 of 120");
-  // …and the card owned by the unloaded mission is not in UNTRACKED at all.
-  await expect(page.getByTestId("rail-untracked-view")).toHaveCount(0);
-  await expect(page.getByTestId("rail-adopt")).toHaveCount(0);
-});
-
-test("ADOPT sends the mutation and the session leaves UNTRACKED", async ({
-  page,
-}) => {
-  const posted: { url: string; body: string }[] = [];
-  const active = [
-    missionRow({ id: "msn_1", title: "Kimi transcript adapter" }),
-  ];
-  // After the adopt the server holds the session — the list says so on the refetch, which is
-  // what the console reloads for.
-  let held = false;
-
-  await stub(page, { cards: [{ ...CARD, mission_id: null }] });
-  await mockMissions(page, {
-    missions: (q: URLSearchParams) =>
-      pagedMissions({
-        active: held
-          ? [missionRow({ id: "msn_1", session_keys: ["claude:aaa"] })]
-          : active,
-      })(q),
-  });
-  // AFTER `mockMissions`: Playwright matches the most recently registered route first, and its
-  // catch-all `**/api/missions**` also matches this URL.
-  await page.route("**/api/missions/*/adopt", async (r) => {
-    posted.push({ url: r.request().url(), body: r.request().postData() ?? "" });
-    held = true;
-    return r.fulfill({
-      json: {
-        ...MISSION,
-        sessions: [{ session_key: "claude:aaa", removed_at: null }],
-      },
-    });
-  });
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/mission");
-
-  // The console opens on a MISSION; ADOPT lives with the session, so the untracked view is
-  // where it is offered.
-  await page.getByTestId("rail-untracked-view").click();
-  const adopt = page.getByTestId("rail-adopt");
-  await expect(adopt).toBeEnabled();
-  await adopt.click();
-
-  // The mutation actually went, at the selected mission, naming the session.
-  await expect.poll(() => posted.length).toBe(1);
-  expect(posted[0].url).toContain("/api/missions/msn_1/adopt");
-  expect(posted[0].body).toContain("claude:aaa");
-  // And the row leaves UNTRACKED rather than sitting there looking adoptable.
-  await expect(page.getByTestId("rail-adopt")).toHaveCount(0);
-});
-
-test("a refresh after an adopt keeps every page the operator opened, past the server's cap", async ({
+test("a refresh after a lifecycle change keeps every page the operator opened, past the server's cap", async ({
   page,
 }) => {
   // 250 missions: more than the server will EVER return in one page (`LIST_LIMIT_MAX = 200`).
   // The console asked for `missions.length` in a single request, so once three pages were open
-  // the refresh that follows an adopt silently replaced 250 rows with the first 200 — the later
+  // the refresh that follows a mutation silently replaced 250 rows with the first 200 — the later
   // pages vanished from the rail, which looks exactly like the missions being gone.
+  //
+  // The mutation used to be the console's ADOPT, which #948 removed. Any settled mission mutation
+  // takes the same `reload()`, so the trigger is now closing the selected mission as DONE.
   const active = Array.from({ length: 250 }, (_, i) =>
     missionRow({ id: `msn_${i + 1}`, title: `Mission ${i + 1}` }),
   );
@@ -936,21 +888,20 @@ test("a refresh after an adopt keeps every page the operator opened, past the se
   // this the check runs against the pre-refresh rail and passes on a truncating reload — the
   // race that made an earlier version of this test green against the very bug it names.
   const listReqs: string[] = [];
-  await stub(page, { cards: [{ ...CARD, mission_id: null }] });
+  await stub(page);
   await mockMissions(page, {
     missions: (q: URLSearchParams) => {
       listReqs.push(q.toString());
       return pagedMissions({ active })(q);
     },
   });
-  await page.route("**/api/missions/*/adopt", (r) =>
-    r.fulfill({
-      json: {
-        ...MISSION,
-        sessions: [{ session_key: "claude:aaa", removed_at: null }],
-      },
-    }),
-  );
+  // AFTER `mockMissions`, so it wins — and so the POST is not answered by the list resolver, which
+  // would count it as a list request and move `before` below.
+  const transitions: string[] = [];
+  await page.route("**/api/missions/*/state", (r) => {
+    transitions.push(r.request().postData() ?? "");
+    return r.fulfill({ json: { ...MISSION, state: "done", closed_at: T } });
+  });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/mission");
 
@@ -961,10 +912,14 @@ test("a refresh after an adopt keeps every page the operator opened, past the se
   await more.click();
   await expect(page.getByTestId("rail-mission")).toHaveCount(250);
 
-  // The adopt triggers the refresh. Every opened page must come back.
+  // Select a mission (nothing is auto-selected, #948) and close it: the settled transition
+  // triggers the refresh. Every opened page must come back.
+  await page.getByTestId("rail-mission").first().click();
+  await expect(page.getByTestId("mission-done")).toBeVisible();
   const before = listReqs.length;
-  await page.getByTestId("rail-untracked-view").click();
-  await page.getByTestId("rail-adopt").click();
+  await page.getByTestId("mission-done").click();
+  await page.getByTestId("mission-done").click(); // the confirmation
+  await expect.poll(() => transitions.length).toBe(1);
 
   // Wait for the refresh to be OVER, not merely started: three opened pages is three requests,
   // and asserting before they land tests the rail as it was rather than as the refresh left it.
@@ -999,12 +954,12 @@ test("a refresh after an adopt keeps every page the operator opened, past the se
     );
 });
 
-test("archived missions are reachable, and refuse adoption while shown", async ({
+test("archived missions are reachable, and the scope comes back to Active", async ({
   page,
 }) => {
   // Archiving is not deletion. Without a way back the console loses a mission's objectives,
   // timeline and decisions the moment it is put away.
-  await stub(page, { cards: [{ ...CARD, mission_id: null }] });
+  await stub(page);
   await mockMissions(page, {
     missions: pagedMissions({
       active: [missionRow({ id: "msn_1", title: "Kimi transcript adapter" })],
@@ -1031,20 +986,15 @@ test("archived missions are reachable, and refuse adoption while shown", async (
   await expect(page.getByTestId("rail-mission")).toContainText(
     "Shipped last month",
   );
-  await page.getByTestId("rail-untracked-view").click();
-  // The server refuses every ordinary mutation on an archived mission, so the console must not
-  // offer one. Disabled and SAYING WHY — never hidden, and never offered-then-409'd.
-  const adopt = page.getByTestId("rail-adopt");
-  await expect(adopt).toBeDisabled();
-  await expect(adopt).toHaveAttribute("title", /unarchive/i);
+  // (The "refuses adoption while archived" half went with the console's ADOPT control, #948 —
+  // adoption starts from the session now and `mission-adopt.spec.ts` covers it.)
 
   // …and back, which is the half a one-way filter would have shipped broken.
   await flipMissionScope(page);
+  await expect(page.getByTestId("rail-mission")).toHaveCount(1);
   await expect(page.getByTestId("rail-mission")).toContainText(
     "Kimi transcript adapter",
   );
-  await page.getByTestId("rail-untracked-view").click();
-  await expect(page.getByTestId("rail-adopt")).toBeEnabled();
 });
 
 test("the timeline pages by CURSOR, and older events append rather than replace", async ({
@@ -1095,11 +1045,10 @@ test("the timeline pages by CURSOR, and older events append rather than replace"
   );
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/mission");
+  // Selected explicitly: entering the section opens the new-mission page (#948).
+  await page.getByTestId("rail-mission").first().click();
 
-  // THROUGH THE TAB (#942). This used to say "no tab click: 1440 is the widest layout mode, where
-  // all three panes are on screen at once" — that mode is gone, along with the 340px track that
-  // made it. The strip is the detail surface at every width, so the timeline is one press away
-  // here exactly as it is at 412.
+  // Through the section toggle — one press away here exactly as it is at 412.
   await openMissionDetails(page, "timeline");
   await expect(page.getByTestId("timeline-row")).toHaveCount(2);
   await page.getByTestId("timeline-more").click();

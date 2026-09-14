@@ -1,25 +1,26 @@
 /** Mission workspace (#944): searchable rail, one start action and Context-first
  * disclosures. List and detail requests retain their generation/mission fences;
  * changing a view never changes a session’s ownership or terminal lifetime. */
+import { ChevronRight } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
 import { useSectionState } from "../../app/sectionState";
 import { MissionFilters, type MissionFiltersValue } from "./MissionFilters";
+import { MissionLanding } from "./MissionLanding";
 import { MissionDetails } from "./MissionDetails";
 import { MissionTitle } from "./MissionTitle";
 import { MissionSupervisorNotices } from "./MissionSupervisorBoard";
 import { useMissionRailSlot } from "./railSlot";
 
 import { ApiError, api } from "../../lib/api";
-import { actionOutcome } from "../../lib/orchestratorAction";
 import type {
   Mission,
   MissionEvent,
@@ -31,7 +32,6 @@ import type {
 
 import { Link, useSearchParams } from "react-router-dom";
 
-import { HudFrame } from "../hud/HudFrame";
 import { ActionRow } from "./ActionRow";
 import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
@@ -39,8 +39,7 @@ import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionLifecycle } from "./MissionLifecycle";
 import { type ObjectiveOp } from "./MissionObjectives";
-import { MissionRail, UNTRACKED_VIEW } from "./MissionRail";
-import { BAND_LABEL } from "./bands";
+import { MissionRail } from "./MissionRail";
 import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
 import { useMissionDetail } from "./useMissionDetail";
 import styles from "./mission.module.css";
@@ -51,17 +50,6 @@ function sessionRoute(key: string): string {
   const engine = i < 0 ? key : key.slice(0, i);
   const uuid = i < 0 ? "" : key.slice(i + 1);
   return `/s/${encodeURIComponent(engine)}/${encodeURIComponent(uuid)}`;
-}
-
-/** Does the action have prose of its own? (#781.)
- *
- *  When it does, the review's ⚠ marker AND its summary both stand down — three descriptions of
- *  one session was the defect. The test is on the action HAVING PROSE, never on it existing:
- *  `rationale` may legitimately be empty (`str(item.get("rationale") or "")`) and `ActionRow`
- *  renders no line for an empty one, so keying on existence alone would leave a block carrying
- *  controls and no explanation at all. */
-function actionSpeaks(c: PulseCard): boolean {
-  return !!c.pending_action?.rationale?.trim();
 }
 
 /** One page of the rail. The server caps `limit` itself; this is the client's step size. */
@@ -99,15 +87,11 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
  *  is never used to select, so it can never become a request. */
 const MISSION_ID_RE = /^msn_[0-9a-f]{32}$/;
 
-/** Below 1400px the workspace selects Conversation or Details. The wide layout
- * displays both; an empty workspace keeps Details available with an explanation. */
-const STOPS = ["THREAD", "DETAILS"] as const;
+/** What the console is showing when no mission is selected: the new-mission page (#948). Its Ask
+ *  turns are filed under this id, since there is no mission to keep them in. A real mission id is
+ *  `msn_…`, so it cannot collide. */
+const LANDING_VIEW = "__landing__";
 
-/** The states that have RELEASED the mission's roster (#896 review 20, finding 2). A mission in
- *  one of these holds no sessions and follows nothing through, so it cannot be the target of an
- *  adoption — the store refuses it, and the rail must not aim a control at a refusal. */
-const CLOSED_STATES = new Set(["done", "failed", "abandoned"]);
-type Stop = (typeof STOPS)[number];
 
 /** One timeline row.
  *
@@ -150,12 +134,11 @@ function ThreadEvent({ event }: { event: MissionEvent }) {
 /** Everything that belongs to ONE mission. Keyed by the parent — see the module note. */
 function MissionBody({
   missionId,
-  stop,
+  detailsOpen,
   onDetails,
   onConversation,
   configured,
   onTitle,
-  onSessions,
   cards,
   onResolved,
   onNote,
@@ -164,12 +147,15 @@ function MissionBody({
   lifecycleSlot,
 }: {
   missionId: string;
-  stop: Stop;
+  /** Below 1400px the details sit behind ONE disclosure (#948) — whether it is open. At 1400px and
+   *  above they are always beside the thread and this changes nothing. */
+  detailsOpen: boolean;
+  /** Open the details disclosure. */
   onDetails: () => void;
+  /** Close it, giving the thread the room back. */
   onConversation: () => void;
   configured: boolean;
   onTitle: (t: string | null) => void;
-  onSessions: (keys: string[]) => void;
   /** UNFILTERED — a mission's decisions must not depend on the chips (see `allCards`). */
   cards: PulseCard[];
   onResolved: (a: OrchestratorAction) => void;
@@ -214,9 +200,6 @@ function MissionBody({
         .map((s) => s.session_key),
     [d.mission],
   );
-  useEffect(() => {
-    onSessions(keys);
-  }, [keys, onSessions]);
 
   /** The decisions waiting on THIS mission — the whole point of the console. A pending action
    *  rides its session's card (`_attach_pending`, #754), so the mission's decisions are the
@@ -548,8 +531,36 @@ function MissionBody({
     </div>
   );
 
+  /** One line saying what is behind the disclosure, so a closed band still tells the operator
+   *  whether anything there needs them. */
+  const detailsId = useId();
+  const objectivesSummary = d.objectivesFailed
+    ? "objectives unavailable"
+    : d.objectives.length
+      ? `${d.objectives.filter((o) => o.state === "met").length}/${d.objectives.length} objectives met`
+      : "no objectives yet";
+  const detailsSummary = `${objectivesSummary} · ${keys.length} ${keys.length === 1 ? "session" : "sessions"} · ${d.events.length} events`;
+
   return (
     <>
+      {/* ONE DISCLOSURE, NOT A TAB (#948). Below 1400px the details used to be the other half of a
+          Conversation / Details tab pair, which read as a second way to pick a mission when the
+          rail already does that. The thread is always on screen now; the details open in a band
+          above it, and neither the thread nor its composer unmounts or moves parent when the band
+          toggles (#930's draft-survival rule). At 1400px and above the band is hidden and the
+          details sit beside the thread as before. */}
+      <button
+        type="button"
+        className={styles.detailsToggle}
+        aria-expanded={detailsOpen}
+        aria-controls={detailsId}
+        onClick={detailsOpen ? onConversation : onDetails}
+        data-testid="details-toggle"
+      >
+        <ChevronRight size={14} aria-hidden="true" />
+        <span>Details</span>
+        <small>{detailsSummary}</small>
+      </button>
       {lifecycleSlot && lifecycle
         ? createPortal(lifecycle, lifecycleSlot)
         : null}
@@ -561,7 +572,7 @@ function MissionBody({
           two is the whole fix — the pane keeps `flex: 1` and scrolls, the dock is `flex: none`
           and sits on the bottom edge, so the empty space becomes thread instead of void. */}
       <div
-        className={`${styles.threadCol} ${stop === "DETAILS" ? styles.hideThread : ""}`}
+        className={styles.threadCol}
       >
         <div className={styles.pane} data-testid="pane">
           {/* THE SCROLLING CONTENT, in its own box so a SHORT thread sits at the BOTTOM (#942).
@@ -570,7 +581,7 @@ function MissionBody({
             between the last answer and the box you type into. Chats grow up from the composer.
             `.paneInner` carries `margin-top: auto` — see the note beside `.pane`. */}
           <div
-            className={`${styles.paneInner} ${stop === "THREAD" ? styles.paneAtBottom : ""}`}
+            className={`${styles.paneInner} ${styles.paneAtBottom}`}
           >
             {/* ONE HEADER ROW (#942). The mission's controls live in the console's header now, beside
             the title and the state, instead of on a second row of their own inside the pane —
@@ -674,7 +685,8 @@ function MissionBody({
         {composerDock}
       </div>
       <div
-        className={`${styles.detailsWrap} ${stop === "THREAD" ? styles.hideDetails : ""}`}
+        id={detailsId}
+        className={`${styles.detailsWrap} ${detailsOpen ? "" : styles.hideDetails}`}
       >
         <MissionDetails
           missionId={missionId}
@@ -708,45 +720,21 @@ function MissionBody({
 }
 
 export function MissionConsole({
-  cards,
   allCards,
   configured,
-  loading,
   onActionResolved,
   onMembershipChanged,
-  filtered,
-  onClearFilters,
-  untrackedFilters,
 }: {
-  /** Live sessions from the existing overview, AFTER the project/agent chips. This narrows the
-   *  UNTRACKED list and nothing else. */
-  cards: PulseCard[];
-  /** The same set BEFORE the chips. A mission's decisions are read from here, because a filter
-   *  is a view over the session list and was never meant to withdraw a decision: selecting a
-   *  chip that excludes a held session must not remove its Approve/Reject row while the mission
-   *  stays selected and still says `needs_you`. */
+  /** Every card from the overview. A mission's decisions are read from here — the pending actions
+   *  of the sessions it holds. */
   allCards: PulseCard[];
   /** Told when a decision settles, so the route can refresh the overview the cards came from. */
   onActionResolved?: (a: OrchestratorAction) => void;
-  /** Refetch the overview. Adoption changes WHICH MISSION HOLDS a session, and that fact is now
-   *  stamped on the card by the server — so the cards are the thing that went stale, not just
-   *  the mission list. Refreshing only the list would leave the adopted session sitting in
-   *  UNTRACKED, still offering ADOPT, until the next poll. */
+  /** Refetch the overview. Closing, archiving or detaching changes WHICH MISSION HOLDS a session,
+   *  and that fact is stamped on the cards by the server. */
   onMembershipChanged?: () => void;
-  /** Whether an AI endpoint is configured. The composer is disabled without one —
-   *  `/api/pulse/ask` answers 409 and has no local fallback, so `find` / `history` genuinely do
-   *  not work without a model. */
+  /** Whether an AI endpoint is configured. The Ask composer is disabled without one. */
   configured: boolean;
-  /** The overview scan is still running. Only affects the UNTRACKED group's honesty: "no live
-   *  sessions" and "we have not looked yet" are different claims. */
-  loading?: boolean;
-  /** The sidebar project/agent filters are narrowing the list right now. Needed to tell "you have no
-   *  sessions" from "this COMBINATION has none" — the second is recoverable in one tap and the
-   *  first is not, and saying the wrong one leaves the operator staring at a blank pane with no
-   *  way back (#803). */
-  filtered?: boolean;
-  onClearFilters?: () => void;
-  untrackedFilters?: ReactNode;
 }) {
   /** THE RAIL'S ROWS AND ITS COUNT, as ONE value (#896 review 13, finding 1).
    *
@@ -818,11 +806,19 @@ export function MissionConsole({
    *  not be read would be the same absence-read-as-evidence mistake the mission work has already
    *  paid for twice. Set only in `applyList`, which runs on a fenced success. */
   const [listLoaded, setListLoaded] = useState(false);
-  const [selected, setSelected] = useSectionState<string | null>(
-    "missions.selected",
-    null,
+  /** WHICH MISSION IS OPEN — plain state, deliberately NOT retained for the visit (#948).
+   *
+   *  Entering the section opens the new-mission page; that is what the operator asked the front
+   *  door to be. It used to restore the last selection (#944), and before that to AUTO-SELECT a
+   *  mission — the one needing you, else an untracked decision, else the first row. Both are gone.
+   *  What needs the operator is previewed on the landing instead, from the same rows the rail's
+   *  dots read. Filters and scope ARE still retained for the visit. */
+  const [selected, setSelected] = useState<string | null>(null);
+  /** The details disclosure below 1400px — kept for the visit, like the sections inside it. */
+  const [detailsOpen, setDetailsOpen] = useSectionState<boolean>(
+    "missions.detailsOpen",
+    false,
   );
-  const [stop, setStop] = useSectionState<Stop>("missions.view", "THREAD");
 
   /** `?m=<mission id>` — the one deep link into a specific mission (#948). The session header,
    *  the row menu and the bell link here.
@@ -839,7 +835,6 @@ export function MissionConsole({
     setConsumedLink(deepLink);
     if (deepLink !== null && MISSION_ID_RE.test(deepLink)) {
       setSelected(deepLink);
-      setStop("THREAD");
     }
   }
   useEffect(() => {
@@ -872,25 +867,21 @@ export function MissionConsole({
    *  `startNewMission` dismisses whatever surface the rail lives in, so it closes over
    *  `dismissRail` — which is why the slot is read ABOVE this. Reading a `const` declared below
    *  it is a TDZ error, which the react-hooks lint catches and a browser would too. */
-  const [composerCreating, setComposerCreating] = useState(false);
+  const [composerCreating, setComposerCreating] = useState(true);
+  /** Bumped by "+ New mission" so the brief takes focus — which it must not do on plain arrival. */
+  const [focusKey, setFocusKey] = useState(0);
   const startNewMission = useCallback(() => {
-    // LEAVE THE CURRENT MISSION FIRST (#937 review 1, finding 2). With one selected the console
-    // renders `MissionBody`, whose composer sends MESSAGES to that mission — there is no create
-    // field on that branch at all, so the request had nowhere to land and the button did nothing
-    // in the most ordinary state there is. Starting a new mission means leaving the one you are
-    // on, so the selection moves to the sentinel view, which is where creation lives.
-    setSelected(UNTRACKED_VIEW);
-    setStop("THREAD");
+    // Back to the front door (#948): with nothing selected the workspace IS the new-mission page.
+    setSelected(null);
     setComposerCreating(true);
+    setFocusKey((n) => n + 1);
     // On a phone the rail IS the drawer; leaving it open hides the field the operator is about
     // to type into.
     dismissRail();
-  }, [dismissRail, setSelected, setStop]);
+  }, [dismissRail]);
 
-  const [adopting, setAdopting] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
-  const [heldExtra, setHeldExtra] = useState<string[]>([]);
   /** Ask turns for the UNTRACKED view ONLY (#890). A mission's turns are durable and live in its
    *  timeline; this view has no mission to keep them in, so its Ask stays transient and says so
    *  on screen. Keyed by view rather than kept bare, because the sentinel is one of several
@@ -916,20 +907,13 @@ export function MissionConsole({
    *  Captured at SEND time and compared at RESOLUTION time. Both halves are load-bearing:
    *  capturing the ANSWER rather than the token is the bug this replaces. */
   const visitRef = useRef(0);
-  /** …and the same number as STATE, for the one consumer that cannot capture it itself.
-   *
-   *  `ActionRow` calls `onNote` at RESOLUTION time and takes no token — it is shared with the
-   *  bell and has no notion of a console visit. What it does do is hold the `onNote` prop its
-   *  in-flight handler was created with, so a callback whose identity changes per visit carries
-   *  the visit with it. That is what the state is for: the ref cannot change a closure. */
-  const [visitTk, setVisitTk] = useState(0);
-  // `?? UNTRACKED_VIEW` is load-bearing, not defensive. With nothing selected the console still
-  // renders a composer — that is the empty state, and Ask must work on a fresh install — and its
+  // `?? LANDING_VIEW` is load-bearing, not defensive. With nothing selected the console still
+  // renders a composer — the new-mission page, where Ask must work on a fresh install — and its
   // `missionId` is the sentinel. Comparing against a null selection would make that composer
   // never current, so every answer it received would be discarded as stale: the fence firing on
   // the one surface it was never meant to guard.
   const isCurrent = useCallback(
-    (id: string) => (shownRef.current ?? UNTRACKED_VIEW) === id,
+    (id: string) => (shownRef.current ?? LANDING_VIEW) === id,
     [],
   );
   /** The visit to capture. Read from an event handler — after the effect below has published it
@@ -942,26 +926,6 @@ export function MissionConsole({
     [],
   );
 
-  /** The same fence the mission body's notes take, for the UNTRACKED view's own decisions.
-   *
-   *  That view is not inside the keyed mission body, so selecting a mission does not unmount it
-   *  and a late `ActionRow` refusal would paint over whatever the operator moved to.
-   *
-   *  **On the VISIT, not the view's id** (#896 review 11, finding 2). `isCurrent(UNTRACKED_VIEW)`
-   *  is true again the moment the operator comes back, so UNTRACKED → mission B → UNTRACKED
-   *  admitted a settled-action 409 raised two views ago into a list that has since been re-read:
-   *  "Not sent — already settled", about something the operator did before they stepped out.
-   *
-   *  The token is captured HERE, in the closure `ActionRow` holds — because that component
-   *  reports at resolution time and cannot capture one itself. A new callback identity per visit
-   *  is the capture. */
-  const noteIfUntracked = useCallback(
-    (msg: string) => {
-      if (!isVisitCurrent(visitTk)) return;
-      setNote(msg);
-    },
-    [isVisitCurrent, visitTk],
-  );
 
   const total = list.total;
   /** …and how many server rows have been consumed, which is the next page's offset. */
@@ -1290,8 +1254,6 @@ export function MissionConsole({
   /** The newest pagination attempt. An attempt owns the busy flag and the append only while it
    *  is still this one — see `loadMoreMissions`. */
   const pageAttempt = useRef(0);
-  /** …and the newest ADOPT, for the same reason, plus the view it was started from. */
-  const adoptAttempt = useRef(0);
 
   const loadMoreMissions = useCallback(() => {
     // THE CURSOR, not the rendered count (#896 review 17, finding 1). Deduping drops rows the
@@ -1396,55 +1358,7 @@ export function MissionConsole({
       });
   }, [loadingMore, consumed, total]);
 
-  /** Live sessions no mission holds. `heldExtra` folds in the selected mission's own roster so a
-   *  freshly adopted session leaves UNTRACKED immediately, without waiting for the list refetch.
-   *  Computed from the missions we have, so a store outage shows every live session as untracked
-   *  rather than hiding them — the safe direction: the operator can still see their work, and it
-   *  is adoption that is unavailable. */
-  const untracked = useMemo(() => {
-    // OWNERSHIP COMES FROM THE CARD, not from the mission rows in memory. The rail is paged, so
-    // deriving it here made "held by mission 101" indistinguishable from "held by nobody" until
-    // the operator clicked Load more — and the session was offered an ADOPT the server refused
-    // with 409. `mission_id` is stamped server-side over EVERY mission (`routes/pulse`), loaded
-    // or not.
-    //
-    // `heldExtra` still folds in the selected mission's freshly-read roster, so a just-adopted
-    // session leaves UNTRACKED on the spot rather than on the next overview poll. The mission
-    // rows are no longer consulted at all.
-    const held = new Set<string>(heldExtra);
-    // NOT filtered on `c.live`. #840 §15 says "live sessions with no mission", but the overview's
-    // cards are RECENT work and most carry `live: false` — that flag is a registry overlay
-    // (working/attached), not "exists". Filtering on it hid almost everything the grid used to
-    // show, including settled sessions whose last action the operator still wants to see. The
-    // rail replaces the grid, so it lists what the grid listed; `live` drives the dot, not
-    // membership.
-    return cards.filter((c) => !held.has(c.id) && !c.mission_id);
-  }, [cards, heldExtra]);
-
-  /** What the console opens on before either list has settled — derived from both reads.
-   *
-   *  It opens on WHAT NEEDS YOU. A decision the operator has to go looking for is a decision
-   *  they will miss, which is the failure this whole feature exists to remove. So: a mission
-   *  whose ledger says `needs_you` first, then an untracked session carrying a pending decision,
-   *  then simply the first mission.
-   *
-   *  The reads arrive independently. Keep deriving until both have settled, then remember the
-   *  selection for section navigation. An explicit selection always wins. */
-  const autoSelected = useMemo(() => {
-    // NOTE: `untracked`, not `cards` — a card a mission already holds is that mission's
-    // decision, and jumping to UNTRACKED for it would send the operator to a list it is not in.
-    const needy = missions.find((m) => m.needs_you);
-    if (needy) return needy.id;
-    if (untracked.some((c) => c.pending_action)) return UNTRACKED_VIEW;
-    if (missions.length) return missions[0].id;
-    // No missions at all, but sessions exist: show them. Falling through to the invitation here
-    // would tell an operator with live work that there is "nothing tracked yet" and hide the
-    // work behind a rail that is a DRAWER on a phone — true in letter, useless in practice.
-    return untracked.length ? UNTRACKED_VIEW : null;
-  }, [missions, untracked]);
-  const shown = selected ?? autoSelected;
-  if (selected === null && autoSelected !== null && listLoaded && !loading)
-    setSelected(autoSelected);
+  const shown = selected;
   /** The header's title, from the SAME mission the body renders.
    *
    *  `title` is pushed up by the body after its detail fetch, so on its own it is null for the
@@ -1457,40 +1371,6 @@ export function MissionConsole({
   const [lifecycleSlotEl, setLifecycleSlotEl] = useState<HTMLElement | null>(
     null,
   );
-  /** A genuinely fresh install: the ACTIVE rail has been read and holds nothing (#929).
-   *
-   *  Every clause earns its place. `listLoaded` separates "none" from "not yet"; `!storeError`
-   *  keeps the invitation away from a console that could not read the store; `!archived` keeps
-   *  it out of the archived scope, where an empty rail is ordinary rather than first-run. With
-   *  none of them, a first-run panel would appear on a degraded or still-loading page and tell
-   *  the operator their work does not exist. */
-  const firstRun =
-    listLoaded && !storeError && !archived && !missionFiltered && total === 0;
-
-  /** The honest answer to "show me the objectives" when there is no mission to show them for
-   *  (#929) — a DELIBERATE explanatory empty state, never invented mission data.
-   *
-   *  Hoisted to a value because BOTH no-mission shapes need it and neither may be replaced by
-   *  it: `shown` is the UNTRACKED sentinel when sessions exist and `null` when nothing does,
-   *  and each of those branches owns a composer whose draft must survive a tab press
-   *  (#930 review 2, finding 1). Rendering this as a sibling branch unmounted them. */
-  const noMissionStop =
-    stop === "THREAD" ? null : (
-      <div
-        className={styles.empty}
-        data-testid={`no-mission-${stop.toLowerCase()}`}
-      >
-        <div className={styles.emptyLead}>No mission selected.</div>
-        {/* ONE SENTENCE PER STOP (#942 review 4). CONTEXT became reachable when the tabs replaced
-            the detail column, and it fell through to the TIMELINE's sentence — telling the
-            operator that a timeline belongs to a mission on a tab that is about neither. A
-            two-branch ternary was correct while there were two stops that could be empty. */}
-        <div>
-          Context, objectives, follow-through and timeline belong to a mission.
-          Choose one from the list or create a mission.
-        </div>
-      </div>
-    );
   // Published in an effect, not during render: a ref write in the render phase is a lint error
   // and, more to the point, a render that is thrown away would still have published.
   useEffect(() => {
@@ -1498,48 +1378,9 @@ export function MissionConsole({
     // ONE COUNTER FOR VIEW AND SCOPE. Two would let a request captured under the old view and the
     // new scope compare equal on the half that happened to move.
     visitRef.current += 1;
-    setVisitTk(visitRef.current);
   }, [shown, archived]);
 
-  /** A CHANGE OF WHAT IS SHOWN STARTS AT THE THREAD (#930 review 2, finding 2).
-   *
-   *  `select()` already does this, but `shown` is `selected ?? autoSelected` — so a mission can
-   *  be ENTERED without anyone selecting it, when a list arrives and `autoSelected` picks the
-   *  first row. Entering a mission on whatever tab the last one was left on is stale state, not
-   *  data: the operator asked to look at a mission, and the thread is what that means. (Before
-   *  #942 this was worse than untidy — at >=1400px the strip was hidden on the theory that a
-   *  detail column had replaced it, so the thread and its composer were unreachable with no
-   *  control on screen to get back. The strip is now always rendered, so this is once again just
-   *  the right default rather than the only way out.)
-   *
-   *  Keyed on `shown` rather than on the auto/explicit distinction: a tab press does not change
-   *  `shown`, so switching stops on a mission still works exactly as before. */
-  const enteredRef = useRef(shown);
-  useEffect(() => {
-    if (enteredRef.current === shown) return;
-    enteredRef.current = shown;
-    setStop("THREAD");
-  }, [shown, setStop]);
 
-  /** Adoption needs a real, LIVE mission. In the UNTRACKED view `shown` is the sentinel, so the
-   *  target is the first mission that can actually hold work — and when there is none the
-   *  control is disabled and says why.
-   *
-   *  `null` in the archived scope, deliberately: the server refuses every ordinary mutation on
-   *  an archived mission ("unarchive it first", 409), so offering ADOPT there would advertise a
-   *  control the backend will not honour.
-   *
-   *  **A CLOSED MISSION IS THE SAME CASE** (#896 review 20, finding 2). Reaching `done` /
-   *  `failed` / `abandoned` RELEASES the roster, so adopting into one leaves an active session on
-   *  a mission nobody follows through on. The store refuses it — that is where the guarantee
-   *  lives — and picking the first *unarchived* row regardless of state meant the rail happily
-   *  aimed the control at a mission the server was always going to reject. It aims at an eligible
-   *  one instead, and offers nothing when there is none. */
-  const adoptTarget = archived
-    ? null
-    : shown && shown !== UNTRACKED_VIEW
-      ? shown
-      : (missions.find((m) => !CLOSED_STATES.has(m.state))?.id ?? null);
 
   /** Flipping the scope drops the explicit selection so the derivation re-picks WITHIN the new
    *  scope. Without this the console kept showing the active mission it was on while the rail
@@ -1719,69 +1560,10 @@ export function MissionConsole({
         void reload();
       }
       setSelected(m.id);
-      setStop("THREAD");
     },
-    [archived, setScope, reload, setSelected, setStop],
+    [archived, setScope, reload, setSelected],
   );
 
-  const adopt = useCallback(
-    (sessionKey: string) => {
-      if (!adoptTarget) return;
-      setAdopting(sessionKey);
-      setNote(null);
-      // WHICH VISIT THE OPERATOR PRESSED IT FROM (#896 review 9 finding 4; review 10 finding 3).
-      //
-      // The refusal is a fact about THIS attempt — "already held by mission X" — and the console
-      // note is a surface that outlives the view it was raised in. Started in UNTRACKED and
-      // resolved after the operator selected mission B, an unfenced error appeared over B with
-      // nothing to say which mission it was about.
-      //
-      // A VISIT, not the id it had: `from !== shownRef.current` was satisfied again the moment
-      // the operator came back, so UNTRACKED → B → UNTRACKED admitted a refusal raised two views
-      // ago into a list that has since been re-read. The token cannot be re-entered.
-      const from = visit();
-      const attempt = ++adoptAttempt.current;
-      api
-        .adoptMissionSession(adoptTarget, sessionKey)
-        .then(() => {
-          // Optimistic, then authoritative. The server has confirmed the adoption, so the row
-          // leaves UNTRACKED on the spot rather than after a poll; the overview refetch then
-          // replaces the guess with the server's own stamp.
-          setHeldExtra((prev) =>
-            prev.includes(sessionKey) ? prev : [...prev, sessionKey],
-          );
-          onMembershipChanged?.();
-          return reload();
-        })
-        .catch((e: unknown) => {
-          // AUTHORITATIVE FIRST, AND UNCONDITIONALLY (#896 review 10, finding 5). A refusal is
-          // not "nothing happened": the 409 this path exists to report says the session is held
-          // by a mission the displayed card claims nothing about, so the picture that produced
-          // the attempt is the stale one. Refreshing only on success leaves UNTRACKED asserting
-          // an ownership the server has just denied, until the outer poll happens to run.
-          //
-          // Outside the attempt fence deliberately — a re-read is a fact about the SERVER, and
-          // it is correct for whoever is looking. Only the NOTE below is view-local.
-          onMembershipChanged?.();
-          // Exclusive membership: a session already held comes back 409 NAMING the holder, and
-          // that detail is the useful half — "no" without "where it went" is not an answer. It
-          // is only an answer for the visit it was asked from, though.
-          if (attempt !== adoptAttempt.current || !isVisitCurrent(from)) return;
-          setNote(
-            e instanceof Error
-              ? e.message
-              : "That session could not be adopted.",
-          );
-        })
-        .finally(() => {
-          // The busy flag is owned by the attempt, for the reason the pagination token is: a
-          // superseded request clearing the current one's spinner re-enables a control that is
-          // still working.
-          if (attempt === adoptAttempt.current) setAdopting(null);
-        });
-    },
-    [adoptTarget, reload, onMembershipChanged, visit, isVisitCurrent],
-  );
 
   const onTurns = useCallback(
     (missionId: string, fn: (prev: AskTurn[]) => AskTurn[]) =>
@@ -1792,7 +1574,6 @@ export function MissionConsole({
   const select = useCallback(
     (id: string) => {
       setSelected(id);
-      setStop("THREAD");
       // CLOSE THE SURFACE THE RAIL LIVES IN (#940). Selection changes local state and never the
       // URL, so the shell's pathname effect cannot see it — without this the drawer stays open
       // over the mission that was just picked. `dismiss` is a no-op on a docked column, so this
@@ -1800,9 +1581,8 @@ export function MissionConsole({
       dismissRail();
       setNote(null);
       setTitle(null);
-      setHeldExtra([]);
     },
-    [dismissRail, setSelected, setStop],
+    [dismissRail, setSelected],
   );
 
   /** A decision settled here must also settle everywhere else it is drawn. The route owns the
@@ -1832,10 +1612,8 @@ export function MissionConsole({
   const rail = (
     <MissionRail
       headEl={railSlotEl ? railSlot.headEl : null}
+      footEl={railSlotEl ? railSlot.footEl : null}
       missions={missions}
-      untracked={allCards.filter(
-        (c) => !c.mission_id && !heldExtra.includes(c.id),
-      )}
       filters={
         <MissionFilters
           value={filters}
@@ -1844,7 +1622,6 @@ export function MissionConsole({
           projectNames={projectNames}
         />
       }
-      untrackedFilters={untrackedFilters}
       projectNames={projectNames}
       loading={!listLoaded && !storeError}
       filtered={missionFiltered}
@@ -1863,38 +1640,11 @@ export function MissionConsole({
     />
   );
 
-  const filteredEmpty =
-    filtered && untracked.length === 0 ? (
-      <div className={styles.empty} data-testid="console-filtered-empty">
-        <div className={styles.emptyLead}>No sessions match these filters</div>
-        <div>
-          There is work here, just not in this combination — the sidebar filters
-          are narrowing it.
-        </div>
-        <button
-          type="button"
-          className={styles.adoptInline}
-          onClick={onClearFilters}
-        >
-          Show all sessions
-        </button>
-      </div>
-    ) : null;
-
-  const filteredMissionsEmpty =
-    missionFiltered && listLoaded && !storeError && total === 0 ? (
-      <div className={styles.empty} data-testid="mission-filter-empty">
-        <div className={styles.emptyLead}>No missions match these filters.</div>
-        <div>Clear the mission filters to choose an existing mission.</div>
-        <button
-          type="button"
-          className={styles.adoptInline}
-          onClick={() => changeFilters({ q: "", project: "", state: "" })}
-        >
-          Clear mission filters
-        </button>
-      </div>
-    ) : null;
+  /** The landing's recovery: back to the Active scope with no filters (#948). */
+  const clearAll = useCallback(() => {
+    changeFilters({ q: "", project: "", state: "" });
+    if (archived) setScope(false);
+  }, [changeFilters, archived, setScope]);
 
   return (
     <div className={styles.console} data-testid="mission-console">
@@ -1927,69 +1677,31 @@ export function MissionConsole({
       )}
 
       <div className={styles.centre}>
-        <div className={styles.topbar}>
-          {/* The console's own `☰` retired with its drawer (#940). The shell's hamburger is the
-              one control that opens the rail now, at every width — which is the whole point: the
-              operator was meeting two of them on one screen, opening two different lists. */}
-          {/* NOT a second "MISSION CONTROL" (#929). The route's own <h1> says that a few
-              pixels above, so this fell back to printing the page's name twice — one of the
-              things that made the page read as two designs stacked. This says which MISSION
-              you are looking at, or what to do if you are not looking at one. */}
-          {/* THE TITLE COMES FROM THE MISSION THE BODY IS RENDERING (#942).
-              It used to come from `title`, a separate piece of console state the body pushed up
-              after its detail fetch resolved — so between selecting a mission and that fetch
-              landing, and after any re-render that cleared it, the header said "Select a mission"
-              while that mission's own state and controls rendered underneath. At 1280 that was
-              reproducible on load. The rail already knows the row's title, so the header reads it
-              from there and falls back to the fetched one only to catch a rename. */}
-          {shown && shown !== UNTRACKED_VIEW && shownTitle ? (
-            <MissionTitle key={shown} title={shownTitle} />
-          ) : (
-            <span className={styles.missionTitle} data-testid="console-title">
-              {shown === UNTRACKED_VIEW
-                ? "Sessions without a mission"
-                : missions.length
-                  ? "Select a mission"
-                  : missionFiltered
-                    ? "No matching missions"
-                    : "No missions yet"}
-            </span>
-          )}
-          {/* Where `MissionBody` portals the mission's state and actions, so the header is ONE
-              row rather than a title above a second bar. */}
-          <span
-            className={styles.topbarActions}
-            ref={setLifecycleSlotEl}
-            data-testid="header-actions"
-          />
-        </div>
+        {/* THE HEADER BELONGS TO A MISSION (#948). With nothing selected the workspace is the
+            new-mission page, whose own heading says what to do — a "Select a mission" row above it
+            was the old empty state speaking over the new one. */}
+        {shown ? (
+          <div className={styles.topbar}>
+            {/* THE TITLE COMES FROM THE MISSION THE BODY IS RENDERING (#942): the rail row answers
+                at once, and the fetched title wins only to catch a rename. */}
+            {shownTitle ? (
+              <MissionTitle key={shown} title={shownTitle} />
+            ) : (
+              <span className={styles.missionTitle} data-testid="console-title">
+                Loading mission…
+              </span>
+            )}
+            {/* Where `MissionBody` portals the mission's state and actions, so the header is ONE
+                row rather than a title above a second bar. */}
+            <span
+              className={styles.topbarActions}
+              ref={setLifecycleSlotEl}
+              data-testid="header-actions"
+            />
+          </div>
+        ) : null}
 
-        {/* Hide the tabs only when a wide mission workspace has a details column. */}
-        <div
-          className={`${styles.stops} ${shown && shown !== UNTRACKED_VIEW ? styles.hasDetails : ""}`}
-          role="tablist"
-          aria-label="Mission view"
-        >
-          {STOPS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              role="tab"
-              aria-selected={stop === s}
-              className={`${styles.stop} ${stop === s ? styles.stopOn : ""}`}
-              onClick={() => setStop(s)}
-              data-testid={`stop-${s.toLowerCase()}`}
-            >
-              {s === "THREAD" ? "Conversation" : "Details"}
-            </button>
-          ))}
-        </div>
-
-        {shown &&
-        shown !== UNTRACKED_VIEW &&
-        listLoaded &&
-        !shownRow &&
-        missionFiltered ? (
+        {shown && listLoaded && !shownRow && missionFiltered ? (
           <div className={styles.filterNotice}>
             {hasMore || needsReRead || storeError
               ? "Not in the loaded mission results"
@@ -2014,8 +1726,7 @@ export function MissionConsole({
         ) : null}
 
         {/* The store outage is announced HERE as well as in the rail. On a phone the rail is a
-            drawer, so a rail-only notice tells the operator nothing at all — a degraded console
-            that looks healthy is worse than one that says it is degraded. */}
+            drawer, so a rail-only notice tells the operator nothing at all. */}
         {storeError ? (
           <div
             className={styles.notice}
@@ -2025,258 +1736,20 @@ export function MissionConsole({
             <div className={styles.noticeLead}>
               The mission store could not be read.
             </div>
-            <div>{storeError}. Sessions below are unaffected.</div>
+            <div>{storeError}.</div>
           </div>
         ) : null}
 
         <div className={styles.split} data-testid="split">
-          {shown === UNTRACKED_VIEW ? (
-            <div
-              className={`${styles.pane} ${styles.untrackedPane}`}
-              data-testid="pane"
-            >
-              {/* THE EXPLANATORY STOP RENDERS *INSIDE* THIS BRANCH, NOT INSTEAD OF IT
-                (#930 review 2, finding 1). As a sibling branch it replaced the whole pane —
-                composer included — so OBJECTIVES → THREAD was an unmount round trip and the
-                operator's draft did not survive a tab they pressed to look at something. The
-                stop now swaps the CONTENT around a composer that stays mounted throughout,
-                which is the same reasoning as the first-run ordering fix one review earlier:
-                the composer's position may move, its identity may not. */}
-              {noMissionStop}
-              {/* THE FIRST-RUN INVITATION, ABOVE THE LIST (#929).
-                With no mission, `adoptTarget` is null and EVERY card's ADOPT is disabled — so
-                the page led with a list of dead buttons and hid the one live action beneath
-                them. This puts the way out first. It is shown only for a rail that was
-                successfully READ and found empty; see `firstRun`. */}
-              {filteredEmpty && stop === "THREAD" ? (
-                filteredEmpty
-              ) : filteredMissionsEmpty && stop === "THREAD" ? (
-                filteredMissionsEmpty
-              ) : firstRun && stop === "THREAD" ? (
-                <div className={styles.empty} data-testid="first-run">
-                  <div className={styles.emptyLead}>
-                    Start your first mission.
-                  </div>
-                  <div>
-                    A mission plans the work, dispatches an agent and drives it
-                    to a pull request. Describe what you want done — or ADOPT a
-                    running session into a mission once you have one.
-                  </div>
-                </div>
-              ) : null}
-              {/* Ask lives here too. Until #871 the composer is not mission-qualified — it asks
-                about your past work — and gating it behind "create a mission first" would make
-                it unreachable on a fresh install, which the Ask box never was. Keyed on the
-                sentinel so its turns are filed under this view rather than a mission.
-
-                It sits ABOVE the list on a fresh install and below it otherwise (#929): with no
-                mission every ADOPT is disabled, so shipping the only live action beneath a page
-                of dead buttons made the way out the last thing an operator found.
-
-                THE ONLY COMPOSER ON THIS BRANCH, AND IT NEVER MOVES PARENTS (#930 review 1,
-                finding 1). It renders above the session list on a fresh install and below it
-                otherwise — but as TWO conditional mounts that was a remount, not a move: an
-                operator typing while the mission list was still in flight lost the draft the
-                instant an empty list arrived and flipped `firstRun`. The mount is fixed here
-                and only its visual order changes, so the draft, the mode and any pending send
-                survive the answer landing. */}
-              <div className={firstRun ? undefined : styles.composerBelow}>
-                <Composer
-                  missionId={UNTRACKED_VIEW}
-                  configured={configured}
-                  turns={turns[UNTRACKED_VIEW] ?? []}
-                  onTurns={onTurns}
-                  visit={visit}
-                  isVisitCurrent={isVisitCurrent}
-                  onCreated={onCreated}
-                  creating={composerCreating}
-                  onCreatingChange={setComposerCreating}
-                />
-              </div>
-              {stop !== "THREAD" ? null : (
-                <>
-                  <div className={styles.empty}>
-                    <div className={styles.emptyLead}>
-                      {untracked.length} live{" "}
-                      {untracked.length === 1 ? "session" : "sessions"} with no
-                      mission.
-                    </div>
-                    <div>
-                      {firstRun
-                        ? "ADOPT becomes available as soon as a mission exists — until then, act on what a session is waiting for here."
-                        : "ADOPT one into a mission from the rail, or act on what it is waiting for here."}
-                    </div>
-                  </div>
-                  {/* The sessions themselves, not only their decisions.
-                On a phone the rail IS a drawer, so anything that lives only on a rail row is
-                reachable only by opening it — including what the orchestrator last did here.
-                This view is the surface that is visible without the drawer, so it carries the
-                session's own line as well as its decision.
-
-                A decision renders through the SAME `ActionRow`, so its controls come from the
-                server's projection. Before this phase it rode a card; without somewhere to go it
-                would simply vanish, and a console that loses decisions for unorganised work is
-                worse than the grid it replaced. */}
-                  <ul
-                    className={styles.sessionList}
-                    aria-label="Untracked sessions"
-                  >
-                    {untracked.map((c) => (
-                      <li
-                        key={c.id}
-                        className={`${styles.event} ${styles.sessionBlock}`}
-                        data-testid="untracked-session"
-                      >
-                        {/* The HUD corner brackets the grid's cards carried (#476). This block is what
-                    replaced those cards, so it keeps the treatment rather than quietly dropping
-                    the repo's card vocabulary along with the grid. */}
-                        <HudFrame />
-                        <div className={styles.eventHead}>
-                          {/* Colour alone is not an accessible state: the band rides the LED's
-                      accessible name, exactly as the grid moved it there when it dropped the
-                      section headings (#750). */}
-                          <span
-                            className={`${styles.dot} ${
-                              c.state === "needs_you"
-                                ? styles.dotNeedsYou
-                                : c.live
-                                  ? styles.dotRunning
-                                  : ""
-                            }`}
-                            role="img"
-                            aria-label={BAND_LABEL[c.state] ?? c.state}
-                          />{" "}
-                          {c.engine} · {c.project?.name || "no project"}
-                        </div>
-                        <div className={styles.eventText}>
-                          {c.title || c.id}
-                        </div>
-                        {/* The review's two statements, both standing down when the action speaks. The
-                    ⚠ carries the reason on its accessible name as well as in text — colour and
-                    a glyph are not a reason. */}
-                        {!actionSpeaks(c) &&
-                        c.intervention_required &&
-                        c.intervention_reason ? (
-                          <div
-                            className={styles.objStale}
-                            data-testid="intervention"
-                          >
-                            <span
-                              role="img"
-                              aria-label={`Intervention required: ${c.intervention_reason}`}
-                            >
-                              ⚠
-                            </span>{" "}
-                            {c.intervention_reason}
-                          </div>
-                        ) : null}
-                        {!actionSpeaks(c) && (c.synthesis || c.ai_summary) ? (
-                          <div className={styles.objReason}>
-                            {c.synthesis || c.ai_summary}
-                          </div>
-                        ) : null}
-                        {/* The card's own jump link. Without it the only route into an untracked session
-                    is the sidebar, which is exactly the "the decision is here, its session is
-                    somewhere else" split this phase exists to close. */}
-                        {/* "Jump into …", never "Open session": the app shell's own nav already carries
-                    an "Open session overview" link, and a second control with that name is the
-                    duplicate `pulse-card-once` guards against. */}
-                        <Link
-                          className={styles.openSession}
-                          to={sessionRoute(c.id)}
-                          aria-label={`Jump into ${c.title || c.id}`}
-                        >
-                          Jump in
-                        </Link>{" "}
-                        {/* ADOPT lives with the session, not on a rail row — the rail navigates. It is
-                    rendered DISABLED rather than hidden when no mission is selected, so the
-                    operator can see that adoption exists and why it is unavailable. */}
-                        {/* `mission_id === undefined` means the server could not READ the membership
-                    store — not that nobody holds this session (that is `null`). The card still
-                    shows, because hiding the operator's work is the worse failure, but ADOPT is
-                    refused rather than offered: a mutation the backend cannot authorize must
-                    not be advertised. */}
-                        <button
-                          type="button"
-                          className={styles.adoptInline}
-                          onClick={() => adopt(c.id)}
-                          disabled={
-                            !adoptTarget ||
-                            adopting === c.id ||
-                            c.mission_id === undefined
-                          }
-                          title={
-                            c.mission_id === undefined
-                              ? "Mission membership could not be read, so adoption is unavailable"
-                              : archived
-                                ? "Archived missions cannot take new sessions — unarchive it first"
-                                : adoptTarget
-                                  ? "Take this session into the selected mission"
-                                  : missions.length
-                                    ? "Every mission here is closed — reopen one, or start a new mission, before adopting a session"
-                                    : "Select a mission first"
-                          }
-                          data-testid="rail-adopt"
-                        >
-                          {adopting === c.id ? "…" : "ADOPT"}
-                        </button>
-                        {c.pending_action ? (
-                          /* `embedded` — this block already names the session and links to it, which is
-                     exactly what the prop means. Without it `ActionRow` renders its own session
-                     link and the block carries two links to the same place (#781: one link).
-                     The MISSION thread is the opposite case and is deliberately NOT embedded: a
-                     mission can hold several sessions, so a decision there must name its own. */
-                          <ActionRow
-                            action={c.pending_action as OrchestratorAction}
-                            onResolved={onResolved}
-                            /* FENCED, like every other late outcome (#896 review 5, finding 4). This
-                         path is not inside the keyed mission body, so nothing unmounts it when
-                         the operator selects a mission — and `ActionRow`'s settled-record 409
-                         calls the parent note, so an approval started here would paint its
-                         refusal over whatever the operator moved to. `UNTRACKED_VIEW` is the id
-                         this view holds, which is exactly what `isCurrent` compares against. */
-                            onNote={noteIfUntracked}
-                            embedded
-                          />
-                        ) : c.last_action ? (
-                          <div
-                            className={styles.objReason}
-                            data-testid="untracked-view-last-action"
-                          >
-                            {c.last_action.verb.toUpperCase()}{" "}
-                            {actionOutcome(c.last_action.state)}
-                            {c.last_action.repeats && c.last_action.repeats > 1
-                              ? ` ×${c.last_action.repeats}`
-                              : ""}
-                          </div>
-                        ) : null}
-                        {/* The action's state, folded into the block's own footer and appearing exactly
-                    once (#781). The embedded row deliberately draws no frame and no state of its
-                    own — one box, one footer — so the container is where this belongs. */}
-                        {c.pending_action ? (
-                          <div
-                            className={styles.objWhen}
-                            data-testid="session-state"
-                          >
-                            {c.pending_action.state}
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          ) : shown ? (
+          {shown ? (
             <MissionBody
               key={shown}
               missionId={shown}
-              stop={stop}
-              onDetails={() => setStop("DETAILS")}
-              onConversation={() => setStop("THREAD")}
+              detailsOpen={detailsOpen}
+              onDetails={() => setDetailsOpen(true)}
+              onConversation={() => setDetailsOpen(false)}
               configured={configured}
               onTitle={setTitle}
-              onSessions={setHeldExtra}
               cards={allCards}
               onResolved={onResolved}
               onNote={setNote}
@@ -2285,46 +1758,30 @@ export function MissionConsole({
               onMissionChanged={onMissionChanged}
             />
           ) : (
-            <div className={styles.pane} data-testid="pane">
-              {/* Same shape as the untracked branch above, for the same reason: the stop swaps
-                the CONTENT and never the composer (#930 review 2, finding 1). */}
-              {noMissionStop}
-              {stop !== "THREAD" ? null : filteredMissionsEmpty ? (
-                filteredMissionsEmpty
-              ) : filtered ? (
-                filteredEmpty
-              ) : (
-                <div className={styles.empty} data-testid="console-empty">
-                  <div className={styles.emptyLead}>Nothing tracked yet.</div>
-                  <div>
-                    A mission groups the sessions working one outcome, with the
-                    objectives that define done.
-                  </div>
-                  {loading ? (
-                    <div style={{ marginTop: 10 }}>
-                      Looking for live sessions…
-                    </div>
-                  ) : untracked.length ? (
-                    <div style={{ marginTop: 10 }}>
-                      {untracked.length} live{" "}
-                      {untracked.length === 1 ? "session is" : "sessions are"}{" "}
-                      still listed under UNTRACKED.
-                    </div>
-                  ) : null}
-                </div>
-              )}
-              <Composer
-                missionId={UNTRACKED_VIEW}
-                configured={configured}
-                turns={turns[UNTRACKED_VIEW] ?? []}
-                onTurns={onTurns}
-                visit={visit}
-                isVisitCurrent={isVisitCurrent}
-                onCreated={onCreated}
-                creating={composerCreating}
-                onCreatingChange={setComposerCreating}
-              />
-            </div>
+            <MissionLanding
+              composer={
+                <Composer
+                  missionId={LANDING_VIEW}
+                  configured={configured}
+                  turns={turns[LANDING_VIEW] ?? []}
+                  onTurns={onTurns}
+                  visit={visit}
+                  isVisitCurrent={isVisitCurrent}
+                  onCreated={onCreated}
+                  creating={composerCreating}
+                  onCreatingChange={setComposerCreating}
+                  focusKey={focusKey}
+                />
+              }
+              missions={missions}
+              filtered={missionFiltered || archived}
+              partial={hasMore || needsReRead}
+              loaded={listLoaded}
+              unavailable={!!storeError}
+              onSelect={select}
+              onClearFilters={clearAll}
+              projectNames={projectNames}
+            />
           )}
         </div>
       </div>

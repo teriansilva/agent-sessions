@@ -7,6 +7,16 @@ import {
   openMissionRail,
 } from "./mission-console";
 
+/** Select a mission from the rail (#948 P3). Nothing is auto-selected any more — `/mission` opens on
+ *  the new-mission page — so a test about a selected mission picks one itself, through the shell's
+ *  drawer on a phone. Without a title it takes the first row. */
+async function selectMission(page: Page, title?: string) {
+  await openMissionRail(page);
+  const rows = page.getByTestId("rail-mission");
+  await (title ? rows.filter({ hasText: title }) : rows).first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
 export async function setupSections(page: Page) {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
@@ -85,6 +95,7 @@ test("section buttons share the brand row and Send typography at every width (#9
 }) => {
   await setupSections(page);
   await page.goto("/mission");
+  await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   for (const width of [320, 360, 375, 412, 640, 641, 800, 801, 1100, 1440]) {
     await page.setViewportSize({ width, height: 740 });
@@ -145,6 +156,7 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
   await setupSections(page);
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/mission");
+  await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   await page.getByTestId("composer-input").fill("Keep this draft");
   const controls = [
@@ -226,6 +238,7 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await setupSections(page);
   await page.goto("/mission");
+  await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   const toggle = page.locator(".hud-topbar > .navToggle");
   await page.clock.fastForward(7001);
@@ -279,6 +292,7 @@ test("compact header keeps drawer and notification anchors reachable (#946)", as
   for (const width of [320, 800, 801]) {
     await page.setViewportSize({ width, height: 740 });
     await page.goto("/mission");
+    await selectMission(page, "Mission layout");
     await expect(page.getByTestId("console-title")).toHaveText(
       "Mission layout",
     );
@@ -397,9 +411,12 @@ test("Context comes first and details collapse inside a fixed workspace", async 
 }) => {
   await setupSections(page);
   await page.goto("/mission");
+  await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
-  const tab = page.getByRole("tab", { name: "Details", exact: true });
-  if (await tab.isVisible()) await tab.click();
+  // Below 1400px the details are ONE disclosure above the thread (#948 P3); the Details tab it
+  // replaced is gone. At 1400+ the toggle is hidden and the details are already beside the thread.
+  const band = page.getByTestId("details-toggle");
+  if (await band.isVisible()) await band.click();
   const details = page.getByTestId("mission-details");
   await expect(
     details.getByRole("button", { name: /^Context/ }),
@@ -434,6 +451,7 @@ for (const width of [1600, 1400, 1280, 801, 800, 412, 375]) {
     await page.setViewportSize({ width, height: 950 });
     await setupSections(page);
     await page.goto("/mission");
+    await selectMission(page, "Mission layout");
     await expect(page.getByTestId("console-title")).toHaveText(
       "Mission layout",
     );
@@ -444,10 +462,18 @@ for (const width of [1600, 1400, 1280, 801, 800, 412, 375]) {
         .boundingBox())!;
       expect(details.x).toBeGreaterThanOrEqual(thread.x + thread.width);
       expect(details.width).toBeGreaterThan(300);
-      await expect(page.getByTestId("stop-details")).toBeHidden();
+      await expect(page.getByTestId("details-toggle")).toBeHidden();
     } else {
-      await page.getByTestId("stop-details").click();
-      await expect(page.getByTestId("composer-input")).toBeHidden();
+      // #948 P3: one disclosure instead of a Details TAB. The tab REPLACED the thread (so the
+      // composer was hidden); the band opens ABOVE the thread and the composer stays on screen.
+      const toggle = page.getByTestId("details-toggle");
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(page.getByTestId("mission-details")).toBeVisible();
+      await expect(page.getByTestId("composer-input")).toBeVisible();
+      const band = (await page.getByTestId("mission-details").boundingBox())!;
+      const thread = (await page.getByTestId("pane").boundingBox())!;
+      expect(band.y + band.height).toBeLessThanOrEqual(thread.y + 1);
     }
     await info.attach(`mission-${width}`, {
       body: await page.screenshot(),
@@ -502,6 +528,7 @@ test("a late search cannot replace the filtered result or the open mission", asy
     });
   });
   await page.goto("/mission");
+  await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   await openMissionRail(page);
   const search = page.getByRole("searchbox", { name: "Search missions" });
@@ -559,6 +586,7 @@ for (const initial of ["draft", "planned"]) {
       return r.fulfill({ status: 500, json: { detail: "Unexpected launch" } });
     });
     await page.goto("/mission");
+    await selectMission(page);
     await expect(page.getByTestId("mission-begin")).toBeEnabled();
     await expect(page.getByTestId("mission-replan")).toBeVisible();
     await page.getByTestId("mission-begin").click();
@@ -616,6 +644,7 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
     });
   });
   await page.goto("/mission");
+  await selectMission(page);
   await page.getByTestId("mission-begin").click();
   await expect(page.getByTestId("mission-begin")).toHaveText("Confirm begin");
   expect(launches).toBe(0);
@@ -627,10 +656,11 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
   const consequence = (await page
     .getByTestId("mission-dispatch-confirm")
     .boundingBox())!;
-  const tabs = (await page
-    .getByRole("tablist", { name: "Mission view" })
-    .boundingBox())!;
-  expect(consequence.y + consequence.height).toBeLessThanOrEqual(tabs.y);
+  // The consequence sits in the header, clear of the workspace below it. It was measured against
+  // the Conversation / Details tab strip, which #948 P3 removed; the workspace's top edge is the
+  // same boundary.
+  const workspace = (await page.getByTestId("split").boundingBox())!;
+  expect(consequence.y + consequence.height).toBeLessThanOrEqual(workspace.y);
   await page.screenshot({
     path: `../design-review/actual-begin-${info.project.name}.png`,
   });
@@ -778,6 +808,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
     for (const width of [375, 412, 800, 1280]) {
       await page.setViewportSize({ width, height: 540 });
       await page.goto("/mission");
+      await selectMission(page);
       await expect(page.getByTestId("console-title")).toHaveText(title.trim());
       await page
         .getByTestId("composer-input")
@@ -820,6 +851,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
   );
   await page.setViewportSize({ width: 375, height: 540 });
   await page.goto("/mission");
+  await selectMission(page);
   await expect(page.getByTestId("console-title")).toHaveText(title);
   await page.getByTestId("composer-input").fill("Still reachable");
   await expectReachable(page, "composer-input");
@@ -833,56 +865,43 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
   });
 });
 
-test("an empty mission search keeps untracked sessions out of first-run guidance", async ({
+test("an empty mission search on the landing names the filter, and clearing it restores the rail", async ({
   page,
 }) => {
+  // This asserted that untracked sessions stayed out of the first-run guidance under an empty
+  // search. Both the untracked-session list and the first-run block were removed by #948 P3. What
+  // an empty SEARCH must still not do is read as "nothing here": the landing's NEEDS YOU preview
+  // says it is scoped to the current filters and offers the way back, and once cleared — with no
+  // filter and nothing needing the operator — the preview is absent rather than claiming anything.
   await setupSections(page);
-  await page.route(/\/api\/pulse$/, (r) =>
-    r.fulfill({
-      json: {
-        generated_at: 1,
-        window_days: 3,
-        cards: [
-          {
-            id: "claude:11111111-1111-1111-1111-111111111111",
-            engine: "claude",
-            title: "Untracked work",
-            cwd: "/repo",
-            project: { kind: "project", id: "p1", name: "BattleLab" },
-            last_activity: 1,
-            live: true,
-            state: "in_flight",
-            mission_id: null,
-          },
-        ],
-      },
-    }),
-  );
   await page.goto("/mission");
-  await openMissionRail(page);
-  await page
-    .getByRole("button", { name: /Sessions without a mission/ })
-    .click();
   await openMissionRail(page);
   await page
     .getByRole("searchbox", { name: "Search missions" })
     .fill("no matching mission");
   await expect(page.getByTestId("rail-mission")).toHaveCount(0);
+  await expect(page.getByTestId("rail-no-missions")).toHaveText(
+    "No missions match these filters.",
+  );
   if (await page.getByRole("dialog").count())
     await page.keyboard.press("Escape");
-  await expect(page.getByTestId("first-run")).toHaveCount(0);
-  const empty = page.getByTestId("mission-filter-empty");
-  await expect(empty).toContainText("No missions match these filters");
-  await expect(page.getByTestId("untracked-session")).toContainText(
-    "Untracked work",
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
+  await expect(page.getByTestId("landing-needs-scope")).toContainText(
+    "in current filters",
   );
-  await empty.getByRole("button", { name: "Clear mission filters" }).click();
-  await expect(empty).toHaveCount(0);
+  await expect(page.getByTestId("landing-needs-empty")).toHaveText(
+    "Nothing needs you in these filters.",
+  );
+  await page.getByTestId("landing-clear-filters").click();
+  await expect(page.getByTestId("landing-needs-you")).toHaveCount(0);
   await openMissionRail(page);
   await expect(page.getByTestId("rail-mission")).toHaveCount(2);
+  await expect(
+    page.getByRole("searchbox", { name: "Search missions" }),
+  ).toHaveValue("");
 });
 
-test("a restored later-page mission is not declared outside its matching filters", async ({
+test("a selected later-page mission is not declared outside its matching filters", async ({
   page,
 }) => {
   await setupSections(page);
@@ -924,8 +943,17 @@ test("a restored later-page mission is not declared outside its matching filters
     .filter({ hasText: "Mission 101" })
     .click();
   await expect(page.getByTestId("console-title")).toHaveText("Mission 101");
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
-  await page.getByRole("link", { name: "Missions", exact: true }).click();
+  // Reach "selected, but not on the loaded page" by CHANGING THE SEARCH: the rail resets to its
+  // first page while the selection is kept. (It used to be reached by leaving for Sessions and
+  // coming back, which relied on the selection being retained for the visit — #948 P3 made
+  // selection plain state, so the section now opens on the landing instead.) The new search
+  // still matches Mission 101, so the notice must say it is not LOADED, not that it is filtered out.
+  await openMissionRail(page);
+  await page
+    .getByRole("searchbox", { name: "Search missions" })
+    .fill("Mission 1");
+  if (await page.getByRole("dialog").count())
+    await page.keyboard.press("Escape");
   await expect(page.getByTestId("console-title")).toHaveText("Mission 101");
   await expect(
     page.getByText("Not in the loaded mission results", { exact: false }),

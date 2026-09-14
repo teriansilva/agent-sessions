@@ -1,5 +1,8 @@
-import { openMissionConversation } from "./mission-console";
-import { openMissionDetails } from "./mission-console";
+import {
+  openMissionConversation,
+  openMissionDetails,
+  openMissionRail,
+} from "./mission-console";
 /** #942 — the console reads as one thing.
  *
  *  Every claim here is a GEOMETRY or an AGREEMENT claim, and the defects they guard were all
@@ -189,6 +192,7 @@ for (const [w, h] of [
     await page.setViewportSize({ width: w, height: h });
     await page.goto("/mission");
     await expect(page.getByTestId("mission-console")).toBeVisible();
+    await selectFirst(page);
     await page.getByTestId("pane").waitFor();
 
     const dock = await page.locator('[class*="composerDock"]').boundingBox();
@@ -211,6 +215,7 @@ test("the thread takes the slack: a taller viewport grows the pane, not the gap 
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1400, height: 700 });
   await page.goto("/mission");
+  await selectFirst(page);
   await page.getByTestId("pane").waitFor();
   const short = await page.getByTestId("pane").boundingBox();
 
@@ -234,13 +239,15 @@ for (const w of [1280, 1400, 1600] as const) {
     await stub(page, ROWS);
     await page.setViewportSize({ width: w, height: 900 });
     await page.goto("/mission");
+    // Selected explicitly — entering the section selects nothing (#948).
+    await page.getByTestId("rail-mission").first().click();
     await expect(page.getByTestId("mission-state")).toBeVisible();
 
-    // THE DEFECT: at 1280 this read "Select a mission" while that mission's own `running` state
-    // and its controls rendered underneath. The title came from console state the body pushed up
-    // after its detail fetch, so it was null for the whole of that round trip.
+    // THE DEFECT: at 1280 the header read "Select a mission" while that mission's own `running`
+    // state and its controls rendered underneath. The title came from console state the body
+    // pushed up after its detail fetch, so it was null for the whole of that round trip. (That copy
+    // no longer exists, #948; the exact-title check below is what pins the agreement.)
     const title = await page.getByTestId("console-title").innerText();
-    expect(title).not.toMatch(/select a mission|no missions yet/i);
     expect(title.trim()).toBe("Kimi transcript adapter");
   });
 }
@@ -268,9 +275,10 @@ test("the header names the mission BEFORE its detail lands (#942)", async ({
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/mission");
 
-  // The RAIL has its rows — the list call was never held — and a mission is auto-selected. The
+  // The RAIL has its rows — the list call was never held — and the operator picks a mission. The
   // detail is still in flight, which is the whole point.
   await expect(page.getByTestId("rail-mission").first()).toBeVisible();
+  await page.getByTestId("rail-mission").first().click();
   await expect(page.getByTestId("console-title")).toHaveText(
     "Kimi transcript adapter",
   );
@@ -283,17 +291,20 @@ test("the header names the mission BEFORE its detail lands (#942)", async ({
   );
 });
 
-test("with nothing selected the header says so, and no state is claimed (#942)", async ({
+test("with nothing selected no header claims a mission, and no state is claimed (#942, #948)", async ({
   page,
 }) => {
-  // The control: the fix must not make the header assert a mission when there is none.
-  await stub(page, []);
+  // The control: the fix must not make the header assert a mission when none is selected. Since
+  // #948 the header belongs to a mission and is absent on the new-mission page — asserted with
+  // missions LOADED, so it cannot pass merely because the list has not arrived.
+  await stub(page, ROWS);
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
-  await expect(page.getByTestId("console-title")).toHaveText(
-    /no missions yet/i,
-  );
+  await expect(page.getByTestId("rail-mission")).toHaveCount(2);
+  await expect(page.getByTestId("mission-landing")).toBeVisible();
+  await expect(page.getByTestId("console-title")).toHaveCount(0);
+  await expect(page.getByTestId("header-actions")).toHaveCount(0);
   await expect(page.getByTestId("mission-state")).toHaveCount(0);
 });
 
@@ -307,7 +318,7 @@ test("one primary action inline; the destructive lifecycle is behind the overflo
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
-  await expect(page.getByTestId("mission-state")).toBeVisible();
+  await selectFirst(page);
 
   // Inline: the state's own next step, and nothing else.
   await expect(page.getByTestId("mission-done")).toBeVisible();
@@ -339,6 +350,7 @@ test("the overflow is a real menu: Escape closes it and focus returns (#942)", a
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   const trigger = page.getByTestId("mission-overflow");
   await trigger.click();
   await expect(page.getByTestId("mission-overflow-menu")).toBeVisible();
@@ -356,6 +368,7 @@ test("the overflow does NOT claim to be modal — the console stays reachable (#
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   await page.getByTestId("mission-overflow").click();
   await expect(page.getByTestId("mission-overflow-menu")).toBeVisible();
   await expect(
@@ -374,6 +387,7 @@ test("the overflow honours the ARROW KEYS its role promises (#942)", async ({
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   await page.getByTestId("mission-overflow").click();
   const menu = page.getByTestId("mission-overflow-menu");
   await expect(menu).toBeVisible();
@@ -406,12 +420,11 @@ test("the overflow honours the ARROW KEYS its role promises (#942)", async ({
 // Tabs, not a panel stack — the 340px third track is gone.
 // ==============================================================================================
 
-/** Select the first mission. At 412 the rail auto-selects; at desktop widths it does not until
- *  the row is clicked, and a helper that only did one passed on one project and asserted against
- *  an unselected console on the other. */
+/** Select the first mission, at any width. Nothing is auto-selected (#948), so the row is always
+ *  clicked — through the shell's drawer on a phone (a no-op where the rail is a docked column). */
 async function selectFirst(page: Page) {
-  const row = page.getByTestId("rail-mission").first();
-  if ((await row.count()) && (await row.isVisible())) await row.click();
+  await openMissionRail(page);
+  await page.locator('[data-testid="rail-mission"]:visible').first().click();
   await expect(page.getByTestId("mission-state")).toBeVisible();
 }
 
@@ -472,12 +485,12 @@ test("the wide workspace uses the available width for conversation and details (
   await expect(page.getByTestId("mission-details")).toBeVisible();
 });
 
-test("a half-typed message survives a tab round trip (#942)", async ({
+test("a half-typed message survives a details round trip (#942, #948)", async ({
   page,
 }) => {
   // OBJECTIVES has a composer of its own ("Add an objective"). Two inputs on one surface is how a
-  // draft gets eaten — and losing an unsent turn to a tab press is a worse bug than the layout
-  // this phase set out to fix.
+  // draft gets eaten — and losing an unsent turn to opening the details is a worse bug than the
+  // layout this phase set out to fix. At 1200 the details sit behind the #948 disclosure.
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1200, height: 950 });
   await page.goto("/mission");
@@ -608,6 +621,7 @@ test("the overflow lets Tab LEAVE — it is a menu, not a trap (#942)", async ({
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   const trigger = page.getByTestId("mission-overflow");
   const menu = page.getByTestId("mission-overflow-menu");
 
@@ -721,7 +735,7 @@ test("a LONG thread still leaves the composer on the bottom edge, and its last e
   await stub(page, ROWS, { events, events_next_seq: null });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/mission");
-  await expect(page.getByTestId("mission-state")).toBeVisible();
+  await selectFirst(page);
 
   // The dock is still ON the bottom edge — a thread that overflows must scroll, not push it off.
   const dock = (await page.locator('[class*="composerDock"]').boundingBox())!;
@@ -788,7 +802,10 @@ test("a LONG objective list scrolls inside the pane, composer still docked (#942
   await openMissionDetails(page, "followThrough");
   await expect(page.getByTestId("objective")).toHaveCount(25);
 
-  await expect(page.getByTestId("composer-input")).toBeHidden();
+  // COMPOSER STILL DOCKED, as the title says. Under the old tab strip opening Details hid the
+  // thread, so this asserted `toBeHidden()`; since #948 the details open in a band above a thread
+  // that never leaves the screen.
+  await expect(page.getByTestId("composer-input")).toBeVisible();
   const scroll = page.getByTestId("mission-details");
   expect(await scroll.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(
     true,
@@ -881,6 +898,7 @@ test("a confirmation rerender does not throw focus out of the open menu (#942)",
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   const trigger = page.getByTestId("mission-overflow");
   await trigger.click();
   const menu = page.getByTestId("mission-overflow-menu");
@@ -912,6 +930,7 @@ test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async 
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
   await page.goto("/mission");
+  await selectFirst(page);
   const trigger = page.getByTestId("mission-overflow");
   const menu = page.getByTestId("mission-overflow-menu");
 
@@ -980,25 +999,19 @@ test("a RECOVERED objectives read stops claiming it could not be read (#942)", a
   await expect(page.getByTestId("objectives-unreadable")).toHaveCount(0);
 });
 
-test("CONTEXT with nothing selected explains ITSELF, not the timeline (#942)", async ({
+test("with nothing selected there is no details surface to fall through (#942, #948)", async ({
   page,
 }) => {
-  // CONTEXT became reachable when the tabs replaced the detail column, and fell through to the
-  // timeline's sentence — an explanation about a surface the operator is not looking at.
+  // #942's version asserted that CONTEXT, reachable with nothing selected, explained itself
+  // rather than falling through to the timeline's sentence. #948 removed the surface that made it
+  // reachable: the details belong to a mission and do not render on the new-mission page at all,
+  // at either layout — so the fall-through cannot happen, and this pins that it cannot.
   await stub(page, []);
-  await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/mission");
-  await expect(page.getByTestId("mission-console")).toBeVisible();
-
-  await page.getByTestId("stop-details").click();
-  const ctx = page.getByTestId("no-mission-details");
-  await expect(ctx).toBeVisible();
-  await expect(ctx).toContainText(
-    /context, objectives, follow-through and timeline belong to a mission/i,
-  );
-
-  await page.getByTestId("stop-details").click();
-  await expect(page.getByTestId("no-mission-details")).toContainText(
-    /timeline belong to a mission/i,
-  );
+  for (const width of [1600, 1200]) {
+    await page.setViewportSize({ width, height: 950 });
+    await page.goto("/mission");
+    await expect(page.getByTestId("mission-landing")).toBeVisible();
+    await expect(page.getByTestId("details-toggle")).toHaveCount(0);
+    await expect(page.getByTestId("mission-details")).toHaveCount(0);
+  }
 });

@@ -1,6 +1,11 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-import { mockMissions } from "./mission-console";
+import {
+  MISSION,
+  missionList,
+  missionRow,
+  mockMissions,
+} from "./mission-console";
 
 // #754 — Pulse must use the width it has.
 //
@@ -11,9 +16,17 @@ import { mockMissions } from "./mission-console";
 // defect verbatim. Separately the cards rendered as four state sections, each leaving a
 // partial row.
 //
-// #777 then merged the feed INTO the cards, so the two feed-density tests that lived here are
-// gone with it — one list means the card assertions below are the whole story.
+// #777 then merged the feed INTO the cards, and #878 replaced the card grid with the mission
+// console. #948 P3 removed the last card surface — the "Sessions without a mission" view — so the
+// properties are asserted where the decisions now live: a mission's thread. REMOVED with that view,
+// because the UI no longer exists:
+//   - the four band headings' absence and the card list's needs-you-first ORDER (there is no
+//     session card list under /mission to have sections or an order);
+//   - `_sessionBlock_` one-per-row at phone width (the block itself is gone).
 const NOW = Math.floor(Date.now() / 1000);
+
+/** A server-shaped mission id (`msn_` + 32 hex), so the `?m=` deep link is honoured. */
+const MID = `msn_${"d754".repeat(8)}`;
 
 const ORCH = {
   enabled: true,
@@ -36,7 +49,7 @@ const ORCH = {
 const PROJECTS = [
   ["p1", "infra"],
   ["p2", "battlelab"],
-  ["p3", "superstatus"],
+  ["p3", "docs-site"],
   // Neutral names only: `check-public-snapshot` denylists internal repo/host names, and a
   // fixture is snapshot content like any other file.
   ["p4", "sandbox"],
@@ -71,22 +84,20 @@ const TITLES = [
   "Resolve 3090 vision+ACE-Step VRAM collision",
   "Verify Mac runner launchd persistence",
   "Add CI check for reserved ModSecurity rule IDs",
-  "Prompted to cut a release after merging dictation",
-  "Enable captcha and email verification on staging",
-  "Resume PR #731 investigation",
 ];
 
 const CARDS = TITLES.map((t, i) => {
   const eng = ["claude", "codex", "opencode", "gemini"][i % 4];
   const [pid, pname] = PROJECTS[i % 4];
+  const id = `${eng}:${"0".repeat(7)}${i}-0000-4000-8000-00000000000${i % 10}`;
   return {
-    id: `${eng}:${"0".repeat(7)}${i}-0000-4000-8000-00000000000${i % 10}`,
+    id,
     engine: eng,
     title: t,
     cwd: `/home/u/${pname}`,
     project: { kind: "project", id: pid, name: pname, color: "#ffb000" },
-    state: i < 6 ? "needs_you" : i < 8 ? "in_flight" : "idle",
-    live: i >= 6 && i < 8,
+    state: i < 6 ? "needs_you" : "in_flight",
+    live: i >= 6,
     last_activity: NOW - i * 3600,
     intervention_required: i < 3,
     intervention_reason: i < 3 ? "waiting on a decision" : "",
@@ -94,16 +105,19 @@ const CARDS = TITLES.map((t, i) => {
     ai_summary:
       "Agent finished the edit, validated the JSON and stopped without confirming the next step.",
     synthesis: null,
+    mission_id: MID,
     ...(i < 6
       ? {
-          pending_action: act(i, `${eng}:x`, t),
+          pending_action: act(i, id, t),
           state_without_action: "idle",
         }
       : {}),
   };
 });
 
-async function mock(page) {
+const KEYS = CARDS.map((c) => c.id);
+
+async function mock(page: Page) {
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -154,10 +168,7 @@ async function mock(page) {
       json: {
         config: ORCH,
         pending: CARDS.slice(0, 6).map((c) => c.pending_action),
-        feed: TITLES.slice(0, 8).map((t, i) => ({
-          ...act(i + 20, `claude:f${i}`, t),
-          state: ["delivered", "expired", "observed", "rejected"][i % 4],
-        })),
+        feed: [],
         expired_now: 0,
         running: [],
         last: {},
@@ -179,10 +190,29 @@ async function mock(page) {
       },
     }),
   );
+  // One mission holding all eight sessions — six of them with a decision pending.
+  await mockMissions(page, {
+    missions: missionList([
+      missionRow({
+        id: MID,
+        title: "Density sweep",
+        session_keys: KEYS,
+        needs_you: true,
+      }),
+    ]),
+    mission: {
+      ...MISSION,
+      id: MID,
+      title: "Density sweep",
+      sessions: KEYS.map((k) => ({ session_key: k, removed_at: null })),
+      events: [],
+      events_next_seq: null,
+    },
+  });
 }
 
 /** Widths + per-row counts for a class-name prefix (CSS modules hash the suffix). */
-async function layout(page, prefix: string) {
+async function layout(page: Page, prefix: string) {
   return page.evaluate((p) => {
     const els = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
       (e) =>
@@ -199,27 +229,19 @@ async function layout(page, prefix: string) {
   }, prefix);
 }
 
-test("the session cards are ONE list, ordered needs-you first", async ({
+test("at 1900px the rail is a real column BESIDE the mission's thread", async ({
   page,
 }) => {
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
+  await page.goto(`/mission?m=${MID}`);
+  await expect(page.getByTestId("console-title")).toHaveText("Density sweep");
+  await expect(page.getByText(TITLES[0])).toBeVisible();
 
-  // No per-band sections: the four headings used to break the grid and leave a partial row.
-  for (const band of ["Needs you", "In flight", "Recently active", "Idle"]) {
-    await expect(
-      page.getByRole("heading", { name: band, exact: true }),
-    ).toHaveCount(0);
-  }
-
-  // DROPPED by #878, and this is the only assertion in this file that is gone rather than moved:
-  // `cards.perRow > 1`. The multi-column grid it measured does not exist — the console's pane is
-  // a single column by design, and the width a 1900px viewport used to spend on extra card
-  // columns now goes to the rail. So the property is asserted in its new form: the rail is a
-  // real column BESIDE the pane at this width, not stacked above it.
+  // DROPPED by #878: `cards.perRow > 1`. The multi-column grid it measured does not exist — the
+  // console's pane is a single column by design, and the width a 1900px viewport used to spend on
+  // extra card columns now goes to the rail. So the property is asserted in its new form: the
+  // rail is a real column BESIDE the pane at this width, not stacked above it.
   const railBox = await page
     .getByRole("navigation", { name: /missions/i })
     .boundingBox();
@@ -227,29 +249,20 @@ test("the session cards are ONE list, ordered needs-you first", async ({
   expect(railBox).not.toBeNull();
   expect(paneBox).not.toBeNull();
   expect(railBox!.x + railBox!.width).toBeLessThanOrEqual(paneBox!.x + 1);
-
-  // …and the order the headings conveyed survives as sort order — unchanged, and the reason
-  // that `perRow` assertion could go: what mattered was never the columns, it was that one
-  // ordered list replaced four sections.
-  const titles = await page.locator("li").allInnerTexts();
-  const idx = (t: string) => titles.findIndex((x) => x.includes(t));
-  expect(idx(TITLES[0])).toBeLessThan(idx(TITLES[6])); // needs_you before in_flight
-  expect(idx(TITLES[6])).toBeLessThan(idx(TITLES[8])); // in_flight before idle
 });
 
-test("the LED carries the band for a screen reader, since the heading no longer does", async ({
+test("what needs you carries its band for a screen reader, not just a colour", async ({
   page,
 }) => {
+  // Colour alone was acceptable under a "Needs you" heading. It is not, on its own. The card LED
+  // this asserted went with the untracked view (#948 P3); the front door's NEEDS YOU preview is
+  // the surface that now says a mission needs you, and its LED must say so too.
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
-  // Colour alone was acceptable under a "Needs you" heading. It is not, on its own.
-  await expect(
-    page.getByRole("img", { name: "Needs you" }).first(),
-  ).toBeAttached();
-  await expect(page.getByRole("img", { name: "Idle" }).first()).toBeAttached();
+  await page.goto("/mission");
+  const row = page.getByTestId("landing-needs-row");
+  await expect(row).toContainText("Density sweep");
+  await expect(row.getByRole("img", { name: "Needs you" })).toBeAttached();
 });
 
 test("on a phone everything stays exactly one column", async ({ page }) => {
@@ -258,15 +271,13 @@ test("on a phone everything stays exactly one column", async ({ page }) => {
   // CSS at phone width, and it has to hold in the desktop project too or it proves nothing
   // about a desktop browser narrowed to a phone-sized window.
   await page.setViewportSize({ width: 390, height: 844 });
-  await mockMissions(page);
-    await page.goto("/mission");
-  await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
-  // One column, and the console is now one column at EVERY width — so the assertion that used
-  // to distinguish phone from desktop is instead the stronger one it always stood for: nothing
-  // is laid out side by side at phone width, and the page does not scroll sideways.
-  const sessions = await layout(page, "_sessionBlock_");
-  expect(sessions.perRow).toBe(1);
+  await page.goto(`/mission?m=${MID}`);
+  await expect(page.getByTestId("console-title")).toHaveText("Density sweep");
+  await expect(page.getByText(TITLES[5])).toBeVisible();
+  // One column: the six decision rows are never laid out side by side at phone width, and the
+  // page does not scroll sideways.
   const feed = await layout(page, "_act_");
+  expect(feed.n).toBe(6);
   expect(feed.perRow).toBe(1);
   const wide = await page.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth,

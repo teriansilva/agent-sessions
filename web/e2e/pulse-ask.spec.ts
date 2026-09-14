@@ -101,7 +101,9 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
   });
 
   await mockMissions(page);
-    await page.goto("/mission");
+  await page.goto("/mission");
+  // The front door opens in NEW MISSION mode (#948 P3); Ask is one tap away on the same composer.
+  await page.getByTestId("composer-mode-ask").click();
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });
@@ -157,7 +159,9 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   );
 
   await mockMissions(page);
-    await page.goto("/mission");
+  await page.goto("/mission");
+  // The front door opens in NEW MISSION mode (#948 P3); Ask is one tap away on the same composer.
+  await page.getByTestId("composer-mode-ask").click();
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });

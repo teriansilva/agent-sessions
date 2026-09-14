@@ -1,11 +1,18 @@
 import { expect, test } from "@playwright/test";
 
-import { mockMissions } from "./mission-console";
+import { missionList, missionRow, mockMissions } from "./mission-console";
 
 // #494: the Pulse view must NOT scroll horizontally on a phone. Root cause: `.pulse` set
 // overflow-y:auto, which promotes overflow-x to auto, so a long unbroken token in an AI
 // summary / intervention reason / banner forced the panel wider than the viewport. This proves
 // (red→green) that nothing on /mission is horizontally scrollable at narrow widths.
+//
+// WHERE THE LONG TOKENS LIVE NOW (#948 P3): the session cards and their filter chips went with the
+// "Sessions without a mission" view, so entering /mission shows the new-mission page. The text an
+// operator does not control on that page is the missions' own — titles in the NEEDS YOU preview
+// and the rail, and project names in the mission filter — so that is where the unbroken token is
+// planted. The #803 folder-path chip this spec also exercised belonged to the removed untracked
+// filter row; the sessions sidebar's own chips are pinned in `sidebar/Filters.test.tsx`.
 
 const CONFIG = {
   csrf: "x",
@@ -21,12 +28,7 @@ const LONG =
   "AGENT_SESSIONS_FORCE_PASSWORD_CHANGE_supercalifragilistic_0123456789_abcdefghij";
 const T = 1_700_000_000;
 
-// #803: a folder ref as the SERVER emits it — `projects.resolve()` returns
-// `Ref(kind="folder", id=cwd, name=cwd)`, so a chip labelled with `name` is the whole path. The
-// two cards below carry short synthetic names ("webapp", "superstatus") that the server never
-// produces, which is why this spec passed while the live filter row ran off the side of the
-// phone. The realistic row is what actually exercises the overflow: `.chip` is
-// `white-space: nowrap`, so a ~110-char label cannot wrap.
+// A folder path as the server emits it — long, and unbreakable at a slash-free width.
 const SCRATCH =
   "/tmp/claude-1000/-home-u-claude-agent-sessions/337e9b61-b91d-4d6c-8013-19865f22b34f/scratchpad/work-claude-208de4e6";
 
@@ -38,76 +40,33 @@ const OVERVIEW = {
   input_fingerprint: "fp",
   synthesis_skipped: false,
   banner: `State of your work: the ${LONG} token in this banner must wrap, never scroll.`,
-  cards: [
-    {
-      id: "claude:abc",
-      engine: "claude",
-      title: "Awaiting choice on the social-source invite-gating gap",
-      cwd: "/home/u/webapp",
-      project: { kind: "folder", id: "/home/u/webapp", name: "webapp" },
-      last_activity: T - 120,
-      ai_summary: null,
-      intervention_required: true,
-      intervention_reason: `needs a decision about ${LONG} before it can proceed`,
-      reviewed_at: T - 120,
-      live: false,
-      state: "needs_you",
-      synthesis: `presents a multi-select prompt about ${LONG} (open issue / note / explain / custom).`,
-    },
-    {
-      id: "claude:def",
-      engine: "claude",
-      title: "Debugging AppHost build hang",
-      cwd: "/home/u/superstatus",
-      project: {
-        kind: "folder",
-        id: "/home/u/superstatus",
-        name: "superstatus",
-      },
-      last_activity: T - 300,
-      ai_summary: `exploring ${LONG} in the build graph`,
-      intervention_required: false,
-      intervention_reason: "",
-      reviewed_at: T - 300,
-      live: true,
-      state: "in_flight",
-      synthesis: null,
-    },
-    // Unadopted cwd with the REAL folder-ref shape (`name === id === cwd`). Before #803 this
-    // became its own chip labelled with the full path; now it joins `Default`.
-    {
-      id: "codex:ghi",
-      engine: "codex",
-      title: "Probe session in a scratch dir",
-      cwd: SCRATCH,
-      project: { kind: "folder", id: SCRATCH, name: SCRATCH },
-      last_activity: T - 400,
-      ai_summary: null,
-      intervention_required: false,
-      intervention_reason: "",
-      reviewed_at: T - 400,
-      live: false,
-      state: "idle",
-      synthesis: null,
-    },
-    // An adopted project keeps the filter row on screen once the three folder refs above
-    // collapse into one `Default` chip — without it the row would fall below its
-    // "more than one project or engine" render threshold and this spec would stop covering it.
-    {
-      id: "claude:jkl",
-      engine: "claude",
-      title: "Real work in an adopted project",
-      cwd: "/home/u/battlelab",
-      project: { kind: "project", id: "p-bl", name: "Battlelab", color: "" },
-      last_activity: T - 500,
-      ai_summary: null,
-      intervention_required: false,
-      intervention_reason: "",
-      reviewed_at: T - 500,
-      live: false,
-      state: "idle",
-      synthesis: null,
-    },
+  cards: [],
+};
+
+const MISSIONS = missionList([
+  missionRow({
+    id: "msn_1",
+    title: `Awaiting choice on ${LONG} before it can proceed`,
+    project_id: "p-long",
+    needs_you: true,
+    updated_at: T - 120,
+  }),
+  missionRow({
+    id: "msn_2",
+    title: `Debugging ${LONG} in the build graph`,
+    project_id: "p-long-2",
+    needs_you: true,
+    updated_at: T - 300,
+  }),
+]);
+// The filter bar's project select lists these, so its option labels carry the long names too.
+(MISSIONS.facets as { projects: string[] }).projects = ["p-long", "p-long-2"];
+
+// Two projects sharing a name, so the console disambiguates them with their (long) folder.
+const PROJECTS = {
+  projects: [
+    { id: "p-long", name: `proj-${LONG}`, folders: [SCRATCH] },
+    { id: "p-long-2", name: `proj-${LONG}`, folders: [`${SCRATCH}-two`] },
   ],
 };
 
@@ -132,10 +91,15 @@ for (const width of [360, 390]) {
     );
     await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
     await page.route("**/api/pulse", (r) => r.fulfill({ json: OVERVIEW }));
+    await page.route(/\/api\/projects($|\?)/, (r) =>
+      r.fulfill({ json: PROJECTS }),
+    );
 
-    await mockMissions(page);
+    await mockMissions(page, { missions: MISSIONS });
     await page.goto("/mission");
-    await expect(page.getByText(/Awaiting choice/i)).toBeVisible();
+    await expect(
+      page.getByTestId("landing-needs-row").filter({ hasText: /Awaiting choice/i }),
+    ).toBeVisible();
 
     const result = await page.evaluate(() => {
       // User-visible horizontal scroll = an element whose overflow-x is auto/scroll AND whose

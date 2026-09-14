@@ -344,7 +344,7 @@ test("a LOST terminal CAS still reconciles the OVERVIEW, and still does not move
   // A 409 on `running -> done` says the mission is ALREADY in a state this client did not put it
   // in — and for a terminal state, the server released every session it held when that happened.
   // The overview's cards still carry the old `mission_id`, so suppressing the membership refresh
-  // leaves those sessions in neither the roster nor UNTRACKED until the outer poll: an ownership
+  // leaves those sessions still stamped with the mission until the outer poll: an ownership
   // picture the server has just disproved, held on screen because OUR transition lost.
   vi.mocked(api.setMissionState).mockRejectedValue(
     new ApiError(409, "mission msn_1 is no longer running"),

@@ -7,8 +7,12 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { missionList, missionRow, mockMissions,
+import {
   flipMissionScope,
+  missionList,
+  missionRow,
+  mockMissions,
+  openMissionRail,
 } from "./mission-console";
 
 const T = 1_700_000_000;
@@ -82,6 +86,19 @@ function deferred() {
 
 const box = async (p: Page, sel: string) =>
   (await p.getByTestId(sel).boundingBox())!;
+
+/** Select a mission from the rail (#948 P3). Nothing is auto-selected any more — the section opens
+ *  on the new-mission page — so every test about a SELECTED mission picks one itself, waiting for
+ *  the row rather than for a selection that will never be made for it. */
+async function selectMission(page: Page, title: RegExp = /a mission/i) {
+  await openMissionRail(page);
+  await page
+    .getByRole("navigation", { name: /missions/i })
+    .getByRole("button", { name: title })
+    .first()
+    .click();
+  await page.getByTestId("mission-state").waitFor();
+}
 
 test.describe("the shell's sidebar is the mission rail (#935)", () => {
   test("the rail renders inside the app shell, and the console keeps no rail of its own", async ({
@@ -158,15 +175,18 @@ test.describe("the thread fills the width it was given (#935)", () => {
       await page.setViewportSize({ width, height: 900 });
       await stub(page);
       await page.goto("/mission");
-      await page.getByTestId("pane").waitFor();
+      // With nothing selected the workspace IS the new-mission page (#948 P3) — there is no thread
+      // pane to measure, so the landing is what must own the width.
+      await page.getByTestId("mission-landing").waitFor();
 
       const con = await box(page, "mission-console");
-      const pane = await box(page, "pane");
+      const landing = await box(page, "mission-landing");
       await expect(page.getByTestId("detail-column")).toHaveCount(0);
+      await expect(page.getByTestId("mission-details")).toHaveCount(0);
 
       // RED before the fix: a 340px track sat to the right of the pane in every state, so the
       // pane stopped ~340px short of the console's own right edge.
-      const shortfall = con.x + con.width - (pane.x + pane.width);
+      const shortfall = con.x + con.width - (landing.x + landing.width);
       expect(shortfall).toBeLessThan(24);
     });
   }
@@ -178,7 +198,7 @@ test.describe("the thread fills the width it was given (#935)", () => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/mission");
-    await page.getByTestId("mission-state").waitFor();
+    await selectMission(page);
 
     const con = await box(page, "mission-console");
     const pane = await box(page, "pane");
@@ -196,22 +216,40 @@ test.describe("the thread fills the width it was given (#935)", () => {
     expect(details.x).toBeGreaterThanOrEqual(pane.x + pane.width);
   });
 
-  test("the stop strip owns every pane, at 1399 and above (#942)", async ({
+  test("below 1400 the details are ONE disclosure above the thread; at 1400 they sit beside it (#948)", async ({
     page,
   }, testInfo) => {
+    // This was "the stop strip owns every pane": a Conversation / Details tab pair at every width.
+    // #948 P3 removed the tabs. Below 1400px one `details-toggle` opens the details in a band
+    // ABOVE the thread, and the thread stays on screen; at 1400px and above the toggle is gone and
+    // the details are always beside the thread.
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1399, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/mission");
-    await page.getByTestId("pane").waitFor();
-    await page.getByTestId("stop-details").click();
+    await selectMission(page);
+    const toggle = page.getByTestId("details-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("mission-details")).toBeHidden();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(page.getByTestId("mission-details")).toBeVisible();
     await expect(page.getByTestId("detail-context")).toBeVisible();
+    // The band is ABOVE the thread, and the thread did not go anywhere.
+    await expect(page.getByTestId("pane")).toBeVisible();
+    const details = await box(page, "mission-details");
+    const pane = await box(page, "pane");
+    expect(details.y + details.height).toBeLessThanOrEqual(pane.y + 1);
 
-    // …and the breakpoint that used to switch layouts no longer switches anything.
+    // …and at 1400+ the disclosure is gone and the details are simply there, beside the thread.
     await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(toggle).toBeHidden();
     await expect(page.getByTestId("mission-details")).toBeVisible();
     await expect(page.getByTestId("detail-context")).toBeVisible();
+    const wide = await box(page, "mission-details");
+    const widePane = await box(page, "pane");
+    expect(wide.x).toBeGreaterThanOrEqual(widePane.x + widePane.width);
   });
 });
 
@@ -299,7 +337,8 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     await page.setViewportSize({ width: 1400, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.goto("/mission");
-    await page.getByTestId("pane").waitFor();
+    // The landing, since nothing is selected on arrival (#948 P3).
+    await page.getByTestId("mission-landing").waitFor();
 
     await expect(page.locator("aside.sidebar")).toBeVisible();
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -691,10 +730,12 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, manyRows);
     await page.goto("/mission");
-    // A populated list auto-selects, so this is the ORDINARY state — and the one where the first
+    // A mission SELECTED is the ordinary working state — and the one where the first
     // implementation did nothing at all: the console renders `MissionBody`, whose composer sends
     // messages to that mission and has no creation field. The empty-list test passed throughout.
-    await page.getByTestId("mission-state").waitFor();
+    // Selected explicitly: since #948 P3 nothing is auto-selected on arrival.
+    // Not anchored with `$`: a rail row's accessible name carries its meta line after the title.
+    await selectMission(page, /Mission number 0(?!\d)/);
 
     await page.getByTestId("rail-new-mission").click();
 
@@ -800,7 +841,8 @@ test("a slow creation settling later cannot close a newer form or eat its draft 
   });
 
   await page.goto("/mission");
-  await page.getByTestId("mission-state").waitFor();
+  // Start from a selected mission, explicitly — nothing is auto-selected since #948 P3.
+  await selectMission(page, /an existing mission/i);
 
   // A: start a creation and submit it, leaving the response in flight.
   await page.getByTestId("rail-new-mission").click();

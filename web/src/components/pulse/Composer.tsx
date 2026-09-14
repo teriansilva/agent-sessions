@@ -47,6 +47,7 @@
  * project" — the two pickers are not interchangeable, which is why this reads
  * `api.projectEntities()` and not `api.folders()`.
  */
+import { BookMarked } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Link } from "react-router-dom";
@@ -55,6 +56,8 @@ import { api, ApiError } from "../../lib/api";
 import type { Mission, ProjectEntity, PulseAskMatch } from "../../types/api";
 
 import styles from "./mission.module.css";
+import { renderTemplate } from "../../lib/templateMessage";
+import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 
 export interface AskTurn {
   id: number;
@@ -86,6 +89,10 @@ function matchRoute(key: string): string {
  *  take a project-less create and make a `draft`, but a mission that cannot run until somebody
  *  notices is not what an operator pressing START asked for, and the one moment they are looking
  *  at a picker is the cheapest moment to answer it. */
+/** The server's instruction cap (`missions.INSTRUCTION_MAX`). It truncates silently, so the form
+ *  refuses to start over it rather than letting the tail of a brief disappear (#948). */
+const INSTRUCTION_MAX = 8000;
+
 function NewMissionForm({
   onCreated,
   onCancel,
@@ -111,6 +118,14 @@ function NewMissionForm({
   const [projectsError, setProjectsError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The template picker (#948) — INSERT-ONLY here: a mission has no session to send into, so a
+   *  template becomes part of the brief and the operator still presses Start. */
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  /** Where focus returns when the picker closes — the Template button, recorded when it is pressed
+   *  (state rather than a ref read during render). */
+  const [templatesTrigger, setTemplatesTrigger] = useState<HTMLElement | null>(null);
+  const length = instruction.trim().length;
+  const overCap = length > INSTRUCTION_MAX;
   /** False once this form has been cancelled or unmounted. A create is not abortable, so the
    *  completion has to be fenced rather than the request cancelled — the same shape as the ask
    *  path's liveness fence above, and for the same reason. */
@@ -148,7 +163,10 @@ function NewMissionForm({
     async (e: React.FormEvent) => {
       e.preventDefault();
       const text = instruction.trim();
-      if (!text || busy || !projectId) return;
+      // `overCap` is checked HERE, not only on the Start button: Ctrl/⌘+Enter calls
+      // `requestSubmit()`, which submits a form whose submit button is disabled, and the server
+      // would silently truncate the brief.
+      if (!text || busy || !projectId || overCap) return;
       // CAPTURED HERE, not asked for later. The token names the view AND the scope as they were
       // when the operator pressed START (#896 review 10, finding 4).
       const at = visit();
@@ -163,8 +181,8 @@ function NewMissionForm({
         });
         // FENCED AT RESOLUTION, ON THE VISIT. The operator may have cancelled, or moved to
         // another mission, or flipped Active → Archived while this was in flight. The last of
-        // those is the case an id fence cannot see: this form sits in the UNTRACKED view, which
-        // the scope flip does not unmount and whose sentinel id is unchanged, so "the same view
+        // those is the case an id fence cannot see: this form sits on the landing (it sat in the
+        // untracked view before #948), which the scope flip does not unmount, so "the same view
         // is showing" stayed true while the rail underneath it became a different set (#896
         // review 10, finding 4).
         //
@@ -187,7 +205,7 @@ function NewMissionForm({
         setBusy(false);
       }
     },
-    [instruction, projectId, busy, onCreated, visit, isVisitCurrent],
+    [instruction, projectId, busy, overCap, onCreated, visit, isVisitCurrent],
   );
 
   return (
@@ -203,7 +221,14 @@ function NewMissionForm({
           rows={1}
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="What should this mission achieve?"
+          // Enter is a newline — a brief is prose. Ctrl/⌘+Enter starts it.
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder="Describe the outcome you want — e.g. fix the flaky upload retry and open a PR"
           aria-label="Mission instruction"
           data-testid="new-mission-instruction"
         />
@@ -245,6 +270,16 @@ function NewMissionForm({
               : "Pick the project this mission works in. It decides where its agent runs."}
         </div>
       ) : null}
+      {length > INSTRUCTION_MAX * 0.9 ? (
+        <div
+          className={overCap ? styles.objStale : styles.objReason}
+          role="status"
+          data-testid="new-mission-count"
+        >
+          {length} / {INSTRUCTION_MAX}
+          {overCap ? " — shorten the brief to start this mission" : ""}
+        </div>
+      ) : null}
       {error ? (
         <div
           className={styles.objStale}
@@ -255,6 +290,17 @@ function NewMissionForm({
         </div>
       ) : null}
       <div className={styles.newMissionActions}>
+        <button
+          type="button"
+          className={styles.missionBtn}
+          onClick={(e) => {
+            setTemplatesTrigger(e.currentTarget);
+            setTemplatesOpen(true);
+          }}
+          data-testid="new-mission-template"
+        >
+          <BookMarked size={13} aria-hidden="true" /> TEMPLATE
+        </button>
         <button
           type="button"
           className={styles.missionBtn}
@@ -274,12 +320,28 @@ function NewMissionForm({
           // A PROJECT IS REQUIRED. Without one the mission has no cwd, the server refuses
           // `running` for ever, and this console has no way to assign one afterwards — so
           // offering START would be offering a dead end (#896 review 9, finding 2).
-          disabled={busy || !instruction.trim() || !projectId}
+          disabled={busy || !instruction.trim() || !projectId || overCap}
           data-testid="new-mission-start"
         >
           {busy ? "…" : "START"}
         </button>
       </div>
+      {templatesOpen ? (
+        <TemplatePickerModal
+          insertLabel="Insert into mission brief"
+          onInsert={(t, values) => {
+            // The same assembly the session composer pastes — body, then image paths — so a
+            // template reads identically wherever it lands (#905's one-seam rule).
+            const text = renderTemplate(t, values);
+            setInstruction((prev) =>
+              prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text,
+            );
+            setTemplatesOpen(false);
+          }}
+          onClose={() => setTemplatesOpen(false)}
+          returnFocusTo={templatesTrigger}
+        />
+      ) : null}
     </form>
   );
 }
@@ -294,6 +356,7 @@ export function Composer({
   onCreated,
   creating,
   onCreatingChange,
+  focusKey,
 }: {
   /** The mission these turns belong to. Ownership is keyed on it. */
   missionId: string;
@@ -313,6 +376,8 @@ export function Composer({
    *  which is what #930's remount fixes were about. */
   creating: boolean;
   onCreatingChange: (creating: boolean) => void;
+  /** Bumped by "+ New mission" to move focus into the brief (#948). */
+  focusKey?: number;
   turns: AskTurn[];
   onTurns: (missionId: string, fn: (prev: AskTurn[]) => AskTurn[]) => void;
   /** The visit a request is started in, and whether it is still on screen. Captured at SEND
@@ -336,7 +401,18 @@ export function Composer({
   const [busy, setBusy] = useState(false);
   /** Focus the field the operator just asked for. Not `setState`, so no cascading render — and
    *  the field does not exist until the create branch has rendered, hence the frame wait. */
+  // NOT ON ARRIVAL (#948). The landing opens in NEW MISSION mode, and focusing the brief the moment
+  // the section is entered would pop a phone's keyboard over the page the operator just arrived on.
+  // Focus moves when they ASK for it: switching to NEW MISSION, or "+ New mission" (`focusKey`).
+  const arrived = useRef(false);
   useEffect(() => {
+    if (!arrived.current) {
+      arrived.current = true;
+      // …UNLESS the operator already asked for it: "+ New mission" pressed while a mission is open
+      // bumps `focusKey` and MOUNTS a fresh composer, so a request made before mount would be lost
+      // if the first run were always skipped.
+      if (!focusKey) return;
+    }
     if (!creating) return;
     const raf = requestAnimationFrame(() => {
       document
@@ -346,7 +422,7 @@ export function Composer({
         ?.focus();
     });
     return () => cancelAnimationFrame(raf);
-  }, [creating]);
+  }, [creating, focusKey]);
   /** The mission currently owning an in-flight request, read inside the late callback. A ref,
    *  not state, because the callback must see the value at RESOLUTION time, not the one captured
    *  when the request started. */
@@ -470,21 +546,21 @@ export function Composer({
       >
         <button
           type="button"
-          className={`${styles.modeBtn} ${creating ? "" : styles.modeOn}`}
-          aria-pressed={!creating}
-          onClick={() => onCreatingChange(false)}
-          data-testid="composer-mode-ask"
-        >
-          ASK
-        </button>
-        <button
-          type="button"
           className={`${styles.modeBtn} ${creating ? styles.modeOn : ""}`}
           aria-pressed={creating}
           onClick={() => onCreatingChange(true)}
           data-testid="composer-mode-new"
         >
           NEW MISSION
+        </button>
+        <button
+          type="button"
+          className={`${styles.modeBtn} ${creating ? "" : styles.modeOn}`}
+          aria-pressed={!creating}
+          onClick={() => onCreatingChange(false)}
+          data-testid="composer-mode-ask"
+        >
+          ASK
         </button>
       </div>
 

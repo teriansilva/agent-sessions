@@ -25,6 +25,7 @@ import {
   missionList,
   missionRow,
   mockMissions,
+  openMissionRail,
 } from "./mission-console";
 
 const T = 1_700_000_000;
@@ -189,17 +190,20 @@ async function openConsole(page: Page, supervisor: unknown | undefined) {
 
 /** Reach the OBJECTIVES pane on either project.
  *
- *  The two layouts differ in one step and it is not cosmetic: at 412 px the drawer auto-selects the
- *  single mission, while at 1280 px (the MIDDLE layout mode — rail is a column, detail is still a
- *  tab strip) nothing is selected until the rail row is clicked. A helper that only did the tab
- *  click passed on mobile and asserted against a hidden pane on desktop. */
+ *  NOTHING IS AUTO-SELECTED (#948 P3): the section opens on the new-mission page at every width,
+ *  so the mission is picked from the rail on BOTH projects — through the shell's drawer on a
+ *  phone. The previous version clicked the row only if it was already visible, which silently
+ *  skipped the click whenever the list had not landed yet and relied on auto-selection to cover
+ *  for it. The click now WAITS for the row. */
 async function showObjectives(page: Page) {
-  const railRow = page
+  await openMissionRail(page);
+  await page
     .getByRole("navigation", { name: /missions/i })
-    .getByRole("button", { name: /Kimi transcript adapter/i });
-  if ((await railRow.count()) > 0 && (await railRow.first().isVisible())) {
-    await railRow.first().click();
-  }
+    .getByRole("button", { name: /Kimi transcript adapter/i })
+    .first()
+    .click();
+  // Selecting dismisses the drawer; make sure it is gone before aiming at the pane.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
 }
