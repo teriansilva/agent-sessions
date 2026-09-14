@@ -981,6 +981,36 @@ export interface FileContent {
   mime?: string;
   content?: string;
   truncated?: boolean;
+  /** #950: sha256 of the complete bytes — what a save is bound to. `null` when the read was
+   *  truncated, because there is then nothing honest to save against. */
+  version?: string | null;
+  /** #950: whether the viewer may offer EDIT; when not, `readonly_reason` says why as a predicate
+   *  ("is larger than 1 MiB …", "mixes CRLF and LF line endings"). */
+  editable?: boolean;
+  readonly_reason?: string | null;
+  eol?: "\n" | "\r\n";
+  bom?: boolean;
+}
+
+/** POST /api/files/write (#950) — a completed save. `retained` is the version it replaced, kept in
+ *  the recovery store; null when the text was unchanged and nothing was written. */
+export interface FileWriteResult {
+  path: string;
+  version: string;
+  size: number;
+  retained: { path: string; version: string } | null;
+}
+
+/** The body of a 409 from POST /api/files/write (#950), carried as `ApiError.record`. */
+export interface FileWriteRefusal {
+  detail: string;
+  reason?: "changed" | "open_elsewhere" | "opened_during_save" | "too_large" | "not_editable";
+  /** The version now on disk, when the refusal is `changed`. */
+  version?: string;
+  /** Best-effort name of the process holding the file open. Often absent; never required. */
+  holder?: { pid: number; comm: string };
+  /** Both surviving names, when a writer claimed the name mid-save and nothing was overwritten. */
+  both?: string[];
 }
 
 /** GET /api/files/capabilities (#783) — the panel fails CLOSED when the platform cannot support

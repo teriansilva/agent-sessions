@@ -17,11 +17,12 @@ either.
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import files, filewrite, gitpanel, gitwrite
+from .. import fileedit, files, filewrite, gitpanel, gitwrite
 from . import fileupload
 
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -142,12 +143,58 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         if not path or not path.strip():
             raise HTTPException(status_code=422, detail="path is required", headers=_NO_STORE)
         try:
-            payload = await _run(path, files.read_file, path)
+            # The editor's read (#950): the same payload plus `version` / `editable` /
+            # `readonly_reason` / `eol` / `bom`, decided on the bytes as stored.
+            payload = await _run(path, fileedit.read_file, path)
         except files.FsError as e:
             raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
         except Exception:
             raise HTTPException(
                 status_code=500, detail="could not read the file", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
+    @app.post("/api/files/write")
+    async def files_write(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        """Save an edited text file in place (#950).
+
+        The body is read from ``request.stream()`` against :data:`fileedit.MAX_BODY_BYTES`, so an
+        oversized request is refused as it arrives rather than after it has been buffered whole.
+        A refusal the viewer has to act on (changed on disk, open in another process, both
+        versions kept) comes back as a 409 with its structured fields beside ``detail``.
+        """
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > fileedit.MAX_BODY_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="that file is too large to save from the editor",
+                    headers=_NO_STORE,
+                )
+        try:
+            body = json.loads(raw) if raw else None
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=422, detail="a JSON object is required", headers=_NO_STORE
+            )
+        path = body.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise HTTPException(status_code=422, detail="path is required", headers=_NO_STORE)
+        try:
+            payload = await _run(path, fileedit.save, path, body.get("content"), body.get("expect"))
+        except fileedit.SaveRefused as e:
+            fields = {k: v for k, v in e.fields.items() if v is not None}
+            return _json({"detail": str(e), **fields}, status=e.status)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="the save failed", headers=_NO_STORE
             ) from None
         return _json(payload)
 

@@ -218,3 +218,47 @@ test("no console stylesheet paints TEXT in a raw status hue", () => {
       "signal colours and fail AA as small text on the light ground",
   ).toEqual([]);
 });
+
+// ---------------------------------------------------------------- editor syntax colours (#950)
+//
+// The editor paints code on --surface-3. Every syntax token is plain hex so it can be checked
+// directly, on every selector that declares a palette (the bare :root is the dark default).
+
+const SYNTAX = [
+  "syn-keyword",
+  "syn-string",
+  "syn-number",
+  "syn-comment",
+  "syn-function",
+  "syn-type",
+  "syn-property",
+  "syn-punct",
+];
+
+for (const [name, selector] of Object.entries(THEMES)) {
+  test(`${name}: every editor syntax colour meets WCAG AA on --surface-3`, () => {
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => token(themed.includes(`--${n}:`) ? themed : root, n);
+    const ground = pick("surface-3");
+    for (const syn of SYNTAX) {
+      expect(ratio(pick(syn), ground), `${name} --${syn} on --surface-3`).toBeGreaterThanOrEqual(
+        4.5,
+      );
+    }
+  });
+
+  test(`${name}: no syntax colour is a status hue or the brand accent`, () => {
+    // A string painted --status-up reads as "healthy"; a keyword painted --accent reads as a
+    // control. Colour is load-bearing in this design system (docs/design.md §3).
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => token(themed.includes(`--${n}:`) ? themed : root, n);
+    const reserved = ["status-up", "status-degraded", "status-down", "status-unknown", "status-draft", "accent"].map(
+      (n) => token(root, n).toLowerCase(),
+    );
+    for (const syn of SYNTAX) {
+      expect(reserved, `${name} --${syn}`).not.toContain(pick(syn).toLowerCase());
+    }
+  });
+}

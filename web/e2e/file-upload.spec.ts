@@ -359,7 +359,9 @@ test("the footer no longer claims READ ONLY, and says what is still unavailable"
   await openPanel(page);
   const panel = page.locator("[data-file-panel]");
   await expect(panel).not.toContainText("READ ONLY");
-  await expect(panel).toContainText("NO MOVE / RENAME / DELETE / EDIT");
+  // EDIT left this list when the viewer became an editor (#950); the rest is still unavailable.
+  await expect(panel).toContainText("NO MOVE / RENAME / DELETE");
+  await expect(panel).not.toContainText("/ EDIT");
 });
 
 test("a browser with no webkitdirectory says so instead of offering a broken Folder…", async ({

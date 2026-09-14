@@ -524,10 +524,10 @@ export function FilePanel({
         <span className="hud-tag">
           {root === cwd ? "ROOT // SESSION CWD" : "ROOT // CUSTOM"}
         </span>
-        {/* `READ ONLY` became a lie the moment upload (#807) and the git writes (#806) shipped.
-            It is REPLACED rather than deleted, because the remaining boundary is still worth
-            saying out loud — and it stays accurate for both features. */}
-        <span className="hud-tag">NO MOVE / RENAME / DELETE / EDIT</span>
+        {/* `READ ONLY` became a lie the moment upload (#807) and the git writes (#806) shipped,
+            and `EDIT` left this list when the viewer became an editor (#950). What remains is
+            still worth saying out loud. */}
+        <span className="hud-tag">NO MOVE / RENAME / DELETE</span>
       </div>
     </>
   );
@@ -565,6 +565,7 @@ export function FilePanel({
             staged={viewer.staged}
             returnFocusTo={viewer.trigger}
             onClose={() => setViewer(null)}
+            onOpenPath={(p) => setViewer({ path: p, trigger: viewer.trigger })}
           />
         )}
       </>
@@ -610,6 +611,7 @@ export function FilePanel({
           staged={viewer.staged}
           returnFocusTo={viewer.trigger}
           onClose={() => setViewer(null)}
+          onOpenPath={(p) => setViewer({ path: p, trigger: viewer.trigger })}
         />
       )}
     </>

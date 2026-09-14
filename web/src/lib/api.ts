@@ -14,6 +14,7 @@ import type {
   FileCapabilities,
   FileContent,
   FileListing,
+  FileWriteResult,
   Folder,
   FsDir,
   GitBranches,
@@ -552,6 +553,11 @@ export const api = {
       `/api/files/read?path=${encodeURIComponent(path)}`,
       init,
     ),
+  /** File viewer (#950): save edited text, bound to the version it was loaded at. A refusal is a
+   *  409 whose body (`FileWriteRefusal`) rides on `ApiError.record` — `mutateJson`, not
+   *  `postJson`, precisely so that body survives. */
+  filesWrite: (path: string, content: string, expect: string) =>
+    mutateJson<FileWriteResult>("POST", "/api/files/write", { path, content, expect }),
   /** File panel (#783): platform support for the containment contract. Fails closed. */
   filesCapabilities: () => getJson<FileCapabilities>("/api/files/capabilities"),
   /** GIT tab (#784): repository state for the panel's current root. */

@@ -509,6 +509,214 @@
   border-top: 1px solid var(--line);
 }
 
+/* ------------------------------------------------------------------ editor (#950)
+ *
+ * CodeMirror draws its own scroller, so the body stops scrolling when the editor is in it. The
+ * editor's LOOK lives in editor/theme.ts (tokens only); this block only sizes it and holds the
+ * touch overrides, which need a media query the CodeMirror theme API does not scope. */
+
+.viewerBodyEditor {
+  overflow: hidden;
+}
+.editorHost {
+  height: 100%;
+  min-height: 0;
+}
+.editorHost :global(.battlelab-code-editor) {
+  height: 100%;
+}
+.modeBarWrap {
+  flex-wrap: wrap;
+}
+/* Information, not a control: on a phone-width bar it gives its room to SAVE, which otherwise
+   wraps onto a second row and takes a line of code off the screen. */
+@media (max-width: 480px) {
+  .viewerStateTag {
+    display: none;
+  }
+}
+/* The unsaved marker is an LED + a word, never colour alone: the dot carries the draft hue
+   (#477 — "you have unsent text"), the word stays a readable text colour in both themes. */
+.unsaved {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.unsaved::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-draft);
+}
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 12px;
+  border: 1px solid var(--cta-bg-1);
+  border-radius: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.cta:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.cta:active:not(:disabled) {
+  background: var(--cta-bg-2);
+  border-color: var(--cta-bg-2);
+}
+.cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.cta:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.banner {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--text-3);
+  background: var(--bg-1);
+}
+.bannerWarn {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, var(--bg-1));
+}
+.bannerBad {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-1));
+}
+.bannerTag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.bannerWarn .bannerTag {
+  color: var(--warn-text);
+}
+.bannerBad .bannerTag {
+  color: var(--danger-text);
+}
+.bannerText {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.bannerRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.bannerHint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+}
+.segBtn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.segBtn:first-child {
+  border-left: 0;
+}
+.segBtnOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.segBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.linkBtn {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.linkBtn:hover {
+  color: var(--accent);
+}
+.linkBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .cta,
+  .segBtn {
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 11.5px;
+  }
+  .linkBtn {
+    min-height: 44px;
+    font-size: 11px;
+  }
+  /* Three classes deep so it outranks the theme's own `.cm-*` rules (two classes). */
+  .editorHost :global(.cm-editor) {
+    font-size: 13px;
+  }
+  .editorHost :global(.cm-editor .cm-button),
+  .editorHost :global(.cm-editor .cm-textfield) {
+    min-height: 44px;
+  }
+  .editorHost :global(.cm-editor .cm-panel.cm-search label) {
+    min-height: 44px;
+  }
+  .editorHost :global(.cm-editor .cm-panel.cm-search [name="close"]) {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 /* ------------------------------------------------------------------ touch
  *
  * Real targets, not expanded hit boxes. A 44px `::after` on a chip in a 26px bar overlaps its

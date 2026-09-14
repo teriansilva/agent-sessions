@@ -213,6 +213,15 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # tears the streams down on shutdown.
     registry = session_stream.SessionRegistry()
 
+    # In-place saves (#950) hold a kernel write lease, and a lease break is delivered as SIGIO —
+    # whose default action terminates the process. A no-op handler (installed here because
+    # `signal.signal` only works on the main thread) makes the break observable instead of fatal.
+    # Deliberately a handler, not SIG_IGN: an ignored disposition would be inherited by every agent
+    # this app execs. If it cannot be installed, the editor reports why and stays read-only.
+    from . import fileedit
+
+    fileedit.install_lease_signal_handler()
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Raise the default thread-pool ceiling (#280). Each live session's SessionStream._drain
@@ -239,6 +248,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # (the existing /api/sessions HTTP path keeps working as fallback).
         with contextlib.suppress(Exception):
             await registry.discover()
+        # Resolve any in-place save a crash left half-done (#950), off the event loop. Every
+        # resolution action checks what exists first, and none removes the last name of bytes
+        # that were displaced; a store that cannot be opened is reported by the next save.
+        with contextlib.suppress(Exception):
+            await asyncio.get_running_loop().run_in_executor(None, fileedit.startup_resolve)
         # Idle-session reaper (#279): tear down STALE (detached + long-idle) sessions so PTYs/
         # memory/tasks don't accumulate until the app slows. Disabled unless
         # AGENT_SESSIONS_REAP_IDLE_SECONDS > 0; defaults to dry-run (logs candidates, kills

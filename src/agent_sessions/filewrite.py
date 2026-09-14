@@ -872,6 +872,11 @@ def open_destination(dir_path: object, relpath: object, on_collision: object) ->
     base = contained_path(dir_path)
     parts = validate_relpath(relpath if isinstance(relpath, str) else "")
     refuse_git_metadata(base, parts)
+    # The editor's recovery store holds journals its save path acts on (#950), so an upload must
+    # never create one. Imported here because `fileedit` imports this module.
+    from . import fileedit
+
+    fileedit.refuse_recovery_store(base, parts)
 
     base_fd = _open_dir(base)
     dirs: list[int] = []

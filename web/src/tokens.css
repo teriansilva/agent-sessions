@@ -69,6 +69,18 @@
   --diff-add-fg: var(--status-up);
   --diff-del-bg: color-mix(in srgb, var(--status-down) 16%, transparent);
   --diff-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  /* Syntax colours for the file editor (#950). Their own names, like the diff pair above: a
+     keyword is not a status and not an interaction, so none of these reuses a --status-* hue or
+     --accent — which would make a string read as "healthy" or a keyword as clickable. Plain hex
+     so contrast.test.ts can hold every one at WCAG AA on --surface-3, the editor's ground. */
+  --syn-keyword: #c4a7ff;
+  --syn-string: #d9c7a0;
+  --syn-number: #f2a8c4;
+  --syn-comment: #8b9099;
+  --syn-function: #e8e9ec;
+  --syn-type: #8fd3c7;
+  --syn-property: #b9bec7;
+  --syn-punct: #a7abb3;
   --font-mono:
     "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
     "Roboto Mono", Menlo, Consolas, monospace;
@@ -132,6 +144,14 @@
   --brand-soft: #ffd47a;
   --badge-bg: #2a2310;
   --badge-fg: #ffd47a;
+  --syn-keyword: #c4a7ff;
+  --syn-string: #d9c7a0;
+  --syn-number: #f2a8c4;
+  --syn-comment: #8b9099;
+  --syn-function: #e8e9ec;
+  --syn-type: #8fd3c7;
+  --syn-property: #b9bec7;
+  --syn-punct: #a7abb3;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -176,4 +196,13 @@
   --diff-del-fg: color-mix(in srgb, var(--status-down) 20%, var(--text-1));
   --diff-add-bg: color-mix(in srgb, var(--status-up) 8%, transparent);
   --diff-del-bg: color-mix(in srgb, var(--status-down) 8%, transparent);
+  /* Darker syntax set for the light ground (--surface-3 #dfe1e4); each ≥4.5:1 there. */
+  --syn-keyword: #5b3fb0;
+  --syn-string: #7a4e12;
+  --syn-number: #a3306b;
+  --syn-comment: #555a63;
+  --syn-function: #14161a;
+  --syn-type: #1d6b61;
+  --syn-property: #41454d;
+  --syn-punct: #41454d;
 }

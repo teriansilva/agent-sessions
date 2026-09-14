@@ -124,6 +124,16 @@ def _isolate_lock_dir(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_edit_recovery(tmp_path, monkeypatch) -> None:
+    """Point the editor's recovery store (#950) at a per-test tmp dir.
+
+    ``fileedit.recovery_dir()`` defaults to ``~/.agent-sessions/edit-recovery`` — on the CI runner,
+    the live app's own store — and it is created by a READ too (the same-filesystem check needs
+    it), not just by a save. Autouse so no test can reach the real store by forgetting."""
+    monkeypatch.setenv("AGENT_SESSIONS_EDIT_RECOVERY", str(tmp_path / "edit-recovery"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_usage(tmp_path, monkeypatch) -> None:
     """Point the per-agent usage store (#839) at a per-test tmp file.
 
